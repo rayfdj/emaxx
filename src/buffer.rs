@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::lisp::types::Value;
 use ropey::Rope;
 
 /// Modification counter. Bumped on every edit, used to detect
@@ -52,6 +53,9 @@ pub struct Buffer {
 
     /// Overlays attached to this buffer.
     pub overlays: Vec<crate::overlay::Overlay>,
+
+    /// Sparse text property spans over [start, end) buffer positions.
+    text_properties: Vec<TextPropertySpan>,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +64,13 @@ pub enum UndoEntry {
     Insert { pos: usize, len: usize },
     /// Deleted text that was at pos (1-based). To undo: re-insert it.
     Delete { pos: usize, text: String },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextPropertySpan {
+    pub start: usize,
+    pub end: usize,
+    pub props: Vec<(String, Value)>,
 }
 
 /// Errors that buffer operations can produce.
@@ -103,6 +114,7 @@ impl Buffer {
             undo_list: Vec::new(),
             undo_disabled: false,
             overlays: Vec::new(),
+            text_properties: Vec::new(),
         }
     }
 
@@ -125,6 +137,7 @@ impl Buffer {
             undo_list: Vec::new(),
             undo_disabled: false,
             overlays: Vec::new(),
+            text_properties: Vec::new(),
         }
     }
 
@@ -363,6 +376,83 @@ impl Buffer {
         Ok(self.text.slice((from - 1)..(to - 1)).to_string())
     }
 
+    pub fn substring_property_spans(&self, from: usize, to: usize) -> Vec<TextPropertySpan> {
+        let from = from.max(self.begv);
+        let to = to.min(self.zv);
+        if from >= to {
+            return Vec::new();
+        }
+        let mut spans = Vec::new();
+        for span in &self.text_properties {
+            let start = span.start.max(from);
+            let end = span.end.min(to);
+            if start < end {
+                spans.push(TextPropertySpan {
+                    start: start - from,
+                    end: end - from,
+                    props: span.props.clone(),
+                });
+            }
+        }
+        merge_adjacent_spans(spans)
+    }
+
+    pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
+        if pos < self.point_min() || pos >= self.point_max() {
+            return None;
+        }
+        self.text_properties
+            .iter()
+            .find(|span| span.start <= pos && pos < span.end)
+            .and_then(|span| {
+                span.props
+                    .iter()
+                    .find(|(name, _)| name == prop)
+                    .map(|(_, value)| value.clone())
+            })
+    }
+
+    pub fn text_properties_at(&self, pos: usize) -> Vec<(String, Value)> {
+        if pos < self.point_min() || pos >= self.point_max() {
+            return Vec::new();
+        }
+        self.text_properties
+            .iter()
+            .find(|span| span.start <= pos && pos < span.end)
+            .map(|span| span.props.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn add_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
+        self.modify_text_properties(start, end, |mut current| {
+            for (name, value) in props {
+                if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
+                    *existing = value.clone();
+                } else {
+                    current.push((name.clone(), value.clone()));
+                }
+            }
+            current
+        });
+    }
+
+    pub fn put_text_property(&mut self, start: usize, end: usize, name: &str, value: Value) {
+        self.modify_text_properties(start, end, |mut current| {
+            current.retain(|(key, _)| key != name);
+            current.push((name.to_string(), value.clone()));
+            current
+        });
+    }
+
+    pub fn remove_list_of_text_properties(&mut self, start: usize, end: usize, names: &[String]) {
+        self.modify_text_properties(start, end, |current| {
+            current
+                .into_iter()
+                .filter(|(key, _)| !names.iter().any(|name| name == key))
+                .collect()
+        });
+    }
+
     /// Character at position (1-based). None if out of range.
     pub fn char_at(&self, pos: usize) -> Option<char> {
         if pos < self.begv || pos >= self.zv {
@@ -389,18 +479,33 @@ impl Buffer {
 
     /// Insert text at point and advance point past it.
     pub fn insert(&mut self, s: &str) -> usize {
+        self.insert_with_properties(s, None)
+    }
+
+    pub fn insert_and_inherit(&mut self, s: &str) -> usize {
+        let inherit_from = if self.pt > self.point_min() {
+            self.pt - 1
+        } else {
+            self.pt
+        };
+        let props = self.text_properties_at(inherit_from);
+        self.insert_with_properties(s, Some(props))
+    }
+
+    pub fn insert_with_properties(&mut self, s: &str, props: Option<Vec<(String, Value)>>) -> usize {
         let nchars = s.chars().count();
         if nchars == 0 {
             return self.pt;
         }
 
+        let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
         self.text.insert(idx0, s);
 
         // Record undo
         if !self.undo_disabled {
             self.undo_list.push(UndoEntry::Insert {
-                pos: self.pt,
+                pos: insert_at,
                 len: nchars,
             });
         }
@@ -419,7 +524,14 @@ impl Buffer {
         }
 
         // Adjust overlays
-        crate::overlay::adjust_for_insert(&mut self.overlays, self.pt - nchars, nchars);
+        crate::overlay::adjust_for_insert(&mut self.overlays, insert_at, nchars);
+
+        self.adjust_text_properties_for_insert(insert_at, nchars);
+        if let Some(props) = props
+            && !props.is_empty()
+        {
+            self.add_text_properties(insert_at, insert_at + nchars, &props);
+        }
 
         self.modiff += 1;
         self.pt
@@ -477,6 +589,7 @@ impl Buffer {
         // Adjust overlays and evaporate empty ones
         crate::overlay::adjust_for_delete(&mut self.overlays, from, to);
         crate::overlay::evaporate(&mut self.overlays);
+        self.adjust_text_properties_for_delete(from, to);
 
         // Shrink accessible region
         self.zv -= nchars;
@@ -555,6 +668,14 @@ impl Buffer {
         self.save_modiff = self.modiff;
     }
 
+    pub fn enable_undo(&mut self) {
+        self.undo_disabled = false;
+    }
+
+    pub fn undo_entries(&self) -> &[UndoEntry] {
+        &self.undo_list
+    }
+
     pub fn modified_tick(&self) -> ModCount {
         self.modiff
     }
@@ -586,6 +707,160 @@ impl Buffer {
         let newlines = slice.chars().filter(|&c| c == '\n').count();
         if end > start { newlines + 1 } else { 0 }
     }
+
+    fn adjust_text_properties_for_insert(&mut self, pos: usize, nchars: usize) {
+        if nchars == 0 {
+            return;
+        }
+        let mut updated = Vec::new();
+        for span in self.text_properties.clone() {
+            if span.end <= pos {
+                updated.push(span);
+            } else if span.start >= pos {
+                updated.push(TextPropertySpan {
+                    start: span.start + nchars,
+                    end: span.end + nchars,
+                    props: span.props,
+                });
+            } else {
+                updated.push(TextPropertySpan {
+                    start: span.start,
+                    end: pos,
+                    props: span.props.clone(),
+                });
+                updated.push(TextPropertySpan {
+                    start: pos + nchars,
+                    end: span.end + nchars,
+                    props: span.props,
+                });
+            }
+        }
+        self.text_properties = merge_adjacent_spans(updated);
+    }
+
+    fn adjust_text_properties_for_delete(&mut self, from: usize, to: usize) {
+        if from >= to {
+            return;
+        }
+        let removed = to - from;
+        let mut updated = Vec::new();
+        for span in self.text_properties.clone() {
+            if span.end <= from {
+                updated.push(span);
+            } else if span.start >= to {
+                updated.push(TextPropertySpan {
+                    start: span.start - removed,
+                    end: span.end - removed,
+                    props: span.props,
+                });
+            } else {
+                if span.start < from {
+                    updated.push(TextPropertySpan {
+                        start: span.start,
+                        end: from,
+                        props: span.props.clone(),
+                    });
+                }
+                if span.end > to {
+                    updated.push(TextPropertySpan {
+                        start: from,
+                        end: span.end - removed,
+                        props: span.props,
+                    });
+                }
+            }
+        }
+        self.text_properties = merge_adjacent_spans(updated);
+    }
+
+    fn modify_text_properties<F>(&mut self, start: usize, end: usize, mut f: F)
+    where
+        F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
+    {
+        let start = start.max(self.point_min());
+        let end = end.min(self.point_max());
+        if start >= end {
+            return;
+        }
+
+        let original = self.text_properties.clone();
+        let mut updated = Vec::new();
+        for span in &original {
+            if span.end <= start || span.start >= end {
+                updated.push(span.clone());
+            } else {
+                if span.start < start {
+                    updated.push(TextPropertySpan {
+                        start: span.start,
+                        end: start,
+                        props: span.props.clone(),
+                    });
+                }
+                if span.end > end {
+                    updated.push(TextPropertySpan {
+                        start: end,
+                        end: span.end,
+                        props: span.props.clone(),
+                    });
+                }
+            }
+        }
+
+        let mut boundaries = vec![start, end];
+        for span in &original {
+            if span.end <= start || span.start >= end {
+                continue;
+            }
+            boundaries.push(span.start.max(start));
+            boundaries.push(span.end.min(end));
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+
+        for window in boundaries.windows(2) {
+            let seg_start = window[0];
+            let seg_end = window[1];
+            if seg_start >= seg_end {
+                continue;
+            }
+            let current = properties_at_from(&original, seg_start);
+            let next = f(current);
+            if !next.is_empty() {
+                updated.push(TextPropertySpan {
+                    start: seg_start,
+                    end: seg_end,
+                    props: next,
+                });
+            }
+        }
+
+        self.text_properties = merge_adjacent_spans(updated);
+    }
+}
+
+fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(String, Value)> {
+    spans
+        .iter()
+        .find(|span| span.start <= pos && pos < span.end)
+        .map(|span| span.props.clone())
+        .unwrap_or_default()
+}
+
+fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
+    spans.retain(|span| span.start < span.end && !span.props.is_empty());
+    spans.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
+    let mut merged: Vec<TextPropertySpan> = Vec::new();
+    for span in spans {
+        if let Some(last) = merged.last_mut()
+            && last.end == span.start
+            && last.props == span.props
+        {
+            last.end = span.end;
+        } else {
+            merged.push(span);
+        }
+    }
+    merged
 }
 
 #[cfg(test)]

@@ -1,3 +1,6 @@
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use super::primitives;
 use super::types::{Env, LispError, Value};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
@@ -21,6 +24,15 @@ impl ErtTestDefinition {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct MarkerState {
+    pub id: u64,
+    pub buffer_id: Option<u64>,
+    pub position: Option<usize>,
+    pub last_position: Option<usize>,
+    pub insertion_type: bool,
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -38,6 +50,10 @@ pub struct Interpreter {
     next_buffer_id: u64,
     /// Next overlay ID for identity tracking.
     next_overlay_id: u64,
+    /// Next marker ID for identity tracking.
+    next_marker_id: u64,
+    /// All markers currently known to the interpreter.
+    markers: Vec<MarkerState>,
     /// User-defined macros: name → (params, body).
     macros: Vec<(String, Vec<String>, Vec<Value>)>,
     /// Collected ERT test definitions.
@@ -64,6 +80,8 @@ impl Interpreter {
             buffer_list: vec![(0, "*test*".to_string())],
             next_buffer_id: 1,
             next_overlay_id: 1,
+            next_marker_id: 1,
+            markers: Vec::new(),
             macros: Vec::new(),
             ert_tests: Vec::new(),
             test_results: Vec::new(),
@@ -154,6 +172,7 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        self.detach_markers_for_buffer(id);
         if id == self.current_buffer_id {
             self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
             if let Some((next_id, next_buffer)) = self.inactive_buffers.pop() {
@@ -175,6 +194,236 @@ impl Interpreter {
         let id = self.next_overlay_id;
         self.next_overlay_id += 1;
         id
+    }
+
+    /// Allocate a new marker.
+    pub fn make_marker(&mut self) -> Value {
+        let id = self.next_marker_id;
+        self.next_marker_id += 1;
+        self.markers.push(MarkerState {
+            id,
+            buffer_id: None,
+            position: None,
+            last_position: None,
+            insertion_type: false,
+        });
+        Value::Marker(id)
+    }
+
+    pub fn find_marker(&self, id: u64) -> Option<&MarkerState> {
+        self.markers.iter().find(|marker| marker.id == id)
+    }
+
+    pub fn find_marker_mut(&mut self, id: u64) -> Option<&mut MarkerState> {
+        self.markers.iter_mut().find(|marker| marker.id == id)
+    }
+
+    pub fn marker_position(&self, id: u64) -> Option<usize> {
+        self.find_marker(id).and_then(|marker| marker.position)
+    }
+
+    pub fn marker_buffer_id(&self, id: u64) -> Option<u64> {
+        self.find_marker(id).and_then(|marker| marker.buffer_id)
+    }
+
+    pub fn marker_last_position(&self, id: u64) -> Option<usize> {
+        self.find_marker(id).and_then(|marker| marker.last_position)
+    }
+
+    pub fn marker_insertion_type(&self, id: u64) -> Option<bool> {
+        self.find_marker(id).map(|marker| marker.insertion_type)
+    }
+
+    pub fn set_marker_insertion_type(&mut self, id: u64, insertion_type: bool) {
+        if let Some(marker) = self.find_marker_mut(id) {
+            marker.insertion_type = insertion_type;
+        }
+    }
+
+    pub fn set_marker(
+        &mut self,
+        id: u64,
+        position: Option<usize>,
+        buffer_id: Option<u64>,
+    ) -> Result<(), LispError> {
+        let marker = self
+            .find_marker_mut(id)
+            .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{}>", id)))?;
+        marker.buffer_id = buffer_id;
+        marker.position = position;
+        if let Some(pos) = position {
+            marker.last_position = Some(pos);
+        }
+        Ok(())
+    }
+
+    pub fn copy_marker_value(
+        &mut self,
+        value: &Value,
+        insertion_type: bool,
+    ) -> Result<Value, LispError> {
+        let marker_value = self.make_marker();
+        let Value::Marker(marker_id) = marker_value else {
+            unreachable!("make_marker always returns a marker")
+        };
+        match value {
+            Value::Nil => {
+                self.set_marker(marker_id, None, None)?;
+            }
+            Value::Marker(source_id) => {
+                let source = self.find_marker(*source_id).cloned().ok_or_else(|| {
+                    LispError::TypeError("marker".into(), format!("marker<{}>", source_id))
+                })?;
+                self.set_marker(marker_id, source.position, source.buffer_id)?;
+            }
+            Value::Integer(position) => {
+                self.set_marker(
+                    marker_id,
+                    Some(*position as usize),
+                    Some(self.current_buffer_id()),
+                )?;
+            }
+            _ => {
+                return Err(LispError::TypeError(
+                    "integer-or-marker-p".into(),
+                    value.type_name(),
+                ));
+            }
+        }
+        self.set_marker_insertion_type(marker_id, insertion_type);
+        Ok(marker_value)
+    }
+
+    pub fn detach_markers_for_buffer(&mut self, buffer_id: u64) {
+        for marker in &mut self.markers {
+            if marker.buffer_id == Some(buffer_id) {
+                marker.last_position = marker.position.or(marker.last_position);
+                marker.position = None;
+                marker.buffer_id = None;
+            }
+        }
+    }
+
+    pub fn adjust_markers_for_insert(
+        &mut self,
+        buffer_id: u64,
+        pos: usize,
+        nchars: usize,
+        before_markers: bool,
+    ) {
+        if nchars == 0 {
+            return;
+        }
+        for marker in &mut self.markers {
+            if marker.buffer_id != Some(buffer_id) {
+                continue;
+            }
+            let Some(position) = marker.position else {
+                continue;
+            };
+            if position > pos || (position == pos && (before_markers || marker.insertion_type)) {
+                let new_pos = position + nchars;
+                marker.position = Some(new_pos);
+                marker.last_position = Some(new_pos);
+            }
+        }
+    }
+
+    pub fn adjust_markers_for_delete(&mut self, buffer_id: u64, from: usize, to: usize) {
+        if from >= to {
+            return;
+        }
+        let nchars = to - from;
+        for marker in &mut self.markers {
+            if marker.buffer_id != Some(buffer_id) {
+                continue;
+            }
+            let Some(position) = marker.position else {
+                continue;
+            };
+            let new_pos = if position > to {
+                position - nchars
+            } else if position > from {
+                from
+            } else {
+                position
+            };
+            marker.position = Some(new_pos);
+            marker.last_position = Some(new_pos);
+        }
+    }
+
+    pub fn insert_current_buffer(&mut self, s: &str) {
+        let pos = self.buffer.point();
+        let nchars = s.chars().count();
+        self.buffer.insert(s);
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+    }
+
+    pub fn insert_current_buffer_with_properties(
+        &mut self,
+        s: &str,
+        props: Option<Vec<(String, Value)>>,
+    ) {
+        let pos = self.buffer.point();
+        let nchars = s.chars().count();
+        self.buffer.insert_with_properties(s, props);
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+    }
+
+    pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
+        let pos = self.buffer.point();
+        let nchars = s.chars().count();
+        self.buffer.insert_and_inherit(s);
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+    }
+
+    pub fn insert_current_buffer_before_markers(&mut self, s: &str) {
+        let pos = self.buffer.point();
+        let nchars = s.chars().count();
+        self.buffer.insert(s);
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
+    }
+
+    pub fn insert_current_buffer_before_markers_and_inherit(&mut self, s: &str) {
+        let pos = self.buffer.point();
+        let nchars = s.chars().count();
+        self.buffer.insert_and_inherit(s);
+        self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
+    }
+
+    pub fn delete_region_current_buffer(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> Result<String, crate::buffer::BufferError> {
+        let from = from.max(self.buffer.point_min());
+        let to = to.min(self.buffer.point_max());
+        let deleted = self.buffer.delete_region(from, to)?;
+        self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
+        Ok(deleted)
+    }
+
+    pub fn delete_char_current_buffer(
+        &mut self,
+        n: isize,
+    ) -> Result<String, crate::buffer::BufferError> {
+        if n >= 0 {
+            let from = self.buffer.point();
+            let to = from + n as usize;
+            if to > self.buffer.point_max() {
+                return Err(crate::buffer::BufferError::EndOfBuffer);
+            }
+            self.delete_region_current_buffer(from, to)
+        } else {
+            let count = (-n) as usize;
+            let to = self.buffer.point();
+            if to < self.buffer.point_min() + count {
+                return Err(crate::buffer::BufferError::BeginningOfBuffer);
+            }
+            let from = to - count;
+            self.delete_region_current_buffer(from, to)
+        }
     }
 
     /// Borrow a live buffer by ID.
@@ -270,6 +519,9 @@ impl Interpreter {
                 return Ok(v.clone());
             }
         }
+        if name == "buffer-undo-list" {
+            return Ok(crate::lisp::primitives::buffer_undo_list_value(&self.buffer));
+        }
         // Built-in constants and functions
         match name {
             "nil" => Ok(Value::Nil),
@@ -290,7 +542,10 @@ impl Interpreter {
     }
 
     /// Set a variable in the innermost local frame, or in globals.
-    fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
+    pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
+        if name == "buffer-undo-list" {
+            return;
+        }
         // Try to find and update in local env
         for frame in env.iter_mut().rev() {
             for (k, v) in frame.iter_mut().rev() {
@@ -320,6 +575,7 @@ impl Interpreter {
             Value::BuiltinFunc(_)
             | Value::Lambda(_, _, _)
             | Value::Buffer(_, _)
+            | Value::Marker(_)
             | Value::Overlay(_) => Ok(expr.clone()),
 
             Value::Symbol(name) => self.lookup(name, env),
@@ -328,6 +584,10 @@ impl Interpreter {
                 let items = expr.to_vec()?;
                 if items.is_empty() {
                     return Ok(Value::Nil);
+                }
+
+                if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
+                    return Ok(expr.clone());
                 }
 
                 // Check for special forms first
@@ -366,10 +626,14 @@ impl Interpreter {
                         "dotimes" => return self.sf_dotimes(&items, env),
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "condition-case" => return self.sf_condition_case(&items, env),
+                        "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
+                        "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
+                        "with-selected-window" => return self.sf_progn(&items[2..], env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-restriction" => return self.sf_progn(&items[1..], env),
+                        "combine-change-calls" => return self.sf_progn(&items[3..], env),
                         "cl-destructuring-bind" => {
                             return self.sf_cl_destructuring_bind(&items, env)
                         }
@@ -955,7 +1219,32 @@ impl Interpreter {
         self.switch_to_buffer_id(temp_id)?;
         let result = self.sf_progn(&items[1..], env);
         let _ = self.switch_to_buffer_id(saved_buffer_id);
-        let _ = self.remove_buffer_id(temp_id);
+        self.kill_buffer_id(temp_id);
+        result
+    }
+
+    fn sf_ert_with_temp_file(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "ert-with-temp-file".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("emaxx-{stamp}.tmp"));
+        fs::write(&path, "").map_err(|error| LispError::Signal(error.to_string()))?;
+        env.push(vec![(name, Value::String(path.display().to_string()))]);
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        let _ = fs::remove_file(&path);
         result
     }
 
@@ -981,6 +1270,18 @@ impl Interpreter {
         let result = self.sf_progn(&items[1..], env);
         self.buffer.goto_char(saved_pt);
         result
+    }
+
+    fn sf_cl_assert(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let result = self.eval(&items[1], env)?;
+        if result.is_truthy() {
+            Ok(result)
+        } else {
+            Err(LispError::Signal("Assertion failed".into()))
+        }
     }
 
     // ── cl-destructuring-bind ──

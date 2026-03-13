@@ -18,6 +18,8 @@ pub enum Value {
     Lambda(Vec<String>, Vec<Value>, Env),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(u64, String),
+    /// A marker object, identified by unique id.
+    Marker(u64),
     /// An overlay object, identified by unique id.
     Overlay(u64),
 }
@@ -160,6 +162,7 @@ impl Value {
             Value::BuiltinFunc(name) => format!("builtin<{}>", name),
             Value::Lambda(_, _, _) => "lambda".into(),
             Value::Buffer(_, name) => format!("buffer<{}>", name),
+            Value::Marker(id) => format!("marker<{}>", id),
             Value::Overlay(id) => format!("overlay<{}>", id),
         }
     }
@@ -176,6 +179,7 @@ impl PartialEq for Value {
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
             (Value::Cons(a1, a2), Value::Cons(b1, b2)) => a1 == b1 && a2 == b2,
             (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
+            (Value::Marker(a), Value::Marker(b)) => a == b,
             (Value::Overlay(a), Value::Overlay(b)) => a == b,
             _ => false,
         }
@@ -217,6 +221,7 @@ impl fmt::Display for Value {
             Value::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
             Value::Lambda(params, _, _) => write!(f, "#<lambda ({})>", params.join(" ")),
             Value::Buffer(_, name) => write!(f, "#<buffer {}>", name),
+            Value::Marker(id) => write!(f, "#<marker id:{}>", id),
             Value::Overlay(id) => write!(f, "#<overlay id:{}>", id),
         }
     }
