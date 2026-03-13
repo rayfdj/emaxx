@@ -125,6 +125,18 @@ pub fn is_builtin(name: &str) -> bool {
             | "prin1-to-string"
             | "princ"
             | "print"
+            // Reader
+            | "read"
+            // More string/char ops
+            | "char-equal"
+            | "number-sequence"
+            // More buffer ops
+            | "following-char"
+            | "preceding-char"
+            | "buffer-last-name"
+            // Stubs for terminal/display
+            | "display-graphic-p"
+            | "frame-parameter"
             // Misc
             | "error"
             | "signal"
@@ -596,60 +608,199 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs("format".into(), 0));
             }
             let fmt = args[0].as_string()?;
-            // Simple %-substitution
             let mut result = String::new();
             let mut arg_idx = 1;
             let chars: Vec<char> = fmt.chars().collect();
             let mut i = 0;
             while i < chars.len() {
-                if chars[i] == '%' && i + 1 < chars.len() {
+                if chars[i] != '%' || i + 1 >= chars.len() {
+                    result.push(chars[i]);
                     i += 1;
+                    continue;
+                }
+                i += 1; // skip '%'
+
+                if chars[i] == '%' {
+                    result.push('%');
+                    i += 1;
+                    continue;
+                }
+
+                // Parse optional N$ positional arg
+                let mut positional: Option<usize> = None;
+                if chars[i].is_ascii_digit() {
+                    let mut n = 0usize;
+                    let digit_start = i;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        n = n * 10 + (chars[i] as usize - '0' as usize);
+                        i += 1;
+                    }
+                    if i < chars.len() && chars[i] == '$' {
+                        positional = Some(n);
+                        i += 1;
+                    } else {
+                        i = digit_start; // not positional, rewind
+                    }
+                }
+
+                // Parse flags
+                let mut flag_hash = false;
+                let mut flag_zero = false;
+                let mut flag_minus = false;
+                while i < chars.len() {
                     match chars[i] {
-                        's' => {
-                            if arg_idx < args.len() {
-                                match &args[arg_idx] {
-                                    Value::String(s) => result.push_str(s),
-                                    other => result.push_str(&other.to_string()),
-                                }
-                                arg_idx += 1;
-                            }
-                        }
-                        'd' => {
-                            if arg_idx < args.len() {
-                                if let Ok(n) = args[arg_idx].as_integer() {
-                                    result.push_str(&n.to_string());
-                                }
-                                arg_idx += 1;
-                            }
-                        }
-                        'S' => {
-                            // prin1 format
-                            if arg_idx < args.len() {
-                                result.push_str(&args[arg_idx].to_string());
-                                arg_idx += 1;
-                            }
-                        }
-                        '%' => result.push('%'),
-                        'c' => {
-                            if arg_idx < args.len()
-                                && let Ok(n) = args[arg_idx].as_integer()
-                                && let Some(c) = char::from_u32(n as u32)
-                            {
-                                result.push(c);
-                            }
-                            if arg_idx < args.len() {
-                                arg_idx += 1;
-                            }
-                        }
-                        _ => {
-                            result.push('%');
-                            result.push(chars[i]);
+                        '#' => flag_hash = true,
+                        '0' => flag_zero = true,
+                        '-' => flag_minus = true,
+                        '+' | ' ' => {} // ignored for now
+                        _ => break,
+                    }
+                    i += 1;
+                }
+
+                // Parse width
+                let mut width: usize = 0;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    width = width * 10 + (chars[i] as usize - '0' as usize);
+                    i += 1;
+                }
+
+                // Skip precision (e.g., .2)
+                if i < chars.len() && chars[i] == '.' {
+                    i += 1;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+
+                if i >= chars.len() {
+                    break;
+                }
+
+                let conv = chars[i];
+                i += 1;
+
+                // Get the argument
+                let aidx = if let Some(n) = positional {
+                    n
+                } else {
+                    let idx = arg_idx;
+                    arg_idx += 1;
+                    idx
+                };
+                if aidx >= args.len() {
+                    continue;
+                }
+                let arg = &args[aidx];
+
+                // Convert to integer, handling floats
+                let as_int = || -> i64 {
+                    match arg {
+                        Value::Integer(n) => *n,
+                        Value::Float(f) => *f as i64,
+                        _ => 0,
+                    }
+                };
+
+                let formatted = match conv {
+                    's' => match arg {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    },
+                    'S' => arg.to_string(),
+                    'd' => {
+                        let n = as_int();
+                        n.to_string()
+                    }
+                    'o' => {
+                        let n = as_int();
+                        if n < 0 {
+                            // Emacs uses unsigned representation for negative
+                            format!("{:o}", n as u64)
+                        } else {
+                            format!("{:o}", n)
                         }
                     }
+                    'x' => {
+                        let n = as_int();
+                        if flag_hash && n != 0 {
+                            format!("0x{:x}", n)
+                        } else if n < 0 {
+                            format!("{:x}", n as u64)
+                        } else {
+                            format!("{:x}", n)
+                        }
+                    }
+                    'X' => {
+                        let n = as_int();
+                        if flag_hash && n != 0 {
+                            format!("0X{:X}", n)
+                        } else {
+                            format!("{:X}", n)
+                        }
+                    }
+                    'b' => {
+                        let n = as_int();
+                        if n < 0 {
+                            format!("{:b}", n as u64)
+                        } else {
+                            format!("{:b}", n)
+                        }
+                    }
+                    'c' => {
+                        let n = as_int();
+                        char::from_u32(n as u32)
+                            .map(|c| c.to_string())
+                            .unwrap_or_default()
+                    }
+                    _ => {
+                        // Unknown, just pass through
+                        if let Some(pos) = positional {
+                            format!("%{}${}", pos, conv)
+                        } else {
+                            format!("%{}", conv)
+                        }
+                    }
+                };
+
+                // Apply width/padding
+                if width > 0 && formatted.len() < width {
+                    let pad_char = if flag_zero && !flag_minus { '0' } else { ' ' };
+                    let padding = width - formatted.len();
+                    if flag_minus {
+                        result.push_str(&formatted);
+                        for _ in 0..padding {
+                            result.push(pad_char);
+                        }
+                    } else if flag_zero && (conv == 'x' || conv == 'X') && flag_hash {
+                        // For %#08x, pad zeros after the 0x prefix
+                        if let Some(rest) = formatted.strip_prefix("0x") {
+                            result.push_str("0x");
+                            for _ in 0..padding {
+                                result.push('0');
+                            }
+                            result.push_str(rest);
+                        } else if let Some(rest) = formatted.strip_prefix("0X") {
+                            result.push_str("0X");
+                            for _ in 0..padding {
+                                result.push('0');
+                            }
+                            result.push_str(rest);
+                        } else {
+                            for _ in 0..padding {
+                                result.push('0');
+                            }
+                            result.push_str(&formatted);
+                        }
+                    } else {
+                        for _ in 0..padding {
+                            result.push(pad_char);
+                        }
+                        result.push_str(&formatted);
+                    }
                 } else {
-                    result.push(chars[i]);
+                    result.push_str(&formatted);
                 }
-                i += 1;
             }
             Ok(Value::String(result))
         }
@@ -1121,6 +1272,91 @@ pub fn call(
         "prin1-to-string" => {
             need_args(name, args, 1)?;
             Ok(Value::String(args[0].to_string()))
+        }
+
+        // ── More string/char ops ──
+        "char-equal" => {
+            need_args(name, args, 2)?;
+            let a = args[0].as_integer()?;
+            let b = args[1].as_integer()?;
+            // case-insensitive comparison (simplified: just lowercase ASCII)
+            let eq = a == b || (a as u8 as char).eq_ignore_ascii_case(&(b as u8 as char));
+            Ok(if eq { Value::T } else { Value::Nil })
+        }
+        "number-sequence" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(
+                    "number-sequence".into(),
+                    args.len(),
+                ));
+            }
+            let from = args[0].as_integer()?;
+            let to = if args.len() > 1 {
+                args[1].as_integer()?
+            } else {
+                from
+            };
+            let step = if args.len() > 2 {
+                args[2].as_integer()?
+            } else if from <= to {
+                1
+            } else {
+                -1
+            };
+            if step == 0 {
+                return Err(LispError::Signal(
+                    "number-sequence: step must not be 0".into(),
+                ));
+            }
+            let mut result = Vec::new();
+            let mut i = from;
+            if step > 0 {
+                while i <= to {
+                    result.push(Value::Integer(i));
+                    i += step;
+                }
+            } else {
+                while i >= to {
+                    result.push(Value::Integer(i));
+                    i += step;
+                }
+            }
+            Ok(Value::list(result))
+        }
+
+        // ── More buffer ops ──
+        "following-char" => match interp.buffer.char_at(interp.buffer.point()) {
+            Some(c) => Ok(Value::Integer(c as i64)),
+            None => Ok(Value::Integer(0)),
+        },
+        "preceding-char" => {
+            let pt = interp.buffer.point();
+            if pt <= interp.buffer.point_min() {
+                Ok(Value::Integer(0))
+            } else {
+                match interp.buffer.char_at(pt - 1) {
+                    Some(c) => Ok(Value::Integer(c as i64)),
+                    None => Ok(Value::Integer(0)),
+                }
+            }
+        }
+        "buffer-last-name" => {
+            // We don't track last-name, return current name
+            Ok(Value::String(interp.buffer.name.clone()))
+        }
+
+        // ── Display stubs ──
+        "display-graphic-p" | "frame-parameter" => Ok(Value::Nil),
+
+        // ── Reader ──
+        "read" => {
+            need_args(name, args, 1)?;
+            let s = args[0].as_string()?;
+            let mut reader = super::reader::Reader::new(s);
+            match reader.read()? {
+                Some(val) => Ok(val),
+                None => Err(LispError::EndOfInput),
+            }
         }
 
         // ── Misc ──
