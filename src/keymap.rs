@@ -263,6 +263,7 @@ pub fn default_global_keymap() -> Keymap {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

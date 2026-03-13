@@ -1,3 +1,5 @@
+#![deny(clippy::unwrap_used)]
+
 use std::io::{self, stdout};
 use std::{env, fs};
 
