@@ -49,6 +49,9 @@ pub struct Buffer {
 
     /// When true, don't record undo entries.
     undo_disabled: bool,
+
+    /// Overlays attached to this buffer.
+    pub overlays: Vec<crate::overlay::Overlay>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +102,7 @@ impl Buffer {
             file: None,
             undo_list: Vec::new(),
             undo_disabled: false,
+            overlays: Vec::new(),
         }
     }
 
@@ -120,6 +124,7 @@ impl Buffer {
             file: None,
             undo_list: Vec::new(),
             undo_disabled: false,
+            overlays: Vec::new(),
         }
     }
 
@@ -413,6 +418,9 @@ impl Buffer {
             *m += nchars;
         }
 
+        // Adjust overlays
+        crate::overlay::adjust_for_insert(&mut self.overlays, self.pt - nchars, nchars);
+
         self.modiff += 1;
         self.pt
     }
@@ -465,6 +473,10 @@ impl Buffer {
                 *m = from;
             }
         }
+
+        // Adjust overlays and evaporate empty ones
+        crate::overlay::adjust_for_delete(&mut self.overlays, from, to);
+        crate::overlay::evaporate(&mut self.overlays);
 
         // Shrink accessible region
         self.zv -= nchars;

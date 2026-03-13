@@ -12,6 +12,8 @@ pub struct Interpreter {
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
     next_buffer_id: u64,
+    /// Next overlay ID for identity tracking.
+    next_overlay_id: u64,
     /// User-defined macros: name → (params, body).
     macros: Vec<(String, Vec<String>, Vec<Value>)>,
     /// Collected ERT test definitions: (name, body).
@@ -33,6 +35,7 @@ impl Interpreter {
             buffer: crate::buffer::Buffer::new("*test*"),
             buffer_list: vec![(0, "*test*".to_string())],
             next_buffer_id: 1,
+            next_overlay_id: 1,
             macros: Vec::new(),
             ert_tests: Vec::new(),
             test_results: Vec::new(),
@@ -54,6 +57,23 @@ impl Interpreter {
     /// Find a buffer by name, returning (id, name).
     pub fn find_buffer(&self, name: &str) -> Option<(u64, String)> {
         self.buffer_list.iter().find(|(_, n)| n == name).cloned()
+    }
+
+    /// Allocate a new unique overlay ID.
+    pub fn alloc_overlay_id(&mut self) -> u64 {
+        let id = self.next_overlay_id;
+        self.next_overlay_id += 1;
+        id
+    }
+
+    /// Find an overlay by ID in the current buffer.
+    pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
+        self.buffer.overlays.iter().find(|ov| ov.id == id)
+    }
+
+    /// Find a mutable overlay by ID in the current buffer.
+    pub fn find_overlay_mut(&mut self, id: u64) -> Option<&mut crate::overlay::Overlay> {
+        self.buffer.overlays.iter_mut().find(|ov| ov.id == id)
     }
 
     /// Look up a variable, returning None if unbound (for use by primitives).
@@ -134,9 +154,10 @@ impl Interpreter {
                 Ok(expr.clone())
             }
 
-            Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Buffer(_, _) => {
-                Ok(expr.clone())
-            }
+            Value::BuiltinFunc(_)
+            | Value::Lambda(_, _, _)
+            | Value::Buffer(_, _)
+            | Value::Overlay(_) => Ok(expr.clone()),
 
             Value::Symbol(name) => self.lookup(name, env),
 
@@ -187,6 +208,82 @@ impl Interpreter {
                         }
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-restriction" => return self.sf_progn(&items[1..], env),
+                        "cl-destructuring-bind" => {
+                            return self.sf_cl_destructuring_bind(&items, env)
+                        }
+                        "cl-flet" | "cl-labels" => {
+                            return self.sf_cl_flet(&items, env)
+                        }
+                        "cl-macrolet" => {
+                            return self.sf_cl_macrolet(&items, env)
+                        }
+                        "incf" | "cl-incf" => {
+                            // (incf PLACE &optional DELTA)
+                            if items.len() < 2 {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "incf".into(),
+                                    items.len() - 1,
+                                ));
+                            }
+                            let delta = if items.len() > 2 {
+                                self.eval(&items[2], env)?.as_integer()?
+                            } else {
+                                1
+                            };
+                            let name = items[1].as_symbol()?.to_string();
+                            let cur = self.lookup(&name, env)?.as_integer()?;
+                            let new_val = Value::Integer(cur + delta);
+                            self.set_variable(&name, new_val.clone(), env);
+                            return Ok(new_val);
+                        }
+                        "decf" | "cl-decf" => {
+                            if items.len() < 2 {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "decf".into(),
+                                    items.len() - 1,
+                                ));
+                            }
+                            let delta = if items.len() > 2 {
+                                self.eval(&items[2], env)?.as_integer()?
+                            } else {
+                                1
+                            };
+                            let name = items[1].as_symbol()?.to_string();
+                            let cur = self.lookup(&name, env)?.as_integer()?;
+                            let new_val = Value::Integer(cur - delta);
+                            self.set_variable(&name, new_val.clone(), env);
+                            return Ok(new_val);
+                        }
+                        "push" => {
+                            // (push NEWELT PLACE)
+                            if items.len() < 3 {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "push".into(),
+                                    items.len() - 1,
+                                ));
+                            }
+                            let val = self.eval(&items[1], env)?;
+                            let name = items[2].as_symbol()?.to_string();
+                            let cur = self.lookup(&name, env)?;
+                            let new_val = Value::cons(val, cur);
+                            self.set_variable(&name, new_val.clone(), env);
+                            return Ok(new_val);
+                        }
+                        "pop" => {
+                            // (pop PLACE)
+                            if items.len() < 2 {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "pop".into(),
+                                    items.len() - 1,
+                                ));
+                            }
+                            let name = items[1].as_symbol()?.to_string();
+                            let cur = self.lookup(&name, env)?;
+                            let result = cur.car()?;
+                            let rest = cur.cdr()?;
+                            self.set_variable(&name, rest, env);
+                            return Ok(result);
+                        }
                         "ert-deftest" => return self.sf_ert_deftest(&items),
                         "should" => return self.sf_should(&items, env),
                         "should-not" => return self.sf_should_not(&items, env),
@@ -649,6 +746,132 @@ impl Interpreter {
         let saved_pt = self.buffer.point();
         let result = self.sf_progn(&items[1..], env);
         self.buffer.goto_char(saved_pt);
+        result
+    }
+
+    // ── cl-destructuring-bind ──
+    // (cl-destructuring-bind (var1 var2 ... &optional opt1 ...) expr body...)
+    fn sf_cl_destructuring_bind(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-destructuring-bind".into(),
+                items.len() - 1,
+            ));
+        }
+        let pattern = items[1].to_vec()?;
+        let val = self.eval(&items[2], env)?;
+        let vals = val.to_vec()?;
+
+        let mut frame = Vec::new();
+        let mut pi = 0; // pattern index
+        let mut vi = 0; // value index
+        let mut optional = false;
+
+        while pi < pattern.len() {
+            let p = &pattern[pi];
+            if let Value::Symbol(s) = p {
+                match s.as_str() {
+                    "&optional" => {
+                        optional = true;
+                        pi += 1;
+                        continue;
+                    }
+                    "&rest" => {
+                        pi += 1;
+                        if pi < pattern.len()
+                            && let Value::Symbol(rest_name) = &pattern[pi]
+                        {
+                            let rest_vals: Vec<Value> = vals[vi..].to_vec();
+                            frame.push((rest_name.clone(), Value::list(rest_vals)));
+                        }
+                        break;
+                    }
+                    name => {
+                        let v = if vi < vals.len() {
+                            vals[vi].clone()
+                        } else if optional {
+                            Value::Nil
+                        } else {
+                            return Err(LispError::WrongNumberOfArgs(
+                                "cl-destructuring-bind".into(),
+                                vals.len(),
+                            ));
+                        };
+                        frame.push((name.to_string(), v));
+                        vi += 1;
+                    }
+                }
+            }
+            pi += 1;
+        }
+
+        env.push(frame);
+        let result = self.sf_progn(&items[3..], env);
+        env.pop();
+        result
+    }
+
+    // ── cl-flet ──
+    // (cl-flet ((name (args) body...) ...) body...)
+    fn sf_cl_flet(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs("cl-flet".into(), items.len() - 1));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut frame = Vec::new();
+        for binding in &bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                continue;
+            }
+            let fname = parts[0].as_symbol()?.to_string();
+            let params_val = parts[1].to_vec()?;
+            let mut params = Vec::new();
+            for p in &params_val {
+                params.push(p.as_symbol()?.to_string());
+            }
+            let body: Vec<Value> = parts[2..].to_vec();
+            let lambda = Value::Lambda(params, body, env.clone());
+            frame.push((fname, lambda));
+        }
+        env.push(frame);
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        result
+    }
+
+    // ── cl-macrolet ──
+    // (cl-macrolet ((name (args) body...) ...) body...)
+    fn sf_cl_macrolet(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-macrolet".into(),
+                items.len() - 1,
+            ));
+        }
+        let bindings = items[1].to_vec()?;
+        // Register macros temporarily
+        let saved_macros_len = self.macros.len();
+        for binding in &bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                continue;
+            }
+            let mname = parts[0].as_symbol()?.to_string();
+            let params_val = parts[1].to_vec()?;
+            let mut params = Vec::new();
+            for p in &params_val {
+                params.push(p.as_symbol()?.to_string());
+            }
+            let body: Vec<Value> = parts[2..].to_vec();
+            self.macros.push((mname, params, body));
+        }
+        let result = self.sf_progn(&items[2..], env);
+        self.macros.truncate(saved_macros_len);
         result
     }
 
