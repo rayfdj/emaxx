@@ -529,6 +529,8 @@ impl Interpreter {
             "float-pi" => Ok(Value::Float(std::f64::consts::PI)),
             "most-positive-fixnum" => Ok(Value::Integer(i64::MAX)),
             "most-negative-fixnum" => Ok(Value::Integer(i64::MIN)),
+            "enable-multibyte-characters" => Ok(Value::T),
+            "system-type" => Ok(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
             _ if name.starts_with(':') => Ok(Value::Symbol(name.to_string())),
             _ => {
                 // Check if it's a known builtin function
