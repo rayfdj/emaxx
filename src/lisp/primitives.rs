@@ -154,48 +154,98 @@ pub fn call(
     args: &[Value],
     env: &super::types::Env,
 ) -> Result<Value, LispError> {
+    // Helper: check if any argument is a float
+    let has_float = |args: &[Value]| args.iter().any(|a| matches!(a, Value::Float(_)));
+    // Helper: get numeric value as f64
+    let as_num = |a: &Value| -> Result<f64, LispError> {
+        match a {
+            Value::Integer(n) => Ok(*n as f64),
+            Value::Float(f) => Ok(*f),
+            _ => Err(LispError::TypeError("number".into(), a.type_name())),
+        }
+    };
+
     match name {
         // ── Arithmetic ──
         "+" => {
-            let mut sum: i64 = 0;
-            for a in args {
-                sum = sum.wrapping_add(a.as_integer()?);
+            if has_float(args) {
+                let mut sum = 0.0;
+                for a in args {
+                    sum += as_num(a)?;
+                }
+                Ok(Value::Float(sum))
+            } else {
+                let mut sum: i64 = 0;
+                for a in args {
+                    sum = sum.wrapping_add(a.as_integer()?);
+                }
+                Ok(Value::Integer(sum))
             }
-            Ok(Value::Integer(sum))
         }
         "-" => {
             if args.is_empty() {
                 return Ok(Value::Integer(0));
             }
-            if args.len() == 1 {
-                return Ok(Value::Integer(args[0].as_integer()?.wrapping_neg()));
+            if has_float(args) {
+                if args.len() == 1 {
+                    return Ok(Value::Float(-as_num(&args[0])?));
+                }
+                let mut result = as_num(&args[0])?;
+                for a in &args[1..] {
+                    result -= as_num(a)?;
+                }
+                Ok(Value::Float(result))
+            } else {
+                if args.len() == 1 {
+                    return Ok(Value::Integer(args[0].as_integer()?.wrapping_neg()));
+                }
+                let mut result = args[0].as_integer()?;
+                for a in &args[1..] {
+                    result = result.wrapping_sub(a.as_integer()?);
+                }
+                Ok(Value::Integer(result))
             }
-            let mut result = args[0].as_integer()?;
-            for a in &args[1..] {
-                result = result.wrapping_sub(a.as_integer()?);
-            }
-            Ok(Value::Integer(result))
         }
         "*" => {
-            let mut product: i64 = 1;
-            for a in args {
-                product = product.wrapping_mul(a.as_integer()?);
+            if has_float(args) {
+                let mut product = 1.0;
+                for a in args {
+                    product *= as_num(a)?;
+                }
+                Ok(Value::Float(product))
+            } else {
+                let mut product: i64 = 1;
+                for a in args {
+                    product = product.wrapping_mul(a.as_integer()?);
+                }
+                Ok(Value::Integer(product))
             }
-            Ok(Value::Integer(product))
         }
         "/" => {
             if args.len() < 2 {
                 return Err(LispError::WrongNumberOfArgs("/".into(), args.len()));
             }
-            let mut result = args[0].as_integer()?;
-            for a in &args[1..] {
-                let divisor = a.as_integer()?;
-                if divisor == 0 {
-                    return Err(LispError::Signal("Division by zero".into()));
+            if has_float(args) {
+                let mut result = as_num(&args[0])?;
+                for a in &args[1..] {
+                    let divisor = as_num(a)?;
+                    if divisor == 0.0 {
+                        return Err(LispError::Signal("Division by zero".into()));
+                    }
+                    result /= divisor;
                 }
-                result /= divisor;
+                Ok(Value::Float(result))
+            } else {
+                let mut result = args[0].as_integer()?;
+                for a in &args[1..] {
+                    let divisor = a.as_integer()?;
+                    if divisor == 0 {
+                        return Err(LispError::Signal("Division by zero".into()));
+                    }
+                    result /= divisor;
+                }
+                Ok(Value::Integer(result))
             }
-            Ok(Value::Integer(result))
         }
         "%" | "mod" => {
             need_args(name, args, 2)?;
@@ -242,13 +292,13 @@ pub fn call(
         // ── Comparison ──
         "=" => {
             need_args(name, args, 2)?;
-            let a = args[0].as_integer()?;
-            let b = args[1].as_integer()?;
+            let a = as_num(&args[0])?;
+            let b = as_num(&args[1])?;
             Ok(if a == b { Value::T } else { Value::Nil })
         }
         "<" => {
             need_args(name, args, 2)?;
-            Ok(if args[0].as_integer()? < args[1].as_integer()? {
+            Ok(if as_num(&args[0])? < as_num(&args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -256,7 +306,7 @@ pub fn call(
         }
         ">" => {
             need_args(name, args, 2)?;
-            Ok(if args[0].as_integer()? > args[1].as_integer()? {
+            Ok(if as_num(&args[0])? > as_num(&args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -264,7 +314,7 @@ pub fn call(
         }
         "<=" => {
             need_args(name, args, 2)?;
-            Ok(if args[0].as_integer()? <= args[1].as_integer()? {
+            Ok(if as_num(&args[0])? <= as_num(&args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -272,7 +322,7 @@ pub fn call(
         }
         ">=" => {
             need_args(name, args, 2)?;
-            Ok(if args[0].as_integer()? >= args[1].as_integer()? {
+            Ok(if as_num(&args[0])? >= as_num(&args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -280,7 +330,7 @@ pub fn call(
         }
         "/=" => {
             need_args(name, args, 2)?;
-            Ok(if args[0].as_integer()? != args[1].as_integer()? {
+            Ok(if as_num(&args[0])? != as_num(&args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -389,7 +439,7 @@ pub fn call(
         }
         "bufferp" => {
             need_args(name, args, 1)?;
-            Ok(if matches!(args[0], Value::Buffer(_)) {
+            Ok(if matches!(args[0], Value::Buffer(_, _)) {
                 Value::T
             } else {
                 Value::Nil
@@ -398,7 +448,7 @@ pub fn call(
         "buffer-live-p" => {
             need_args(name, args, 1)?;
             // For now, all buffer values we hand out are live
-            Ok(if matches!(args[0], Value::Buffer(_)) {
+            Ok(if matches!(args[0], Value::Buffer(_, _)) {
                 Value::T
             } else {
                 Value::Nil
@@ -629,30 +679,55 @@ pub fn call(
                 // Parse optional N$ positional arg
                 let mut positional: Option<usize> = None;
                 if chars[i].is_ascii_digit() {
-                    let mut n = 0usize;
+                    let mut n = 0u64;
                     let digit_start = i;
                     while i < chars.len() && chars[i].is_ascii_digit() {
-                        n = n * 10 + (chars[i] as usize - '0' as usize);
+                        n = n
+                            .saturating_mul(10)
+                            .saturating_add(chars[i] as u64 - '0' as u64);
                         i += 1;
                     }
                     if i < chars.len() && chars[i] == '$' {
-                        positional = Some(n);
+                        if n == 0 || n > args.len() as u64 {
+                            return Err(LispError::Signal(
+                                "Not enough arguments for format string".into(),
+                            ));
+                        }
+                        positional = Some(n as usize);
                         i += 1;
                     } else {
                         i = digit_start; // not positional, rewind
                     }
+                } else if chars[i] == '$' {
+                    return Err(LispError::Signal("Invalid format operation %$".into()));
+                } else if chars[i] == '-' {
+                    // Check for %-N$s which is invalid
+                    let save = i;
+                    i += 1;
+                    let mut has_digits = false;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        has_digits = true;
+                        i += 1;
+                    }
+                    if has_digits && i < chars.len() && chars[i] == '$' {
+                        return Err(LispError::Signal("Invalid format operation %$".into()));
+                    }
+                    i = save; // rewind, handle as flag below
                 }
 
                 // Parse flags
                 let mut flag_hash = false;
                 let mut flag_zero = false;
                 let mut flag_minus = false;
+                let mut flag_plus = false;
+                let mut flag_space = false;
                 while i < chars.len() {
                     match chars[i] {
                         '#' => flag_hash = true,
                         '0' => flag_zero = true,
                         '-' => flag_minus = true,
-                        '+' | ' ' => {} // ignored for now
+                        '+' => flag_plus = true,
+                        ' ' => flag_space = true,
                         _ => break,
                     }
                     i += 1;
@@ -689,72 +764,110 @@ pub fn call(
                     idx
                 };
                 if aidx >= args.len() {
-                    continue;
+                    return Err(LispError::Signal(
+                        "Not enough arguments for format string".into(),
+                    ));
                 }
                 let arg = &args[aidx];
 
-                // Convert to integer, handling floats
-                let as_int = || -> i64 {
-                    match arg {
-                        Value::Integer(n) => *n,
-                        Value::Float(f) => *f as i64,
-                        _ => 0,
+                // Convert to integer, requiring integer type for some conversions
+                let require_int = |a: &Value| -> Result<i64, LispError> {
+                    match a {
+                        Value::Integer(n) => Ok(*n),
+                        Value::Float(f) => Ok(*f as i64),
+                        _ => Err(LispError::TypeError("integer".into(), a.type_name())),
                     }
                 };
 
                 let formatted = match conv {
                     's' => match arg {
                         Value::String(s) => s.clone(),
+                        Value::Integer(n) => n.to_string(),
                         other => other.to_string(),
                     },
                     'S' => arg.to_string(),
                     'd' => {
-                        let n = as_int();
+                        let n = require_int(arg)?;
                         n.to_string()
                     }
                     'o' => {
-                        let n = as_int();
-                        if n < 0 {
-                            // Emacs uses unsigned representation for negative
+                        let n = require_int(arg)?;
+                        let abs_bits = if n < 0 {
                             format!("{:o}", n as u64)
                         } else {
                             format!("{:o}", n)
+                        };
+                        let sign = if n < 0 {
+                            "-"
+                        } else if flag_plus {
+                            "+"
+                        } else {
+                            ""
+                        };
+                        if n < 0 {
+                            abs_bits // Emacs uses unsigned repr for negative octal
+                        } else {
+                            format!("{}{}", sign, abs_bits)
                         }
                     }
                     'x' => {
-                        let n = as_int();
-                        if flag_hash && n != 0 {
-                            format!("0x{:x}", n)
-                        } else if n < 0 {
+                        let n = require_int(arg)?;
+                        let prefix = if flag_hash && n != 0 { "0x" } else { "" };
+                        let abs_bits = if n < 0 {
                             format!("{:x}", n as u64)
                         } else {
                             format!("{:x}", n)
-                        }
+                        };
+                        format!("{}{}", prefix, abs_bits)
                     }
                     'X' => {
-                        let n = as_int();
-                        if flag_hash && n != 0 {
-                            format!("0X{:X}", n)
+                        let n = require_int(arg)?;
+                        let prefix = if flag_hash && n != 0 { "0X" } else { "" };
+                        let abs_bits = if n < 0 {
+                            format!("{:X}", n as u64)
                         } else {
                             format!("{:X}", n)
-                        }
+                        };
+                        format!("{}{}", prefix, abs_bits)
                     }
-                    'b' => {
-                        let n = as_int();
-                        if n < 0 {
-                            format!("{:b}", n as u64)
+                    'b' | 'B' => {
+                        let n = require_int(arg)?;
+                        let upper = conv == 'B';
+                        let abs_n = n.unsigned_abs();
+                        let bits = format!("{:b}", abs_n);
+                        let sign_str = if n < 0 {
+                            "-"
+                        } else if flag_plus {
+                            "+"
                         } else {
-                            format!("{:b}", n)
-                        }
+                            ""
+                        };
+                        let prefix = if flag_hash && n != 0 {
+                            if upper { "0B" } else { "0b" }
+                        } else {
+                            ""
+                        };
+                        format!("{}{}{}", sign_str, prefix, bits)
                     }
                     'c' => {
-                        let n = as_int();
+                        let n = match arg {
+                            Value::Integer(n) => *n,
+                            Value::Float(_) => {
+                                return Err(LispError::TypeError("integer".into(), "float".into()));
+                            }
+                            _ => {
+                                return Err(LispError::TypeError(
+                                    "integer".into(),
+                                    arg.type_name(),
+                                ));
+                            }
+                        };
                         char::from_u32(n as u32)
                             .map(|c| c.to_string())
-                            .unwrap_or_default()
+                            .ok_or_else(|| LispError::Signal(format!("Invalid character: {}", n)))?
                     }
                     _ => {
-                        // Unknown, just pass through
+                        // Unknown conversion, pass through
                         if let Some(pos) = positional {
                             format!("%{}${}", pos, conv)
                         } else {
@@ -765,36 +878,52 @@ pub fn call(
 
                 // Apply width/padding
                 if width > 0 && formatted.len() < width {
-                    let pad_char = if flag_zero && !flag_minus { '0' } else { ' ' };
                     let padding = width - formatted.len();
                     if flag_minus {
+                        // Left-align: content then spaces
                         result.push_str(&formatted);
                         for _ in 0..padding {
-                            result.push(pad_char);
+                            result.push(' ');
                         }
-                    } else if flag_zero && (conv == 'x' || conv == 'X') && flag_hash {
-                        // For %#08x, pad zeros after the 0x prefix
-                        if let Some(rest) = formatted.strip_prefix("0x") {
-                            result.push_str("0x");
-                            for _ in 0..padding {
-                                result.push('0');
-                            }
-                            result.push_str(rest);
-                        } else if let Some(rest) = formatted.strip_prefix("0X") {
-                            result.push_str("0X");
-                            for _ in 0..padding {
-                                result.push('0');
-                            }
-                            result.push_str(rest);
-                        } else {
-                            for _ in 0..padding {
-                                result.push('0');
-                            }
-                            result.push_str(&formatted);
+                    } else if flag_zero && !flag_minus {
+                        // Zero-pad: put zeros after sign/prefix, before digits
+                        // Find the split point: sign + prefix
+                        let s = &formatted;
+                        let mut prefix_end = 0;
+                        if s.starts_with('-') || s.starts_with('+') {
+                            prefix_end = 1;
                         }
-                    } else {
+                        if s[prefix_end..].starts_with("0x")
+                            || s[prefix_end..].starts_with("0X")
+                            || s[prefix_end..].starts_with("0b")
+                            || s[prefix_end..].starts_with("0B")
+                        {
+                            prefix_end += 2;
+                        }
+                        result.push_str(&s[..prefix_end]);
                         for _ in 0..padding {
-                            result.push(pad_char);
+                            result.push('0');
+                        }
+                        result.push_str(&s[prefix_end..]);
+                    } else if flag_plus && matches!(conv, 'b' | 'B' | 'd' | 'o' | 'x' | 'X') {
+                        // Right-align with + flag: spaces then sign+digits
+                        for _ in 0..padding {
+                            result.push(' ');
+                        }
+                        result.push_str(&formatted);
+                    } else if flag_space
+                        && matches!(conv, 'b' | 'B' | 'd' | 'o' | 'x' | 'X')
+                        && !formatted.starts_with('-')
+                    {
+                        // Space flag: like right-align but ensure at least one space for sign
+                        for _ in 0..padding {
+                            result.push(' ');
+                        }
+                        result.push_str(&formatted);
+                    } else {
+                        // Right-align with spaces
+                        for _ in 0..padding {
+                            result.push(' ');
                         }
                         result.push_str(&formatted);
                     }
@@ -902,7 +1031,7 @@ pub fn call(
         "buffer-size" => Ok(Value::Integer(interp.buffer.buffer_size() as i64)),
         "buffer-name" => {
             if !args.is_empty()
-                && let Value::Buffer(name) = &args[0]
+                && let Value::Buffer(_, name) = &args[0]
             {
                 return Ok(Value::String(name.clone()));
             }
@@ -1080,15 +1209,21 @@ pub fn call(
             // Setting to t: just leave the modified state as-is (it's already modified if changed)
             Ok(Value::Nil)
         }
-        "current-buffer" => Ok(Value::Buffer(interp.buffer.name.clone())),
+        "current-buffer" => {
+            let id = interp
+                .find_buffer(&interp.buffer.name)
+                .map(|(id, _)| id)
+                .unwrap_or(0);
+            Ok(Value::Buffer(id, interp.buffer.name.clone()))
+        }
         "generate-new-buffer" => {
             need_args(name, args, 1)?;
             let base = args[0].as_string()?;
-            let buf_name = if interp.buffer_list.contains(&base.to_string()) {
+            let buf_name = if interp.has_buffer(base) {
                 let mut n = 2;
                 loop {
                     let candidate = format!("{}<{}>", base, n);
-                    if !interp.buffer_list.contains(&candidate) {
+                    if !interp.has_buffer(&candidate) {
                         break candidate;
                     }
                     n += 1;
@@ -1096,20 +1231,18 @@ pub fn call(
             } else {
                 base.to_string()
             };
-            interp.buffer_list.push(buf_name.clone());
-            Ok(Value::Buffer(buf_name))
+            let id = interp.alloc_buffer_id();
+            interp.buffer_list.push((id, buf_name.clone()));
+            Ok(Value::Buffer(id, buf_name))
         }
         "get-buffer" => {
             need_args(name, args, 1)?;
             match &args[0] {
-                Value::Buffer(_) => Ok(args[0].clone()),
-                Value::String(s) => {
-                    if interp.buffer_list.contains(s) {
-                        Ok(Value::Buffer(s.clone()))
-                    } else {
-                        Ok(Value::Nil)
-                    }
-                }
+                Value::Buffer(_, _) => Ok(args[0].clone()),
+                Value::String(s) => match interp.find_buffer(s) {
+                    Some((id, name)) => Ok(Value::Buffer(id, name)),
+                    None => Ok(Value::Nil),
+                },
                 _ => Err(LispError::TypeError(
                     "string-or-buffer".into(),
                     args[0].type_name(),
@@ -1119,7 +1252,7 @@ pub fn call(
         "get-buffer-create" => {
             need_args(name, args, 1)?;
             let buf_name = match &args[0] {
-                Value::Buffer(n) => n.clone(),
+                Value::Buffer(_, n) => n.clone(),
                 Value::String(s) => s.clone(),
                 _ => {
                     return Err(LispError::TypeError(
@@ -1128,10 +1261,13 @@ pub fn call(
                     ));
                 }
             };
-            if !interp.buffer_list.contains(&buf_name) {
-                interp.buffer_list.push(buf_name.clone());
+            if let Some((id, name)) = interp.find_buffer(&buf_name) {
+                Ok(Value::Buffer(id, name))
+            } else {
+                let id = interp.alloc_buffer_id();
+                interp.buffer_list.push((id, buf_name.clone()));
+                Ok(Value::Buffer(id, buf_name))
             }
-            Ok(Value::Buffer(buf_name))
         }
         "generate-new-buffer-name" => {
             need_args(name, args, 1)?;
@@ -1141,15 +1277,13 @@ pub fn call(
             } else {
                 None
             };
-            if !interp.buffer_list.contains(&base.to_string()) || ignore.as_deref() == Some(base) {
+            if !interp.has_buffer(base) || ignore.as_deref() == Some(base) {
                 Ok(Value::String(base.to_string()))
             } else {
                 let mut n = 2;
                 loop {
                     let candidate = format!("{}<{}>", base, n);
-                    if !interp.buffer_list.contains(&candidate)
-                        || ignore.as_deref() == Some(&candidate)
-                    {
+                    if !interp.has_buffer(&candidate) || ignore.as_deref() == Some(&candidate) {
                         break Ok(Value::String(candidate));
                     }
                     n += 1;
@@ -1164,47 +1298,47 @@ pub fn call(
             }
             let old_name = interp.buffer.name.clone();
             let unique = args.len() > 1 && args[1].is_truthy();
-            let final_name =
-                if interp.buffer_list.contains(&new_name.to_string()) && new_name != old_name {
-                    if unique {
-                        let mut n = 2;
-                        loop {
-                            let candidate = format!("{}<{}>", new_name, n);
-                            if !interp.buffer_list.contains(&candidate) {
-                                break candidate;
-                            }
-                            n += 1;
+            let final_name = if interp.has_buffer(new_name) && new_name != old_name {
+                if unique {
+                    let mut n = 2;
+                    loop {
+                        let candidate = format!("{}<{}>", new_name, n);
+                        if !interp.has_buffer(&candidate) {
+                            break candidate;
                         }
-                    } else {
-                        return Err(LispError::Signal(format!(
-                            "Buffer name `{}' is in use",
-                            new_name
-                        )));
+                        n += 1;
                     }
                 } else {
-                    new_name.to_string()
-                };
-            if let Some(pos) = interp.buffer_list.iter().position(|n| *n == old_name) {
-                interp.buffer_list[pos] = final_name.clone();
+                    return Err(LispError::Signal(format!(
+                        "Buffer name `{}' is in use",
+                        new_name
+                    )));
+                }
+            } else {
+                new_name.to_string()
+            };
+            if let Some(pos) = interp.buffer_list.iter().position(|(_, n)| *n == old_name) {
+                interp.buffer_list[pos].1 = final_name.clone();
             }
+            interp.buffer.last_name = Some(old_name);
             interp.buffer.name = final_name.clone();
             Ok(Value::String(final_name))
         }
         "other-buffer" => {
             let exclude = if !args.is_empty() {
                 match &args[0] {
-                    Value::Buffer(n) => n.clone(),
+                    Value::Buffer(_, n) => n.clone(),
                     _ => interp.buffer.name.clone(),
                 }
             } else {
                 interp.buffer.name.clone()
             };
-            for buf_name in &interp.buffer_list {
+            for (id, buf_name) in &interp.buffer_list {
                 if *buf_name != exclude && !buf_name.starts_with(' ') {
-                    return Ok(Value::Buffer(buf_name.clone()));
+                    return Ok(Value::Buffer(*id, buf_name.clone()));
                 }
             }
-            Ok(Value::Buffer("*scratch*".into()))
+            Ok(Value::Buffer(0, "*scratch*".into()))
         }
         "buffer-base-buffer" => {
             // No indirect buffers supported yet
@@ -1214,16 +1348,18 @@ pub fn call(
             let bufs: Vec<Value> = interp
                 .buffer_list
                 .iter()
-                .map(|n| Value::Buffer(n.clone()))
+                .map(|(id, n)| Value::Buffer(*id, n.clone()))
                 .collect();
             Ok(Value::list(bufs))
         }
         "set-buffer" => {
             need_args(name, args, 1)?;
-            // We only have one actual buffer, but return the buffer value
             match &args[0] {
-                Value::Buffer(n) => Ok(Value::Buffer(n.clone())),
-                Value::String(s) => Ok(Value::Buffer(s.clone())),
+                Value::Buffer(_, _) => Ok(args[0].clone()),
+                Value::String(s) => match interp.find_buffer(s) {
+                    Some((id, name)) => Ok(Value::Buffer(id, name)),
+                    None => Ok(Value::Buffer(0, s.clone())),
+                },
                 _ => Err(LispError::TypeError(
                     "string-or-buffer".into(),
                     args[0].type_name(),
@@ -1231,13 +1367,12 @@ pub fn call(
             }
         }
         "kill-buffer" => {
-            // Remove from buffer list
             if let Some(buf_name) = match &args.first() {
-                Some(Value::Buffer(n)) => Some(n.clone()),
+                Some(Value::Buffer(_, n)) => Some(n.clone()),
                 Some(Value::String(s)) => Some(s.clone()),
                 _ => None,
             } {
-                interp.buffer_list.retain(|n| *n != buf_name);
+                interp.buffer_list.retain(|(_, n)| *n != buf_name);
             }
             Ok(Value::T)
         }
@@ -1279,8 +1414,15 @@ pub fn call(
             need_args(name, args, 2)?;
             let a = args[0].as_integer()?;
             let b = args[1].as_integer()?;
-            // case-insensitive comparison (simplified: just lowercase ASCII)
-            let eq = a == b || (a as u8 as char).eq_ignore_ascii_case(&(b as u8 as char));
+            let case_fold = interp
+                .lookup_var("case-fold-search", env)
+                .map(|v| v.is_truthy())
+                .unwrap_or(false);
+            let eq = if case_fold {
+                a == b || (a as u8 as char).eq_ignore_ascii_case(&(b as u8 as char))
+            } else {
+                a == b
+            };
             Ok(if eq { Value::T } else { Value::Nil })
         }
         "number-sequence" => {
@@ -1340,10 +1482,13 @@ pub fn call(
                 }
             }
         }
-        "buffer-last-name" => {
-            // We don't track last-name, return current name
-            Ok(Value::String(interp.buffer.name.clone()))
-        }
+        "buffer-last-name" => Ok(Value::String(
+            interp
+                .buffer
+                .last_name
+                .clone()
+                .unwrap_or_else(|| interp.buffer.name.clone()),
+        )),
 
         // ── Display stubs ──
         "display-graphic-p" | "frame-parameter" => Ok(Value::Nil),
@@ -1403,7 +1548,7 @@ pub fn call(
                 Value::Cons(_, _) => "cons",
                 Value::BuiltinFunc(_) => "subr",
                 Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
-                Value::Buffer(_) => "buffer",
+                Value::Buffer(_, _) => "buffer",
             };
             Ok(Value::Symbol(name.into()))
         }

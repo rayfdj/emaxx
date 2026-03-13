@@ -15,6 +15,9 @@ pub struct Buffer {
     /// Human-visible name (e.g. "*scratch*" or "main.rs").
     pub name: String,
 
+    /// Previous name, set by rename-buffer.
+    pub last_name: Option<String>,
+
     /// The text.
     text: Rope,
 
@@ -84,6 +87,7 @@ impl Buffer {
         let text = Rope::new();
         Buffer {
             name: name.to_string(),
+            last_name: None,
             text,
             pt: 1,
             mark: None,
@@ -104,6 +108,7 @@ impl Buffer {
         let len = text.len_chars();
         Buffer {
             name: name.to_string(),
+            last_name: None,
             text,
             pt: 1,
             mark: None,
