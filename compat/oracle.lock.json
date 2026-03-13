@@ -1,0 +1,19 @@
+{
+  "format_version": 2,
+  "emacs_version": "31.0.50",
+  "emacs_repo_commit": "f15ad18a1446b492188d4f9c83f113b8c7b66a8e",
+  "system_type": "darwin",
+  "native_compilation": true,
+  "selector_default": "(not (or (tag :expensive-test) (tag :unstable)))",
+  "selector_expensive": "(not (tag :unstable))",
+  "selector_all": "t",
+  "selector_aliases": {
+    "all": "t",
+    "check": "(not (or (tag :expensive-test) (tag :unstable)))",
+    "check-all": "t",
+    "check-expensive": "(not (tag :unstable))",
+    "check-maybe": "(not (or (tag :expensive-test) (tag :unstable)))",
+    "default": "(not (or (tag :expensive-test) (tag :unstable)))",
+    "expensive": "(not (tag :unstable))"
+  }
+}
