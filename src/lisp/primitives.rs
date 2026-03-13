@@ -57,6 +57,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "mapcar"
             | "apply"
             | "funcall"
+            // Allocation
+            | "make-string"
+            | "make-vector"
             // String operations
             | "concat"
             | "substring"
@@ -104,7 +107,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-buffer-modified-p"
             | "current-buffer"
             | "generate-new-buffer"
+            | "get-buffer"
             | "get-buffer-create"
+            | "generate-new-buffer-name"
+            | "rename-buffer"
+            | "other-buffer"
+            | "buffer-base-buffer"
+            | "buffer-list"
+            | "set-buffer"
             | "kill-buffer"
             | "set-mark"
             | "mark"
@@ -365,10 +375,22 @@ pub fn call(
                 Value::Nil
             })
         }
-        "bufferp" | "buffer-live-p" => {
-            // Stub: we don't have first-class buffer objects yet
+        "bufferp" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            Ok(if matches!(args[0], Value::Buffer(_)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "buffer-live-p" => {
+            need_args(name, args, 1)?;
+            // For now, all buffer values we hand out are live
+            Ok(if matches!(args[0], Value::Buffer(_)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
 
         // ── List operations ──
@@ -494,6 +516,37 @@ pub fn call(
                 call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
             }
             interp.eval(&Value::list(call_items), &mut Vec::new())
+        }
+
+        // ── Allocation ──
+        "make-string" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(
+                    "make-string".into(),
+                    args.len(),
+                ));
+            }
+            let length = args[0].as_integer()?;
+            if length < 0 {
+                return Err(LispError::Signal("Wrong type argument: natnump".into()));
+            }
+            let init = args[1].as_integer()?;
+            let c = char::from_u32(init as u32).unwrap_or('\0');
+            let s: String = std::iter::repeat_n(c, length as usize).collect();
+            Ok(Value::String(s))
+        }
+        "make-vector" => {
+            need_args(name, args, 2)?;
+            let length = args[0].as_integer()?;
+            if length < 0 {
+                return Err(LispError::Signal("Wrong type argument: natnump".into()));
+            }
+            let init = args[1].clone();
+            let items: Vec<Value> = std::iter::repeat_n(init, length as usize).collect();
+            // Represent as (vector el1 el2 ...) like the reader does for #(...)
+            let mut result = vec![Value::symbol("vector")];
+            result.extend(items);
+            Ok(Value::list(result))
         }
 
         // ── String operations ──
@@ -696,7 +749,14 @@ pub fn call(
             }
         }
         "buffer-size" => Ok(Value::Integer(interp.buffer.buffer_size() as i64)),
-        "buffer-name" => Ok(Value::String(interp.buffer.name.clone())),
+        "buffer-name" => {
+            if !args.is_empty()
+                && let Value::Buffer(name) = &args[0]
+            {
+                return Ok(Value::String(name.clone()));
+            }
+            Ok(Value::String(interp.buffer.name.clone()))
+        }
         "char-after" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -869,11 +929,167 @@ pub fn call(
             // Setting to t: just leave the modified state as-is (it's already modified if changed)
             Ok(Value::Nil)
         }
-        "current-buffer" | "generate-new-buffer" | "get-buffer-create" => {
-            // Stubs: return a symbol for now
-            Ok(Value::Symbol("*buffer*".into()))
+        "current-buffer" => Ok(Value::Buffer(interp.buffer.name.clone())),
+        "generate-new-buffer" => {
+            need_args(name, args, 1)?;
+            let base = args[0].as_string()?;
+            let buf_name = if interp.buffer_list.contains(&base.to_string()) {
+                let mut n = 2;
+                loop {
+                    let candidate = format!("{}<{}>", base, n);
+                    if !interp.buffer_list.contains(&candidate) {
+                        break candidate;
+                    }
+                    n += 1;
+                }
+            } else {
+                base.to_string()
+            };
+            interp.buffer_list.push(buf_name.clone());
+            Ok(Value::Buffer(buf_name))
         }
-        "kill-buffer" => Ok(Value::T),
+        "get-buffer" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Buffer(_) => Ok(args[0].clone()),
+                Value::String(s) => {
+                    if interp.buffer_list.contains(s) {
+                        Ok(Value::Buffer(s.clone()))
+                    } else {
+                        Ok(Value::Nil)
+                    }
+                }
+                _ => Err(LispError::TypeError(
+                    "string-or-buffer".into(),
+                    args[0].type_name(),
+                )),
+            }
+        }
+        "get-buffer-create" => {
+            need_args(name, args, 1)?;
+            let buf_name = match &args[0] {
+                Value::Buffer(n) => n.clone(),
+                Value::String(s) => s.clone(),
+                _ => {
+                    return Err(LispError::TypeError(
+                        "string-or-buffer".into(),
+                        args[0].type_name(),
+                    ));
+                }
+            };
+            if !interp.buffer_list.contains(&buf_name) {
+                interp.buffer_list.push(buf_name.clone());
+            }
+            Ok(Value::Buffer(buf_name))
+        }
+        "generate-new-buffer-name" => {
+            need_args(name, args, 1)?;
+            let base = args[0].as_string()?;
+            let ignore = if args.len() > 1 {
+                args[1].as_string().ok().map(|s| s.to_string())
+            } else {
+                None
+            };
+            if !interp.buffer_list.contains(&base.to_string()) || ignore.as_deref() == Some(base) {
+                Ok(Value::String(base.to_string()))
+            } else {
+                let mut n = 2;
+                loop {
+                    let candidate = format!("{}<{}>", base, n);
+                    if !interp.buffer_list.contains(&candidate)
+                        || ignore.as_deref() == Some(&candidate)
+                    {
+                        break Ok(Value::String(candidate));
+                    }
+                    n += 1;
+                }
+            }
+        }
+        "rename-buffer" => {
+            need_args(name, args, 1)?;
+            let new_name = args[0].as_string()?;
+            if new_name.is_empty() {
+                return Err(LispError::Signal("Empty string for buffer name".into()));
+            }
+            let old_name = interp.buffer.name.clone();
+            let unique = args.len() > 1 && args[1].is_truthy();
+            let final_name =
+                if interp.buffer_list.contains(&new_name.to_string()) && new_name != old_name {
+                    if unique {
+                        let mut n = 2;
+                        loop {
+                            let candidate = format!("{}<{}>", new_name, n);
+                            if !interp.buffer_list.contains(&candidate) {
+                                break candidate;
+                            }
+                            n += 1;
+                        }
+                    } else {
+                        return Err(LispError::Signal(format!(
+                            "Buffer name `{}' is in use",
+                            new_name
+                        )));
+                    }
+                } else {
+                    new_name.to_string()
+                };
+            if let Some(pos) = interp.buffer_list.iter().position(|n| *n == old_name) {
+                interp.buffer_list[pos] = final_name.clone();
+            }
+            interp.buffer.name = final_name.clone();
+            Ok(Value::String(final_name))
+        }
+        "other-buffer" => {
+            let exclude = if !args.is_empty() {
+                match &args[0] {
+                    Value::Buffer(n) => n.clone(),
+                    _ => interp.buffer.name.clone(),
+                }
+            } else {
+                interp.buffer.name.clone()
+            };
+            for buf_name in &interp.buffer_list {
+                if *buf_name != exclude && !buf_name.starts_with(' ') {
+                    return Ok(Value::Buffer(buf_name.clone()));
+                }
+            }
+            Ok(Value::Buffer("*scratch*".into()))
+        }
+        "buffer-base-buffer" => {
+            // No indirect buffers supported yet
+            Ok(Value::Nil)
+        }
+        "buffer-list" => {
+            let bufs: Vec<Value> = interp
+                .buffer_list
+                .iter()
+                .map(|n| Value::Buffer(n.clone()))
+                .collect();
+            Ok(Value::list(bufs))
+        }
+        "set-buffer" => {
+            need_args(name, args, 1)?;
+            // We only have one actual buffer, but return the buffer value
+            match &args[0] {
+                Value::Buffer(n) => Ok(Value::Buffer(n.clone())),
+                Value::String(s) => Ok(Value::Buffer(s.clone())),
+                _ => Err(LispError::TypeError(
+                    "string-or-buffer".into(),
+                    args[0].type_name(),
+                )),
+            }
+        }
+        "kill-buffer" => {
+            // Remove from buffer list
+            if let Some(buf_name) = match &args.first() {
+                Some(Value::Buffer(n)) => Some(n.clone()),
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            } {
+                interp.buffer_list.retain(|n| *n != buf_name);
+            }
+            Ok(Value::T)
+        }
         "set-mark" => {
             need_args(name, args, 1)?;
             let pos = args[0].as_integer()? as usize;
@@ -951,6 +1167,7 @@ pub fn call(
                 Value::Cons(_, _) => "cons",
                 Value::BuiltinFunc(_) => "subr",
                 Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
+                Value::Buffer(_) => "buffer",
             };
             Ok(Value::Symbol(name.into()))
         }
