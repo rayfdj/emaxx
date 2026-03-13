@@ -40,6 +40,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "listp"
             | "bufferp"
             | "buffer-live-p"
+            | "zerop"
+            | "natnump"
+            | "atom"
+            | "nlistp"
+            | "characterp"
             // List operations
             | "cons"
             | "car"
@@ -169,6 +174,17 @@ pub fn is_builtin(name: &str) -> bool {
             | "intern"
             | "symbol-name"
             | "type-of"
+            | "random"
+            | "vector"
+            | "aref"
+            | "aset"
+            | "seq-every-p"
+            | "nreverse"
+            | "copy-sequence"
+            | "delete"
+            | "delq"
+            | "make-list"
+            | "insert-before-markers"
     )
 }
 
@@ -477,6 +493,42 @@ pub fn call(
                 Value::T
             } else {
                 Value::Nil
+            })
+        }
+
+        "zerop" => {
+            need_args(name, args, 1)?;
+            Ok(match &args[0] {
+                Value::Integer(0) => Value::T,
+                Value::Float(f) if *f == 0.0 => Value::T,
+                _ => Value::Nil,
+            })
+        }
+
+        "natnump" => {
+            need_args(name, args, 1)?;
+            Ok(match &args[0] {
+                Value::Integer(n) if *n >= 0 => Value::T,
+                _ => Value::Nil,
+            })
+        }
+
+        "atom" => {
+            need_args(name, args, 1)?;
+            Ok(if args[0].is_cons() { Value::Nil } else { Value::T })
+        }
+
+        "nlistp" => {
+            need_args(name, args, 1)?;
+            Ok(if args[0].is_list() { Value::Nil } else { Value::T })
+        }
+
+        "characterp" => {
+            need_args(name, args, 1)?;
+            // In Emacs, characters are integers 0..#x3FFFFF
+            Ok(match &args[0] {
+                Value::Integer(n) if *n >= 0 && *n <= 0x3F_FFFF => Value::T,
+                _ => Value::Nil,
             })
         }
 
@@ -2016,6 +2068,133 @@ pub fn call(
             Ok(Value::list(items))
         }
 
+        "random" => {
+            if args.is_empty() {
+                Ok(Value::Integer(rand_simple()))
+            } else {
+                let limit = args[0].as_integer()?;
+                if limit <= 0 {
+                    Ok(Value::Integer(0))
+                } else {
+                    Ok(Value::Integer(rand_simple().unsigned_abs() as i64 % limit))
+                }
+            }
+        }
+
+        "vector" => {
+            // (vector &rest OBJECTS) — creates a "vector" as a list for now
+            Ok(Value::list(args.to_vec()))
+        }
+
+        "aref" => {
+            need_args(name, args, 2)?;
+            let idx = args[1].as_integer()? as usize;
+            // Support both list-vectors and strings
+            match &args[0] {
+                Value::String(s) => {
+                    match s.chars().nth(idx) {
+                        Some(c) => Ok(Value::Integer(c as i64)),
+                        None => Err(LispError::Signal("Args out of range".into())),
+                    }
+                }
+                _ => {
+                    // Treat as list-vector
+                    let items = args[0].to_vec()?;
+                    items.get(idx).cloned().ok_or_else(|| {
+                        LispError::Signal("Args out of range".into())
+                    })
+                }
+            }
+        }
+
+        "aset" => {
+            need_args(name, args, 3)?;
+            // Aset on vectors: we can't mutate easily, just return the value
+            Ok(args[2].clone())
+        }
+
+        "seq-every-p" => {
+            need_args(name, args, 2)?;
+            let pred = args[0].clone();
+            let seq = args[1].to_vec()?;
+            for item in &seq {
+                let result = match &pred {
+                    Value::BuiltinFunc(fname) => {
+                        call(interp, fname, std::slice::from_ref(item), env)?
+                    }
+                    Value::Lambda(params, body, captured_env) => {
+                        let mut call_env = captured_env.clone();
+                        let mut frame = Vec::new();
+                        if let Some(p) = params.first() {
+                            frame.push((p.clone(), item.clone()));
+                        }
+                        call_env.push(frame);
+                        let mut r = Value::Nil;
+                        for expr in body {
+                            r = interp.eval(expr, &mut call_env)?;
+                        }
+                        r
+                    }
+                    _ => {
+                        return Err(LispError::TypeError(
+                            "function".into(),
+                            pred.type_name(),
+                        ))
+                    }
+                };
+                if result.is_nil() {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
+        }
+
+        "nreverse" => {
+            need_args(name, args, 1)?;
+            let mut items = args[0].to_vec()?;
+            items.reverse();
+            Ok(Value::list(items))
+        }
+
+        "copy-sequence" => {
+            need_args(name, args, 1)?;
+            // Lisp values are already cloned, so this is identity
+            Ok(args[0].clone())
+        }
+
+        "delete" | "delq" => {
+            need_args(name, args, 2)?;
+            let elt = &args[0];
+            let items = args[1].to_vec()?;
+            let filtered: Vec<Value> = items.into_iter().filter(|x| x != elt).collect();
+            Ok(Value::list(filtered))
+        }
+
+        "make-list" => {
+            need_args(name, args, 2)?;
+            let n = args[0].as_integer()?;
+            let val = args[1].clone();
+            let items: Vec<Value> = (0..n).map(|_| val.clone()).collect();
+            Ok(Value::list(items))
+        }
+
+        "insert-before-markers" => {
+            // Same as insert for now (we don't have markers)
+            for arg in args {
+                let s = match arg {
+                    Value::String(s) => s.clone(),
+                    Value::Integer(n) => {
+                        char::from_u32(*n as u32)
+                            .map(|c| c.to_string())
+                            .unwrap_or_default()
+                    }
+                    _ => format!("{}", arg),
+                };
+                interp.buffer.insert(&s);
+            }
+            Ok(Value::Nil)
+        }
+
         _ => Err(LispError::Signal(format!("Unknown function: {}", name))),
     }
 }
@@ -2026,4 +2205,16 @@ fn need_args(name: &str, args: &[Value], n: usize) -> Result<(), LispError> {
     } else {
         Ok(())
     }
+}
+
+/// Simple pseudo-random number (xorshift64).
+fn rand_simple() -> i64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
+    let mut s = STATE.load(Ordering::Relaxed);
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    STATE.store(s, Ordering::Relaxed);
+    s as i64
 }
