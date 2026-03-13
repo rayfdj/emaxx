@@ -1,5 +1,7 @@
+use crate::buffer::TextPropertySpan;
 use super::eval::Interpreter;
 use super::types::{LispError, Value};
+use regex::Regex;
 
 /// Check if a name is a known builtin.
 pub fn is_builtin(name: &str) -> bool {
@@ -26,6 +28,7 @@ pub fn is_builtin(name: &str) -> bool {
             // Equality
             | "eq"
             | "equal"
+            | "equal-including-properties"
             | "string="
             | "string-equal"
             // Type predicates
@@ -36,6 +39,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "floatp"
             | "stringp"
             | "symbolp"
+            | "boundp"
             | "consp"
             | "listp"
             | "bufferp"
@@ -45,6 +49,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "atom"
             | "nlistp"
             | "characterp"
+            | "markerp"
             // List operations
             | "cons"
             | "car"
@@ -62,7 +67,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "mapcar"
             | "apply"
             | "funcall"
+            | "funcall-interactively"
+            | "call-interactively"
             | "identity"
+            | "mapconcat"
             // Allocation
             | "make-string"
             | "make-vector"
@@ -75,25 +83,39 @@ pub fn is_builtin(name: &str) -> bool {
             | "format"
             | "char-to-string"
             | "string-to-char"
+            | "byte-to-string"
+            | "multibyte-string-p"
+            | "unibyte-char-to-multibyte"
             | "upcase"
             | "downcase"
             // Buffer operations
             | "insert"
+            | "insert-and-inherit"
+            | "insert-char"
+            | "insert-byte"
+            | "insert-buffer-substring"
+            | "insert-before-markers-and-inherit"
             | "point"
             | "point-min"
             | "point-max"
             | "goto-char"
             | "forward-char"
             | "backward-char"
+            | "forward-word"
             | "beginning-of-line"
             | "end-of-line"
             | "forward-line"
+            | "search-forward"
+            | "search-backward"
+            | "re-search-forward"
+            | "search-forward-regexp"
             | "buffer-string"
             | "buffer-substring"
             | "buffer-substring-no-properties"
             | "buffer-size"
             | "buffer-name"
             | "set-buffer-multibyte"
+            | "buffer-enable-undo"
             | "char-after"
             | "char-before"
             | "bobp"
@@ -102,8 +124,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "eolp"
             | "delete-region"
             | "delete-char"
+            | "delete-forward-char"
+            | "kill-word"
+            | "kill-region"
             | "erase-buffer"
             | "current-column"
+            | "move-to-column"
             | "line-number-at-pos"
             | "line-beginning-position"
             | "line-end-position"
@@ -113,8 +139,23 @@ pub fn is_builtin(name: &str) -> bool {
             | "widen"
             | "buffer-modified-p"
             | "set-buffer-modified-p"
+            | "gap-position"
+            | "gap-size"
+            | "position-bytes"
+            | "byte-to-position"
             | "get-pos-property"
             | "get-char-property"
+            | "get-text-property"
+            | "text-properties-at"
+            | "put-text-property"
+            | "add-text-properties"
+            | "remove-list-of-text-properties"
+            | "compare-buffer-substrings"
+            | "field-beginning"
+            | "field-end"
+            | "field-string-no-properties"
+            | "delete-field"
+            | "constrain-to-field"
             | "current-buffer"
             | "generate-new-buffer"
             | "get-buffer"
@@ -126,11 +167,27 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-list"
             | "set-buffer"
             | "switch-to-buffer"
+            | "find-file"
+            | "find-file-noselect"
             | "kill-buffer"
             | "set-mark"
+            | "push-mark"
             | "mark"
             | "region-beginning"
             | "region-end"
+            | "make-marker"
+            | "copy-marker"
+            | "point-marker"
+            | "mark-marker"
+            | "point-min-marker"
+            | "point-max-marker"
+            | "marker-buffer"
+            | "marker-position"
+            | "marker-last-position"
+            | "marker-insertion-type"
+            | "set-marker-insertion-type"
+            | "set-marker"
+            | "move-marker"
             // Output
             | "message"
             | "prin1-to-string"
@@ -150,6 +207,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "frame-parameter"
             | "selected-window"
             | "selected-frame"
+            | "transient-mark-mode"
+            | "facemenu-add-face"
+            | "get-buffer-window"
+            | "set-window-start"
+            | "set-window-point"
             // Overlay operations
             | "make-overlay"
             | "overlayp"
@@ -179,16 +241,23 @@ pub fn is_builtin(name: &str) -> bool {
             | "error"
             | "signal"
             | "throw"
+            | "take"
             | "add-hook"
             | "describe-function"
             | "ignore"
             | "intern"
             | "symbol-function"
             | "symbol-name"
+            | "char-from-name"
+            | "evenp"
             | "type-of"
             | "file-truename"
+            | "save-buffer"
             | "random"
             | "make-hash-table"
+            | "make-char-table"
+            | "propertize"
+            | "regexp-quote"
             | "vector"
             | "aref"
             | "aset"
@@ -198,7 +267,17 @@ pub fn is_builtin(name: &str) -> bool {
             | "delete"
             | "delq"
             | "make-list"
+            | "looking-at"
+            | "replace-match"
+            | "replace-region-contents"
+            | "subst-char-in-region"
+            | "flush-lines"
             | "insert-before-markers"
+            | "internal--labeled-narrow-to-region"
+            | "internal--labeled-widen"
+            | "undo-boundary"
+            | "undo"
+            | "undo-more"
     ) || is_composed_accessor_name(name)
 }
 
@@ -211,12 +290,23 @@ pub fn call(
 ) -> Result<Value, LispError> {
     // Helper: check if any argument is a float
     let has_float = |args: &[Value]| args.iter().any(|a| matches!(a, Value::Float(_)));
+    let as_integer_like = |a: &Value| -> Result<i64, LispError> {
+        match a {
+            Value::Integer(n) => Ok(*n),
+            Value::Marker(id) => interp
+                .marker_position(*id)
+                .map(|pos| pos as i64)
+                .ok_or_else(|| {
+                    LispError::TypeError("number-or-marker-p".into(), a.type_name())
+                }),
+            _ => Err(LispError::TypeError("number".into(), a.type_name())),
+        }
+    };
     // Helper: get numeric value as f64
     let as_num = |a: &Value| -> Result<f64, LispError> {
         match a {
-            Value::Integer(n) => Ok(*n as f64),
             Value::Float(f) => Ok(*f),
-            _ => Err(LispError::TypeError("number".into(), a.type_name())),
+            _ => Ok(as_integer_like(a)? as f64),
         }
     };
 
@@ -232,7 +322,7 @@ pub fn call(
             } else {
                 let mut sum: i64 = 0;
                 for a in args {
-                    sum = sum.wrapping_add(a.as_integer()?);
+                    sum = sum.wrapping_add(as_integer_like(a)?);
                 }
                 Ok(Value::Integer(sum))
             }
@@ -252,11 +342,11 @@ pub fn call(
                 Ok(Value::Float(result))
             } else {
                 if args.len() == 1 {
-                    return Ok(Value::Integer(args[0].as_integer()?.wrapping_neg()));
+                    return Ok(Value::Integer(as_integer_like(&args[0])?.wrapping_neg()));
                 }
-                let mut result = args[0].as_integer()?;
+                let mut result = as_integer_like(&args[0])?;
                 for a in &args[1..] {
-                    result = result.wrapping_sub(a.as_integer()?);
+                    result = result.wrapping_sub(as_integer_like(a)?);
                 }
                 Ok(Value::Integer(result))
             }
@@ -271,7 +361,7 @@ pub fn call(
             } else {
                 let mut product: i64 = 1;
                 for a in args {
-                    product = product.wrapping_mul(a.as_integer()?);
+                    product = product.wrapping_mul(as_integer_like(a)?);
                 }
                 Ok(Value::Integer(product))
             }
@@ -291,9 +381,9 @@ pub fn call(
                 }
                 Ok(Value::Float(result))
             } else {
-                let mut result = args[0].as_integer()?;
+                let mut result = as_integer_like(&args[0])?;
                 for a in &args[1..] {
-                    let divisor = a.as_integer()?;
+                    let divisor = as_integer_like(a)?;
                     if divisor == 0 {
                         return Err(LispError::Signal("Division by zero".into()));
                     }
@@ -304,8 +394,8 @@ pub fn call(
         }
         "%" | "mod" => {
             need_args(name, args, 2)?;
-            let a = args[0].as_integer()?;
-            let b = args[1].as_integer()?;
+            let a = as_integer_like(&args[0])?;
+            let b = as_integer_like(&args[1])?;
             if b == 0 {
                 return Err(LispError::Signal("Division by zero".into()));
             }
@@ -313,19 +403,19 @@ pub fn call(
         }
         "1+" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(args[0].as_integer()?.wrapping_add(1)))
+            Ok(Value::Integer(as_integer_like(&args[0])?.wrapping_add(1)))
         }
         "1-" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(args[0].as_integer()?.wrapping_sub(1)))
+            Ok(Value::Integer(as_integer_like(&args[0])?.wrapping_sub(1)))
         }
         "max" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("max".into(), 0));
             }
-            let mut result = args[0].as_integer()?;
+            let mut result = as_integer_like(&args[0])?;
             for a in &args[1..] {
-                result = result.max(a.as_integer()?);
+                result = result.max(as_integer_like(a)?);
             }
             Ok(Value::Integer(result))
         }
@@ -333,15 +423,15 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("min".into(), 0));
             }
-            let mut result = args[0].as_integer()?;
+            let mut result = as_integer_like(&args[0])?;
             for a in &args[1..] {
-                result = result.min(a.as_integer()?);
+                result = result.min(as_integer_like(a)?);
             }
             Ok(Value::Integer(result))
         }
         "abs" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(args[0].as_integer()?.abs()))
+            Ok(Value::Integer(as_integer_like(&args[0])?.abs()))
         }
 
         // ── Comparison ──
@@ -410,10 +500,18 @@ pub fn call(
                 Value::Nil
             })
         }
+        "equal-including-properties" => {
+            need_args(name, args, 2)?;
+            Ok(if values_equal_including_properties(&args[0], &args[1]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "string=" | "string-equal" => {
             need_args(name, args, 2)?;
-            let a = args[0].as_string()?;
-            let b = args[1].as_string()?;
+            let a = string_text(&args[0])?;
+            let b = string_text(&args[1])?;
             Ok(if a == b { Value::T } else { Value::Nil })
         }
 
@@ -462,7 +560,7 @@ pub fn call(
         }
         "stringp" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].is_string() {
+            Ok(if string_like(&args[0]).is_some() {
                 Value::T
             } else {
                 Value::Nil
@@ -471,6 +569,18 @@ pub fn call(
         "symbolp" => {
             need_args(name, args, 1)?;
             Ok(if args[0].is_symbol() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "boundp" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(if interp.lookup_var(symbol, env).is_some()
+                || matches!(symbol, "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum")
+                || symbol == "buffer-undo-list"
+            {
                 Value::T
             } else {
                 Value::Nil
@@ -544,6 +654,14 @@ pub fn call(
                 _ => Value::Nil,
             })
         }
+        "markerp" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(args[0], Value::Marker(_)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
 
         // ── List operations ──
         "cons" => {
@@ -602,7 +720,9 @@ pub fn call(
         "length" => {
             need_args(name, args, 1)?;
             match &args[0] {
-                Value::String(s) => Ok(Value::Integer(s.chars().count() as i64)),
+                value if string_like(value).is_some() => {
+                    Ok(Value::Integer(string_text(value)?.chars().count() as i64))
+                }
                 Value::Nil => Ok(Value::Integer(0)),
                 Value::Cons(_, _) => Ok(Value::Integer(args[0].to_vec()?.len() as i64)),
                 _ => Err(LispError::TypeError("sequence".into(), args[0].type_name())),
@@ -646,6 +766,23 @@ pub fn call(
             }
             Ok(Value::list(results))
         }
+        "mapconcat" => {
+            need_args(name, args, 3)?;
+            let list = call(interp, "mapcar", &args[..2], env)?.to_vec()?;
+            let sep = string_text(&args[2])?;
+            let mut result = String::new();
+            for (index, item) in list.iter().enumerate() {
+                if index > 0 {
+                    result.push_str(&sep);
+                }
+                if let Some(string) = string_like(item) {
+                    result.push_str(&string.text);
+                } else {
+                    result.push_str(&item.to_string());
+                }
+            }
+            Ok(Value::String(result))
+        }
         "apply" => {
             if args.len() < 2 {
                 return Err(LispError::WrongNumberOfArgs("apply".into(), args.len()));
@@ -669,6 +806,22 @@ pub fn call(
             let func = &args[0];
             let mut call_items = vec![func.clone()];
             for a in &args[1..] {
+                call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
+            }
+            interp.eval(&Value::list(call_items), &mut Vec::new())
+        }
+        "funcall-interactively" | "call-interactively" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            let func = &args[0];
+            let tail = if name == "call-interactively" {
+                &args[1..1]
+            } else {
+                &args[1..]
+            };
+            let mut call_items = vec![func.clone()];
+            for a in tail {
                 call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
             }
             interp.eval(&Value::list(call_items), &mut Vec::new())
@@ -708,20 +861,28 @@ pub fn call(
         // ── String operations ──
         "concat" => {
             let mut result = String::new();
+            let mut props = Vec::new();
             for a in args {
-                match a {
-                    Value::String(s) => result.push_str(s),
-                    Value::Nil => {} // (concat nil) is ""
-                    _ => result.push_str(&a.to_string()),
+                if let Some(string) = string_like(a) {
+                    let offset = result.chars().count();
+                    result.push_str(&string.text);
+                    props.extend(shift_string_props(&string.props, offset));
+                } else {
+                    match a {
+                        Value::Nil => {}
+                        _ => result.push_str(&a.to_string()),
+                    }
                 }
             }
-            Ok(Value::String(result))
+            Ok(string_like_value(result, merge_string_props(props)))
         }
         "substring" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs("substring".into(), args.len()));
             }
-            let s = args[0].as_string()?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let s = string.text;
             let chars: Vec<char> = s.chars().collect();
             let from = if args.len() > 1 {
                 args[1].as_integer()? as usize
@@ -735,15 +896,18 @@ pub fn call(
             };
             let to = to.min(chars.len());
             let from = from.min(to);
-            Ok(Value::String(chars[from..to].iter().collect()))
+            Ok(string_like_value(
+                chars[from..to].iter().collect(),
+                slice_string_props(&string.props, from, to),
+            ))
         }
         "string-to-multibyte" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(args[0].as_string()?.to_string()))
+            Ok(Value::String(string_text(&args[0])?))
         }
         "string-to-number" => {
             need_args(name, args, 1)?;
-            let s = args[0].as_string()?;
+            let s = string_text(&args[0])?;
             let n = s.parse::<i64>().unwrap_or(0);
             Ok(Value::Integer(n))
         }
@@ -755,7 +919,7 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("format".into(), 0));
             }
-            let fmt = args[0].as_string()?;
+            let fmt = string_text(&args[0])?;
             let mut result = String::new();
             let mut arg_idx = 1;
             let chars: Vec<char> = fmt.chars().collect();
@@ -878,10 +1042,12 @@ pub fn call(
                 };
 
                 let formatted = match conv {
-                    's' => match arg {
-                        Value::String(s) => s.clone(),
+                    's' => match string_like(arg) {
+                        Some(s) => s.text,
+                        None => match arg {
                         Value::Integer(n) => n.to_string(),
                         other => other.to_string(),
+                        },
                     },
                     'S' => arg.to_string(),
                     'd' => {
@@ -1038,33 +1204,139 @@ pub fn call(
                 .ok_or_else(|| LispError::Signal(format!("Invalid character: {}", n)))?;
             Ok(Value::String(c.to_string()))
         }
+        "byte-to-string" => {
+            need_args(name, args, 1)?;
+            let n = args[0].as_integer()?;
+            if !(0..=255).contains(&n) {
+                return Err(LispError::Signal("Byte value out of range".into()));
+            }
+            let c = char::from_u32(n as u32)
+                .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", n)))?;
+            Ok(Value::String(c.to_string()))
+        }
         "string-to-char" => {
             need_args(name, args, 1)?;
-            let s = args[0].as_string()?;
+            let s = string_text(&args[0])?;
             Ok(Value::Integer(
                 s.chars().next().map(|c| c as i64).unwrap_or(0),
             ))
         }
+        "multibyte-string-p" => {
+            need_args(name, args, 1)?;
+            let s = string_text(&args[0])?;
+            Ok(if s.chars().any(|ch| (ch as u32) > 0x7F) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "unibyte-char-to-multibyte" => {
+            need_args(name, args, 1)?;
+            let n = args[0].as_integer()?;
+            if !(0..=255).contains(&n) {
+                return Err(LispError::Signal("Byte value out of range".into()));
+            }
+            Ok(Value::Integer(n))
+        }
         "upcase" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(args[0].as_string()?.to_uppercase()))
+            Ok(Value::String(string_text(&args[0])?.to_uppercase()))
         }
         "downcase" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(args[0].as_string()?.to_lowercase()))
+            Ok(Value::String(string_text(&args[0])?.to_lowercase()))
         }
 
         // ── Buffer operations ──
         "insert" => {
             for a in args {
-                let s = match a {
-                    Value::String(s) => s.clone(),
-                    Value::Integer(n) => char::from_u32(*n as u32)
-                        .map(|c| c.to_string())
-                        .unwrap_or_default(),
-                    _ => a.to_string(),
-                };
-                interp.buffer.insert(&s);
+                if string_like(a).is_some() {
+                    insert_string_like(interp, a, false, false);
+                } else {
+                    let s = match a {
+                        Value::Integer(n) => char::from_u32(*n as u32)
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                        _ => a.to_string(),
+                    };
+                    interp.insert_current_buffer(&s);
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "insert-and-inherit" => {
+            for a in args {
+                if string_like(a).is_some() {
+                    insert_string_like(interp, a, true, false);
+                } else {
+                    let s = match a {
+                        Value::Integer(n) => char::from_u32(*n as u32)
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                        _ => a.to_string(),
+                    };
+                    interp.insert_current_buffer_and_inherit(&s);
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "insert-char" => {
+            need_args(name, args, 1)?;
+            let ch = args[0].as_integer()?;
+            let count = if args.len() > 1 {
+                args[1].as_integer()?.max(0) as usize
+            } else {
+                1
+            };
+            let c = char::from_u32(ch as u32)
+                .ok_or_else(|| LispError::Signal(format!("Invalid character: {}", ch)))?;
+            let text: String = std::iter::repeat_n(c, count).collect();
+            interp.insert_current_buffer(&text);
+            Ok(Value::Nil)
+        }
+        "insert-byte" => {
+            need_args(name, args, 2)?;
+            let byte = args[0].as_integer()?;
+            if !(0..=255).contains(&byte) {
+                return Err(LispError::Signal("Byte value out of range".into()));
+            }
+            let count = args[1].as_integer()?.max(0) as usize;
+            let c = char::from_u32(byte as u32)
+                .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", byte)))?;
+            let text: String = std::iter::repeat_n(c, count).collect();
+            interp.insert_current_buffer(&text);
+            Ok(Value::Nil)
+        }
+        "insert-buffer-substring" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let buffer_id = interp.resolve_buffer_id(&args[0])?;
+            let source = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+            let start = if args.len() > 1 {
+                position_from_value(interp, &args[1])?
+            } else {
+                source.point_min()
+            };
+            let end = if args.len() > 2 {
+                position_from_value(interp, &args[2])?
+            } else {
+                source.point_max()
+            };
+            let text = source
+                .buffer_substring(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let props = source.substring_property_spans(start, end);
+            let insert_at = interp.buffer.point();
+            interp.insert_current_buffer(&text);
+            for span in props {
+                interp.buffer.add_text_properties(
+                    insert_at + span.start,
+                    insert_at + span.end,
+                    &span.props,
+                );
             }
             Ok(Value::Nil)
         }
@@ -1073,7 +1345,7 @@ pub fn call(
         "point-max" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
         "goto-char" => {
             need_args(name, args, 1)?;
-            let pos = args[0].as_integer()? as usize;
+            let pos = position_from_value(interp, &args[0])?;
             interp.buffer.goto_char(pos);
             Ok(Value::Integer(interp.buffer.point() as i64))
         }
@@ -1087,6 +1359,46 @@ pub fn call(
                 Ok(_) => Ok(Value::Nil),
                 Err(e) => Err(LispError::Signal(e.to_string())),
             }
+        }
+        "forward-word" => {
+            let n = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
+            let forward = n >= 0;
+            let mut remaining = n.unsigned_abs();
+            while remaining > 0 {
+                if forward {
+                    while let Some(ch) = interp.buffer.char_at(interp.buffer.point()) {
+                        if ch.is_alphanumeric() || ch == '_' {
+                            break;
+                        }
+                        let _ = interp.buffer.forward_char(1);
+                    }
+                    while let Some(ch) = interp.buffer.char_at(interp.buffer.point()) {
+                        if !(ch.is_alphanumeric() || ch == '_') {
+                            break;
+                        }
+                        let _ = interp.buffer.forward_char(1);
+                    }
+                } else {
+                    while interp.buffer.point() > interp.buffer.point_min() {
+                        if matches!(interp.buffer.char_before(), Some(ch) if ch.is_alphanumeric() || ch == '_') {
+                            break;
+                        }
+                        let _ = interp.buffer.forward_char(-1);
+                    }
+                    while interp.buffer.point() > interp.buffer.point_min() {
+                        if !matches!(interp.buffer.char_before(), Some(ch) if ch.is_alphanumeric() || ch == '_') {
+                            break;
+                        }
+                        let _ = interp.buffer.forward_char(-1);
+                    }
+                }
+                remaining -= 1;
+            }
+            Ok(Value::Nil)
         }
         "backward-char" => {
             let n = if args.is_empty() {
@@ -1116,17 +1428,102 @@ pub fn call(
             let remaining = interp.buffer.forward_line(n as isize);
             Ok(Value::Integer(remaining as i64))
         }
-        "buffer-string" => Ok(Value::String(interp.buffer.buffer_string())),
+        "search-forward" | "search-backward" => {
+            need_args(name, args, 1)?;
+            let needle = string_text(&args[0])?;
+            let haystack = interp.buffer.buffer_string();
+            let point = interp.buffer.point();
+            let result = if name == "search-forward" {
+                let offset = haystack
+                    .chars()
+                    .take(point.saturating_sub(1))
+                    .map(|ch| ch.len_utf8())
+                    .sum::<usize>();
+                haystack[offset..].find(&needle).map(|found| {
+                    let chars = haystack[offset..offset + found + needle.len()].chars().count();
+                    point + chars
+                })
+            } else {
+                let prefix: String = haystack.chars().take(point.saturating_sub(1)).collect();
+                prefix.rfind(&needle).map(|found| prefix[..found].chars().count() + 1)
+            };
+            match result {
+                Some(pos) => {
+                    interp.buffer.goto_char(pos);
+                    Ok(Value::Integer(pos as i64))
+                }
+                None => Ok(Value::Nil),
+            }
+        }
+        "re-search-forward" | "search-forward-regexp" => {
+            need_args(name, args, 1)?;
+            let pattern = string_text(&args[0])?;
+            let regex = Regex::new(&translate_elisp_regex(&pattern))
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let tail = interp
+                .buffer
+                .buffer_substring(interp.buffer.point(), interp.buffer.point_max())
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            if let Some(matched) = regex.find(&tail) {
+                let chars = tail[..matched.end()].chars().count();
+                let pos = interp.buffer.point() + chars;
+                interp.buffer.goto_char(pos);
+                Ok(Value::Integer(pos as i64))
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        "buffer-string" => Ok(string_like_value(
+            interp.buffer.buffer_string(),
+            interp
+                .buffer
+                .substring_property_spans(interp.buffer.point_min(), interp.buffer.point_max()),
+        )),
         "buffer-substring" | "buffer-substring-no-properties" => {
             need_args(name, args, 2)?;
             let from = args[0].as_integer()? as usize;
             let to = args[1].as_integer()? as usize;
             match interp.buffer.buffer_substring(from, to) {
-                Ok(s) => Ok(Value::String(s)),
+                Ok(s) => {
+                    if name == "buffer-substring" {
+                        Ok(string_like_value(
+                            s,
+                            interp.buffer.substring_property_spans(from, to),
+                        ))
+                    } else {
+                        Ok(Value::String(s))
+                    }
+                }
                 Err(e) => Err(LispError::Signal(e.to_string())),
             }
         }
         "buffer-size" => Ok(Value::Integer(interp.buffer.buffer_size() as i64)),
+        "buffer-enable-undo" => {
+            interp.buffer.enable_undo();
+            Ok(Value::Nil)
+        }
+        "gap-position" => Ok(Value::Integer(interp.buffer.point() as i64)),
+        "gap-size" => Ok(Value::Integer(0)),
+        "position-bytes" => {
+            let pos = if args.is_empty() {
+                interp.buffer.point()
+            } else {
+                position_from_value(interp, &args[0])?
+            };
+            Ok(position_bytes(interp, pos)
+                .map(|byte_pos| Value::Integer(byte_pos as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "byte-to-position" => {
+            need_args(name, args, 1)?;
+            let byte = args[0].as_integer()?;
+            if byte <= 0 {
+                return Ok(Value::Nil);
+            }
+            Ok(byte_to_position(interp, byte as usize)
+                .map(|pos| Value::Integer(pos as i64))
+                .unwrap_or(Value::Nil))
+        }
         "buffer-name" => {
             if !args.is_empty()
                 && let Value::Buffer(_, name) = &args[0]
@@ -1184,30 +1581,58 @@ pub fn call(
         }),
         "delete-region" => {
             need_args(name, args, 2)?;
-            let from = args[0].as_integer()? as usize;
-            let to = args[1].as_integer()? as usize;
-            match interp.buffer.delete_region(from, to) {
+            let from = position_from_value(interp, &args[0])?;
+            let to = position_from_value(interp, &args[1])?;
+            match interp.delete_region_current_buffer(from, to) {
                 Ok(_) => Ok(Value::Nil),
                 Err(e) => Err(LispError::Signal(e.to_string())),
             }
         }
+        "kill-region" => call(interp, "delete-region", args, env),
         "delete-char" => {
             let n = if args.is_empty() {
                 1
             } else {
                 args[0].as_integer()?
             };
-            match interp.buffer.delete_char(n as isize) {
+            match interp.delete_char_current_buffer(n as isize) {
                 Ok(_) => Ok(Value::Nil),
                 Err(e) => Err(LispError::Signal(e.to_string())),
             }
+        }
+        "delete-forward-char" => {
+            let n = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
+            call(interp, "delete-char", &[Value::Integer(n)], env)
+        }
+        "kill-word" => {
+            let count = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
+            let start = interp.buffer.point();
+            call(interp, "forward-word", &[Value::Integer(count)], env)?;
+            let end = interp.buffer.point();
+            interp.buffer.goto_char(start);
+            call(
+                interp,
+                "delete-region",
+                &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                env,
+            )
         }
         "erase-buffer" => {
             let size = interp.buffer.buffer_size();
             if size > 0 {
                 let min = interp.buffer.point_min();
                 let max = interp.buffer.point_max();
-                interp.buffer.delete_region(min, max)?;
+                interp
+                    .delete_region_current_buffer(min, max)
+                    .map_err(|e| LispError::Signal(e.to_string()))?;
             }
             Ok(Value::Nil)
         }
@@ -1237,6 +1662,23 @@ pub fn call(
                 }
             }
             Ok(Value::Integer(col as i64))
+        }
+        "move-to-column" => {
+            need_args(name, args, 1)?;
+            let target = args[0].as_integer()?.max(0) as usize;
+            let saved = interp.buffer.point();
+            interp.buffer.beginning_of_line();
+            let start = interp.buffer.point();
+            interp.buffer.goto_char(saved);
+            let mut pos = start;
+            while pos < interp.buffer.point_max() && column_at(interp, start, pos) < target {
+                if matches!(interp.buffer.char_at(pos), Some('\n') | None) {
+                    break;
+                }
+                pos += 1;
+            }
+            interp.buffer.goto_char(pos);
+            Ok(Value::Integer(interp.buffer.current_column() as i64))
         }
         "line-number-at-pos" => {
             let pos = if args.is_empty() {
@@ -1330,7 +1772,197 @@ pub fn call(
                 &prop,
                 name == "get-pos-property",
             )
+            .or_else(|| buffer.text_property_at(pos, &prop))
             .unwrap_or(Value::Nil))
+        }
+        "get-text-property" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let pos = args[0].as_integer()? as usize;
+            let prop = args[1].as_symbol()?.to_string();
+            if let Some(object) = args.get(2) {
+                if string_like(object).is_some() {
+                    Ok(string_property_at(object, pos, &prop).unwrap_or(Value::Nil))
+                } else {
+                    let buffer_id = if object.is_nil() {
+                        interp.current_buffer_id()
+                    } else {
+                        interp.resolve_buffer_id(object)?
+                    };
+                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {}", buffer_id))
+                    })?;
+                    Ok(buffer.text_property_at(pos, &prop).unwrap_or(Value::Nil))
+                }
+            } else {
+                Ok(interp.buffer.text_property_at(pos, &prop).unwrap_or(Value::Nil))
+            }
+        }
+        "text-properties-at" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let pos = args[0].as_integer()? as usize;
+            let props = if let Some(object) = args.get(1) {
+                if string_like(object).is_some() {
+                    string_properties_at(object, pos)
+                } else {
+                    let buffer_id = if object.is_nil() {
+                        interp.current_buffer_id()
+                    } else {
+                        interp.resolve_buffer_id(object)?
+                    };
+                    interp
+                        .get_buffer_by_id(buffer_id)
+                        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?
+                        .text_properties_at(pos)
+                }
+            } else {
+                interp.buffer.text_properties_at(pos)
+            };
+            Ok(plist_value(&props))
+        }
+        "put-text-property" => {
+            need_args(name, args, 4)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let prop = args[2].as_symbol()?.to_string();
+            interp
+                .buffer
+                .put_text_property(start, end, &prop, args[3].clone());
+            Ok(Value::T)
+        }
+        "add-text-properties" => {
+            need_args(name, args, 3)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let props = plist_pairs(&args[2])?;
+            interp.buffer.add_text_properties(start, end, &props);
+            Ok(Value::T)
+        }
+        "remove-list-of-text-properties" => {
+            need_args(name, args, 3)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let names = args[2]
+                .to_vec()?
+                .into_iter()
+                .map(|value| value.as_symbol().map(|s| s.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            interp
+                .buffer
+                .remove_list_of_text_properties(start, end, &names);
+            Ok(Value::T)
+        }
+        "compare-buffer-substrings" => {
+            need_args(name, args, 6)?;
+            let left_id = interp.resolve_buffer_id(&args[0])?;
+            let left_start = position_from_value(interp, &args[1])?;
+            let left_end = position_from_value(interp, &args[2])?;
+            let right_id = interp.resolve_buffer_id(&args[3])?;
+            let right_start = position_from_value(interp, &args[4])?;
+            let right_end = position_from_value(interp, &args[5])?;
+            let left = interp
+                .get_buffer_by_id(left_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?
+                .buffer_substring(left_start, left_end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let right = interp
+                .get_buffer_by_id(right_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?
+                .buffer_substring(right_start, right_end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            Ok(Value::Integer(compare_buffer_substrings(&left, &right)))
+        }
+        "field-beginning" | "field-end" => {
+            let pos = if args.is_empty() {
+                interp.buffer.point()
+            } else {
+                position_from_value(interp, &args[0])?
+            };
+            let field = interp.buffer.text_property_at(pos, "field");
+            let mut cursor = pos;
+            if name == "field-beginning" {
+                while cursor > interp.buffer.point_min()
+                    && interp.buffer.text_property_at(cursor - 1, "field") == field
+                {
+                    cursor -= 1;
+                }
+            } else {
+                while cursor < interp.buffer.point_max()
+                    && interp.buffer.text_property_at(cursor, "field") == field
+                {
+                    cursor += 1;
+                }
+            }
+            Ok(Value::Integer(cursor as i64))
+        }
+        "field-string-no-properties" => {
+            need_args(name, args, 1)?;
+            let pos = position_from_value(interp, &args[0])?;
+            let start = call(interp, "field-beginning", &[Value::Integer(pos as i64)], env)?
+                .as_integer()? as usize;
+            let end = call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
+                .as_integer()? as usize;
+            Ok(Value::String(
+                interp
+                    .buffer
+                    .buffer_substring(start, end)
+                    .map_err(|e| LispError::Signal(e.to_string()))?,
+            ))
+        }
+        "delete-field" => {
+            need_args(name, args, 1)?;
+            let pos = position_from_value(interp, &args[0])?;
+            let start = call(interp, "field-beginning", &[Value::Integer(pos as i64)], env)?
+                .as_integer()? as usize;
+            let end = call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
+                .as_integer()? as usize;
+            interp
+                .delete_region_current_buffer(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            Ok(Value::Nil)
+        }
+        "constrain-to-field" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let new_pos = if args[0].is_nil() {
+                interp.buffer.point()
+            } else {
+                position_from_value(interp, &args[0])?
+            };
+            let old_pos = if args.len() > 1 {
+                position_from_value(interp, &args[1])?
+            } else {
+                interp.buffer.point()
+            };
+            let inhibit_motion = interp
+                .lookup_var("inhibit-field-text-motion", env)
+                .is_some_and(|value| value.is_truthy());
+            let mut constrained = new_pos;
+            if !inhibit_motion
+                && interp.buffer.text_property_at(new_pos, "field")
+                    != interp.buffer.text_property_at(old_pos, "field")
+            {
+                constrained = if new_pos < old_pos {
+                    call(
+                        interp,
+                        "field-beginning",
+                        &[Value::Integer(old_pos as i64)],
+                        env,
+                    )?
+                    .as_integer()? as usize
+                } else {
+                    call(interp, "field-end", &[Value::Integer(old_pos as i64)], env)?
+                        .as_integer()? as usize
+                };
+            }
+            if args[0].is_nil() {
+                interp.buffer.goto_char(constrained);
+            }
+            Ok(Value::Integer(constrained as i64))
         }
         "current-buffer" => {
             Ok(Value::Buffer(
@@ -1481,9 +2113,37 @@ pub fn call(
         }
         "switch-to-buffer" => {
             need_args(name, args, 1)?;
-            let id = interp.resolve_buffer_id(&args[0])?;
+            let id = match &args[0] {
+                Value::String(name) => interp
+                    .find_buffer(name)
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| interp.create_buffer(name).0),
+                _ => interp.resolve_buffer_id(&args[0])?,
+            };
             interp.switch_to_buffer_id(id)?;
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
+        }
+        "find-file-noselect" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            if let Some((id, name)) = interp.find_buffer(&path) {
+                return Ok(Value::Buffer(id, name));
+            }
+            let (id, _) = interp.create_buffer(&path);
+            let contents = std::fs::read_to_string(&path).unwrap_or_default();
+            if let Some(buffer) = interp.get_buffer_by_id_mut(id) {
+                *buffer = crate::buffer::Buffer::from_text(&path, &contents);
+                buffer.file = Some(path.clone());
+                buffer.set_unmodified();
+            }
+            Ok(Value::Buffer(id, path))
+        }
+        "find-file" => {
+            need_args(name, args, 1)?;
+            let buffer = call(interp, "find-file-noselect", args, env)?;
+            let id = interp.resolve_buffer_id(&buffer)?;
+            interp.switch_to_buffer_id(id)?;
+            Ok(buffer)
         }
         "kill-buffer" => {
             let id = if let Some(buffer) = args.first() {
@@ -1496,7 +2156,16 @@ pub fn call(
         }
         "set-mark" => {
             need_args(name, args, 1)?;
-            let pos = args[0].as_integer()? as usize;
+            let pos = position_from_value(interp, &args[0])?;
+            interp.buffer.set_mark(pos);
+            Ok(Value::Nil)
+        }
+        "push-mark" => {
+            let pos = if args.is_empty() || args[0].is_nil() {
+                interp.buffer.point()
+            } else {
+                position_from_value(interp, &args[0])?
+            };
             interp.buffer.set_mark(pos);
             Ok(Value::Nil)
         }
@@ -1504,6 +2173,83 @@ pub fn call(
             Some(m) => Value::Integer(m as i64),
             None => Value::Nil,
         }),
+        "make-marker" => Ok(interp.make_marker()),
+        "copy-marker" => {
+            need_args(name, args, 1)?;
+            let insertion_type = args.get(1).is_some_and(Value::is_truthy);
+            interp.copy_marker_value(&args[0], insertion_type)
+        }
+        "point-marker" => interp.copy_marker_value(
+            &Value::Integer(interp.buffer.point() as i64),
+            false,
+        ),
+        "mark-marker" => match interp.buffer.mark() {
+            Some(pos) => interp.copy_marker_value(&Value::Integer(pos as i64), false),
+            None => interp.copy_marker_value(&Value::Nil, false),
+        },
+        "point-min-marker" => interp.copy_marker_value(
+            &Value::Integer(interp.buffer.point_min() as i64),
+            false,
+        ),
+        "point-max-marker" => interp.copy_marker_value(
+            &Value::Integer(interp.buffer.point_max() as i64),
+            false,
+        ),
+        "marker-buffer" => {
+            need_args(name, args, 1)?;
+            let marker_id = marker_id_from_value(&args[0])?;
+            match interp.marker_buffer_id(marker_id) {
+                Some(buffer_id) => {
+                    let buffer_name = interp
+                        .buffer_list
+                        .iter()
+                        .find(|(id, _)| *id == buffer_id)
+                        .map(|(_, name)| name.clone())
+                        .unwrap_or_else(|| "*unknown*".to_string());
+                    Ok(Value::Buffer(buffer_id, buffer_name))
+                }
+                None => Ok(Value::Nil),
+            }
+        }
+        "marker-position" => {
+            need_args(name, args, 1)?;
+            let marker_id = marker_id_from_value(&args[0])?;
+            Ok(interp
+                .marker_position(marker_id)
+                .map(|pos| Value::Integer(pos as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "marker-last-position" => {
+            need_args(name, args, 1)?;
+            let marker_id = marker_id_from_value(&args[0])?;
+            Ok(interp
+                .marker_last_position(marker_id)
+                .map(|pos| Value::Integer(pos as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "marker-insertion-type" => {
+            need_args(name, args, 1)?;
+            let marker_id = marker_id_from_value(&args[0])?;
+            Ok(if interp.marker_insertion_type(marker_id).unwrap_or(false) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "set-marker-insertion-type" => {
+            need_args(name, args, 2)?;
+            let marker_id = marker_id_from_value(&args[0])?;
+            let insertion_type = args[1].is_truthy();
+            interp.set_marker_insertion_type(marker_id, insertion_type);
+            Ok(if insertion_type { Value::T } else { Value::Nil })
+        }
+        "set-marker" | "move-marker" => {
+            need_args(name, args, 2)?;
+            let marker_id = marker_id_from_value(&args[0])?;
+            let (position, buffer_id) = marker_target(interp, &args[1], args.get(2))?;
+            interp.set_marker(marker_id, position, buffer_id)?;
+            Ok(args[0].clone())
+        }
         "region-beginning" => match interp.buffer.region() {
             Some((beg, _)) => Ok(Value::Integer(beg as i64)),
             None => Err(LispError::Signal("The mark is not set now".into())),
@@ -1609,9 +2355,19 @@ pub fn call(
         )),
 
         // ── Display stubs ──
-        "display-graphic-p" | "frame-parameter" => Ok(Value::Nil),
+        "display-graphic-p" | "frame-parameter" | "transient-mark-mode" => Ok(Value::Nil),
         "selected-window" => Ok(Value::Symbol("window".into())),
         "selected-frame" => Ok(Value::Symbol("frame".into())),
+        "get-buffer-window" => Ok(Value::Symbol("window".into())),
+        "set-window-start" | "set-window-point" => Ok(Value::T),
+        "facemenu-add-face" => {
+            need_args(name, args, 3)?;
+            let face = args[0].clone();
+            let start = position_from_value(interp, &args[1])?;
+            let end = position_from_value(interp, &args[2])?;
+            interp.buffer.put_text_property(start, end, "face", face);
+            Ok(Value::Nil)
+        }
 
         // ── Reader ──
         "read" => {
@@ -1671,11 +2427,41 @@ pub fn call(
             let s = args[0].as_symbol()?;
             Ok(Value::String(s.to_string()))
         }
+        "char-from-name" => {
+            need_args(name, args, 1)?;
+            let name = args[0].as_string()?;
+            let ch = match name {
+                "SMILE" => 0x263A,
+                _ => return Ok(Value::Nil),
+            };
+            Ok(Value::Integer(ch))
+        }
+        "evenp" => {
+            need_args(name, args, 1)?;
+            Ok(if args[0].as_integer()? % 2 == 0 {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "file-truename" => {
             need_args(name, args, 1)?;
             Ok(Value::String(args[0].as_string()?.to_string()))
         }
+        "save-buffer" => {
+            let Some(path) = interp.buffer.file.clone() else {
+                return Ok(Value::Nil);
+            };
+            std::fs::write(&path, interp.buffer.buffer_string())
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            interp.buffer.set_unmodified();
+            Ok(Value::Nil)
+        }
         "make-hash-table" => Ok(Value::String("#<hash-table>".into())),
+        "regexp-quote" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(regex::escape(&string_text(&args[0])?)))
+        }
         "type-of" => {
             need_args(name, args, 1)?;
             let name = match &args[0] {
@@ -1689,6 +2475,7 @@ pub fn call(
                 Value::BuiltinFunc(_) => "subr",
                 Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
                 Value::Buffer(_, _) => "buffer",
+                Value::Marker(_) => "marker",
                 Value::Overlay(_) => "overlay",
             };
             Ok(Value::Symbol(name.into()))
@@ -2194,8 +2981,9 @@ pub fn call(
         }
 
         "vector" => {
-            // (vector &rest OBJECTS) — creates a "vector" as a list for now
-            Ok(Value::list(args.to_vec()))
+            let mut items = vec![Value::symbol("vector")];
+            items.extend(args.iter().cloned());
+            Ok(Value::list(items))
         }
 
         "aref" => {
@@ -2210,8 +2998,7 @@ pub fn call(
                     }
                 }
                 _ => {
-                    // Treat as list-vector
-                    let items = args[0].to_vec()?;
+                    let items = vector_items(&args[0])?;
                     items.get(idx).cloned().ok_or_else(|| {
                         LispError::Signal("Args out of range".into())
                     })
@@ -2274,6 +3061,63 @@ pub fn call(
             Ok(args[0].clone())
         }
 
+        "propertize" => {
+            if args.is_empty() || args.len().is_multiple_of(2) {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let text = string_text(&args[0])?;
+            let props = args[1..]
+                .chunks(2)
+                .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1].clone())))
+                .collect::<Result<Vec<_>, LispError>>()?;
+            let len = text.chars().count();
+            Ok(string_like_value(
+                text,
+                vec![TextPropertySpan {
+                    start: 0,
+                    end: len,
+                    props,
+                }],
+            ))
+        }
+
+        "make-char-table" => {
+            need_args(name, args, 1)?;
+            Ok(Value::list([Value::symbol("vector"), args[0].clone()]))
+        }
+
+        "undo-boundary" => Ok(Value::Nil),
+
+        "undo" => {
+            interp
+                .buffer
+                .undo()
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            Ok(Value::Nil)
+        }
+
+        "undo-more" => {
+            let count = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
+            for _ in 0..count.max(0) {
+                interp
+                    .buffer
+                    .undo()
+                    .map_err(|e| LispError::Signal(e.to_string()))?;
+            }
+            Ok(Value::Nil)
+        }
+
+        "take" => {
+            need_args(name, args, 2)?;
+            let n = args[0].as_integer()?.max(0) as usize;
+            let items = args[1].to_vec()?;
+            Ok(Value::list(items.into_iter().take(n)))
+        }
+
         "delete" | "delq" => {
             need_args(name, args, 2)?;
             let elt = &args[0];
@@ -2290,20 +3134,206 @@ pub fn call(
             Ok(Value::list(items))
         }
 
+        "looking-at" => {
+            need_args(name, args, 1)?;
+            let pattern = string_text(&args[0])?;
+            interp.set_variable(
+                "last-looking-at-pattern",
+                Value::String(pattern.clone()),
+                &mut env.clone(),
+            );
+            let regex = Regex::new(&translate_elisp_regex(&pattern))
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let pos = interp.buffer.point();
+            let tail = interp
+                .buffer
+                .buffer_substring(pos, interp.buffer.point_max())
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            Ok(if regex.is_match(&tail) && regex.find(&tail).is_some_and(|m| m.start() == 0) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+
+        "replace-match" => {
+            need_args(name, args, 1)?;
+            let replacement = string_text(&args[0])?;
+            let pos = interp.buffer.point();
+            let pattern = interp
+                .lookup_var("last-looking-at-pattern", env)
+                .and_then(|value| string_like(&value))
+                .map(|string| string.text)
+                .ok_or_else(|| LispError::Signal("No previous search".into()))?;
+            let regex = Regex::new(&translate_elisp_regex(&pattern))
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let tail = interp
+                .buffer
+                .buffer_substring(pos, interp.buffer.point_max())
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let found = regex
+                .find(&tail)
+                .filter(|matched| matched.start() == 0)
+                .ok_or_else(|| LispError::Signal("No previous search".into()))?;
+            let end = pos + tail[..found.end()].chars().count();
+            interp
+                .delete_region_current_buffer(pos, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            interp.insert_current_buffer(&replacement);
+            Ok(Value::Nil)
+        }
+
+        "replace-region-contents" => {
+            if args.len() < 3 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let from = position_from_value(interp, &args[0])?;
+            let to = position_from_value(interp, &args[1])?;
+            let replacement = replacement_text(interp, &args[2])?;
+            interp
+                .delete_region_current_buffer(from, to)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            interp.insert_current_buffer(&replacement);
+            Ok(Value::Nil)
+        }
+        "flush-lines" => {
+            need_args(name, args, 3)?;
+            let pattern = string_text(&args[0])?;
+            let start = position_from_value(interp, &args[1])?;
+            let end = position_from_value(interp, &args[2])?;
+            let regex = Regex::new(&translate_elisp_regex(&pattern))
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let text = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let filtered = text
+                .split_inclusive('\n')
+                .filter(|line| !regex.is_match(&line.to_lowercase()))
+                .collect::<String>();
+            interp
+                .delete_region_current_buffer(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            interp.insert_current_buffer(&filtered);
+            Ok(Value::Nil)
+        }
+
+        "subst-char-in-region" => {
+            need_args(name, args, 4)?;
+            let from = position_from_value(interp, &args[0])?;
+            let to = position_from_value(interp, &args[1])?;
+            let old = args[2].as_integer()? as u32;
+            let new = args[3].as_integer()? as u32;
+            let old = char::from_u32(old)
+                .ok_or_else(|| LispError::Signal("Invalid character".into()))?;
+            let new = char::from_u32(new)
+                .ok_or_else(|| LispError::Signal("Invalid character".into()))?;
+            let text = interp
+                .buffer
+                .buffer_substring(from, to)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let replaced: String = text
+                .chars()
+                .map(|ch| if ch == old { new } else { ch })
+                .collect();
+            interp
+                .delete_region_current_buffer(from, to)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            interp.insert_current_buffer(&replaced);
+            Ok(Value::Nil)
+        }
+
+        "internal--labeled-narrow-to-region" => {
+            need_args(name, args, 3)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let label = args[2].as_symbol()?.to_string();
+            let state = Value::list([
+                Value::Integer(interp.buffer.point_min() as i64),
+                Value::Integer(interp.buffer.point_max() as i64),
+            ]);
+            interp.set_variable(
+                &format!("__emaxx-labeled-restriction-{label}"),
+                state,
+                &mut env.clone(),
+            );
+            interp.buffer.narrow_to_region(start, end);
+            Ok(Value::Nil)
+        }
+
+        "internal--labeled-widen" => {
+            need_args(name, args, 1)?;
+            let label = args[0].as_symbol()?.to_string();
+            if let Some(state) =
+                interp.lookup_var(&format!("__emaxx-labeled-restriction-{label}"), env)
+            {
+                let values = state.to_vec()?;
+                let start = values.first().and_then(|v| v.as_integer().ok()).unwrap_or(1) as usize;
+                let end = values
+                    .get(1)
+                    .and_then(|v| v.as_integer().ok())
+                    .unwrap_or((interp.buffer.size_total() + 1) as i64) as usize;
+                interp.buffer.narrow_to_region(start, end);
+            } else {
+                interp.buffer.widen();
+            }
+            Ok(Value::Nil)
+        }
+
         "insert-before-markers" => {
             for arg in args {
                 let insert_at = interp.buffer.point();
-                let s = match arg {
-                    Value::String(s) => s.clone(),
-                    Value::Integer(n) => {
-                        char::from_u32(*n as u32)
-                            .map(|c| c.to_string())
-                            .unwrap_or_default()
-                    }
-                    _ => format!("{}", arg),
+                let nchars = if let Some(string) = string_like(arg) {
+                    let nchars = string.text.chars().count();
+                    insert_string_like(interp, arg, false, true);
+                    nchars
+                } else {
+                    let s = match arg {
+                        Value::Integer(n) => {
+                            char::from_u32(*n as u32)
+                                .map(|c| c.to_string())
+                                .unwrap_or_default()
+                        }
+                        _ => format!("{}", arg),
+                    };
+                    let nchars = s.chars().count();
+                    interp.insert_current_buffer_before_markers(&s);
+                    nchars
                 };
-                let nchars = s.chars().count();
-                interp.buffer.insert(&s);
+                for overlay in &mut interp.buffer.overlays {
+                    if overlay.is_dead() {
+                        continue;
+                    }
+                    if overlay.beg == insert_at {
+                        overlay.beg += nchars;
+                    }
+                    if overlay.end == insert_at {
+                        overlay.end += nchars;
+                    }
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "insert-before-markers-and-inherit" => {
+            for arg in args {
+                let insert_at = interp.buffer.point();
+                let nchars = if let Some(string) = string_like(arg) {
+                    let nchars = string.text.chars().count();
+                    insert_string_like(interp, arg, true, true);
+                    nchars
+                } else {
+                    let s = match arg {
+                        Value::Integer(n) => {
+                            char::from_u32(*n as u32)
+                                .map(|c| c.to_string())
+                                .unwrap_or_default()
+                        }
+                        _ => format!("{}", arg),
+                    };
+                    let nchars = s.chars().count();
+                    interp.insert_current_buffer_before_markers_and_inherit(&s);
+                    nchars
+                };
                 for overlay in &mut interp.buffer.overlays {
                     if overlay.is_dead() {
                         continue;
@@ -2379,7 +3409,371 @@ fn overlay_covers_position(
     }
 }
 
+fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
+    match value {
+        Value::Integer(pos) if *pos >= 0 => Ok(*pos as usize),
+        Value::Marker(id) => interp
+            .marker_position(*id)
+            .ok_or_else(|| LispError::TypeError("integer-or-marker-p".into(), value.type_name())),
+        _ => Err(LispError::TypeError(
+            "integer-or-marker-p".into(),
+            value.type_name(),
+        )),
+    }
+}
+
+fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
+    match value {
+        Value::Marker(id) => Ok(*id),
+        _ => Err(LispError::TypeError("marker".into(), value.type_name())),
+    }
+}
+
+fn marker_target(
+    interp: &Interpreter,
+    value: &Value,
+    buffer: Option<&Value>,
+) -> Result<(Option<usize>, Option<u64>), LispError> {
+    match value {
+        Value::Nil => Ok((None, None)),
+        Value::Marker(marker_id) => Ok((
+            interp.marker_position(*marker_id),
+            interp.marker_buffer_id(*marker_id),
+        )),
+        _ => {
+            let position = position_from_value(interp, value)?;
+            let buffer_id = if let Some(buffer) = buffer {
+                if buffer.is_nil() {
+                    interp.current_buffer_id()
+                } else {
+                    interp.resolve_buffer_id(buffer)?
+                }
+            } else {
+                interp.current_buffer_id()
+            };
+            Ok((Some(position), Some(buffer_id)))
+        }
+    }
+}
+
+fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
+    let items = value.to_vec()?;
+    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal") {
+        Ok(items.into_iter().skip(1).collect())
+    } else {
+        Ok(items)
+    }
+}
+
+fn position_bytes(interp: &Interpreter, pos: usize) -> Option<usize> {
+    let text = interp.buffer.buffer_string();
+    let char_len = text.chars().count();
+    if pos == 0 || pos > char_len + 1 {
+        return None;
+    }
+    Some(1 + text.chars().take(pos - 1).map(char::len_utf8).sum::<usize>())
+}
+
+fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usize> {
+    if byte == 0 {
+        return None;
+    }
+    let text = interp.buffer.buffer_string();
+    let total_bytes = text.len();
+    if byte > total_bytes + 1 {
+        return None;
+    }
+    if byte == total_bytes + 1 {
+        return Some(text.chars().count() + 1);
+    }
+    let mut current_byte = 1usize;
+    for (index, ch) in text.chars().enumerate() {
+        let next = current_byte + ch.len_utf8();
+        if byte < next {
+            return Some(index + 1);
+        }
+        current_byte = next;
+    }
+    Some(text.chars().count() + 1)
+}
+
+fn column_at(interp: &Interpreter, line_start: usize, pos: usize) -> usize {
+    let tab_width = interp
+        .lookup_var("tab-width", &Vec::new())
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(8)
+        .max(1) as usize;
+    let mut col = 0usize;
+    for p in line_start..pos {
+        match interp.buffer.char_at(p) {
+            Some('\t') => col = (col / tab_width + 1) * tab_width,
+            Some(_) => col += 1,
+            None => break,
+        }
+    }
+    col
+}
+
+fn compare_buffer_substrings(left: &str, right: &str) -> i64 {
+    let left_chars: Vec<char> = left.chars().collect();
+    let right_chars: Vec<char> = right.chars().collect();
+    let min_len = left_chars.len().min(right_chars.len());
+    for index in 0..min_len {
+        if left_chars[index] != right_chars[index] {
+            let offset = (index + 1) as i64;
+            return if left_chars[index] < right_chars[index] {
+                -offset
+            } else {
+                offset
+            };
+        }
+    }
+    if left_chars.len() == right_chars.len() {
+        0
+    } else {
+        let offset = (min_len + 1) as i64;
+        if left_chars.len() < right_chars.len() {
+            -offset
+        } else {
+            offset
+        }
+    }
+}
+
+fn translate_elisp_regex(pattern: &str) -> String {
+    pattern
+        .replace("\\'", "$")
+        .replace("\\(", "(")
+        .replace("\\)", ")")
+}
+
+fn replacement_text(interp: &Interpreter, source: &Value) -> Result<String, LispError> {
+    if let Some(string) = string_like(source) {
+        return Ok(string.text);
+    }
+    match source {
+        Value::Buffer(id, _) => interp
+            .get_buffer_by_id(*id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))?
+            .buffer_substring(1, interp.get_buffer_by_id(*id).expect("checked").point_max())
+            .map_err(|e| LispError::Signal(e.to_string())),
+        _ => {
+            let items = vector_items(source)?;
+            if items.len() >= 3 {
+                let buffer_id = interp.resolve_buffer_id(&items[0])?;
+                let start = position_from_value(interp, &items[1])?;
+                let end = position_from_value(interp, &items[2])?;
+                interp
+                    .get_buffer_by_id(buffer_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?
+                    .buffer_substring(start, end)
+                    .map_err(|e| LispError::Signal(e.to_string()))
+            } else {
+                Err(LispError::TypeError(
+                    "string-or-buffer".into(),
+                    source.type_name(),
+                ))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct StringLike {
+    text: String,
+    props: Vec<TextPropertySpan>,
+}
+
+fn string_like(value: &Value) -> Option<StringLike> {
+    match value {
+        Value::String(text) => Some(StringLike {
+            text: text.clone(),
+            props: Vec::new(),
+        }),
+        Value::Cons(_, _) => {
+            let items = vector_items(value).ok()?;
+            let Value::String(text) = items.first()?.clone() else {
+                return None;
+            };
+            let mut props = Vec::new();
+            let mut i = 1;
+            while i + 2 < items.len() {
+                let start = items[i].as_integer().ok()? as usize;
+                let end = items[i + 1].as_integer().ok()? as usize;
+                let plist = plist_pairs(&items[i + 2]).ok()?;
+                props.push(TextPropertySpan {
+                    start,
+                    end,
+                    props: plist,
+                });
+                i += 3;
+            }
+            Some(StringLike { text, props })
+        }
+        _ => None,
+    }
+}
+
+fn string_text(value: &Value) -> Result<String, LispError> {
+    string_like(value)
+        .map(|string| string.text)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
+}
+
+fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> Value {
+    if props.is_empty() {
+        Value::String(text)
+    } else {
+        let mut items = vec![Value::symbol("vector"), Value::String(text)];
+        for span in props {
+            items.push(Value::Integer(span.start as i64));
+            items.push(Value::Integer(span.end as i64));
+            items.push(plist_value(&span.props));
+        }
+        Value::list(items)
+    }
+}
+
+fn plist_pairs(value: &Value) -> Result<Vec<(String, Value)>, LispError> {
+    let items = value.to_vec()?;
+    let mut props = Vec::new();
+    let mut i = 0;
+    while i + 1 < items.len() {
+        let key = items[i].as_symbol()?.to_string();
+        props.push((key, items[i + 1].clone()));
+        i += 2;
+    }
+    Ok(props)
+}
+
+fn plist_value(props: &[(String, Value)]) -> Value {
+    let mut items = Vec::new();
+    for (key, value) in props {
+        items.push(Value::Symbol(key.clone()));
+        items.push(value.clone());
+    }
+    Value::list(items)
+}
+
+fn shift_string_props(props: &[TextPropertySpan], offset: usize) -> Vec<TextPropertySpan> {
+    props
+        .iter()
+        .map(|span| TextPropertySpan {
+            start: span.start + offset,
+            end: span.end + offset,
+            props: span.props.clone(),
+        })
+        .collect()
+}
+
+fn slice_string_props(
+    props: &[TextPropertySpan],
+    from: usize,
+    to: usize,
+) -> Vec<TextPropertySpan> {
+    let mut sliced = Vec::new();
+    for span in props {
+        let start = span.start.max(from);
+        let end = span.end.min(to);
+        if start < end {
+            sliced.push(TextPropertySpan {
+                start: start - from,
+                end: end - from,
+                props: span.props.clone(),
+            });
+        }
+    }
+    merge_string_props(sliced)
+}
+
+fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
+    props.retain(|span| span.start < span.end && !span.props.is_empty());
+    props.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
+    let mut merged: Vec<TextPropertySpan> = Vec::new();
+    for span in props {
+        if let Some(last) = merged.last_mut()
+            && last.end == span.start
+            && last.props == span.props
+        {
+            last.end = span.end;
+        } else {
+            merged.push(span);
+        }
+    }
+    merged
+}
+
+fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {
+    let string = string_like(value)?;
+    string
+        .props
+        .iter()
+        .find(|span| span.start <= pos && pos < span.end)
+        .and_then(|span| {
+            span.props
+                .iter()
+                .find(|(name, _)| name == prop)
+                .map(|(_, value)| value.clone())
+        })
+}
+
+fn string_properties_at(value: &Value, pos: usize) -> Vec<(String, Value)> {
+    string_like(value)
+        .and_then(|string| {
+            string
+                .props
+                .iter()
+                .find(|span| span.start <= pos && pos < span.end)
+                .map(|span| span.props.clone())
+        })
+        .unwrap_or_default()
+}
+
+fn insert_string_like(interp: &mut Interpreter, value: &Value, inherit: bool, before_markers: bool) {
+    if let Some(string) = string_like(value) {
+        let insert_at = interp.buffer.point();
+        if before_markers {
+            if inherit {
+                interp.insert_current_buffer_before_markers_and_inherit(&string.text);
+            } else {
+                interp.insert_current_buffer_before_markers(&string.text);
+            }
+        } else if inherit {
+            interp.insert_current_buffer_and_inherit(&string.text);
+        } else {
+            interp.insert_current_buffer(&string.text);
+        }
+        for span in string.props {
+            interp.buffer.add_text_properties(
+                insert_at + span.start,
+                insert_at + span.end,
+                &span.props,
+            );
+        }
+    }
+}
+
+pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
+    let entries = buffer
+        .undo_entries()
+        .iter()
+        .rev()
+        .map(|entry| match entry {
+            crate::buffer::UndoEntry::Insert { pos, len } => {
+                Value::cons(Value::Integer(*pos as i64), Value::Integer(*len as i64))
+            }
+            crate::buffer::UndoEntry::Delete { pos, text } => {
+                Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
+            }
+        })
+        .collect::<Vec<_>>();
+    Value::list(entries)
+}
+
 fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
+    if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
+        return left_string.text == right_string.text;
+    }
     match (left, right) {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
         (Value::Integer(a), Value::Integer(b)) => a == b,
@@ -2388,12 +3782,40 @@ fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,
+        (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
         (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
         (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
             values_equal(interp, a_car, b_car) && values_equal(interp, a_cdr, b_cdr)
         }
         _ => false,
     }
+}
+
+fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
+    if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
+        return left_string.text == right_string.text && left_string.props == right_string.props;
+    }
+    match (left, right) {
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
+            values_equal_including_properties(a_car, b_car)
+                && values_equal_including_properties(a_cdr, b_cdr)
+        }
+        _ => left == right,
+    }
+}
+
+fn markers_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {
+    let Some(left) = interp.find_marker(left_id) else {
+        return left_id == right_id;
+    };
+    let Some(right) = interp.find_marker(right_id) else {
+        return false;
+    };
+    left.buffer_id == right.buffer_id && left.position == right.position
 }
 
 fn overlays_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {

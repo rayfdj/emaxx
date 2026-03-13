@@ -144,7 +144,7 @@ impl<'a> Reader<'a> {
 
     fn read_vector(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume '['
-        let mut items = vec![Value::symbol("vector")];
+        let mut items = vec![Value::symbol("vector-literal")];
         loop {
             self.skip_whitespace_and_comments();
             match self.peek() {
@@ -367,10 +367,9 @@ impl<'a> Reader<'a> {
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
             }
             Some(b'(') => {
-                // #(...) — read as (vector ...) for now
-                // We'll represent vectors as (vector el1 el2 ...)
+                // #(...) — read as a self-evaluating vector literal.
                 self.advance(); // consume '('
-                let mut items = vec![Value::symbol("vector")];
+                let mut items = vec![Value::symbol("vector-literal")];
                 loop {
                     self.skip_whitespace_and_comments();
                     match self.peek() {
@@ -698,7 +697,7 @@ mod tests {
         assert_eq!(
             read_one("[1 2 foo]"),
             Value::list([
-                Value::Symbol("vector".into()),
+                Value::Symbol("vector-literal".into()),
                 Value::Integer(1),
                 Value::Integer(2),
                 Value::Symbol("foo".into()),
