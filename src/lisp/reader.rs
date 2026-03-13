@@ -30,7 +30,7 @@ impl<'a> Reader<'a> {
         loop {
             // Skip whitespace
             while let Some(ch) = self.peek() {
-                if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' {
+                if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == 0x0C {
                     self.advance();
                 } else {
                     break;
@@ -104,7 +104,8 @@ impl<'a> Reader<'a> {
                         self.advance();
                         // Only a dot if followed by whitespace or paren
                         match self.peek() {
-                            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b')') => {
+                            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
+                            | Some(b')') | Some(0x0C) => {
                                 let val = self.read()?.ok_or(LispError::EndOfInput)?;
                                 dotted_end = Some(val);
                                 self.skip_whitespace_and_comments();
@@ -463,6 +464,7 @@ impl<'a> Reader<'a> {
                 || ch == b'\t'
                 || ch == b'\n'
                 || ch == b'\r'
+                || ch == 0x0C
                 || ch == b'('
                 || ch == b')'
                 || ch == b'"'
@@ -568,6 +570,15 @@ mod tests {
     fn comments_skipped() {
         let val = read_one("; this is a comment\n42");
         assert_eq!(val, Value::Integer(42));
+    }
+
+    #[test]
+    fn form_feed_is_treated_as_whitespace() {
+        let forms = Reader::new("foo\x0Cbar").read_all().unwrap();
+        assert_eq!(
+            forms,
+            vec![Value::Symbol("foo".into()), Value::Symbol("bar".into())]
+        );
     }
 
     #[test]

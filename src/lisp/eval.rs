@@ -138,6 +138,7 @@ impl Interpreter {
             "t" => Ok(Value::T),
             "most-positive-fixnum" => Ok(Value::Integer(i64::MAX)),
             "most-negative-fixnum" => Ok(Value::Integer(i64::MIN)),
+            _ if name.starts_with(':') => Ok(Value::Symbol(name.to_string())),
             _ => {
                 // Check if it's a known builtin function
                 if primitives::is_builtin(name) {
@@ -207,7 +208,9 @@ impl Interpreter {
                         "let*" => return self.sf_letstar(&items, env),
                         "setq" => return self.sf_setq(&items, env),
                         "setq-local" => return self.sf_setq(&items, env), // same for now
-                        "defvar" => return self.sf_defvar(&items, env),
+                        "defvar" | "defconst" | "defvar-local" => {
+                            return self.sf_defvar(&items, env)
+                        }
                         "defun" => return self.sf_defun(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
                         "backquote" => return self.eval_backquote(&items[1], env),
@@ -307,15 +310,15 @@ impl Interpreter {
                             self.set_variable(&name, rest, env);
                             return Ok(result);
                         }
+                        "add-to-list" => return self.sf_add_to_list(&items, env),
                         "ert-deftest" => return self.sf_ert_deftest(&items),
                         "should" => return self.sf_should(&items, env),
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
                         "skip-unless" => return self.sf_skip_unless(&items, env),
                         "skip-when" => return self.sf_skip_when(&items, env),
-                        "require" | "provide" | "declare" | "eval-and-compile" => {
-                            return Ok(Value::Nil);
-                        }
+                        "require" | "provide" | "declare" => return Ok(Value::Nil),
+                        "eval-and-compile" => return self.sf_progn(&items[1..], env),
                         "ert-info" => {
                             // (ert-info (msg) body...) — just run the body
                             return self.sf_progn(&items[2..], env);
@@ -603,6 +606,46 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
+    fn sf_add_to_list(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "add-to-list".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        let place = quoted_symbol_name(&items[1]).ok_or_else(|| {
+            LispError::TypeError("symbol".into(), unquote(&items[1]).type_name())
+        })?;
+        let value = self.eval(&items[2], env)?;
+        let append = if items.len() > 3 {
+            self.eval(&items[3], env)?.is_truthy()
+        } else {
+            false
+        };
+        if items.len() > 4 {
+            // Emacs accepts an optional comparison function. We don't have distinct
+            // eq/equal semantics yet, but evaluating it still preserves load-time
+            // errors from invalid comparator expressions.
+            let _ = self.eval(&items[4], env)?;
+        }
+
+        let current = self.lookup_var(&place, env).unwrap_or(Value::Nil);
+        let mut values = current.to_vec()?;
+        if values.iter().any(|existing| existing == &value) {
+            return Ok(current);
+        }
+
+        if append {
+            values.push(value);
+        } else {
+            values.insert(0, value);
+        }
+        let updated = Value::list(values);
+        self.set_variable(&place, updated.clone(), env);
+        Ok(updated)
+    }
+
     fn sf_defun(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 4 {
             return Err(LispError::Signal("defun needs name, params, body".into()));
@@ -815,7 +858,8 @@ impl Interpreter {
                         break;
                     }
                     name => {
-                        let v = if vi < vals.len() {
+                        let consumed = vi < vals.len();
+                        let v = if consumed {
                             vals[vi].clone()
                         } else if optional {
                             Value::Nil
@@ -826,7 +870,9 @@ impl Interpreter {
                             ));
                         };
                         frame.push((name.to_string(), v));
-                        vi += 1;
+                        if consumed {
+                            vi += 1;
+                        }
                     }
                 }
             }
@@ -1289,6 +1335,13 @@ fn keyword_symbol_name(value: &Value) -> Option<String> {
     symbol_name(value)
 }
 
+fn quoted_symbol_name(value: &Value) -> Option<String> {
+    match unquote(value) {
+        Value::Symbol(name) => Some(name),
+        _ => None,
+    }
+}
+
 fn unquote(value: &Value) -> Value {
     match value {
         Value::Cons(_, _) => {
@@ -1507,6 +1560,94 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(passed, 1);
         assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn keyword_symbols_self_evaluate() {
+        assert_eq!(eval_str(":default"), Value::Symbol(":default".into()));
+    }
+
+    #[test]
+    fn defconst_binds_global_like_defvar() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(&mut interp, "(defconst sample-constant 42)"),
+            Value::Nil
+        );
+        assert_eq!(eval_str_with(&mut interp, "sample-constant"), Value::Integer(42));
+    }
+
+    #[test]
+    fn defvar_local_loads_like_defvar() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(&mut interp, "(defvar-local sample-local :default)"),
+            Value::Nil
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "sample-local"),
+            Value::Symbol(":default".into())
+        );
+    }
+
+    #[test]
+    fn add_to_list_updates_quoted_variable() {
+        let mut interp = Interpreter::new();
+        eval_str_with(&mut interp, "(setq sample-list '(b c))");
+        assert_eq!(
+            eval_str_with(&mut interp, "(add-to-list 'sample-list 'a)"),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "sample-list"),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "(add-to-list 'sample-list 'c t)"),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn eval_and_compile_runs_its_body_when_loading_helpers() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (eval-and-compile
+              (defun helper-name () 'loaded))
+            (helper-name)
+            "#,
+        );
+        assert_eq!(eval_str_with(&mut interp, "(helper-name)"), Value::Symbol("loaded".into()));
+    }
+
+    #[test]
+    fn cl_destructuring_bind_keeps_missing_optional_slots_nil() {
+        assert_eq!(
+            eval_str(
+                "(cl-destructuring-bind (a b &optional c d &rest rest) '(1 2) (list a b c d rest))"
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ])
+        );
     }
 
     #[test]
