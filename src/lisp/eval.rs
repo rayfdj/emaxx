@@ -28,6 +28,10 @@ pub struct Interpreter {
     globals: Vec<(String, Value)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
+    /// The ID of the current buffer.
+    current_buffer_id: u64,
+    /// Inactive buffers keyed by ID.
+    inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
     /// Known buffers: (id, name) pairs.
     pub buffer_list: Vec<(u64, String)>,
     /// Next buffer ID for identity tracking.
@@ -55,6 +59,8 @@ impl Interpreter {
         Interpreter {
             globals: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
+            current_buffer_id: 0,
+            inactive_buffers: Vec::new(),
             buffer_list: vec![(0, "*test*".to_string())],
             next_buffer_id: 1,
             next_overlay_id: 1,
@@ -77,9 +83,91 @@ impl Interpreter {
         self.buffer_list.iter().any(|(_, n)| n == name)
     }
 
+    /// Check if a buffer ID exists in the live buffer list.
+    pub fn has_buffer_id(&self, id: u64) -> bool {
+        self.buffer_list.iter().any(|(buffer_id, _)| *buffer_id == id)
+    }
+
     /// Find a buffer by name, returning (id, name).
     pub fn find_buffer(&self, name: &str) -> Option<(u64, String)> {
         self.buffer_list.iter().find(|(_, n)| n == name).cloned()
+    }
+
+    /// Return the current buffer ID.
+    pub fn current_buffer_id(&self) -> u64 {
+        self.current_buffer_id
+    }
+
+    /// Resolve a Lisp string-or-buffer value to a live buffer ID.
+    pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
+        match value {
+            Value::Buffer(id, _) if self.has_buffer_id(*id) => Ok(*id),
+            Value::Buffer(_, name) | Value::String(name) => self
+                .find_buffer(name)
+                .map(|(id, _)| id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer named {}", name))),
+            _ => Err(LispError::TypeError(
+                "string-or-buffer".into(),
+                value.type_name(),
+            )),
+        }
+    }
+
+    /// Create and register a new empty buffer.
+    pub fn create_buffer(&mut self, name: &str) -> (u64, String) {
+        let id = self.alloc_buffer_id();
+        self.inactive_buffers
+            .push((id, crate::buffer::Buffer::new(name)));
+        self.buffer_list.push((id, name.to_string()));
+        (id, name.to_string())
+    }
+
+    /// Switch the current buffer to a different live buffer ID.
+    pub fn switch_to_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
+        if id == self.current_buffer_id {
+            return Ok(());
+        }
+        let pos = self
+            .inactive_buffers
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))?;
+        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
+        let current_id = self.current_buffer_id;
+        let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
+        self.inactive_buffers.push((current_id, current_buffer));
+        self.current_buffer_id = id;
+        Ok(())
+    }
+
+    /// Remove a non-current buffer from the live buffer list.
+    pub fn remove_buffer_id(&mut self, id: u64) -> Option<crate::buffer::Buffer> {
+        if id == self.current_buffer_id {
+            return None;
+        }
+        self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
+        self.inactive_buffers
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == id)
+            .map(|pos| self.inactive_buffers.swap_remove(pos).1)
+    }
+
+    /// Kill a buffer by ID, switching away if it is current.
+    pub fn kill_buffer_id(&mut self, id: u64) {
+        if id == self.current_buffer_id {
+            self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
+            if let Some((next_id, next_buffer)) = self.inactive_buffers.pop() {
+                self.buffer = next_buffer;
+                self.current_buffer_id = next_id;
+            } else {
+                let scratch_id = self.alloc_buffer_id();
+                self.buffer = crate::buffer::Buffer::new("*scratch*");
+                self.current_buffer_id = scratch_id;
+                self.buffer_list.push((scratch_id, "*scratch*".to_string()));
+            }
+        } else {
+            let _ = self.remove_buffer_id(id);
+        }
     }
 
     /// Allocate a new unique overlay ID.
@@ -89,14 +177,64 @@ impl Interpreter {
         id
     }
 
-    /// Find an overlay by ID in the current buffer.
-    pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
-        self.buffer.overlays.iter().find(|ov| ov.id == id)
+    /// Borrow a live buffer by ID.
+    pub fn get_buffer_by_id(&self, id: u64) -> Option<&crate::buffer::Buffer> {
+        if id == self.current_buffer_id {
+            Some(&self.buffer)
+        } else {
+            self.inactive_buffers
+                .iter()
+                .find(|(buffer_id, _)| *buffer_id == id)
+                .map(|(_, buffer)| buffer)
+        }
     }
 
-    /// Find a mutable overlay by ID in the current buffer.
+    /// Borrow a live buffer mutably by ID.
+    pub fn get_buffer_by_id_mut(&mut self, id: u64) -> Option<&mut crate::buffer::Buffer> {
+        if id == self.current_buffer_id {
+            Some(&mut self.buffer)
+        } else {
+            self.inactive_buffers
+                .iter_mut()
+                .find(|(buffer_id, _)| *buffer_id == id)
+                .map(|(_, buffer)| buffer)
+        }
+    }
+
+    /// Find an overlay by ID in any live buffer.
+    pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
+        self.buffer
+            .overlays
+            .iter()
+            .find(|ov| ov.id == id)
+            .or_else(|| {
+                self.inactive_buffers.iter().find_map(|(_, buffer)| {
+                    buffer.overlays.iter().find(|ov| ov.id == id)
+                })
+            })
+    }
+
+    /// Find a mutable overlay by ID in any live buffer.
     pub fn find_overlay_mut(&mut self, id: u64) -> Option<&mut crate::overlay::Overlay> {
-        self.buffer.overlays.iter_mut().find(|ov| ov.id == id)
+        if let Some(overlay) = self.buffer.overlays.iter_mut().find(|ov| ov.id == id) {
+            return Some(overlay);
+        }
+        self.inactive_buffers
+            .iter_mut()
+            .find_map(|(_, buffer)| buffer.overlays.iter_mut().find(|ov| ov.id == id))
+    }
+
+    /// Remove and return an overlay by ID from any live buffer.
+    pub fn take_overlay(&mut self, id: u64) -> Option<crate::overlay::Overlay> {
+        if let Some(pos) = self.buffer.overlays.iter().position(|ov| ov.id == id) {
+            return Some(self.buffer.overlays.swap_remove(pos));
+        }
+        for (_, buffer) in &mut self.inactive_buffers {
+            if let Some(pos) = buffer.overlays.iter().position(|ov| ov.id == id) {
+                return Some(buffer.overlays.swap_remove(pos));
+            }
+        }
+        None
     }
 
     /// Look up a variable, returning None if unbound (for use by primitives).
@@ -136,6 +274,7 @@ impl Interpreter {
         match name {
             "nil" => Ok(Value::Nil),
             "t" => Ok(Value::T),
+            "float-pi" => Ok(Value::Float(std::f64::consts::PI)),
             "most-positive-fixnum" => Ok(Value::Integer(i64::MAX)),
             "most-negative-fixnum" => Ok(Value::Integer(i64::MIN)),
             _ if name.starts_with(':') => Ok(Value::Symbol(name.to_string())),
@@ -228,10 +367,7 @@ impl Interpreter {
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "condition-case" => return self.sf_condition_case(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
-                        "with-current-buffer" => {
-                            // For now, just evaluate the body
-                            return self.sf_progn(&items[2..], env);
-                        }
+                        "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-restriction" => return self.sf_progn(&items[1..], env),
                         "cl-destructuring-bind" => {
@@ -801,11 +937,42 @@ impl Interpreter {
     }
 
     fn sf_with_temp_buffer(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        // Save current buffer, create a fresh one, run body, restore
-        let saved_buffer =
-            std::mem::replace(&mut self.buffer, crate::buffer::Buffer::new("*temp*"));
+        let saved_buffer_id = self.current_buffer_id;
+        let base_name = " *temp*";
+        let temp_name = if self.has_buffer(base_name) {
+            let mut n = 2;
+            loop {
+                let candidate = format!("{}<{}>", base_name, n);
+                if !self.has_buffer(&candidate) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        } else {
+            base_name.to_string()
+        };
+        let (temp_id, _) = self.create_buffer(&temp_name);
+        self.switch_to_buffer_id(temp_id)?;
         let result = self.sf_progn(&items[1..], env);
-        self.buffer = saved_buffer;
+        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        let _ = self.remove_buffer_id(temp_id);
+        result
+    }
+
+    fn sf_with_current_buffer(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let target = self.eval(&items[1], env)?;
+        let target_id = self.resolve_buffer_id(&target)?;
+        let saved_buffer_id = self.current_buffer_id;
+        self.switch_to_buffer_id(target_id)?;
+        let result = self.sf_progn(&items[2..], env);
+        let _ = self.switch_to_buffer_id(saved_buffer_id);
         result
     }
 
@@ -1528,6 +1695,9 @@ mod tests {
     #[test]
     fn eval_list_ops() {
         assert_eq!(eval_str("(car '(1 2 3))"), Value::Integer(1));
+        assert_eq!(eval_str("(cadr '(1 2 3))"), Value::Integer(2));
+        assert_eq!(eval_str("(cddr '(1 2 3))"), Value::list([Value::Integer(3)]));
+        assert_eq!(eval_str("(identity 'ok)"), Value::Symbol("ok".into()));
         assert_eq!(eval_str("(length '(1 2 3))"), Value::Integer(3));
     }
 

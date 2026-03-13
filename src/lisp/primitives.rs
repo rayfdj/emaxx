@@ -62,12 +62,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "mapcar"
             | "apply"
             | "funcall"
+            | "identity"
             // Allocation
             | "make-string"
             | "make-vector"
             // String operations
             | "concat"
             | "substring"
+            | "string-to-multibyte"
             | "string-to-number"
             | "number-to-string"
             | "format"
@@ -91,6 +93,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-substring-no-properties"
             | "buffer-size"
             | "buffer-name"
+            | "set-buffer-multibyte"
             | "char-after"
             | "char-before"
             | "bobp"
@@ -110,6 +113,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "widen"
             | "buffer-modified-p"
             | "set-buffer-modified-p"
+            | "get-pos-property"
+            | "get-char-property"
             | "current-buffer"
             | "generate-new-buffer"
             | "get-buffer"
@@ -120,6 +125,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-base-buffer"
             | "buffer-list"
             | "set-buffer"
+            | "switch-to-buffer"
             | "kill-buffer"
             | "set-mark"
             | "mark"
@@ -142,6 +148,8 @@ pub fn is_builtin(name: &str) -> bool {
             // Stubs for terminal/display
             | "display-graphic-p"
             | "frame-parameter"
+            | "selected-window"
+            | "selected-frame"
             // Overlay operations
             | "make-overlay"
             | "overlayp"
@@ -171,10 +179,16 @@ pub fn is_builtin(name: &str) -> bool {
             | "error"
             | "signal"
             | "throw"
+            | "add-hook"
+            | "describe-function"
+            | "ignore"
             | "intern"
+            | "symbol-function"
             | "symbol-name"
             | "type-of"
+            | "file-truename"
             | "random"
+            | "make-hash-table"
             | "vector"
             | "aref"
             | "aset"
@@ -185,7 +199,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "delq"
             | "make-list"
             | "insert-before-markers"
-    )
+    ) || is_composed_accessor_name(name)
 }
 
 /// Dispatch a builtin function call.
@@ -390,7 +404,7 @@ pub fn call(
         }
         "equal" => {
             need_args(name, args, 2)?;
-            Ok(if args[0] == args[1] {
+            Ok(if values_equal(interp, &args[0], &args[1]) {
                 Value::T
             } else {
                 Value::Nil
@@ -488,8 +502,7 @@ pub fn call(
         }
         "buffer-live-p" => {
             need_args(name, args, 1)?;
-            // For now, all buffer values we hand out are live
-            Ok(if matches!(args[0], Value::Buffer(_, _)) {
+            Ok(if matches!(&args[0], Value::Buffer(id, _) if interp.has_buffer_id(*id)) {
                 Value::T
             } else {
                 Value::Nil
@@ -544,6 +557,10 @@ pub fn call(
         "cdr" => {
             need_args(name, args, 1)?;
             args[0].cdr()
+        }
+        "identity" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
         }
         "list" => Ok(Value::list(args.iter().cloned())),
         "append" => {
@@ -719,6 +736,10 @@ pub fn call(
             let to = to.min(chars.len());
             let from = from.min(to);
             Ok(Value::String(chars[from..to].iter().collect()))
+        }
+        "string-to-multibyte" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(args[0].as_string()?.to_string()))
         }
         "string-to-number" => {
             need_args(name, args, 1)?;
@@ -1114,6 +1135,7 @@ pub fn call(
             }
             Ok(Value::String(interp.buffer.name.clone()))
         }
+        "set-buffer-multibyte" => Ok(args.first().cloned().unwrap_or(Value::Nil)),
         "char-after" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -1286,12 +1308,35 @@ pub fn call(
             // Setting to t: just leave the modified state as-is (it's already modified if changed)
             Ok(Value::Nil)
         }
+        "get-pos-property" | "get-char-property" => {
+            need_args(name, args, 2)?;
+            let pos = args[0].as_integer()? as usize;
+            let prop = args[1].as_symbol()?.to_string();
+            let buffer_id = if let Some(object) = args.get(2) {
+                if object.is_nil() {
+                    interp.current_buffer_id()
+                } else {
+                    interp.resolve_buffer_id(object)?
+                }
+            } else {
+                interp.current_buffer_id()
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+            Ok(highest_priority_overlay_property(
+                buffer,
+                pos,
+                &prop,
+                name == "get-pos-property",
+            )
+            .unwrap_or(Value::Nil))
+        }
         "current-buffer" => {
-            let id = interp
-                .find_buffer(&interp.buffer.name)
-                .map(|(id, _)| id)
-                .unwrap_or(0);
-            Ok(Value::Buffer(id, interp.buffer.name.clone()))
+            Ok(Value::Buffer(
+                interp.current_buffer_id(),
+                interp.buffer.name.clone(),
+            ))
         }
         "generate-new-buffer" => {
             need_args(name, args, 1)?;
@@ -1308,14 +1353,14 @@ pub fn call(
             } else {
                 base.to_string()
             };
-            let id = interp.alloc_buffer_id();
-            interp.buffer_list.push((id, buf_name.clone()));
+            let (id, _) = interp.create_buffer(&buf_name);
             Ok(Value::Buffer(id, buf_name))
         }
         "get-buffer" => {
             need_args(name, args, 1)?;
             match &args[0] {
-                Value::Buffer(_, _) => Ok(args[0].clone()),
+                Value::Buffer(id, _) if interp.has_buffer_id(*id) => Ok(args[0].clone()),
+                Value::Buffer(_, _) => Ok(Value::Nil),
                 Value::String(s) => match interp.find_buffer(s) {
                     Some((id, name)) => Ok(Value::Buffer(id, name)),
                     None => Ok(Value::Nil),
@@ -1341,8 +1386,7 @@ pub fn call(
             if let Some((id, name)) = interp.find_buffer(&buf_name) {
                 Ok(Value::Buffer(id, name))
             } else {
-                let id = interp.alloc_buffer_id();
-                interp.buffer_list.push((id, buf_name.clone()));
+                let (id, _) = interp.create_buffer(&buf_name);
                 Ok(Value::Buffer(id, buf_name))
             }
         }
@@ -1431,26 +1475,23 @@ pub fn call(
         }
         "set-buffer" => {
             need_args(name, args, 1)?;
-            match &args[0] {
-                Value::Buffer(_, _) => Ok(args[0].clone()),
-                Value::String(s) => match interp.find_buffer(s) {
-                    Some((id, name)) => Ok(Value::Buffer(id, name)),
-                    None => Ok(Value::Buffer(0, s.clone())),
-                },
-                _ => Err(LispError::TypeError(
-                    "string-or-buffer".into(),
-                    args[0].type_name(),
-                )),
-            }
+            let id = interp.resolve_buffer_id(&args[0])?;
+            interp.switch_to_buffer_id(id)?;
+            Ok(Value::Buffer(id, interp.buffer.name.clone()))
+        }
+        "switch-to-buffer" => {
+            need_args(name, args, 1)?;
+            let id = interp.resolve_buffer_id(&args[0])?;
+            interp.switch_to_buffer_id(id)?;
+            Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
         "kill-buffer" => {
-            if let Some(buf_name) = match &args.first() {
-                Some(Value::Buffer(_, n)) => Some(n.clone()),
-                Some(Value::String(s)) => Some(s.clone()),
-                _ => None,
-            } {
-                interp.buffer_list.retain(|(_, n)| *n != buf_name);
-            }
+            let id = if let Some(buffer) = args.first() {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            interp.kill_buffer_id(id);
             Ok(Value::T)
         }
         "set-mark" => {
@@ -1569,6 +1610,8 @@ pub fn call(
 
         // ── Display stubs ──
         "display-graphic-p" | "frame-parameter" => Ok(Value::Nil),
+        "selected-window" => Ok(Value::Symbol("window".into())),
+        "selected-frame" => Ok(Value::Symbol("frame".into())),
 
         // ── Reader ──
         "read" => {
@@ -1608,11 +1651,31 @@ pub fn call(
             let s = args[0].as_string()?;
             Ok(Value::Symbol(s.to_string()))
         }
+        "ignore" => Ok(Value::Nil),
+        "describe-function" => {
+            let _ = get_or_create_buffer(interp, "*Help*");
+            Ok(Value::Nil)
+        }
+        "add-hook" => Ok(Value::Nil),
+        "symbol-function" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(if is_builtin(symbol) {
+                Value::BuiltinFunc(symbol.to_string())
+            } else {
+                Value::String(format!("#<function {}>", symbol))
+            })
+        }
         "symbol-name" => {
             need_args(name, args, 1)?;
             let s = args[0].as_symbol()?;
             Ok(Value::String(s.to_string()))
         }
+        "file-truename" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(args[0].as_string()?.to_string()))
+        }
+        "make-hash-table" => Ok(Value::String("#<hash-table>".into())),
         "type-of" => {
             need_args(name, args, 1)?;
             let name = match &args[0] {
@@ -1635,20 +1698,47 @@ pub fn call(
 
         "make-overlay" => {
             // (make-overlay BEG END &optional BUFFER FRONT-ADVANCE REAR-ADVANCE)
-            need_args(name, args, 2)?;
-            let beg = args[0].as_integer()? as usize;
-            let end = args[1].as_integer()? as usize;
+            if !(2..=5).contains(&args.len()) {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let beg = args[0].as_integer()?;
+            let end = args[1].as_integer()?;
+            let buffer_id = if let Some(buffer_arg) = args.get(2) {
+                if buffer_arg.is_nil() {
+                    interp.current_buffer_id()
+                } else if matches!(buffer_arg, Value::Buffer(_, _)) {
+                    interp.resolve_buffer_id(buffer_arg)?
+                } else {
+                    return Err(LispError::TypeError(
+                        "buffer".into(),
+                        buffer_arg.type_name(),
+                    ));
+                }
+            } else {
+                interp.current_buffer_id()
+            };
             let front_advance = args.get(3).is_some_and(|v| v.is_truthy());
             let rear_advance = args.get(4).is_some_and(|v| v.is_truthy());
-            // Buffer arg (args[2]) is ignored — we always use the current buffer.
-            let buf_id = interp.buffer_list.iter()
-                .find(|(_, n)| n == &interp.buffer.name)
-                .map_or(0, |(id, _)| *id);
             let ov_id = interp.alloc_overlay_id();
+            let (beg, end) = {
+                let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                    LispError::Signal(format!("No buffer with id {}", buffer_id))
+                })?;
+                clamp_overlay_range(buffer, beg, end)
+            };
             let ov = crate::overlay::Overlay::new(
-                ov_id, beg, end, buf_id, front_advance, rear_advance,
+                ov_id,
+                beg,
+                end,
+                buffer_id,
+                front_advance,
+                rear_advance,
             );
-            interp.buffer.overlays.push(ov);
+            interp
+                .get_buffer_by_id_mut(buffer_id)
+                .expect("resolved live buffer id")
+                .overlays
+                .push(ov);
             Ok(Value::Overlay(ov_id))
         }
 
@@ -1705,22 +1795,44 @@ pub fn call(
 
         "move-overlay" => {
             // (move-overlay OVERLAY BEG END &optional BUFFER)
-            need_args(name, args, 3)?;
+            if !(3..=4).contains(&args.len()) {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
             let ov_id = match &args[0] {
                 Value::Overlay(id) => *id,
                 _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
             };
-            let beg = args[1].as_integer()? as usize;
-            let end = args[2].as_integer()? as usize;
-            let (beg, end) = if beg > end { (end, beg) } else { (beg, end) };
-            match interp.find_overlay_mut(ov_id) {
-                Some(ov) => {
-                    ov.beg = beg;
-                    ov.end = end;
-                    Ok(Value::Overlay(ov_id))
+            let target_buffer_id = if let Some(buffer_arg) = args.get(3) {
+                if buffer_arg.is_nil() {
+                    interp.current_buffer_id()
+                } else if matches!(buffer_arg, Value::Buffer(_, _)) {
+                    interp.resolve_buffer_id(buffer_arg)?
+                } else {
+                    return Err(LispError::TypeError("buffer".into(), buffer_arg.type_name()));
                 }
-                None => Ok(Value::Nil),
-            }
+            } else {
+                interp.current_buffer_id()
+            };
+            let beg = args[1].as_integer()?;
+            let end = args[2].as_integer()?;
+            let (beg, end) = {
+                let buffer = interp.get_buffer_by_id(target_buffer_id).ok_or_else(|| {
+                    LispError::Signal(format!("No buffer with id {}", target_buffer_id))
+                })?;
+                clamp_overlay_range(buffer, beg, end)
+            };
+            let mut overlay = take_overlay(interp, ov_id).unwrap_or_else(|| {
+                crate::overlay::Overlay::new(ov_id, beg, end, target_buffer_id, false, false)
+            });
+            overlay.beg = beg;
+            overlay.end = end;
+            overlay.buffer_id = Some(target_buffer_id);
+            interp
+                .get_buffer_by_id_mut(target_buffer_id)
+                .expect("resolved live buffer id")
+                .overlays
+                .push(overlay);
+            Ok(Value::Overlay(ov_id))
         }
 
         "delete-overlay" => {
@@ -2179,8 +2291,8 @@ pub fn call(
         }
 
         "insert-before-markers" => {
-            // Same as insert for now (we don't have markers)
             for arg in args {
+                let insert_at = interp.buffer.point();
                 let s = match arg {
                     Value::String(s) => s.clone(),
                     Value::Integer(n) => {
@@ -2190,13 +2302,118 @@ pub fn call(
                     }
                     _ => format!("{}", arg),
                 };
+                let nchars = s.chars().count();
                 interp.buffer.insert(&s);
+                for overlay in &mut interp.buffer.overlays {
+                    if overlay.is_dead() {
+                        continue;
+                    }
+                    if overlay.beg == insert_at {
+                        overlay.beg += nchars;
+                    }
+                    if overlay.end == insert_at {
+                        overlay.end += nchars;
+                    }
+                }
             }
             Ok(Value::Nil)
         }
 
+        _ if is_composed_accessor_name(name) => call_composed_accessor(name, args),
+
         _ => Err(LispError::Signal(format!("Unknown function: {}", name))),
     }
+}
+
+fn get_or_create_buffer(interp: &mut Interpreter, name: &str) -> (u64, String) {
+    interp
+        .find_buffer(name)
+        .unwrap_or_else(|| interp.create_buffer(name))
+}
+
+fn clamp_overlay_range(buffer: &crate::buffer::Buffer, beg: i64, end: i64) -> (usize, usize) {
+    let min = buffer.point_min() as i64;
+    let max = buffer.point_max() as i64;
+    let clamp = |pos: i64| pos.clamp(min, max) as usize;
+    let beg = clamp(beg);
+    let end = clamp(end);
+    if beg > end { (end, beg) } else { (beg, end) }
+}
+
+fn take_overlay(interp: &mut Interpreter, overlay_id: u64) -> Option<crate::overlay::Overlay> {
+    interp.take_overlay(overlay_id)
+}
+
+fn highest_priority_overlay_property(
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    prop: &str,
+    include_empty_rear_advance: bool,
+) -> Option<Value> {
+    let mut overlays: Vec<&crate::overlay::Overlay> = buffer
+        .overlays
+        .iter()
+        .filter(|overlay| {
+            !overlay.is_dead() && overlay_covers_position(overlay, pos, include_empty_rear_advance)
+        })
+        .collect();
+    overlays.sort_by(|a, b| {
+        a.priority()
+            .cmp(&b.priority())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    overlays
+        .last()
+        .and_then(|overlay| overlay.get_prop(prop).cloned())
+}
+
+fn overlay_covers_position(
+    overlay: &crate::overlay::Overlay,
+    pos: usize,
+    include_empty_rear_advance: bool,
+) -> bool {
+    if overlay.beg == overlay.end {
+        include_empty_rear_advance && overlay.rear_advance && overlay.beg == pos
+    } else {
+        overlay.beg <= pos && pos < overlay.end
+    }
+}
+
+fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+        (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,
+        (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
+        (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
+            values_equal(interp, a_car, b_car) && values_equal(interp, a_cdr, b_cdr)
+        }
+        _ => false,
+    }
+}
+
+fn overlays_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {
+    let Some(left) = interp.find_overlay(left_id) else {
+        return left_id == right_id;
+    };
+    let Some(right) = interp.find_overlay(right_id) else {
+        return false;
+    };
+    left.beg == right.beg
+        && left.end == right.end
+        && left.buffer_id == right.buffer_id
+        && left.plist.len() == right.plist.len()
+        && left
+            .plist
+            .iter()
+            .zip(&right.plist)
+            .all(|((left_key, left_value), (right_key, right_value))| {
+                left_key == right_key && values_equal(interp, left_value, right_value)
+            })
 }
 
 fn need_args(name: &str, args: &[Value], n: usize) -> Result<(), LispError> {
@@ -2205,6 +2422,29 @@ fn need_args(name: &str, args: &[Value], n: usize) -> Result<(), LispError> {
     } else {
         Ok(())
     }
+}
+
+fn is_composed_accessor_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() >= 3
+        && bytes.first() == Some(&b'c')
+        && bytes.last() == Some(&b'r')
+        && bytes[1..bytes.len() - 1]
+            .iter()
+            .all(|byte| matches!(byte, b'a' | b'd'))
+}
+
+fn call_composed_accessor(name: &str, args: &[Value]) -> Result<Value, LispError> {
+    need_args(name, args, 1)?;
+    let mut value = args[0].clone();
+    for op in name[1..name.len() - 1].bytes().rev() {
+        value = match op {
+            b'a' => value.car()?,
+            b'd' => value.cdr()?,
+            _ => unreachable!("validated by is_composed_accessor_name"),
+        };
+    }
+    Ok(value)
 }
 
 /// Simple pseudo-random number (xorshift64).

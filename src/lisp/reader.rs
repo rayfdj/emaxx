@@ -56,7 +56,9 @@ impl<'a> Reader<'a> {
         match self.peek() {
             None => Ok(None),
             Some(b'(') => self.read_list(),
+            Some(b'[') => self.read_vector(),
             Some(b')') => Err(LispError::ReadError("unexpected ')'".into())),
+            Some(b']') => Err(LispError::ReadError("unexpected ']'".into())),
             Some(b'"') => self.read_string(),
             Some(b'\'') => self.read_quote("quote"),
             Some(b'`') => self.read_quote("backquote"),
@@ -138,6 +140,26 @@ impl<'a> Reader<'a> {
             result = Value::cons(item, result);
         }
         Ok(Some(result))
+    }
+
+    fn read_vector(&mut self) -> Result<Option<Value>, LispError> {
+        self.advance(); // consume '['
+        let mut items = vec![Value::symbol("vector")];
+        loop {
+            self.skip_whitespace_and_comments();
+            match self.peek() {
+                None => return Err(LispError::EndOfInput),
+                Some(b']') => {
+                    self.advance();
+                    break;
+                }
+                _ => {
+                    let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                    items.push(val);
+                }
+            }
+        }
+        Ok(Some(Value::list(items)))
     }
 
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
@@ -365,6 +387,22 @@ impl<'a> Reader<'a> {
                 }
                 Ok(Some(Value::list(items)))
             }
+            Some(ch) if ch.is_ascii_digit() => {
+                let base = self.read_unsigned_decimal();
+                let radix = match self.peek() {
+                    Some(b'r') | Some(b'R') => {
+                        self.advance();
+                        base
+                    }
+                    _ => {
+                        return Err(LispError::ReadError(
+                            "unsupported # syntax after numeric prefix".into(),
+                        ));
+                    }
+                };
+                let value = self.read_radix_integer(radix)?;
+                Ok(Some(Value::Integer(value)))
+            }
             Some(b'x') | Some(b'X') => {
                 // #xNN or #x-NN — hexadecimal integer
                 self.advance();
@@ -467,6 +505,8 @@ impl<'a> Reader<'a> {
                 || ch == 0x0C
                 || ch == b'('
                 || ch == b')'
+                || ch == b'['
+                || ch == b']'
                 || ch == b'"'
                 || ch == b';'
             {
@@ -487,6 +527,12 @@ impl<'a> Reader<'a> {
             return Ok(Some(Value::Integer(n)));
         }
 
+        if let Some((radix, digits)) = token.split_once(['r', 'R'])
+            && let Ok(base) = radix.parse::<u32>()
+        {
+            return Ok(Some(Value::Integer(parse_radix_integer(base, digits)?)));
+        }
+
         // Try parsing as float
         if (token.contains('.') || token.contains('e') || token.contains('E'))
             && let Ok(f) = token.parse::<f64>()
@@ -501,6 +547,59 @@ impl<'a> Reader<'a> {
             _ => Ok(Some(Value::Symbol(token.to_string()))),
         }
     }
+
+    fn read_unsigned_decimal(&mut self) -> u32 {
+        let start = self.pos;
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_digit() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        std::str::from_utf8(&self.input[start..self.pos])
+            .ok()
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .unwrap_or(10)
+    }
+
+    fn read_radix_integer(&mut self, base: u32) -> Result<i64, LispError> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.advance();
+        }
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_alphanumeric() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let token = std::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|e| LispError::ReadError(e.to_string()))?;
+        parse_radix_integer(base, token)
+    }
+}
+
+fn parse_radix_integer(base: u32, token: &str) -> Result<i64, LispError> {
+    if !(2..=36).contains(&base) {
+        return Err(LispError::ReadError(format!("invalid radix {}", base)));
+    }
+    let (negative, digits) = token
+        .strip_prefix('-')
+        .map_or((false, token), |rest| (true, rest));
+    if digits.is_empty() {
+        return Err(LispError::ReadError("missing radix digits".into()));
+    }
+    let mut value: i64 = 0;
+    for ch in digits.chars() {
+        let digit = ch
+            .to_digit(base)
+            .ok_or_else(|| LispError::ReadError(format!("invalid radix digit {}", ch)))?
+            as i64;
+        value = value.wrapping_mul(base as i64).wrapping_add(digit);
+    }
+    Ok(if negative { value.wrapping_neg() } else { value })
 }
 
 #[cfg(test)]
@@ -592,6 +691,24 @@ mod tests {
     fn read_multiple() {
         let forms = Reader::new("1 2 3").read_all().unwrap();
         assert_eq!(forms.len(), 3);
+    }
+
+    #[test]
+    fn bare_vector_syntax() {
+        assert_eq!(
+            read_one("[1 2 foo]"),
+            Value::list([
+                Value::Symbol("vector".into()),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Symbol("foo".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn reads_hash_radix_integers() {
+        assert_eq!(read_one("#16r3FFFFF"), Value::Integer(0x3F_FFFF));
     }
 
     #[test]
