@@ -10,6 +10,8 @@ pub struct Interpreter {
     pub buffer: crate::buffer::Buffer,
     /// Known buffer names (simple buffer list for tests).
     pub buffer_list: Vec<String>,
+    /// User-defined macros: name → (params, body).
+    macros: Vec<(String, Vec<String>, Vec<Value>)>,
     /// Collected ERT test definitions: (name, body).
     pub ert_tests: Vec<(String, Value)>,
     /// Results from running tests: (name, passed, error_message).
@@ -28,6 +30,7 @@ impl Interpreter {
             globals: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             buffer_list: vec!["*test*".to_string()],
+            macros: Vec::new(),
             ert_tests: Vec::new(),
             test_results: Vec::new(),
         }
@@ -140,7 +143,8 @@ impl Interpreter {
                         "setq-local" => return self.sf_setq(&items, env), // same for now
                         "defvar" => return self.sf_defvar(&items, env),
                         "defun" => return self.sf_defun(&items, env),
-                        "defmacro" => return Ok(Value::Nil), // stub
+                        "defmacro" => return self.sf_defmacro(&items),
+                        "backquote" => return self.eval_backquote(&items[1], env),
                         "lambda" => return self.sf_lambda(&items, env),
                         "function" | "function-quote" => {
                             // #'foo or (function foo)
@@ -165,6 +169,7 @@ impl Interpreter {
                         "should" => return self.sf_should(&items, env),
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
+                        "skip-unless" => return self.sf_skip_unless(&items, env),
                         "require" | "provide" | "declare" | "eval-and-compile" => {
                             return Ok(Value::Nil);
                         }
@@ -174,6 +179,13 @@ impl Interpreter {
                         }
                         _ => {}
                     }
+                }
+
+                // Check for macro expansion
+                if let Value::Symbol(name) = &items[0]
+                    && let Some(expanded) = self.try_macroexpand(name, &items[1..], env)?
+                {
+                    return self.eval(&expanded, env);
                 }
 
                 // Regular function call
@@ -616,6 +628,162 @@ impl Interpreter {
         let result = self.sf_progn(&items[1..], env);
         self.buffer.goto_char(saved_pt);
         result
+    }
+
+    // ── Backquote ──
+
+    fn eval_backquote(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        match expr {
+            Value::Cons(_, _) => {
+                let items = expr.to_vec()?;
+                // Check for (comma expr) at the top level
+                if items.len() == 2
+                    && let Value::Symbol(s) = &items[0]
+                    && (s == "comma" || s == "comma-at")
+                {
+                    return self.eval(&items[1], env);
+                }
+                // Process each element, handling splicing
+                let mut result: Vec<Value> = Vec::new();
+                for item in &items {
+                    if let Value::Cons(_, _) = item {
+                        let sub = item.to_vec()?;
+                        if sub.len() == 2
+                            && let Value::Symbol(s) = &sub[0]
+                        {
+                            if s == "comma" {
+                                result.push(self.eval(&sub[1], env)?);
+                                continue;
+                            }
+                            if s == "comma-at" {
+                                let val = self.eval(&sub[1], env)?;
+                                if let Ok(elems) = val.to_vec() {
+                                    result.extend(elems);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    // Recurse into nested lists
+                    result.push(self.eval_backquote(item, env)?);
+                }
+                Ok(Value::list(result))
+            }
+            // Non-list: return as-is (like quote)
+            _ => Ok(expr.clone()),
+        }
+    }
+
+    // ── Macros ──
+
+    fn sf_defmacro(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::WrongNumberOfArgs("defmacro".into(), items.len()));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let params_list = items[2].to_vec()?;
+        let mut params = Vec::new();
+        for p in &params_list {
+            params.push(p.as_symbol()?.to_string());
+        }
+        // Body starts at index 3, skip docstrings
+        let body_start = if items.len() > 4 {
+            if let Value::String(_) = &items[3] {
+                4
+            } else {
+                3
+            }
+        } else {
+            3
+        };
+        // Skip (declare ...) forms
+        let body_start = if body_start < items.len() {
+            if let Value::Cons(_, _) = &items[body_start] {
+                if let Ok(decl) = items[body_start].to_vec() {
+                    if let Some(Value::Symbol(s)) = decl.first() {
+                        if s == "declare" {
+                            body_start + 1
+                        } else {
+                            body_start
+                        }
+                    } else {
+                        body_start
+                    }
+                } else {
+                    body_start
+                }
+            } else {
+                body_start
+            }
+        } else {
+            body_start
+        };
+        let body: Vec<Value> = items[body_start..].to_vec();
+        self.macros.push((name.clone(), params, body));
+        Ok(Value::Symbol(name))
+    }
+
+    fn try_macroexpand(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
+        // Find the macro
+        let macro_def = self.macros.iter().find(|(n, _, _)| n == name).cloned();
+        let Some((_, params, body)) = macro_def else {
+            return Ok(None);
+        };
+
+        // Bind params to unevaluated args
+        let mut frame = Vec::new();
+        let mut arg_idx = 0;
+        let mut rest = false;
+
+        for param in &params {
+            if param == "&optional" {
+                continue;
+            }
+            if param == "&rest" || param == "&body" {
+                rest = true;
+                continue;
+            }
+            if rest {
+                let rest_args = Value::list(args[arg_idx..].iter().cloned());
+                frame.push((param.clone(), rest_args));
+                break;
+            }
+            let val = if arg_idx < args.len() {
+                args[arg_idx].clone()
+            } else {
+                Value::Nil
+            };
+            frame.push((param.clone(), val));
+            arg_idx += 1;
+        }
+
+        env.push(frame);
+        let expanded = if body.len() == 1 {
+            self.eval(&body[0], env)?
+        } else {
+            let progn =
+                Value::list(std::iter::once(Value::symbol("progn")).chain(body.iter().cloned()));
+            self.eval(&progn, env)?
+        };
+        env.pop();
+        Ok(Some(expanded))
+    }
+
+    fn sf_skip_unless(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let val = self.eval(&items[1], env)?;
+        if val.is_truthy() {
+            Ok(Value::Nil)
+        } else {
+            Err(LispError::Signal("Test skipped".into()))
+        }
     }
 
     // ── ERT support ──
