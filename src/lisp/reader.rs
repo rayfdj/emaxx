@@ -278,21 +278,59 @@ impl<'a> Reader<'a> {
 
     fn read_character(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume '?'
-        match self.advance() {
+        match self.peek() {
             None => Err(LispError::EndOfInput),
             Some(b'\\') => {
-                // Escaped character
+                self.advance(); // consume backslash
                 match self.advance() {
                     None => Err(LispError::EndOfInput),
-                    Some(b'n') => Ok(Some(Value::Integer(b'\n' as i64))),
-                    Some(b't') => Ok(Some(Value::Integer(b'\t' as i64))),
-                    Some(b'r') => Ok(Some(Value::Integer(b'\r' as i64))),
-                    Some(b' ') => Ok(Some(Value::Integer(b' ' as i64))),
-                    Some(b'\\') => Ok(Some(Value::Integer(b'\\' as i64))),
+                    Some(b'n') => Ok(Some(Value::Integer('\n' as i64))),
+                    Some(b't') => Ok(Some(Value::Integer('\t' as i64))),
+                    Some(b'r') => Ok(Some(Value::Integer('\r' as i64))),
+                    Some(b' ') => Ok(Some(Value::Integer(' ' as i64))),
+                    Some(b'\\') => Ok(Some(Value::Integer('\\' as i64))),
+                    Some(b'x') => {
+                        let val = self.read_hex_digits(6);
+                        Ok(Some(Value::Integer(val as i64)))
+                    }
+                    Some(b'u') => {
+                        let val = self.read_hex_digits(4);
+                        Ok(Some(Value::Integer(val as i64)))
+                    }
+                    Some(b'U') => {
+                        let val = self.read_hex_digits(8);
+                        Ok(Some(Value::Integer(val as i64)))
+                    }
+                    Some(ch) if ch.is_ascii_digit() => {
+                        // Octal escape
+                        let mut val = (ch - b'0') as i64;
+                        for _ in 0..2 {
+                            match self.peek() {
+                                Some(d) if d.is_ascii_digit() && d < b'8' => {
+                                    self.advance();
+                                    val = val * 8 + (d - b'0') as i64;
+                                }
+                                _ => break,
+                            }
+                        }
+                        Ok(Some(Value::Integer(val)))
+                    }
                     Some(ch) => Ok(Some(Value::Integer(ch as i64))),
                 }
             }
-            Some(ch) => Ok(Some(Value::Integer(ch as i64))),
+            Some(ch) if ch < 0x80 => {
+                self.advance();
+                Ok(Some(Value::Integer(ch as i64)))
+            }
+            Some(_) => {
+                // Multi-byte UTF-8 character like ?± or ?Ā
+                if let Some(c) = self.read_utf8_char() {
+                    Ok(Some(Value::Integer(c as i64)))
+                } else {
+                    let b = self.advance().unwrap();
+                    Ok(Some(Value::Integer(b as i64)))
+                }
+            }
         }
     }
 
@@ -325,6 +363,90 @@ impl<'a> Reader<'a> {
                     }
                 }
                 Ok(Some(Value::list(items)))
+            }
+            Some(b'x') | Some(b'X') => {
+                // #xNN or #x-NN — hexadecimal integer
+                self.advance();
+                let neg = self.peek() == Some(b'-');
+                if neg {
+                    self.advance();
+                }
+                let mut val: i64 = 0;
+                let mut any = false;
+                while let Some(ch) = self.peek() {
+                    if ch.is_ascii_hexdigit() {
+                        self.advance();
+                        any = true;
+                        let digit = match ch {
+                            b'0'..=b'9' => (ch - b'0') as i64,
+                            b'a'..=b'f' => (ch - b'a' + 10) as i64,
+                            b'A'..=b'F' => (ch - b'A' + 10) as i64,
+                            _ => unreachable!(),
+                        };
+                        val = val.wrapping_mul(16).wrapping_add(digit);
+                    } else {
+                        break;
+                    }
+                }
+                if !any {
+                    return Err(LispError::ReadError("no digits after #x".into()));
+                }
+                if neg {
+                    val = val.wrapping_neg();
+                }
+                Ok(Some(Value::Integer(val)))
+            }
+            Some(b'o') | Some(b'O') => {
+                // #oNN or #o-NN — octal integer
+                self.advance();
+                let neg = self.peek() == Some(b'-');
+                if neg {
+                    self.advance();
+                }
+                let mut val: i64 = 0;
+                let mut any = false;
+                while let Some(ch) = self.peek() {
+                    if (b'0'..=b'7').contains(&ch) {
+                        self.advance();
+                        any = true;
+                        val = val.wrapping_mul(8).wrapping_add((ch - b'0') as i64);
+                    } else {
+                        break;
+                    }
+                }
+                if !any {
+                    return Err(LispError::ReadError("no digits after #o".into()));
+                }
+                if neg {
+                    val = val.wrapping_neg();
+                }
+                Ok(Some(Value::Integer(val)))
+            }
+            Some(b'b') | Some(b'B') => {
+                // #bNN or #b-NN — binary integer
+                self.advance();
+                let neg = self.peek() == Some(b'-');
+                if neg {
+                    self.advance();
+                }
+                let mut val: i64 = 0;
+                let mut any = false;
+                while let Some(ch) = self.peek() {
+                    if ch == b'0' || ch == b'1' {
+                        self.advance();
+                        any = true;
+                        val = val.wrapping_mul(2).wrapping_add((ch - b'0') as i64);
+                    } else {
+                        break;
+                    }
+                }
+                if !any {
+                    return Err(LispError::ReadError("no digits after #b".into()));
+                }
+                if neg {
+                    val = val.wrapping_neg();
+                }
+                Ok(Some(Value::Integer(val)))
             }
             _ => {
                 // Skip unknown hash syntax, try to read as atom

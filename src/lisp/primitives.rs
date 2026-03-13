@@ -126,7 +126,12 @@ pub fn is_builtin(name: &str) -> bool {
 }
 
 /// Dispatch a builtin function call.
-pub fn call(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Value, LispError> {
+pub fn call(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &super::types::Env,
+) -> Result<Value, LispError> {
     match name {
         // ── Arithmetic ──
         "+" => {
@@ -767,7 +772,33 @@ pub fn call(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Valu
             }
             Ok(Value::Nil)
         }
-        "current-column" => Ok(Value::Integer(interp.buffer.current_column() as i64)),
+        "current-column" => {
+            // Look up tab-width from environment (default 8)
+            let tab_width = interp
+                .lookup_var("tab-width", env)
+                .and_then(|v| v.as_integer().ok())
+                .unwrap_or(8) as usize;
+            let tab_width = tab_width.max(1);
+
+            let pt = interp.buffer.point();
+            let bol = {
+                let saved = interp.buffer.point();
+                interp.buffer.beginning_of_line();
+                let bol = interp.buffer.point();
+                interp.buffer.goto_char(saved);
+                bol
+            };
+
+            let mut col: usize = 0;
+            for pos in bol..pt {
+                match interp.buffer.char_at(pos) {
+                    Some('\t') => col = (col / tab_width + 1) * tab_width,
+                    Some(_) => col += 1,
+                    None => break,
+                }
+            }
+            Ok(Value::Integer(col as i64))
+        }
         "line-number-at-pos" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -777,14 +808,38 @@ pub fn call(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Valu
             Ok(Value::Integer(interp.buffer.line_number_at_pos(pos) as i64))
         }
         "line-beginning-position" | "pos-bol" => {
+            let n = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
             let saved = interp.buffer.point();
-            interp.buffer.beginning_of_line();
+            let count = (n - 1) as isize;
+            let shortage = if count != 0 {
+                interp.buffer.forward_line(count)
+            } else {
+                0
+            };
+            // If forward_line overshot (couldn't find enough lines),
+            // point is already at point-max/point-min — don't move it back.
+            if shortage == 0 || (count > 0 && interp.buffer.point() < interp.buffer.point_max()) {
+                interp.buffer.beginning_of_line();
+            }
             let result = interp.buffer.point();
             interp.buffer.goto_char(saved);
             Ok(Value::Integer(result as i64))
         }
         "line-end-position" | "pos-eol" => {
+            let n = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
             let saved = interp.buffer.point();
+            let count = (n - 1) as isize;
+            if count != 0 {
+                interp.buffer.forward_line(count);
+            }
             interp.buffer.end_of_line();
             let result = interp.buffer.point();
             interp.buffer.goto_char(saved);
