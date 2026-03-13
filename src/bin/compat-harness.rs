@@ -537,9 +537,6 @@ fn ensure_emaxx_binary() -> Result<PathBuf, String> {
         return Err(format!("cannot locate binary directory for {}", current.display()));
     };
     let candidate = bin_dir.join("emaxx");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
 
     let status = Command::new("cargo")
         .arg("build")
