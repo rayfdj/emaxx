@@ -8,6 +8,8 @@ pub struct Interpreter {
     globals: Vec<(String, Value)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
+    /// Known buffer names (simple buffer list for tests).
+    pub buffer_list: Vec<String>,
     /// Collected ERT test definitions: (name, body).
     pub ert_tests: Vec<(String, Value)>,
     /// Results from running tests: (name, passed, error_message).
@@ -25,6 +27,7 @@ impl Interpreter {
         Interpreter {
             globals: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
+            buffer_list: vec!["*test*".to_string()],
             ert_tests: Vec::new(),
             test_results: Vec::new(),
         }
@@ -108,7 +111,7 @@ impl Interpreter {
                 Ok(expr.clone())
             }
 
-            Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => Ok(expr.clone()),
+            Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Buffer(_) => Ok(expr.clone()),
 
             Value::Symbol(name) => self.lookup(name, env),
 
