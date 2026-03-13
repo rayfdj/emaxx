@@ -15,6 +15,8 @@ fn emacs_test_dir() -> Option<PathBuf> {
 }
 
 /// Run a single .el test file and report results.
+/// This is a lightweight smoke harness; the authoritative compatibility
+/// runner lives in `cargo run --bin compat-harness`.
 fn run_el_test(filename: &str) {
     let test_dir = emacs_test_dir().expect("Cannot find emacs test/src directory");
     let path = test_dir.join(filename);
@@ -33,8 +35,8 @@ fn run_el_test(filename: &str) {
             }
             println!("  [{}/{}] passed, {} failed", passed, total, failed);
 
-            // For now, don't assert all pass — just report.
-            // As we increase compatibility we'll tighten this.
+            // Keep this permissive: the dedicated compatibility harness
+            // owns strict oracle comparisons now.
             assert!(passed > 0 || total == 0, "No tests passed in {}", filename);
         }
         Err(e) => {

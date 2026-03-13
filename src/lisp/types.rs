@@ -233,10 +233,26 @@ pub enum LispError {
     WrongNumberOfArgs(String, usize),
     /// Generic error with a message (like Emacs's `error` function)
     Signal(String),
+    /// An ERT skip condition.
+    TestSkipped(String),
     /// End of input during read
     EndOfInput,
     /// Reader syntax error
     ReadError(String),
+}
+
+impl LispError {
+    pub fn condition_type(&self) -> &'static str {
+        match self {
+            LispError::TypeError(_, _) => "wrong-type-argument",
+            LispError::Void(_) => "void-variable",
+            LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments",
+            LispError::Signal(_) => "error",
+            LispError::TestSkipped(_) => "ert-test-skipped",
+            LispError::EndOfInput => "end-of-file",
+            LispError::ReadError(_) => "invalid-read-syntax",
+        }
+    }
 }
 
 impl fmt::Display for LispError {
@@ -250,6 +266,7 @@ impl fmt::Display for LispError {
                 write!(f, "Wrong number of arguments: {}, {}", name, n)
             }
             LispError::Signal(msg) => write!(f, "{}", msg),
+            LispError::TestSkipped(msg) => write!(f, "{}", msg),
             LispError::EndOfInput => write!(f, "End of file during parsing"),
             LispError::ReadError(msg) => write!(f, "Invalid read syntax: {}", msg),
         }

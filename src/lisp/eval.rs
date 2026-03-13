@@ -1,5 +1,25 @@
 use super::primitives;
 use super::types::{Env, LispError, Value};
+use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
+use regex::Regex;
+
+#[derive(Clone, Debug)]
+pub struct ErtTestDefinition {
+    pub name: String,
+    pub body: Value,
+    pub tags: Vec<String>,
+    pub expected_result: String,
+}
+
+impl ErtTestDefinition {
+    fn discovered(&self) -> DiscoveredTest {
+        DiscoveredTest {
+            name: self.name.clone(),
+            tags: self.tags.clone(),
+            expected_result: self.expected_result.clone(),
+        }
+    }
+}
 
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
@@ -16,10 +36,12 @@ pub struct Interpreter {
     next_overlay_id: u64,
     /// User-defined macros: name → (params, body).
     macros: Vec<(String, Vec<String>, Vec<Value>)>,
-    /// Collected ERT test definitions: (name, body).
-    pub ert_tests: Vec<(String, Value)>,
-    /// Results from running tests: (name, passed, error_message).
-    pub test_results: Vec<(String, bool, Option<String>)>,
+    /// Collected ERT test definitions.
+    pub ert_tests: Vec<ErtTestDefinition>,
+    /// Results from the most recent ERT run.
+    pub test_results: Vec<TestOutcome>,
+    /// Selected test names from the most recent ERT run.
+    pub last_selected_tests: Vec<String>,
 }
 
 impl Default for Interpreter {
@@ -39,6 +61,7 @@ impl Interpreter {
             macros: Vec::new(),
             ert_tests: Vec::new(),
             test_results: Vec::new(),
+            last_selected_tests: Vec::new(),
         }
     }
 
@@ -289,6 +312,7 @@ impl Interpreter {
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
                         "skip-unless" => return self.sf_skip_unless(&items, env),
+                        "skip-when" => return self.sf_skip_when(&items, env),
                         "require" | "provide" | "declare" | "eval-and-compile" => {
                             return Ok(Value::Nil);
                         }
@@ -1058,7 +1082,19 @@ impl Interpreter {
         if val.is_truthy() {
             Ok(Value::Nil)
         } else {
-            Err(LispError::Signal("Test skipped".into()))
+            Err(LispError::TestSkipped("Test skipped".into()))
+        }
+    }
+
+    fn sf_skip_when(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let val = self.eval(&items[1], env)?;
+        if val.is_truthy() {
+            Err(LispError::TestSkipped("Test skipped".into()))
+        } else {
+            Ok(Value::Nil)
         }
     }
 
@@ -1072,23 +1108,46 @@ impl Interpreter {
             Value::Symbol(s) => s.clone(),
             _ => return Ok(Value::Nil),
         };
+        if self.ert_tests.iter().any(|test| test.name == name) {
+            return Err(LispError::Signal(format!(
+                "Test `{name}` redefined (or loaded twice)"
+            )));
+        }
 
         // items[2] is the param list (always empty for ert-deftest)
-        // items[3..] is the body, possibly starting with a docstring
-        let body_start = if items.len() > 4 {
-            if let Value::String(_) = &items[3] {
-                4
-            } else {
-                3
+        // items[3..] is docstring, keyword metadata, then body forms.
+        let mut cursor = 3;
+        if items.get(cursor).is_some_and(|value| matches!(value, Value::String(_))) {
+            cursor += 1;
+        }
+
+        let mut tags = Vec::new();
+        let mut expected_result = ":passed".to_string();
+        while cursor + 1 < items.len()
+            && items
+                .get(cursor)
+                .and_then(keyword_symbol_name)
+                .is_some_and(|name| name.starts_with(':'))
+        {
+            let keyword = keyword_symbol_name(&items[cursor]).unwrap_or_default();
+            let value = &items[cursor + 1];
+            match keyword.as_str() {
+                ":tags" => tags = parse_ert_tags(value),
+                ":expected-result" => expected_result = selector_atom(value),
+                _ => {}
             }
-        } else {
-            3
-        };
+            cursor += 2;
+        }
 
         let body = Value::list(
-            std::iter::once(Value::symbol("progn")).chain(items[body_start..].iter().cloned()),
+            std::iter::once(Value::symbol("progn")).chain(items[cursor..].iter().cloned()),
         );
-        self.ert_tests.push((name, body));
+        self.ert_tests.push(ErtTestDefinition {
+            name,
+            body,
+            tags,
+            expected_result,
+        });
         Ok(Value::Nil)
     }
 
@@ -1128,9 +1187,18 @@ impl Interpreter {
         }
         match self.eval(&items[1], env) {
             Err(e) => {
+                if let Some(expected_type) = should_error_type(items)
+                    && expected_type != e.condition_type()
+                {
+                    return Err(LispError::Signal(format!(
+                        "Test failed: expected error type {} but got {}",
+                        expected_type,
+                        e.condition_type()
+                    )));
+                }
                 // Return the error as (error "message") like Emacs does
                 Ok(Value::list([
-                    Value::symbol("error"),
+                    Value::symbol(e.condition_type()),
                     Value::String(e.to_string()),
                 ]))
             }
@@ -1141,29 +1209,163 @@ impl Interpreter {
         }
     }
 
+    pub fn discovered_tests(&self) -> Vec<DiscoveredTest> {
+        self.ert_tests
+            .iter()
+            .map(ErtTestDefinition::discovered)
+            .collect()
+    }
+
     /// Run all collected ERT tests. Returns (passed, failed, total).
     pub fn run_ert_tests(&mut self) -> (usize, usize, usize) {
-        let tests: Vec<(String, Value)> = self.ert_tests.clone();
-        let total = tests.len();
-        let mut passed = 0;
-        let mut failed = 0;
+        let summary = self.run_ert_tests_with_selector(None);
+        (summary.passed, summary.failed, summary.total)
+    }
 
-        for (name, body) in &tests {
+    pub fn run_ert_tests_with_selector(&mut self, selector: Option<&Value>) -> BatchSummary {
+        let tests: Vec<ErtTestDefinition> = self
+            .ert_tests
+            .iter()
+            .filter(|test| selector.is_none_or(|selector| selector_matches(selector, test)))
+            .cloned()
+            .collect();
+        let mut summary = BatchSummary::default();
+        self.test_results.clear();
+        self.last_selected_tests = tests.iter().map(|test| test.name.clone()).collect();
+        summary.total = tests.len();
+
+        for test in &tests {
             let mut env: Env = Vec::new();
-            match self.eval(body, &mut env) {
+            match self.eval(&test.body, &mut env) {
                 Ok(_) => {
-                    passed += 1;
-                    self.test_results.push((name.clone(), true, None));
+                    summary.passed += 1;
+                    if test.expected_result == ":failed" {
+                        summary.unexpected += 1;
+                    }
+                    self.test_results.push(TestOutcome {
+                        name: test.name.clone(),
+                        status: TestStatus::Passed,
+                        condition_type: None,
+                        message: None,
+                    });
                 }
                 Err(e) => {
-                    failed += 1;
-                    self.test_results
-                        .push((name.clone(), false, Some(e.to_string())));
+                    let status = match e {
+                        LispError::TestSkipped(_) => TestStatus::Skipped,
+                        _ => TestStatus::Failed,
+                    };
+                    let expected_failure = test.expected_result == ":failed";
+                    match status {
+                        TestStatus::Passed => summary.passed += 1,
+                        TestStatus::Failed => {
+                            summary.failed += 1;
+                            if !expected_failure {
+                                summary.unexpected += 1;
+                            }
+                        }
+                        TestStatus::Skipped => summary.skipped += 1,
+                    }
+                    self.test_results.push(TestOutcome {
+                        name: test.name.clone(),
+                        status,
+                        condition_type: Some(e.condition_type().to_string()),
+                        message: Some(e.to_string()),
+                    });
                 }
             }
         }
+        summary
+    }
+}
 
-        (passed, failed, total)
+fn symbol_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn keyword_symbol_name(value: &Value) -> Option<String> {
+    symbol_name(value)
+}
+
+fn unquote(value: &Value) -> Value {
+    match value {
+        Value::Cons(_, _) => {
+            if let Ok(items) = value.to_vec()
+                && items.len() == 2
+                && matches!(items.first(), Some(Value::Symbol(name)) if name == "quote")
+            {
+                return items[1].clone();
+            }
+            value.clone()
+        }
+        _ => value.clone(),
+    }
+}
+
+fn selector_atom(value: &Value) -> String {
+    match unquote(value) {
+        Value::Symbol(name) => name.clone(),
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn parse_ert_tags(value: &Value) -> Vec<String> {
+    match unquote(value) {
+        Value::Nil => Vec::new(),
+        Value::Cons(_, _) => unquote(value)
+            .to_vec()
+            .map(|values| values.iter().map(selector_atom).collect())
+            .unwrap_or_default(),
+        other => vec![selector_atom(&other)],
+    }
+}
+
+fn should_error_type(items: &[Value]) -> Option<String> {
+    let mut cursor = 2;
+    while cursor + 1 < items.len() {
+        match keyword_symbol_name(&items[cursor]).as_deref() {
+            Some(":type") => return Some(selector_atom(&items[cursor + 1])),
+            Some(_) => cursor += 2,
+            None => break,
+        }
+    }
+    None
+}
+
+fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
+    match unquote(selector) {
+        Value::Nil => false,
+        Value::T => true,
+        Value::Symbol(name) if name == "t" => true,
+        Value::Symbol(name) if name == "nil" => false,
+        Value::Symbol(name) => test.name == name,
+        Value::String(pattern) => Regex::new(&pattern)
+            .map(|regex| regex.is_match(&test.name))
+            .unwrap_or(false),
+        Value::Cons(_, _) => {
+            let Ok(items) = unquote(selector).to_vec() else {
+                return false;
+            };
+            if items.is_empty() {
+                return false;
+            }
+            match symbol_name(&items[0]).as_deref() {
+                Some("tag") => items
+                    .get(1)
+                    .map(|tag| test.tags.iter().any(|candidate| candidate == &selector_atom(tag)))
+                    .unwrap_or(false),
+                Some("not") => items.get(1).is_some_and(|inner| !selector_matches(inner, test)),
+                Some("or") => items[1..].iter().any(|inner| selector_matches(inner, test)),
+                Some("and") => items[1..].iter().all(|inner| selector_matches(inner, test)),
+                Some("member") => items[1..].iter().any(|item| selector_atom(item) == test.name),
+                Some("eql") => items.get(1).is_some_and(|item| selector_atom(item) == test.name),
+                _ => false,
+            }
+        }
+        _ => false,
     }
 }
 
@@ -1305,6 +1507,62 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(passed, 1);
         assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn ert_selector_excludes_expensive_tests_by_tag() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest cheap-test ()
+              (should t))
+            (ert-deftest expensive-test ()
+              :tags '(:expensive-test)
+              (should t))
+            "#,
+        );
+        let selector = Reader::new("(not (or (tag :expensive-test) (tag :unstable)))")
+            .read_all()
+            .unwrap()
+            .remove(0);
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.total, 1);
+        assert_eq!(interp.last_selected_tests, vec!["cheap-test".to_string()]);
+    }
+
+    #[test]
+    fn should_error_checks_error_type() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest typed-error ()
+              (should-error (car 1) :type 'wrong-type-argument))
+            "#,
+        );
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn skip_unless_records_skip_in_summary() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest skipped-test ()
+              (skip-unless nil))
+            "#,
+        );
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(interp.test_results[0].status, TestStatus::Skipped);
+        assert_eq!(
+            interp.test_results[0].condition_type.as_deref(),
+            Some("ert-test-skipped")
+        );
     }
 
     #[test]
