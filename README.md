@@ -19,7 +19,7 @@ cargo test --lib
 Integration tests run actual Emacs `.el` test files (ERT) against the Rust implementation. They expect a checkout of the Emacs source tree as a sibling directory:
 
 ```
-../emacs/          # git clone https://github.com/emacs-mirror/emacs.git
+../emacs/          # git clone https://git.savannah.gnu.org/git/emacs.git
 ../emaxx/          # this project
 ```
 
