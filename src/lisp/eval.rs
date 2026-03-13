@@ -8,8 +8,10 @@ pub struct Interpreter {
     globals: Vec<(String, Value)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
-    /// Known buffer names (simple buffer list for tests).
-    pub buffer_list: Vec<String>,
+    /// Known buffers: (id, name) pairs.
+    pub buffer_list: Vec<(u64, String)>,
+    /// Next buffer ID for identity tracking.
+    next_buffer_id: u64,
     /// User-defined macros: name → (params, body).
     macros: Vec<(String, Vec<String>, Vec<Value>)>,
     /// Collected ERT test definitions: (name, body).
@@ -29,11 +31,29 @@ impl Interpreter {
         Interpreter {
             globals: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
-            buffer_list: vec!["*test*".to_string()],
+            buffer_list: vec![(0, "*test*".to_string())],
+            next_buffer_id: 1,
             macros: Vec::new(),
             ert_tests: Vec::new(),
             test_results: Vec::new(),
         }
+    }
+
+    /// Allocate a new unique buffer ID.
+    pub fn alloc_buffer_id(&mut self) -> u64 {
+        let id = self.next_buffer_id;
+        self.next_buffer_id += 1;
+        id
+    }
+
+    /// Check if a buffer name exists in the buffer list.
+    pub fn has_buffer(&self, name: &str) -> bool {
+        self.buffer_list.iter().any(|(_, n)| n == name)
+    }
+
+    /// Find a buffer by name, returning (id, name).
+    pub fn find_buffer(&self, name: &str) -> Option<(u64, String)> {
+        self.buffer_list.iter().find(|(_, n)| n == name).cloned()
     }
 
     /// Look up a variable, returning None if unbound (for use by primitives).
@@ -114,7 +134,9 @@ impl Interpreter {
                 Ok(expr.clone())
             }
 
-            Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Buffer(_) => Ok(expr.clone()),
+            Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Buffer(_, _) => {
+                Ok(expr.clone())
+            }
 
             Value::Symbol(name) => self.lookup(name, env),
 
@@ -634,38 +656,56 @@ impl Interpreter {
 
     fn eval_backquote(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
-            Value::Cons(_, _) => {
-                let items = expr.to_vec()?;
-                // Check for (comma expr) at the top level
-                if items.len() == 2
-                    && let Value::Symbol(s) = &items[0]
+            Value::Cons(car, cdr) => {
+                // Check for (comma expr) or (comma-at expr) at the top level
+                if let Value::Symbol(s) = car.as_ref()
                     && (s == "comma" || s == "comma-at")
+                    && let Value::Cons(val, rest) = cdr.as_ref()
+                    && matches!(rest.as_ref(), Value::Nil)
                 {
-                    return self.eval(&items[1], env);
+                    return self.eval(val, env);
                 }
-                // Process each element, handling splicing
+                // Walk the cons structure, handling splicing and dotted pairs
                 let mut result: Vec<Value> = Vec::new();
-                for item in &items {
-                    if let Value::Cons(_, _) = item {
-                        let sub = item.to_vec()?;
-                        if sub.len() == 2
-                            && let Value::Symbol(s) = &sub[0]
-                        {
-                            if s == "comma" {
-                                result.push(self.eval(&sub[1], env)?);
-                                continue;
-                            }
-                            if s == "comma-at" {
-                                let val = self.eval(&sub[1], env)?;
-                                if let Ok(elems) = val.to_vec() {
-                                    result.extend(elems);
+                let mut current: &Value = expr;
+                loop {
+                    match current {
+                        Value::Cons(car, cdr) => {
+                            // Check if car is (comma x) or (comma-at x)
+                            if let Value::Cons(inner_car, inner_cdr) = car.as_ref()
+                                && let Value::Symbol(s) = inner_car.as_ref()
+                                && let Value::Cons(val, rest) = inner_cdr.as_ref()
+                                && matches!(rest.as_ref(), Value::Nil)
+                            {
+                                if s == "comma" {
+                                    result.push(self.eval(val, env)?);
+                                    current = cdr;
+                                    continue;
                                 }
-                                continue;
+                                if s == "comma-at" {
+                                    let evaled = self.eval(val, env)?;
+                                    if let Ok(elems) = evaled.to_vec() {
+                                        result.extend(elems);
+                                    }
+                                    current = cdr;
+                                    continue;
+                                }
                             }
+                            result.push(self.eval_backquote(car, env)?);
+                            current = cdr;
+                        }
+                        Value::Nil => break,
+                        other => {
+                            // Dotted pair tail — evaluate and attach
+                            let tail = self.eval_backquote(other, env)?;
+                            // Build dotted list
+                            let mut out = tail;
+                            for item in result.into_iter().rev() {
+                                out = Value::cons(item, out);
+                            }
+                            return Ok(out);
                         }
                     }
-                    // Recurse into nested lists
-                    result.push(self.eval_backquote(item, env)?);
                 }
                 Ok(Value::list(result))
             }
@@ -851,7 +891,13 @@ impl Interpreter {
             return Err(LispError::WrongNumberOfArgs("should-error".into(), 0));
         }
         match self.eval(&items[1], env) {
-            Err(_) => Ok(Value::T), // good, error was raised
+            Err(e) => {
+                // Return the error as (error "message") like Emacs does
+                Ok(Value::list([
+                    Value::symbol("error"),
+                    Value::String(e.to_string()),
+                ]))
+            }
             Ok(val) => Err(LispError::Signal(format!(
                 "Test failed: expected error but got {}",
                 val

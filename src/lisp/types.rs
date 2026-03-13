@@ -16,8 +16,8 @@ pub enum Value {
     BuiltinFunc(String),
     /// A lambda or closure: params, body, captured env
     Lambda(Vec<String>, Vec<Value>, Env),
-    /// A buffer object, identified by name.
-    Buffer(String),
+    /// A buffer object: (id, name). The id is used for `eq` identity.
+    Buffer(u64, String),
 }
 
 /// An environment frame: a list of (name, value) bindings.
@@ -157,7 +157,7 @@ impl Value {
             Value::Cons(_, _) => "cons".into(),
             Value::BuiltinFunc(name) => format!("builtin<{}>", name),
             Value::Lambda(_, _, _) => "lambda".into(),
-            Value::Buffer(name) => format!("buffer<{}>", name),
+            Value::Buffer(_, name) => format!("buffer<{}>", name),
         }
     }
 }
@@ -172,7 +172,7 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
             (Value::Cons(a1, a2), Value::Cons(b1, b2)) => a1 == b1 && a2 == b2,
-            (Value::Buffer(a), Value::Buffer(b)) => a == b,
+            (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
             _ => false,
         }
     }
@@ -212,7 +212,7 @@ impl fmt::Display for Value {
             }
             Value::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
             Value::Lambda(params, _, _) => write!(f, "#<lambda ({})>", params.join(" ")),
-            Value::Buffer(name) => write!(f, "#<buffer {}>", name),
+            Value::Buffer(_, name) => write!(f, "#<buffer {}>", name),
         }
     }
 }
