@@ -671,6 +671,20 @@ impl Interpreter {
                 loop {
                     match current {
                         Value::Cons(car, cdr) => {
+                            // Is current itself a (comma x) or (comma-at x)?
+                            if let Value::Symbol(s) = car.as_ref()
+                                && (s == "comma" || s == "comma-at")
+                                && let Value::Cons(val, rest) = cdr.as_ref()
+                                && matches!(rest.as_ref(), Value::Nil)
+                            {
+                                // This is a comma form used as a dotted tail
+                                let tail = self.eval(val, env)?;
+                                let mut out = tail;
+                                for item in result.into_iter().rev() {
+                                    out = Value::cons(item, out);
+                                }
+                                return Ok(out);
+                            }
                             // Check if car is (comma x) or (comma-at x)
                             if let Value::Cons(inner_car, inner_cdr) = car.as_ref()
                                 && let Value::Symbol(s) = inner_car.as_ref()
@@ -696,9 +710,8 @@ impl Interpreter {
                         }
                         Value::Nil => break,
                         other => {
-                            // Dotted pair tail — evaluate and attach
+                            // Dotted pair tail (non-cons) — evaluate and attach
                             let tail = self.eval_backquote(other, env)?;
-                            // Build dotted list
                             let mut out = tail;
                             for item in result.into_iter().rev() {
                                 out = Value::cons(item, out);
@@ -1069,6 +1082,90 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(passed, 1);
         assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn format_binary_negative() {
+        assert_eq!(
+            eval_str(r#"(format "%b" #x-5A)"#),
+            Value::String("-1011010".into())
+        );
+        assert_eq!(
+            eval_str(r#"(format "%b" #x5A)"#),
+            Value::String("1011010".into())
+        );
+    }
+
+    #[test]
+    fn backquote_dotted_pair() {
+        assert_eq!(
+            eval_str(r#"(car '(#x-5A . "1011010"))"#),
+            Value::Integer(-90)
+        );
+        assert_eq!(
+            eval_str(r#"(cdr '(#x-5A . "1011010"))"#),
+            Value::String("1011010".into())
+        );
+    }
+
+    #[test]
+    fn dolist_dotted_pairs() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((result nil))
+                     (dolist (pair `((1 . "a") (2 . "b")))
+                       (setq result (concat (cdr pair) (or result ""))))
+                     result)"#
+            ),
+            Value::String("ba".into())
+        );
+    }
+
+    #[test]
+    fn format_binary_nonzero_simple() {
+        // Simplified version of the ERT test
+        assert_eq!(
+            eval_str(
+                r#"(let* ((n #x-5A) (bits "1011010")
+                          (sgn- (if (< n 0) "-" "")))
+                     (concat sgn- bits))"#
+            ),
+            Value::String("-1011010".into())
+        );
+        // The actual assertion from the test
+        assert_eq!(
+            eval_str(
+                r#"(let* ((n #x-5A) (bits "1011010")
+                          (sgn- (if (< n 0) "-" "")))
+                     (string-equal (format "%b" n) (concat sgn- bits)))"#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn format_binary_via_dolist() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((ok t))
+                     (dolist (nbits `((#x-5A . "1011010")
+                                      (#x5A . "1011010")))
+                       (let* ((n (car nbits)) (bits (cdr nbits))
+                              (sgn- (if (< n 0) "-" "")))
+                         (unless (string-equal (format "%b" n) (concat sgn- bits))
+                           (setq ok nil))))
+                     ok)"#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn backtick_comma_in_dotted_pair() {
+        assert_eq!(
+            eval_str(r#"`(#xFFF . ,(make-string 12 ?1))"#),
+            Value::cons(Value::Integer(0xFFF), Value::String("111111111111".into()))
+        );
     }
 
     #[test]
