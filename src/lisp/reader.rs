@@ -327,7 +327,7 @@ impl<'a> Reader<'a> {
                 if let Some(c) = self.read_utf8_char() {
                     Ok(Some(Value::Integer(c as i64)))
                 } else {
-                    let b = self.advance().unwrap();
+                    let b = self.advance().expect("peek confirmed byte exists");
                     Ok(Some(Value::Integer(b as i64)))
                 }
             }
@@ -502,6 +502,7 @@ impl<'a> Reader<'a> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

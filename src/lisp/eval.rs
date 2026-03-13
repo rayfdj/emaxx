@@ -395,7 +395,7 @@ impl Interpreter {
         for binding in &bindings {
             match binding {
                 Value::Symbol(name) => {
-                    let frame = env.last_mut().unwrap();
+                    let frame = env.last_mut().expect("env frame just pushed");
                     frame.push((name.clone(), Value::Nil));
                 }
                 Value::Cons(_, _) => {
@@ -406,7 +406,7 @@ impl Interpreter {
                     } else {
                         Value::Nil
                     };
-                    let frame = env.last_mut().unwrap();
+                    let frame = env.last_mut().expect("env frame just pushed");
                     frame.push((name, val));
                 }
                 _ => return Err(LispError::ReadError("bad let* binding".into())),
@@ -525,7 +525,7 @@ impl Interpreter {
 
         env.push(vec![(var_name.clone(), Value::Nil)]);
         for item in list_items {
-            let frame = env.last_mut().unwrap();
+            let frame = env.last_mut().expect("env frame just pushed");
             frame[0] = (var_name.clone(), item);
             self.sf_progn(&items[2..], env)?;
         }
@@ -545,7 +545,7 @@ impl Interpreter {
 
         env.push(vec![(var_name.clone(), Value::Integer(0))]);
         for i in 0..count {
-            let frame = env.last_mut().unwrap();
+            let frame = env.last_mut().expect("env frame just pushed");
             frame[0] = (var_name.clone(), Value::Integer(i));
             self.sf_progn(&items[2..], env)?;
         }
@@ -718,6 +718,7 @@ impl Interpreter {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::lisp::reader::Reader;
