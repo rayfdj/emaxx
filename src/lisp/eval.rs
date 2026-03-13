@@ -30,6 +30,23 @@ impl Interpreter {
         }
     }
 
+    /// Look up a variable, returning None if unbound (for use by primitives).
+    pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
+        for frame in env.iter().rev() {
+            for (k, v) in frame.iter().rev() {
+                if k == name {
+                    return Some(v.clone());
+                }
+            }
+        }
+        for (k, v) in self.globals.iter().rev() {
+            if k == name {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+
     /// Look up a variable in the given local env, then globals.
     fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         // Search local frames from innermost to outermost
@@ -170,7 +187,7 @@ impl Interpreter {
         }
 
         match func {
-            Value::BuiltinFunc(ref name) => primitives::call(self, name, &args),
+            Value::BuiltinFunc(ref name) => primitives::call(self, name, &args, env),
             Value::Lambda(ref params, ref body, ref closure_env) => {
                 if params.len() != args.len() {
                     // Handle &optional and &rest later; for now just check
@@ -229,7 +246,7 @@ impl Interpreter {
                 if let Value::Symbol(name) = &items[0] {
                     // Try as builtin one more time
                     if primitives::is_builtin(name) {
-                        return primitives::call(self, name, &args);
+                        return primitives::call(self, name, &args, env);
                     }
                 }
                 Err(LispError::Signal(format!("Invalid function: {}", items[0])))
