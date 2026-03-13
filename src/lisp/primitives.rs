@@ -137,6 +137,31 @@ pub fn is_builtin(name: &str) -> bool {
             // Stubs for terminal/display
             | "display-graphic-p"
             | "frame-parameter"
+            // Overlay operations
+            | "make-overlay"
+            | "overlayp"
+            | "overlay-buffer"
+            | "overlay-start"
+            | "overlay-end"
+            | "move-overlay"
+            | "delete-overlay"
+            | "delete-all-overlays"
+            | "overlay-put"
+            | "overlay-get"
+            | "overlay-properties"
+            | "overlays-at"
+            | "overlays-in"
+            | "next-overlay-change"
+            | "previous-overlay-change"
+            | "overlay-lists"
+            | "overlay-recenter"
+            | "remove-overlays"
+            // Plist operations
+            | "plist-get"
+            | "plist-put"
+            | "plist-member"
+            // Sorting
+            | "sort"
             // Misc
             | "error"
             | "signal"
@@ -1549,8 +1574,446 @@ pub fn call(
                 Value::BuiltinFunc(_) => "subr",
                 Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
                 Value::Buffer(_, _) => "buffer",
+                Value::Overlay(_) => "overlay",
             };
             Ok(Value::Symbol(name.into()))
+        }
+
+        // ── Overlay operations ──
+
+        "make-overlay" => {
+            // (make-overlay BEG END &optional BUFFER FRONT-ADVANCE REAR-ADVANCE)
+            need_args(name, args, 2)?;
+            let beg = args[0].as_integer()? as usize;
+            let end = args[1].as_integer()? as usize;
+            let front_advance = args.get(3).is_some_and(|v| v.is_truthy());
+            let rear_advance = args.get(4).is_some_and(|v| v.is_truthy());
+            // Buffer arg (args[2]) is ignored — we always use the current buffer.
+            let buf_id = interp.buffer_list.iter()
+                .find(|(_, n)| n == &interp.buffer.name)
+                .map_or(0, |(id, _)| *id);
+            let ov_id = interp.alloc_overlay_id();
+            let ov = crate::overlay::Overlay::new(
+                ov_id, beg, end, buf_id, front_advance, rear_advance,
+            );
+            interp.buffer.overlays.push(ov);
+            Ok(Value::Overlay(ov_id))
+        }
+
+        "overlayp" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(&args[0], Value::Overlay(_)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+
+        "overlay-buffer" => {
+            need_args(name, args, 1)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            match interp.find_overlay(ov_id) {
+                Some(ov) if !ov.is_dead() => {
+                    let buf_id = ov.buffer_id.unwrap_or(0);
+                    let buf_name = interp.buffer_list.iter()
+                        .find(|(id, _)| *id == buf_id)
+                        .map_or("*unknown*".to_string(), |(_, n)| n.clone());
+                    Ok(Value::Buffer(buf_id, buf_name))
+                }
+                _ => Ok(Value::Nil),
+            }
+        }
+
+        "overlay-start" => {
+            need_args(name, args, 1)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            match interp.find_overlay(ov_id) {
+                Some(ov) if !ov.is_dead() => Ok(Value::Integer(ov.beg as i64)),
+                _ => Ok(Value::Nil),
+            }
+        }
+
+        "overlay-end" => {
+            need_args(name, args, 1)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            match interp.find_overlay(ov_id) {
+                Some(ov) if !ov.is_dead() => Ok(Value::Integer(ov.end as i64)),
+                _ => Ok(Value::Nil),
+            }
+        }
+
+        "move-overlay" => {
+            // (move-overlay OVERLAY BEG END &optional BUFFER)
+            need_args(name, args, 3)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            let beg = args[1].as_integer()? as usize;
+            let end = args[2].as_integer()? as usize;
+            let (beg, end) = if beg > end { (end, beg) } else { (beg, end) };
+            match interp.find_overlay_mut(ov_id) {
+                Some(ov) => {
+                    ov.beg = beg;
+                    ov.end = end;
+                    Ok(Value::Overlay(ov_id))
+                }
+                None => Ok(Value::Nil),
+            }
+        }
+
+        "delete-overlay" => {
+            need_args(name, args, 1)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            if let Some(ov) = interp.find_overlay_mut(ov_id) {
+                ov.buffer_id = None;
+            }
+            Ok(Value::Nil)
+        }
+
+        "delete-all-overlays" => {
+            // Remove all overlays (or mark them dead)
+            interp.buffer.overlays.clear();
+            Ok(Value::Nil)
+        }
+
+        "overlay-put" => {
+            need_args(name, args, 3)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            let key = match &args[1] {
+                Value::Symbol(s) => s.clone(),
+                _ => return Err(LispError::TypeError("symbol".into(), args[1].type_name())),
+            };
+            let value = args[2].clone();
+            if let Some(ov) = interp.find_overlay_mut(ov_id) {
+                ov.put_prop(&key, value.clone());
+            }
+            Ok(value)
+        }
+
+        "overlay-get" => {
+            need_args(name, args, 2)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            let key = match &args[1] {
+                Value::Symbol(s) => s.clone(),
+                _ => return Err(LispError::TypeError("symbol".into(), args[1].type_name())),
+            };
+            match interp.find_overlay(ov_id) {
+                Some(ov) => Ok(ov.get_prop(&key).cloned().unwrap_or(Value::Nil)),
+                None => Ok(Value::Nil),
+            }
+        }
+
+        "overlay-properties" => {
+            need_args(name, args, 1)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            match interp.find_overlay(ov_id) {
+                Some(ov) => {
+                    let mut items = Vec::new();
+                    for (k, v) in &ov.plist {
+                        items.push(Value::Symbol(k.clone()));
+                        items.push(v.clone());
+                    }
+                    Ok(Value::list(items))
+                }
+                None => Ok(Value::Nil),
+            }
+        }
+
+        "overlays-at" => {
+            need_args(name, args, 1)?;
+            let pos = args[0].as_integer()? as usize;
+            let result: Vec<Value> = interp
+                .buffer
+                .overlays
+                .iter()
+                .filter(|ov| !ov.is_dead() && ov.beg <= pos && pos < ov.end)
+                .map(|ov| Value::Overlay(ov.id))
+                .collect();
+            Ok(Value::list(result))
+        }
+
+        "overlays-in" => {
+            need_args(name, args, 2)?;
+            let beg = args[0].as_integer()? as usize;
+            let end = args[1].as_integer()? as usize;
+            // Z is the un-narrowed buffer end (1-based).
+            let z = interp.buffer.size_total() + 1;
+            let result: Vec<Value> = interp
+                .buffer
+                .overlays
+                .iter()
+                .filter(|ov| {
+                    if ov.is_dead() {
+                        return false;
+                    }
+                    if ov.beg == ov.end {
+                        // Zero-length overlay at pos P:
+                        // Include if P is in [beg, end), or if beg==end and P==beg,
+                        // or if P==end and end >= Z (at the real buffer end).
+                        return (ov.beg >= beg && ov.beg < end)
+                            || (beg == end && ov.beg == beg)
+                            || (ov.beg == end && end >= z);
+                    }
+                    // Non-empty overlay: include if it overlaps [beg, end)
+                    ov.beg < end && ov.end > beg
+                })
+                .map(|ov| Value::Overlay(ov.id))
+                .collect();
+            Ok(Value::list(result))
+        }
+
+        "next-overlay-change" => {
+            need_args(name, args, 1)?;
+            let pos = args[0].as_integer()? as usize;
+            let zv = interp.buffer.point_max();
+            let mut next = zv;
+            for ov in &interp.buffer.overlays {
+                if ov.is_dead() {
+                    continue;
+                }
+                if ov.beg > pos && ov.beg < next {
+                    next = ov.beg;
+                }
+                if ov.end > pos && ov.end < next {
+                    next = ov.end;
+                }
+            }
+            Ok(Value::Integer(next as i64))
+        }
+
+        "previous-overlay-change" => {
+            need_args(name, args, 1)?;
+            let pos = args[0].as_integer()? as usize;
+            let begv = interp.buffer.point_min();
+            let mut prev = begv;
+            for ov in &interp.buffer.overlays {
+                if ov.is_dead() {
+                    continue;
+                }
+                if ov.beg < pos && ov.beg > prev {
+                    prev = ov.beg;
+                }
+                if ov.end < pos && ov.end > prev {
+                    prev = ov.end;
+                }
+            }
+            Ok(Value::Integer(prev as i64))
+        }
+
+        "overlay-lists" => {
+            // Returns (BEFORE-LIST . AFTER-LIST) relative to point.
+            let pt = interp.buffer.point();
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for ov in &interp.buffer.overlays {
+                if ov.is_dead() {
+                    continue;
+                }
+                if ov.end <= pt {
+                    before.push(Value::Overlay(ov.id));
+                } else {
+                    after.push(Value::Overlay(ov.id));
+                }
+            }
+            Ok(Value::cons(Value::list(before), Value::list(after)))
+        }
+
+        "overlay-recenter" => {
+            // In real Emacs this recenters the overlay cache. We're a no-op.
+            Ok(Value::Nil)
+        }
+
+        "remove-overlays" => {
+            // (remove-overlays &optional BEG END NAME VAL)
+            let beg = if args.is_empty() || args[0].is_nil() {
+                interp.buffer.point_min()
+            } else {
+                args[0].as_integer()? as usize
+            };
+            let end = if args.len() < 2 || args[1].is_nil() {
+                interp.buffer.point_max()
+            } else {
+                args[1].as_integer()? as usize
+            };
+            let filter_name = if args.len() >= 3 {
+                args[2].as_symbol().ok().map(|s| s.to_string())
+            } else {
+                None
+            };
+            let filter_val = args.get(3).cloned();
+            let zv = interp.buffer.point_max();
+
+            // Collect IDs to delete (fully contained or matching)
+            let ids_to_delete: Vec<u64> = interp
+                .buffer
+                .overlays
+                .iter()
+                .filter(|ov| {
+                    if ov.is_dead() {
+                        return false;
+                    }
+                    // Check property filter
+                    if let Some(ref fname) = filter_name {
+                        let val = ov.get_prop(fname).cloned().unwrap_or(Value::Nil);
+                        if let Some(ref fval) = filter_val
+                            && val != *fval
+                        {
+                            return false;
+                        }
+                    }
+                    // Check containment
+                    if ov.beg == ov.end {
+                        // Zero-length: include if within range
+                        ov.beg >= beg && (ov.beg < end || (ov.beg == end && end == zv))
+                    } else {
+                        ov.beg >= beg && ov.end <= end
+                    }
+                })
+                .map(|ov| ov.id)
+                .collect();
+
+            for id in &ids_to_delete {
+                if let Some(ov) = interp.find_overlay_mut(*id) {
+                    ov.buffer_id = None;
+                }
+            }
+            interp.buffer.overlays.retain(|ov| !ids_to_delete.contains(&ov.id));
+            Ok(Value::Nil)
+        }
+
+        // ── Plist operations ──
+
+        "plist-get" => {
+            need_args(name, args, 2)?;
+            let plist = args[0].to_vec()?;
+            let key = &args[1];
+            let mut i = 0;
+            while i + 1 < plist.len() {
+                if plist[i] == *key {
+                    return Ok(plist[i + 1].clone());
+                }
+                i += 2;
+            }
+            Ok(Value::Nil)
+        }
+
+        "plist-put" => {
+            need_args(name, args, 3)?;
+            let mut plist = args[0].to_vec()?;
+            let key = &args[1];
+            let val = &args[2];
+            let mut i = 0;
+            let mut found = false;
+            while i + 1 < plist.len() {
+                if plist[i] == *key {
+                    plist[i + 1] = val.clone();
+                    found = true;
+                    break;
+                }
+                i += 2;
+            }
+            if !found {
+                plist.push(key.clone());
+                plist.push(val.clone());
+            }
+            Ok(Value::list(plist))
+        }
+
+        "plist-member" => {
+            need_args(name, args, 2)?;
+            let key = &args[1];
+            let mut current = args[0].clone();
+            loop {
+                match current {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(car, cdr) => {
+                        if *car == *key {
+                            return Ok(Value::Cons(car, cdr));
+                        }
+                        // Skip the value
+                        match *cdr {
+                            Value::Cons(_, next_cdr) => current = *next_cdr,
+                            _ => return Ok(Value::Nil),
+                        }
+                    }
+                    _ => return Ok(Value::Nil),
+                }
+            }
+        }
+
+        // ── Sort ──
+
+        "sort" => {
+            need_args(name, args, 2)?;
+            let mut items = args[0].to_vec()?;
+            let pred = args[1].clone();
+            // Sort using the predicate. We need to call back into the interpreter.
+            // Use a simple insertion sort to avoid issues with the borrow checker
+            // and Rust's sort requiring Fn (not FnMut with &mut self).
+            let len = items.len();
+            for i in 1..len {
+                let mut j = i;
+                while j > 0 {
+                    let pred_args = [items[j - 1].clone(), items[j].clone()];
+                    let result = match &pred {
+                        Value::BuiltinFunc(fname) => {
+                            call(interp, fname, &pred_args, env)?
+                        }
+                        Value::Lambda(params, body, captured_env) => {
+                            let mut call_env = captured_env.clone();
+                            let mut frame = Vec::new();
+                            for (k, param) in params.iter().enumerate() {
+                                frame.push((
+                                    param.clone(),
+                                    pred_args.get(k).cloned().unwrap_or(Value::Nil),
+                                ));
+                            }
+                            call_env.push(frame);
+                            let mut r = Value::Nil;
+                            for expr in body {
+                                r = interp.eval(expr, &mut call_env)?;
+                            }
+                            r
+                        }
+                        _ => {
+                            return Err(LispError::TypeError(
+                                "function".into(),
+                                pred.type_name(),
+                            ))
+                        }
+                    };
+                    // If pred(items[j-1], items[j]) is nil, swap
+                    if result.is_nil() {
+                        items.swap(j - 1, j);
+                        j -= 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            Ok(Value::list(items))
         }
 
         _ => Err(LispError::Signal(format!("Unknown function: {}", name))),
