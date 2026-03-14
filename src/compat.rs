@@ -95,6 +95,9 @@ pub fn selector_aliases(test_native_comp: bool) -> BTreeMap<String, String> {
 pub enum Scope {
     Src,
     Lisp,
+    LibSrc,
+    Misc,
+    Automated,
     All,
 }
 
@@ -103,7 +106,9 @@ impl Scope {
         match self {
             Self::Src => &["test/src"],
             Self::Lisp => &["test/lisp"],
-            Self::All => &["test/src", "test/lisp"],
+            Self::LibSrc => &["test/lib-src"],
+            Self::Misc => &["test/misc"],
+            Self::Automated | Self::All => &["test/src", "test/lisp", "test/lib-src", "test/misc"],
         }
     }
 }

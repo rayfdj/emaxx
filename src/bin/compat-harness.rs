@@ -49,6 +49,9 @@ struct PinArgs {
 enum ScopeArg {
     Src,
     Lisp,
+    LibSrc,
+    Misc,
+    Automated,
     All,
 }
 
@@ -57,6 +60,9 @@ impl From<ScopeArg> for Scope {
         match value {
             ScopeArg::Src => Scope::Src,
             ScopeArg::Lisp => Scope::Lisp,
+            ScopeArg::LibSrc => Scope::LibSrc,
+            ScopeArg::Misc => Scope::Misc,
+            ScopeArg::Automated => Scope::Automated,
             ScopeArg::All => Scope::All,
         }
     }
@@ -64,7 +70,7 @@ impl From<ScopeArg> for Scope {
 
 #[derive(Debug, Args)]
 struct ListArgs {
-    #[arg(long, value_enum, default_value = "all")]
+    #[arg(long, value_enum, default_value = "automated")]
     scope: ScopeArg,
     #[arg(long, default_value = "default")]
     selector: String,
@@ -76,7 +82,7 @@ struct ListArgs {
 
 #[derive(Debug, Args)]
 struct RunArgs {
-    #[arg(long, value_enum, default_value = "all")]
+    #[arg(long, value_enum, default_value = "automated")]
     scope: ScopeArg,
     #[arg(long, default_value = "default")]
     selector: String,
