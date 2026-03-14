@@ -266,8 +266,20 @@ impl Interpreter {
         None
     }
 
+    pub fn load_target(&mut self, target: &str) -> Result<PathBuf, LispError> {
+        let Some(path) = self.resolve_load_target(target) else {
+            return Err(LispError::Signal(format!("Cannot open load file: {target}")));
+        };
+        crate::lisp::load_file_strict(self, &path)?;
+        Ok(path)
+    }
+
     fn require_feature(&mut self, feature: &str) -> Result<Value, LispError> {
         if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
+            return Ok(Value::Symbol(feature.to_string()));
+        }
+        if is_compat_preloaded_feature(feature) {
+            self.provide_feature(feature);
             return Ok(Value::Symbol(feature.to_string()));
         }
         let Some(path) = self.resolve_load_target(feature) else {
@@ -3954,6 +3966,10 @@ fn feature_name(value: &Value) -> Option<String> {
         }),
         _ => None,
     }
+}
+
+fn is_compat_preloaded_feature(feature: &str) -> bool {
+    matches!(feature, "cus-edit" | "cus-load")
 }
 
 fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
