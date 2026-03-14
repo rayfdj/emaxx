@@ -3,6 +3,20 @@
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::fmt;
+use std::{cell::RefCell, rc::Rc};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StringPropertySpan {
+    pub start: usize,
+    pub end: usize,
+    pub props: Vec<(String, Value)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedStringState {
+    pub text: String,
+    pub props: Vec<StringPropertySpan>,
+}
 
 /// A Lisp value. This covers the subset we need for ERT tests.
 #[derive(Clone, Debug)]
@@ -13,6 +27,7 @@ pub enum Value {
     BigInteger(BigInt),
     Float(f64),
     String(String),
+    StringObject(Rc<RefCell<SharedStringState>>),
     Symbol(String),
     Cons(Box<Value>, Box<Value>),
     /// Built-in function: name, arity (min, max), function pointer handled in eval
@@ -27,6 +42,10 @@ pub enum Value {
     Overlay(u64),
     /// A char-table object, identified by unique id.
     CharTable(u64),
+    /// A record object, identified by unique id.
+    Record(u64),
+    /// A finalizer object, identified by unique id.
+    Finalizer(u64),
 }
 
 /// An environment frame: a list of (name, value) bindings.
@@ -77,7 +96,7 @@ impl Value {
     }
 
     pub fn is_string(&self) -> bool {
-        matches!(self, Value::String(_))
+        matches!(self, Value::String(_) | Value::StringObject(_))
     }
 
     pub fn is_symbol(&self) -> bool {
@@ -169,6 +188,7 @@ impl Value {
             Value::BigInteger(_) => "integer".into(),
             Value::Float(_) => "float".into(),
             Value::String(_) => "string".into(),
+            Value::StringObject(_) => "string".into(),
             Value::Symbol(_) => "symbol".into(),
             Value::Cons(_, _) => "cons".into(),
             Value::BuiltinFunc(name) => format!("builtin<{}>", name),
@@ -177,6 +197,8 @@ impl Value {
             Value::Marker(id) => format!("marker<{}>", id),
             Value::Overlay(id) => format!("overlay<{}>", id),
             Value::CharTable(id) => format!("char-table<{}>", id),
+            Value::Record(id) => format!("record<{}>", id),
+            Value::Finalizer(id) => format!("finalizer<{}>", id),
         }
     }
 }
@@ -192,12 +214,15 @@ impl PartialEq for Value {
             | (Value::BigInteger(b), Value::Integer(a)) => &BigInt::from(*a) == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
+            (Value::StringObject(a), Value::StringObject(b)) => Rc::ptr_eq(a, b),
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
             (Value::Cons(a1, a2), Value::Cons(b1, b2)) => a1 == b1 && a2 == b2,
             (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
             (Value::Marker(a), Value::Marker(b)) => a == b,
             (Value::Overlay(a), Value::Overlay(b)) => a == b,
             (Value::CharTable(a), Value::CharTable(b)) => a == b,
+            (Value::Record(a), Value::Record(b)) => a == b,
+            (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
             _ => false,
         }
     }
@@ -212,6 +237,7 @@ impl fmt::Display for Value {
             Value::BigInteger(n) => write!(f, "{}", n),
             Value::Float(v) => write!(f, "{}", v),
             Value::String(s) => write!(f, "\"{}\"", s),
+            Value::StringObject(state) => write!(f, "\"{}\"", state.borrow().text),
             Value::Symbol(s) => write!(f, "{}", s),
             Value::Cons(_, _) => {
                 write!(f, "(")?;
@@ -242,6 +268,8 @@ impl fmt::Display for Value {
             Value::Marker(id) => write!(f, "#<marker id:{}>", id),
             Value::Overlay(id) => write!(f, "#<overlay id:{}>", id),
             Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
+            Value::Record(id) => write!(f, "#<record id:{}>", id),
+            Value::Finalizer(id) => write!(f, "#<finalizer id:{}>", id),
         }
     }
 }
@@ -257,6 +285,10 @@ pub enum LispError {
     WrongNumberOfArgs(String, usize),
     /// Generic error with a message (like Emacs's `error` function)
     Signal(String),
+    /// Generic error with explicit condition payload.
+    SignalValue(Value),
+    /// Non-local exit via `throw`.
+    Throw(Value, Value),
     /// An ERT skip condition.
     TestSkipped(String),
     /// End of input during read
@@ -271,7 +303,8 @@ impl LispError {
             LispError::TypeError(_, _) => "wrong-type-argument",
             LispError::Void(_) => "void-variable",
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments",
-            LispError::Signal(_) => "error",
+            LispError::Signal(_) | LispError::SignalValue(_) => "error",
+            LispError::Throw(_, _) => "no-catch",
             LispError::TestSkipped(_) => "ert-test-skipped",
             LispError::EndOfInput => "end-of-file",
             LispError::ReadError(_) => "invalid-read-syntax",
@@ -290,6 +323,11 @@ impl fmt::Display for LispError {
                 write!(f, "Wrong number of arguments: {}, {}", name, n)
             }
             LispError::Signal(msg) => write!(f, "{}", msg),
+            LispError::SignalValue(value) => match value.to_vec() {
+                Ok(items) if items.len() >= 2 => write!(f, "{}", items[1]),
+                _ => write!(f, "{}", value),
+            },
+            LispError::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
             LispError::TestSkipped(msg) => write!(f, "{}", msg),
             LispError::EndOfInput => write!(f, "End of file during parsing"),
             LispError::ReadError(msg) => write!(f, "Invalid read syntax: {}", msg),

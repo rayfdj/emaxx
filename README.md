@@ -10,13 +10,17 @@ cargo build
 
 ## Testing
 
-There are three different test layers in this repo, and they serve different purposes:
+There are three different correctness test layers in this repo, and they serve different purposes:
 
 - `cargo test --lib`: fast Rust unit tests for individual subsystems.
 - `cargo test`: unit tests plus a small permissive smoke layer that runs a few upstream Emacs `.el` files through `emaxx`.
 - `cargo run --bin compat-harness ...`: the authoritative oracle-backed compatibility runner that compares `emaxx` against a pinned real Emacs binary.
 
-The detailed guide lives in [docs/testing.md](docs/testing.md).
+There is also a separate performance scoreboard:
+
+- `cargo run --bin perf-harness ...`: a manual/local performance baseline harness that collects real Emacs baselines and compares `emaxx` where paired workloads already exist.
+
+The detailed guides live in [docs/testing.md](docs/testing.md) and [docs/performance.md](docs/performance.md).
 
 ### Unit Tests
 
@@ -78,3 +82,17 @@ This is the command path that should be used to judge behavioral compatibility. 
 Artifacts are written under `target/compat/`. The tracked oracle lock lives at `compat/oracle.lock.json`, while the local machine-specific oracle config is written to `compat/oracle.local.json`.
 
 If the `emacs` directory isn't found, the smoke integration tests will fail with a clear error. The Emacs tests are never copied into this repo — they're always read from the sibling checkout so we stay in sync with upstream.
+
+### Performance Harness
+
+The performance harness is separate from correctness testing on purpose:
+
+```
+cargo run --bin perf-harness -- list
+cargo run --bin perf-harness -- run --runner oracle --all
+cargo run --bin perf-harness -- run --runner both --scenario noverlay/perf-marker-suite
+```
+
+It writes artifacts under `target/perf/` and classifies scenarios as `comparable`, `provisional`, or `oracle_only`.
+
+Only `comparable` cases count toward the top-line `faster / parity / slower` scoreboard. In v1 this harness is non-blocking for slower results and is intended for manual/local use rather than CI gating.

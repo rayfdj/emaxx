@@ -1,0 +1,110 @@
+{
+  "format_version": 1,
+  "scenarios": [
+    {
+      "id": "noverlay/perf-marker-suite",
+      "description": "Marker adjustment microbenchmarks from overlay-perf.el",
+      "group": "noverlay",
+      "tier": "comparable",
+      "oracle_adapter": "noverlay_suite",
+      "emaxx_adapter": "noverlay_marker_suite",
+      "load_files": [
+        "test/manual/noverlay/overlay-perf.el"
+      ],
+      "params": {
+        "suite": "perf-marker-suite",
+        "n": 4096
+      },
+      "warmup": 1,
+      "samples": 5,
+      "timeout_secs": 60
+    },
+    {
+      "id": "noverlay/perf-insert-delete-suite",
+      "description": "Insert/delete overlay adjustment microbenchmarks from overlay-perf.el",
+      "group": "noverlay",
+      "tier": "comparable",
+      "oracle_adapter": "noverlay_suite",
+      "emaxx_adapter": "noverlay_insert_delete_suite",
+      "load_files": [
+        "test/manual/noverlay/overlay-perf.el"
+      ],
+      "params": {
+        "suite": "perf-insert-delete-suite",
+        "n": 4096
+      },
+      "warmup": 1,
+      "samples": 5,
+      "timeout_secs": 60
+    },
+    {
+      "id": "noverlay/perf-realworld-suite",
+      "description": "Real-world overlay workloads from overlay-perf.el",
+      "group": "noverlay",
+      "tier": "provisional",
+      "oracle_adapter": "noverlay_suite",
+      "emaxx_adapter": null,
+      "load_files": [
+        "test/manual/noverlay/overlay-perf.el"
+      ],
+      "params": {
+        "suite": "perf-realworld-suite",
+        "n": 4096
+      },
+      "warmup": 1,
+      "samples": 3,
+      "timeout_secs": 180
+    },
+    {
+      "id": "noverlay/perf-display-suite",
+      "description": "Redisplay-heavy overlay workloads from overlay-perf.el",
+      "group": "noverlay",
+      "tier": "oracle_only",
+      "oracle_adapter": "noverlay_suite",
+      "emaxx_adapter": null,
+      "load_files": [
+        "test/manual/noverlay/overlay-perf.el"
+      ],
+      "params": {
+        "suite": "perf-display-suite",
+        "n": 4096
+      },
+      "warmup": 1,
+      "samples": 3,
+      "timeout_secs": 180
+    },
+    {
+      "id": "noverlay/perf-noc-suite",
+      "description": "next-overlay-change workloads from overlay-perf.el",
+      "group": "noverlay",
+      "tier": "oracle_only",
+      "oracle_adapter": "noverlay_suite",
+      "emaxx_adapter": null,
+      "load_files": [
+        "test/manual/noverlay/overlay-perf.el"
+      ],
+      "params": {
+        "suite": "perf-noc-suite",
+        "n": 4096
+      },
+      "warmup": 1,
+      "samples": 3,
+      "timeout_secs": 180
+    },
+    {
+      "id": "coding/decoder",
+      "description": "Decoder benchmark from coding-tests.el",
+      "group": "coding",
+      "tier": "oracle_only",
+      "oracle_adapter": "coding_decoder",
+      "emaxx_adapter": null,
+      "load_files": [
+        "test/src/coding-tests.el"
+      ],
+      "params": {},
+      "warmup": 1,
+      "samples": 3,
+      "timeout_secs": 180
+    }
+  ]
+}

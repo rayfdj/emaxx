@@ -20,11 +20,22 @@ pub fn load_file_strict(
     interp: &mut eval::Interpreter,
     path: &Path,
 ) -> Result<(), types::LispError> {
-    let forms = read_forms(path)?;
+    let previous = interp.set_current_load_file(Some(path.display().to_string()));
+    let forms = match read_forms(path) {
+        Ok(forms) => forms,
+        Err(error) => {
+            interp.set_current_load_file(previous);
+            return Err(error);
+        }
+    };
     let mut env = types::Env::new();
     for form in &forms {
-        interp.eval(form, &mut env)?;
+        if let Err(error) = interp.eval(form, &mut env) {
+            interp.set_current_load_file(previous);
+            return Err(error);
+        }
     }
+    interp.set_current_load_file(previous);
     Ok(())
 }
 
@@ -34,7 +45,14 @@ pub fn run_ert_file(
     path: &Path,
 ) -> Result<(usize, usize, usize, Vec<TestResult>), types::LispError> {
     let mut interp = eval::Interpreter::new();
-    let forms = read_forms(path)?;
+    let previous = interp.set_current_load_file(Some(path.display().to_string()));
+    let forms = match read_forms(path) {
+        Ok(forms) => forms,
+        Err(error) => {
+            interp.set_current_load_file(previous);
+            return Err(error);
+        }
+    };
 
     // Evaluate all top-level forms (this collects ert-deftest definitions)
     let mut env = types::Env::new();
@@ -42,6 +60,7 @@ pub fn run_ert_file(
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);
     }
+    interp.set_current_load_file(previous);
 
     // Run the collected tests
     let (passed, failed, total) = interp.run_ert_tests();

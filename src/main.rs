@@ -15,7 +15,7 @@ use emaxx::display::{self, Screen};
 use emaxx::keymap::{self, Key};
 
 #[derive(Debug, Parser)]
-#[command(name = "emaxx", disable_help_subcommand = true)]
+#[command(name = "emaxx", version, disable_help_subcommand = true)]
 struct Cli {
     #[arg(long)]
     batch: bool,

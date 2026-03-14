@@ -14,5 +14,7 @@ walkdir = "2.5"
 num-bigint = "0.4"
 num-traits = "0.2"
 unicode-width = "0.2"
+flate2 = "1.1"
+roxmltree = "0.20"
 
 [dev-dependencies]
