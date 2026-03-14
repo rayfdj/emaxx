@@ -32,6 +32,31 @@ pub fn is_builtin(name: &str) -> bool {
             | "max"
             | "min"
             | "abs"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "copysign"
+            | "isnan"
+            | "exp"
+            | "expt"
+            | "log"
+            | "sqrt"
+            | "float"
+            | "frexp"
+            | "ldexp"
+            | "logb"
+            | "ceiling"
+            | "floor"
+            | "round"
+            | "truncate"
+            | "fceiling"
+            | "ffloor"
+            | "fround"
+            | "ftruncate"
+            | "ash"
             | "logior"
             // Comparison
             | "="
@@ -579,6 +604,18 @@ pub fn call(
         }
         "%" | "mod" => {
             need_args(name, args, 2)?;
+            if has_float(args) {
+                let a = numeric_to_f64(interp, &args[0])?;
+                let b = numeric_to_f64(interp, &args[1])?;
+                if b == 0.0 {
+                    return Err(LispError::Signal("Division by zero".into()));
+                }
+                let mut remainder = a % b;
+                if remainder != 0.0 && (remainder.is_sign_negative() != b.is_sign_negative()) {
+                    remainder += b;
+                }
+                return Ok(Value::Float(remainder));
+            }
             if has_big_integer(args) {
                 let a = integer_like_bigint(interp, &args[0])?;
                 let b = integer_like_bigint(interp, &args[1])?;
@@ -607,6 +644,13 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("max".into(), 0));
             }
+            if has_float(args) {
+                let mut result = numeric_to_f64(interp, &args[0])?;
+                for a in &args[1..] {
+                    result = result.max(numeric_to_f64(interp, a)?);
+                }
+                return Ok(Value::Float(result));
+            }
             if has_big_integer(args) {
                 let mut result = integer_like_bigint(interp, &args[0])?;
                 for a in &args[1..] {
@@ -624,6 +668,13 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("min".into(), 0));
             }
+            if has_float(args) {
+                let mut result = numeric_to_f64(interp, &args[0])?;
+                for a in &args[1..] {
+                    result = result.min(numeric_to_f64(interp, a)?);
+                }
+                return Ok(Value::Float(result));
+            }
             if has_big_integer(args) {
                 let mut result = integer_like_bigint(interp, &args[0])?;
                 for a in &args[1..] {
@@ -639,7 +690,9 @@ pub fn call(
         }
         "abs" => {
             need_args(name, args, 1)?;
-            if matches!(args[0], Value::BigInteger(_)) {
+            if let Value::Float(value) = args[0] {
+                Ok(Value::Float(value.abs()))
+            } else if matches!(args[0], Value::BigInteger(_)) {
                 Ok(normalize_bigint_value(integer_like_bigint(interp, &args[0])?.abs()))
             } else {
                 let value = integer_like_i64(interp, &args[0])?;
@@ -648,6 +701,139 @@ pub fn call(
                     None => Ok(normalize_bigint_value(BigInt::from(value).abs())),
                 }
             }
+        }
+        "sin" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.sin()))
+        }
+        "cos" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.cos()))
+        }
+        "tan" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.tan()))
+        }
+        "asin" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.asin()))
+        }
+        "acos" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.acos()))
+        }
+        "atan" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let y = numeric_to_f64(interp, &args[0])?;
+            Ok(Value::Float(if let Some(x) = args.get(1) {
+                y.atan2(numeric_to_f64(interp, x)?)
+            } else {
+                y.atan()
+            }))
+        }
+        "copysign" => {
+            need_args(name, args, 2)?;
+            Ok(Value::Float(
+                numeric_to_f64(interp, &args[0])?.copysign(numeric_to_f64(interp, &args[1])?),
+            ))
+        }
+        "isnan" => {
+            need_args(name, args, 1)?;
+            let value = match &args[0] {
+                Value::Float(value) => *value,
+                Value::Integer(_) | Value::BigInteger(_) => {
+                    return Ok(Value::Nil);
+                }
+                _ => return Err(LispError::TypeError("number".into(), args[0].type_name())),
+            };
+            Ok(if value.is_nan() { Value::T } else { Value::Nil })
+        }
+        "exp" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.exp()))
+        }
+        "expt" => {
+            need_args(name, args, 2)?;
+            Ok(expt_value(interp, &args[0], &args[1])?)
+        }
+        "log" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let value = numeric_to_f64(interp, &args[0])?;
+            let result = if let Some(base) = args.get(1) {
+                let base = numeric_to_f64(interp, base)?;
+                if base == 10.0 {
+                    value.log10()
+                } else if base == 2.0 {
+                    value.log2()
+                } else {
+                    value.log(base)
+                }
+            } else {
+                value.ln()
+            };
+            Ok(Value::Float(result))
+        }
+        "sqrt" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?.sqrt()))
+        }
+        "float" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(numeric_to_f64(interp, &args[0])?))
+        }
+        "frexp" => {
+            need_args(name, args, 1)?;
+            let (sig, exp) = frexp_parts(numeric_to_f64(interp, &args[0])?);
+            Ok(Value::cons(Value::Float(sig), Value::Integer(exp)))
+        }
+        "ldexp" => {
+            need_args(name, args, 2)?;
+            let significand = numeric_to_f64(interp, &args[0])?;
+            let exponent = integer_like_i64(interp, &args[1])?;
+            Ok(Value::Float(ldexp_value(significand, exponent)))
+        }
+        "logb" => {
+            need_args(name, args, 1)?;
+            Ok(logb_value(interp, &args[0])?)
+        }
+        "ceiling" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Ceiling, args, false)?)
+        }
+        "floor" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Floor, args, false)?)
+        }
+        "round" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Round, args, false)?)
+        }
+        "truncate" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Truncate, args, false)?)
+        }
+        "fceiling" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Ceiling, args, true)?)
+        }
+        "ffloor" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Floor, args, true)?)
+        }
+        "fround" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Round, args, true)?)
+        }
+        "ftruncate" => {
+            Ok(integer_rounding_value(interp, RoundingKind::Truncate, args, true)?)
+        }
+        "ash" => {
+            need_args(name, args, 2)?;
+            let value = integer_like_bigint(interp, &args[0])?;
+            let shift = integer_like_i64(interp, &args[1])?;
+            let shifted = if shift >= 0 {
+                value << shift as usize
+            } else {
+                value >> (-shift) as usize
+            };
+            Ok(normalize_bigint_value(shifted))
         }
         "logior" => {
             let mut result = 0i64;
@@ -698,7 +884,7 @@ pub fn call(
         }
         "<=" => {
             need_args(name, args, 2)?;
-            Ok(if !numeric_gt(interp, &args[0], &args[1])? {
+            Ok(if numeric_lte(interp, &args[0], &args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -706,7 +892,7 @@ pub fn call(
         }
         ">=" => {
             need_args(name, args, 2)?;
-            Ok(if !numeric_lt(interp, &args[0], &args[1])? {
+            Ok(if numeric_gte(interp, &args[0], &args[1])? {
                 Value::T
             } else {
                 Value::Nil
@@ -3959,7 +4145,7 @@ pub fn call(
         }
         "evenp" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].as_integer()? % 2 == 0 {
+            Ok(if (&integer_like_bigint(interp, &args[0])? & BigInt::from(1u8)).is_zero() {
                 Value::T
             } else {
                 Value::Nil
@@ -8234,6 +8420,14 @@ fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispError> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum RoundingKind {
+    Ceiling,
+    Floor,
+    Round,
+    Truncate,
+}
+
 fn normalize_bigint_value(value: BigInt) -> Value {
     value
         .to_i64()
@@ -8274,6 +8468,314 @@ fn numeric_to_f64(interp: &Interpreter, value: &Value) -> Result<f64, LispError>
     }
 }
 
+fn bigint_from_integral_float(value: f64) -> Option<BigInt> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return None;
+    }
+    bigint_from_truncated_float(value).ok()
+}
+
+fn apply_rounding_kind(kind: RoundingKind, value: f64) -> Result<f64, LispError> {
+    if !value.is_finite() {
+        return Err(LispError::Signal("Floating-point overflow".into()));
+    }
+    Ok(match kind {
+        RoundingKind::Ceiling => value.ceil(),
+        RoundingKind::Floor => value.floor(),
+        RoundingKind::Round => value.round_ties_even(),
+        RoundingKind::Truncate => value.trunc(),
+    })
+}
+
+fn integer_rounding_value(
+    interp: &Interpreter,
+    kind: RoundingKind,
+    args: &[Value],
+    float_result: bool,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(
+            match (kind, float_result) {
+                (RoundingKind::Ceiling, false) => "ceiling",
+                (RoundingKind::Floor, false) => "floor",
+                (RoundingKind::Round, false) => "round",
+                (RoundingKind::Truncate, false) => "truncate",
+                (RoundingKind::Ceiling, true) => "fceiling",
+                (RoundingKind::Floor, true) => "ffloor",
+                (RoundingKind::Round, true) => "fround",
+                (RoundingKind::Truncate, true) => "ftruncate",
+            }
+            .into(),
+            args.len(),
+        ));
+    }
+    if float_result && !matches!(args[0], Value::Float(_)) {
+        return Err(LispError::TypeError("float".into(), args[0].type_name()));
+    }
+
+    if args.len() == 1 {
+        if float_result {
+            return Ok(Value::Float(apply_rounding_kind(
+                kind,
+                numeric_to_f64(interp, &args[0])?,
+            )?));
+        }
+        return match &args[0] {
+            Value::Integer(_) | Value::BigInteger(_) => Ok(args[0].clone()),
+            _ => rounded_f64_to_number_value(apply_rounding_kind(
+                kind,
+                numeric_to_f64(interp, &args[0])?,
+            )?),
+        };
+    }
+
+    if let Some(rounded) = exact_numeric_division_round(interp, kind, &args[0], &args[1])? {
+        return if float_result {
+            Ok(Value::Float(numeric_to_f64(interp, &rounded)?))
+        } else {
+            Ok(rounded)
+        };
+    }
+
+    if let (Some(numerator), Some(divisor)) = (
+        integer_like_bigint_for_rounding(interp, &args[0]),
+        integer_like_bigint_for_rounding(interp, &args[1]),
+    ) {
+        if divisor.is_zero() {
+            return Err(LispError::Signal("Division by zero".into()));
+        }
+        let rounded = exact_integer_division_round(kind, numerator, divisor);
+        return if float_result {
+            Ok(Value::Float(
+                numeric_to_f64(interp, &rounded).unwrap_or(f64::NAN),
+            ))
+        } else {
+            Ok(rounded)
+        };
+    }
+
+    let divisor = numeric_to_f64(interp, &args[1])?;
+    if divisor == 0.0 || divisor.is_nan() {
+        return Err(LispError::Signal("Division by zero".into()));
+    }
+    let quotient = numeric_to_f64(interp, &args[0])? / divisor;
+    let rounded = apply_rounding_kind(kind, quotient)?;
+    if float_result {
+        Ok(Value::Float(rounded))
+    } else {
+        rounded_f64_to_number_value(rounded)
+    }
+}
+
+fn rounded_f64_to_number_value(value: f64) -> Result<Value, LispError> {
+    Ok(normalize_bigint_value(bigint_from_truncated_float(value)?))
+}
+
+fn integer_like_bigint_for_rounding(interp: &Interpreter, value: &Value) -> Option<BigInt> {
+    match value {
+        Value::Float(value) => bigint_from_integral_float(*value),
+        _ => integer_like_bigint(interp, value).ok(),
+    }
+}
+
+fn exact_numeric_division_round(
+    interp: &Interpreter,
+    kind: RoundingKind,
+    numerator: &Value,
+    divisor: &Value,
+) -> Result<Option<Value>, LispError> {
+    let Some((num_sig, num_exp)) = exact_binary_rational(interp, numerator)? else {
+        return Ok(None);
+    };
+    let Some((div_sig, div_exp)) = exact_binary_rational(interp, divisor)? else {
+        return Ok(None);
+    };
+    if div_sig.is_zero() {
+        return Err(LispError::Signal("Division by zero".into()));
+    }
+    let mut scaled_num = num_sig;
+    let mut scaled_div = div_sig;
+    let exponent_delta = num_exp - div_exp;
+    if exponent_delta >= 0 {
+        scaled_num <<= exponent_delta as usize;
+    } else {
+        scaled_div <<= (-exponent_delta) as usize;
+    }
+    Ok(Some(exact_integer_division_round(
+        kind,
+        scaled_num,
+        scaled_div,
+    )))
+}
+
+fn exact_integer_division_round(kind: RoundingKind, numerator: BigInt, divisor: BigInt) -> Value {
+    let quotient = &numerator / &divisor;
+    let remainder = &numerator % &divisor;
+    if remainder.is_zero() {
+        return normalize_bigint_value(quotient);
+    }
+    let same_sign = numerator.sign() == divisor.sign();
+    let adjusted = match kind {
+        RoundingKind::Truncate => quotient,
+        RoundingKind::Floor => {
+            if same_sign {
+                quotient
+            } else {
+                quotient - 1
+            }
+        }
+        RoundingKind::Ceiling => {
+            if same_sign {
+                quotient + 1
+            } else {
+                quotient
+            }
+        }
+        RoundingKind::Round => {
+            let twice_remainder = remainder.abs() * 2;
+            let divisor_abs = divisor.abs();
+            if twice_remainder < divisor_abs {
+                quotient
+            } else if twice_remainder > divisor_abs {
+                if same_sign {
+                    quotient + 1
+                } else {
+                    quotient - 1
+                }
+            } else if (&quotient & BigInt::from(1u8)).is_zero() {
+                quotient
+            } else if same_sign {
+                quotient + 1
+            } else {
+                quotient - 1
+            }
+        }
+    };
+    normalize_bigint_value(adjusted)
+}
+
+fn frexp_parts(value: f64) -> (f64, i64) {
+    if value == 0.0 {
+        return (value, 0);
+    }
+    let exponent = value.abs().log2().floor() as i64 + 1;
+    let significand = value / ldexp_value(1.0, exponent);
+    (significand, exponent)
+}
+
+fn ldexp_value(significand: f64, exponent: i64) -> f64 {
+    if exponent > i32::MAX as i64 {
+        return if significand == 0.0 {
+            0.0
+        } else if significand.is_sign_negative() {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    if exponent < i32::MIN as i64 {
+        return 0.0_f64.copysign(significand);
+    }
+    significand * 2.0_f64.powi(exponent as i32)
+}
+
+fn logb_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    match value {
+        Value::Integer(number) => {
+            if *number == 0 {
+                return Err(LispError::Signal("Arithmetic error".into()));
+            }
+            Ok(Value::Integer(i64::BITS as i64 - 1 - number.unsigned_abs().leading_zeros() as i64))
+        }
+        Value::BigInteger(number) => {
+            if number.is_zero() {
+                return Err(LispError::Signal("Arithmetic error".into()));
+            }
+            Ok(Value::Integer(number.abs().to_str_radix(2).len() as i64 - 1))
+        }
+        _ => {
+            let value = numeric_to_f64(interp, value)?;
+            if !value.is_finite() || value == 0.0 {
+                return Err(LispError::Signal("Arithmetic error".into()));
+            }
+            let (_sig, exponent) = frexp_parts(value.abs());
+            Ok(Value::Integer(exponent - 1))
+        }
+    }
+}
+
+fn expt_value(interp: &Interpreter, base: &Value, exponent: &Value) -> Result<Value, LispError> {
+    let exponent_bigint = integer_like_bigint(interp, exponent);
+    if matches!(base, Value::Float(_)) || matches!(exponent, Value::Float(_)) {
+        return Ok(Value::Float(
+            numeric_to_f64(interp, base)?.powf(numeric_to_f64(interp, exponent)?),
+        ));
+    }
+    let exponent_bigint = exponent_bigint?;
+    if exponent_bigint.is_negative() {
+        let base_value = integer_like_i64(interp, base)? as f64;
+        let exponent_value = exponent_bigint
+            .to_f64()
+            .ok_or_else(|| LispError::TypeError("number".into(), exponent.type_name()))?;
+        return Ok(Value::Float(base_value.powf(exponent_value)));
+    }
+
+    let base_bigint = integer_like_bigint(interp, base)?;
+    if exponent_bigint.is_zero() {
+        return Ok(Value::Integer(1));
+    }
+    if base_bigint.is_zero() {
+        return Ok(Value::Integer(0));
+    }
+    if base_bigint == BigInt::from(1) {
+        return Ok(Value::Integer(1));
+    }
+    if base_bigint == BigInt::from(-1) {
+        let even = (&exponent_bigint & BigInt::from(1u8)).is_zero();
+        return Ok(Value::Integer(if even { 1 } else { -1 }));
+    }
+    let exponent_u32 = exponent_bigint
+        .to_u32()
+        .ok_or_else(|| LispError::Signal("Exponent too large".into()))?;
+    Ok(normalize_bigint_value(base_bigint.pow(exponent_u32)))
+}
+
+fn exact_binary_rational(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Option<(BigInt, i32)>, LispError> {
+    match value {
+        Value::Float(value) => Ok(exact_float_binary_rational(*value)),
+        Value::Integer(value) => Ok(Some((BigInt::from(*value), 0))),
+        Value::BigInteger(value) => Ok(Some((value.clone(), 0))),
+        Value::Marker(_) => Ok(Some((BigInt::from(integer_like_i64(interp, value)?), 0))),
+        _ => Err(LispError::TypeError("number".into(), value.type_name())),
+    }
+}
+
+fn exact_float_binary_rational(value: f64) -> Option<(BigInt, i32)> {
+    if !value.is_finite() {
+        return None;
+    }
+    if value == 0.0 {
+        return Some((BigInt::zero(), 0));
+    }
+    let bits = value.to_bits();
+    let negative = bits >> 63 != 0;
+    let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+    let mantissa = bits & ((1u64 << 52) - 1);
+    let (significand, exponent) = if exponent_bits == 0 {
+        (mantissa, 1 - 1023 - 52)
+    } else {
+        ((1u64 << 52) | mantissa, exponent_bits - 1023 - 52)
+    };
+    let mut bigint = BigInt::from(significand);
+    if negative {
+        bigint = -bigint;
+    }
+    Some((bigint, exponent))
+}
+
 fn numeric_lt(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
     if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
         return Ok(numeric_to_f64(interp, left)? < numeric_to_f64(interp, right)?);
@@ -8292,6 +8794,26 @@ fn numeric_gt(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool,
         return Ok(integer_like_bigint(interp, left)? > integer_like_bigint(interp, right)?);
     }
     Ok(integer_like_i64(interp, left)? > integer_like_i64(interp, right)?)
+}
+
+fn numeric_lte(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
+    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+        return Ok(numeric_to_f64(interp, left)? <= numeric_to_f64(interp, right)?);
+    }
+    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
+        return Ok(integer_like_bigint(interp, left)? <= integer_like_bigint(interp, right)?);
+    }
+    Ok(integer_like_i64(interp, left)? <= integer_like_i64(interp, right)?)
+}
+
+fn numeric_gte(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
+    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+        return Ok(numeric_to_f64(interp, left)? >= numeric_to_f64(interp, right)?);
+    }
+    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
+        return Ok(integer_like_bigint(interp, left)? >= integer_like_bigint(interp, right)?);
+    }
+    Ok(integer_like_i64(interp, left)? >= integer_like_i64(interp, right)?)
 }
 
 fn number_to_string(value: &Value) -> Result<String, LispError> {

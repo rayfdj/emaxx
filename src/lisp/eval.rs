@@ -1683,6 +1683,8 @@ impl Interpreter {
                         "prog1" => return self.sf_prog1(&items, env),
                         "let" => return self.sf_let(&items, env),
                         "let*" => return self.sf_letstar(&items, env),
+                        "pcase-let" => return self.sf_pcase_let(&items, env, false),
+                        "pcase-let*" => return self.sf_pcase_let(&items, env, true),
                         "let-alist" => return self.sf_let_alist(&items, env),
                         "setq" => return self.sf_setq(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
@@ -2190,6 +2192,54 @@ impl Interpreter {
             }
         }
 
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        result
+    }
+
+    fn sf_pcase_let(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+        sequential: bool,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let bindings = items[1].to_vec()?;
+        if sequential {
+            env.push(Vec::new());
+            for binding in &bindings {
+                let parts = binding.to_vec()?;
+                if parts.len() < 2 {
+                    return Err(LispError::ReadError("bad pcase-let* binding".into()));
+                }
+                let value = self.eval(&parts[1], env)?;
+                let mut frame_bindings = Vec::new();
+                if !pcase_pattern_bindings(&parts[0], &value, &mut frame_bindings)? {
+                    env.pop();
+                    return Err(LispError::Signal("pcase-let*: no matching clause".into()));
+                }
+                let frame = env.last_mut().expect("env frame just pushed");
+                frame.extend(frame_bindings);
+            }
+            let result = self.sf_progn(&items[2..], env);
+            env.pop();
+            return result;
+        }
+
+        let mut frame = Vec::new();
+        for binding in &bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                return Err(LispError::ReadError("bad pcase-let binding".into()));
+            }
+            let value = self.eval(&parts[1], env)?;
+            if !pcase_pattern_bindings(&parts[0], &value, &mut frame)? {
+                return Err(LispError::Signal("pcase-let: no matching clause".into()));
+            }
+        }
+        env.push(frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         result
