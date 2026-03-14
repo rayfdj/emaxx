@@ -240,7 +240,7 @@ impl Interpreter {
         self.current_load_file.as_deref()
     }
 
-    fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
+    pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
         let direct = PathBuf::from(target);
         if direct.exists() {
             return Some(direct);
@@ -1559,6 +1559,7 @@ impl Interpreter {
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
+            "custom-current-group-alist" => Some(Value::Nil),
             "source-directory" => Some(Value::String(
                 std::env::var("EMACS_TEST_DIRECTORY")
                     .ok()
@@ -4334,6 +4335,55 @@ mod tests {
             base
         );
         assert_eq!(eval_str(&expr), Value::String(expected));
+    }
+
+    #[test]
+    fn custom_current_group_alist_defaults_to_nil() {
+        assert_eq!(eval_str("custom-current-group-alist"), Value::Nil);
+    }
+
+    #[test]
+    fn locate_library_searches_configured_load_path() {
+        let temp = std::env::temp_dir().join(format!(
+            "emaxx-locate-library-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let library = temp.join("sample-lib.el");
+        std::fs::write(&library, ";;; sample-lib.el\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![temp.clone()]);
+        assert_eq!(
+            eval_str_with(&mut interp, "(locate-library \"sample-lib\")"),
+            Value::String(library.display().to_string())
+        );
+
+        std::fs::remove_file(&library).unwrap();
+        std::fs::remove_dir(&temp).unwrap();
+    }
+
+    #[test]
+    fn search_forward_missing_pattern_signals_search_failed() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let forms = Reader::new("(with-temp-buffer (insert \"abc\") (search-forward \"z\"))")
+            .read_all()
+            .unwrap();
+        let error = interp.eval(&forms[0], &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "search-failed");
+        assert_eq!(error.to_string(), "\"z\"");
+    }
+
+    #[test]
+    fn search_forward_noerror_returns_nil_on_missing_pattern() {
+        assert_eq!(
+            eval_str("(with-temp-buffer (insert \"abc\") (search-forward \"z\" nil t))"),
+            Value::Nil
+        );
     }
 
     #[test]

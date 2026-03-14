@@ -305,7 +305,22 @@ impl LispError {
             LispError::TypeError(_, _) => "wrong-type-argument",
             LispError::Void(_) => "void-variable",
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments",
-            LispError::Signal(_) | LispError::SignalValue(_) => "error",
+            LispError::Signal(_) => "error",
+            LispError::SignalValue(value) => {
+                if value
+                    .to_vec()
+                    .ok()
+                    .and_then(|items| match items.first() {
+                        Some(Value::Symbol(symbol)) => Some(symbol == "search-failed"),
+                        _ => None,
+                    })
+                    .unwrap_or(false)
+                {
+                    "search-failed"
+                } else {
+                    "error"
+                }
+            }
             LispError::ErtTestFailed(_) => "ert-test-failed",
             LispError::Throw(_, _) => "no-catch",
             LispError::TestSkipped(_) => "ert-test-skipped",
