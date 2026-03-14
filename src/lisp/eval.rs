@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::primitives;
@@ -142,6 +143,8 @@ pub struct Interpreter {
     pub lossage_size: i64,
     face_inheritance: Vec<(String, Option<String>)>,
     undo_sequence: Option<UndoSequenceState>,
+    load_path: Vec<PathBuf>,
+    loading_features: Vec<String>,
 }
 
 impl Default for Interpreter {
@@ -193,7 +196,13 @@ impl Interpreter {
             lossage_size: 300,
             face_inheritance: Vec::new(),
             undo_sequence: None,
+            load_path: Vec::new(),
+            loading_features: Vec::new(),
         }
+    }
+
+    pub fn set_load_path(&mut self, load_path: Vec<PathBuf>) {
+        self.load_path = load_path;
     }
 
     /// Allocate a new unique buffer ID.
@@ -229,6 +238,49 @@ impl Interpreter {
 
     pub fn current_load_file(&self) -> Option<&str> {
         self.current_load_file.as_deref()
+    }
+
+    fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
+        let direct = PathBuf::from(target);
+        if direct.exists() {
+            return Some(direct);
+        }
+
+        let with_el = if target.ends_with(".el") {
+            None
+        } else {
+            Some(format!("{target}.el"))
+        };
+        for root in &self.load_path {
+            let candidate = root.join(target);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            if let Some(with_el) = &with_el {
+                let candidate = root.join(with_el);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
+    fn require_feature(&mut self, feature: &str) -> Result<Value, LispError> {
+        if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
+            return Ok(Value::Symbol(feature.to_string()));
+        }
+        let Some(path) = self.resolve_load_target(feature) else {
+            return Err(LispError::Signal(format!("Cannot open load file: {feature}")));
+        };
+        self.loading_features.push(feature.to_string());
+        let load_result = crate::lisp::load_file_strict(self, &path);
+        self.loading_features.pop();
+        load_result?;
+        if !self.has_feature(feature) {
+            self.provide_feature(feature);
+        }
+        Ok(Value::Symbol(feature.to_string()))
     }
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
@@ -1688,10 +1740,13 @@ impl Interpreter {
                         "let-alist" => return self.sf_let_alist(&items, env),
                         "setq" => return self.sf_setq(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
+                        "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
+                        "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
                         "defvar" | "defconst" => return self.sf_defvar(&items, env),
                         "defvar-local" => return self.sf_defvar_local(&items, env),
-                        "defun" => return self.sf_defun(&items, env),
+                        "defun" | "defsubst" => return self.sf_defun(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
+                        "defalias" => return self.sf_defalias(&items, env),
                         "backquote" => return self.eval_backquote(&items[1], env),
                         "lambda" => return self.sf_lambda(&items, env),
                         "function" | "function-quote" => {
@@ -1741,43 +1796,6 @@ impl Interpreter {
                         }
                         "cl-macrolet" => {
                             return self.sf_cl_macrolet(&items, env)
-                        }
-                        "incf" | "cl-incf" => {
-                            // (incf PLACE &optional DELTA)
-                            if items.len() < 2 {
-                                return Err(LispError::WrongNumberOfArgs(
-                                    "incf".into(),
-                                    items.len() - 1,
-                                ));
-                            }
-                            let delta = if items.len() > 2 {
-                                self.eval(&items[2], env)?.as_integer()?
-                            } else {
-                                1
-                            };
-                            let name = items[1].as_symbol()?.to_string();
-                            let cur = self.lookup(&name, env)?.as_integer()?;
-                            let new_val = Value::Integer(cur + delta);
-                            self.set_variable(&name, new_val.clone(), env);
-                            return Ok(new_val);
-                        }
-                        "decf" | "cl-decf" => {
-                            if items.len() < 2 {
-                                return Err(LispError::WrongNumberOfArgs(
-                                    "decf".into(),
-                                    items.len() - 1,
-                                ));
-                            }
-                            let delta = if items.len() > 2 {
-                                self.eval(&items[2], env)?.as_integer()?
-                            } else {
-                                1
-                            };
-                            let name = items[1].as_symbol()?.to_string();
-                            let cur = self.lookup(&name, env)?.as_integer()?;
-                            let new_val = Value::Integer(cur - delta);
-                            self.set_variable(&name, new_val.clone(), env);
-                            return Ok(new_val);
                         }
                         "push" => {
                             // (push NEWELT PLACE)
@@ -1856,7 +1874,7 @@ impl Interpreter {
                         "rx" => return self.sf_rx(&items),
                         "require" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
-                                self.provide_feature(&feature);
+                                return self.require_feature(&feature);
                             }
                             return Ok(Value::Nil);
                         }
@@ -2322,6 +2340,30 @@ impl Interpreter {
             self.mark_auto_buffer_local(items[1].as_symbol()?);
         }
         self.sf_defvar(items, env)
+    }
+
+    fn sf_incf(&mut self, items: &[Value], env: &mut Env, sign: i64) -> Result<Value, LispError> {
+        if items.len() < 2 || items.len() > 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                if sign >= 0 { "incf".into() } else { "decf".into() },
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let delta = if let Some(amount) = items.get(2) {
+            self.eval(amount, env)?
+        } else {
+            Value::Integer(1)
+        };
+        let current = self.lookup(&name, env)?;
+        let updated = primitives::call(
+            self,
+            if sign >= 0 { "+" } else { "-" },
+            &[current, delta],
+            env,
+        )?;
+        self.set_variable(&name, updated.clone(), env);
+        Ok(updated)
     }
 
     fn sf_add_to_list(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -3288,6 +3330,24 @@ impl Interpreter {
         };
         let body: Vec<Value> = items[body_start..].to_vec();
         self.macros.push((name.clone(), params, body));
+        Ok(Value::Symbol(name))
+    }
+
+    fn sf_defalias(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "defalias".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = quoted_symbol_name(&items[1])
+            .or_else(|| items[1].as_symbol().ok().map(str::to_string))
+            .ok_or_else(|| LispError::TypeError("symbol".into(), items[1].type_name()))?;
+        let function = match &items[2] {
+            Value::Symbol(symbol) => self.lookup_function(symbol, env)?,
+            other => self.eval(other, env)?,
+        };
+        self.functions.push((name.clone(), function));
         Ok(Value::Symbol(name))
     }
 

@@ -404,6 +404,38 @@ pub fn configure_upstream_like_env_with_home(
     }
 }
 
+pub fn emaxx_upstream_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for relative_root in ["test", "test/lisp", "lisp"] {
+        let root = emacs_repo.join(relative_root);
+        if !root.exists() {
+            continue;
+        }
+        paths.push(canonicalize_path(&root)?);
+        for entry in WalkDir::new(&root).into_iter() {
+            let entry = entry.map_err(|err| format!("walk {}: {err}", root.display()))?;
+            if entry.file_type().is_dir()
+                && entry
+                    .path()
+                    .read_dir()
+                    .ok()
+                    .into_iter()
+                    .flat_map(|iter| iter.filter_map(Result::ok))
+                    .any(|child| {
+                        child.file_type().is_ok_and(|file_type| file_type.is_file())
+                            && child.path().extension().is_some_and(|ext| ext == "el")
+                    })
+            {
+                let path = canonicalize_path(entry.path())?;
+                if !paths.iter().any(|existing| existing == &path) {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
 pub fn discover_test_files(repo_root: &Path, scope: Scope) -> Result<Vec<PathBuf>, String> {
     let test_root = repo_root.join("test");
     let mut files = Vec::new();

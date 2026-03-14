@@ -412,6 +412,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "cancel-timer"
             | "lossage-size"
             | "ignore"
+            | "make-obsolete"
+            | "make-obsolete-variable"
+            | "define-obsolete-function-alias"
+            | "define-obsolete-variable-alias"
+            | "macroexp-warn-and-return"
             | "intern"
             | "autoloadp"
             | "documentation"
@@ -4027,6 +4032,11 @@ pub fn call(
                 .unwrap_or(Value::Nil))
         }
         "ignore" => Ok(Value::Nil),
+        "make-obsolete"
+        | "make-obsolete-variable"
+        | "define-obsolete-function-alias"
+        | "define-obsolete-variable-alias" => Ok(Value::Nil),
+        "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
         "describe-function" => {
             let _ = get_or_create_buffer(interp, "*Help*");
             Ok(Value::Nil)

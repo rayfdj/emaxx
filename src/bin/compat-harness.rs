@@ -399,6 +399,7 @@ fn run_emaxx(
         .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
     let result_path = per_file_dir.join("emaxx.json");
     let test_directory = repo_root.join("test");
+    let load_paths = compat::emaxx_upstream_load_path(repo_root)?;
     let mut command = Command::new(emaxx_binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
@@ -406,8 +407,10 @@ fn run_emaxx(
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");
     command.arg("--batch");
-    command.arg("-L");
-    command.arg(&test_directory);
+    for load_path in &load_paths {
+        command.arg("-L");
+        command.arg(load_path);
+    }
     command.arg("-l");
     command.arg("ert");
     command.arg("-l");

@@ -26,6 +26,7 @@ struct PerfRequest {
 
 pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     let mut interpreter = Interpreter::new();
+    interpreter.set_load_path(options.load_path.clone());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     let mut loaded_test_file: Option<PathBuf> = None;
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
