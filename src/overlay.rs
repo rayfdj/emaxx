@@ -68,6 +68,15 @@ impl Overlay {
 /// Adjust overlay positions after inserting `nchars` at position `pos` (1-based).
 pub fn adjust_for_insert(overlays: &mut [Overlay], pos: usize, nchars: usize) {
     for ov in overlays.iter_mut() {
+        if ov.beg == ov.end && ov.beg == pos {
+            if ov.rear_advance {
+                ov.end += nchars;
+                if ov.front_advance {
+                    ov.beg += nchars;
+                }
+            }
+            continue;
+        }
         if ov.beg > pos || (ov.beg == pos && ov.front_advance) {
             ov.beg += nchars;
         }
@@ -134,6 +143,22 @@ mod tests {
         adjust_for_insert(&mut ovs, 5, 2);
         assert_eq!(ovs[0].beg, 7);
         assert_eq!(ovs[0].end, 12);
+    }
+
+    #[test]
+    fn adjust_insert_empty_overlay_front_advance_only_stays_put() {
+        let mut ovs = vec![Overlay::new(1, 5, 5, 0, true, false)];
+        adjust_for_insert(&mut ovs, 5, 2);
+        assert_eq!(ovs[0].beg, 5);
+        assert_eq!(ovs[0].end, 5);
+    }
+
+    #[test]
+    fn adjust_insert_empty_overlay_with_both_advances_moves() {
+        let mut ovs = vec![Overlay::new(1, 5, 5, 0, true, true)];
+        adjust_for_insert(&mut ovs, 5, 2);
+        assert_eq!(ovs[0].beg, 7);
+        assert_eq!(ovs[0].end, 7);
     }
 
     #[test]
