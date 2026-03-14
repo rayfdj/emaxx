@@ -629,6 +629,9 @@ impl<'a> Reader<'a> {
         }
 
         // Try parsing as float
+        if let Some(f) = parse_special_float_token(&token) {
+            return Ok(Some(Value::Float(f)));
+        }
         if (token.contains('.') || token.contains('e') || token.contains('E'))
             && let Ok(f) = token.parse::<f64>()
         {
@@ -681,6 +684,43 @@ fn is_integer_token(token: &str) -> bool {
         .strip_prefix(['+', '-'])
         .unwrap_or(token);
     !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn parse_special_float_token(token: &str) -> Option<f64> {
+    let (mantissa, suffix) = token.split_once(['e', 'E'])?;
+    let mantissa_value = mantissa.parse::<f64>().ok()?;
+    let upper_suffix = suffix.to_ascii_uppercase();
+    if upper_suffix == "+NAN" || upper_suffix == "NAN" {
+        let sign = if mantissa_value.is_sign_negative() {
+            -1.0
+        } else {
+            1.0
+        };
+        return Some(f64::NAN.copysign(sign));
+    }
+    if upper_suffix == "+INF" || upper_suffix == "INF" {
+        return Some(if mantissa_value.is_sign_negative() {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        });
+    }
+    if upper_suffix == "-INF" {
+        return Some(if mantissa_value.is_sign_negative() {
+            f64::INFINITY
+        } else {
+            f64::NEG_INFINITY
+        });
+    }
+    if upper_suffix == "-NAN" {
+        let sign = if mantissa_value.is_sign_negative() {
+            1.0
+        } else {
+            -1.0
+        };
+        return Some(f64::NAN.copysign(sign));
+    }
+    None
 }
 
 fn normalize_bigint(value: BigInt) -> Value {
