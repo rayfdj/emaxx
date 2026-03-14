@@ -301,6 +301,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-remote-p"
             | "ert-resource-directory"
             | "ert-resource-file"
+            | "load"
+            | "file-readable-p"
             | "file-exists-p"
             | "file-executable-p"
             | "delete-file"
@@ -406,6 +408,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "take"
             | "add-hook"
             | "remove-hook"
+            | "run-hooks"
+            | "mapatoms"
+            | "eval-after-load"
             | "describe-function"
             | "executable-find"
             | "run-with-timer"
@@ -3337,6 +3342,23 @@ pub fn call(
             };
             Ok(Value::String(expand_file_name(&file, Some(&directory))))
         }
+        "load" => {
+            if args.is_empty() || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let target = string_text(&args[0])?;
+            let _loaded = interp.load_target(&target)?;
+            Ok(Value::T)
+        }
+        "file-readable-p" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            Ok(if file_readable_p(&path) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "file-exists-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -4095,6 +4117,11 @@ pub fn call(
             } else {
                 interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
             }
+            Ok(Value::Nil)
+        }
+        "run-hooks" | "eval-after-load" => Ok(Value::Nil),
+        "mapatoms" => {
+            need_args(name, args, 1)?;
             Ok(Value::Nil)
         }
         "remove-hook" => {
@@ -6630,6 +6657,10 @@ fn path_to_directory_string(path: &Path) -> String {
         rendered.push(std::path::MAIN_SEPARATOR);
     }
     rendered
+}
+
+fn file_readable_p(path: &str) -> bool {
+    fs::File::open(path).is_ok()
 }
 
 fn file_executable_p(path: &str) -> bool {
