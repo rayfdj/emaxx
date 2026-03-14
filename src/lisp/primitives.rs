@@ -299,6 +299,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-name-concat"
             | "file-name-unquote"
             | "file-remote-p"
+            | "locate-library"
             | "ert-resource-directory"
             | "ert-resource-file"
             | "load"
@@ -2038,10 +2039,13 @@ pub fn call(
             )))
         }
         "search-forward" | "search-backward" => {
-            need_args(name, args, 1)?;
+            if args.is_empty() || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
             let needle = string_text(&args[0])?;
             let haystack = interp.buffer.buffer_string();
             let point = interp.buffer.point();
+            let noerror = args.get(2).is_some_and(Value::is_truthy);
             let result = if name == "search-forward" {
                 let offset = haystack
                     .chars()
@@ -2069,11 +2073,17 @@ pub fn call(
                     interp.buffer.goto_char(point);
                     Ok(Value::Integer(point as i64))
                 }
-                None => Ok(Value::Nil),
+                None if noerror => Ok(Value::Nil),
+                None => Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("search-failed".into()),
+                    Value::String(needle),
+                ]))),
             }
         }
         "re-search-forward" | "search-forward-regexp" => {
-            need_args(name, args, 1)?;
+            if args.is_empty() || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
             let pattern = string_text(&args[0])?;
             let regex = Regex::new(&translate_elisp_regex(&pattern))
                 .map_err(|e| LispError::Signal(e.to_string()))?;
@@ -2082,6 +2092,7 @@ pub fn call(
                 .buffer
                 .buffer_substring(start, interp.buffer.point_max())
                 .map_err(|e| LispError::Signal(e.to_string()))?;
+            let noerror = args.get(2).is_some_and(Value::is_truthy);
             if let Some(captures) = regex.captures(&tail)
                 && let Some(matched) = captures.get(0)
             {
@@ -2091,7 +2102,14 @@ pub fn call(
                 Ok(Value::Integer(pos as i64))
             } else {
                 interp.last_match_data = None;
-                Ok(Value::Nil)
+                if noerror {
+                    Ok(Value::Nil)
+                } else {
+                    Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("search-failed".into()),
+                        Value::String(pattern),
+                    ])))
+                }
             }
         }
         "buffer-string" => Ok(string_like_value(
@@ -3344,6 +3362,16 @@ pub fn call(
                 ));
             };
             Ok(Value::String(expand_file_name(&file, Some(&directory))))
+        }
+        "locate-library" => {
+            if args.is_empty() || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let library = string_text(&args[0])?;
+            Ok(interp
+                .resolve_load_target(&library)
+                .map(|path| Value::String(path.display().to_string()))
+                .unwrap_or(Value::Nil))
         }
         "load" => {
             if args.is_empty() || args.len() > 5 {
