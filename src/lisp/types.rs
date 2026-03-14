@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use std::fmt;
 
 /// A Lisp value. This covers the subset we need for ERT tests.
@@ -8,6 +10,7 @@ pub enum Value {
     Nil,
     T,
     Integer(i64),
+    BigInteger(BigInt),
     Float(f64),
     String(String),
     Symbol(String),
@@ -22,6 +25,8 @@ pub enum Value {
     Marker(u64),
     /// An overlay object, identified by unique id.
     Overlay(u64),
+    /// A char-table object, identified by unique id.
+    CharTable(u64),
 }
 
 /// An environment frame: a list of (name, value) bindings.
@@ -68,7 +73,7 @@ impl Value {
     }
 
     pub fn is_integer(&self) -> bool {
-        matches!(self, Value::Integer(_))
+        matches!(self, Value::Integer(_) | Value::BigInteger(_))
     }
 
     pub fn is_string(&self) -> bool {
@@ -92,6 +97,9 @@ impl Value {
     pub fn as_integer(&self) -> Result<i64, LispError> {
         match self {
             Value::Integer(n) => Ok(*n),
+            Value::BigInteger(n) => n
+                .to_i64()
+                .ok_or_else(|| LispError::TypeError("fixnum".into(), self.type_name())),
             _ => Err(LispError::TypeError("integer".into(), self.type_name())),
         }
     }
@@ -100,6 +108,9 @@ impl Value {
         match self {
             Value::Float(f) => Ok(*f),
             Value::Integer(n) => Ok(*n as f64),
+            Value::BigInteger(n) => n
+                .to_f64()
+                .ok_or_else(|| LispError::TypeError("number".into(), self.type_name())),
             _ => Err(LispError::TypeError("number".into(), self.type_name())),
         }
     }
@@ -155,6 +166,7 @@ impl Value {
             Value::Nil => "nil".into(),
             Value::T => "t".into(),
             Value::Integer(_) => "integer".into(),
+            Value::BigInteger(_) => "integer".into(),
             Value::Float(_) => "float".into(),
             Value::String(_) => "string".into(),
             Value::Symbol(_) => "symbol".into(),
@@ -164,6 +176,7 @@ impl Value {
             Value::Buffer(_, name) => format!("buffer<{}>", name),
             Value::Marker(id) => format!("marker<{}>", id),
             Value::Overlay(id) => format!("overlay<{}>", id),
+            Value::CharTable(id) => format!("char-table<{}>", id),
         }
     }
 }
@@ -174,6 +187,9 @@ impl PartialEq for Value {
             (Value::Nil, Value::Nil) => true,
             (Value::T, Value::T) => true,
             (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
+            (Value::Integer(a), Value::BigInteger(b))
+            | (Value::BigInteger(b), Value::Integer(a)) => &BigInt::from(*a) == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
@@ -181,6 +197,7 @@ impl PartialEq for Value {
             (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
             (Value::Marker(a), Value::Marker(b)) => a == b,
             (Value::Overlay(a), Value::Overlay(b)) => a == b,
+            (Value::CharTable(a), Value::CharTable(b)) => a == b,
             _ => false,
         }
     }
@@ -192,6 +209,7 @@ impl fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::T => write!(f, "t"),
             Value::Integer(n) => write!(f, "{}", n),
+            Value::BigInteger(n) => write!(f, "{}", n),
             Value::Float(v) => write!(f, "{}", v),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Symbol(s) => write!(f, "{}", s),
@@ -223,6 +241,7 @@ impl fmt::Display for Value {
             Value::Buffer(_, name) => write!(f, "#<buffer {}>", name),
             Value::Marker(id) => write!(f, "#<marker id:{}>", id),
             Value::Overlay(id) => write!(f, "#<overlay id:{}>", id),
+            Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
         }
     }
 }

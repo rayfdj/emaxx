@@ -37,6 +37,9 @@ pub struct Buffer {
     /// Value of modiff at last save.
     save_modiff: ModCount,
 
+    /// True when the buffer is modified but its contents were auto-saved.
+    autosaved: bool,
+
     /// Narrowing: accessible region [begv, zv] (1-based, inclusive of begv,
     /// exclusive of zv in the sense that zv is one past the last accessible char).
     begv: usize,
@@ -47,6 +50,10 @@ pub struct Buffer {
 
     /// Undo log. Each entry records enough to reverse one operation.
     undo_list: Vec<UndoEntry>,
+
+    /// Extra Lisp-visible undo entries we don't replay yet, but keep so
+    /// `buffer-undo-list` matches Emacs more closely.
+    undo_meta: Vec<Value>,
 
     /// When true, don't record undo entries.
     undo_disabled: bool,
@@ -63,7 +70,13 @@ pub enum UndoEntry {
     /// Inserted n chars starting at pos (1-based). To undo: delete them.
     Insert { pos: usize, len: usize },
     /// Deleted text that was at pos (1-based). To undo: re-insert it.
-    Delete { pos: usize, text: String },
+    Delete {
+        pos: usize,
+        text: String,
+        props: Vec<TextPropertySpan>,
+    },
+    /// Boundary between undo groups.
+    Boundary,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,12 +119,14 @@ impl Buffer {
             pt: 1,
             mark: None,
             mark_active: false,
-            modiff: 0,
-            save_modiff: 0,
+            modiff: 1,
+            save_modiff: 1,
+            autosaved: false,
             begv: 1,
             zv: 1, // empty buffer: zv = 1
             file: None,
             undo_list: Vec::new(),
+            undo_meta: Vec::new(),
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
@@ -129,12 +144,14 @@ impl Buffer {
             pt: 1,
             mark: None,
             mark_active: false,
-            modiff: 0,
-            save_modiff: 0,
+            modiff: 1,
+            save_modiff: 1,
+            autosaved: false,
             begv: 1,
             zv: len + 1,
             file: None,
             undo_list: Vec::new(),
+            undo_meta: Vec::new(),
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
@@ -156,6 +173,10 @@ impl Buffer {
     /// One past last accessible position (1-based).
     pub fn point_max(&self) -> usize {
         self.zv
+    }
+
+    pub fn restriction(&self) -> (usize, usize) {
+        (self.begv, self.zv)
     }
 
     /// Number of accessible characters.
@@ -534,6 +555,7 @@ impl Buffer {
         }
 
         self.modiff += 1;
+        self.autosaved = false;
         self.pt
     }
 
@@ -559,12 +581,14 @@ impl Buffer {
 
         // Grab text for undo before deleting
         let deleted: String = self.text.slice(from0..to0).to_string();
+        let deleted_props = self.substring_property_spans(from, to);
         let nchars = to - from;
 
         if !self.undo_disabled {
             self.undo_list.push(UndoEntry::Delete {
                 pos: from,
                 text: deleted.clone(),
+                props: deleted_props,
             });
         }
 
@@ -595,6 +619,7 @@ impl Buffer {
         self.zv -= nchars;
 
         self.modiff += 1;
+        self.autosaved = false;
         Ok(deleted)
     }
 
@@ -619,21 +644,33 @@ impl Buffer {
     // ── Undo ──
 
     pub fn undo(&mut self) -> Result<(), BufferError> {
-        let entry = match self.undo_list.pop() {
-            Some(e) => e,
-            None => return Ok(()), // nothing to undo
-        };
+        while matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
+            self.undo_list.pop();
+        }
+        if self.undo_list.is_empty() {
+            return Ok(());
+        }
 
-        // Temporarily disable undo recording while undoing
         self.undo_disabled = true;
-        match entry {
-            UndoEntry::Insert { pos, len } => {
-                self.goto_char(pos);
-                self.delete_region(pos, pos + len)?;
-            }
-            UndoEntry::Delete { pos, text } => {
-                self.goto_char(pos);
-                self.insert(&text);
+        while let Some(entry) = self.undo_list.pop() {
+            match entry {
+                UndoEntry::Insert { pos, len } => {
+                    self.goto_char(pos);
+                    self.delete_region(pos, pos + len)?;
+                }
+                UndoEntry::Delete { pos, text, props } => {
+                    self.goto_char(pos);
+                    let insert_at = self.point();
+                    self.insert(&text);
+                    for span in &props {
+                        self.add_text_properties(
+                            insert_at + span.start,
+                            insert_at + span.end,
+                            &span.props,
+                        );
+                    }
+                }
+                UndoEntry::Boundary => break,
             }
         }
         self.undo_disabled = false;
@@ -658,6 +695,15 @@ impl Buffer {
         self.zv = self.text.len_chars() + 1;
     }
 
+    pub fn restore_restriction(&mut self, start: usize, end: usize) {
+        self.begv = start.max(1).min(self.text.len_chars() + 1);
+        self.zv = end.max(self.begv).min(self.text.len_chars() + 1);
+        self.pt = self.pt.clamp(self.begv, self.zv);
+        if let Some(mark) = &mut self.mark {
+            *mark = (*mark).clamp(self.begv, self.zv);
+        }
+    }
+
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
@@ -666,6 +712,24 @@ impl Buffer {
 
     pub fn set_unmodified(&mut self) {
         self.save_modiff = self.modiff;
+        self.autosaved = false;
+    }
+
+    pub fn set_modified(&mut self) {
+        if !self.is_modified() {
+            self.modiff = self.modiff.saturating_add(1);
+        }
+        self.autosaved = false;
+    }
+
+    pub fn is_autosaved(&self) -> bool {
+        self.is_modified() && self.autosaved
+    }
+
+    pub fn set_autosaved(&mut self) {
+        if self.is_modified() {
+            self.autosaved = true;
+        }
     }
 
     pub fn enable_undo(&mut self) {
@@ -676,8 +740,45 @@ impl Buffer {
         &self.undo_list
     }
 
+    pub fn undo_meta_entries(&self) -> &[Value] {
+        &self.undo_meta
+    }
+
+    pub fn push_undo_meta(&mut self, entry: Value) {
+        self.undo_meta.push(entry);
+    }
+
+    pub fn push_undo_boundary(&mut self) {
+        if !matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
+            self.undo_list.push(UndoEntry::Boundary);
+        }
+    }
+
+    pub fn clear_undo_history(&mut self) {
+        self.undo_list.clear();
+        self.undo_meta.clear();
+    }
+
     pub fn modified_tick(&self) -> ModCount {
         self.modiff
+    }
+
+    pub fn swap_text_state(&mut self, other: &mut Buffer) {
+        std::mem::swap(&mut self.text, &mut other.text);
+        std::mem::swap(&mut self.pt, &mut other.pt);
+        std::mem::swap(&mut self.mark, &mut other.mark);
+        std::mem::swap(&mut self.mark_active, &mut other.mark_active);
+        std::mem::swap(&mut self.modiff, &mut other.modiff);
+        std::mem::swap(&mut self.save_modiff, &mut other.save_modiff);
+        std::mem::swap(&mut self.autosaved, &mut other.autosaved);
+        std::mem::swap(&mut self.begv, &mut other.begv);
+        std::mem::swap(&mut self.zv, &mut other.zv);
+        std::mem::swap(&mut self.file, &mut other.file);
+        std::mem::swap(&mut self.undo_list, &mut other.undo_list);
+        std::mem::swap(&mut self.undo_meta, &mut other.undo_meta);
+        std::mem::swap(&mut self.undo_disabled, &mut other.undo_disabled);
+        std::mem::swap(&mut self.overlays, &mut other.overlays);
+        std::mem::swap(&mut self.text_properties, &mut other.text_properties);
     }
 
     // ── Line/column helpers ──
@@ -1031,6 +1132,18 @@ mod tests {
         assert_eq!(buf.buffer_string(), "ac");
         buf.undo().unwrap();
         assert_eq!(buf.buffer_string(), "abc");
+    }
+
+    #[test]
+    fn undo_delete_restores_text_properties() {
+        let mut buf = Buffer::from_text("test", "abc");
+        buf.add_text_properties(2, 3, &[("markup".into(), Value::String("x".into()))]);
+        buf.goto_char(2);
+        buf.delete_char(1).unwrap();
+        assert_eq!(buf.buffer_string(), "ac");
+        buf.undo().unwrap();
+        assert_eq!(buf.buffer_string(), "abc");
+        assert_eq!(buf.text_property_at(2, "markup"), Some(Value::String("x".into())));
     }
 
     #[test]
