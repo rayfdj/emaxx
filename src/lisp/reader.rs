@@ -307,41 +307,44 @@ impl<'a> Reader<'a> {
             None => Err(LispError::EndOfInput),
             Some(b'\\') => {
                 self.advance(); // consume backslash
-                match self.advance() {
-                    None => Err(LispError::EndOfInput),
-                    Some(b'n') => Ok(Some(Value::Integer('\n' as i64))),
-                    Some(b't') => Ok(Some(Value::Integer('\t' as i64))),
-                    Some(b'r') => Ok(Some(Value::Integer('\r' as i64))),
-                    Some(b' ') => Ok(Some(Value::Integer(' ' as i64))),
-                    Some(b'\\') => Ok(Some(Value::Integer('\\' as i64))),
-                    Some(b'x') => {
-                        let val = self.read_hex_digits(6);
-                        Ok(Some(Value::Integer(val as i64)))
-                    }
-                    Some(b'u') => {
-                        let val = self.read_hex_digits(4);
-                        Ok(Some(Value::Integer(val as i64)))
-                    }
-                    Some(b'U') => {
-                        let val = self.read_hex_digits(8);
-                        Ok(Some(Value::Integer(val as i64)))
-                    }
-                    Some(ch) if ch.is_ascii_digit() => {
-                        // Octal escape
-                        let mut val = (ch - b'0') as i64;
-                        for _ in 0..2 {
-                            match self.peek() {
-                                Some(d) if d.is_ascii_digit() && d < b'8' => {
-                                    self.advance();
-                                    val = val * 8 + (d - b'0') as i64;
-                                }
-                                _ => break,
-                            }
+                const SHIFT_BIT: i64 = 1 << 25;
+                const CTRL_BIT: i64 = 1 << 26;
+                const META_BIT: i64 = 1 << 27;
+
+                let mut modifiers = 0i64;
+                loop {
+                    match (self.peek(), self.input.get(self.pos + 1).copied()) {
+                        (Some(b'S'), Some(b'-')) => {
+                            modifiers |= SHIFT_BIT;
+                            self.pos += 2;
                         }
-                        Ok(Some(Value::Integer(val)))
+                        (Some(b'C'), Some(b'-')) => {
+                            modifiers |= CTRL_BIT;
+                            self.pos += 2;
+                        }
+                        (Some(b'M'), Some(b'-')) => {
+                            modifiers |= META_BIT;
+                            self.pos += 2;
+                        }
+                        _ => break,
                     }
-                    Some(ch) => Ok(Some(Value::Integer(ch as i64))),
                 }
+                let mut value = self.read_escaped_character_code()?;
+                if modifiers & CTRL_BIT != 0 && value != 0 {
+                    value = match value {
+                        0x3f => 0x7f,
+                        n if (b'a' as i64..=b'z' as i64).contains(&n) => {
+                            (n - b'a' as i64) + 1
+                        }
+                        n if (b'A' as i64..=b'Z' as i64).contains(&n) => {
+                            (n - b'A' as i64) + 1
+                        }
+                        n => n & 0x1f,
+                    };
+                    modifiers &= !CTRL_BIT;
+                }
+                value |= modifiers;
+                Ok(Some(Value::Integer(value)))
             }
             Some(ch) if ch < 0x80 => {
                 self.advance();
@@ -356,6 +359,63 @@ impl<'a> Reader<'a> {
                     Ok(Some(Value::Integer(b as i64)))
                 }
             }
+        }
+    }
+
+    fn read_escaped_character_code(&mut self) -> Result<i64, LispError> {
+        if self.peek() == Some(b'\\') {
+            self.advance();
+        }
+        match self.advance() {
+            None => Err(LispError::EndOfInput),
+            Some(b'n') => Ok('\n' as i64),
+            Some(b't') => Ok('\t' as i64),
+            Some(b'r') => Ok('\r' as i64),
+            Some(b' ') => Ok(' ' as i64),
+            Some(b'\\') => Ok('\\' as i64),
+            Some(b'N') => {
+                if self.peek() != Some(b'{') {
+                    return Ok('N' as i64);
+                }
+                self.advance(); // consume '{'
+                let start = self.pos;
+                while let Some(ch) = self.peek() {
+                    if ch == b'}' {
+                        let name = std::str::from_utf8(&self.input[start..self.pos])
+                            .map_err(|e| LispError::ReadError(e.to_string()))?;
+                        self.advance(); // consume '}'
+                        let ch = match name {
+                            "LATIN SMALL LETTER E WITH ACUTE" => '\u{00E9}',
+                            "GREEK SMALL LETTER LAMDA" => '\u{03BB}',
+                            _ => {
+                                return Err(LispError::ReadError(format!(
+                                    "unknown character name {{{name}}}"
+                                )))
+                            }
+                        };
+                        return Ok(ch as i64);
+                    }
+                    self.advance();
+                }
+                Err(LispError::EndOfInput)
+            }
+            Some(b'x') => Ok(self.read_hex_digits(6) as i64),
+            Some(b'u') => Ok(self.read_hex_digits(4) as i64),
+            Some(b'U') => Ok(self.read_hex_digits(8) as i64),
+            Some(ch) if ch.is_ascii_digit() => {
+                let mut val = (ch - b'0') as i64;
+                for _ in 0..2 {
+                    match self.peek() {
+                        Some(d) if d.is_ascii_digit() && d < b'8' => {
+                            self.advance();
+                            val = val * 8 + (d - b'0') as i64;
+                        }
+                        _ => break,
+                    }
+                }
+                Ok(val)
+            }
+            Some(ch) => Ok(ch as i64),
         }
     }
 

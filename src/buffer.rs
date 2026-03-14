@@ -37,6 +37,9 @@ pub struct Buffer {
     /// Value of modiff at last save.
     save_modiff: ModCount,
 
+    /// Snapshot of buffer text when last marked unmodified.
+    saved_text: String,
+
     /// True when the buffer is modified but its contents were auto-saved.
     autosaved: bool,
 
@@ -63,6 +66,12 @@ pub struct Buffer {
 
     /// Sparse text property spans over [start, end) buffer positions.
     text_properties: Vec<TextPropertySpan>,
+
+    /// When true, suppress creation/kill buffer hooks for this buffer.
+    pub inhibit_hooks: bool,
+
+    /// Whether positions in this buffer are interpreted as multibyte character positions.
+    multibyte: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -74,9 +83,21 @@ pub enum UndoEntry {
         pos: usize,
         text: String,
         props: Vec<TextPropertySpan>,
+        markers: Vec<UndoMarker>,
     },
+    /// A logical grouped change that should appear as a single Lisp undo entry.
+    Combined { display: Value, entries: Vec<UndoEntry> },
+    /// A Lisp-visible undo entry we don't know how to replay.
+    Opaque(Value),
     /// Boundary between undo groups.
     Boundary,
+}
+
+#[derive(Clone, Debug)]
+pub struct UndoMarker {
+    pub id: u64,
+    pub original_pos: usize,
+    pub collapsed_pos: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +114,8 @@ pub enum BufferError {
     EndOfBuffer,
     ReadOnly, // placeholder for later
     InvalidPosition(usize),
+    NoFurtherUndoInformation,
+    UnrecognizedUndoEntry(String),
 }
 
 impl std::fmt::Display for BufferError {
@@ -102,6 +125,10 @@ impl std::fmt::Display for BufferError {
             BufferError::EndOfBuffer => write!(f, "End of buffer"),
             BufferError::ReadOnly => write!(f, "Buffer is read-only"),
             BufferError::InvalidPosition(p) => write!(f, "Invalid position: {}", p),
+            BufferError::NoFurtherUndoInformation => write!(f, "No further undo information"),
+            BufferError::UnrecognizedUndoEntry(entry) => {
+                write!(f, "Unrecognized entry in undo list {}", entry)
+            }
         }
     }
 }
@@ -121,6 +148,7 @@ impl Buffer {
             mark_active: false,
             modiff: 1,
             save_modiff: 1,
+            saved_text: String::new(),
             autosaved: false,
             begv: 1,
             zv: 1, // empty buffer: zv = 1
@@ -130,6 +158,8 @@ impl Buffer {
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
+            inhibit_hooks: false,
+            multibyte: true,
         }
     }
 
@@ -146,6 +176,7 @@ impl Buffer {
             mark_active: false,
             modiff: 1,
             save_modiff: 1,
+            saved_text: s.to_string(),
             autosaved: false,
             begv: 1,
             zv: len + 1,
@@ -155,6 +186,8 @@ impl Buffer {
             undo_disabled: false,
             overlays: Vec::new(),
             text_properties: Vec::new(),
+            inhibit_hooks: false,
+            multibyte: true,
         }
     }
 
@@ -182,6 +215,14 @@ impl Buffer {
     /// Number of accessible characters.
     pub fn buffer_size(&self) -> usize {
         self.zv - self.begv
+    }
+
+    pub fn is_multibyte(&self) -> bool {
+        self.multibyte
+    }
+
+    pub fn set_multibyte(&mut self, enabled: bool) {
+        self.multibyte = enabled;
     }
 
     /// Total characters in the buffer (ignoring narrowing).
@@ -359,6 +400,10 @@ impl Buffer {
 
     pub fn mark(&self) -> Option<usize> {
         self.mark
+    }
+
+    pub fn mark_active(&self) -> bool {
+        self.mark_active
     }
 
     pub fn set_mark(&mut self, pos: usize) {
@@ -589,6 +634,7 @@ impl Buffer {
                 pos: from,
                 text: deleted.clone(),
                 props: deleted_props,
+                markers: Vec::new(),
             });
         }
 
@@ -644,36 +690,15 @@ impl Buffer {
     // ── Undo ──
 
     pub fn undo(&mut self) -> Result<(), BufferError> {
-        while matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
-            self.undo_list.pop();
-        }
-        if self.undo_list.is_empty() {
-            return Ok(());
+        let group = self.take_undo_group(None)?;
+        self.push_undo_boundary();
+        for entry in group.iter().rev() {
+            self.apply_undo_entry(entry)?;
         }
 
-        self.undo_disabled = true;
-        while let Some(entry) = self.undo_list.pop() {
-            match entry {
-                UndoEntry::Insert { pos, len } => {
-                    self.goto_char(pos);
-                    self.delete_region(pos, pos + len)?;
-                }
-                UndoEntry::Delete { pos, text, props } => {
-                    self.goto_char(pos);
-                    let insert_at = self.point();
-                    self.insert(&text);
-                    for span in &props {
-                        self.add_text_properties(
-                            insert_at + span.start,
-                            insert_at + span.end,
-                            &span.props,
-                        );
-                    }
-                }
-                UndoEntry::Boundary => break,
-            }
+        if !self.is_modified() {
+            self.autosaved = false;
         }
-        self.undo_disabled = false;
         Ok(())
     }
 
@@ -681,8 +706,10 @@ impl Buffer {
 
     /// Restrict the accessible portion of the buffer.
     pub fn narrow_to_region(&mut self, start: usize, end: usize) {
-        let start = start.max(1).min(self.text.len_chars() + 1);
-        let end = end.max(start).min(self.text.len_chars() + 1);
+        let lower = start.min(end);
+        let upper = start.max(end);
+        let start = lower.max(1).min(self.text.len_chars() + 1);
+        let end = upper.max(start).min(self.text.len_chars() + 1);
         self.begv = start;
         self.zv = end;
         // Clamp point into the new region
@@ -696,8 +723,10 @@ impl Buffer {
     }
 
     pub fn restore_restriction(&mut self, start: usize, end: usize) {
-        self.begv = start.max(1).min(self.text.len_chars() + 1);
-        self.zv = end.max(self.begv).min(self.text.len_chars() + 1);
+        let lower = start.min(end);
+        let upper = start.max(end);
+        self.begv = lower.max(1).min(self.text.len_chars() + 1);
+        self.zv = upper.max(self.begv).min(self.text.len_chars() + 1);
         self.pt = self.pt.clamp(self.begv, self.zv);
         if let Some(mark) = &mut self.mark {
             *mark = (*mark).clamp(self.begv, self.zv);
@@ -707,11 +736,12 @@ impl Buffer {
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
-        self.modiff != self.save_modiff
+        self.buffer_string() != self.saved_text
     }
 
     pub fn set_unmodified(&mut self) {
         self.save_modiff = self.modiff;
+        self.saved_text = self.buffer_string();
         self.autosaved = false;
     }
 
@@ -740,12 +770,41 @@ impl Buffer {
         &self.undo_list
     }
 
+    pub fn undo_groups(&self) -> Vec<Vec<UndoEntry>> {
+        self.collect_undo_groups()
+    }
+
     pub fn undo_meta_entries(&self) -> &[Value] {
         &self.undo_meta
     }
 
     pub fn push_undo_meta(&mut self, entry: Value) {
         self.undo_meta.push(entry);
+    }
+
+    pub fn push_undo_entry(&mut self, entry: UndoEntry) {
+        self.undo_list.push(entry);
+    }
+
+    pub fn undo_len(&self) -> usize {
+        self.undo_list.len()
+    }
+
+    pub fn take_undo_entries_since(&mut self, start: usize) -> Vec<UndoEntry> {
+        self.undo_list.split_off(start)
+    }
+
+    pub fn attach_markers_to_last_delete(&mut self, markers: Vec<UndoMarker>) {
+        if markers.is_empty() {
+            return;
+        }
+        if let Some(UndoEntry::Delete {
+            markers: delete_markers,
+            ..
+        }) = self.undo_list.last_mut()
+        {
+            delete_markers.extend(markers);
+        }
     }
 
     pub fn push_undo_boundary(&mut self) {
@@ -770,6 +829,7 @@ impl Buffer {
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
         std::mem::swap(&mut self.modiff, &mut other.modiff);
         std::mem::swap(&mut self.save_modiff, &mut other.save_modiff);
+        std::mem::swap(&mut self.saved_text, &mut other.saved_text);
         std::mem::swap(&mut self.autosaved, &mut other.autosaved);
         std::mem::swap(&mut self.begv, &mut other.begv);
         std::mem::swap(&mut self.zv, &mut other.zv);
@@ -939,6 +999,291 @@ impl Buffer {
     }
 }
 
+impl Buffer {
+    pub fn take_undo_group(
+        &mut self,
+        region: Option<(usize, usize)>,
+    ) -> Result<Vec<UndoEntry>, BufferError> {
+        self.take_undo_group_with_skip(region, 0)
+    }
+
+    pub fn take_undo_group_with_skip(
+        &mut self,
+        region: Option<(usize, usize)>,
+        skip_newest_groups: usize,
+    ) -> Result<Vec<UndoEntry>, BufferError> {
+        if region.is_none() || !self.mark_active {
+            if skip_newest_groups == 0 {
+                return self.pop_latest_undo_group();
+            }
+            return self.pop_undo_group_skipping(skip_newest_groups);
+        }
+        let mut groups = self.collect_undo_groups();
+        if groups.is_empty() {
+            return Err(BufferError::NoFurtherUndoInformation);
+        }
+
+        let selected = region
+            .and_then(|region| self.select_undo_group_for_region(&groups, region))
+            .unwrap_or(groups.len() - 1);
+        let group = map_group_through_newer(&groups[selected], &groups[selected + 1..]);
+        groups.remove(selected);
+        self.restore_undo_groups(&groups);
+        if group.is_empty() {
+            return Err(BufferError::NoFurtherUndoInformation);
+        }
+        Ok(group)
+    }
+
+    fn pop_latest_undo_group(&mut self) -> Result<Vec<UndoEntry>, BufferError> {
+        while matches!(self.undo_list.last(), Some(UndoEntry::Boundary)) {
+            self.undo_list.pop();
+        }
+        if self.undo_list.is_empty() {
+            return Err(BufferError::NoFurtherUndoInformation);
+        }
+
+        let mut group = Vec::new();
+        while let Some(entry) = self.undo_list.pop() {
+            match entry {
+                UndoEntry::Boundary => break,
+                other => group.push(other),
+            }
+        }
+        group.reverse();
+        if group.is_empty() {
+            return Err(BufferError::NoFurtherUndoInformation);
+        }
+        Ok(group)
+    }
+
+    fn pop_undo_group_skipping(&mut self, skip_newest_groups: usize) -> Result<Vec<UndoEntry>, BufferError> {
+        let mut end = self.undo_list.len();
+        while end > 0 && matches!(self.undo_list[end - 1], UndoEntry::Boundary) {
+            end -= 1;
+        }
+        if end == 0 {
+            return Err(BufferError::NoFurtherUndoInformation);
+        }
+
+        for _ in 0..skip_newest_groups {
+            while end > 0 && !matches!(self.undo_list[end - 1], UndoEntry::Boundary) {
+                end -= 1;
+            }
+            while end > 0 && matches!(self.undo_list[end - 1], UndoEntry::Boundary) {
+                end -= 1;
+            }
+            if end == 0 {
+                return Err(BufferError::NoFurtherUndoInformation);
+            }
+        }
+
+        let mut start = end;
+        while start > 0 && !matches!(self.undo_list[start - 1], UndoEntry::Boundary) {
+            start -= 1;
+        }
+        let group = self.undo_list[start..end].to_vec();
+        self.undo_list.drain(start..end);
+        while self
+            .undo_list
+            .get(start)
+            .is_some_and(|entry| matches!(entry, UndoEntry::Boundary))
+            && start > 0
+            && matches!(self.undo_list[start - 1], UndoEntry::Boundary)
+        {
+            self.undo_list.remove(start);
+        }
+        if group.is_empty() {
+            return Err(BufferError::NoFurtherUndoInformation);
+        }
+        Ok(group)
+    }
+
+    fn collect_undo_groups(&self) -> Vec<Vec<UndoEntry>> {
+        let mut groups = Vec::new();
+        let mut current = Vec::new();
+        for entry in &self.undo_list {
+            match entry {
+                UndoEntry::Boundary => {
+                    if !current.is_empty() {
+                        groups.push(std::mem::take(&mut current));
+                    }
+                }
+                other => current.push(other.clone()),
+            }
+        }
+        if !current.is_empty() {
+            groups.push(current);
+        }
+        groups
+    }
+
+    fn restore_undo_groups(&mut self, groups: &[Vec<UndoEntry>]) {
+        self.undo_list.clear();
+        for (index, group) in groups.iter().enumerate() {
+            self.undo_list.extend(group.iter().cloned());
+            if index + 1 < groups.len() {
+                self.undo_list.push(UndoEntry::Boundary);
+            }
+        }
+    }
+
+    fn select_undo_group_for_region(
+        &self,
+        groups: &[Vec<UndoEntry>],
+        region: (usize, usize),
+    ) -> Option<usize> {
+        for index in (0..groups.len()).rev() {
+            if group_intersects_region(&groups[index], &groups[index + 1..], region) {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn apply_undo_entry(&mut self, entry: &UndoEntry) -> Result<(), BufferError> {
+        match entry {
+            UndoEntry::Insert { pos, len } => {
+                self.goto_char(*pos);
+                self.delete_region(*pos, *pos + *len)?;
+                Ok(())
+            }
+            UndoEntry::Delete {
+                pos, text, props, ..
+            } => {
+                self.goto_char(*pos);
+                let insert_at = self.point();
+                self.insert(text);
+                for span in props {
+                    self.add_text_properties(insert_at + span.start, insert_at + span.end, &span.props);
+                }
+                Ok(())
+            }
+            UndoEntry::Combined { entries, .. } => {
+                for inner in entries.iter().rev() {
+                    self.apply_undo_entry(inner)?;
+                }
+                Ok(())
+            }
+            UndoEntry::Opaque(value) => Err(BufferError::UnrecognizedUndoEntry(format!("{value}"))),
+            UndoEntry::Boundary => Ok(()),
+        }
+    }
+}
+
+fn group_intersects_region(
+    group: &[UndoEntry],
+    newer_groups: &[Vec<UndoEntry>],
+    region: (usize, usize),
+) -> bool {
+    let (region_start, region_end) = region;
+    for (mut start, mut end) in leaf_ranges(group) {
+        for later_group in newer_groups {
+            for entry in later_group {
+                start = map_position_through_entry(start, entry, false);
+                end = map_position_through_entry(end, entry, false);
+            }
+        }
+        let lower = start.min(end);
+        let upper = start.max(end);
+        if lower == upper {
+            if region_start <= lower && lower <= region_end {
+                return true;
+            }
+        } else if lower >= region_start && upper <= region_end {
+            return true;
+        }
+    }
+    false
+}
+
+fn leaf_ranges(entries: &[UndoEntry]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for entry in entries {
+        match entry {
+            UndoEntry::Insert { pos, len } => ranges.push((*pos, *pos + *len)),
+            // Re-inserting deleted text affects the current buffer at a point,
+            // not across the deleted span that no longer exists.
+            UndoEntry::Delete { pos, .. } => ranges.push((*pos, *pos)),
+            UndoEntry::Combined { entries, .. } => ranges.extend(leaf_ranges(entries)),
+            UndoEntry::Opaque(_) | UndoEntry::Boundary => {}
+        }
+    }
+    ranges
+}
+
+fn map_position_through_entry(position: usize, entry: &UndoEntry, is_end: bool) -> usize {
+    match entry {
+        UndoEntry::Insert { pos, len } => {
+            if position > *pos || (is_end && position == *pos) {
+                position + *len
+            } else {
+                position
+            }
+        }
+        UndoEntry::Delete { pos, text, .. } => {
+            let deleted = text.chars().count();
+            let to = *pos + deleted;
+            if position > to {
+                position - deleted
+            } else if position > *pos {
+                *pos
+            } else {
+                position
+            }
+        }
+        UndoEntry::Combined { entries, .. } => entries
+            .iter()
+            .fold(position, |mapped, inner| map_position_through_entry(mapped, inner, is_end)),
+        UndoEntry::Opaque(_) | UndoEntry::Boundary => position,
+    }
+}
+
+fn map_group_through_newer(group: &[UndoEntry], newer_groups: &[Vec<UndoEntry>]) -> Vec<UndoEntry> {
+    group
+        .iter()
+        .map(|entry| map_undo_entry_through_newer(entry, newer_groups))
+        .collect()
+}
+
+fn map_undo_entry_through_newer(entry: &UndoEntry, newer_groups: &[Vec<UndoEntry>]) -> UndoEntry {
+    match entry {
+        UndoEntry::Insert { pos, len } => UndoEntry::Insert {
+            pos: map_position_through_groups(*pos, newer_groups, false),
+            len: *len,
+        },
+        UndoEntry::Delete {
+            pos,
+            text,
+            props,
+            markers,
+        } => UndoEntry::Delete {
+            pos: map_position_through_groups(*pos, newer_groups, false),
+            text: text.clone(),
+            props: props.clone(),
+            markers: markers.clone(),
+        },
+        UndoEntry::Combined { display, entries } => UndoEntry::Combined {
+            display: display.clone(),
+            entries: map_group_through_newer(entries, newer_groups),
+        },
+        UndoEntry::Opaque(value) => UndoEntry::Opaque(value.clone()),
+        UndoEntry::Boundary => UndoEntry::Boundary,
+    }
+}
+
+fn map_position_through_groups(
+    position: usize,
+    newer_groups: &[Vec<UndoEntry>],
+    is_end: bool,
+) -> usize {
+    newer_groups.iter().fold(position, |mapped, group| {
+        group.iter().fold(mapped, |inner, entry| {
+            map_position_through_entry(inner, entry, is_end)
+        })
+    })
+}
+
 fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(String, Value)> {
     spans
         .iter()
@@ -962,6 +1307,36 @@ fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpa
         }
     }
     merged
+}
+
+fn position_to_byte_in_text(text: &str, pos: usize) -> Option<usize> {
+    let char_len = text.chars().count();
+    if pos == 0 || pos > char_len + 1 {
+        return None;
+    }
+    Some(1 + text.chars().take(pos - 1).map(char::len_utf8).sum::<usize>())
+}
+
+fn byte_to_position_in_text(text: &str, byte: usize) -> Option<usize> {
+    if byte == 0 {
+        return None;
+    }
+    let total_bytes = text.len();
+    if byte > total_bytes + 1 {
+        return None;
+    }
+    if byte == total_bytes + 1 {
+        return Some(text.chars().count() + 1);
+    }
+    let mut current_byte = 1usize;
+    for (index, ch) in text.chars().enumerate() {
+        let next = current_byte + ch.len_utf8();
+        if byte < next {
+            return Some(index + 1);
+        }
+        current_byte = next;
+    }
+    Some(text.chars().count() + 1)
 }
 
 #[cfg(test)]

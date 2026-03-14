@@ -36,8 +36,27 @@ pub struct MarkerState {
 #[derive(Clone, Debug)]
 pub struct CharTableState {
     pub id: u64,
-    pub purpose: String,
-    pub entries: Vec<(u32, Value)>,
+    pub subtype: Option<String>,
+    pub default: Value,
+    pub parent: Option<u64>,
+    pub extra_slots: Vec<Value>,
+    pub entries: Vec<CharTableEntry>,
+    pub category_docs: Vec<(u32, String)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CharTableEntry {
+    pub start: u32,
+    pub end: u32,
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, Default)]
+struct UndoSequenceState {
+    original_groups: Vec<Vec<crate::buffer::UndoEntry>>,
+    undone_count: usize,
+    redo_groups: Vec<Vec<crate::buffer::UndoEntry>>,
+    had_error: bool,
 }
 
 /// The interpreter state: holds the global environment, the current buffer,
@@ -63,6 +82,8 @@ pub struct Interpreter {
     markers: Vec<MarkerState>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
+    /// Shared standard category table.
+    standard_category_table_id: Option<u64>,
     /// Next char-table ID for identity tracking.
     next_char_table_id: u64,
     /// Buffer-local hook lists keyed by (buffer id, hook name).
@@ -89,6 +110,7 @@ pub struct Interpreter {
     pub last_selected_tests: Vec<String>,
     /// The latest regexp match data in buffer coordinates.
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
+    undo_sequence: Option<UndoSequenceState>,
 }
 
 impl Default for Interpreter {
@@ -110,6 +132,7 @@ impl Interpreter {
             next_marker_id: 1,
             markers: Vec::new(),
             char_tables: Vec::new(),
+            standard_category_table_id: None,
             next_char_table_id: 1,
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
@@ -123,6 +146,7 @@ impl Interpreter {
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),
             last_match_data: None,
+            undo_sequence: None,
         }
     }
 
@@ -335,13 +359,17 @@ impl Interpreter {
         Ok(marker_value)
     }
 
-    pub fn make_char_table(&mut self, purpose: &str) -> Value {
+    pub fn make_char_table(&mut self, subtype: Option<String>, default: Value) -> Value {
         let id = self.next_char_table_id;
         self.next_char_table_id += 1;
         self.char_tables.push(CharTableState {
             id,
-            purpose: purpose.to_string(),
+            subtype,
+            default,
+            parent: None,
+            extra_slots: Vec::new(),
             entries: Vec::new(),
+            category_docs: Vec::new(),
         });
         Value::CharTable(id)
     }
@@ -355,29 +383,162 @@ impl Interpreter {
     }
 
     pub fn char_table_set(&mut self, id: u64, key: u32, value: Value) -> Result<(), LispError> {
+        self.char_table_set_range(id, key, key, value)
+    }
+
+    pub fn char_table_set_range(
+        &mut self,
+        id: u64,
+        start: u32,
+        end: u32,
+        value: Value,
+    ) -> Result<(), LispError> {
         let table = self
             .find_char_table_mut(id)
             .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
-        if let Some((_, existing)) = table.entries.iter_mut().find(|(entry_key, _)| *entry_key == key)
-        {
-            *existing = value;
-        } else {
-            table.entries.push((key, value));
-        }
+        table.entries.push(CharTableEntry {
+            start: start.min(end),
+            end: start.max(end),
+            value,
+        });
+        Ok(())
+    }
+
+    pub fn char_table_set_default(&mut self, id: u64, value: Value) -> Result<(), LispError> {
+        let table = self
+            .find_char_table_mut(id)
+            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        table.default = value;
         Ok(())
     }
 
     pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
-        self.find_char_table(id).and_then(|table| {
-            table.entries
-                .iter()
-                .find(|(entry_key, _)| *entry_key == key)
-                .map(|(_, value)| value.clone())
-        })
+        let table = self.find_char_table(id)?;
+        if let Some(entry) = table
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.start <= key && key <= entry.end)
+        {
+            return Some(entry.value.clone());
+        }
+        if let Some(parent_id) = table.parent
+            && let Some(value) = self.char_table_get(parent_id, key)
+        {
+            return Some(value);
+        }
+        Some(table.default.clone())
+    }
+
+    pub fn char_table_range(&self, id: u64, start: u32, end: u32) -> Option<Value> {
+        let table = self.find_char_table(id)?;
+        if let Some(entry) = table
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.start == start.min(end) && entry.end == start.max(end))
+        {
+            return Some(entry.value.clone());
+        }
+        if let Some(parent_id) = table.parent
+            && let Some(value) = self.char_table_range(parent_id, start, end)
+        {
+            return Some(value);
+        }
+        Some(table.default.clone())
+    }
+
+    pub fn char_table_subtype(&self, id: u64) -> Option<Option<String>> {
+        self.find_char_table(id).map(|table| table.subtype.clone())
+    }
+
+    pub fn char_table_parent(&self, id: u64) -> Option<Option<u64>> {
+        self.find_char_table(id).map(|table| table.parent)
+    }
+
+    pub fn set_char_table_parent(&mut self, id: u64, parent: Option<u64>) -> Result<(), LispError> {
+        let table = self
+            .find_char_table_mut(id)
+            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        table.parent = parent;
+        Ok(())
+    }
+
+    pub fn char_table_extra_slot(&self, id: u64, slot: usize) -> Option<Value> {
+        self.find_char_table(id)
+            .and_then(|table| table.extra_slots.get(slot).cloned())
+    }
+
+    pub fn set_char_table_extra_slot(
+        &mut self,
+        id: u64,
+        slot: usize,
+        value: Value,
+    ) -> Result<(), LispError> {
+        let table = self
+            .find_char_table_mut(id)
+            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        while table.extra_slots.len() <= slot {
+            table.extra_slots.push(Value::Nil);
+        }
+        table.extra_slots[slot] = value;
+        Ok(())
     }
 
     pub fn char_table_purpose(&self, id: u64) -> Option<&str> {
-        self.find_char_table(id).map(|table| table.purpose.as_str())
+        self.find_char_table(id)
+            .and_then(|table| table.subtype.as_deref())
+    }
+
+    pub fn clone_char_table(&mut self, id: u64) -> Result<Value, LispError> {
+        let source = self
+            .find_char_table(id)
+            .cloned()
+            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let new_id = self.next_char_table_id;
+        self.next_char_table_id += 1;
+        self.char_tables.push(CharTableState {
+            id: new_id,
+            ..source
+        });
+        Ok(Value::CharTable(new_id))
+    }
+
+    pub fn ensure_standard_category_table(&mut self) -> u64 {
+        if let Some(id) = self.standard_category_table_id {
+            return id;
+        }
+        let Value::CharTable(id) = self.make_char_table(Some("category-table".into()), Value::String(String::new())) else {
+            unreachable!("make_char_table returns a char-table");
+        };
+        self.standard_category_table_id = Some(id);
+        id
+    }
+
+    pub fn category_docstring(&self, id: u64, category: u32) -> Option<String> {
+        self.find_char_table(id).and_then(|table| {
+            table
+                .category_docs
+                .iter()
+                .find(|(ch, _)| *ch == category)
+                .map(|(_, doc)| doc.clone())
+        })
+    }
+
+    pub fn define_category(
+        &mut self,
+        id: u64,
+        category: u32,
+        doc: String,
+    ) -> Result<(), LispError> {
+        let table = self
+            .find_char_table_mut(id)
+            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        if table.category_docs.iter().any(|(ch, _)| *ch == category) {
+            return Err(LispError::Signal("Category already defined".into()));
+        }
+        table.category_docs.push((category, doc));
+        Ok(())
     }
 
     pub fn detach_markers_for_buffer(&mut self, buffer_id: u64) {
@@ -682,8 +843,10 @@ impl Interpreter {
     ) -> Result<String, crate::buffer::BufferError> {
         let from = from.max(self.buffer.point_min());
         let to = to.min(self.buffer.point_max());
+        let affected_markers = self.affected_markers_for_delete(self.current_buffer_id(), from, to);
         let related = self.related_buffer_ids(self.current_buffer_id());
         let deleted = self.buffer.delete_region(from, to)?;
+        self.buffer.attach_markers_to_last_delete(affected_markers);
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
         self.mirror_delete_to_related_buffers(&related, from, to);
         Ok(deleted)
@@ -711,6 +874,194 @@ impl Interpreter {
         }
     }
 
+    pub fn undo_current_buffer(&mut self) -> Result<(), LispError> {
+        let region = if self.buffer.mark_active() {
+            self.buffer.region()
+        } else {
+            None
+        };
+        if region.is_none() {
+            let redo_groups = self
+                .undo_sequence
+                .as_ref()
+                .filter(|state| !state.had_error && !state.redo_groups.is_empty())
+                .map(|state| state.redo_groups.clone());
+            if let Some(redo_groups) = redo_groups {
+                for group in redo_groups.iter().rev() {
+                    self.replay_sequence_group(group)?;
+                }
+                if let Some(state) = self.undo_sequence.as_mut() {
+                    state.undone_count = 1;
+                    state.redo_groups.clear();
+                }
+                return Ok(());
+            }
+            if self
+                .undo_sequence
+                .as_ref()
+                .is_some_and(|state| !state.had_error && state.redo_groups.is_empty())
+            {
+                self.start_undo_sequence_step()?;
+                return self.undo_more_current_buffer();
+            }
+            return self.start_undo_sequence_step();
+        }
+        let group = self
+            .buffer
+            .take_undo_group(region)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        self.buffer.push_undo_boundary();
+        for entry in group.iter().rev() {
+            self.apply_current_buffer_undo_entry(entry)?;
+        }
+        Ok(())
+    }
+
+    pub fn undo_more_current_buffer(&mut self) -> Result<(), LispError> {
+        if self.undo_sequence.is_none() {
+            return self.start_undo_sequence_step();
+        }
+        let group = {
+            let state = self.undo_sequence.as_ref().expect("checked above");
+            if state.undone_count >= state.original_groups.len() {
+                return Err(LispError::Signal(
+                    crate::buffer::BufferError::NoFurtherUndoInformation.to_string(),
+                ));
+            }
+            let start = state.original_groups.len() - 1 - state.undone_count;
+            state.original_groups[start].clone()
+        };
+        let before = self.buffer.undo_entries().len();
+        if let Err(error) = self.replay_sequence_group(&group) {
+            if let Some(state) = self.undo_sequence.as_mut() {
+                state.had_error = true;
+            }
+            return Err(error);
+        }
+        let state = self.undo_sequence.as_mut().expect("sequence active");
+        state
+            .redo_groups
+            .push(latest_generated_undo_group(&self.buffer.undo_entries()[before..]));
+        state.undone_count += 1;
+        state.had_error = false;
+        Ok(())
+    }
+
+    pub fn reset_undo_sequence(&mut self) {
+        self.undo_sequence = None;
+    }
+
+    fn start_undo_sequence_step(&mut self) -> Result<(), LispError> {
+        let original_groups = self.buffer.undo_groups();
+        let group = original_groups
+            .last()
+            .cloned()
+            .ok_or_else(|| {
+                LispError::Signal(crate::buffer::BufferError::NoFurtherUndoInformation.to_string())
+            })?;
+        self.replay_sequence_group(&group)?;
+        self.undo_sequence = Some(UndoSequenceState {
+            original_groups,
+            undone_count: 1,
+            redo_groups: Vec::new(),
+            had_error: false,
+        });
+        Ok(())
+    }
+
+    fn replay_sequence_group(
+        &mut self,
+        group: &[crate::buffer::UndoEntry],
+    ) -> Result<(), LispError> {
+        for entry in group.iter().rev() {
+            self.apply_current_buffer_undo_entry(entry)?;
+        }
+        Ok(())
+    }
+
+    fn apply_current_buffer_undo_entry(
+        &mut self,
+        entry: &crate::buffer::UndoEntry,
+    ) -> Result<(), LispError> {
+        match entry {
+            crate::buffer::UndoEntry::Insert { pos, len } => {
+                self.buffer.goto_char(*pos);
+                self.delete_region_current_buffer(*pos, *pos + *len)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                Ok(())
+            }
+            crate::buffer::UndoEntry::Delete {
+                pos,
+                text,
+                props,
+                markers,
+            } => {
+                self.buffer.goto_char(*pos);
+                let insert_at = self.buffer.point();
+                self.insert_current_buffer(text);
+                for span in props {
+                    self.buffer.add_text_properties(
+                        insert_at + span.start,
+                        insert_at + span.end,
+                        &span.props,
+                    );
+                }
+                let inserted = text.chars().count();
+                for marker in markers {
+                    let expected_auto_pos = match self.marker_insertion_type(marker.id) {
+                        Some(true) => marker.collapsed_pos + inserted,
+                        _ => marker.collapsed_pos,
+                    };
+                    if self.marker_buffer_id(marker.id) == Some(self.current_buffer_id())
+                        && self.marker_position(marker.id) == Some(expected_auto_pos)
+                    {
+                        let _ = self.set_marker(
+                            marker.id,
+                            Some(marker.original_pos),
+                            Some(self.current_buffer_id()),
+                        );
+                    }
+                }
+                Ok(())
+            }
+            crate::buffer::UndoEntry::Combined { entries, .. } => {
+                for inner in entries.iter().rev() {
+                    self.apply_current_buffer_undo_entry(inner)?;
+                }
+                Ok(())
+            }
+            crate::buffer::UndoEntry::Opaque(value) => Err(LispError::Signal(format!(
+                "Unrecognized entry in undo list {}",
+                render_undo_value(value)
+            ))),
+            crate::buffer::UndoEntry::Boundary => Ok(()),
+        }
+    }
+
+    fn affected_markers_for_delete(
+        &self,
+        buffer_id: u64,
+        from: usize,
+        to: usize,
+    ) -> Vec<crate::buffer::UndoMarker> {
+        self.markers
+            .iter()
+            .filter(|marker| marker.buffer_id == Some(buffer_id))
+            .filter_map(|marker| {
+                let pos = marker.position?;
+                if pos >= from && pos <= to {
+                    Some(crate::buffer::UndoMarker {
+                        id: marker.id,
+                        original_pos: pos,
+                        collapsed_pos: from,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Borrow a live buffer by ID.
     pub fn get_buffer_by_id(&self, id: u64) -> Option<&crate::buffer::Buffer> {
         if id == self.current_buffer_id {
@@ -732,6 +1083,18 @@ impl Interpreter {
                 .iter_mut()
                 .find(|(buffer_id, _)| *buffer_id == id)
                 .map(|(_, buffer)| buffer)
+        }
+    }
+
+    pub fn buffer_hooks_inhibited(&self, id: u64) -> bool {
+        self.get_buffer_by_id(id)
+            .map(|buffer| buffer.inhibit_hooks)
+            .unwrap_or(false)
+    }
+
+    pub fn set_buffer_hooks_inhibited(&mut self, id: u64, inhibit: bool) {
+        if let Some(buffer) = self.get_buffer_by_id_mut(id) {
+            buffer.inhibit_hooks = inhibit;
         }
     }
 
@@ -866,7 +1229,11 @@ impl Interpreter {
             "float-pi" => Ok(Value::Float(std::f64::consts::PI)),
             "most-positive-fixnum" => Ok(Value::Integer(i64::MAX)),
             "most-negative-fixnum" => Ok(Value::Integer(i64::MIN)),
-            "enable-multibyte-characters" => Ok(Value::T),
+            "enable-multibyte-characters" => Ok(if self.buffer.is_multibyte() {
+                Value::T
+            } else {
+                Value::Nil
+            }),
             "buffer-file-name" => Ok(self
                 .buffer
                 .file
@@ -876,6 +1243,7 @@ impl Interpreter {
             "temporary-file-directory" => Ok(Value::String(
                 std::env::temp_dir().display().to_string(),
             )),
+            "tab-width" => Ok(Value::Integer(8)),
             "system-type" => Ok(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
             _ if name.starts_with('.') => Ok(Value::Nil),
             _ if name.starts_with(':') => Ok(Value::Symbol(name.to_string())),
@@ -907,7 +1275,15 @@ impl Interpreter {
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
         if name == "buffer-undo-list" {
             if value.is_nil() {
+                self.undo_sequence = None;
                 self.buffer.clear_undo_history();
+            } else if let Value::Cons(head, tail) = &value
+                && **tail == crate::lisp::primitives::buffer_undo_list_value(&self.buffer)
+            {
+                let entry = buffer_undo_head_to_entry(head);
+                self.buffer.push_undo_entry(entry);
+            } else {
+                self.undo_sequence = None;
             }
             return;
         }
@@ -1025,10 +1401,14 @@ impl Interpreter {
                         "with-silent-modifications" => {
                             return self.sf_with_silent_modifications(&items, env)
                         }
-                        "combine-change-calls" => return self.sf_progn(&items[3..], env),
+                        "combine-change-calls" => {
+                            return self.sf_combine_change_calls(&items, env)
+                        }
                         "cl-destructuring-bind" => {
                             return self.sf_cl_destructuring_bind(&items, env)
                         }
+                        "cl-letf" => return self.sf_cl_letf(&items, env),
+                        "aset" => return self.sf_aset(&items, env),
                         "cl-flet" | "cl-labels" => {
                             return self.sf_cl_flet(&items, env)
                         }
@@ -1081,11 +1461,47 @@ impl Interpreter {
                                 ));
                             }
                             let val = self.eval(&items[1], env)?;
-                            let name = items[2].as_symbol()?.to_string();
-                            let cur = self.lookup(&name, env)?;
-                            let new_val = Value::cons(val, cur);
-                            self.set_variable(&name, new_val.clone(), env);
-                            return Ok(new_val);
+                            match &items[2] {
+                                Value::Symbol(name) => {
+                                    let cur = self.lookup(name, env)?;
+                                    let new_val = Value::cons(val, cur);
+                                    self.set_variable(name, new_val.clone(), env);
+                                    return Ok(new_val);
+                                }
+                                Value::Cons(_, _) => {
+                                    let place_items = items[2].to_vec()?;
+                                    if place_items.len() == 3
+                                        && matches!(
+                                            &place_items[0],
+                                            Value::Symbol(symbol) if symbol == "overlay-get"
+                                        )
+                                    {
+                                        let overlay = self.eval(&place_items[1], env)?;
+                                        let prop = self.eval(&place_items[2], env)?;
+                                        let overlay_id = match overlay {
+                                            Value::Overlay(id) => id,
+                                            other => {
+                                                return Err(LispError::TypeError(
+                                                    "overlay".into(),
+                                                    other.type_name(),
+                                                ))
+                                            }
+                                        };
+                                        let prop_name = prop.as_symbol()?.to_string();
+                                        let cur = self
+                                            .find_overlay(overlay_id)
+                                            .and_then(|overlay| overlay.get_prop(&prop_name).cloned())
+                                            .unwrap_or(Value::Nil);
+                                        let new_val = Value::cons(val, cur);
+                                        if let Some(overlay) = self.find_overlay_mut(overlay_id) {
+                                            overlay.put_prop(&prop_name, new_val.clone());
+                                        }
+                                        return Ok(new_val);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            return Err(LispError::Signal("Unsupported push place".into()));
                         }
                         "pop" => {
                             // (pop PLACE)
@@ -1160,7 +1576,6 @@ impl Interpreter {
                     }
                 }
 
-                let mut new_env = closure_env.clone();
                 let mut frame = Vec::new();
                 let mut arg_idx = 0;
                 let mut optional = false;
@@ -1195,8 +1610,18 @@ impl Interpreter {
                     arg_idx += 1;
                 }
 
-                new_env.push(frame);
-                self.sf_progn(body, &mut new_env)
+                let mut captured_frames = 0;
+                for captured in closure_env.iter().rev() {
+                    env.insert(0, captured.clone());
+                    captured_frames += 1;
+                }
+                env.push(frame);
+                let result = self.sf_progn(body, env);
+                env.pop();
+                for _ in 0..captured_frames {
+                    env.remove(0);
+                }
+                result
             }
             _ => {
                 // Maybe the head is a symbol naming a function we haven't resolved
@@ -1418,7 +1843,7 @@ impl Interpreter {
                 continue;
             };
             let value = match *cdr {
-                Value::Cons(value, _) => *value,
+                Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
                 other => other,
             };
             frame.push((format!(".{symbol}"), value));
@@ -1809,7 +2234,7 @@ impl Interpreter {
                     }
                     // For simplicity, match any handler
                     if let Some(ref var_name) = var {
-                        env.push(vec![(var_name.clone(), Value::String(e.to_string()))]);
+                        env.push(vec![(var_name.clone(), error_condition_value(&e))]);
                     }
                     let result = self.sf_progn(&parts[1..], env);
                     if var.is_some() {
@@ -1838,6 +2263,7 @@ impl Interpreter {
             base_name.to_string()
         };
         let (temp_id, _) = self.create_buffer(&temp_name);
+        self.set_buffer_hooks_inhibited(temp_id, true);
         self.switch_to_buffer_id(temp_id)?;
         let result = self.sf_progn(&items[1..], env);
         let _ = self.switch_to_buffer_id(saved_buffer_id);
@@ -1865,6 +2291,7 @@ impl Interpreter {
             base_name.to_string()
         };
         let (temp_id, _) = self.create_buffer(&temp_name);
+        self.set_buffer_hooks_inhibited(temp_id, true);
         self.switch_to_buffer_id(temp_id)?;
         let body_result = self.sf_progn(&items[1..], env);
         let output = Value::String(self.buffer.buffer_string());
@@ -2068,6 +2495,23 @@ impl Interpreter {
         result
     }
 
+    fn sf_combine_change_calls(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let start_undo = self.buffer.undo_len();
+        let result = self.sf_progn(&items[3..], env)?;
+        let entries = self.buffer.take_undo_entries_since(start_undo);
+        if !entries.is_empty() {
+            self.buffer.push_undo_entry(crate::buffer::UndoEntry::Combined {
+                display: combined_undo_display(&entries),
+                entries,
+            });
+        }
+        Ok(result)
+    }
+
     fn sf_cl_assert(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Ok(Value::Nil);
@@ -2147,6 +2591,75 @@ impl Interpreter {
         let result = self.sf_progn(&items[3..], env);
         env.pop();
         result
+    }
+
+    fn sf_cl_letf(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs("cl-letf".into(), items.len() - 1));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut rebound = Vec::new();
+        for binding in &bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                continue;
+            }
+            let place = parts[0].to_vec()?;
+            if !matches!(place.first(), Some(Value::Symbol(name)) if name == "symbol-function") {
+                return Err(LispError::Signal("Unsupported cl-letf place".into()));
+            }
+            let Some(target) = place.get(1) else {
+                return Err(LispError::Signal("Unsupported cl-letf place".into()));
+            };
+            let function_name = function_name_from_binding_form(target)?;
+            let value = self.eval(&parts[1], env)?;
+            self.functions.push((function_name.clone(), value));
+            rebound.push(function_name);
+        }
+        let result = self.sf_progn(&items[2..], env);
+        for name in rebound.into_iter().rev() {
+            if let Some(index) = self.functions.iter().rposition(|(fname, _)| *fname == name) {
+                self.functions.remove(index);
+            }
+        }
+        result
+    }
+
+    fn sf_aset(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() != 4 {
+            return Err(LispError::WrongNumberOfArgs(
+                "aset".into(),
+                items.len() - 1,
+            ));
+        }
+        if let Value::Symbol(name) = &items[1] {
+            let current = self.lookup(name, env)?;
+            let new_value = self.eval(&items[3], env)?;
+            let index_value = self.eval(&items[2], env)?;
+            if matches!(current, Value::CharTable(_)) {
+                primitives::call(self, "aset", &[current, index_value, new_value.clone()], env)?;
+                return Ok(new_value);
+            }
+            let index = index_value.as_integer()? as usize;
+            let mut entries = current.to_vec()?;
+            let tagged = matches!(
+                entries.first(),
+                Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+            );
+            let slot = if tagged { index + 1 } else { index };
+            if slot >= entries.len() {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            entries[slot] = new_value.clone();
+            self.set_variable(name, Value::list(entries), env);
+            return Ok(new_value);
+        }
+
+        let vector = self.eval(&items[1], env)?;
+        let index = self.eval(&items[2], env)?;
+        let new_value = self.eval(&items[3], env)?;
+        primitives::call(self, "aset", &[vector, index, new_value.clone()], env)?;
+        Ok(new_value)
     }
 
     // ── cl-flet ──
@@ -2506,11 +3019,7 @@ impl Interpreter {
                         e.condition_type()
                     )));
                 }
-                // Return the error as (error "message") like Emacs does
-                Ok(Value::list([
-                    Value::symbol(e.condition_type()),
-                    Value::String(e.to_string()),
-                ]))
+                Ok(error_condition_value(&e))
             }
             Ok(val) => Err(LispError::Signal(format!(
                 "Test failed: expected error but got {}",
@@ -2606,6 +3115,25 @@ fn quoted_symbol_name(value: &Value) -> Option<String> {
     }
 }
 
+fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::Cons(_, _) => {
+            let items = value.to_vec()?;
+            if items.len() == 2
+                && matches!(items.first(), Some(Value::Symbol(name)) if name == "function" || name == "function-quote" || name == "quote")
+            {
+                return function_name_from_binding_form(&items[1]);
+            }
+            let other = unquote(value);
+            Err(LispError::TypeError("symbol".into(), other.type_name()))
+        }
+        _ => match unquote(value) {
+            Value::Symbol(name) => Ok(name),
+            other => Err(LispError::TypeError("symbol".into(), other.type_name())),
+        },
+    }
+}
+
 fn unquote(value: &Value) -> Value {
     match value {
         Value::Cons(_, _) => {
@@ -2685,6 +3213,149 @@ fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
         _ => false,
     }
 }
+
+fn error_condition_value(error: &LispError) -> Value {
+    match error {
+        LispError::TypeError(expected, got) => Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol(expected.clone()),
+            match got.as_str() {
+                "nil" => Value::Nil,
+                _ => Value::String(got.clone()),
+            },
+        ]),
+        LispError::Void(symbol) => Value::list([
+            Value::Symbol("void-variable".into()),
+            Value::Symbol(symbol.clone()),
+        ]),
+        LispError::WrongNumberOfArgs(name, count) => Value::list([
+            Value::Symbol("wrong-number-of-arguments".into()),
+            Value::Symbol(name.clone()),
+            Value::Integer(*count as i64),
+        ]),
+        LispError::EndOfInput => Value::list([
+            Value::Symbol("end-of-file".into()),
+            Value::Nil,
+        ]),
+        LispError::TestSkipped(message) => Value::list([
+            Value::Symbol("ert-test-skipped".into()),
+            Value::String(message.clone()),
+        ]),
+        LispError::ReadError(message) | LispError::Signal(message) => Value::list([
+            Value::Symbol("error".into()),
+            Value::String(message.clone()),
+        ]),
+    }
+}
+
+fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
+    match value {
+        Value::Nil => crate::buffer::UndoEntry::Boundary,
+        Value::Cons(car, cdr) => match (&**car, &**cdr) {
+            (Value::Integer(pos), Value::Integer(len)) if *pos >= 0 && *len >= 0 => {
+                crate::buffer::UndoEntry::Insert {
+                    pos: *pos as usize,
+                    len: *len as usize,
+                }
+            }
+            (Value::String(text), Value::Integer(pos)) if *pos >= 0 => {
+                crate::buffer::UndoEntry::Delete {
+                    pos: *pos as usize,
+                    text: text.clone(),
+                    props: Vec::new(),
+                    markers: Vec::new(),
+                }
+            }
+            _ => crate::buffer::UndoEntry::Opaque(value.clone()),
+        },
+        _ => crate::buffer::UndoEntry::Opaque(value.clone()),
+    }
+}
+
+fn combined_undo_display(entries: &[crate::buffer::UndoEntry]) -> Value {
+    Value::list([
+        Value::Symbol("apply".into()),
+        Value::Integer(2),
+        Value::Integer(1),
+        Value::Integer(1),
+        Value::Symbol("undo--wrap-and-run-primitive-undo".into()),
+        Value::Integer(1),
+        Value::Integer(1),
+        Value::list(entries.iter().map(undo_entry_display)),
+    ])
+}
+
+fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
+    match entry {
+        crate::buffer::UndoEntry::Insert { pos, len } => {
+            Value::cons(Value::Integer(*pos as i64), Value::Integer(*len as i64))
+        }
+        crate::buffer::UndoEntry::Delete { pos, text, .. } => {
+            Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
+        }
+        crate::buffer::UndoEntry::Combined { display, .. }
+        | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
+        crate::buffer::UndoEntry::Boundary => Value::Nil,
+    }
+}
+
+fn latest_generated_undo_group(entries: &[crate::buffer::UndoEntry]) -> Vec<crate::buffer::UndoEntry> {
+    entries
+        .iter()
+        .filter(|entry| !matches!(entry, crate::buffer::UndoEntry::Boundary))
+        .cloned()
+        .collect()
+}
+
+fn render_undo_value(value: &Value) -> String {
+    match value {
+        Value::Nil => "nil".into(),
+        Value::T => "t".into(),
+        Value::Integer(n) => n.to_string(),
+        Value::BigInteger(n) => n.to_string(),
+        Value::Float(n) => {
+            if n.fract() == 0.0 {
+                format!("{n:.1}")
+            } else {
+                n.to_string()
+            }
+        }
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Symbol(s) => s.clone(),
+        Value::Cons(_, _) => {
+            let mut rendered = String::from("(");
+            let mut current = value;
+            let mut first = true;
+            loop {
+                match current {
+                    Value::Cons(car, cdr) => {
+                        if !first {
+                            rendered.push(' ');
+                        }
+                        rendered.push_str(&render_undo_value(car));
+                        first = false;
+                        current = cdr;
+                    }
+                    Value::Nil => break,
+                    other => {
+                        rendered.push_str(" . ");
+                        rendered.push_str(&render_undo_value(other));
+                        break;
+                    }
+                }
+            }
+            rendered.push(')');
+            rendered
+        }
+        Value::BuiltinFunc(name) => format!("#<builtin {name}>"),
+        Value::Lambda(params, _, _) => format!("#<lambda ({})>", params.join(" ")),
+        Value::Buffer(_, name) => format!("#<buffer {name}>"),
+        Value::Marker(id) => format!("#<marker id:{id}>"),
+        Value::Overlay(id) => format!("#<overlay id:{id}>"),
+        Value::CharTable(id) => format!("#<char-table id:{id}>"),
+    }
+}
+
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -3088,6 +3759,340 @@ mod tests {
         assert_eq!(
             eval_str("(let ((x 0)) (while (< x 5) (setq x (1+ x))) x)"),
             Value::Integer(5)
+        );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_record_insert_inside_overlay() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "1234")
+                  (let ((overlay (make-overlay 2 4)))
+                    (dolist (hooks-property '(insert-in-front-hooks
+                                              modification-hooks
+                                              insert-behind-hooks))
+                      (overlay-put
+                       overlay
+                       hooks-property
+                       (list (lambda (ov &rest args)
+                               (push (list hooks-property args)
+                                     (overlay-get overlay
+                                                  'recorded-modification-hook-calls)))))
+                      (overlay-put overlay 'recorded-modification-hook-calls nil))
+                    (goto-char 3)
+                    (insert "x")
+                    (overlay-get overlay 'recorded-modification-hook-calls)))"#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("modification-hooks".into()),
+                    Value::list([
+                        Value::T,
+                        Value::Integer(3),
+                        Value::Integer(4),
+                        Value::Integer(0),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("modification-hooks".into()),
+                    Value::list([Value::Nil, Value::Integer(3), Value::Integer(3)]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_record_insert_at_overlay_start() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "1234")
+                  (let ((overlay (make-overlay 2 4)))
+                    (dolist (hooks-property '(insert-in-front-hooks
+                                              modification-hooks
+                                              insert-behind-hooks))
+                      (overlay-put
+                       overlay
+                       hooks-property
+                       (list (lambda (ov &rest args)
+                               (push (list hooks-property args)
+                                     (overlay-get overlay
+                                                  'recorded-modification-hook-calls)))))
+                      (overlay-put overlay 'recorded-modification-hook-calls nil))
+                    (goto-char 2)
+                    (insert "x")
+                    (overlay-get overlay 'recorded-modification-hook-calls)))"#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("insert-in-front-hooks".into()),
+                    Value::list([
+                        Value::T,
+                        Value::Integer(2),
+                        Value::Integer(3),
+                        Value::Integer(0),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("insert-in-front-hooks".into()),
+                    Value::list([Value::Nil, Value::Integer(2), Value::Integer(2)]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_record_replace_two_chars() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "1234")
+                  (let ((overlay (make-overlay 2 4)))
+                    (dolist (hooks-property '(insert-in-front-hooks
+                                              modification-hooks
+                                              insert-behind-hooks))
+                      (overlay-put
+                       overlay
+                       hooks-property
+                       (list (lambda (ov &rest args)
+                               (push (list hooks-property args)
+                                     (overlay-get overlay
+                                                  'recorded-modification-hook-calls)))))
+                      (overlay-put overlay 'recorded-modification-hook-calls nil))
+                    (goto-char (point-min))
+                    (search-forward "23")
+                    (replace-match "x")
+                    (overlay-get overlay 'recorded-modification-hook-calls)))"#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("modification-hooks".into()),
+                    Value::list([
+                        Value::T,
+                        Value::Integer(2),
+                        Value::Integer(3),
+                        Value::Integer(2),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("modification-hooks".into()),
+                    Value::list([Value::Nil, Value::Integer(2), Value::Integer(4)]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_record_zero_length_insert() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((overlay (make-overlay 1 1)))
+                    (dolist (hooks-property '(insert-in-front-hooks
+                                              modification-hooks
+                                              insert-behind-hooks))
+                      (overlay-put
+                       overlay
+                       hooks-property
+                       (list (lambda (ov &rest args)
+                               (push (list hooks-property args)
+                                     (overlay-get overlay
+                                                  'recorded-modification-hook-calls)))))
+                      (overlay-put overlay 'recorded-modification-hook-calls nil))
+                    (insert "x")
+                    (overlay-get overlay 'recorded-modification-hook-calls)))"#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("insert-behind-hooks".into()),
+                    Value::list([
+                        Value::T,
+                        Value::Integer(1),
+                        Value::Integer(2),
+                        Value::Integer(0),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("insert-in-front-hooks".into()),
+                    Value::list([
+                        Value::T,
+                        Value::Integer(1),
+                        Value::Integer(2),
+                        Value::Integer(0),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("insert-behind-hooks".into()),
+                    Value::list([Value::Nil, Value::Integer(1), Value::Integer(1)]),
+                ]),
+                Value::list([
+                    Value::Symbol("insert-in-front-hooks".into()),
+                    Value::list([Value::Nil, Value::Integer(1), Value::Integer(1)]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_data_driven_cases() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((mismatch nil))
+                  (dolist (test-case
+                           '(((insert-at . 1))
+                             ((insert-at . 2)
+                              (expected-calls . ((insert-in-front-hooks (nil 2 2))
+                                                 (insert-in-front-hooks (t 2 3 0)))))
+                             ((insert-at . 3)
+                              (expected-calls . ((modification-hooks (nil 3 3))
+                                                 (modification-hooks (t 3 4 0)))))
+                             ((insert-at . 4)
+                              (expected-calls . ((insert-behind-hooks (nil 4 4))
+                                                 (insert-behind-hooks (t 4 5 0)))))
+                             ((insert-at . 5))
+                             ((replace . "1"))
+                             ((replace . "2")
+                              (expected-calls . ((modification-hooks (nil 2 3))
+                                                 (modification-hooks (t 2 3 1)))))
+                             ((replace . "3")
+                              (expected-calls . ((modification-hooks (nil 3 4))
+                                                 (modification-hooks (t 3 4 1)))))
+                             ((replace . "4"))
+                             ((replace . "4") (overlay-beg . 4))
+                             ((replace . "12")
+                              (expected-calls . ((modification-hooks (nil 1 3))
+                                                 (modification-hooks (t 1 2 2)))))
+                             ((replace . "23")
+                              (expected-calls . ((modification-hooks (nil 2 4))
+                                                 (modification-hooks (t 2 3 2)))))
+                             ((replace . "34")
+                              (expected-calls . ((modification-hooks (nil 3 5))
+                                                 (modification-hooks (t 3 4 2)))))
+                             ((replace . "123")
+                              (expected-calls . ((modification-hooks (nil 1 4))
+                                                 (modification-hooks (t 1 2 3)))))
+                             ((replace . "234")
+                              (expected-calls . ((modification-hooks (nil 2 5))
+                                                 (modification-hooks (t 2 3 3)))))
+                             ((replace . "1234")
+                              (expected-calls . ((modification-hooks (nil 1 5))
+                                                 (modification-hooks (t 1 2 4)))))
+                             ((buffer-text . "") (overlay-beg . 1) (overlay-end . 1)
+                              (insert-at . 1)
+                              (expected-calls . ((insert-in-front-hooks (nil 1 1))
+                                                 (insert-behind-hooks (nil 1 1))
+                                                 (insert-in-front-hooks (t 1 2 0))
+                                                 (insert-behind-hooks (t 1 2 0)))))))
+                    (when (null mismatch)
+                      (dolist (advance '(nil t))
+                        (when (null mismatch)
+                          (let-alist test-case
+                            (with-temp-buffer
+                              (insert (or .buffer-text "1234"))
+                              (let ((overlay (make-overlay
+                                              (or .overlay-beg 2)
+                                              (or .overlay-end 4)
+                                              nil
+                                              advance advance)))
+                                (dolist (hooks-property '(insert-in-front-hooks
+                                                          modification-hooks
+                                                          insert-behind-hooks))
+                                  (overlay-put
+                                   overlay
+                                   hooks-property
+                                   (list (lambda (ov &rest args)
+                                           (push (list hooks-property args)
+                                                 (overlay-get overlay
+                                                              'recorded-modification-hook-calls)))))
+                                  (overlay-put overlay 'recorded-modification-hook-calls nil))
+                                (when .insert-at
+                                  (goto-char .insert-at)
+                                  (insert "x"))
+                                (when .replace
+                                  (goto-char (point-min))
+                                  (search-forward .replace)
+                                  (replace-match "x"))
+                                (let ((actual (reverse (overlay-get overlay 'recorded-modification-hook-calls))))
+                                  (unless (equal .expected-calls actual)
+                                    (setq mismatch (list test-case advance actual)))))))))))
+                  mismatch)"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn overlay_complex_insert_2_regions() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert (make-string 100 ?\s))
+                  (make-overlay 77 7 nil nil t)
+                  (make-overlay 21 53 nil t t)
+                  (make-overlay 84 14 nil nil nil)
+                  (make-overlay 38 69 nil t nil)
+                  (make-overlay 93 15 nil nil t)
+                  (make-overlay 73 48 nil t t)
+                  (make-overlay 96 51 nil t t)
+                  (make-overlay 6 43 nil t t)
+                  (make-overlay 15 100 nil t t)
+                  (make-overlay 22 17 nil nil nil)
+                  (make-overlay 72 45 nil t nil)
+                  (make-overlay 2 74 nil nil t)
+                  (make-overlay 15 29 nil t t)
+                  (make-overlay 17 34 nil t t)
+                  (make-overlay 101 66 nil t nil)
+                  (make-overlay 94 24 nil nil nil)
+                  (goto-char 78)
+                  (insert "           ")
+                  (narrow-to-region 47 19)
+                  (goto-char 46)
+                  (widen)
+                  (narrow-to-region 13 3)
+                  (goto-char 9)
+                  (delete-char 0)
+                  (goto-char 11)
+                  (insert "           ")
+                  (goto-char 3)
+                  (insert "          ")
+                  (goto-char 8)
+                  (insert "       ")
+                  (goto-char 26)
+                  (insert "  ")
+                  (goto-char 14)
+                  (widen)
+                  (narrow-to-region 71 35)
+                  (sort (mapcar (lambda (ov)
+                                  (cons (overlay-start ov)
+                                        (overlay-end ov)))
+                                (overlays-in (point-min)
+                                             (point-max)))
+                        (lambda (o1 o2)
+                          (or (< (car o1) (car o2))
+                              (and (= (car o1) (car o2))
+                                   (< (cdr o1) (cdr o2)))))))"#
+            ),
+            Value::list([
+                Value::cons(Value::Integer(2), Value::Integer(104)),
+                Value::cons(Value::Integer(23), Value::Integer(73)),
+                Value::cons(Value::Integer(24), Value::Integer(107)),
+                Value::cons(Value::Integer(44), Value::Integer(125)),
+                Value::cons(Value::Integer(45), Value::Integer(59)),
+                Value::cons(Value::Integer(45), Value::Integer(134)),
+                Value::cons(Value::Integer(45), Value::Integer(141)),
+                Value::cons(Value::Integer(47), Value::Integer(52)),
+                Value::cons(Value::Integer(47), Value::Integer(64)),
+                Value::cons(Value::Integer(51), Value::Integer(83)),
+                Value::cons(Value::Integer(54), Value::Integer(135)),
+                Value::cons(Value::Integer(68), Value::Integer(99)),
+            ])
         );
     }
 }

@@ -6,6 +6,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use regex::Regex;
 use std::fs;
 use std::process::Command;
+use unicode_width::UnicodeWidthChar;
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 
@@ -24,6 +25,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "max"
             | "min"
             | "abs"
+            | "logior"
             // Comparison
             | "="
             | "<"
@@ -37,6 +39,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "equal-including-properties"
             | "string="
             | "string-equal"
+            | "string-search"
             | "xor"
             // Type predicates
             | "null"
@@ -90,14 +93,18 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-to-multibyte"
             | "string-to-number"
             | "number-to-string"
+            | "string-match-p"
+            | "string-width"
             | "format"
             | "char-to-string"
             | "string-to-char"
             | "byte-to-string"
             | "multibyte-string-p"
+            | "multibyte-char-to-unibyte"
             | "unibyte-char-to-multibyte"
             | "upcase"
             | "downcase"
+            | "char-resolve-modifiers"
             // Buffer operations
             | "insert"
             | "insert-and-inherit"
@@ -158,6 +165,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "gap-size"
             | "position-bytes"
             | "byte-to-position"
+            | "max-char"
             | "get-pos-property"
             | "get-char-property"
             | "get-text-property"
@@ -184,6 +192,26 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-local-value"
             | "buffer-local-variables"
             | "buffer-list"
+            | "char-table-p"
+            | "char-table-subtype"
+            | "char-table-parent"
+            | "set-char-table-parent"
+            | "char-table-extra-slot"
+            | "set-char-table-extra-slot"
+            | "char-table-range"
+            | "set-char-table-range"
+            | "make-category-table"
+            | "category-table-p"
+            | "standard-category-table"
+            | "category-table"
+            | "set-category-table"
+            | "define-category"
+            | "category-docstring"
+            | "make-category-set"
+            | "category-set-mnemonics"
+            | "modify-category-entry"
+            | "char-category-set"
+            | "copy-category-table"
             | "set-buffer"
             | "switch-to-buffer"
             | "buffer-file-name"
@@ -267,6 +295,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "throw"
             | "take"
             | "add-hook"
+            | "remove-hook"
             | "describe-function"
             | "executable-find"
             | "ignore"
@@ -323,11 +352,34 @@ pub fn call(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
-    env: &super::types::Env,
+    env: &mut super::types::Env,
 ) -> Result<Value, LispError> {
     // Helper: check if any argument is a float
     let has_float = |args: &[Value]| args.iter().any(|a| matches!(a, Value::Float(_)));
     let has_big_integer = |args: &[Value]| args.iter().any(|a| matches!(a, Value::BigInteger(_)));
+
+    if matches!(
+        name,
+        "undo-boundary"
+            | "insert"
+            | "insert-char"
+            | "insert-before-markers"
+            | "insert-before-markers-and-inherit"
+            | "delete-region"
+            | "kill-region"
+            | "delete-char"
+            | "delete-forward-char"
+            | "kill-word"
+            | "erase-buffer"
+            | "put-text-property"
+            | "add-text-properties"
+            | "remove-list-of-text-properties"
+            | "set-buffer-multibyte"
+            | "write-region"
+            | "save-buffer"
+    ) {
+        interp.reset_undo_sequence();
+    }
 
     match name {
         // ── Arithmetic ──
@@ -489,6 +541,13 @@ pub fn call(
                 Ok(Value::Integer(integer_like_i64(interp, &args[0])?.abs()))
             }
         }
+        "logior" => {
+            let mut result = 0i64;
+            for arg in args {
+                result |= arg.as_integer()?;
+            }
+            Ok(Value::Integer(result))
+        }
 
         // ── Comparison ──
         "=" => {
@@ -585,6 +644,34 @@ pub fn call(
             let a = string_text(&args[0])?;
             let b = string_text(&args[1])?;
             Ok(if a == b { Value::T } else { Value::Nil })
+        }
+        "string-search" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let needle = string_text(&args[0])?;
+            let haystack = string_text(&args[1])?;
+            let hay_chars: Vec<char> = haystack.chars().collect();
+            let start = if args.len() == 3 {
+                let start = args[2].as_integer()?;
+                if start < 0 || start as usize > hay_chars.len() {
+                    return Err(LispError::Signal("Args out of range".into()));
+                }
+                start as usize
+            } else {
+                0
+            };
+            if needle.is_empty() {
+                return Ok(Value::Integer(start as i64));
+            }
+            let suffix: String = hay_chars[start..].iter().collect();
+            match suffix.find(&needle) {
+                Some(byte_offset) => {
+                    let char_offset = suffix[..byte_offset].chars().count();
+                    Ok(Value::Integer((start + char_offset) as i64))
+                }
+                None => Ok(Value::Nil),
+            }
         }
 
         // ── Type predicates ──
@@ -927,7 +1014,7 @@ pub fn call(
             for a in &all_args {
                 call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
             }
-            interp.eval(&Value::list(call_items), &mut Vec::new())
+            interp.eval(&Value::list(call_items), env)
         }
         "funcall" => {
             if args.is_empty() {
@@ -938,7 +1025,7 @@ pub fn call(
             for a in &args[1..] {
                 call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
             }
-            interp.eval(&Value::list(call_items), &mut Vec::new())
+            interp.eval(&Value::list(call_items), env)
         }
         "funcall-interactively" | "call-interactively" => {
             if args.is_empty() {
@@ -954,7 +1041,7 @@ pub fn call(
             for a in tail {
                 call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
             }
-            interp.eval(&Value::list(call_items), &mut Vec::new())
+            interp.eval(&Value::list(call_items), env)
         }
 
         // ── Allocation ──
@@ -1006,6 +1093,45 @@ pub fn call(
             }
             Ok(string_like_value(result, merge_string_props(props)))
         }
+        "string-match-p" => {
+            need_args(name, args, 2)?;
+            let pattern = string_text(&args[0])?;
+            let haystack = string_text(&args[1])?;
+            let regex = Regex::new(&translate_elisp_regex(&pattern))
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            Ok(if regex.is_match(&haystack) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "string-width" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs("string-width".into(), args.len()));
+            }
+            let text = string_text(&args[0])?;
+            let chars: Vec<char> = text.chars().collect();
+            let len = chars.len() as i64;
+            let start = normalize_string_index(args.get(1), 0, len)?;
+            let end = normalize_string_index(args.get(2), len, len)?;
+            if end < start {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            let tab_width = interp
+                .lookup_var("tab-width", &Vec::new())
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(8)
+                .max(1) as usize;
+            let mut width = 0usize;
+            for ch in chars[start as usize..end as usize].iter().copied() {
+                if ch == '\t' {
+                    width += tab_width;
+                } else {
+                    width += ch.width().unwrap_or(0);
+                }
+            }
+            Ok(Value::Integer(width as i64))
+        }
         "string" => {
             let mut result = String::new();
             for arg in args {
@@ -1044,6 +1170,15 @@ pub fn call(
         "string-to-multibyte" => {
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?))
+        }
+        "multibyte-char-to-unibyte" => {
+            need_args(name, args, 1)?;
+            let ch = args[0].as_integer()?;
+            Ok(if (0..=255).contains(&ch) {
+                Value::Integer(ch)
+            } else {
+                Value::Integer(-1)
+            })
         }
         "string-to-number" => {
             need_args(name, args, 1)?;
@@ -1334,6 +1469,10 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?.to_lowercase()))
         }
+        "char-resolve-modifiers" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(resolve_char_modifiers(args[0].as_integer()?)))
+        }
 
         // ── Buffer operations ──
         "insert" => {
@@ -1510,17 +1649,25 @@ pub fn call(
                     .map(|ch| ch.len_utf8())
                     .sum::<usize>();
                 haystack[offset..].find(&needle).map(|found| {
-                    let chars = haystack[offset..offset + found + needle.len()].chars().count();
-                    point + chars
+                    let match_start_chars = haystack[offset..offset + found].chars().count();
+                    let match_end_chars =
+                        haystack[offset..offset + found + needle.len()].chars().count();
+                    (point + match_start_chars, point + match_end_chars)
                 })
             } else {
                 let prefix: String = haystack.chars().take(point.saturating_sub(1)).collect();
-                prefix.rfind(&needle).map(|found| prefix[..found].chars().count() + 1)
+                prefix.rfind(&needle).map(|found| {
+                    let start = prefix[..found].chars().count() + 1;
+                    let end = start + needle.chars().count();
+                    (start, end)
+                })
             };
             match result {
-                Some(pos) => {
-                    interp.buffer.goto_char(pos);
-                    Ok(Value::Integer(pos as i64))
+                Some((start, end)) => {
+                    interp.last_match_data = Some(vec![Some((start, end))]);
+                    let point = if name == "search-backward" { start } else { end };
+                    interp.buffer.goto_char(point);
+                    Ok(Value::Integer(point as i64))
                 }
                 None => Ok(Value::Nil),
             }
@@ -1578,6 +1725,7 @@ pub fn call(
         }
         "gap-position" => Ok(Value::Integer(interp.buffer.point() as i64)),
         "gap-size" => Ok(Value::Integer(0)),
+        "max-char" => Ok(Value::Integer(0x3F_FFFF)),
         "position-bytes" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -1606,7 +1754,15 @@ pub fn call(
             }
             Ok(Value::String(interp.buffer.name.clone()))
         }
-        "set-buffer-multibyte" => Ok(args.first().cloned().unwrap_or(Value::Nil)),
+        "set-buffer-multibyte" => {
+            let enabled = args.first().is_none_or(Value::is_truthy);
+            interp.buffer.set_multibyte(enabled);
+            interp.buffer.push_undo_entry(crate::buffer::UndoEntry::Combined {
+                display: Value::Nil,
+                entries: Vec::new(),
+            });
+            Ok(if enabled { Value::T } else { Value::Nil })
+        }
         "char-after" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -1687,6 +1843,20 @@ pub fn call(
             }
         }
         "delete-forward-char" => {
+            if interp.buffer.mark_active()
+                && interp
+                    .lookup_var("transient-mark-mode", env)
+                    .is_some_and(|value| value.is_truthy())
+                && let Some((start, end)) = interp.buffer.region()
+            {
+                interp.buffer.deactivate_mark();
+                return call(
+                    interp,
+                    "delete-region",
+                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                    env,
+                );
+            }
             let n = if args.is_empty() {
                 1
             } else {
@@ -1958,6 +2128,10 @@ pub fn call(
             interp
                 .buffer
                 .put_text_property(start, end, &prop, args[3].clone());
+            interp.buffer.push_undo_entry(crate::buffer::UndoEntry::Combined {
+                display: Value::Nil,
+                entries: Vec::new(),
+            });
             Ok(Value::T)
         }
         "add-text-properties" => {
@@ -1966,6 +2140,10 @@ pub fn call(
             let end = position_from_value(interp, &args[1])?;
             let props = plist_pairs(&args[2])?;
             interp.buffer.add_text_properties(start, end, &props);
+            interp.buffer.push_undo_entry(crate::buffer::UndoEntry::Combined {
+                display: Value::Nil,
+                entries: Vec::new(),
+            });
             Ok(Value::T)
         }
         "remove-list-of-text-properties" => {
@@ -1980,6 +2158,10 @@ pub fn call(
             interp
                 .buffer
                 .remove_list_of_text_properties(start, end, &names);
+            interp.buffer.push_undo_entry(crate::buffer::UndoEntry::Combined {
+                display: Value::Nil,
+                entries: Vec::new(),
+            });
             Ok(Value::T)
         }
         "compare-buffer-substrings" => {
@@ -2100,6 +2282,7 @@ pub fn call(
         "generate-new-buffer" => {
             need_args(name, args, 1)?;
             let base = args[0].as_string()?;
+            let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
             let buf_name = if interp.has_buffer(base) {
                 let mut n = 2;
                 loop {
@@ -2113,6 +2296,10 @@ pub fn call(
                 base.to_string()
             };
             let (id, _) = interp.create_buffer(&buf_name);
+            interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
+            if !inhibit_hooks {
+                run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+            }
             Ok(Value::Buffer(id, buf_name))
         }
         "get-buffer" => {
@@ -2132,6 +2319,7 @@ pub fn call(
         }
         "get-buffer-create" => {
             need_args(name, args, 1)?;
+            let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
             let buf_name = match &args[0] {
                 Value::Buffer(_, n) => n.clone(),
                 Value::String(s) => s.clone(),
@@ -2146,6 +2334,10 @@ pub fn call(
                 Ok(Value::Buffer(id, name))
             } else {
                 let (id, _) = interp.create_buffer(&buf_name);
+                interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
+                if !inhibit_hooks {
+                    run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+                }
                 Ok(Value::Buffer(id, buf_name))
             }
         }
@@ -2177,6 +2369,7 @@ pub fn call(
             let base_id = interp.resolve_buffer_id(&args[0])?;
             let new_name = string_text(&args[1])?;
             let clone = args.get(2).is_some_and(|value| value.is_truthy());
+            let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
             let (new_id, _) = interp.create_buffer(&new_name);
             let (text, props, point, mark, file, base_overlays) = {
                 let base = interp
@@ -2206,6 +2399,7 @@ pub fn call(
             if let Some(buffer) = interp.get_buffer_by_id_mut(new_id) {
                 *buffer = crate::buffer::Buffer::from_text(&new_name, &text);
                 buffer.file = file;
+                buffer.inhibit_hooks = inhibit_hooks;
                 buffer.goto_char(point);
                 if let Some(mark) = mark {
                     buffer.set_mark(mark);
@@ -2216,6 +2410,9 @@ pub fn call(
                 buffer.overlays = overlays;
             }
             interp.register_indirect_buffer(new_id, base_id);
+            if !inhibit_hooks {
+                run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+            }
             Ok(Value::Buffer(new_id, new_name))
         }
         "rename-buffer" => {
@@ -2412,7 +2609,59 @@ pub fn call(
             } else {
                 interp.current_buffer_id()
             };
+            let inhibit_hooks = interp.buffer_hooks_inhibited(id);
+            let auto_save = interp.buffer_local_value(id, "buffer-auto-save-file-name");
+            let auto_save_path = auto_save
+                .as_ref()
+                .and_then(|value| string_text(value).ok());
+            let modified = interp
+                .get_buffer_by_id(id)
+                .map(|buffer| buffer.is_modified())
+                .unwrap_or(false);
+            if modified
+                && let Some(path) = auto_save_path.as_ref()
+                && fs::metadata(path).is_ok()
+            {
+                let _ = call_named_function(
+                    interp,
+                    "read-multiple-choice",
+                    &[
+                        Value::String("Buffer modified; kill anyway?".into()),
+                        Value::list([Value::list([
+                            Value::Integer('y' as i64),
+                            Value::String("Yes".into()),
+                        ])]),
+                    ],
+                    env,
+                )?;
+                if interp
+                    .lookup_var("kill-buffer-delete-auto-save-files", env)
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    let delete = call_named_function(
+                        interp,
+                        "yes-or-no-p",
+                        &[Value::String("Delete auto-save file?".into())],
+                        env,
+                    )?;
+                    if delete.is_truthy() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+            if !inhibit_hooks {
+                for hook in hook_values(interp, "kill-buffer-query-functions", env, Some(id)) {
+                    let result = call_function_value(interp, &hook, &[], env)?;
+                    if result.is_nil() {
+                        return Ok(Value::Nil);
+                    }
+                }
+                run_named_hooks(interp, "kill-buffer-hook", env, Some(id))?;
+            }
             interp.kill_buffer_id(id);
+            if !inhibit_hooks {
+                run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
+            }
             Ok(Value::T)
         }
         "set-mark" => {
@@ -2428,6 +2677,9 @@ pub fn call(
                 position_from_value(interp, &args[0])?
             };
             interp.buffer.set_mark(pos);
+            if !args.get(2).is_some_and(Value::is_truthy) {
+                interp.buffer.deactivate_mark();
+            }
             Ok(Value::Nil)
         }
         "mark" => Ok(match interp.buffer.mark() {
@@ -2616,7 +2868,16 @@ pub fn call(
         )),
 
         // ── Display stubs ──
-        "display-graphic-p" | "frame-parameter" | "transient-mark-mode" => Ok(Value::Nil),
+        "display-graphic-p" | "frame-parameter" => Ok(Value::Nil),
+        "transient-mark-mode" => {
+            let enabled = args.first().is_some_and(Value::is_truthy);
+            interp.set_variable(
+                "transient-mark-mode",
+                if enabled { Value::T } else { Value::Nil },
+                env,
+            );
+            Ok(if enabled { Value::T } else { Value::Nil })
+        }
         "selected-window" => Ok(Value::Symbol("window".into())),
         "selected-frame" => Ok(Value::Symbol("frame".into())),
         "get-buffer-window" => Ok(Value::Symbol("window".into())),
@@ -2701,6 +2962,29 @@ pub fn call(
                     hooks.insert(0, function);
                 }
             }
+            if local {
+                interp.set_buffer_local_hook(interp.current_buffer_id(), &hook_name, hooks);
+            } else {
+                interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
+            }
+            Ok(Value::Nil)
+        }
+        "remove-hook" => {
+            need_args(name, args, 2)?;
+            let hook_name = args[0].as_symbol()?.to_string();
+            let function = args[1].clone();
+            let local = args.get(3).is_some_and(|value| value.is_truthy());
+            let mut hooks = if local {
+                interp
+                    .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                    .unwrap_or_default()
+            } else {
+                interp
+                    .lookup_var(&hook_name, env)
+                    .map(|value| value.to_vec().unwrap_or_default())
+                    .unwrap_or_default()
+            };
+            hooks.retain(|hook| hook != &function);
             if local {
                 interp.set_buffer_local_hook(interp.current_buffer_id(), &hook_name, hooks);
             } else {
@@ -2905,7 +3189,21 @@ pub fn call(
                 _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
             };
             match interp.find_overlay(ov_id) {
-                Some(ov) if !ov.is_dead() => Ok(Value::Integer(ov.beg as i64)),
+                Some(ov) if !ov.is_dead() => {
+                    let pos = if let Some(buffer_id) = ov.buffer_id {
+                        let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                            LispError::Signal(format!("No buffer with id {}", buffer_id))
+                        })?;
+                        if buffer.is_multibyte() {
+                            ov.beg
+                        } else {
+                            buffer_position_to_byte(buffer, ov.beg).unwrap_or(ov.beg)
+                        }
+                    } else {
+                        ov.beg
+                    };
+                    Ok(Value::Integer(pos as i64))
+                }
                 _ => Ok(Value::Nil),
             }
         }
@@ -2917,7 +3215,21 @@ pub fn call(
                 _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
             };
             match interp.find_overlay(ov_id) {
-                Some(ov) if !ov.is_dead() => Ok(Value::Integer(ov.end as i64)),
+                Some(ov) if !ov.is_dead() => {
+                    let pos = if let Some(buffer_id) = ov.buffer_id {
+                        let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                            LispError::Signal(format!("No buffer with id {}", buffer_id))
+                        })?;
+                        if buffer.is_multibyte() {
+                            ov.end
+                        } else {
+                            buffer_position_to_byte(buffer, ov.end).unwrap_or(ov.end)
+                        }
+                    } else {
+                        ov.end
+                    };
+                    Ok(Value::Integer(pos as i64))
+                }
                 _ => Ok(Value::Nil),
             }
         }
@@ -3277,21 +3589,8 @@ pub fn call(
                             Value::BuiltinFunc(fname) => {
                                 call(interp, fname, &pred_args, env)?
                             }
-                            Value::Lambda(params, body, captured_env) => {
-                                let mut call_env = captured_env.clone();
-                                let mut frame = Vec::new();
-                                for (k, param) in params.iter().enumerate() {
-                                    frame.push((
-                                        param.clone(),
-                                        pred_args.get(k).cloned().unwrap_or(Value::Nil),
-                                    ));
-                                }
-                                call_env.push(frame);
-                                let mut r = Value::Nil;
-                                for expr in body {
-                                    r = interp.eval(expr, &mut call_env)?;
-                                }
-                                r
+                            Value::Lambda(_, _, _) => {
+                                call_function_value(interp, pred, &pred_args, env)?
                             }
                             _ => {
                                 return Err(LispError::TypeError(
@@ -3347,6 +3646,10 @@ pub fn call(
                         None => Err(LispError::Signal("Args out of range".into())),
                     }
                 }
+                Value::CharTable(id) => {
+                    let key = args[1].as_integer()? as u32;
+                    Ok(interp.char_table_get(*id, key).unwrap_or(Value::Nil))
+                }
                 _ => {
                     let items = vector_items(&args[0])?;
                     items.get(idx).cloned().ok_or_else(|| {
@@ -3377,18 +3680,8 @@ pub fn call(
                     Value::BuiltinFunc(fname) => {
                         call(interp, fname, std::slice::from_ref(item), env)?
                     }
-                    Value::Lambda(params, body, captured_env) => {
-                        let mut call_env = captured_env.clone();
-                        let mut frame = Vec::new();
-                        if let Some(p) = params.first() {
-                            frame.push((p.clone(), item.clone()));
-                        }
-                        call_env.push(frame);
-                        let mut r = Value::Nil;
-                        for expr in body {
-                            r = interp.eval(expr, &mut call_env)?;
-                        }
-                        r
+                    Value::Lambda(_, _, _) => {
+                        call_function_value(interp, &pred, std::slice::from_ref(item), env)?
                     }
                     _ => {
                         return Err(LispError::TypeError(
@@ -3439,8 +3732,259 @@ pub fn call(
 
         "make-char-table" => {
             need_args(name, args, 1)?;
-            let purpose = args[0].as_symbol()?;
-            Ok(interp.make_char_table(purpose))
+            let subtype = match &args[0] {
+                Value::Nil => None,
+                Value::Symbol(symbol) => Some(symbol.clone()),
+                other => {
+                    return Err(LispError::TypeError(
+                        "symbol".into(),
+                        other.type_name(),
+                    ))
+                }
+            };
+            let default = args.get(1).cloned().unwrap_or(Value::Nil);
+            Ok(interp.make_char_table(subtype, default))
+        }
+
+        "char-table-p" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(args[0], Value::CharTable(_)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+
+        "char-table-subtype" => {
+            need_args(name, args, 1)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            Ok(interp
+                .char_table_subtype(id)
+                .flatten()
+                .map(Value::Symbol)
+                .unwrap_or(Value::Nil))
+        }
+
+        "char-table-parent" => {
+            need_args(name, args, 1)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            Ok(interp
+                .char_table_parent(id)
+                .flatten()
+                .and_then(|parent_id| interp.find_char_table(parent_id).map(|_| Value::CharTable(parent_id)))
+                .unwrap_or(Value::Nil))
+        }
+
+        "set-char-table-parent" => {
+            need_args(name, args, 2)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            let parent = match &args[1] {
+                Value::Nil => None,
+                Value::CharTable(parent_id) => Some(*parent_id),
+                other => {
+                    return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                }
+            };
+            interp.set_char_table_parent(id, parent)?;
+            Ok(args[1].clone())
+        }
+
+        "char-table-extra-slot" => {
+            need_args(name, args, 2)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            let slot = args[1].as_integer()?.max(0) as usize;
+            Ok(interp.char_table_extra_slot(id, slot).unwrap_or(Value::Nil))
+        }
+
+        "set-char-table-extra-slot" => {
+            need_args(name, args, 3)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            let slot = args[1].as_integer()?.max(0) as usize;
+            interp.set_char_table_extra_slot(id, slot, args[2].clone())?;
+            Ok(args[2].clone())
+        }
+
+        "char-table-range" => {
+            need_args(name, args, 2)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            match char_table_range_spec(&args[1])? {
+                None => Ok(interp.find_char_table(id).map(|table| table.default.clone()).unwrap_or(Value::Nil)),
+                Some((start, end)) if start == end => Ok(interp.char_table_get(id, start).unwrap_or(Value::Nil)),
+                Some((start, end)) => Ok(interp.char_table_range(id, start, end).unwrap_or(Value::Nil)),
+            }
+        }
+
+        "set-char-table-range" => {
+            need_args(name, args, 3)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            match char_table_range_spec(&args[1])? {
+                None => interp.char_table_set_default(id, args[2].clone())?,
+                Some((start, end)) => interp.char_table_set_range(id, start, end, args[2].clone())?,
+            }
+            Ok(args[2].clone())
+        }
+
+        "make-category-table" => Ok(interp.make_char_table(
+            Some("category-table".into()),
+            Value::String(String::new()),
+        )),
+
+        "category-table-p" => {
+            need_args(name, args, 1)?;
+            Ok(match &args[0] {
+                Value::CharTable(id)
+                    if interp.char_table_subtype(*id).flatten().as_deref()
+                        == Some("category-table") =>
+                {
+                    Value::T
+                }
+                _ => Value::Nil,
+            })
+        }
+
+        "standard-category-table" => Ok(Value::CharTable(interp.ensure_standard_category_table())),
+
+        "category-table" => {
+            let table = interp
+                .buffer_local_value(interp.current_buffer_id(), "category-table")
+                .and_then(|value| match value {
+                    Value::CharTable(id) => Some(Value::CharTable(id)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| Value::CharTable(interp.ensure_standard_category_table()));
+            Ok(table)
+        }
+
+        "set-category-table" => {
+            need_args(name, args, 1)?;
+            let table = match &args[0] {
+                Value::CharTable(id) => Value::CharTable(*id),
+                other => {
+                    return Err(LispError::TypeError(
+                        "char-table".into(),
+                        other.type_name(),
+                    ))
+                }
+            };
+            interp.set_buffer_local_value(interp.current_buffer_id(), "category-table", table.clone());
+            Ok(table)
+        }
+
+        "define-category" => {
+            need_args(name, args, 3)?;
+            let category = args[0].as_integer()?;
+            let doc = string_text(&args[1])?;
+            let table = match args.get(2) {
+                Some(Value::CharTable(id)) => *id,
+                Some(Value::Nil) | None => interp.ensure_standard_category_table(),
+                Some(other) => {
+                    return Err(LispError::TypeError(
+                        "char-table".into(),
+                        other.type_name(),
+                    ))
+                }
+            };
+            interp.define_category(table, category as u32, doc)?;
+            Ok(Value::Nil)
+        }
+
+        "category-docstring" => {
+            need_args(name, args, 2)?;
+            let category = args[0].as_integer()? as u32;
+            let table = match &args[1] {
+                Value::CharTable(id) => *id,
+                other => {
+                    return Err(LispError::TypeError(
+                        "char-table".into(),
+                        other.type_name(),
+                    ))
+                }
+            };
+            Ok(interp
+                .category_docstring(table, category)
+                .map(Value::String)
+                .unwrap_or(Value::Nil))
+        }
+
+        "make-category-set" => {
+            need_args(name, args, 1)?;
+            let text = string_text(&args[0])?;
+            Ok(Value::String(normalize_category_set(&text)))
+        }
+
+        "category-set-mnemonics" => {
+            need_args(name, args, 1)?;
+            let text = string_text(&args[0])?;
+            Ok(Value::String(normalize_category_set(&text)))
+        }
+
+        "modify-category-entry" => {
+            need_args(name, args, 3)?;
+            let character = args[0].as_integer()? as u32;
+            let category = args[1].as_integer()? as u32;
+            let table = match &args[2] {
+                Value::CharTable(id) => *id,
+                other => {
+                    return Err(LispError::TypeError(
+                        "char-table".into(),
+                        other.type_name(),
+                    ))
+                }
+            };
+            let reset = args.get(3).is_some_and(Value::is_truthy);
+            let category_char = char::from_u32(category)
+                .ok_or_else(|| LispError::Signal("Invalid character".into()))?;
+            let current = interp
+                .char_table_get(table, character)
+                .and_then(|value| string_like(&value).map(|s| s.text))
+                .unwrap_or_default();
+            let mut chars: Vec<char> = current.chars().collect();
+            if reset {
+                chars.retain(|existing| *existing != category_char);
+            } else if !chars.contains(&category_char) {
+                chars.push(category_char);
+            }
+            chars.sort_unstable();
+            let updated = chars.into_iter().collect::<String>();
+            interp.char_table_set(table, character, Value::String(updated))?;
+            Ok(Value::Nil)
+        }
+
+        "char-category-set" => {
+            need_args(name, args, 1)?;
+            let character = args[0].as_integer()? as u32;
+            let table_id = interp
+                .buffer_local_value(interp.current_buffer_id(), "category-table")
+                .and_then(|value| match value {
+                    Value::CharTable(id) => Some(id),
+                    _ => None,
+                })
+                .unwrap_or_else(|| interp.ensure_standard_category_table());
+            Ok(interp
+                .char_table_get(table_id, character)
+                .unwrap_or_else(|| Value::String(String::new())))
+        }
+
+        "copy-category-table" => {
+            need_args(name, args, 1)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError("char-table".into(), args[0].type_name()));
+            };
+            interp.clone_char_table(id)
         }
 
         "translate-region-internal" => {
@@ -3495,10 +4039,7 @@ pub fn call(
         }
 
         "undo" => {
-            interp
-                .buffer
-                .undo()
-                .map_err(|e| LispError::Signal(e.to_string()))?;
+            interp.undo_current_buffer()?;
             Ok(Value::Nil)
         }
 
@@ -3506,13 +4047,18 @@ pub fn call(
             let count = if args.is_empty() {
                 1
             } else {
-                args[0].as_integer()?
+                match &args[0] {
+                    Value::Nil => {
+                        return Err(LispError::TypeError(
+                            "number-or-marker-p".into(),
+                            "nil".into(),
+                        ))
+                    }
+                    value => value.as_integer()?,
+                }
             };
             for _ in 0..count.max(0) {
-                interp
-                    .buffer
-                    .undo()
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
+                interp.undo_more_current_buffer()?;
             }
             Ok(Value::Nil)
         }
@@ -3599,9 +4145,31 @@ pub fn call(
                 .as_ref()
                 .and_then(|entries| entries.first().and_then(|entry| *entry))
                 .ok_or_else(|| LispError::Signal("No previous search".into()))?;
-            delete_region_with_hooks(interp, start, end, env)?;
+            let replacement_len = replacement.chars().count();
+            let overlay_calls =
+                overlay_change_hook_calls(&interp.buffer, start, end, start + replacement_len);
+            run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+            run_change_hooks(
+                interp,
+                "before-change-functions",
+                &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                env,
+            )?;
+            interp.delete_region_current_buffer(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
             interp.buffer.goto_char(start);
-            insert_text_with_hooks(interp, &replacement, &[], false, false, env)?;
+            interp.insert_current_buffer(&replacement);
+            run_change_hooks(
+                interp,
+                "after-change-functions",
+                &[
+                    Value::Integer(start as i64),
+                    Value::Integer((start + replacement_len) as i64),
+                    Value::Integer((end - start) as i64),
+                ],
+                env,
+            )?;
+            run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
             interp.last_match_data = None;
             Ok(Value::Nil)
         }
@@ -3959,6 +4527,16 @@ fn get_or_create_buffer(interp: &mut Interpreter, name: &str) -> (u64, String) {
 }
 
 fn clamp_overlay_range(buffer: &crate::buffer::Buffer, beg: i64, end: i64) -> (usize, usize) {
+    let beg = if buffer.is_multibyte() {
+        beg as usize
+    } else {
+        buffer_byte_to_position(buffer, beg.max(0) as usize).unwrap_or(1)
+    } as i64;
+    let end = if buffer.is_multibyte() {
+        end as usize
+    } else {
+        buffer_byte_to_position(buffer, end.max(0) as usize).unwrap_or(1)
+    } as i64;
     let min = buffer.point_min() as i64;
     let max = buffer.point_max() as i64;
     let clamp = |pos: i64| pos.clamp(min, max) as usize;
@@ -4062,8 +4640,8 @@ fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     }
 }
 
-fn position_bytes(interp: &Interpreter, pos: usize) -> Option<usize> {
-    let text = interp.buffer.buffer_string();
+fn buffer_position_to_byte(buffer: &crate::buffer::Buffer, pos: usize) -> Option<usize> {
+    let text = buffer.buffer_string();
     let char_len = text.chars().count();
     if pos == 0 || pos > char_len + 1 {
         return None;
@@ -4071,11 +4649,11 @@ fn position_bytes(interp: &Interpreter, pos: usize) -> Option<usize> {
     Some(1 + text.chars().take(pos - 1).map(char::len_utf8).sum::<usize>())
 }
 
-fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usize> {
+fn buffer_byte_to_position(buffer: &crate::buffer::Buffer, byte: usize) -> Option<usize> {
     if byte == 0 {
         return None;
     }
-    let text = interp.buffer.buffer_string();
+    let text = buffer.buffer_string();
     let total_bytes = text.len();
     if byte > total_bytes + 1 {
         return None;
@@ -4086,12 +4664,94 @@ fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usize> {
     let mut current_byte = 1usize;
     for (index, ch) in text.chars().enumerate() {
         let next = current_byte + ch.len_utf8();
+        if byte == current_byte {
+            return Some(index + 1);
+        }
         if byte < next {
             return Some(index + 1);
         }
         current_byte = next;
     }
     Some(text.chars().count() + 1)
+}
+
+fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>, LispError> {
+    match value {
+        Value::Nil => Ok(None),
+        Value::Integer(codepoint) if *codepoint >= 0 => Ok(Some((*codepoint as u32, *codepoint as u32))),
+        Value::Cons(car, cdr) => {
+            let start = car.as_integer()?;
+            let end = cdr.as_integer()?;
+            if start < 0 || end < 0 {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            Ok(Some((start as u32, end as u32)))
+        }
+        other => Err(LispError::TypeError(
+            "character-or-cons-or-nil".into(),
+            other.type_name(),
+        )),
+    }
+}
+
+fn normalize_category_set(text: &str) -> String {
+    let mut chars: Vec<char> = text.chars().collect();
+    chars.sort_unstable();
+    chars.dedup();
+    chars.into_iter().collect()
+}
+
+fn normalize_string_index(arg: Option<&Value>, default: i64, len: i64) -> Result<i64, LispError> {
+    let Some(value) = arg else {
+        return Ok(default);
+    };
+    if value.is_nil() {
+        return Ok(default);
+    }
+    let raw = value.as_integer()?;
+    let index = if raw < 0 { len + raw } else { raw };
+    if !(0..=len).contains(&index) {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    Ok(index)
+}
+
+fn resolve_char_modifiers(value: i64) -> i64 {
+    const SHIFT_BIT: i64 = 1 << 25;
+    const CTRL_BIT: i64 = 1 << 26;
+    const META_BIT: i64 = 1 << 27;
+    const CHAR_MASK: i64 = 0x3F_FFFF;
+
+    let mut base = value & CHAR_MASK;
+    let meta = value & META_BIT;
+    let shift = value & SHIFT_BIT != 0;
+    let ctrl = value & CTRL_BIT != 0;
+
+    if shift
+        && let Some(ch) = char::from_u32(base as u32)
+        && ch.is_ascii_lowercase()
+    {
+        base = ch.to_ascii_uppercase() as i64;
+    }
+
+    if ctrl {
+        base = match base {
+            0x3f => 0x7f,
+            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
+            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
+            n => n & 0x1f,
+        };
+    }
+
+    base | meta
+}
+
+fn position_bytes(interp: &Interpreter, pos: usize) -> Option<usize> {
+    buffer_position_to_byte(&interp.buffer, pos)
+}
+
+fn byte_to_position(interp: &Interpreter, byte: usize) -> Option<usize> {
+    buffer_byte_to_position(&interp.buffer, byte)
 }
 
 fn column_at(interp: &Interpreter, line_start: usize, pos: usize) -> usize {
@@ -4536,21 +5196,20 @@ fn call_function_value(
     interp: &mut Interpreter,
     function: &Value,
     args: &[Value],
-    env: &super::types::Env,
+    env: &mut super::types::Env,
 ) -> Result<Value, LispError> {
     let mut items = vec![function.clone()];
     for arg in args {
         items.push(Value::list([Value::symbol("quote"), arg.clone()]));
     }
-    let mut call_env = env.clone();
-    interp.eval(&Value::list(items), &mut call_env)
+    interp.eval(&Value::list(items), env)
 }
 
 fn run_change_hooks(
     interp: &mut Interpreter,
     hook_name: &str,
     args: &[Value],
-    env: &super::types::Env,
+    env: &mut super::types::Env,
 ) -> Result<(), LispError> {
     if interp.change_hooks_are_running() {
         return Ok(());
@@ -4575,15 +5234,197 @@ fn run_change_hooks(
     result
 }
 
+fn hook_values(
+    interp: &Interpreter,
+    hook_name: &str,
+    env: &super::types::Env,
+    buffer_id: Option<u64>,
+) -> Vec<Value> {
+    let mut hooks = interp
+        .lookup_var(hook_name, env)
+        .map(|value| value.to_vec().unwrap_or_default())
+        .unwrap_or_default();
+    if let Some(id) = buffer_id
+        && let Some(local) = interp.buffer_local_hook(id, hook_name)
+    {
+        hooks.extend(local);
+    }
+    hooks
+}
+
+fn run_named_hooks(
+    interp: &mut Interpreter,
+    hook_name: &str,
+    env: &mut super::types::Env,
+    buffer_id: Option<u64>,
+) -> Result<(), LispError> {
+    for hook in hook_values(interp, hook_name, env, buffer_id) {
+        call_function_value(interp, &hook, &[], env)?;
+    }
+    Ok(())
+}
+
+fn call_named_function(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &mut super::types::Env,
+) -> Result<Value, LispError> {
+    match interp.lookup_function(name, env) {
+        Ok(function) => call_function_value(interp, &function, args, env),
+        Err(_) => Ok(Value::T),
+    }
+}
+
+#[derive(Clone)]
+struct OverlayHookCall {
+    overlay_id: u64,
+    functions: Vec<Value>,
+    before_tail: Vec<Value>,
+    after_tail: Vec<Value>,
+}
+
+fn overlay_hook_functions(overlay: &crate::overlay::Overlay, property: &str) -> Vec<Value> {
+    match overlay.get_prop(property) {
+        Some(value) => value
+            .to_vec()
+            .unwrap_or_else(|_| vec![value.clone()])
+            .into_iter()
+            .filter(|value| value.is_truthy())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+fn overlay_insert_hook_calls(
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    inserted_len: usize,
+) -> Vec<OverlayHookCall> {
+    let mut calls = Vec::new();
+    for overlay in &buffer.overlays {
+        if overlay.is_dead() {
+            continue;
+        }
+        if overlay.beg == overlay.end && overlay.beg == pos {
+            for property in ["insert-in-front-hooks", "insert-behind-hooks"] {
+                let functions = overlay_hook_functions(overlay, property);
+                if !functions.is_empty() {
+                    calls.push(OverlayHookCall {
+                        overlay_id: overlay.id,
+                        functions,
+                        before_tail: vec![Value::Integer(pos as i64), Value::Integer(pos as i64)],
+                        after_tail: vec![
+                            Value::Integer(pos as i64),
+                            Value::Integer((pos + inserted_len) as i64),
+                            Value::Integer(0),
+                        ],
+                    });
+                }
+            }
+            continue;
+        }
+        let property = if pos == overlay.beg {
+            Some("insert-in-front-hooks")
+        } else if pos == overlay.end {
+            Some("insert-behind-hooks")
+        } else if overlay.beg < pos && pos < overlay.end {
+            Some("modification-hooks")
+        } else {
+            None
+        };
+        let Some(property) = property else {
+            continue;
+        };
+        let functions = overlay_hook_functions(overlay, property);
+        if functions.is_empty() {
+            continue;
+        }
+        calls.push(OverlayHookCall {
+            overlay_id: overlay.id,
+            functions,
+            before_tail: vec![Value::Integer(pos as i64), Value::Integer(pos as i64)],
+            after_tail: vec![
+                Value::Integer(pos as i64),
+                Value::Integer((pos + inserted_len) as i64),
+                Value::Integer(0),
+            ],
+        });
+    }
+    calls
+}
+
+fn overlay_change_hook_calls(
+    buffer: &crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    new_end: usize,
+) -> Vec<OverlayHookCall> {
+    let mut calls = Vec::new();
+    let old_len = to.saturating_sub(from);
+    for overlay in &buffer.overlays {
+        if overlay.is_dead() || overlay.beg == overlay.end {
+            continue;
+        }
+        if overlay.beg < to && from < overlay.end {
+            let functions = overlay_hook_functions(overlay, "modification-hooks");
+            if functions.is_empty() {
+                continue;
+            }
+            calls.push(OverlayHookCall {
+                overlay_id: overlay.id,
+                functions,
+                before_tail: vec![Value::Integer(from as i64), Value::Integer(to as i64)],
+                after_tail: vec![
+                    Value::Integer(from as i64),
+                    Value::Integer(new_end as i64),
+                    Value::Integer(old_len as i64),
+                ],
+            });
+        }
+    }
+    calls
+}
+
+fn run_overlay_hook_calls(
+    interp: &mut Interpreter,
+    calls: &[OverlayHookCall],
+    after: bool,
+    env: &mut super::types::Env,
+) -> Result<(), LispError> {
+    env.push(vec![("inhibit-modification-hooks".into(), Value::T)]);
+    for call in calls {
+        if after && interp.find_overlay(call.overlay_id).is_none() {
+            continue;
+        }
+        for function in &call.functions {
+            let mut args = vec![
+                Value::Overlay(call.overlay_id),
+                if after { Value::T } else { Value::Nil },
+            ];
+            args.extend(if after {
+                call.after_tail.clone()
+            } else {
+                call.before_tail.clone()
+            });
+            call_function_value(interp, function, &args, env)?;
+        }
+    }
+    env.pop();
+    Ok(())
+}
+
 fn delete_region_with_hooks(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
-    env: &super::types::Env,
+    env: &mut super::types::Env,
 ) -> Result<String, LispError> {
     if from >= to {
         return Ok(String::new());
     }
+    let overlay_calls = overlay_change_hook_calls(&interp.buffer, from, to, from);
+    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     let has_before_hooks = interp
         .lookup_var("before-change-functions", env)
         .map(|value| !value.to_vec().unwrap_or_default().is_empty())
@@ -4634,6 +5475,7 @@ fn delete_region_with_hooks(
         ],
         env,
     )?;
+    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
     Ok(deleted)
 }
 
@@ -4643,12 +5485,14 @@ fn insert_text_with_hooks(
     props: &[TextPropertySpan],
     inherit: bool,
     before_markers: bool,
-    env: &super::types::Env,
+    env: &mut super::types::Env,
 ) -> Result<(), LispError> {
     if text.is_empty() {
         return Ok(());
     }
     let start = interp.buffer.point();
+    let overlay_calls = overlay_insert_hook_calls(&interp.buffer, start, text.chars().count());
+    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
     run_change_hooks(
         interp,
         "before-change-functions",
@@ -4684,6 +5528,7 @@ fn insert_text_with_hooks(
         ],
         env,
     )?;
+    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
     Ok(())
 }
 
@@ -4933,7 +5778,8 @@ fn render_prin1(
             if let Some(function) = interp.lookup_var("print-unreadable-function", env)
                 && function.is_truthy()
             {
-                let rendered = call_function_value(interp, &function, &[], env)?;
+                let mut call_env = env.clone();
+                let rendered = call_function_value(interp, &function, &[], &mut call_env)?;
                 return string_text(&rendered);
             }
             Ok(value.to_string())
@@ -5112,10 +5958,26 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
             crate::buffer::UndoEntry::Delete { pos, text, .. } => {
                 Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
             }
+            crate::buffer::UndoEntry::Combined { display, .. }
+            | crate::buffer::UndoEntry::Opaque(display) => display.clone(),
             crate::buffer::UndoEntry::Boundary => Value::Nil,
         })
         .collect::<Vec<_>>();
     entries.extend(buffer.undo_meta_entries().iter().rev().cloned());
+    if buffer.file.is_some()
+        && buffer
+            .undo_entries()
+            .iter()
+            .any(|entry| matches!(entry, crate::buffer::UndoEntry::Insert { .. } | crate::buffer::UndoEntry::Delete { .. }))
+    {
+        entries.push(Value::list([
+            Value::T,
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Integer(0),
+        ]));
+    }
     Value::list(entries)
 }
 
