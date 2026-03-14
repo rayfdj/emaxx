@@ -1,4 +1,6 @@
 use super::types::{LispError, Value};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 
 /// A simple s-expression reader. Handles the subset of Elisp syntax
 /// that appears in ERT test files: atoms, lists, strings, quotes,
@@ -399,8 +401,7 @@ impl<'a> Reader<'a> {
                         ));
                     }
                 };
-                let value = self.read_radix_integer(radix)?;
-                Ok(Some(Value::Integer(value)))
+                Ok(Some(self.read_radix_integer(radix)?))
             }
             Some(b'x') | Some(b'X') => {
                 // #xNN or #x-NN — hexadecimal integer
@@ -409,19 +410,19 @@ impl<'a> Reader<'a> {
                 if neg {
                     self.advance();
                 }
-                let mut val: i64 = 0;
+                let mut val = BigInt::from(0u8);
                 let mut any = false;
                 while let Some(ch) = self.peek() {
                     if ch.is_ascii_hexdigit() {
                         self.advance();
                         any = true;
                         let digit = match ch {
-                            b'0'..=b'9' => (ch - b'0') as i64,
-                            b'a'..=b'f' => (ch - b'a' + 10) as i64,
-                            b'A'..=b'F' => (ch - b'A' + 10) as i64,
+                            b'0'..=b'9' => ch - b'0',
+                            b'a'..=b'f' => ch - b'a' + 10,
+                            b'A'..=b'F' => ch - b'A' + 10,
                             _ => unreachable!(),
                         };
-                        val = val.wrapping_mul(16).wrapping_add(digit);
+                        val = val * 16u8 + BigInt::from(digit);
                     } else {
                         break;
                     }
@@ -430,9 +431,9 @@ impl<'a> Reader<'a> {
                     return Err(LispError::ReadError("no digits after #x".into()));
                 }
                 if neg {
-                    val = val.wrapping_neg();
+                    val = -val;
                 }
-                Ok(Some(Value::Integer(val)))
+                Ok(Some(normalize_bigint(val)))
             }
             Some(b'o') | Some(b'O') => {
                 // #oNN or #o-NN — octal integer
@@ -441,13 +442,13 @@ impl<'a> Reader<'a> {
                 if neg {
                     self.advance();
                 }
-                let mut val: i64 = 0;
+                let mut val = BigInt::from(0u8);
                 let mut any = false;
                 while let Some(ch) = self.peek() {
                     if (b'0'..=b'7').contains(&ch) {
                         self.advance();
                         any = true;
-                        val = val.wrapping_mul(8).wrapping_add((ch - b'0') as i64);
+                        val = val * 8u8 + BigInt::from(ch - b'0');
                     } else {
                         break;
                     }
@@ -456,9 +457,9 @@ impl<'a> Reader<'a> {
                     return Err(LispError::ReadError("no digits after #o".into()));
                 }
                 if neg {
-                    val = val.wrapping_neg();
+                    val = -val;
                 }
-                Ok(Some(Value::Integer(val)))
+                Ok(Some(normalize_bigint(val)))
             }
             Some(b'b') | Some(b'B') => {
                 // #bNN or #b-NN — binary integer
@@ -467,13 +468,13 @@ impl<'a> Reader<'a> {
                 if neg {
                     self.advance();
                 }
-                let mut val: i64 = 0;
+                let mut val = BigInt::from(0u8);
                 let mut any = false;
                 while let Some(ch) = self.peek() {
                     if ch == b'0' || ch == b'1' {
                         self.advance();
                         any = true;
-                        val = val.wrapping_mul(2).wrapping_add((ch - b'0') as i64);
+                        val = val * 2u8 + BigInt::from(ch - b'0');
                     } else {
                         break;
                     }
@@ -482,9 +483,9 @@ impl<'a> Reader<'a> {
                     return Err(LispError::ReadError("no digits after #b".into()));
                 }
                 if neg {
-                    val = val.wrapping_neg();
+                    val = -val;
                 }
-                Ok(Some(Value::Integer(val)))
+                Ok(Some(normalize_bigint(val)))
             }
             _ => {
                 // Skip unknown hash syntax, try to read as atom
@@ -525,11 +526,16 @@ impl<'a> Reader<'a> {
         if let Ok(n) = token.parse::<i64>() {
             return Ok(Some(Value::Integer(n)));
         }
+        if is_integer_token(token)
+            && let Ok(n) = token.parse::<BigInt>()
+        {
+            return Ok(Some(normalize_bigint(n)));
+        }
 
         if let Some((radix, digits)) = token.split_once(['r', 'R'])
             && let Ok(base) = radix.parse::<u32>()
         {
-            return Ok(Some(Value::Integer(parse_radix_integer(base, digits)?)));
+            return Ok(Some(parse_radix_integer(base, digits)?));
         }
 
         // Try parsing as float
@@ -562,7 +568,7 @@ impl<'a> Reader<'a> {
             .unwrap_or(10)
     }
 
-    fn read_radix_integer(&mut self, base: u32) -> Result<i64, LispError> {
+    fn read_radix_integer(&mut self, base: u32) -> Result<Value, LispError> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
             self.advance();
@@ -580,7 +586,21 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn parse_radix_integer(base: u32, token: &str) -> Result<i64, LispError> {
+fn is_integer_token(token: &str) -> bool {
+    let digits = token
+        .strip_prefix(['+', '-'])
+        .unwrap_or(token);
+    !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn normalize_bigint(value: BigInt) -> Value {
+    value
+        .to_i64()
+        .map(Value::Integer)
+        .unwrap_or(Value::BigInteger(value))
+}
+
+fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
     if !(2..=36).contains(&base) {
         return Err(LispError::ReadError(format!("invalid radix {}", base)));
     }
@@ -590,15 +610,17 @@ fn parse_radix_integer(base: u32, token: &str) -> Result<i64, LispError> {
     if digits.is_empty() {
         return Err(LispError::ReadError("missing radix digits".into()));
     }
-    let mut value: i64 = 0;
+    let mut value = BigInt::from(0u8);
     for ch in digits.chars() {
         let digit = ch
             .to_digit(base)
-            .ok_or_else(|| LispError::ReadError(format!("invalid radix digit {}", ch)))?
-            as i64;
-        value = value.wrapping_mul(base as i64).wrapping_add(digit);
+            .ok_or_else(|| LispError::ReadError(format!("invalid radix digit {}", ch)))?;
+        value = value * BigInt::from(base) + BigInt::from(digit);
     }
-    Ok(if negative { value.wrapping_neg() } else { value })
+    if negative {
+        value = -value;
+    }
+    Ok(normalize_bigint(value))
 }
 
 #[cfg(test)]

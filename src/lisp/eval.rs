@@ -33,6 +33,13 @@ pub struct MarkerState {
     pub insertion_type: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct CharTableState {
+    pub id: u64,
+    pub purpose: String,
+    pub entries: Vec<(u32, Value)>,
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -54,14 +61,34 @@ pub struct Interpreter {
     next_marker_id: u64,
     /// All markers currently known to the interpreter.
     markers: Vec<MarkerState>,
+    /// Char tables allocated by the interpreter.
+    char_tables: Vec<CharTableState>,
+    /// Next char-table ID for identity tracking.
+    next_char_table_id: u64,
+    /// Buffer-local hook lists keyed by (buffer id, hook name).
+    buffer_local_hooks: Vec<(u64, String, Vec<Value>)>,
+    /// Buffer-local variable values keyed by (buffer id, variable name).
+    buffer_locals: Vec<(u64, String, Value)>,
+    /// Variables that automatically become buffer-local when set.
+    auto_buffer_locals: Vec<String>,
+    /// Active labeled restrictions keyed by (buffer id, label, start, end).
+    labeled_restrictions: Vec<(u64, String, usize, usize)>,
+    /// Indirect buffer mapping: (buffer id, base buffer id).
+    indirect_buffers: Vec<(u64, u64)>,
+    /// Prevent recursive before/after-change hook re-entry.
+    change_hooks_running: usize,
     /// User-defined macros: name → (params, body).
     macros: Vec<(String, Vec<String>, Vec<Value>)>,
+    /// User-defined functions in the function namespace.
+    functions: Vec<(String, Value)>,
     /// Collected ERT test definitions.
     pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
     pub test_results: Vec<TestOutcome>,
     /// Selected test names from the most recent ERT run.
     pub last_selected_tests: Vec<String>,
+    /// The latest regexp match data in buffer coordinates.
+    pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
 }
 
 impl Default for Interpreter {
@@ -82,10 +109,20 @@ impl Interpreter {
             next_overlay_id: 1,
             next_marker_id: 1,
             markers: Vec::new(),
+            char_tables: Vec::new(),
+            next_char_table_id: 1,
+            buffer_local_hooks: Vec::new(),
+            buffer_locals: Vec::new(),
+            auto_buffer_locals: Vec::new(),
+            labeled_restrictions: Vec::new(),
+            indirect_buffers: Vec::new(),
+            change_hooks_running: 0,
             macros: Vec::new(),
+            functions: Vec::new(),
             ert_tests: Vec::new(),
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),
+            last_match_data: None,
         }
     }
 
@@ -173,6 +210,10 @@ impl Interpreter {
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
         self.detach_markers_for_buffer(id);
+        self.buffer_locals
+            .retain(|(buffer_id, _, _)| *buffer_id != id);
+        self.indirect_buffers
+            .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if id == self.current_buffer_id {
             self.buffer_list.retain(|(buffer_id, _)| *buffer_id != id);
             if let Some((next_id, next_buffer)) = self.inactive_buffers.pop() {
@@ -294,6 +335,51 @@ impl Interpreter {
         Ok(marker_value)
     }
 
+    pub fn make_char_table(&mut self, purpose: &str) -> Value {
+        let id = self.next_char_table_id;
+        self.next_char_table_id += 1;
+        self.char_tables.push(CharTableState {
+            id,
+            purpose: purpose.to_string(),
+            entries: Vec::new(),
+        });
+        Value::CharTable(id)
+    }
+
+    pub fn find_char_table(&self, id: u64) -> Option<&CharTableState> {
+        self.char_tables.iter().find(|table| table.id == id)
+    }
+
+    pub fn find_char_table_mut(&mut self, id: u64) -> Option<&mut CharTableState> {
+        self.char_tables.iter_mut().find(|table| table.id == id)
+    }
+
+    pub fn char_table_set(&mut self, id: u64, key: u32, value: Value) -> Result<(), LispError> {
+        let table = self
+            .find_char_table_mut(id)
+            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        if let Some((_, existing)) = table.entries.iter_mut().find(|(entry_key, _)| *entry_key == key)
+        {
+            *existing = value;
+        } else {
+            table.entries.push((key, value));
+        }
+        Ok(())
+    }
+
+    pub fn char_table_get(&self, id: u64, key: u32) -> Option<Value> {
+        self.find_char_table(id).and_then(|table| {
+            table.entries
+                .iter()
+                .find(|(entry_key, _)| *entry_key == key)
+                .map(|(_, value)| value.clone())
+        })
+    }
+
+    pub fn char_table_purpose(&self, id: u64) -> Option<&str> {
+        self.find_char_table(id).map(|table| table.purpose.as_str())
+    }
+
     pub fn detach_markers_for_buffer(&mut self, buffer_id: u64) {
         for marker in &mut self.markers {
             if marker.buffer_id == Some(buffer_id) {
@@ -353,11 +439,200 @@ impl Interpreter {
         }
     }
 
+    pub fn live_marker_positions_for_buffer(&self, buffer_id: u64) -> Vec<(u64, Option<usize>)> {
+        self.markers
+            .iter()
+            .filter(|marker| marker.buffer_id == Some(buffer_id))
+            .map(|marker| (marker.id, marker.position))
+            .collect()
+    }
+
+    pub fn change_hooks_are_running(&self) -> bool {
+        self.change_hooks_running > 0
+    }
+
+    pub fn enter_change_hooks(&mut self) {
+        self.change_hooks_running += 1;
+    }
+
+    pub fn leave_change_hooks(&mut self) {
+        self.change_hooks_running = self.change_hooks_running.saturating_sub(1);
+    }
+
+    pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
+        self.buffer_local_hooks
+            .iter()
+            .find(|(id, name, _)| *id == buffer_id && name == hook_name)
+            .map(|(_, _, hooks)| hooks.clone())
+    }
+
+    pub fn set_buffer_local_hook(
+        &mut self,
+        buffer_id: u64,
+        hook_name: &str,
+        hooks: Vec<Value>,
+    ) {
+        if let Some((_, _, existing)) = self
+            .buffer_local_hooks
+            .iter_mut()
+            .find(|(id, name, _)| *id == buffer_id && name == hook_name)
+        {
+            *existing = hooks;
+        } else {
+            self.buffer_local_hooks
+                .push((buffer_id, hook_name.to_string(), hooks));
+        }
+    }
+
+    pub fn buffer_local_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
+        self.buffer_locals
+            .iter()
+            .rev()
+            .find(|(id, var, _)| *id == buffer_id && var == name)
+            .map(|(_, _, value)| value.clone())
+    }
+
+    pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
+        for (id, var, existing) in self.buffer_locals.iter_mut().rev() {
+            if *id == buffer_id && var == name {
+                *existing = value;
+                return;
+            }
+        }
+        self.buffer_locals
+            .push((buffer_id, name.to_string(), value));
+    }
+
+    pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
+        let mut vars = Vec::new();
+        for (id, name, value) in &self.buffer_locals {
+            if *id == buffer_id && !vars.iter().any(|(existing, _)| existing == name) {
+                vars.push((name.clone(), value.clone()));
+            }
+        }
+        vars
+    }
+
+    pub fn mark_auto_buffer_local(&mut self, name: &str) {
+        if !self.auto_buffer_locals.iter().any(|existing| existing == name) {
+            self.auto_buffer_locals.push(name.to_string());
+        }
+    }
+
+    pub fn is_auto_buffer_local(&self, name: &str) -> bool {
+        self.auto_buffer_locals.iter().any(|existing| existing == name)
+    }
+
+    pub fn effective_labeled_restriction(
+        &self,
+        buffer_id: u64,
+        skip_label: Option<&str>,
+    ) -> Option<(usize, usize)> {
+        let mut result: Option<(usize, usize)> = None;
+        for (id, label, start, end) in &self.labeled_restrictions {
+            if *id != buffer_id || skip_label == Some(label.as_str()) {
+                continue;
+            }
+            result = Some(match result {
+                Some((cur_start, cur_end)) => (cur_start.max(*start), cur_end.min(*end)),
+                None => (*start, *end),
+            });
+        }
+        result
+    }
+
+    pub fn register_indirect_buffer(&mut self, buffer_id: u64, base_id: u64) {
+        self.indirect_buffers.push((buffer_id, base_id));
+    }
+
+    pub fn buffer_base_id(&self, buffer_id: u64) -> Option<u64> {
+        self.indirect_buffers
+            .iter()
+            .find(|(id, _)| *id == buffer_id)
+            .map(|(_, base_id)| *base_id)
+    }
+
+    pub fn root_buffer_id(&self, mut buffer_id: u64) -> u64 {
+        while let Some(base_id) = self.buffer_base_id(buffer_id) {
+            buffer_id = base_id;
+        }
+        buffer_id
+    }
+
+    pub fn related_buffer_ids(&self, buffer_id: u64) -> Vec<u64> {
+        let root = self.root_buffer_id(buffer_id);
+        self.buffer_list
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| self.root_buffer_id(*id) == root)
+            .collect()
+    }
+
+    fn mirror_insert_to_related_buffers(
+        &mut self,
+        related: &[u64],
+        pos: usize,
+        s: &str,
+        props: Option<Vec<(String, Value)>>,
+        before_markers: bool,
+        inherit: bool,
+    ) {
+        let current_id = self.current_buffer_id();
+        let nchars = s.chars().count();
+        for buffer_id in related {
+            if *buffer_id == current_id {
+                continue;
+            }
+            if let Some(buffer) = self.get_buffer_by_id_mut(*buffer_id) {
+                let saved_point = buffer.point();
+                buffer.goto_char(pos);
+                if inherit {
+                    buffer.insert_and_inherit(s);
+                } else if let Some(props) = props.clone() {
+                    buffer.insert_with_properties(s, Some(props));
+                } else {
+                    buffer.insert(s);
+                }
+                let restored = if saved_point > pos || (saved_point == pos && before_markers) {
+                    saved_point + nchars
+                } else {
+                    saved_point
+                };
+                buffer.goto_char(restored);
+            }
+            self.adjust_markers_for_insert(*buffer_id, pos, nchars, before_markers);
+        }
+    }
+
+    fn mirror_delete_to_related_buffers(&mut self, related: &[u64], from: usize, to: usize) {
+        let current_id = self.current_buffer_id();
+        for buffer_id in related {
+            if *buffer_id == current_id {
+                continue;
+            }
+            if let Some(buffer) = self.get_buffer_by_id_mut(*buffer_id) {
+                let saved_point = buffer.point();
+                let _ = buffer.delete_region(from, to);
+                let restored = if saved_point > to {
+                    saved_point - (to - from)
+                } else if saved_point > from {
+                    from
+                } else {
+                    saved_point
+                };
+                buffer.goto_char(restored);
+            }
+            self.adjust_markers_for_delete(*buffer_id, from, to);
+        }
+    }
+
     pub fn insert_current_buffer(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
+        let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, None, false, false);
     }
 
     pub fn insert_current_buffer_with_properties(
@@ -367,29 +642,37 @@ impl Interpreter {
     ) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
-        self.buffer.insert_with_properties(s, props);
+        let related = self.related_buffer_ids(self.current_buffer_id());
+        self.buffer.insert_with_properties(s, props.clone());
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, props, false, false);
     }
 
     pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
+        let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert_and_inherit(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, None, false, true);
     }
 
     pub fn insert_current_buffer_before_markers(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
+        let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
+        self.mirror_insert_to_related_buffers(&related, pos, s, None, true, false);
     }
 
     pub fn insert_current_buffer_before_markers_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
+        let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert_and_inherit(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
+        self.mirror_insert_to_related_buffers(&related, pos, s, None, true, true);
     }
 
     pub fn delete_region_current_buffer(
@@ -399,8 +682,10 @@ impl Interpreter {
     ) -> Result<String, crate::buffer::BufferError> {
         let from = from.max(self.buffer.point_min());
         let to = to.min(self.buffer.point_max());
+        let related = self.related_buffer_ids(self.current_buffer_id());
         let deleted = self.buffer.delete_region(from, to)?;
         self.adjust_markers_for_delete(self.current_buffer_id(), from, to);
+        self.mirror_delete_to_related_buffers(&related, from, to);
         Ok(deleted)
     }
 
@@ -450,6 +735,52 @@ impl Interpreter {
         }
     }
 
+    pub fn swap_buffer_text_state(&mut self, left_id: u64, right_id: u64) -> Result<(), LispError> {
+        if left_id == right_id {
+            return Ok(());
+        }
+        if left_id == self.current_buffer_id {
+            let pos = self
+                .inactive_buffers
+                .iter()
+                .position(|(buffer_id, _)| *buffer_id == right_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
+            let (buffer, inactive_buffers) = (&mut self.buffer, &mut self.inactive_buffers);
+            buffer.swap_text_state(&mut inactive_buffers[pos].1);
+            return Ok(());
+        }
+        if right_id == self.current_buffer_id {
+            let pos = self
+                .inactive_buffers
+                .iter()
+                .position(|(buffer_id, _)| *buffer_id == left_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
+            let (buffer, inactive_buffers) = (&mut self.buffer, &mut self.inactive_buffers);
+            buffer.swap_text_state(&mut inactive_buffers[pos].1);
+            return Ok(());
+        }
+
+        let left_index = self
+            .inactive_buffers
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == left_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
+        let right_index = self
+            .inactive_buffers
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == right_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
+        let (first, second) = if left_index < right_index {
+            let (left_slice, right_slice) = self.inactive_buffers.split_at_mut(right_index);
+            (&mut left_slice[left_index].1, &mut right_slice[0].1)
+        } else {
+            let (right_slice, left_slice) = self.inactive_buffers.split_at_mut(left_index);
+            (&mut left_slice[0].1, &mut right_slice[right_index].1)
+        };
+        first.swap_text_state(second);
+        Ok(())
+    }
+
     /// Find an overlay by ID in any live buffer.
     pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
         self.buffer
@@ -495,6 +826,9 @@ impl Interpreter {
                 }
             }
         }
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), name) {
+            return Some(value);
+        }
         for (k, v) in self.globals.iter().rev() {
             if k == name {
                 return Some(v.clone());
@@ -514,6 +848,9 @@ impl Interpreter {
             }
         }
         // Search globals
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), name) {
+            return Ok(value);
+        }
         for (k, v) in self.globals.iter().rev() {
             if k == name {
                 return Ok(v.clone());
@@ -522,7 +859,7 @@ impl Interpreter {
         if name == "buffer-undo-list" {
             return Ok(crate::lisp::primitives::buffer_undo_list_value(&self.buffer));
         }
-        // Built-in constants and functions
+        // Built-in constants
         match name {
             "nil" => Ok(Value::Nil),
             "t" => Ok(Value::T),
@@ -530,22 +867,54 @@ impl Interpreter {
             "most-positive-fixnum" => Ok(Value::Integer(i64::MAX)),
             "most-negative-fixnum" => Ok(Value::Integer(i64::MIN)),
             "enable-multibyte-characters" => Ok(Value::T),
+            "buffer-file-name" => Ok(self
+                .buffer
+                .file
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Nil)),
+            "temporary-file-directory" => Ok(Value::String(
+                std::env::temp_dir().display().to_string(),
+            )),
             "system-type" => Ok(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
+            _ if name.starts_with('.') => Ok(Value::Nil),
             _ if name.starts_with(':') => Ok(Value::Symbol(name.to_string())),
-            _ => {
-                // Check if it's a known builtin function
-                if primitives::is_builtin(name) {
-                    Ok(Value::BuiltinFunc(name.to_string()))
-                } else {
-                    Err(LispError::Void(name.to_string()))
+            _ => Err(LispError::Void(name.to_string())),
+        }
+    }
+
+    pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+        for frame in env.iter().rev() {
+            for (k, v) in frame.iter().rev() {
+                if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                    return Ok(v.clone());
                 }
             }
+        }
+        for (k, v) in self.functions.iter().rev() {
+            if k == name {
+                return Ok(v.clone());
+            }
+        }
+        if primitives::is_builtin(name) {
+            Ok(Value::BuiltinFunc(name.to_string()))
+        } else {
+            Err(LispError::Void(name.to_string()))
         }
     }
 
     /// Set a variable in the innermost local frame, or in globals.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
         if name == "buffer-undo-list" {
+            if value.is_nil() {
+                self.buffer.clear_undo_history();
+            }
+            return;
+        }
+        if self.buffer_local_value(self.current_buffer_id(), name).is_some()
+            || self.is_auto_buffer_local(name)
+        {
+            self.set_buffer_local_value(self.current_buffer_id(), name, value);
             return;
         }
         // Try to find and update in local env
@@ -570,7 +939,12 @@ impl Interpreter {
     /// Evaluate an expression.
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
-            Value::Nil | Value::T | Value::Integer(_) | Value::Float(_) | Value::String(_) => {
+            Value::Nil
+            | Value::T
+            | Value::Integer(_)
+            | Value::BigInteger(_)
+            | Value::Float(_)
+            | Value::String(_) => {
                 Ok(expr.clone())
             }
 
@@ -578,7 +952,8 @@ impl Interpreter {
             | Value::Lambda(_, _, _)
             | Value::Buffer(_, _)
             | Value::Marker(_)
-            | Value::Overlay(_) => Ok(expr.clone()),
+            | Value::Overlay(_)
+            | Value::CharTable(_) => Ok(expr.clone()),
 
             Value::Symbol(name) => self.lookup(name, env),
 
@@ -600,6 +975,7 @@ impl Interpreter {
                         "when" => return self.sf_when(&items, env),
                         "unless" => return self.sf_unless(&items, env),
                         "cond" => return self.sf_cond(&items, env),
+                        "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
                         "not" => return self.sf_not(&items, env),
@@ -607,11 +983,11 @@ impl Interpreter {
                         "prog1" => return self.sf_prog1(&items, env),
                         "let" => return self.sf_let(&items, env),
                         "let*" => return self.sf_letstar(&items, env),
+                        "let-alist" => return self.sf_let_alist(&items, env),
                         "setq" => return self.sf_setq(&items, env),
-                        "setq-local" => return self.sf_setq(&items, env), // same for now
-                        "defvar" | "defconst" | "defvar-local" => {
-                            return self.sf_defvar(&items, env)
-                        }
+                        "setq-local" => return self.sf_setq_local(&items, env),
+                        "defvar" | "defconst" => return self.sf_defvar(&items, env),
+                        "defvar-local" => return self.sf_defvar_local(&items, env),
                         "defun" => return self.sf_defun(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
                         "backquote" => return self.eval_backquote(&items[1], env),
@@ -619,6 +995,9 @@ impl Interpreter {
                         "function" | "function-quote" => {
                             // #'foo or (function foo)
                             if items.len() >= 2 {
+                                if let Value::Symbol(name) = &items[1] {
+                                    return self.lookup_function(name, env);
+                                }
                                 return self.eval(&items[1], env);
                             }
                             return Ok(Value::Nil);
@@ -626,15 +1005,26 @@ impl Interpreter {
                         "while" => return self.sf_while(&items, env),
                         "dolist" => return self.sf_dolist(&items, env),
                         "dotimes" => return self.sf_dotimes(&items, env),
+                        "cl-loop" => return self.sf_cl_loop(&items, env),
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "condition-case" => return self.sf_condition_case(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
+                        "with-output-to-string" => {
+                            return self.sf_with_output_to_string(&items, env)
+                        }
                         "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
+                        "with-restriction" => return self.sf_with_restriction(&items, env),
+                        "without-restriction" => {
+                            return self.sf_without_restriction(&items, env)
+                        }
                         "with-selected-window" => return self.sf_progn(&items[2..], env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
-                        "save-restriction" => return self.sf_progn(&items[1..], env),
+                        "save-restriction" => return self.sf_save_restriction(&items, env),
+                        "with-silent-modifications" => {
+                            return self.sf_with_silent_modifications(&items, env)
+                        }
                         "combine-change-calls" => return self.sf_progn(&items[3..], env),
                         "cl-destructuring-bind" => {
                             return self.sf_cl_destructuring_bind(&items, env)
@@ -743,7 +1133,11 @@ impl Interpreter {
     }
 
     fn eval_call(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        let func = self.eval(&items[0], env)?;
+        let func = if let Value::Symbol(name) = &items[0] {
+            self.lookup_function(name, env)?
+        } else {
+            self.eval(&items[0], env)?
+        };
         let mut args = Vec::new();
         for item in &items[1..] {
             args.push(self.eval(item, env)?);
@@ -871,6 +1265,38 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
+    fn sf_pcase_exhaustive(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Ok(Value::Nil);
+        }
+        let value = self.eval(&items[1], env)?;
+        for clause in &items[2..] {
+            let clause_items = clause.to_vec()?;
+            if clause_items.is_empty() {
+                continue;
+            }
+            let pattern = match &clause_items[0] {
+                Value::Cons(_, _) => {
+                    let parts = clause_items[0].to_vec()?;
+                    if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
+                        parts.get(1).cloned().unwrap_or(Value::Nil)
+                    } else {
+                        clause_items[0].clone()
+                    }
+                }
+                other => other.clone(),
+            };
+            if pattern == value {
+                return self.sf_progn(&clause_items[1..], env);
+            }
+        }
+        Err(LispError::Signal("pcase-exhaustive: no matching clause".into()))
+    }
+
     fn sf_and(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         let mut result = Value::T;
         for item in &items[1..] {
@@ -978,14 +1404,56 @@ impl Interpreter {
         result
     }
 
+    fn sf_let_alist(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let alist = self.eval(&items[1], env)?;
+        let mut frame = Vec::new();
+        for entry in alist.to_vec().unwrap_or_default() {
+            let Value::Cons(car, cdr) = entry else {
+                continue;
+            };
+            let Ok(symbol) = car.as_symbol() else {
+                continue;
+            };
+            let value = match *cdr {
+                Value::Cons(value, _) => *value,
+                other => other,
+            };
+            frame.push((format!(".{symbol}"), value));
+        }
+        env.push(frame);
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        result
+    }
+
     fn sf_setq(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        self.sf_setq_internal(items, env, false)
+    }
+
+    fn sf_setq_local(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        self.sf_setq_internal(items, env, true)
+    }
+
+    fn sf_setq_internal(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+        local_only: bool,
+    ) -> Result<Value, LispError> {
         let mut result = Value::Nil;
         let mut i = 1;
         while i + 1 < items.len() {
             let name = items[i].as_symbol()?.to_string();
             let val = self.eval(&items[i + 1], env)?;
             result = val.clone();
-            self.set_variable(&name, val, env);
+            if local_only {
+                self.set_buffer_local_value(self.current_buffer_id(), &name, val);
+            } else {
+                self.set_variable(&name, val, env);
+            }
             i += 2;
         }
         Ok(result)
@@ -1006,6 +1474,13 @@ impl Interpreter {
             self.globals.push((name, val));
         }
         Ok(Value::Nil)
+    }
+
+    fn sf_defvar_local(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() >= 2 {
+            self.mark_auto_buffer_local(items[1].as_symbol()?);
+        }
+        self.sf_defvar(items, env)
     }
 
     fn sf_add_to_list(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -1068,7 +1543,7 @@ impl Interpreter {
 
         let body: Vec<Value> = items[body_start..].to_vec();
         let lambda = Value::Lambda(params, body, env.clone());
-        self.globals.push((name.clone(), lambda));
+        self.functions.push((name.clone(), lambda));
         Ok(Value::Symbol(name))
     }
 
@@ -1158,6 +1633,151 @@ impl Interpreter {
         Ok(result)
     }
 
+    fn sf_cl_loop(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        enum LoopSpec {
+            Range(String, Vec<Value>),
+            List(String, Vec<Value>),
+        }
+
+        if items.len() < 5 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-loop".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        let mut specs = Vec::new();
+        let mut index = 1;
+        while index < items.len() && matches!(&items[index], Value::Symbol(s) if s == "for") {
+            let var_name = items
+                .get(index + 1)
+                .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                .as_symbol()?
+                .to_string();
+            match items.get(index + 2) {
+                Some(Value::Symbol(kind)) if kind == "from" => {
+                    let start = self
+                        .eval(
+                            items
+                                .get(index + 3)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?,
+                            env,
+                        )?
+                        .as_integer()?;
+                    if !matches!(items.get(index + 4), Some(Value::Symbol(s)) if s == "to") {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                    let end = self
+                        .eval(
+                            items
+                                .get(index + 5)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?,
+                            env,
+                        )?
+                        .as_integer()?;
+                    let values = if start <= end {
+                        (start..=end).map(Value::Integer).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    specs.push(LoopSpec::Range(var_name, values));
+                    index += 6;
+                }
+                Some(Value::Symbol(kind)) if kind == "in" => {
+                    let values = self
+                        .eval(
+                            items
+                                .get(index + 3)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?,
+                            env,
+                        )?
+                        .to_vec()?;
+                    specs.push(LoopSpec::List(var_name, values));
+                    index += 4;
+                }
+                _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+            }
+        }
+
+        if specs.is_empty() || index >= items.len() {
+            return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+        }
+
+        let lengths: Vec<usize> = specs
+            .iter()
+            .map(|spec| match spec {
+                LoopSpec::Range(_, values) | LoopSpec::List(_, values) => values.len(),
+            })
+            .collect();
+        let iterations = lengths.into_iter().min().unwrap_or(0);
+        let bindings = specs
+            .iter()
+            .map(|spec| match spec {
+                LoopSpec::Range(name, _) | LoopSpec::List(name, _) => (name.clone(), Value::Nil),
+            })
+            .collect::<Vec<_>>();
+        env.push(bindings);
+
+        let mut result = Value::Nil;
+        match items.get(index) {
+            Some(Value::Symbol(kind)) if kind == "do" => {
+                for iteration in 0..iterations {
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    for (slot, spec) in frame.iter_mut().zip(&specs) {
+                        *slot = match spec {
+                            LoopSpec::Range(name, values) | LoopSpec::List(name, values) => {
+                                (name.clone(), values[iteration].clone())
+                            }
+                        };
+                    }
+                    result = self.sf_progn(&items[index + 1..], env)?;
+                }
+            }
+            Some(Value::Symbol(kind)) if kind == "thereis" => {
+                let thereis_expr = items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?;
+                let until_expr =
+                    if matches!(items.get(index + 2), Some(Value::Symbol(s)) if s == "until") {
+                        items.get(index + 3)
+                    } else {
+                        None
+                    };
+                for iteration in 0..iterations {
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    for (slot, spec) in frame.iter_mut().zip(&specs) {
+                        *slot = match spec {
+                            LoopSpec::Range(name, values) | LoopSpec::List(name, values) => {
+                                (name.clone(), values[iteration].clone())
+                            }
+                        };
+                    }
+                    if let Some(until) = until_expr
+                        && self.eval(until, env)?.is_truthy()
+                    {
+                        result = Value::Nil;
+                        break;
+                    }
+                    let value = self.eval(thereis_expr, env)?;
+                    if value.is_truthy() {
+                        result = value;
+                        break;
+                    }
+                }
+            }
+            _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+        }
+
+        env.pop();
+        Ok(result)
+    }
+
     fn sf_unwind_protect(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         let result = self.eval(&items[1], env);
         // Always run cleanup forms
@@ -1225,6 +1845,35 @@ impl Interpreter {
         result
     }
 
+    fn sf_with_output_to_string(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let saved_buffer_id = self.current_buffer_id;
+        let base_name = " *with-output-to-string*";
+        let temp_name = if self.has_buffer(base_name) {
+            let mut n = 2;
+            loop {
+                let candidate = format!("{}<{}>", base_name, n);
+                if !self.has_buffer(&candidate) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        } else {
+            base_name.to_string()
+        };
+        let (temp_id, _) = self.create_buffer(&temp_name);
+        self.switch_to_buffer_id(temp_id)?;
+        let body_result = self.sf_progn(&items[1..], env);
+        let output = Value::String(self.buffer.buffer_string());
+        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        self.kill_buffer_id(temp_id);
+        body_result?;
+        Ok(output)
+    }
+
     fn sf_ert_with_temp_file(
         &mut self,
         items: &[Value],
@@ -1267,10 +1916,155 @@ impl Interpreter {
         result
     }
 
+    fn sf_with_restriction(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Ok(Value::Nil);
+        }
+        let start = self.eval(&items[1], env)?.as_integer()? as usize;
+        let end = self.eval(&items[2], env)?.as_integer()? as usize;
+        let mut body_index = 3;
+        let label = if matches!(items.get(3), Some(Value::Symbol(s)) if s == ":label") {
+            body_index = 5;
+            match items.get(4) {
+                Some(Value::Symbol(symbol)) => symbol.clone(),
+                Some(Value::Cons(_, _)) => {
+                    let quoted = items[4].to_vec()?;
+                    quoted
+                        .get(1)
+                        .ok_or_else(|| LispError::Signal("Invalid with-restriction label".into()))?
+                        .as_symbol()?
+                        .to_string()
+                }
+                _ => "default".into(),
+            }
+        } else {
+            "default".into()
+        };
+        let saved = (self.buffer.point_min(), self.buffer.point_max());
+        let current = self
+            .effective_labeled_restriction(self.current_buffer_id(), None)
+            .unwrap_or(saved);
+        let effective = (start.max(current.0), end.min(current.1));
+        self.labeled_restrictions
+            .push((self.current_buffer_id(), label, effective.0, effective.1));
+        self.buffer.narrow_to_region(effective.0, effective.1);
+        let result = self.sf_progn(&items[body_index..], env);
+        self.labeled_restrictions.pop();
+        self.buffer.restore_restriction(saved.0, saved.1);
+        result
+    }
+
+    fn sf_without_restriction(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let mut body_index = 1;
+        let label = if matches!(items.get(1), Some(Value::Symbol(s)) if s == ":label") {
+            body_index = 3;
+            match items.get(2) {
+                Some(Value::Symbol(symbol)) => symbol.clone(),
+                Some(Value::Cons(_, _)) => {
+                    let quoted = items[2].to_vec()?;
+                    quoted
+                        .get(1)
+                        .ok_or_else(|| {
+                            LispError::Signal("Invalid without-restriction label".into())
+                        })?
+                        .as_symbol()?
+                        .to_string()
+                }
+                _ => "default".into(),
+            }
+        } else {
+            "default".into()
+        };
+        let saved = (self.buffer.point_min(), self.buffer.point_max());
+        let pos = self
+            .labeled_restrictions
+            .iter()
+            .rposition(|(buffer_id, active_label, _, _)| {
+                *buffer_id == self.current_buffer_id() && *active_label == label
+            });
+        let removed = pos.map(|index| self.labeled_restrictions.remove(index));
+        if let Some((start, end)) = self
+            .effective_labeled_restriction(self.current_buffer_id(), None)
+        {
+            self.buffer.narrow_to_region(start, end);
+        } else {
+            self.buffer.widen();
+        }
+        let result = self.sf_progn(&items[body_index..], env);
+        if let Some(entry) = removed {
+            self.labeled_restrictions.push(entry);
+        }
+        self.buffer.restore_restriction(saved.0, saved.1);
+        result
+    }
+
     fn sf_save_excursion(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         let saved_pt = self.buffer.point();
         let result = self.sf_progn(&items[1..], env);
         self.buffer.goto_char(saved_pt);
+        result
+    }
+
+    fn sf_with_silent_modifications(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let was_modified = self.buffer.is_modified();
+        let was_autosaved = self.buffer.is_autosaved();
+        let result = self.sf_progn(&items[1..], env);
+        if !was_modified {
+            self.buffer.set_unmodified();
+        } else if was_autosaved {
+            self.buffer.set_modified();
+            self.buffer.set_autosaved();
+        } else {
+            self.buffer.set_modified();
+        }
+        result
+    }
+
+    fn sf_save_restriction(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let saved_buffer_id = self.current_buffer_id();
+        let saved_begv = self.buffer.point_min();
+        let saved_zv = self.buffer.point_max();
+        let beg_marker = self.make_marker();
+        let end_marker = self.make_marker();
+        let beg_id = match beg_marker {
+            Value::Marker(id) => id,
+            _ => unreachable!("make_marker returns a marker"),
+        };
+        let end_id = match end_marker {
+            Value::Marker(id) => id,
+            _ => unreachable!("make_marker returns a marker"),
+        };
+        let _ = self.set_marker(beg_id, Some(saved_begv), Some(saved_buffer_id));
+        let _ = self.set_marker(end_id, Some(saved_zv), Some(saved_buffer_id));
+        self.buffer
+            .push_undo_meta(Value::cons(Value::Marker(beg_id), Value::Integer(-(saved_begv as i64))));
+        self.buffer
+            .push_undo_meta(Value::cons(Value::Marker(end_id), Value::Integer(saved_zv as i64)));
+        let result = self.sf_progn(&items[1..], env);
+        let restore_begv = self.marker_position(beg_id).unwrap_or(saved_begv);
+        let restore_zv = self.marker_position(end_id).unwrap_or(saved_zv);
+        self.buffer.restore_restriction(restore_begv, restore_zv);
+        let _ = self.set_marker(beg_id, None, None);
+        let _ = self.set_marker(end_id, None, None);
         result
     }
 
@@ -2060,6 +2854,32 @@ mod tests {
         assert_eq!(
             eval_str_with(&mut interp, "sample-local"),
             Value::Symbol(":default".into())
+        );
+    }
+
+    #[test]
+    fn let_alist_binds_dotted_pair_keys() {
+        assert_eq!(
+            eval_str("(let ((x '((buffer-text . \"hi\")))) (let-alist x .buffer-text))"),
+            Value::String("hi".into())
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_simple_for_from_to_do() {
+        assert_eq!(
+            eval_str("(let ((n 0)) (cl-loop for i from 1 to 3 do (setq n (+ n i))) n)"),
+            Value::Integer(6)
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_parallel_in_thereis_until() {
+        assert_eq!(
+            eval_str(
+                "(cl-loop for a in '(1 2 3) for b in '(1 3 2) thereis (< a b) until (> a b))"
+            ),
+            Value::T
         );
     }
 
