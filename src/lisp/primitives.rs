@@ -6330,6 +6330,29 @@ pub(crate) fn default_directory() -> String {
     path_to_directory_string(&cwd)
 }
 
+fn compat_repo_root_from_test_directory(test_directory: &str) -> Option<PathBuf> {
+    PathBuf::from(test_directory).parent().map(Path::to_path_buf)
+}
+
+fn compat_invocation_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
+    let repo_root = compat_repo_root_from_test_directory(test_directory)?;
+    let candidate = repo_root.join("src").join("emacs");
+    candidate.exists().then_some(candidate)
+}
+
+fn compat_emacsclient_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
+    let repo_root = compat_repo_root_from_test_directory(test_directory)?;
+    let candidate = repo_root.join("lib-src").join("emacsclient");
+    candidate.exists().then_some(candidate)
+}
+
+pub(crate) fn compat_emacsclient_program_name() -> Option<String> {
+    std::env::var("EMACS_TEST_DIRECTORY")
+        .ok()
+        .and_then(|test_directory| compat_emacsclient_path_from_test_directory(&test_directory))
+        .map(|path| path.display().to_string())
+}
+
 pub(crate) fn current_invocation_name() -> Option<String> {
     current_invocation_path().file_name().map(|name| name.to_string_lossy().into_owned())
 }
@@ -6341,6 +6364,11 @@ pub(crate) fn current_invocation_directory() -> Option<String> {
 }
 
 fn current_invocation_path() -> PathBuf {
+    if let Ok(test_directory) = std::env::var("EMACS_TEST_DIRECTORY")
+        && let Some(path) = compat_invocation_path_from_test_directory(&test_directory)
+    {
+        return path;
+    }
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("emaxx"))
 }
 
@@ -7497,6 +7525,36 @@ mod tests {
                 std::env::remove_var("EMAXX_SUBST_TEST");
             }
         }
+    }
+
+    #[test]
+    fn compat_paths_follow_emacs_test_directory_layout() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let repo_root = std::env::temp_dir().join(format!("emaxx-compat-paths-{unique}"));
+        let test_dir = repo_root.join("test");
+        let src_dir = repo_root.join("src");
+        let lib_src_dir = repo_root.join("lib-src");
+        std::fs::create_dir_all(&test_dir).expect("create test directory");
+        std::fs::create_dir_all(&src_dir).expect("create src directory");
+        std::fs::create_dir_all(&lib_src_dir).expect("create lib-src directory");
+        std::fs::write(src_dir.join("emacs"), "").expect("write fake emacs binary");
+        std::fs::write(lib_src_dir.join("emacsclient"), "")
+            .expect("write fake emacsclient binary");
+
+        let test_directory = test_dir.display().to_string();
+        assert_eq!(
+            compat_invocation_path_from_test_directory(&test_directory),
+            Some(src_dir.join("emacs"))
+        );
+        assert_eq!(
+            compat_emacsclient_path_from_test_directory(&test_directory),
+            Some(lib_src_dir.join("emacsclient"))
+        );
+
+        let _ = std::fs::remove_dir_all(&repo_root);
     }
 
     #[test]

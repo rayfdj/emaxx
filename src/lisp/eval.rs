@@ -183,7 +183,7 @@ impl Interpreter {
             change_hooks_running: 0,
             macros: Vec::new(),
             functions: Vec::new(),
-            provided_features: vec!["emaxx".into()],
+            provided_features: vec!["emaxx".into(), "ert".into()],
             current_load_file: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
@@ -1558,6 +1558,7 @@ impl Interpreter {
                     .unwrap_or_else(primitives::default_directory),
             )),
             "default-directory" => Some(Value::String(primitives::default_directory())),
+            "installation-directory" => Some(Value::Nil),
             "tab-width" => Some(Value::Integer(8)),
             "system-type" => Some(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
             "system-configuration-features" => Some(Value::String(
@@ -1586,6 +1587,10 @@ impl Interpreter {
             "invocation-directory" => Some(Value::String(
                 primitives::current_invocation_directory()
                     .unwrap_or_else(primitives::default_directory),
+            )),
+            "emacsclient-program-name" => Some(Value::String(
+                primitives::compat_emacsclient_program_name()
+                    .unwrap_or_else(|| "emacsclient".into()),
             )),
             "process-environment" | "initial-environment" => Some(Value::list(
                 std::env::vars()
@@ -1636,6 +1641,9 @@ impl Interpreter {
             if k == name {
                 return Ok(v.clone());
             }
+        }
+        if matches!(name, "incf" | "decf") {
+            return Ok(Value::BuiltinFunc(name.to_string()));
         }
         if primitives::is_builtin(name) {
             Ok(Value::BuiltinFunc(name.to_string()))
@@ -1869,8 +1877,12 @@ impl Interpreter {
                         "should" => return self.sf_should(&items, env),
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
-                        "skip-unless" => return self.sf_skip_unless(&items, env),
-                        "skip-when" => return self.sf_skip_when(&items, env),
+                        "skip-unless" | "ert--skip-unless" => {
+                            return self.sf_skip_unless(&items, env)
+                        }
+                        "skip-when" | "ert--skip-when" => {
+                            return self.sf_skip_when(&items, env)
+                        }
                         "rx" => return self.sf_rx(&items),
                         "require" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
@@ -4387,6 +4399,47 @@ mod tests {
         let summary = interp.run_ert_tests_with_selector(None);
         assert_eq!(summary.passed, 1);
         assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn defalias_can_reference_incf_via_function_quote() {
+        assert_eq!(
+            eval_str(
+                "(progn \
+                   (defalias 'cl-incf #'incf) \
+                   (let ((n 0)) \
+                     (cl-incf n)))"
+            ),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            eval_str(
+                "(progn \
+                   (defalias 'cl-decf #'decf) \
+                   (let ((n 2)) \
+                     (cl-decf n)))"
+            ),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn require_ert_uses_builtin_feature_and_skip_alias() {
+        let mut interp = Interpreter::new();
+        assert_eq!(eval_str_with(&mut interp, "(require 'ert)"), Value::Symbol("ert".into()));
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest skip-via-ert-private-alias ()
+              (ert--skip-unless nil))
+            "#,
+        );
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(
+            interp.test_results[0].condition_type.as_deref(),
+            Some("ert-test-skipped")
+        );
     }
 
     #[test]
