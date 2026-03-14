@@ -25,9 +25,7 @@ struct PerfRequest {
 }
 
 pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
-    let mut interpreter = Interpreter::new();
-    interpreter.set_load_path(options.load_path.clone());
-    interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
+    let mut interpreter = initialize_batch_interpreter(&options);
     let mut loaded_test_file: Option<PathBuf> = None;
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
     let perf_request = parse_perf_request(&options.eval)?;
@@ -131,6 +129,14 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     } else {
         Ok(1)
     }
+}
+
+fn initialize_batch_interpreter(options: &BatchRunOptions) -> Interpreter {
+    let mut interpreter = Interpreter::new();
+    interpreter.set_load_path(options.load_path.clone());
+    interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
+    interpreter.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+    interpreter
 }
 
 fn parse_selector_requests(expressions: &[String]) -> Result<(Value, bool), String> {
@@ -435,5 +441,15 @@ mod tests {
             .remove(0);
         let selector = extract_ert_batch_selector(&form).expect("selector");
         assert_eq!(selector.to_string(), "(quote (not (tag :unstable)))");
+    }
+
+    #[test]
+    fn batch_runtime_binds_command_line_args_left_to_nil() {
+        let options = BatchRunOptions::default();
+        let interpreter = initialize_batch_interpreter(&options);
+        assert_eq!(
+            interpreter.lookup_var("command-line-args-left", &Vec::new()),
+            Some(Value::Nil)
+        );
     }
 }

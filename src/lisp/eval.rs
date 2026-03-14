@@ -1609,6 +1609,8 @@ impl Interpreter {
                     .map(|(name, value)| Value::String(format!("{name}={value}")))
                     .collect::<Vec<_>>(),
             )),
+            "find-program" => Some(Value::String("find".into())),
+            "grep-program" => Some(Value::String("grep".into())),
             _ if name.starts_with('.') => Some(Value::Nil),
             _ if name.starts_with(':') => Some(Value::Symbol(name.to_string())),
             _ => None,
@@ -3515,7 +3517,7 @@ impl Interpreter {
         if val.is_truthy() {
             Ok(Value::T)
         } else {
-            Err(LispError::Signal(format!(
+            Err(LispError::ErtTestFailed(format!(
                 "Test failed: expected truthy value from {}",
                 items[1]
             )))
@@ -3530,7 +3532,7 @@ impl Interpreter {
         if val.is_nil() {
             Ok(Value::Nil)
         } else {
-            Err(LispError::Signal(format!(
+            Err(LispError::ErtTestFailed(format!(
                 "Test failed: expected nil from {}",
                 items[1]
             )))
@@ -3546,7 +3548,7 @@ impl Interpreter {
                 if let Some(expected_type) = should_error_type(items)
                     && expected_type != e.condition_type()
                 {
-                    return Err(LispError::Signal(format!(
+                    return Err(LispError::ErtTestFailed(format!(
                         "Test failed: expected error type {} but got {}",
                         expected_type,
                         e.condition_type()
@@ -3554,7 +3556,7 @@ impl Interpreter {
                 }
                 Ok(error_condition_value(&e))
             }
-            Ok(val) => Err(LispError::Signal(format!(
+            Ok(val) => Err(LispError::ErtTestFailed(format!(
                 "Test failed: expected error but got {}",
                 val
             ))),
@@ -3772,6 +3774,10 @@ fn error_condition_value(error: &LispError) -> Value {
         ]),
         LispError::TestSkipped(message) => Value::list([
             Value::Symbol("ert-test-skipped".into()),
+            Value::String(message.clone()),
+        ]),
+        LispError::ErtTestFailed(message) => Value::list([
+            Value::Symbol("ert-test-failed".into()),
             Value::String(message.clone()),
         ]),
         LispError::ReadError(message) | LispError::Signal(message) => Value::list([
@@ -4313,6 +4319,24 @@ mod tests {
     }
 
     #[test]
+    fn expand_file_name_uses_dynamic_default_directory() {
+        let base = format!(
+            "{}{}",
+            std::env::temp_dir().display(),
+            std::path::MAIN_SEPARATOR
+        );
+        let expected = std::env::temp_dir()
+            .join("child")
+            .display()
+            .to_string();
+        let expr = format!(
+            "(let ((default-directory {:?})) (expand-file-name \"child\"))",
+            base
+        );
+        assert_eq!(eval_str(&expr), Value::String(expected));
+    }
+
+    #[test]
     fn cl_destructuring_bind_keeps_missing_optional_slots_nil() {
         assert_eq!(
             eval_str(
@@ -4415,6 +4439,24 @@ mod tests {
         let summary = interp.run_ert_tests_with_selector(None);
         assert_eq!(summary.passed, 1);
         assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn should_not_failures_report_ert_test_failed() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest should-not-failure ()
+              (should-not t))
+            "#,
+        );
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(
+            interp.test_results[0].condition_type.as_deref(),
+            Some("ert-test-failed")
+        );
     }
 
     #[test]

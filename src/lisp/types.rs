@@ -287,6 +287,8 @@ pub enum LispError {
     Signal(String),
     /// Generic error with explicit condition payload.
     SignalValue(Value),
+    /// An ERT assertion failure.
+    ErtTestFailed(String),
     /// Non-local exit via `throw`.
     Throw(Value, Value),
     /// An ERT skip condition.
@@ -304,6 +306,7 @@ impl LispError {
             LispError::Void(_) => "void-variable",
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments",
             LispError::Signal(_) | LispError::SignalValue(_) => "error",
+            LispError::ErtTestFailed(_) => "ert-test-failed",
             LispError::Throw(_, _) => "no-catch",
             LispError::TestSkipped(_) => "ert-test-skipped",
             LispError::EndOfInput => "end-of-file",
@@ -327,6 +330,7 @@ impl fmt::Display for LispError {
                 Ok(items) if items.len() >= 2 => write!(f, "{}", items[1]),
                 _ => write!(f, "{}", value),
             },
+            LispError::ErtTestFailed(msg) => write!(f, "{}", msg),
             LispError::Throw(tag, value) => write!(f, "No catch for {}: {}", tag, value),
             LispError::TestSkipped(msg) => write!(f, "{}", msg),
             LispError::EndOfInput => write!(f, "End of file during parsing"),

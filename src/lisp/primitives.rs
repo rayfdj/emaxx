@@ -311,6 +311,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "write-region"
             | "call-process"
             | "call-process-region"
+            | "process-lines"
             | "kill-buffer"
             | "set-mark"
             | "push-mark"
@@ -3273,7 +3274,9 @@ pub fn call(
             let path = string_text(&args[0])?;
             let base = match args.get(1) {
                 Some(value) if !value.is_nil() => Some(string_text(value)?),
-                _ => None,
+                _ => interp
+                    .lookup_var("default-directory", env)
+                    .and_then(|value| string_like(&value).map(|string| string.text)),
             };
             Ok(Value::String(expand_file_name(&path, base.as_deref())))
         }
@@ -3451,6 +3454,33 @@ pub fn call(
                 run_external_process(interp, &program, &argv, input.as_deref(), env)?;
             write_process_output(interp, destination, &process_output.stdout, &process_output.stderr)?;
             Ok(Value::Integer(exit_status_code(&process_output.status)))
+        }
+        "process-lines" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let program = string_text(&args[0])?;
+            let argv = args[1..]
+                .iter()
+                .map(string_text)
+                .collect::<Result<Vec<_>, _>>()?;
+            let process_output = run_external_process(interp, &program, &argv, None, env)?;
+            if !process_output.status.success() {
+                let stderr = String::from_utf8_lossy(&process_output.stderr).trim().to_string();
+                return Err(LispError::Signal(if stderr.is_empty() {
+                    format!(
+                        "process-lines exited with status {}",
+                        exit_status_code(&process_output.status)
+                    )
+                } else {
+                    stderr
+                }));
+            }
+            let lines = String::from_utf8_lossy(&process_output.stdout)
+                .lines()
+                .map(|line| Value::String(line.to_string()))
+                .collect::<Vec<_>>();
+            Ok(Value::list(lines))
         }
         "zlib-decompress-region" => {
             need_args(name, args, 2)?;
@@ -6689,6 +6719,13 @@ fn run_external_process(
 ) -> Result<std::process::Output, LispError> {
     let mut command = Command::new(program);
     command.args(argv);
+    if let Some(default_directory) = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .filter(|directory| !directory.is_empty())
+    {
+        command.current_dir(default_directory);
+    }
     command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -7586,6 +7623,41 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&repo_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_lines_uses_default_directory_as_subprocess_cwd() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let cwd = std::env::temp_dir().join(format!("emaxx-process-lines-{unique}"));
+        std::fs::create_dir_all(&cwd).expect("create temp cwd");
+        let expected = std::fs::canonicalize(&cwd)
+            .expect("canonical temp cwd")
+            .display()
+            .to_string();
+
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_variable(
+            "default-directory",
+            Value::String(cwd.display().to_string()),
+            &mut env,
+        );
+
+        let result = call(
+            &mut interp,
+            "process-lines",
+            &[Value::String("/bin/pwd".into())],
+            &mut env,
+        )
+        .expect("process-lines should succeed");
+
+        assert_eq!(result, Value::list([Value::String(expected)]));
+
+        let _ = std::fs::remove_dir_all(&cwd);
     }
 
     #[test]
