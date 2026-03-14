@@ -7,6 +7,7 @@ use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
 use crate::lisp::types::{Env, Value};
+use crate::perf::{self, PerfRunReport, PERF_RESULT_FILE_ENV};
 
 #[derive(Clone, Debug, Default)]
 pub struct BatchRunOptions {
@@ -15,10 +16,20 @@ pub struct BatchRunOptions {
     pub eval: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PerfRequest {
+    scenario_id: String,
+    n: usize,
+    warmup: u32,
+    samples: u32,
+}
+
 pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     let mut interpreter = Interpreter::new();
+    interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     let mut loaded_test_file: Option<PathBuf> = None;
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
+    let perf_request = parse_perf_request(&options.eval)?;
     let selector_string = selector.to_string();
 
     for target in &options.load {
@@ -48,23 +59,38 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
         }
     }
 
-    let Some(test_file) = loaded_test_file else {
-        return Err("batch mode needs at least one `-l <test file>` target".into());
-    };
-
     let mut eval_env: Env = Vec::new();
     for expression in &options.eval {
         let forms = Reader::new(expression)
             .read_all()
             .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
         for form in forms {
-            if extract_ert_batch_selector(&form).is_none() {
+            if extract_ert_batch_selector(&form).is_none() && extract_perf_request_from_form(&form).is_none() {
                 interpreter
                     .eval(&form, &mut eval_env)
                     .map_err(|error| format!("evaluate --eval expression `{expression}`: {error}"))?;
             }
         }
     }
+
+    if let Some(request) = perf_request {
+        let report = perf::run_emaxx_batch_scenario(
+            &request.scenario_id,
+            request.n,
+            request.warmup,
+            request.samples,
+        )?;
+        emit_perf_artifacts(&report)?;
+        emit_perf_human_log(&report);
+        return Ok(match report.status {
+            perf::PerfRunStatus::Completed | perf::PerfRunStatus::Unsupported => 0,
+            perf::PerfRunStatus::Failed => 1,
+        });
+    }
+
+    let Some(test_file) = loaded_test_file else {
+        return Err("batch mode needs at least one `-l <test file>` target or an `(emaxx-perf-run-batch ...)` request".into());
+    };
 
     let report = if saw_ert_runner {
         let summary = interpreter.run_ert_tests_with_selector(Some(&selector));
@@ -123,6 +149,21 @@ fn parse_selector_requests(expressions: &[String]) -> Result<(Value, bool), Stri
     Ok((selector, saw_ert_runner))
 }
 
+fn parse_perf_request(expressions: &[String]) -> Result<Option<PerfRequest>, String> {
+    let mut request = None;
+    for expression in expressions {
+        let forms = Reader::new(expression)
+            .read_all()
+            .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
+        for form in forms {
+            if let Some(found) = extract_perf_request_from_form(&form) {
+                request = Some(found);
+            }
+        }
+    }
+    Ok(request)
+}
+
 fn resolve_load_target(target: &str, load_path: &[PathBuf]) -> Result<PathBuf, String> {
     let direct = PathBuf::from(target);
     if direct.exists() {
@@ -159,6 +200,42 @@ fn extract_ert_batch_selector(form: &Value) -> Option<Value> {
     items.get(1).cloned().or(Some(Value::T))
 }
 
+fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
+    let items = form.to_vec().ok()?;
+    let head = items.first()?.as_symbol().ok()?;
+    if head != "emaxx-perf-run-batch" {
+        return None;
+    }
+    let scenario_id = match items.get(1)? {
+        Value::String(value) => value.clone(),
+        Value::Symbol(value) => value.clone(),
+        _ => return None,
+    };
+    let n = value_to_usize(items.get(2)).unwrap_or(4096);
+    let warmup = value_to_u32(items.get(3)).unwrap_or(1);
+    let samples = value_to_u32(items.get(4)).unwrap_or(5);
+    Some(PerfRequest {
+        scenario_id,
+        n,
+        warmup,
+        samples,
+    })
+}
+
+fn value_to_usize(value: Option<&Value>) -> Option<usize> {
+    match value? {
+        Value::Integer(number) if *number >= 0 => usize::try_from(*number).ok(),
+        _ => None,
+    }
+}
+
+fn value_to_u32(value: Option<&Value>) -> Option<u32> {
+    match value? {
+        Value::Integer(number) if *number >= 0 => u32::try_from(*number).ok(),
+        _ => None,
+    }
+}
+
 fn report_file_name(path: &Path) -> String {
     match env::var("EMACS_TEST_DIRECTORY") {
         Ok(test_directory) => {
@@ -172,6 +249,13 @@ fn report_file_name(path: &Path) -> String {
 
 fn emit_artifacts(report: &BatchReport) -> Result<(), String> {
     if let Ok(result_file) = env::var(compat::BATCH_RESULT_FILE_ENV) {
+        report.write_json(Path::new(&result_file))?;
+    }
+    Ok(())
+}
+
+fn emit_perf_artifacts(report: &PerfRunReport) -> Result<(), String> {
+    if let Ok(result_file) = env::var(PERF_RESULT_FILE_ENV) {
         report.write_json(Path::new(&result_file))?;
     }
     Ok(())
@@ -208,6 +292,26 @@ fn emit_human_log(report: &BatchReport) {
         report.summary.skipped,
         report.summary.unexpected
     );
+}
+
+fn emit_perf_human_log(report: &PerfRunReport) {
+    if !verbose_mode() {
+        return;
+    }
+    eprintln!("runner: {}", report.runner);
+    eprintln!("scenario: {}", report.scenario_id);
+    eprintln!("status: {:?}", report.status);
+    for case in &report.cases {
+        eprintln!(
+            "{:?}: {}{}",
+            case.status,
+            case.case_id,
+            case.notes
+                .as_ref()
+                .map(|notes| format!(" -- {notes}"))
+                .unwrap_or_default()
+        );
+    }
 }
 
 fn verbose_mode() -> bool {
@@ -309,6 +413,18 @@ fn xml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_perf_request_from_eval_form() {
+        let forms = Reader::new("(emaxx-perf-run-batch \"noverlay/perf-marker-suite\" 2048 1 5)")
+            .read_all()
+            .expect("read perf eval");
+        let request = extract_perf_request_from_form(&forms[0]).expect("perf request");
+        assert_eq!(request.scenario_id, "noverlay/perf-marker-suite");
+        assert_eq!(request.n, 2048);
+        assert_eq!(request.warmup, 1);
+        assert_eq!(request.samples, 5);
+    }
 
     #[test]
     fn extracts_selector_from_ert_batch_eval() {

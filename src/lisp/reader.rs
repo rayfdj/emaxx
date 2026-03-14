@@ -181,6 +181,12 @@ impl<'a> Reader<'a> {
                         Some(b'n') => s.push('\n'),
                         Some(b't') => s.push('\t'),
                         Some(b'r') => s.push('\r'),
+                        Some(b'\n') => {}
+                        Some(b'\r') => {
+                            if self.peek() == Some(b'\n') {
+                                self.advance();
+                            }
+                        }
                         Some(b'\\') => s.push('\\'),
                         Some(b'"') => s.push('"'),
                         Some(b'a') => s.push('\x07'),
@@ -556,7 +562,7 @@ impl<'a> Reader<'a> {
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
-        let start = self.pos;
+        let mut token = String::new();
         while let Some(ch) = self.peek() {
             if ch == b' '
                 || ch == b'\t'
@@ -572,11 +578,35 @@ impl<'a> Reader<'a> {
             {
                 break;
             }
-            self.advance();
+            if ch == b'\\' {
+                self.advance();
+                match self.peek() {
+                    None => return Err(LispError::EndOfInput),
+                    Some(next) if next < 0x80 => {
+                        self.advance();
+                        token.push(next as char);
+                    }
+                    Some(_) => {
+                        if let Some(next) = self.read_utf8_char() {
+                            token.push(next);
+                        } else {
+                            return Err(LispError::ReadError(
+                                "invalid UTF-8 escape in symbol".into(),
+                            ));
+                        }
+                    }
+                }
+                continue;
+            }
+            if ch < 0x80 {
+                self.advance();
+                token.push(ch as char);
+            } else if let Some(next) = self.read_utf8_char() {
+                token.push(next);
+            } else {
+                return Err(LispError::ReadError("invalid UTF-8 in symbol".into()));
+            }
         }
-
-        let token = std::str::from_utf8(&self.input[start..self.pos])
-            .map_err(|e| LispError::ReadError(e.to_string()))?;
 
         if token.is_empty() {
             return Err(LispError::EndOfInput);
@@ -586,7 +616,7 @@ impl<'a> Reader<'a> {
         if let Ok(n) = token.parse::<i64>() {
             return Ok(Some(Value::Integer(n)));
         }
-        if is_integer_token(token)
+        if is_integer_token(&token)
             && let Ok(n) = token.parse::<BigInt>()
         {
             return Ok(Some(normalize_bigint(n)));
@@ -606,10 +636,10 @@ impl<'a> Reader<'a> {
         }
 
         // Special atoms
-        match token {
+        match token.as_str() {
             "nil" => Ok(Some(Value::Nil)),
             "t" => Ok(Some(Value::T)),
-            _ => Ok(Some(Value::Symbol(token.to_string()))),
+            _ => Ok(Some(Value::Symbol(token))),
         }
     }
 
@@ -710,6 +740,7 @@ mod tests {
         assert_eq!(read_one(r#""hello""#), Value::String("hello".into()));
         assert_eq!(read_one(r#""a\nb""#), Value::String("a\nb".into()));
         assert_eq!(read_one(r#""a\"b""#), Value::String("a\"b".into()));
+        assert_eq!(read_one("\"a\\\nb\""), Value::String("ab".into()));
     }
 
     #[test]

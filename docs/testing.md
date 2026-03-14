@@ -2,6 +2,8 @@
 
 `emaxx` has three separate testing layers. They are intentionally different, and they should not be treated as interchangeable.
 
+There is also a separate performance scoreboard in [`docs/performance.md`](/Users/alpha/CodexProjects/emaxx/docs/performance.md). It does not replace any of the correctness layers below.
+
 ## At A Glance
 
 | Command | Purpose | Uses real Emacs oracle? | Scope | Strictness |
@@ -9,6 +11,12 @@
 | `cargo test --lib` | Fast Rust-level regression tests | No | Rust modules only | Strict |
 | `cargo test` | Local smoke coverage | No | Unit tests + 3 upstream `.el` files | Permissive smoke |
 | `cargo run --bin compat-harness -- run ...` | Compatibility scoreboard | Yes | Recursive `test/src` / `test/lisp` coverage | Strict oracle compare |
+
+Performance is tracked separately with:
+
+| Command | Purpose | Uses real Emacs oracle? | Scope | Strictness |
+|---|---|---:|---|---|
+| `cargo run --bin perf-harness -- run ...` | Performance scoreboard | Yes | Scenario manifest in `compat/perf_scenarios.json` | Non-blocking for slower results |
 
 ## 1. Rust Unit Tests
 

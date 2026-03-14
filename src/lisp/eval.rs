@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::primitives;
 use super::types::{Env, LispError, Value};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
-use regex::Regex;
+use regex::{escape as regex_escape, Regex};
 
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
@@ -51,6 +51,13 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
+#[derive(Clone, Debug)]
+pub struct RecordState {
+    pub id: u64,
+    pub type_name: String,
+    pub slots: Vec<Value>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct UndoSequenceState {
     original_groups: Vec<Vec<crate::buffer::UndoEntry>>,
@@ -82,10 +89,24 @@ pub struct Interpreter {
     markers: Vec<MarkerState>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
+    /// Charset aliases defined at runtime.
+    charset_aliases: Vec<(String, String)>,
+    /// Charset plist overrides keyed by canonical charset name.
+    charset_plists: Vec<(String, Value)>,
+    /// Current charset priority order.
+    charset_priority: Vec<String>,
+    /// ISO charset associations keyed by (dimension, chars, final).
+    iso_charsets: Vec<(i64, i64, u32, String)>,
     /// Shared standard category table.
     standard_category_table_id: Option<u64>,
     /// Next char-table ID for identity tracking.
     next_char_table_id: u64,
+    /// Allocated record objects.
+    records: Vec<RecordState>,
+    /// Next record ID for identity tracking.
+    next_record_id: u64,
+    /// Next finalizer ID for identity tracking.
+    next_finalizer_id: u64,
     /// Buffer-local hook lists keyed by (buffer id, hook name).
     buffer_local_hooks: Vec<(u64, String, Vec<Value>)>,
     /// Buffer-local variable values keyed by (buffer id, variable name).
@@ -102,6 +123,10 @@ pub struct Interpreter {
     macros: Vec<(String, Vec<String>, Vec<Value>)>,
     /// User-defined functions in the function namespace.
     functions: Vec<(String, Value)>,
+    /// Features currently available in this interpreter.
+    provided_features: Vec<String>,
+    /// File currently being loaded, if any.
+    current_load_file: Option<String>,
     /// Collected ERT test definitions.
     pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
@@ -110,6 +135,12 @@ pub struct Interpreter {
     pub last_selected_tests: Vec<String>,
     /// The latest regexp match data in buffer coordinates.
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
+    pub profiler_memory_running: bool,
+    pub profiler_memory_log_pending: bool,
+    pub profiler_cpu_running: bool,
+    pub profiler_cpu_log_pending: bool,
+    pub lossage_size: i64,
+    face_inheritance: Vec<(String, Option<String>)>,
     undo_sequence: Option<UndoSequenceState>,
 }
 
@@ -132,8 +163,15 @@ impl Interpreter {
             next_marker_id: 1,
             markers: Vec::new(),
             char_tables: Vec::new(),
+            charset_aliases: Vec::new(),
+            charset_plists: Vec::new(),
+            charset_priority: vec!["unicode".into(), "ascii".into()],
+            iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             standard_category_table_id: None,
             next_char_table_id: 1,
+            records: Vec::new(),
+            next_record_id: 1,
+            next_finalizer_id: 1,
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
             auto_buffer_locals: Vec::new(),
@@ -142,10 +180,18 @@ impl Interpreter {
             change_hooks_running: 0,
             macros: Vec::new(),
             functions: Vec::new(),
+            provided_features: vec!["emaxx".into()],
+            current_load_file: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),
             last_match_data: None,
+            profiler_memory_running: false,
+            profiler_memory_log_pending: false,
+            profiler_cpu_running: false,
+            profiler_cpu_log_pending: false,
+            lossage_size: 300,
+            face_inheritance: Vec::new(),
             undo_sequence: None,
         }
     }
@@ -175,6 +221,14 @@ impl Interpreter {
     /// Return the current buffer ID.
     pub fn current_buffer_id(&self) -> u64 {
         self.current_buffer_id
+    }
+
+    pub fn set_current_load_file(&mut self, path: Option<String>) -> Option<String> {
+        std::mem::replace(&mut self.current_load_file, path)
+    }
+
+    pub fn current_load_file(&self) -> Option<&str> {
+        self.current_load_file.as_deref()
     }
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
@@ -258,6 +312,18 @@ impl Interpreter {
     pub fn alloc_overlay_id(&mut self) -> u64 {
         let id = self.next_overlay_id;
         self.next_overlay_id += 1;
+        id
+    }
+
+    pub fn alloc_record_id(&mut self) -> u64 {
+        let id = self.next_record_id;
+        self.next_record_id += 1;
+        id
+    }
+
+    pub fn alloc_finalizer_id(&mut self) -> u64 {
+        let id = self.next_finalizer_id;
+        self.next_finalizer_id += 1;
         id
     }
 
@@ -502,6 +568,167 @@ impl Interpreter {
             ..source
         });
         Ok(Value::CharTable(new_id))
+    }
+
+    pub fn create_record(&mut self, type_name: &str, slots: Vec<Value>) -> Value {
+        let id = self.alloc_record_id();
+        self.records.push(RecordState {
+            id,
+            type_name: type_name.to_string(),
+            slots,
+        });
+        Value::Record(id)
+    }
+
+    pub fn find_record(&self, id: u64) -> Option<&RecordState> {
+        self.records.iter().find(|record| record.id == id)
+    }
+
+    pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
+        let record = self
+            .find_record(id)
+            .cloned()
+            .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
+        Ok(self.create_record(&record.type_name, record.slots))
+    }
+
+    pub fn provide_feature(&mut self, feature: &str) {
+        if !self.provided_features.iter().any(|name| name == feature) {
+            self.provided_features.push(feature.to_string());
+        }
+    }
+
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.provided_features.iter().any(|name| name == feature)
+    }
+
+    fn builtin_charset_name(name: &str) -> bool {
+        matches!(name, "ascii" | "unicode")
+    }
+
+    pub fn charset_canonical_name(&self, name: &str) -> Option<String> {
+        let mut current = name.to_string();
+        for _ in 0..16 {
+            if Self::builtin_charset_name(&current) {
+                return Some(current);
+            }
+            let (_, target) = self
+                .charset_aliases
+                .iter()
+                .rev()
+                .find(|(alias, _)| alias == &current)?;
+            current = target.clone();
+        }
+        None
+    }
+
+    pub fn has_charset(&self, name: &str) -> bool {
+        self.charset_canonical_name(name).is_some()
+    }
+
+    pub fn charset_id(&self, name: &str) -> Option<i64> {
+        match self.charset_canonical_name(name)?.as_str() {
+            "ascii" => Some(0),
+            "unicode" => Some(1),
+            _ => None,
+        }
+    }
+
+    pub fn charset_plist_value(&self, name: &str) -> Option<Value> {
+        let canonical = self.charset_canonical_name(name)?;
+        self.charset_plists
+            .iter()
+            .rev()
+            .find(|(charset, _)| charset == &canonical)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub fn set_charset_plist_value(&mut self, name: &str, value: Value) -> Result<(), LispError> {
+        let canonical = self
+            .charset_canonical_name(name)
+            .ok_or_else(|| LispError::Void(name.to_string()))?;
+        if let Some((_, existing)) = self
+            .charset_plists
+            .iter_mut()
+            .rev()
+            .find(|(charset, _)| charset == &canonical)
+        {
+            *existing = value;
+        } else {
+            self.charset_plists.push((canonical, value));
+        }
+        Ok(())
+    }
+
+    pub fn define_charset_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
+        let canonical = self
+            .charset_canonical_name(target)
+            .ok_or_else(|| LispError::Void(target.to_string()))?;
+        if let Some((_, existing)) = self
+            .charset_aliases
+            .iter_mut()
+            .rev()
+            .find(|(existing_alias, _)| existing_alias == alias)
+        {
+            *existing = canonical;
+        } else {
+            self.charset_aliases.push((alias.to_string(), canonical));
+        }
+        Ok(())
+    }
+
+    pub fn charset_priority_list(&self) -> Vec<String> {
+        self.charset_priority.clone()
+    }
+
+    pub fn set_charset_priority(&mut self, names: &[String]) {
+        let mut reordered = Vec::new();
+        for name in names {
+            if let Some(canonical) = self.charset_canonical_name(name)
+                && !reordered.iter().any(|existing| existing == &canonical)
+            {
+                reordered.push(canonical);
+            }
+        }
+        for default in ["unicode", "ascii"] {
+            if !reordered.iter().any(|existing| existing == default) {
+                reordered.push(default.to_string());
+            }
+        }
+        self.charset_priority = reordered;
+    }
+
+    pub fn charset_priority_rank(&self, name: &str) -> usize {
+        let canonical = self.charset_canonical_name(name).unwrap_or_else(|| name.to_string());
+        self.charset_priority
+            .iter()
+            .position(|existing| existing == &canonical)
+            .unwrap_or(usize::MAX)
+    }
+
+    pub fn declare_iso_charset(&mut self, dimension: i64, chars: i64, final_char: u32, charset: &str) {
+        let canonical = self
+            .charset_canonical_name(charset)
+            .unwrap_or_else(|| charset.to_string());
+        if let Some((_, _, _, existing)) = self
+            .iso_charsets
+            .iter_mut()
+            .rev()
+            .find(|(d, c, f, _)| *d == dimension && *c == chars && *f == final_char)
+        {
+            *existing = canonical;
+        } else {
+            self.iso_charsets
+                .push((dimension, chars, final_char, canonical));
+        }
+    }
+
+    pub fn iso_charset(&self, dimension: i64, chars: i64, final_char: u32) -> Option<String> {
+        self.iso_charsets
+            .iter()
+            .rev()
+            .find(|(d, c, f, _)| *d == dimension && *c == chars && *f == final_char)
+            .map(|(_, _, _, charset)| charset.clone())
     }
 
     pub fn ensure_standard_category_table(&mut self) -> u64 {
@@ -1144,6 +1371,52 @@ impl Interpreter {
         Ok(())
     }
 
+    pub fn face_inherit_target(&self, face: &str) -> Option<String> {
+        self.face_inheritance
+            .iter()
+            .rev()
+            .find(|(name, _)| name == face)
+            .and_then(|(_, inherit)| inherit.clone())
+    }
+
+    pub fn set_face_inherit_target(
+        &mut self,
+        face: &str,
+        inherit: Option<String>,
+    ) -> Result<(), LispError> {
+        if let Some(target) = inherit.as_ref()
+            && self.face_inheritance_creates_cycle(face, target)
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("error".into()),
+                Value::String("Face inheritance results in inheritance cycle".into()),
+                Value::Symbol(target.clone()),
+            ])));
+        }
+        if let Some((_, slot)) = self
+            .face_inheritance
+            .iter_mut()
+            .rev()
+            .find(|(name, _)| name == face)
+        {
+            *slot = inherit;
+        } else {
+            self.face_inheritance.push((face.to_string(), inherit));
+        }
+        Ok(())
+    }
+
+    fn face_inheritance_creates_cycle(&self, face: &str, target: &str) -> bool {
+        let mut current = Some(target.to_string());
+        while let Some(name) = current {
+            if name == face {
+                return true;
+            }
+            current = self.face_inherit_target(&name);
+        }
+        false
+    }
+
     /// Find an overlay by ID in any live buffer.
     pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
         self.buffer
@@ -1197,7 +1470,80 @@ impl Interpreter {
                 return Some(v.clone());
             }
         }
-        None
+        self.builtin_var_value(name)
+    }
+
+    fn builtin_var_value(&self, name: &str) -> Option<Value> {
+        match name {
+            "nil" => Some(Value::Nil),
+            "t" => Some(Value::T),
+            "float-pi" => Some(Value::Float(std::f64::consts::PI)),
+            "most-positive-fixnum" => Some(Value::Integer(i64::MAX)),
+            "most-negative-fixnum" => Some(Value::Integer(i64::MIN)),
+            "enable-multibyte-characters" => Some(if self.buffer.is_multibyte() {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            "buffer-file-name" => Some(
+                self.buffer
+                    .file
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            "temporary-file-directory" => {
+                Some(Value::String(std::env::temp_dir().display().to_string()))
+            }
+            "source-directory" => Some(Value::String(
+                std::env::var("EMACS_TEST_DIRECTORY")
+                    .ok()
+                    .and_then(|path| {
+                        std::path::PathBuf::from(path)
+                            .parent()
+                            .map(|path| path.display().to_string())
+                    })
+                    .unwrap_or_else(primitives::default_directory),
+            )),
+            "default-directory" => Some(Value::String(primitives::default_directory())),
+            "tab-width" => Some(Value::Integer(8)),
+            "system-type" => Some(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
+            "system-configuration-features" => Some(Value::String(
+                std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES").unwrap_or_default(),
+            )),
+            "charset-list" => Some(Value::list(
+                self.charset_priority_list()
+                    .into_iter()
+                    .map(Value::Symbol)
+                    .collect::<Vec<_>>(),
+            )),
+            "ert-resource-directory-format" => Some(Value::String("%s-resources/".into())),
+            "ert-resource-directory-trim-left-regexp" => Some(Value::String(String::new())),
+            "ert-resource-directory-trim-right-regexp" => {
+                Some(Value::String("\\(-tests?\\)?\\.el".into()))
+            }
+            "load-file-name" | "macroexp-file-name" => Some(
+                self.current_load_file
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            "invocation-name" => Some(Value::String(
+                primitives::current_invocation_name().unwrap_or_else(|| "emaxx".into()),
+            )),
+            "invocation-directory" => Some(Value::String(
+                primitives::current_invocation_directory()
+                    .unwrap_or_else(primitives::default_directory),
+            )),
+            "process-environment" | "initial-environment" => Some(Value::list(
+                std::env::vars()
+                    .map(|(name, value)| Value::String(format!("{name}={value}")))
+                    .collect::<Vec<_>>(),
+            )),
+            _ if name.starts_with('.') => Some(Value::Nil),
+            _ if name.starts_with(':') => Some(Value::Symbol(name.to_string())),
+            _ => None,
+        }
     }
 
     /// Look up a variable in the given local env, then globals.
@@ -1222,33 +1568,8 @@ impl Interpreter {
         if name == "buffer-undo-list" {
             return Ok(crate::lisp::primitives::buffer_undo_list_value(&self.buffer));
         }
-        // Built-in constants
-        match name {
-            "nil" => Ok(Value::Nil),
-            "t" => Ok(Value::T),
-            "float-pi" => Ok(Value::Float(std::f64::consts::PI)),
-            "most-positive-fixnum" => Ok(Value::Integer(i64::MAX)),
-            "most-negative-fixnum" => Ok(Value::Integer(i64::MIN)),
-            "enable-multibyte-characters" => Ok(if self.buffer.is_multibyte() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "buffer-file-name" => Ok(self
-                .buffer
-                .file
-                .clone()
-                .map(Value::String)
-                .unwrap_or(Value::Nil)),
-            "temporary-file-directory" => Ok(Value::String(
-                std::env::temp_dir().display().to_string(),
-            )),
-            "tab-width" => Ok(Value::Integer(8)),
-            "system-type" => Ok(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
-            _ if name.starts_with('.') => Ok(Value::Nil),
-            _ if name.starts_with(':') => Ok(Value::Symbol(name.to_string())),
-            _ => Err(LispError::Void(name.to_string())),
-        }
+        self.builtin_var_value(name)
+            .ok_or_else(|| LispError::Void(name.to_string()))
     }
 
     pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
@@ -1320,7 +1641,8 @@ impl Interpreter {
             | Value::Integer(_)
             | Value::BigInteger(_)
             | Value::Float(_)
-            | Value::String(_) => {
+            | Value::String(_)
+            | Value::StringObject(_) => {
                 Ok(expr.clone())
             }
 
@@ -1329,7 +1651,9 @@ impl Interpreter {
             | Value::Buffer(_, _)
             | Value::Marker(_)
             | Value::Overlay(_)
-            | Value::CharTable(_) => Ok(expr.clone()),
+            | Value::CharTable(_)
+            | Value::Record(_)
+            | Value::Finalizer(_) => Ok(expr.clone()),
 
             Value::Symbol(name) => self.lookup(name, env),
 
@@ -1380,6 +1704,7 @@ impl Interpreter {
                         }
                         "while" => return self.sf_while(&items, env),
                         "dolist" => return self.sf_dolist(&items, env),
+                        "pcase-dolist" => return self.sf_pcase_dolist(&items, env),
                         "dotimes" => return self.sf_dotimes(&items, env),
                         "cl-loop" => return self.sf_cl_loop(&items, env),
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
@@ -1518,6 +1843,7 @@ impl Interpreter {
                             self.set_variable(&name, rest, env);
                             return Ok(result);
                         }
+                        "catch" => return self.sf_catch(&items, env),
                         "add-to-list" => return self.sf_add_to_list(&items, env),
                         "ert-deftest" => return self.sf_ert_deftest(&items),
                         "should" => return self.sf_should(&items, env),
@@ -1525,10 +1851,38 @@ impl Interpreter {
                         "should-error" => return self.sf_should_error(&items, env),
                         "skip-unless" => return self.sf_skip_unless(&items, env),
                         "skip-when" => return self.sf_skip_when(&items, env),
-                        "require" | "provide" | "declare" => return Ok(Value::Nil),
-                        "eval-and-compile" => return self.sf_progn(&items[1..], env),
+                        "rx" => return self.sf_rx(&items),
+                        "require" => {
+                            if let Some(feature) = items.get(1).and_then(feature_name) {
+                                self.provide_feature(&feature);
+                            }
+                            return Ok(Value::Nil);
+                        }
+                        "provide" => {
+                            if let Some(feature) = items.get(1).and_then(feature_name) {
+                                self.provide_feature(&feature);
+                                return Ok(Value::Symbol(feature));
+                            }
+                            return Ok(Value::Nil);
+                        }
+                        "declare" | "declare-function" => return Ok(Value::Nil),
+                        "eval-and-compile" | "eval-when-compile" => {
+                            return self.sf_progn(&items[1..], env);
+                        }
                         "ert-info" => {
                             // (ert-info (msg) body...) — just run the body
+                            return self.sf_progn(&items[2..], env);
+                        }
+                        "minibuffer-with-setup-hook" => {
+                            if items.len() < 3 {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "minibuffer-with-setup-hook".into(),
+                                    items.len().saturating_sub(1),
+                                ));
+                            }
+                            let hook = self.eval(&items[1], env)?;
+                            let call = vec![hook];
+                            self.eval_call(&call, env)?;
                             return self.sf_progn(&items[2..], env);
                         }
                         _ => {}
@@ -1616,7 +1970,7 @@ impl Interpreter {
                     captured_frames += 1;
                 }
                 env.push(frame);
-                let result = self.sf_progn(body, env);
+                let result = self.sf_progn(function_executable_body(body), env);
                 env.pop();
                 for _ in 0..captured_frames {
                     env.remove(0);
@@ -1757,6 +2111,18 @@ impl Interpreter {
             result = self.eval(expr, env)?;
         }
         Ok(result)
+    }
+
+    fn sf_catch(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs("catch".into(), 0));
+        }
+        let tag = self.eval(&items[1], env)?;
+        match self.sf_progn(&items[2..], env) {
+            Ok(value) => Ok(value),
+            Err(LispError::Throw(thrown_tag, value)) if thrown_tag == tag => Ok(value),
+            Err(error) => Err(error),
+        }
     }
 
     fn sf_prog1(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -2036,6 +2402,35 @@ impl Interpreter {
         };
         env.pop();
         Ok(result)
+    }
+
+    fn sf_pcase_dolist(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        let spec = items[1].to_vec()?;
+        if spec.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "pcase-dolist".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let pattern = &spec[0];
+        let list_val = self.eval(&spec[1], env)?;
+        let list_items = list_val.to_vec()?;
+
+        for item in list_items {
+            let mut bindings = Vec::new();
+            if !pcase_pattern_bindings(pattern, &item, &mut bindings)? {
+                return Err(LispError::Signal("pcase-dolist: no matching clause".into()));
+            }
+            env.push(bindings);
+            self.sf_progn(&items[2..], env)?;
+            env.pop();
+        }
+
+        if spec.len() > 2 {
+            self.eval(&spec[2], env)
+        } else {
+            Ok(Value::Nil)
+        }
     }
 
     fn sf_dotimes(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -2921,6 +3316,10 @@ impl Interpreter {
         }
     }
 
+    fn sf_rx(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        Ok(Value::String(compile_rx_sequence(&items[1..])?))
+    }
+
     // ── ERT support ──
 
     fn sf_ert_deftest(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -3245,6 +3644,12 @@ fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol("error".into()),
             Value::String(message.clone()),
         ]),
+        LispError::Throw(tag, value) => Value::list([
+            Value::Symbol("no-catch".into()),
+            tag.clone(),
+            value.clone(),
+        ]),
+        LispError::SignalValue(value) => value.clone(),
     }
 }
 
@@ -3321,6 +3726,7 @@ fn render_undo_value(value: &Value) -> String {
             }
         }
         Value::String(s) => format!("\"{}\"", s),
+        Value::StringObject(state) => format!("\"{}\"", state.borrow().text),
         Value::Symbol(s) => s.clone(),
         Value::Cons(_, _) => {
             let mut rendered = String::from("(");
@@ -3353,6 +3759,133 @@ fn render_undo_value(value: &Value) -> String {
         Value::Marker(id) => format!("#<marker id:{id}>"),
         Value::Overlay(id) => format!("#<overlay id:{id}>"),
         Value::CharTable(id) => format!("#<char-table id:{id}>"),
+        Value::Record(id) => format!("#<record id:{id}>"),
+        Value::Finalizer(id) => format!("#<finalizer id:{id}>"),
+    }
+}
+
+fn function_executable_body(body: &[Value]) -> &[Value] {
+    let mut start = 0usize;
+    while start < body.len() {
+        if is_function_declare_form(&body[start]) || is_function_interactive_form(&body[start]) {
+            start += 1;
+        } else {
+            break;
+        }
+    }
+    &body[start..]
+}
+
+fn is_function_declare_form(form: &Value) -> bool {
+    form.to_vec().ok().is_some_and(|items| {
+        matches!(items.first(), Some(Value::Symbol(name)) if name == "declare")
+    })
+}
+
+fn is_function_interactive_form(form: &Value) -> bool {
+    form.to_vec().ok().is_some_and(|items| {
+        matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive")
+    })
+}
+
+fn pcase_pattern_bindings(
+    pattern: &Value,
+    value: &Value,
+    bindings: &mut Vec<(String, Value)>,
+) -> Result<bool, LispError> {
+    if let Ok(parts) = pattern.to_vec() {
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
+            return pcase_pattern_bindings(parts.get(1).unwrap_or(&Value::Nil), value, bindings);
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
+            && let Some(Value::Symbol(name)) = parts.get(1)
+        {
+            bindings.push((name.clone(), value.clone()));
+            return Ok(true);
+        }
+    }
+
+    match (pattern, value) {
+        (Value::Cons(pattern_car, pattern_cdr), Value::Cons(value_car, value_cdr)) => {
+            let start = bindings.len();
+            if !pcase_pattern_bindings(pattern_car, value_car, bindings)? {
+                bindings.truncate(start);
+                return Ok(false);
+            }
+            if !pcase_pattern_bindings(pattern_cdr, value_cdr, bindings)? {
+                bindings.truncate(start);
+                return Ok(false);
+            }
+            Ok(true)
+        }
+        (Value::Nil, Value::Nil) => Ok(true),
+        _ => Ok(pattern == value),
+    }
+}
+
+fn feature_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Cons(_, _) => value.to_vec().ok().and_then(|items| match items.as_slice() {
+            [Value::Symbol(name), Value::Symbol(symbol)] if name == "quote" => Some(symbol.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
+    let mut regex = String::new();
+    for item in items {
+        regex.push_str(&compile_rx_form(item)?);
+    }
+    Ok(regex)
+}
+
+fn compile_rx_form(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::String(text) => Ok(regex_escape(text)),
+        Value::StringObject(state) => Ok(regex_escape(&state.borrow().text)),
+        Value::Integer(codepoint) => {
+            let ch = char::from_u32(*codepoint as u32)
+                .ok_or_else(|| LispError::Signal(format!("Invalid rx character: {codepoint}")))?;
+            Ok(regex_escape(&ch.to_string()))
+        }
+        Value::Symbol(symbol) => match symbol.as_str() {
+            "bos" | "bol" => Ok("^".into()),
+            "eos" | "eol" => Ok("$".into()),
+            "bow" | "eow" => Ok("\\b".into()),
+            "digit" => Ok("[0-9]".into()),
+            "blank" => Ok("[[:blank:]]".into()),
+            "space" => Ok("[[:space:]]".into()),
+            other => Err(LispError::Signal(format!("Unsupported rx atom: {other}"))),
+        },
+        Value::Cons(_, _) => {
+            let items = value.to_vec()?;
+            let Some(Value::Symbol(head)) = items.first() else {
+                return compile_rx_sequence(&items);
+            };
+            match head.as_str() {
+                "group" => Ok(format!("\\({}\\)", compile_rx_sequence(&items[1..])?)),
+                "+" => Ok(format!("\\(?:{}\\)+", compile_rx_sequence(&items[1..])?)),
+                "*" => Ok(format!("\\(?:{}\\)*", compile_rx_sequence(&items[1..])?)),
+                "?" => Ok(format!("\\(?:{}\\)?", compile_rx_sequence(&items[1..])?)),
+                "seq" => compile_rx_sequence(&items[1..]),
+                "or" => Ok(format!(
+                    "\\(?:{}\\)",
+                    items[1..]
+                        .iter()
+                        .map(compile_rx_form)
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join("\\|")
+                )),
+                _ => compile_rx_sequence(&items),
+            }
+        }
+        other => Err(LispError::Signal(format!(
+            "Unsupported rx form: {}",
+            other.type_name()
+        ))),
     }
 }
 
@@ -3467,6 +4000,22 @@ mod tests {
         assert_eq!(eval_str("(cddr '(1 2 3))"), Value::list([Value::Integer(3)]));
         assert_eq!(eval_str("(identity 'ok)"), Value::Symbol("ok".into()));
         assert_eq!(eval_str("(length '(1 2 3))"), Value::Integer(3));
+    }
+
+    #[test]
+    fn eval_symbol_with_escaped_trailing_space() {
+        assert_eq!(eval_str("'GNU\\ "), Value::Symbol("GNU ".into()));
+        assert_eq!(eval_str("(eq 'GNU\\  'GNU\\ )"), Value::T);
+    }
+
+    #[test]
+    fn eval_font_get_returns_xlfd_foundry_symbol() {
+        assert_eq!(
+            eval_str(
+                "(equal (font-get (font-spec :name \"-GNU -FreeSans-semibold-italic-normal-*-*-*-*-*-*-0-iso10646-1\") :foundry) 'GNU\\ )"
+            ),
+            Value::T
+        );
     }
 
     #[test]
@@ -3599,6 +4148,33 @@ mod tests {
     }
 
     #[test]
+    fn eval_when_compile_runs_its_body_when_loading_helpers() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (eval-when-compile
+              (defun compile-only-helper () 'loaded))
+            (compile-only-helper)
+            "#,
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "(compile-only-helper)"),
+            Value::Symbol("loaded".into())
+        );
+    }
+
+    #[test]
+    fn expand_file_name_joins_invocation_components() {
+        let exe = std::env::current_exe().unwrap();
+        let expected = exe.display().to_string();
+        assert_eq!(
+            eval_str("(expand-file-name invocation-name invocation-directory)"),
+            Value::String(expected)
+        );
+    }
+
+    #[test]
     fn cl_destructuring_bind_keeps_missing_optional_slots_nil() {
         assert_eq!(
             eval_str(
@@ -3611,6 +4187,58 @@ mod tests {
                 Value::Nil,
                 Value::Nil,
             ])
+        );
+    }
+
+    #[test]
+    fn pcase_dolist_binds_backquoted_variables() {
+        assert_eq!(
+            eval_str(
+                "(let (pairs) \
+                   (pcase-dolist (`(,left ,right) '((1 2) (3 4))) \
+                     (push (list left right) pairs)) \
+                   (nreverse pairs))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::list([Value::Integer(3), Value::Integer(4)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn replace_match_updates_match_data_for_subexpressions() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let (mismatch)
+                    (pcase-dolist (`(,pre ,post) '(("" "")
+                                                   ("a" "")
+                                                   ("" "b")
+                                                   ("a" "b")))
+                      (unless mismatch
+                        (erase-buffer)
+                        (insert "hello ")
+                        (save-excursion (insert pre post " world"))
+                        (looking-at
+                         (concat "\\(\\)" pre "\\(\\)\\(\\(\\)\\)\\(\\)" post "\\(\\)"))
+                        (let* ((beg0 (match-beginning 0))
+                               (beg4 (+ beg0 (length pre)))
+                               (end4 (+ beg4 (length "BOO")))
+                               (end0 (+ end4 (length post))))
+                          (replace-match "BOO" t t nil 4)
+                          (unless (and (equal (match-beginning 0) beg0)
+                                       (equal (match-end 0) end0))
+                            (setq mismatch
+                                  (list pre post
+                                        (match-beginning 0)
+                                        (match-end 0)
+                                        beg0
+                                        end0))))))
+                    mismatch))"#,
+            ),
+            Value::Nil
         );
     }
 
@@ -3667,6 +4295,76 @@ mod tests {
         assert_eq!(
             interp.test_results[0].condition_type.as_deref(),
             Some("ert-test-skipped")
+        );
+    }
+
+    #[test]
+    fn call_interactively_consumes_unread_events_for_k_specs() {
+        assert_eq!(
+            eval_str(
+                "(let ((unread-command-events '(?a ?b))) \
+                   (call-interactively \
+                     (lambda (a b) \
+                       (interactive \"ka\0a: \nkb: \") \
+                       (list a b))))"
+            ),
+            Value::list([Value::String("a".into()), Value::String("b".into())])
+        );
+    }
+
+    #[test]
+    fn call_interactively_records_declared_history_arguments() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            "(defun callint-test-int-args (foo bar &optional zot) \
+               (declare (interactive-args (bar 10) (zot 11))) \
+               (interactive (list 1 1 1)) \
+               (+ foo bar zot))",
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((history-length 1) (command-history ())) \
+                   (list (call-interactively 'callint-test-int-args t) command-history))"
+            ),
+            Value::list([
+                Value::Integer(3),
+                Value::list([Value::list([
+                    Value::Symbol("callint-test-int-args".into()),
+                    Value::Integer(1),
+                    Value::Integer(10),
+                    Value::Integer(11),
+                ])]),
+            ])
+        );
+    }
+
+    #[test]
+    fn call_interactively_rejects_invalid_control_letters() {
+        assert_eq!(
+            eval_str(
+                "(cdr (should-error (call-interactively (lambda () (interactive \"ÿ\")))))"
+            ),
+            Value::list([Value::String(
+                "Invalid control letter `ÿ' (#o377, #x00ff) in interactive calling string".into(),
+            )])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn call_process_region_can_delete_entire_buffer() {
+        assert_eq!(
+            eval_str(
+                "(let ((shell (executable-find \"sh\"))) \
+                   (with-temp-buffer \
+                     (insert \"Buffer contents\\n\") \
+                     (list \
+                       (call-process-region nil nil shell :delete nil nil \"-c\" \"cat >/dev/null\") \
+                       (buffer-size))))"
+            ),
+            Value::list([Value::Integer(0), Value::Integer(0)])
         );
     }
 
@@ -4093,6 +4791,89 @@ mod tests {
                 Value::cons(Value::Integer(54), Value::Integer(135)),
                 Value::cons(Value::Integer(68), Value::Integer(99)),
             ])
+        );
+    }
+
+    #[test]
+    fn overlay_positions_survive_unibyte_to_multibyte_transition() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (set-buffer-multibyte t)
+                  (insert "ääää")
+                  (set-buffer-multibyte nil)
+                  (let ((nonempty-bob-end (make-overlay 1 2))
+                        (nonempty-bob-beg (make-overlay 1 3))
+                        (empty-bob        (make-overlay 1 1))
+                        (empty-beg        (make-overlay 3 3))
+                        (empty-end        (make-overlay 2 2))
+                        (nonempty-beg-beg (make-overlay 3 7))
+                        (nonempty-beg-end (make-overlay 3 8))
+                        (nonempty-end-beg (make-overlay 4 7))
+                        (nonempty-end-end (make-overlay 4 8))
+                        (nonempty-eob-beg (make-overlay 5 9))
+                        (nonempty-eob-end (make-overlay 6 9))
+                        (empty-eob        (make-overlay 9 9)))
+                    (set-buffer-multibyte t)
+                    (list
+                     (list (overlay-start nonempty-bob-end) (overlay-end nonempty-bob-end))
+                     (list (overlay-start nonempty-bob-beg) (overlay-end nonempty-bob-beg))
+                     (list (overlay-start empty-bob) (overlay-end empty-bob))
+                     (list (overlay-start empty-beg) (overlay-end empty-beg))
+                     (list (overlay-start empty-end) (overlay-end empty-end))
+                     (list (overlay-start nonempty-beg-beg) (overlay-end nonempty-beg-beg))
+                     (list (overlay-start nonempty-beg-end) (overlay-end nonempty-beg-end))
+                     (list (overlay-start nonempty-end-beg) (overlay-end nonempty-end-beg))
+                     (list (overlay-start nonempty-end-end) (overlay-end nonempty-end-end))
+                     (list (overlay-start nonempty-eob-beg) (overlay-end nonempty-eob-beg))
+                     (list (overlay-start nonempty-eob-end) (overlay-end nonempty-eob-end))
+                     (list (overlay-start empty-eob) (overlay-end empty-eob)))))
+                "#
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::list([Value::Integer(1), Value::Integer(1)]),
+                Value::list([Value::Integer(2), Value::Integer(2)]),
+                Value::list([Value::Integer(2), Value::Integer(2)]),
+                Value::list([Value::Integer(2), Value::Integer(4)]),
+                Value::list([Value::Integer(2), Value::Integer(5)]),
+                Value::list([Value::Integer(3), Value::Integer(4)]),
+                Value::list([Value::Integer(3), Value::Integer(5)]),
+                Value::list([Value::Integer(3), Value::Integer(5)]),
+                Value::list([Value::Integer(4), Value::Integer(5)]),
+                Value::list([Value::Integer(5), Value::Integer(5)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn current_column_uses_lexically_bound_tab_width() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((tab-width 4))
+                    (insert "ab\tcd")
+                    (goto-char (point-min))
+                    (forward-char 3)
+                    (current-column)))
+                "#
+            ),
+            Value::Integer(4)
+        );
+    }
+
+    #[test]
+    fn rx_compiles_common_test_patterns() {
+        assert_eq!(
+            eval_str(r#"(rx bos (group (+ digit)) (+ blank) "Hi" eol)"#),
+            Value::String("^\\(\\(?:[0-9]\\)+\\)\\(?:[[:blank:]]\\)+Hi$".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx bow "SECCOMP" eow)"#),
+            Value::String("\\bSECCOMP\\b".into())
         );
     }
 }

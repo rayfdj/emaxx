@@ -383,8 +383,16 @@ pub fn should_enable_nativecomp_tests(system_type: &str, native_compilation: boo
 }
 
 pub fn configure_upstream_like_env(command: &mut Command, emacs_test_directory: &Path) {
+    configure_upstream_like_env_with_home(command, emacs_test_directory, Path::new("/nonexistent"));
+}
+
+pub fn configure_upstream_like_env_with_home(
+    command: &mut Command,
+    emacs_test_directory: &Path,
+    home: &Path,
+) {
     command.env("LANG", "C");
-    command.env("HOME", "/nonexistent");
+    command.env("HOME", home);
     command.env("EMACS_TEST_DIRECTORY", emacs_test_directory);
     for key in UNSET_ENV_VARS {
         command.env_remove(key);
