@@ -2744,6 +2744,13 @@ impl Interpreter {
                 primitives::current_invocation_directory()
                     .unwrap_or_else(primitives::default_directory),
             )),
+            "emacs-version" => Some(Value::String(
+                std::env::var("EMAXX_EMACS_VERSION")
+                    .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
+            )),
+            "etags-program-name" => Some(Value::String(
+                primitives::find_executable("etags").unwrap_or_else(|| "etags".into()),
+            )),
             "emacsclient-program-name" => Some(Value::String(
                 primitives::compat_emacsclient_program_name()
                     .unwrap_or_else(|| "emacsclient".into()),
@@ -6077,6 +6084,7 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
             "eos" | "eol" => Ok("$".into()),
             "bow" | "eow" => Ok("\\b".into()),
             "digit" => Ok("[0-9]".into()),
+            "xdigit" => Ok("[0-9A-Fa-f]".into()),
             "blank" => Ok("[[:blank:]]".into()),
             "space" => Ok("[[:space:]]".into()),
             other => Err(LispError::Signal(format!("Unsupported rx atom: {other}"))),
@@ -6623,6 +6631,24 @@ mod tests {
     #[test]
     fn custom_current_group_alist_defaults_to_nil() {
         assert_eq!(eval_str("custom-current-group-alist"), Value::Nil);
+    }
+
+    #[test]
+    fn emacs_version_variable_defaults_to_non_empty_string() {
+        let value = eval_str("emacs-version");
+        match value {
+            Value::String(version) => assert!(!version.is_empty()),
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn etags_program_name_defaults_to_non_empty_string() {
+        let value = eval_str("etags-program-name");
+        match value {
+            Value::String(path) => assert!(!path.is_empty()),
+            other => panic!("expected string, got {other:?}"),
+        }
     }
 
     #[test]
@@ -7703,6 +7729,10 @@ mod tests {
         assert_eq!(
             eval_str(r#"(rx bos (group (+ digit)) (+ blank) "Hi" eol)"#),
             Value::String("^\\(\\(?:[0-9]\\)+\\)\\(?:[[:blank:]]\\)+Hi$".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (group xdigit xdigit))"#),
+            Value::String("\\([0-9A-Fa-f][0-9A-Fa-f]\\)".into())
         );
         assert_eq!(
             eval_str(r#"(rx bow "SECCOMP" eow)"#),
