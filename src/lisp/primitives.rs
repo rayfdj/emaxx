@@ -2302,11 +2302,21 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
-        "assq" | "assoc" => {
+        "assq" => {
             need_args(name, args, 2)?;
             let items = args[1].to_vec()?;
             for item in &items {
                 if item.car()? == args[0] {
+                    return Ok(item.clone());
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "assoc" => {
+            need_args(name, args, 2)?;
+            let items = args[1].to_vec()?;
+            for item in &items {
+                if values_equal(interp, &item.car()?, &args[0]) {
                     return Ok(item.clone());
                 }
             }

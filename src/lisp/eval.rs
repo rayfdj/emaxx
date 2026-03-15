@@ -489,7 +489,10 @@ impl Interpreter {
         Interpreter {
             globals: Vec::new(),
             variable_aliases: Vec::new(),
-            special_variables: Vec::new(),
+            special_variables: vec![
+                "command-line-args-left".into(),
+                "command-switch-alist".into(),
+            ],
             symbol_properties: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,
@@ -2639,6 +2642,8 @@ impl Interpreter {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
             "auto-mode-alist" => Some(Value::Nil),
+            "command-switch-alist" => Some(Value::Nil),
+            "command-line-args-left" => Some(Value::Nil),
             "completion-ignored-extensions" => Some(Value::Nil),
             "custom-current-group-alist" => Some(Value::Nil),
             "defun-declarations-alist" => Some(Value::Nil),
@@ -5712,8 +5717,69 @@ fn unquote(value: &Value) -> Value {
     }
 }
 
+fn preloaded_command_line_1() -> Value {
+    Value::Lambda(
+        vec!["args-left".into()],
+        vec![Value::list([
+            Value::Symbol("let".into()),
+            Value::list([
+                Value::list([
+                    Value::Symbol("command-line-args-left".into()),
+                    Value::Symbol("args-left".into()),
+                ]),
+                Value::list([Value::Symbol("tem".into()), Value::Nil]),
+            ]),
+            Value::list([
+                Value::Symbol("while".into()),
+                Value::Symbol("command-line-args-left".into()),
+                Value::list([
+                    Value::Symbol("let".into()),
+                    Value::list([Value::list([
+                        Value::Symbol("argi".into()),
+                        Value::list([
+                            Value::Symbol("car".into()),
+                            Value::Symbol("command-line-args-left".into()),
+                        ]),
+                    ])]),
+                    Value::list([
+                        Value::Symbol("setq".into()),
+                        Value::Symbol("command-line-args-left".into()),
+                        Value::list([
+                            Value::Symbol("cdr".into()),
+                            Value::Symbol("command-line-args-left".into()),
+                        ]),
+                    ]),
+                    Value::list([
+                        Value::Symbol("when".into()),
+                        Value::list([
+                            Value::Symbol("setq".into()),
+                            Value::Symbol("tem".into()),
+                            Value::list([
+                                Value::Symbol("assoc".into()),
+                                Value::Symbol("argi".into()),
+                                Value::Symbol("command-switch-alist".into()),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("funcall".into()),
+                            Value::list([
+                                Value::Symbol("cdr".into()),
+                                Value::Symbol("tem".into()),
+                            ]),
+                            Value::Symbol("argi".into()),
+                        ]),
+                    ]),
+                ]),
+            ]),
+            Value::Nil,
+        ])],
+        Vec::new(),
+    )
+}
+
 fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
+        "command-line-1" => Some(preloaded_command_line_1()),
         "point-to-register" => Some(Value::Lambda(
             vec!["register".into(), "&optional".into(), "arg".into()],
             vec![
@@ -6542,6 +6608,14 @@ mod tests {
     }
 
     #[test]
+    fn assoc_matches_strings_bound_in_lexical_variables() {
+        assert_eq!(
+            eval_str("(let ((key \"--foo\") (alist (list (cons \"--foo\" 1)))) (cdr (assoc key alist)))"),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
     fn unibyte_string_sequences_return_byte_values() {
         assert_eq!(
             eval_str("(let ((s (unibyte-string 225 16))) (aref s 0))"),
@@ -7065,6 +7139,35 @@ mod tests {
                        (quit (car err))))"#
             ),
             Value::Symbol("quit".into())
+        );
+    }
+
+    #[test]
+    fn preloaded_command_line_1_processes_command_switch_alist() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let* ((foo-args ())
+                          (bar-args ())
+                          (command-switch-alist
+                           (list (cons "--foo"
+                                       (lambda (arg)
+                                         (push arg foo-args)
+                                         (pop command-line-args-left)))
+                                 (cons "--bar=value"
+                                       (lambda (arg)
+                                         (push arg bar-args))))))
+                     (command-line-1 '("--foo" "value" "--bar=value"))
+                     (list (equal foo-args '("--foo"))
+                           (equal bar-args '("--bar=value"))
+                           command-line-args-left))"#
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::Nil,
+            ])
         );
     }
 
