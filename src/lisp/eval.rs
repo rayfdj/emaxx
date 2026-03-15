@@ -611,7 +611,7 @@ impl Interpreter {
 
     pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
         let direct = PathBuf::from(target);
-        if direct.exists() {
+        if direct.is_file() {
             return Some(direct);
         }
 
@@ -622,12 +622,12 @@ impl Interpreter {
         };
         for root in &self.load_path {
             let candidate = root.join(target);
-            if candidate.exists() {
+            if candidate.is_file() {
                 return Some(candidate);
             }
             if let Some(with_el) = &with_el {
                 let candidate = root.join(with_el);
-                if candidate.exists() {
+                if candidate.is_file() {
                     return Some(candidate);
                 }
             }
@@ -1709,7 +1709,11 @@ impl Interpreter {
     }
 
     pub fn mark_special_variable(&mut self, name: &str) {
-        if !self.special_variables.iter().any(|existing| existing == name) {
+        if !self
+            .special_variables
+            .iter()
+            .any(|existing| existing == name)
+        {
             self.special_variables.push(name.to_string());
         }
     }
@@ -1955,9 +1959,13 @@ impl Interpreter {
     }
 
     pub fn current_backtrace_frame(&self) -> Option<(Option<String>, Vec<Value>, bool)> {
-        self.backtrace_frames
-            .last()
-            .map(|frame| (frame.function.clone(), frame.args.clone(), frame.debug_on_exit))
+        self.backtrace_frames.last().map(|frame| {
+            (
+                frame.function.clone(),
+                frame.args.clone(),
+                frame.debug_on_exit,
+            )
+        })
     }
 
     pub fn backtrace_frames_snapshot(&self) -> Vec<(Option<String>, Vec<Value>, bool)> {
@@ -2631,6 +2639,30 @@ impl Interpreter {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
             "custom-current-group-alist" => Some(Value::Nil),
+            "defun-declarations-alist" => Some(Value::Nil),
+            "macro-declarations-alist" => Some(Value::Nil),
+            "macroexpand-all-environment" => Some(Value::Nil),
+            "menu-bar-final-items" => Some(Value::Nil),
+            "mode-line-modes" => Some(Value::Nil),
+            "compilation-error-regexp-alist-alist" => Some(Value::Nil),
+            "compilation-error-regexp-alist" => Some(Value::Nil),
+            "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
+            "password-word-equivalents" => Some(Value::list([
+                Value::String("password".into()),
+                Value::String("passcode".into()),
+                Value::String("passphrase".into()),
+                Value::String("pass phrase".into()),
+                Value::String("pin".into()),
+                Value::String("decryption key".into()),
+                Value::String("encryption key".into()),
+            ])),
+            "password-colon-equivalents" => Some(Value::list([
+                Value::Integer(':' as i64),
+                Value::Integer(0xFF1A),
+                Value::Integer(0xFE55),
+                Value::Integer(0xFE13),
+                Value::Integer(0x17D6),
+            ])),
             "source-directory" => Some(Value::String(
                 std::env::var("EMACS_TEST_DIRECTORY")
                     .ok()
@@ -2880,6 +2912,7 @@ impl Interpreter {
                         "when" => return self.sf_when(&items, env),
                         "unless" => return self.sf_unless(&items, env),
                         "cond" => return self.sf_cond(&items, env),
+                        "pcase" => return self.sf_pcase(&items, env),
                         "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
@@ -2911,6 +2944,7 @@ impl Interpreter {
                             return self.sf_define_mode(&items);
                         }
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
+                        "define-inline" => return self.sf_define_inline(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
                         "cl-defstruct" => return self.sf_cl_defstruct(&items),
                         "defalias" => return self.sf_defalias(&items, env),
@@ -2955,6 +2989,7 @@ impl Interpreter {
                         "with-restriction" => return self.sf_with_restriction(&items, env),
                         "without-restriction" => return self.sf_without_restriction(&items, env),
                         "with-selected-window" => return self.sf_progn(&items[2..], env),
+                        "save-match-data" => return self.sf_save_match_data(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-current-buffer" => return self.sf_save_current_buffer(&items, env),
                         "save-restriction" => return self.sf_save_restriction(&items, env),
@@ -3067,7 +3102,16 @@ impl Interpreter {
                             }
                             return Ok(Value::Nil);
                         }
-                        "declare" | "declare-function" => return Ok(Value::Nil),
+                        "with-no-warnings" => return self.sf_progn(&items[1..], env),
+                        "declare"
+                        | "declare-function"
+                        | "cl-declaim"
+                        | "declaim"
+                        | "cl-deftype"
+                        | "def-edebug-elem-spec"
+                        | "def-edebug-spec" => {
+                            return Ok(Value::Nil);
+                        }
                         "eval-and-compile" | "eval-when-compile" => {
                             return self.sf_progn(&items[1..], env);
                         }
@@ -3137,6 +3181,18 @@ impl Interpreter {
         } else {
             func
         };
+        let func = if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
+            let Some(name) = original_name else {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("invalid-function".into()),
+                    func,
+                ])));
+            };
+            self.load_target(&file)?;
+            self.lookup_function(name, env)?
+        } else {
+            func
+        };
 
         match func {
             Value::BuiltinFunc(ref name) => match primitives::call(self, name, args, env) {
@@ -3195,10 +3251,7 @@ impl Interpreter {
                     env.insert(0, captured.clone());
                     captured_frames += 1;
                 }
-                self.push_backtrace_frame(
-                    original_name.map(str::to_string),
-                    args.to_vec(),
-                );
+                self.push_backtrace_frame(original_name.map(str::to_string), args.to_vec());
                 env.push(frame);
                 let result = self.sf_progn(function_executable_body(body), env);
                 env.pop();
@@ -3228,12 +3281,8 @@ impl Interpreter {
         let Some(test_form) = items.get(1) else {
             return Ok(Value::Nil);
         };
-        let tail_aliases = setcdr_tail_aliases(
-            self,
-            test_form,
-            &Value::list(items[1..].to_vec()),
-            env,
-        );
+        let tail_aliases =
+            setcdr_tail_aliases(self, test_form, &Value::list(items[1..].to_vec()), env);
         let saved_aliases = snapshot_tail_alias_values(self, &tail_aliases, env);
         let cond_result = self.eval(test_form, env);
         let tail_became_improper = tail_aliases_became_improper(self, &tail_aliases, env);
@@ -3243,7 +3292,9 @@ impl Interpreter {
             return Err(LispError::Void("if".into()));
         }
         if cond.is_truthy() {
-            items.get(2).map_or(Ok(Value::Nil), |then_form| self.eval(then_form, env))
+            items
+                .get(2)
+                .map_or(Ok(Value::Nil), |then_form| self.eval(then_form, env))
         } else {
             // else branches
             self.sf_progn(items.get(3..).unwrap_or(&[]), env)
@@ -3298,7 +3349,20 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
+    fn sf_pcase(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        self.sf_pcase_like(items, env, false)
+    }
+
     fn sf_pcase_exhaustive(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        self.sf_pcase_like(items, env, true)
+    }
+
+    fn sf_pcase_like(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+        exhaustive: bool,
+    ) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
         }
@@ -3308,24 +3372,21 @@ impl Interpreter {
             if clause_items.is_empty() {
                 continue;
             }
-            let pattern = match &clause_items[0] {
-                Value::Cons(_, _) => {
-                    let parts = clause_items[0].to_vec()?;
-                    if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
-                        parts.get(1).cloned().unwrap_or(Value::Nil)
-                    } else {
-                        clause_items[0].clone()
-                    }
-                }
-                other => other.clone(),
-            };
-            if pattern == value {
-                return self.sf_progn(&clause_items[1..], env);
+            let mut bindings = Vec::new();
+            if pcase_pattern_bindings(&clause_items[0], &value, &mut bindings)? {
+                env.push(bindings);
+                let result = self.sf_progn(&clause_items[1..], env);
+                env.pop();
+                return result;
             }
         }
-        Err(LispError::Signal(
-            "pcase-exhaustive: no matching clause".into(),
-        ))
+        if exhaustive {
+            Err(LispError::Signal(
+                "pcase-exhaustive: no matching clause".into(),
+            ))
+        } else {
+            Ok(Value::Nil)
+        }
     }
 
     fn sf_and(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -3792,15 +3853,12 @@ impl Interpreter {
         };
         let name = match struct_spec {
             Value::Symbol(name) => Some(name.clone()),
-            Value::Cons(_, _) => struct_spec
-                .to_vec()
-                .ok()
-                .and_then(|parts| {
-                    parts
-                        .first()
-                        .and_then(|value| value.as_symbol().ok())
-                        .map(str::to_string)
-                }),
+            Value::Cons(_, _) => struct_spec.to_vec().ok().and_then(|parts| {
+                parts
+                    .first()
+                    .and_then(|value| value.as_symbol().ok())
+                    .map(str::to_string)
+            }),
             _ => None,
         };
         Ok(name.map(Value::Symbol).unwrap_or(Value::Nil))
@@ -3913,6 +3971,20 @@ impl Interpreter {
         let lambda = Value::Lambda(params, body, env.clone());
         self.functions.push((name.clone(), lambda));
         Ok(Value::Symbol(name))
+    }
+
+    fn sf_define_inline(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::Signal(
+                "define-inline needs name, params, body".into(),
+            ));
+        }
+        let mut lowered = Vec::with_capacity(items.len());
+        lowered.push(Value::Symbol("defun".into()));
+        lowered.push(items[1].clone());
+        lowered.push(items[2].clone());
+        lowered.extend(items[3..].iter().map(lower_define_inline_form));
+        self.sf_defun(&lowered, env)
     }
 
     fn sf_lambda(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -4524,10 +4596,7 @@ impl Interpreter {
         for binding in bindings {
             let pair = binding.to_vec()?;
             if pair.len() != 2 {
-                return Err(LispError::Signal(format!(
-                    "Invalid VARIABLES: {}",
-                    binding
-                )));
+                return Err(LispError::Signal(format!("Invalid VARIABLES: {}", binding)));
             }
             let name = primitives::string_text(&self.eval(&pair[0], env)?)?;
             let value = self.eval(&pair[1], env)?;
@@ -4651,6 +4720,13 @@ impl Interpreter {
         let saved_pt = self.buffer.point();
         let result = self.sf_progn(&items[1..], env);
         self.buffer.goto_char(saved_pt);
+        result
+    }
+
+    fn sf_save_match_data(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        let saved = self.last_match_data.clone();
+        let result = self.sf_progn(&items[1..], env);
+        self.last_match_data = saved;
         result
     }
 
@@ -5274,7 +5350,9 @@ impl Interpreter {
         match self.eval(&items[1], env) {
             Err(e) => {
                 if let Some(expected_types) = should_error_types(items)
-                    && !expected_types.iter().any(|expected| expected == &e.condition_type())
+                    && !expected_types
+                        .iter()
+                        .any(|expected| expected == &e.condition_type())
                 {
                     return Err(LispError::ErtTestFailed(format!(
                         "Test failed: expected error type {} but got {}",
@@ -5438,7 +5516,10 @@ fn should_error_types(items: &[Value]) -> Option<Vec<String>> {
             Some(":type") => {
                 let raw = unquote(&items[cursor + 1]);
                 if let Ok(values) = raw.to_vec() {
-                    let names = values.into_iter().map(|value| selector_atom(&value)).collect();
+                    let names = values
+                        .into_iter()
+                        .map(|value| selector_atom(&value))
+                        .collect();
                     return Some(names);
                 }
                 return Some(vec![selector_atom(&raw)]);
@@ -5674,15 +5755,16 @@ fn is_function_interactive_form(form: &Value) -> bool {
 }
 
 fn is_vector_literal(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal")
-    })
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal"),
+    )
 }
 
 fn is_lambda_form(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda")
-    })
+    value
+        .to_vec()
+        .ok()
+        .is_some_and(|items| matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda"))
 }
 
 fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
@@ -5742,7 +5824,88 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
     Ok(())
 }
 
-fn setcdr_tail_aliases(interp: &Interpreter, value: &Value, tail: &Value, env: &Env) -> Vec<String> {
+fn lower_define_inline_form(value: &Value) -> Value {
+    let Ok(items) = value.to_vec() else {
+        return value.clone();
+    };
+    let Some(Value::Symbol(head)) = items.first() else {
+        return value.clone();
+    };
+    match head.as_str() {
+        "inline-quote" => items
+            .get(1)
+            .map(lower_inline_quote_form)
+            .unwrap_or(Value::Nil),
+        "inline-letevals" => lower_inline_progn(&items[2..]),
+        "inline-const-val" => items
+            .get(1)
+            .map(lower_define_inline_form)
+            .unwrap_or(Value::Nil),
+        "inline-const-p" => Value::T,
+        "inline-error" => {
+            let mut lowered = vec![Value::Symbol("error".into())];
+            lowered.extend(items[1..].iter().map(lower_define_inline_form));
+            Value::list(lowered)
+        }
+        _ => Value::list(
+            items
+                .into_iter()
+                .map(|item| lower_define_inline_form(&item)),
+        ),
+    }
+}
+
+fn lower_inline_quote_form(value: &Value) -> Value {
+    let Ok(items) = value.to_vec() else {
+        return value.clone();
+    };
+    let Some(Value::Symbol(head)) = items.first() else {
+        return value.clone();
+    };
+    match head.as_str() {
+        "comma" => items
+            .get(1)
+            .map(lower_define_inline_form)
+            .unwrap_or(Value::Nil),
+        "quote" if items.len() == 2 => match items[1].to_vec() {
+            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if name == "comma") => {
+                quoted
+                    .get(1)
+                    .map(lower_define_inline_form)
+                    .unwrap_or(Value::Nil)
+            }
+            _ => Value::list([Value::Symbol("quote".into()), items[1].clone()]),
+        },
+        "function" | "function-quote" if items.len() == 2 => match items[1].to_vec() {
+            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if name == "comma") => {
+                quoted
+                    .get(1)
+                    .map(lower_define_inline_form)
+                    .unwrap_or(Value::Nil)
+            }
+            _ => Value::list([Value::Symbol(head.clone()), items[1].clone()]),
+        },
+        _ => Value::list(items.into_iter().map(|item| lower_inline_quote_form(&item))),
+    }
+}
+
+fn lower_inline_progn(forms: &[Value]) -> Value {
+    match forms {
+        [] => Value::Nil,
+        [single] => lower_define_inline_form(single),
+        many => Value::list(
+            std::iter::once(Value::Symbol("progn".into()))
+                .chain(many.iter().map(lower_define_inline_form)),
+        ),
+    }
+}
+
+fn setcdr_tail_aliases(
+    interp: &Interpreter,
+    value: &Value,
+    tail: &Value,
+    env: &Env,
+) -> Vec<String> {
     let mut aliases = Vec::new();
     collect_setcdr_tail_aliases(interp, value, tail, env, &mut aliases);
     aliases
@@ -5785,15 +5948,15 @@ fn snapshot_tail_alias_values(
 ) -> Vec<(String, Value)> {
     aliases
         .iter()
-        .filter_map(|name| interp.lookup_var(name, env).map(|value| (name.clone(), value)))
+        .filter_map(|name| {
+            interp
+                .lookup_var(name, env)
+                .map(|value| (name.clone(), value))
+        })
         .collect()
 }
 
-fn restore_tail_alias_values(
-    interp: &mut Interpreter,
-    aliases: &[(String, Value)],
-    env: &mut Env,
-) {
+fn restore_tail_alias_values(interp: &mut Interpreter, aliases: &[(String, Value)], env: &mut Env) {
     for (name, value) in aliases {
         interp.set_variable(name, value.clone(), env);
     }
@@ -5804,9 +5967,22 @@ fn pcase_pattern_bindings(
     value: &Value,
     bindings: &mut Vec<(String, Value)>,
 ) -> Result<bool, LispError> {
+    if matches!(pattern, Value::Symbol(name) if name == "_") {
+        return Ok(true);
+    }
+    if let Value::Symbol(name) = pattern
+        && name != "nil"
+        && name != "t"
+    {
+        bindings.push((name.clone(), value.clone()));
+        return Ok(true);
+    }
     if let Ok(parts) = pattern.to_vec() {
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
             return pcase_pattern_bindings(parts.get(1).unwrap_or(&Value::Nil), value, bindings);
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
+            return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
         }
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
             && let Some(Value::Symbol(name)) = parts.get(1)
@@ -6140,6 +6316,30 @@ mod tests {
         assert_eq!(eval_str(r#"(string= "abc" "abc")"#), Value::T);
         assert_eq!(eval_str(r#"(string= "abc" "def")"#), Value::Nil);
         assert_eq!(eval_str(r#"(length "hello")"#), Value::Integer(5));
+        assert_string_value(eval_str(r#"(reverse "stressed")"#), "desserts");
+        assert_string_value(eval_str(r#"(nreverse "drawer")"#), "reward");
+        assert_string_value(eval_str(r#"(substring-no-properties "hello" 1 4)"#), "ell");
+        assert_string_value(eval_str(r#"(substring "hello" 0 -1)"#), "hell");
+        assert_string_value(
+            eval_str(r#"(replace-regexp-in-string "\\([a-z]+\\)" "<\\1>" "abc 123")"#),
+            "<abc> 123",
+        );
+        assert_string_value(
+            eval_str(r#"(replace-regexp-in-string "[0-9]+" "x" "a1b22" t t)"#),
+            "axbx",
+        );
+        assert_eq!(
+            eval_str(r#"(equal (mapcar #'reverse '("abc" "abd")) '("cba" "dba"))"#),
+            Value::T
+        );
+        assert_eq!(
+            eval_str(r#"(compiled-function-p (lambda (x) x))"#),
+            Value::Nil
+        );
+        assert_eq!(
+            eval_str(r#"(equal (sort '(3 1 2) #'< :in-place t) '(1 2 3))"#),
+            Value::T
+        );
     }
 
     #[test]
@@ -6236,7 +6436,10 @@ mod tests {
     fn defcustom_loads_like_defvar() {
         let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str_with(&mut interp, "(defcustom treesit-max-buffer-size 42 \"doc\")"),
+            eval_str_with(
+                &mut interp,
+                "(defcustom treesit-max-buffer-size 42 \"doc\")"
+            ),
             Value::Nil
         );
         assert_eq!(
@@ -6406,6 +6609,116 @@ mod tests {
     }
 
     #[test]
+    fn autoload_registers_a_lazy_function_stub() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new("(autoload 'sample-autoload \"sample-autoload\")")
+            .read_all()
+            .unwrap();
+        let result = interp.eval(&forms[0], &mut env).unwrap();
+        assert_eq!(result, Value::Symbol("sample-autoload".into()));
+        assert_eq!(
+            interp.lookup_function("sample-autoload", &env).unwrap(),
+            Value::list([
+                Value::Symbol("autoload".into()),
+                Value::String("sample-autoload".into()),
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn autoloaded_functions_load_on_funcall() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-autoload-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample-autoload.el");
+        std::fs::write(&target, "(defun sample-autoload () 42)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        eval_str_with(
+            &mut interp,
+            "(autoload 'sample-autoload \"sample-autoload\")",
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "(funcall 'sample-autoload)"),
+            Value::Integer(42)
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn load_target_prefers_files_over_same_named_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-load-target-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("sample")).unwrap();
+        std::fs::write(root.join("sample.el"), "(provide 'sample)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        let resolved = interp.load_target("sample").unwrap();
+        assert_eq!(resolved, root.join("sample.el"));
+
+        std::fs::remove_file(root.join("sample.el")).unwrap();
+        std::fs::remove_dir(root.join("sample")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn define_inline_lowers_inline_wrappers_into_a_runtime_function() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (define-inline sample-inline (x y)
+              (inline-letevals (x y)
+                (inline-quote (list ,x ',y))))
+            "#,
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "(let ((sym 'ok)) (sample-inline 1 sym))"),
+            Value::list([Value::Integer(1), Value::Symbol("ok".into())])
+        );
+    }
+
+    #[test]
+    fn keymap_placeholders_cover_load_time_setup_calls() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap "demo")))
+                  (list (keymapp map)
+                        (define-key map "a" 'foo)
+                        (lookup-key map "a")
+                        (keymap-parent map)))
+                "#,
+            ),
+            Value::list([
+                Value::T,
+                Value::Symbol("foo".into()),
+                Value::Nil,
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
     fn search_forward_missing_pattern_signals_search_failed() {
         let mut interp = Interpreter::new();
         let mut env: Env = Vec::new();
@@ -6454,6 +6767,17 @@ mod tests {
                 Value::list([Value::Integer(1), Value::Integer(2)]),
                 Value::list([Value::Integer(3), Value::Integer(4)]),
             ])
+        );
+    }
+
+    #[test]
+    fn pcase_matches_quoted_symbols_and_wildcards() {
+        assert_eq!(
+            eval_str(
+                "(list (pcase 'gnu/linux ('gnu/linux 1) (_ 2)) \
+                       (pcase 'other ('gnu/linux 1) (_ 2)))"
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2)])
         );
     }
 
@@ -6571,6 +6895,14 @@ mod tests {
     }
 
     #[test]
+    fn fset_can_define_function_aliases() {
+        assert_eq!(
+            eval_str("(progn (fset 'sample-head #'car) (sample-head '(1 2 3)))"),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
     fn function_quote_allows_forward_symbol_references() {
         assert_eq!(
             eval_str(
@@ -6653,10 +6985,7 @@ mod tests {
                    (setf (alist-get 'b alist nil 'remove) nil)
                    alist)"
             ),
-            Value::list([Value::cons(
-                Value::Symbol("a".into()),
-                Value::Integer(1),
-            )])
+            Value::list([Value::cons(Value::Symbol("a".into()), Value::Integer(1),)])
         );
     }
 
@@ -6717,7 +7046,7 @@ mod tests {
                    (call-interactively \
                      (lambda (a b) \
                        (interactive \"ka\0a: \nkb: \") \
-                       (list a b))))"
+                       (list a b))))",
             ),
             &["a", "b"],
         );
@@ -6808,7 +7137,7 @@ mod tests {
                 r#"(let ((result nil))
                      (dolist (pair `((1 . "a") (2 . "b")))
                        (setq result (concat (cdr pair) (or result ""))))
-                     result)"#
+                     result)"#,
             ),
             "ba",
         );
@@ -7297,7 +7626,9 @@ mod tests {
             Value::list([Value::String("abc".into()), Value::String("abba".into())])
         );
         assert_eq!(
-            eval_str(r#"(null (cl-set-exclusive-or '("abc" "abba") '("abba" "abc") :test #'equal))"#),
+            eval_str(
+                r#"(null (cl-set-exclusive-or '("abc" "abba") '("abba" "abc") :test #'equal))"#
+            ),
             Value::T
         );
         assert_eq!(
@@ -7318,9 +7649,7 @@ mod tests {
             Value::String("bAr".into())
         );
         assert_eq!(
-            eval_str(
-                r#"(let ((completion-ignore-case t)) (try-completion "baz" '("baz" "bAz")))"#
-            ),
+            eval_str(r#"(let ((completion-ignore-case t)) (try-completion "baz" '("baz" "bAz")))"#),
             Value::String("baz".into())
         );
         assert_eq!(

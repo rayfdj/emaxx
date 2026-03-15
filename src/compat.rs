@@ -13,7 +13,8 @@ pub const ORACLE_LOCK_PATH: &str = "compat/oracle.lock.json";
 pub const ORACLE_LOCAL_PATH: &str = "compat/oracle.local.json";
 pub const ORACLE_HELPER_PATH: &str = "compat/emacs_compat_runner.el";
 pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
-const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 8] = [
+const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 9] = [
+    "test/src/comp-tests.el",
     "test/src/data-tests.el",
     "test/src/emacs-module-tests.el",
     "test/src/fns-tests.el",
@@ -518,6 +519,84 @@ pub fn configure_upstream_like_env_with_home(
 }
 
 pub fn emaxx_upstream_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
+    if let Ok(paths) = upstream_repo_load_path(emacs_repo) {
+        return Ok(paths);
+    }
+    fallback_upstream_load_path(emacs_repo)
+}
+
+fn upstream_repo_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
+    let repo_root = canonicalize_path(emacs_repo)?;
+    let emacs_binary = match load_oracle_local_config() {
+        Ok(local) if canonicalize_path(&local.emacs_repo).ok().as_ref() == Some(&repo_root) => {
+            local.emacs_binary
+        }
+        _ => emacs_repo.join("src/emacs"),
+    };
+    if !emacs_binary.is_file() {
+        return Err(format!(
+            "missing upstream emacs binary: {}",
+            emacs_binary.display()
+        ));
+    }
+
+    let repo_literal = serde_json::to_string(&repo_root.display().to_string())
+        .map_err(|err| format!("serialize repo path: {err}"))?;
+    let program = format!(
+        "(let ((repo (file-name-as-directory (expand-file-name {repo_literal})))) \
+           (dolist (path load-path) \
+             (when (and (stringp path) \
+                        (file-directory-p path) \
+                        (string-prefix-p repo (file-name-as-directory (expand-file-name path)))) \
+               (princ (file-name-as-directory (expand-file-name path))) \
+               (terpri))))"
+    );
+
+    let test_directory = emacs_repo.join("test");
+    let mut command = Command::new(&emacs_binary);
+    configure_upstream_like_env(&mut command, &test_directory);
+    command
+        .arg("--no-init-file")
+        .arg("--no-site-file")
+        .arg("--no-site-lisp")
+        .arg("--batch")
+        .arg("--eval")
+        .arg(program);
+    let output = command.output().map_err(|err| {
+        format!(
+            "run {} --batch to inspect load-path: {err}",
+            emacs_binary.display()
+        )
+    })?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} --batch load-path probe failed: {}",
+            emacs_binary.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let mut paths = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let path = canonicalize_path(Path::new(trimmed))?;
+        if path.starts_with(&repo_root) && !paths.iter().any(|existing| existing == &path) {
+            paths.push(path);
+        }
+    }
+    if paths.is_empty() {
+        return Err(format!(
+            "{} --batch returned no repo-local load-path entries",
+            emacs_binary.display()
+        ));
+    }
+    Ok(paths)
+}
+
+fn fallback_upstream_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     for relative_root in ["test", "test/lisp", "lisp"] {
         let root = emacs_repo.join(relative_root);

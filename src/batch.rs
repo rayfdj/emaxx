@@ -189,7 +189,7 @@ fn parse_perf_request(expressions: &[String]) -> Result<Option<PerfRequest>, Str
 
 fn resolve_load_target(target: &str, load_path: &[PathBuf]) -> Result<PathBuf, String> {
     let direct = PathBuf::from(target);
-    if direct.exists() {
+    if direct.is_file() {
         return compat::canonicalize_path(&direct);
     }
 
@@ -200,12 +200,12 @@ fn resolve_load_target(target: &str, load_path: &[PathBuf]) -> Result<PathBuf, S
     };
     for root in load_path {
         let candidate = root.join(target);
-        if candidate.exists() {
+        if candidate.is_file() {
             return compat::canonicalize_path(&candidate);
         }
         if let Some(with_el) = &with_el {
             let candidate = root.join(with_el);
-            if candidate.exists() {
+            if candidate.is_file() {
                 return compat::canonicalize_path(&candidate);
             }
         }

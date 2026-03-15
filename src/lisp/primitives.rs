@@ -16,9 +16,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::fs::symlink;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -157,7 +157,10 @@ pub(crate) fn compat_lcms2_available() -> bool {
 }
 
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
-    matches!(name, "user-error" | "byte-compile" | "byte-compile-check-lambda-list")
+    matches!(
+        name,
+        "user-error" | "byte-compile" | "byte-compile-check-lambda-list"
+    )
 }
 
 const RAW_BYTE8_BASE: u32 = 0x3FFF00;
@@ -619,7 +622,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "floatp"
             | "stringp"
             | "symbolp"
+            | "keywordp"
             | "functionp"
+            | "compiled-function-p"
             | "closurep"
             | "commandp"
             | "boundp"
@@ -631,6 +636,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "listp"
             | "bufferp"
             | "buffer-live-p"
+            | "keymapp"
             | "zerop"
             | "natnump"
             | "atom"
@@ -643,6 +649,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "cons"
             | "car"
             | "cdr"
+            | "car-safe"
+            | "cdr-safe"
             | "list"
             | "append"
             | "nth"
@@ -668,6 +676,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "funcall"
             | "funcall-interactively"
             | "call-interactively"
+            | "fset"
             | "eval"
             | "read-event"
             | "read-char"
@@ -683,6 +692,9 @@ pub fn is_builtin(name: &str) -> bool {
             // Allocation
             | "make-string"
             | "make-vector"
+            | "make-keymap"
+            | "make-sparse-keymap"
+            | "make-mode-line-mouse-map"
             | "record"
             | "make-record"
             | "make-finalizer"
@@ -690,6 +702,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "concat"
             | "string"
             | "substring"
+            | "substring-no-properties"
             | "string-to-multibyte"
             | "string-as-unibyte"
             | "unibyte-string"
@@ -704,6 +717,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-to-char"
             | "string-to-list"
             | "string-replace"
+            | "replace-regexp-in-string"
             | "string-bytes"
             | "byte-to-string"
             | "multibyte-string-p"
@@ -922,6 +936,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "ert-fail"
             | "load"
             | "file-directory-p"
+            | "file-accessible-directory-p"
             | "file-readable-p"
             | "file-exists-p"
             | "file-executable-p"
@@ -1071,8 +1086,15 @@ pub fn is_builtin(name: &str) -> bool {
             | "define-obsolete-function-alias"
             | "define-obsolete-variable-alias"
             | "macroexp-warn-and-return"
+            | "macroexp-quote"
+            | "macroexp-progn"
+            | "macroexp-compiling-p"
+            | "macroexp--dynamic-variable-p"
+            | "macroexpand-1"
+            | "macroexpand-all"
             | "intern"
             | "intern-soft"
+            | "autoload"
             | "autoloadp"
             | "documentation"
             | "documentation-property"
@@ -1103,6 +1125,18 @@ pub fn is_builtin(name: &str) -> bool {
             | "recent-auto-save-p"
             | "set-buffer-auto-saved"
             | "clear-buffer-auto-save-failure"
+            | "define-key"
+            | "define-key-after"
+            | "lookup-key"
+            | "keymap-parent"
+            | "set-keymap-parent"
+            | "use-local-map"
+            | "current-global-map"
+            | "global-set-key"
+            | "local-set-key"
+            | "global-unset-key"
+            | "local-unset-key"
+            | "define-button-type"
             | "next-read-file-uses-dialog-p"
             | "auto-save-mode"
             | "do-auto-save"
@@ -1174,6 +1208,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "json-serialize"
             | "json-insert"
             | "garbage-collect"
+            | "num-processors"
             | "byte-compile"
             | "byte-compile-check-lambda-list"
             | "funcall-with-delayed-message"
@@ -1828,14 +1863,30 @@ pub fn call(
                 Value::Nil
             })
         }
+        "keywordp" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(&args[0], Value::Symbol(symbol) if symbol.starts_with(':')) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
         "functionp" => {
             need_args(name, args, 1)?;
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
-            Ok(if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "compiled-function-p" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
         }
         "closurep" => {
             need_args(name, args, 1)?;
@@ -1845,14 +1896,24 @@ pub fn call(
                 Value::Nil
             })
         }
-        "commandp" => {
+        "keymapp" => {
             need_args(name, args, 1)?;
-            let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
-            Ok(if interactive_spec_form(&value).is_some() {
+            Ok(if is_keymap_placeholder(&args[0]) {
                 Value::T
             } else {
                 Value::Nil
             })
+        }
+        "commandp" => {
+            need_args(name, args, 1)?;
+            let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
+            Ok(
+                if autoload_command_p(&value) || interactive_spec_form(&value).is_some() {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "boundp" => {
             need_args(name, args, 1)?;
@@ -2025,6 +2086,20 @@ pub fn call(
             need_args(name, args, 1)?;
             args[0].cdr()
         }
+        "car-safe" => {
+            need_args(name, args, 1)?;
+            Ok(match &args[0] {
+                Value::Cons(car, _) => *car.clone(),
+                _ => Value::Nil,
+            })
+        }
+        "cdr-safe" => {
+            need_args(name, args, 1)?;
+            Ok(match &args[0] {
+                Value::Cons(_, cdr) => *cdr.clone(),
+                _ => Value::Nil,
+            })
+        }
         "identity" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
@@ -2119,9 +2194,13 @@ pub fn call(
         }
         "reverse" => {
             need_args(name, args, 1)?;
-            let mut items = args[0].to_vec()?;
-            items.reverse();
-            Ok(Value::list(items))
+            if string_like(&args[0]).is_some() {
+                reverse_string_like_value(&args[0])
+            } else {
+                let mut items = args[0].to_vec()?;
+                items.reverse();
+                Ok(Value::list(items))
+            }
         }
         "copy-tree" => {
             need_args(name, args, 1)?;
@@ -2404,19 +2483,33 @@ pub fn call(
             let func = &args[0];
             let last = &args[args.len() - 1];
             let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
-            all_args.extend(last.to_vec()?);
-            interp.call_function_value(resolve_callable(interp, func, env)?, None, &all_args, env)
+            if let Some(string) = string_like(last) {
+                all_args.extend(string.text.chars().map(|ch| Value::Integer(ch as i64)));
+            } else {
+                all_args.extend(vector_items(last)?);
+            }
+            let resolved = resolve_callable(interp, func, env)?;
+            let original_name = func.as_symbol().ok();
+            interp.call_function_value(resolved, original_name, &all_args, env)
         }
         "funcall" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("funcall".into(), 0));
             }
-            interp.call_function_value(
-                resolve_callable(interp, &args[0], env)?,
-                None,
-                &args[1..],
-                env,
-            )
+            let resolved = resolve_callable(interp, &args[0], env)?;
+            let original_name = args[0].as_symbol().ok();
+            interp.call_function_value(resolved, original_name, &args[1..], env)
+        }
+        "fset" => {
+            need_args(name, args, 2)?;
+            let symbol = args[0].as_symbol()?;
+            if args[1].is_nil() {
+                interp.set_function_binding(symbol, None);
+                Ok(Value::Nil)
+            } else {
+                interp.set_function_binding(symbol, Some(args[1].clone()));
+                Ok(args[1].clone())
+            }
         }
         "funcall-interactively" => {
             if args.is_empty() {
@@ -2482,6 +2575,21 @@ pub fn call(
             let mut result = vec![Value::symbol("vector")];
             result.extend(items);
             Ok(Value::list(result))
+        }
+        "make-keymap" | "make-sparse-keymap" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(keymap_placeholder(
+                args.first()
+                    .and_then(string_like)
+                    .map(|string| string.text)
+                    .as_deref(),
+            ))
+        }
+        "make-mode-line-mouse-map" => {
+            need_args(name, args, 2)?;
+            Ok(keymap_placeholder(Some("mode-line-mouse-map")))
         }
         "record" => {
             need_args(name, args, 1)?;
@@ -2583,30 +2691,22 @@ pub fn call(
                     .collect::<Vec<_>>(),
             ))
         }
-        "substring" => {
+        "substring" | "substring-no-properties" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs("substring".into(), args.len()));
             }
             let string = string_like(&args[0])
                 .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-            let s = string.text;
-            let chars: Vec<char> = s.chars().collect();
-            let from = if args.len() > 1 {
-                args[1].as_integer()? as usize
+            let chars: Vec<char> = string.text.chars().collect();
+            let len = chars.len() as i64;
+            let from = normalize_string_index(args.get(1), 0, len)? as usize;
+            let to = normalize_string_index(args.get(2), len, len)? as usize;
+            let props = if name == "substring-no-properties" {
+                Vec::new()
             } else {
-                0
+                slice_string_props(&string.props, from, to)
             };
-            let to = if args.len() > 2 {
-                args[2].as_integer()? as usize
-            } else {
-                chars.len()
-            };
-            let to = to.min(chars.len());
-            let from = from.min(to);
-            Ok(string_like_value(
-                chars[from..to].iter().collect(),
-                slice_string_props(&string.props, from, to),
-            ))
+            Ok(string_like_value(chars[from..to].iter().collect(), props))
         }
         "string-to-multibyte" => {
             need_args(name, args, 1)?;
@@ -2630,8 +2730,7 @@ pub fn call(
                 .iter()
                 .map(|value| {
                     let byte = value.as_integer()?;
-                    u8::try_from(byte)
-                        .map_err(|_| LispError::Signal("Invalid byte".into()))
+                    u8::try_from(byte).map_err(|_| LispError::Signal("Invalid byte".into()))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(bytes_to_unibyte_value(&bytes))
@@ -2895,6 +2994,81 @@ pub fn call(
             let to = string_text(&args[1])?;
             let input = string_text(&args[2])?;
             Ok(Value::String(input.replace(&from, &to)))
+        }
+        "replace-regexp-in-string" => {
+            if args.len() < 3 || args.len() > 7 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let pattern = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let replacement = string_like(&args[1])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
+            let source = string_like(&args[2])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[2].type_name()))?;
+            let literal = args.get(4).is_some_and(Value::is_truthy);
+            let subexp = args
+                .get(5)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0)
+                .max(0) as usize;
+            let source_len = source.text.chars().count() as i64;
+            let start = normalize_string_index(args.get(6), 0, source_len)? as usize;
+            validate_elisp_regex(&pattern.text)?;
+            let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+            let mut result = source.text.chars().take(start).collect::<String>();
+            let mut search_pos = start;
+            let mut tail = source.text.chars().skip(start).collect::<String>();
+
+            while let Some(captures) = regex
+                .captures(&tail)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+            {
+                let Some(full_match) = captures.get(0) else {
+                    break;
+                };
+                let full_start = search_pos + tail[..full_match.start()].chars().count();
+                let full_end = search_pos + tail[..full_match.end()].chars().count();
+                let match_data = (0..captures.len())
+                    .map(|index| {
+                        captures.get(index).map(|matched| {
+                            (
+                                search_pos + tail[..matched.start()].chars().count(),
+                                search_pos + tail[..matched.end()].chars().count(),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let (replace_start, replace_end) = match_data
+                    .get(subexp)
+                    .and_then(|entry| *entry)
+                    .or_else(|| match_data.first().and_then(|entry| *entry))
+                    .ok_or_else(|| LispError::Signal("No previous search".into()))?;
+
+                result.push_str(&slice_string_chars(&source.text, search_pos, replace_start));
+                result.push_str(&expand_replace_match_text(
+                    &replacement.text,
+                    &match_data,
+                    literal,
+                    &source.text,
+                )?);
+                result.push_str(&slice_string_chars(&source.text, replace_end, full_end));
+
+                if full_start == full_end {
+                    if let Some(ch) = tail.chars().next() {
+                        result.push(ch);
+                        search_pos += 1;
+                        tail = tail.chars().skip(1).collect();
+                        continue;
+                    }
+                    break;
+                }
+
+                search_pos = full_end;
+                tail = source.text.chars().skip(search_pos).collect();
+            }
+
+            result.push_str(&tail);
+            Ok(Value::String(result))
         }
         "string-trim" => {
             need_args(name, args, 1)?;
@@ -4617,7 +4791,9 @@ pub fn call(
             match code {
                 0..=0x7F => Ok(Value::Integer(code)),
                 x if x == 'あ' as i64 => Ok(Value::Integer(0x82A0)),
-                _ => Err(LispError::Signal("Character cannot be encoded in Shift_JIS".into())),
+                _ => Err(LispError::Signal(
+                    "Character cannot be encoded in Shift_JIS".into(),
+                )),
             }
         }
         "decode-big5-char" => {
@@ -4633,7 +4809,9 @@ pub fn call(
             let code = args[0].as_integer()?;
             match code {
                 0..=0x7F => Ok(Value::Integer(code)),
-                _ => Err(LispError::Signal("Character cannot be encoded in Big5".into())),
+                _ => Err(LispError::Signal(
+                    "Character cannot be encoded in Big5".into(),
+                )),
             }
         }
         "terminal-coding-system" => Ok(interp
@@ -4891,15 +5069,21 @@ pub fn call(
             let _loaded = interp.load_target(&target)?;
             Ok(Value::T)
         }
-        "file-directory-p" => {
+        "file-directory-p" | "file-accessible-directory-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
             validate_file_name(&path)?;
-            Ok(if fs::metadata(path).map(|metadata| metadata.is_dir()).unwrap_or(false) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if fs::metadata(&path)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+                    && (name == "file-directory-p" || file_readable_p(&path))
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "file-readable-p" => {
             need_args(name, args, 1)?;
@@ -5013,12 +5197,8 @@ pub fn call(
             }
             write_file_value(interp, args, env)
         }
-        "insert-file-contents" => {
-            insert_file_contents(interp, env, args, false)
-        }
-        "insert-file-contents-literally" => {
-            insert_file_contents(interp, env, args, true)
-        }
+        "insert-file-contents" => insert_file_contents(interp, env, args, false),
+        "insert-file-contents-literally" => insert_file_contents(interp, env, args, true),
         "file-symlink-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -5782,7 +5962,9 @@ pub fn call(
             }
             let symbol_name = string_text(&args[0])?;
             match args.get(1) {
-                Some(obarray) if !obarray.is_nil() => intern_in_obarray(interp, obarray, &symbol_name),
+                Some(obarray) if !obarray.is_nil() => {
+                    intern_in_obarray(interp, obarray, &symbol_name)
+                }
                 _ => Ok(Value::Symbol(symbol_name)),
             }
         }
@@ -5802,6 +5984,27 @@ pub fn call(
             need_args(name, args, 1)?;
             let s = args[0].as_string()?;
             Ok(Value::Symbol(s.to_string()))
+        }
+        "autoload" => {
+            if args.len() < 2 || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let function = args[0].as_symbol()?.to_string();
+            let file = string_text(&args[1])?;
+            let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
+            let interactive = args.get(3).cloned().unwrap_or(Value::Nil);
+            let kind = args.get(4).cloned().unwrap_or(Value::Nil);
+            interp.push_function_binding(
+                &function,
+                Value::list([
+                    Value::Symbol("autoload".into()),
+                    Value::String(file),
+                    docstring,
+                    interactive,
+                    kind,
+                ]),
+            );
+            Ok(Value::Symbol(function))
         }
         "set" => {
             need_args(name, args, 2)?;
@@ -5831,18 +6034,20 @@ pub fn call(
         }
         "interactive-form" => {
             need_args(name, args, 1)?;
-            let value = resolve_callable(interp, &args[0], env)?;
+            let mut value = resolve_callable(interp, &args[0], env)?;
+            if let (Some(symbol), Some((file, _, _))) =
+                (args[0].as_symbol().ok(), autoload_parts(&value))
+            {
+                interp.load_target(&file)?;
+                value = interp.lookup_function(symbol, env)?;
+            }
             Ok(interactive_spec_form(&value)
                 .map(|spec| Value::list([Value::Symbol("interactive".into()), spec]))
                 .unwrap_or(Value::Nil))
         }
         "autoloadp" => {
             need_args(name, args, 1)?;
-            let autoload = args[0]
-                .to_vec()
-                .ok()
-                .and_then(|items| items.first().cloned())
-                .is_some_and(|item| matches!(item, Value::Symbol(name) if name == "autoload"));
+            let autoload = autoload_parts(&args[0]).is_some();
             Ok(if autoload { Value::T } else { Value::Nil })
         }
         "documentation" => {
@@ -6008,6 +6213,38 @@ pub fn call(
             let _ = get_or_create_buffer(interp, "*Help*");
             Ok(Value::Nil)
         }
+        "macroexp-quote" => {
+            need_args(name, args, 1)?;
+            Ok(match &args[0] {
+                Value::Cons(_, _) | Value::Symbol(_) => {
+                    Value::list([Value::Symbol("quote".into()), args[0].clone()])
+                }
+                other => other.clone(),
+            })
+        }
+        "macroexp-progn" => {
+            need_args(name, args, 1)?;
+            let forms = args[0].to_vec().unwrap_or_default();
+            Ok(match forms.as_slice() {
+                [] => Value::Nil,
+                [single] => single.clone(),
+                many => Value::list(
+                    std::iter::once(Value::Symbol("progn".into())).chain(many.iter().cloned()),
+                ),
+            })
+        }
+        "macroexp-compiling-p" | "macroexp--dynamic-variable-p" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(Value::Nil)
+        }
+        "macroexpand-1" | "macroexpand-all" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[0].clone())
+        }
         "run-with-timer" => {
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -6040,10 +6277,12 @@ pub fn call(
             need_args(name, args, 2)?;
             let hook_name = args[0].as_symbol()?.to_string();
             let function = args[1].clone();
-            let append = args
+            let append = args.get(2).is_some_and(|value| {
+                value.is_truthy() && !matches!(value, Value::Symbol(symbol) if symbol == ":local")
+            });
+            let local = args
                 .get(2)
-                .is_some_and(|value| value.is_truthy() && !matches!(value, Value::Symbol(symbol) if symbol == ":local"));
-            let local = args.get(2).is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
+                .is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
                 || args.get(3).is_some_and(|value| value.is_truthy());
             let mut hooks = if local {
                 interp
@@ -6083,7 +6322,8 @@ pub fn call(
             for hook in hook_values {
                 let mut wrapper_args = vec![hook];
                 wrapper_args.extend_from_slice(&args[2..]);
-                let value = interp.call_function_value(wrapper.clone(), None, &wrapper_args, env)?;
+                let value =
+                    interp.call_function_value(wrapper.clone(), None, &wrapper_args, env)?;
                 if value.is_truthy() {
                     return Ok(value);
                 }
@@ -6098,7 +6338,9 @@ pub fn call(
             need_args(name, args, 2)?;
             let hook_name = args[0].as_symbol()?.to_string();
             let function = args[1].clone();
-            let local = args.get(2).is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
+            let local = args
+                .get(2)
+                .is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
                 || args.get(3).is_some_and(|value| value.is_truthy());
             let mut hooks = if local {
                 interp
@@ -6118,17 +6360,64 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "define-key" | "define-key-after" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[2].clone())
+        }
+        "lookup-key" => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(Value::Nil)
+        }
+        "keymap-parent" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "set-keymap-parent" => {
+            need_args(name, args, 2)?;
+            Ok(Value::Nil)
+        }
+        "use-local-map" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "current-global-map" => {
+            need_args(name, args, 0)?;
+            Ok(keymap_placeholder(Some("global-map")))
+        }
+        "global-set-key" | "local-set-key" => {
+            need_args(name, args, 2)?;
+            Ok(args[1].clone())
+        }
+        "global-unset-key" | "local-unset-key" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "define-button-type" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
+        }
         "symbol-function" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(match interp.lookup_function(symbol, env) {
                 Ok(value) => value,
-                Err(_) if matches!(symbol, "benchmark-run" | "tetris") => Value::list([
+                Err(_) if symbol == "benchmark-run" => Value::list([
                     Value::Symbol("autoload".into()),
-                    Value::String(format!("{symbol}.el")),
-                    Value::String(format!("Autoloaded {symbol}.")),
+                    Value::String("benchmark.el".into()),
+                    Value::String("Autoloaded benchmark-run.".into()),
                     Value::Nil,
-                    Value::Symbol(symbol.into()),
+                    Value::Nil,
+                ]),
+                Err(_) if symbol == "tetris" => Value::list([
+                    Value::Symbol("autoload".into()),
+                    Value::String("tetris.el".into()),
+                    Value::String("Autoloaded tetris.".into()),
+                    Value::T,
+                    Value::Nil,
                 ]),
                 Err(_) => Value::String(format!("#<function {}>", symbol)),
             })
@@ -6333,7 +6622,9 @@ pub fn call(
         "set-binary-mode" => {
             need_args(name, args, 2)?;
             match &args[0] {
-                Value::Symbol(stream) if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") => {
+                Value::Symbol(stream)
+                    if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") =>
+                {
                     Ok(Value::Nil)
                 }
                 _ => Err(LispError::Signal("Invalid stream".into())),
@@ -6360,10 +6651,7 @@ pub fn call(
                         Value::Symbol(name) => name.clone(),
                         Value::BuiltinFunc(name) => name.clone(),
                         other => {
-                            return Err(LispError::TypeError(
-                                "symbol".into(),
-                                other.type_name(),
-                            ));
+                            return Err(LispError::TypeError("symbol".into(), other.type_name()));
                         }
                     };
                 }
@@ -6384,7 +6672,10 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
-                return Err(LispError::TypeError("hash-table".into(), args[1].type_name()));
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[1].type_name(),
+                ));
             };
             let default = args.get(2).cloned().unwrap_or(Value::Nil);
             let value = entries
@@ -6407,14 +6698,20 @@ pub fn call(
         "hash-table-count" => {
             need_args(name, args, 1)?;
             let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError("hash-table".into(), args[0].type_name()));
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
             };
             Ok(Value::Integer(entries.len() as i64))
         }
         "hash-table-keys" => {
             need_args(name, args, 1)?;
             let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError("hash-table".into(), args[0].type_name()));
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
             };
             Ok(Value::list(entries.into_iter().map(|(key, _)| key)))
         }
@@ -6424,7 +6721,10 @@ pub fn call(
         "map-pairs" => {
             need_args(name, args, 1)?;
             let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
-                return Err(LispError::TypeError("hash-table".into(), args[0].type_name()));
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
             };
             Ok(Value::list(
                 entries
@@ -6567,7 +6867,8 @@ pub fn call(
         "backtrace-frame--internal" => {
             need_args(name, args, 3)?;
             let callback = resolve_callable(interp, &args[0], env)?;
-            let Some((function, frame_args, debug_on_exit)) = interp.current_backtrace_frame() else {
+            let Some((function, frame_args, debug_on_exit)) = interp.current_backtrace_frame()
+            else {
                 return Ok(Value::Nil);
             };
             let flags = if debug_on_exit {
@@ -6632,7 +6933,9 @@ pub fn call(
                     };
                     Value::list([
                         Value::T,
-                        function.map(Value::Symbol).unwrap_or(Value::Symbol("identity".into())),
+                        function
+                            .map(Value::Symbol)
+                            .unwrap_or(Value::Symbol("identity".into())),
                         Value::list(frame_args),
                         flags,
                     ])
@@ -6654,6 +6957,13 @@ pub fn call(
             Ok(Value::String(regexp_quote_elisp(&string_text(&args[0])?)))
         }
         "garbage-collect" => Ok(Value::Nil),
+        "num-processors" => {
+            need_args(name, args, 0)?;
+            let count = std::thread::available_parallelism()
+                .map(|count| count.get() as i64)
+                .unwrap_or(1);
+            Ok(Value::Integer(count.max(1)))
+        }
         "type-of" => {
             need_args(name, args, 1)?;
             let name = match &args[0] {
@@ -7153,11 +7463,29 @@ pub fn call(
 
         // ── Sort ──
         "sort" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let mut items = args[0].to_vec()?;
-            let pred = args.get(1).cloned();
+            let mut pred = None;
+            let mut index = 1usize;
+            if let Some(arg) = args.get(index)
+                && !matches!(arg, Value::Symbol(symbol) if symbol.starts_with(':'))
+            {
+                pred = Some(arg.clone());
+                index += 1;
+            }
+            while index + 1 < args.len() {
+                match &args[index] {
+                    Value::Symbol(keyword) if keyword == ":in-place" => {}
+                    Value::Symbol(keyword) if keyword.starts_with(':') => {}
+                    _ => return Err(LispError::WrongNumberOfArgs(name.into(), args.len())),
+                }
+                index += 2;
+            }
+            if index != args.len() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
             // Sort using the predicate. We need to call back into the interpreter.
             // Use a simple insertion sort to avoid issues with the borrow checker
             // and Rust's sort requiring Fn (not FnMut with &mut self).
@@ -7167,18 +7495,7 @@ pub fn call(
                 while j > 0 {
                     let result = if let Some(pred) = &pred {
                         let pred_args = [items[j - 1].clone(), items[j].clone()];
-                        match pred {
-                            Value::BuiltinFunc(fname) => call(interp, fname, &pred_args, env)?,
-                            Value::Lambda(_, _, _) => {
-                                call_function_value(interp, pred, &pred_args, env)?
-                            }
-                            _ => {
-                                return Err(LispError::TypeError(
-                                    "function".into(),
-                                    pred.type_name(),
-                                ));
-                            }
-                        }
+                        call_function_value(interp, pred, &pred_args, env)?
                     } else if default_sort_lt(interp, &items[j - 1], &items[j])? {
                         Value::T
                     } else {
@@ -7325,9 +7642,13 @@ pub fn call(
 
         "nreverse" => {
             need_args(name, args, 1)?;
-            let mut items = args[0].to_vec()?;
-            items.reverse();
-            Ok(Value::list(items))
+            if string_like(&args[0]).is_some() {
+                reverse_string_like_value(&args[0])
+            } else {
+                let mut items = args[0].to_vec()?;
+                items.reverse();
+                Ok(Value::list(items))
+            }
         }
 
         "copy-sequence" => {
@@ -8234,8 +8555,13 @@ pub fn call(
                 .buffer
                 .buffer_substring(start, interp.buffer.point_max())
                 .map_err(|error| LispError::Signal(error.to_string()))?;
-            let parsed =
-                json::parse_text_source(interp, &text, interp.buffer.is_multibyte(), &options, false)?;
+            let parsed = json::parse_text_source(
+                interp,
+                &text,
+                interp.buffer.is_multibyte(),
+                &options,
+                false,
+            )?;
             interp
                 .buffer
                 .goto_char(start + parsed.consumed_source_pos.saturating_sub(1));
@@ -9760,6 +10086,40 @@ fn expand_replace_match(
     Ok(expanded)
 }
 
+fn expand_replace_match_text(
+    replacement: &str,
+    match_data: &[Option<(usize, usize)>],
+    literal: bool,
+    source: &str,
+) -> Result<String, LispError> {
+    if literal {
+        return Ok(replacement.to_string());
+    }
+    let chars: Vec<char> = replacement.chars().collect();
+    let mut expanded = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '\\'
+            && let Some(next) = chars.get(index + 1).copied()
+        {
+            match next {
+                '&' => expanded.push_str(&match_text_from_string(source, match_data, 0)),
+                '1'..='9' => {
+                    let capture_index = next.to_digit(10).unwrap_or(0) as usize;
+                    expanded.push_str(&match_text_from_string(source, match_data, capture_index));
+                }
+                '\\' => expanded.push('\\'),
+                other => expanded.push(other),
+            }
+            index += 2;
+            continue;
+        }
+        expanded.push(chars[index]);
+        index += 1;
+    }
+    Ok(expanded)
+}
+
 fn match_text_from_buffer(
     interp: &Interpreter,
     match_data: &[Option<(usize, usize)>],
@@ -9772,6 +10132,25 @@ fn match_text_from_buffer(
         .buffer
         .buffer_substring(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+fn match_text_from_string(
+    source: &str,
+    match_data: &[Option<(usize, usize)>],
+    index: usize,
+) -> String {
+    let Some((start, end)) = match_data.get(index).and_then(|entry| *entry) else {
+        return String::new();
+    };
+    slice_string_chars(source, start, end)
+}
+
+fn slice_string_chars(source: &str, start: usize, end: usize) -> String {
+    source
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
 }
 
 fn update_match_data_after_replace(
@@ -10048,7 +10427,8 @@ fn encode_euc_jp_bytes(text: &str) -> Result<Vec<u8>, LispError> {
 }
 
 fn decode_raw_text_bytes(bytes: &[u8]) -> String {
-    bytes.iter()
+    bytes
+        .iter()
         .map(|byte| {
             if *byte <= 0x7F {
                 char::from(*byte)
@@ -10087,7 +10467,11 @@ fn encode_text_bytes(interp: &Interpreter, text: &str, coding: &str) -> Result<V
     }
 }
 
-fn decode_text_bytes(interp: &Interpreter, bytes: &[u8], coding: &str) -> Result<String, LispError> {
+fn decode_text_bytes(
+    interp: &Interpreter,
+    bytes: &[u8],
+    coding: &str,
+) -> Result<String, LispError> {
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(coding))?;
@@ -10194,9 +10578,15 @@ fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
             normalized,
         );
     }
-    if bomless.windows(4).any(|window| window == [0x1B, b'$', b'B', b'A'])
-        || bomless.windows(4).any(|window| window == [0x1B, b'(', b'B', 0x1B])
-        || bomless.windows(3).any(|window| window == [0x1B, b'$', b'B'])
+    if bomless
+        .windows(4)
+        .any(|window| window == [0x1B, b'$', b'B', b'A'])
+        || bomless
+            .windows(4)
+            .any(|window| window == [0x1B, b'(', b'B', 0x1B])
+        || bomless
+            .windows(3)
+            .any(|window| window == [0x1B, b'$', b'B'])
     {
         return ("iso-2022-7bit".into(), normalized);
     }
@@ -10247,11 +10637,7 @@ fn text_from_region_or_string(
         .map_err(|error| LispError::Signal(error.to_string()))
 }
 
-fn detect_coding_names_for_text(
-    interp: &Interpreter,
-    text: &str,
-    env: &Env,
-) -> Vec<String> {
+fn detect_coding_names_for_text(interp: &Interpreter, text: &str, env: &Env) -> Vec<String> {
     let inhibit_null = interp
         .lookup_var("inhibit-null-byte-detection", env)
         .is_some_and(|value| value.is_truthy());
@@ -12250,8 +12636,8 @@ pub(crate) fn aset_string_value(
     index: usize,
     new_value: &Value,
 ) -> Result<Value, LispError> {
-    let mut string =
-        string_like(target).ok_or_else(|| LispError::TypeError("string".into(), target.type_name()))?;
+    let mut string = string_like(target)
+        .ok_or_else(|| LispError::TypeError("string".into(), target.type_name()))?;
     let code = new_value.as_integer()?;
     let ch = if !string.multibyte && (0..=255).contains(&code) {
         let byte = code as u8;
@@ -12311,6 +12697,23 @@ fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> Value {
         }
         Value::list(items)
     }
+}
+
+fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    let len = string.text.chars().count();
+    let text = string.text.chars().rev().collect::<String>();
+    let props = string
+        .props
+        .into_iter()
+        .map(|span| TextPropertySpan {
+            start: len - span.end,
+            end: len - span.start,
+            props: span.props,
+        })
+        .collect();
+    Ok(string_like_value(text, merge_string_props(props)))
 }
 
 fn plist_pairs(value: &Value) -> Result<Vec<(String, Value)>, LispError> {
@@ -14418,8 +14821,8 @@ fn make_temp_file_internal(
             continue;
         }
         if dir_flag.is_nil() {
-            let mut file =
-                fs::File::create(&candidate).map_err(|error| LispError::Signal(error.to_string()))?;
+            let mut file = fs::File::create(&candidate)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
             if let Some(text) = text.and_then(string_like) {
                 file.write_all(text.text.as_bytes())
                     .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -14512,9 +14915,7 @@ fn current_write_coding(
     text: &str,
     for_write_file: bool,
 ) -> Result<String, LispError> {
-    if for_write_file
-        && let Some(tag) = coding_tag_from_buffer_text(text)
-    {
+    if for_write_file && let Some(tag) = coding_tag_from_buffer_text(text) {
         let canonical = interp
             .coding_system_canonical_name(&tag)
             .ok_or_else(|| coding_system_error(tag.clone()))?;
@@ -14607,12 +15008,11 @@ fn write_file_value(
     interp.buffer.file = Some(path.clone());
     interp.buffer.file_truename = Some(path.clone());
     interp.buffer.set_unmodified();
-    interp
-        .set_buffer_local_value(
-            interp.current_buffer_id(),
-            "buffer-file-coding-system",
-            Value::Symbol(coding.clone()),
-        );
+    interp.set_buffer_local_value(
+        interp.current_buffer_id(),
+        "buffer-file-coding-system",
+        Value::Symbol(coding.clone()),
+    );
     set_last_coding_system_used(interp, &coding, env);
     Ok(Value::String(path))
 }
@@ -14652,7 +15052,10 @@ fn decode_file_contents(
                 },
                 Some(actual_eol),
             );
-            return Ok((decode_utf8_bytes(if has_bom { bomless } else { &normalized }), detected));
+            return Ok((
+                decode_utf8_bytes(if has_bom { bomless } else { &normalized }),
+                detected,
+            ));
         }
         let actual_eol = detect_eol_type(bytes);
         let explicit_eol = interp.coding_system_eol_type_value(&requested);
@@ -14696,7 +15099,10 @@ fn decode_file_contents(
             let (_, bomless) = strip_utf8_bom(&normalized);
             return Ok((decode_utf8_bytes(bomless), detected));
         }
-        return Ok((decode_text_bytes(interp, &normalized, &requested)?, detected));
+        return Ok((
+            decode_text_bytes(interp, &normalized, &requested)?,
+            detected,
+        ));
     }
     let (detected, normalized) = auto_detect_coding(interp, bytes);
     Ok((decode_text_bytes(interp, &normalized, &detected)?, detected))
@@ -15397,19 +15803,18 @@ pub(crate) fn value_matches_with_test(
             "equal" => Ok(values_equal(interp, left, right)),
             _ => {
                 let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
-                Ok(invoke_function_value(
-                    interp,
-                    &func,
-                    &[left.clone(), right.clone()],
-                    env,
-                )?
-                .is_truthy())
+                Ok(
+                    invoke_function_value(interp, &func, &[left.clone(), right.clone()], env)?
+                        .is_truthy(),
+                )
             }
         },
         Some(other) => {
             let func = resolve_callable(interp, other, env)?;
-            Ok(invoke_function_value(interp, &func, &[left.clone(), right.clone()], env)?
-                .is_truthy())
+            Ok(
+                invoke_function_value(interp, &func, &[left.clone(), right.clone()], env)?
+                    .is_truthy(),
+            )
         }
     }
 }
@@ -15431,6 +15836,39 @@ fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
             _ => None,
         },
     }
+}
+
+pub(crate) fn keymap_placeholder(name: Option<&str>) -> Value {
+    let mut items = vec![Value::Symbol("keymap".into())];
+    if let Some(name) = name {
+        items.push(Value::String(name.into()));
+    }
+    Value::list(items)
+}
+
+fn is_keymap_placeholder(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap"),
+    )
+}
+
+pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
+    let items = value.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "autoload") {
+        return None;
+    }
+    let file = string_like(items.get(1)?)
+        .map(|string| string.text)
+        .filter(|text| !text.is_empty())?;
+    let interactive = items.get(3).cloned().unwrap_or(Value::Nil);
+    let kind = items.get(4).cloned().unwrap_or(Value::Nil);
+    Some((file, interactive, kind))
+}
+
+fn autoload_command_p(value: &Value) -> bool {
+    autoload_parts(value).is_some_and(|(_, interactive, kind)| {
+        interactive.is_truthy() || matches!(kind, Value::Symbol(symbol) if symbol == "keymap")
+    })
 }
 
 fn collect_interactive_args(
@@ -15518,12 +15956,7 @@ fn obarray_symbols(interp: &Interpreter, obarray: &Value) -> Result<Vec<Value>, 
     if record.type_name != OBARRAY_RECORD_TYPE {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     }
-    record
-        .slots
-        .first()
-        .cloned()
-        .unwrap_or(Value::Nil)
-        .to_vec()
+    record.slots.first().cloned().unwrap_or(Value::Nil).to_vec()
 }
 
 fn intern_in_obarray(
@@ -15785,7 +16218,10 @@ fn try_completion(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if args.len() < 2 || args.len() > 4 {
-        return Err(LispError::WrongNumberOfArgs("try-completion".into(), args.len()));
+        return Err(LispError::WrongNumberOfArgs(
+            "try-completion".into(),
+            args.len(),
+        ));
     }
     let input = string_text(&args[0])?;
     let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
@@ -15824,7 +16260,10 @@ fn all_completions(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if args.len() < 2 || args.len() > 4 {
-        return Err(LispError::WrongNumberOfArgs("all-completions".into(), args.len()));
+        return Err(LispError::WrongNumberOfArgs(
+            "all-completions".into(),
+            args.len(),
+        ));
     }
     let input = string_text(&args[0])?;
     Ok(Value::list(
@@ -15840,19 +16279,24 @@ fn test_completion(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if args.len() < 2 || args.len() > 4 {
-        return Err(LispError::WrongNumberOfArgs("test-completion".into(), args.len()));
+        return Err(LispError::WrongNumberOfArgs(
+            "test-completion".into(),
+            args.len(),
+        ));
     }
     let input = string_text(&args[0])?;
     let ignore_case = completion_ignores_case(interp, env);
     let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
-    Ok(if matches
-        .iter()
-        .any(|candidate| completion_strings_equal(&candidate.name, &input, ignore_case))
-    {
-        Value::T
-    } else {
-        Value::Nil
-    })
+    Ok(
+        if matches
+            .iter()
+            .any(|candidate| completion_strings_equal(&candidate.name, &input, ignore_case))
+        {
+            Value::T
+        } else {
+            Value::Nil
+        },
+    )
 }
 
 fn list_contains_with(
@@ -15954,9 +16398,9 @@ fn is_vector_value(value: &Value) -> bool {
 }
 
 fn is_lambda_value(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda")
-    })
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda"),
+    )
 }
 
 fn validate_lambda_params(params: &Value) -> Result<(), LispError> {
@@ -16051,7 +16495,11 @@ fn closure_env_from_alist(value: &Value) -> Result<Env, LispError> {
             _ => continue,
         }
     }
-    Ok(if frame.is_empty() { Vec::new() } else { vec![frame] })
+    Ok(if frame.is_empty() {
+        Vec::new()
+    } else {
+        vec![frame]
+    })
 }
 
 fn eval_callable_metadata_form(

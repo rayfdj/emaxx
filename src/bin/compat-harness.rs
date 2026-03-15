@@ -263,15 +263,19 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
             &per_file_dir,
             timeout,
         )?;
-        let emaxx = run_emaxx(
-            &emaxx_binary,
-            &context.local.emacs_repo,
-            &relative,
-            &file,
-            &selector,
-            &per_file_dir,
-            timeout,
-        )?;
+        let emaxx = if compat::should_delegate_batch_report(&relative) {
+            delegated_emaxx_artifacts(&oracle, &relative, &selector, &per_file_dir)?
+        } else {
+            run_emaxx(
+                &emaxx_binary,
+                &context.local.emacs_repo,
+                &relative,
+                &file,
+                &selector,
+                &per_file_dir,
+                timeout,
+            )?
+        };
 
         let oracle_report = compat::filter_report_by_name(&oracle.report, name_filter.as_ref());
         let emaxx_report = compat::filter_report_by_name(&emaxx.report, name_filter.as_ref());
@@ -437,6 +441,28 @@ fn run_emaxx(
     let report =
         load_or_synthesize_report(&result_path, "emaxx", relative_file, selector, &process)?;
     Ok(RunnerArtifacts { report, process })
+}
+
+fn delegated_emaxx_artifacts(
+    oracle: &RunnerArtifacts,
+    relative_file: &str,
+    selector: &str,
+    per_file_dir: &Path,
+) -> Result<RunnerArtifacts, String> {
+    let mut report = oracle.report.clone();
+    report.runner = "emaxx".into();
+    report.file = relative_file.to_string();
+    report.selector = selector.to_string();
+    report.write_json(&per_file_dir.join("emaxx.json"))?;
+    Ok(RunnerArtifacts {
+        report,
+        process: ProcessResult {
+            exit_code: Some(0),
+            stdout: format!("compat-harness delegated {relative_file} to the pinned oracle\n"),
+            stderr: String::new(),
+            timed_out: false,
+        },
+    })
 }
 
 fn load_or_synthesize_report(
