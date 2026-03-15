@@ -3833,6 +3833,31 @@ impl Interpreter {
         self.sf_setq_internal(items, env, true)
     }
 
+    pub fn set_custom_option(
+        &mut self,
+        symbol: &str,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let resolved = self.resolve_variable_name(symbol)?;
+        if let Some(setter) = self.get_symbol_property(&resolved, "custom-set") {
+            self.call_function_value(
+                setter,
+                None,
+                &[Value::Symbol(resolved.clone()), value.clone()],
+                env,
+            )?;
+        } else {
+            self.call_function_value(
+                Value::BuiltinFunc("set-default".into()),
+                Some("set-default"),
+                &[Value::Symbol(resolved), value.clone()],
+                env,
+            )?;
+        }
+        Ok(value)
+    }
+
     fn sf_setopt(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() == 1 {
             return Ok(Value::Nil);
@@ -3848,25 +3873,8 @@ impl Interpreter {
         let mut index = 1;
         while index + 1 < items.len() {
             let symbol = items[index].as_symbol()?.to_string();
-            let resolved = self.resolve_variable_name(&symbol)?;
             let value = self.eval(&items[index + 1], env)?;
-            result = value.clone();
-
-            if let Some(setter) = self.get_symbol_property(&resolved, "custom-set") {
-                self.call_function_value(
-                    setter,
-                    None,
-                    &[Value::Symbol(resolved.clone()), value.clone()],
-                    env,
-                )?;
-            } else {
-                self.call_function_value(
-                    Value::BuiltinFunc("set-default".into()),
-                    Some("set-default"),
-                    &[Value::Symbol(resolved), value.clone()],
-                    env,
-                )?;
-            }
+            result = self.set_custom_option(&symbol, value, env)?;
             index += 2;
         }
 
@@ -4248,15 +4256,99 @@ impl Interpreter {
         let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
             return Ok(Value::Nil);
         };
-        if matches!(
-            items.first(),
-            Some(Value::Symbol(kind))
-                if kind == "define-minor-mode" || kind == "define-globalized-minor-mode"
-        ) {
-            self.mark_special_variable(name);
-            if self.lookup_var(name, &Vec::new()).is_none() {
-                self.globals
-                    .push((name.to_string(), Self::stored_value(Value::Nil)));
+        if let Some(Value::Symbol(kind)) = items.first() {
+            if kind == "define-minor-mode" {
+                let mut init_value = Value::Nil;
+                let mut global = false;
+                let mut index = if matches!(
+                    items.get(2),
+                    Some(Value::String(_) | Value::StringObject(_))
+                ) {
+                    3
+                } else {
+                    2
+                };
+
+                while index + 1 < items.len() {
+                    let Some(keyword) = items[index].as_symbol().ok() else {
+                        break;
+                    };
+                    if !keyword.starts_with(':') {
+                        break;
+                    }
+                    match keyword {
+                        ":init-value" => init_value = items[index + 1].clone(),
+                        ":global" => global = items[index + 1].is_truthy(),
+                        _ => {}
+                    }
+                    index += 2;
+                }
+
+                self.mark_special_variable(name);
+                if !global {
+                    self.mark_auto_buffer_local(name);
+                }
+                if self.lookup_var(name, &Vec::new()).is_none() {
+                    self.globals
+                        .push((name.to_string(), Self::stored_value(init_value)));
+                }
+
+                let toggle_form = Value::list([
+                    Value::Symbol("if".into()),
+                    Value::list([
+                        Value::Symbol("eq".into()),
+                        Value::Symbol("arg".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol("toggle".into()),
+                        ]),
+                    ]),
+                    Value::list([Value::Symbol("not".into()), Value::Symbol(name.to_string())]),
+                    Value::list([
+                        Value::Symbol("if".into()),
+                        Value::list([Value::Symbol("not".into()), Value::Symbol("arg".into())]),
+                        Value::list([Value::Symbol("not".into()), Value::Symbol(name.to_string())]),
+                        Value::list([
+                            Value::Symbol("if".into()),
+                            Value::list([
+                                Value::Symbol("integerp".into()),
+                                Value::Symbol("arg".into()),
+                            ]),
+                            Value::list([
+                                Value::Symbol(">".into()),
+                                Value::Symbol("arg".into()),
+                                Value::Integer(0),
+                            ]),
+                            Value::T,
+                        ]),
+                    ]),
+                ]);
+
+                let mut body = vec![Value::list([
+                    Value::Symbol("setq".into()),
+                    Value::Symbol(name.to_string()),
+                    toggle_form,
+                ])];
+                body.extend_from_slice(&items[index..]);
+                body.push(Value::Symbol(name.to_string()));
+
+                self.set_function_binding(
+                    name,
+                    Some(Value::Lambda(
+                        vec!["&optional".into(), "arg".into()],
+                        body,
+                        Vec::new(),
+                    )),
+                );
+                return Ok(Value::Symbol(name.to_string()));
+            }
+
+            if kind == "define-globalized-minor-mode" {
+                self.mark_special_variable(name);
+                if self.lookup_var(name, &Vec::new()).is_none() {
+                    self.globals
+                        .push((name.to_string(), Self::stored_value(Value::Nil)));
+                }
             }
         }
         if self.lookup_function(name, &Vec::new()).is_err() {
@@ -7658,6 +7750,76 @@ mod tests {
     }
 
     #[test]
+    fn customize_set_variable_runs_defcustom_setter() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        eval_str_with(
+            &mut interp,
+            "(defun sample-setter (symbol value)
+               (set-default symbol value)
+               (setq sample-setter-result value))",
+        );
+        eval_str_with(
+            &mut interp,
+            "(defcustom sample-option nil \"doc\" :set #'sample-setter :type 'boolean)",
+        );
+
+        let forms = Reader::new("(customize-set-variable 'sample-option t)")
+            .read_all()
+            .expect("parse customize-set-variable form");
+        assert_eq!(interp.eval(&forms[0], &mut env).unwrap(), Value::T);
+        assert_eq!(interp.lookup("sample-option", &env).unwrap(), Value::T);
+        assert_eq!(interp.lookup("sample-setter-result", &env).unwrap(), Value::T);
+    }
+
+    #[test]
+    fn switch_to_buffer_accepts_bound_string_values() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((buffer-name \"foo\"))
+                   (switch-to-buffer buffer-name)
+                   (buffer-name))"
+            ),
+            Value::String("foo".into())
+        );
+    }
+
+    #[test]
+    fn window_buffer_tracks_selected_buffer() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (switch-to-buffer \"foo\")
+                   (buffer-name (window-buffer (selected-window))))"
+            ),
+            Value::String("foo".into())
+        );
+    }
+
+    #[test]
+    fn define_minor_mode_enables_buffer_local_state_and_runs_body() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (define-minor-mode sample-mode \"doc\"
+                     (setq sample-mode-ran sample-mode))
+                   (sample-mode 1)
+                   (let ((enabled sample-mode)
+                         (ran sample-mode-ran))
+                     (switch-to-buffer \"other\")
+                     (list enabled sample-mode ran)))"
+            ),
+            Value::list([Value::T, Value::Nil, Value::T])
+        );
+    }
+
+    #[test]
     fn defvar_keymap_supports_custom_setters_toggling_bindings() {
         assert_eq!(
             eval_str(
@@ -7711,6 +7873,15 @@ mod tests {
 
     #[test]
     fn require_edmacro_supports_edmacro_parse_keys_cases() {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_require_edmacro_supports_edmacro_parse_keys_cases)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn assert_require_edmacro_supports_edmacro_parse_keys_cases() {
         assert_eq!(
             eval_str(
                 "(progn
