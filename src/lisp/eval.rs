@@ -6448,6 +6448,31 @@ mod tests {
         assert_eq!(eval_str("(+ 1 2 3 4)"), Value::Integer(10));
         assert_eq!(eval_str("(1+ 5)"), Value::Integer(6));
         assert_eq!(eval_str("(1- 5)"), Value::Integer(4));
+        assert_eq!(eval_str("(logand)"), Value::Integer(-1));
+        assert_eq!(eval_str("(logand 7 3 1)"), Value::Integer(1));
+        assert_eq!(eval_str("(logior 1 2 4)"), Value::Integer(7));
+        assert_eq!(eval_str("(logxor 1 2 3)"), Value::Integer(0));
+        assert_eq!(eval_str("(lognot 5)"), Value::Integer(-6));
+    }
+
+    #[test]
+    fn aref_reads_strings_bound_in_lexical_variables() {
+        assert_eq!(
+            eval_str("(let ((buf (make-string 4 0))) (aref buf 0))"),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn unibyte_string_sequences_return_byte_values() {
+        assert_eq!(
+            eval_str("(let ((s (unibyte-string 225 16))) (aref s 0))"),
+            Value::Integer(225)
+        );
+        assert_eq!(
+            eval_str("(let ((s (unibyte-string 225 16))) (string-to-list s))"),
+            Value::list([Value::Integer(225), Value::Integer(16)])
+        );
     }
 
     #[test]
