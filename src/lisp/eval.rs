@@ -100,6 +100,10 @@ pub struct Interpreter {
     iso_charsets: Vec<(i64, i64, u32, String)>,
     /// Shared standard category table.
     standard_category_table_id: Option<u64>,
+    /// Shared standard case table.
+    standard_case_table_id: Option<u64>,
+    /// Buffer-local case tables keyed by buffer id.
+    buffer_case_tables: Vec<(u64, u64)>,
     /// Next char-table ID for identity tracking.
     next_char_table_id: u64,
     /// Allocated record objects.
@@ -143,6 +147,7 @@ pub struct Interpreter {
     pub message_capture_stack: Vec<String>,
     pub lossage_size: i64,
     face_inheritance: Vec<(String, Option<String>)>,
+    syntax_word_chars: Vec<u32>,
     undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
     loading_features: Vec<String>,
@@ -176,6 +181,8 @@ impl Interpreter {
             charset_priority: vec!["unicode".into(), "ascii".into()],
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             standard_category_table_id: None,
+            standard_case_table_id: None,
+            buffer_case_tables: Vec::new(),
             next_char_table_id: 1,
             records: Vec::new(),
             next_record_id: 1,
@@ -201,6 +208,7 @@ impl Interpreter {
             message_capture_stack: Vec::new(),
             lossage_size: 300,
             face_inheritance: Vec::new(),
+            syntax_word_chars: Vec::new(),
             undo_sequence: None,
             load_path: Vec::new(),
             loading_features: Vec::new(),
@@ -569,6 +577,12 @@ impl Interpreter {
         {
             return Some(value);
         }
+        if table.default.is_nil()
+            && let Some(value) =
+                primitives::case_table_default_value(table.subtype.as_deref(), key)
+        {
+            return Some(value);
+        }
         Some(table.default.clone())
     }
 
@@ -596,6 +610,22 @@ impl Interpreter {
 
     pub fn char_table_parent(&self, id: u64) -> Option<Option<u64>> {
         self.find_char_table(id).map(|table| table.parent)
+    }
+
+    pub fn char_table_explicit_get(&self, id: u64, key: u32) -> Option<Value> {
+        let table = self.find_char_table(id)?;
+        if let Some(entry) = table
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.start <= key && key <= entry.end)
+        {
+            return Some(entry.value.clone());
+        }
+        if let Some(parent_id) = table.parent {
+            return self.char_table_explicit_get(parent_id, key);
+        }
+        None
     }
 
     pub fn set_char_table_parent(&mut self, id: u64, parent: Option<u64>) -> Result<(), LispError> {
@@ -825,6 +855,79 @@ impl Interpreter {
         };
         self.standard_category_table_id = Some(id);
         id
+    }
+
+    pub fn ensure_standard_case_table(&mut self) -> u64 {
+        if let Some(id) = self.standard_case_table_id {
+            return id;
+        }
+        let Value::CharTable(down_id) =
+            self.make_char_table(Some("case-table".into()), Value::Nil)
+        else {
+            unreachable!("make_char_table returns a char-table");
+        };
+        let Value::CharTable(up_id) =
+            self.make_char_table(Some("case-table-up".into()), Value::Nil)
+        else {
+            unreachable!("make_char_table returns a char-table");
+        };
+        self.set_char_table_extra_slot(down_id, 0, Value::CharTable(up_id))
+            .expect("new case table accepts upcase slot");
+        self.standard_case_table_id = Some(down_id);
+        down_id
+    }
+
+    pub fn current_case_table_id(&mut self) -> u64 {
+        if let Some((_, id)) = self
+            .buffer_case_tables
+            .iter()
+            .rev()
+            .find(|(buffer_id, _)| *buffer_id == self.current_buffer_id())
+        {
+            *id
+        } else {
+            self.ensure_standard_case_table()
+        }
+    }
+
+    pub fn set_current_case_table(&mut self, id: u64) {
+        let current_buffer_id = self.current_buffer_id();
+        if let Some((_, slot)) = self
+            .buffer_case_tables
+            .iter_mut()
+            .rev()
+            .find(|(buffer_id, _)| *buffer_id == current_buffer_id)
+        {
+            *slot = id;
+        } else {
+            self.buffer_case_tables.push((current_buffer_id, id));
+        }
+    }
+
+    pub fn standard_case_table_id(&mut self) -> u64 {
+        self.ensure_standard_case_table()
+    }
+
+    pub fn set_standard_case_table(&mut self, id: u64) {
+        self.standard_case_table_id = Some(id);
+    }
+
+    pub fn set_syntax_word_char(&mut self, code: u32, enabled: bool) {
+        if enabled {
+            if !self.syntax_word_chars.contains(&code) {
+                self.syntax_word_chars.push(code);
+            }
+        } else {
+            self.syntax_word_chars.retain(|existing| *existing != code);
+        }
+    }
+
+    pub fn is_syntax_word_char(&self, code: u32) -> bool {
+        self.syntax_word_chars.contains(&code)
+    }
+
+    pub fn syntax_word_chars(&self) -> Vec<u32> {
+        self.syntax_word_chars.clone()
     }
 
     pub fn category_docstring(&self, id: u64, category: u32) -> Option<String> {
@@ -1560,6 +1663,10 @@ impl Interpreter {
         match name {
             "nil" => Some(Value::Nil),
             "t" => Some(Value::T),
+            "region-extract-function" => Some(Value::Symbol(
+                "emaxx-default-region-extract-function".into(),
+            )),
+            "case-symbols-as-words" => Some(Value::Nil),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
             "most-positive-fixnum" => Some(Value::Integer(i64::MAX)),
             "most-negative-fixnum" => Some(Value::Integer(i64::MIN)),
