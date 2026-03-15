@@ -2676,8 +2676,7 @@ impl Interpreter {
                     .unwrap_or_else(primitives::default_directory),
             )),
             "data-directory" | "doc-directory" => Some(Value::String(
-                primitives::compat_data_directory()
-                    .unwrap_or_else(primitives::default_directory),
+                primitives::compat_data_directory().unwrap_or_else(primitives::default_directory),
             )),
             "user-login-name" => Some(Value::String(
                 primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
@@ -6681,6 +6680,35 @@ mod tests {
     }
 
     #[test]
+    fn list_buffers_keeps_file_visiting_internal_names_addressable() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-buffer-menu-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample.txt");
+        std::fs::write(&target, "hello\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        let expr = format!(
+            "(progn \
+               (find-file {path:?}) \
+               (rename-buffer \" foo\") \
+               (list-buffers) \
+               (with-current-buffer \"*Buffer List*\" \
+                 (buffer-name (Buffer-menu-buffer))))",
+            path = target.display().to_string()
+        );
+        assert_string_value(eval_str_with(&mut interp, &expr), " foo");
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
     fn load_target_prefers_files_over_same_named_directories() {
         let root = std::env::temp_dir().join(format!(
             "emaxx-load-target-{}",
@@ -7412,8 +7440,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn overlay_modification_hooks_data_driven_cases() {
+    fn assert_overlay_modification_hooks_data_driven_cases() {
         assert_eq!(
             eval_str(
                 r#"
@@ -7499,6 +7526,17 @@ mod tests {
             ),
             Value::Nil
         );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_data_driven_cases() {
+        // This data-heavy Lisp form overflows libtest's default stack on macOS-sized threads.
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_overlay_modification_hooks_data_driven_cases)
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

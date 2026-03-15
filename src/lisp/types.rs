@@ -307,16 +307,14 @@ impl LispError {
             LispError::Void(_) => "void-variable".into(),
             LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
             LispError::Signal(_) => "error".into(),
-            LispError::SignalValue(value) => {
-                value
-                    .to_vec()
-                    .ok()
-                    .and_then(|items| match items.first() {
-                        Some(Value::Symbol(symbol)) => Some(symbol.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| "error".into())
-            }
+            LispError::SignalValue(value) => value
+                .to_vec()
+                .ok()
+                .and_then(|items| match items.first() {
+                    Some(Value::Symbol(symbol)) => Some(symbol.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "error".into()),
             LispError::ErtTestFailed(_) => "ert-test-failed".into(),
             LispError::Throw(_, _) => "no-catch".into(),
             LispError::TestSkipped(_) => "ert-test-skipped".into(),

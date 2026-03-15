@@ -977,10 +977,7 @@ mod tests {
         assert_eq!(read_one("?\\^?"), Value::Integer(127));
         assert_eq!(read_one("?\\s-c"), Value::Integer((1 << 23) | ('c' as i64)));
         assert_eq!(read_one("?\\S-c"), Value::Integer((1 << 25) | ('c' as i64)));
-        assert_eq!(
-            read_one("?\\M-\\C-x"),
-            Value::Integer((1 << 27) | 24)
-        );
+        assert_eq!(read_one("?\\M-\\C-x"), Value::Integer((1 << 27) | 24));
     }
 
     #[test]

@@ -30,6 +30,8 @@ const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static LCMS_ORACLE: OnceLock<Option<compat::OracleLocalConfig>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
+const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
+const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
 
 fn is_lcms_builtin(name: &str) -> bool {
     matches!(
@@ -837,6 +839,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-local-variables"
             | "kill-local-variable"
             | "buffer-list"
+            | "list-buffers"
+            | "list-buffers-noselect"
+            | "Buffer-menu-buffer"
             | "decode-char"
             | "char-charset"
             | "charset-id-internal"
@@ -4491,6 +4496,56 @@ pub fn call(
                 .collect();
             Ok(Value::list(bufs))
         }
+        "list-buffers" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let files_only = args.first().is_some_and(Value::is_truthy);
+            let _ = refresh_buffer_menu(interp, files_only, None, None, env)?;
+            Ok(Value::Symbol("window".into()))
+        }
+        "list-buffers-noselect" => {
+            if args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let files_only = args.first().is_some_and(Value::is_truthy);
+            refresh_buffer_menu(interp, files_only, args.get(1), args.get(2), env)
+        }
+        "Buffer-menu-buffer" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let error_if_non_existent = args.first().is_some_and(Value::is_truthy);
+            let Some(entries) =
+                interp.buffer_local_value(interp.current_buffer_id(), BUFFER_MENU_ENTRIES_VAR)
+            else {
+                return if error_if_non_existent {
+                    Err(LispError::Signal("No buffer on this line".into()))
+                } else {
+                    Ok(Value::Nil)
+                };
+            };
+            let entries = entries.to_vec()?;
+            let line_index = interp
+                .buffer
+                .line_number_at_pos(interp.buffer.point())
+                .saturating_sub(1);
+            let Some(entry) = entries.get(line_index).cloned() else {
+                return if error_if_non_existent {
+                    Err(LispError::Signal("No buffer on this line".into()))
+                } else {
+                    Ok(Value::Nil)
+                };
+            };
+            match entry {
+                Value::Buffer(id, _) if interp.has_buffer_id(id) => Ok(entry),
+                Value::Buffer(_, _) if error_if_non_existent => {
+                    Err(LispError::Signal("This buffer has been killed".into()))
+                }
+                Value::Buffer(_, _) => Ok(Value::Nil),
+                other => Err(LispError::TypeError("buffer".into(), other.type_name())),
+            }
+        }
         "decode-char" => {
             need_args(name, args, 2)?;
             let charset = args[0].as_symbol()?;
@@ -6458,14 +6513,16 @@ pub fn call(
         "color-defined-p" => {
             need_args(name, args, 1)?;
             let color = string_text(&args[0])?;
-            Ok(if ["black", "white", "red", "green", "blue"]
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(&color))
-            {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if ["black", "white", "red", "green", "blue"]
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&color))
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "symbol-function" => {
             need_args(name, args, 1)?;
@@ -16024,6 +16081,136 @@ fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), Lis
         ])));
     }
     Ok(())
+}
+
+fn refresh_buffer_menu(
+    interp: &mut Interpreter,
+    files_only: bool,
+    buffer_list: Option<&Value>,
+    filter_predicate: Option<&Value>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let entries =
+        collect_buffer_menu_entries(interp, files_only, buffer_list, filter_predicate, env)?;
+    let rendered = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Value::Buffer(id, _) => interp
+                .get_buffer_by_id(*id)
+                .map(|buffer| buffer.name.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let menu_buffer = match interp.find_buffer(BUFFER_MENU_BUFFER_NAME) {
+        Some((id, name)) => Value::Buffer(id, name),
+        None => {
+            let (id, _) = interp.create_buffer(BUFFER_MENU_BUFFER_NAME);
+            Value::Buffer(id, BUFFER_MENU_BUFFER_NAME.into())
+        }
+    };
+    let menu_buffer_id = interp.resolve_buffer_id(&menu_buffer)?;
+    {
+        let buffer = interp
+            .get_buffer_by_id_mut(menu_buffer_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", menu_buffer_id)))?;
+        let end = buffer.point_max();
+        if end > 1 {
+            buffer
+                .delete_region(1, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+        }
+        buffer.goto_char(1);
+        buffer.insert(&rendered);
+        buffer.goto_char(1);
+        buffer.set_unmodified();
+    }
+    interp.set_buffer_local_value(
+        menu_buffer_id,
+        BUFFER_MENU_ENTRIES_VAR,
+        Value::list(entries),
+    );
+    Ok(menu_buffer)
+}
+
+fn collect_buffer_menu_entries(
+    interp: &mut Interpreter,
+    files_only: bool,
+    buffer_list: Option<&Value>,
+    filter_predicate: Option<&Value>,
+    env: &mut Env,
+) -> Result<Vec<Value>, LispError> {
+    let current = Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+    let candidates = match buffer_list {
+        Some(value) if !value.is_nil() => resolve_buffer_menu_source(interp, value, env)?,
+        _ => {
+            let mut ordered = vec![current];
+            for (id, name) in interp.buffer_list.clone() {
+                if id != interp.current_buffer_id() {
+                    ordered.push(Value::Buffer(id, name));
+                }
+            }
+            ordered
+        }
+    };
+
+    let mut entries = Vec::new();
+    for candidate in candidates {
+        let buffer_id = interp.resolve_buffer_id(&candidate)?;
+        let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
+            continue;
+        };
+        let name = buffer.name.clone();
+        let file = buffer.file.clone();
+        if name == BUFFER_MENU_BUFFER_NAME {
+            continue;
+        }
+        if name.starts_with(' ') && file.is_none() {
+            continue;
+        }
+        if files_only && file.is_none() {
+            continue;
+        }
+        let buffer_value = Value::Buffer(buffer_id, name);
+        if let Some(predicate) = filter_predicate.filter(|value| !value.is_nil()) {
+            let keep = interp.call_function_value(
+                predicate.clone(),
+                None,
+                std::slice::from_ref(&buffer_value),
+                env,
+            )?;
+            if !keep.is_truthy() {
+                continue;
+            }
+        }
+        if entries
+            .iter()
+            .any(|entry| matches!(entry, Value::Buffer(id, _) if *id == buffer_id))
+        {
+            continue;
+        }
+        entries.push(buffer_value);
+    }
+
+    Ok(entries)
+}
+
+fn resolve_buffer_menu_source(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+) -> Result<Vec<Value>, LispError> {
+    let source = match value {
+        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => {
+            interp.call_function_value(value.clone(), None, &[], env)?
+        }
+        Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
+            interp.call_function_value(value.clone(), None, &[], env)?
+        }
+        other => other.clone(),
+    };
+    source.to_vec()
 }
 
 fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
