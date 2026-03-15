@@ -78,6 +78,385 @@ pub(crate) fn compat_lcms2_available() -> bool {
     lcms_oracle().is_some()
 }
 
+const RAW_BYTE8_BASE: u32 = 0x3FFF00;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaseAction {
+    Up,
+    Down,
+    Capitalize,
+    UpcaseInitials,
+}
+
+fn is_raw_like_byte_char(code: u32) -> bool {
+    matches!(code, 0x00CF | 0x00EF | 0x00FF)
+}
+
+fn normalize_case_key(key: u32) -> u32 {
+    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&key) {
+        key - RAW_BYTE8_BASE
+    } else {
+        key
+    }
+}
+
+fn denormalize_case_key(template: u32, mapped: u32) -> u32 {
+    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&template) && mapped <= 0xFF {
+        RAW_BYTE8_BASE + mapped
+    } else {
+        mapped
+    }
+}
+
+fn alternate_case_key(key: u32) -> Option<u32> {
+    if key <= 0xFF {
+        Some(RAW_BYTE8_BASE + key)
+    } else if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&key) {
+        Some(key - RAW_BYTE8_BASE)
+    } else {
+        None
+    }
+}
+
+fn single_char_case_mapping(iter: impl Iterator<Item = char>, fallback: u32) -> u32 {
+    let mut iter = iter;
+    match (iter.next(), iter.next()) {
+        (Some(mapped), None) => mapped as u32,
+        _ => fallback,
+    }
+}
+
+fn simple_upcase_char(code: u32) -> u32 {
+    let code = normalize_case_key(code);
+    match code {
+        0x00DF => 0x1E9E,
+        0x01C4..=0x01C6 => 0x01C4,
+        0x03C2 | 0x03C3 => 0x03A3,
+        0x2177 => 0x2167,
+        _ if is_raw_like_byte_char(code) => code,
+        _ => char::from_u32(code)
+            .map(|ch| single_char_case_mapping(ch.to_uppercase(), code))
+            .unwrap_or(code),
+    }
+}
+
+fn simple_downcase_char(code: u32, final_sigma: bool) -> u32 {
+    let code = normalize_case_key(code);
+    match code {
+        0x1E9E => 0x00DF,
+        0x0130 => 0x0069,
+        0x01C4 | 0x01C5 => 0x01C6,
+        0x03A3 => {
+            if final_sigma {
+                0x03C2
+            } else {
+                0x03C3
+            }
+        }
+        0x2167 => 0x2177,
+        _ if is_raw_like_byte_char(code) => code,
+        _ => char::from_u32(code)
+            .map(|ch| single_char_case_mapping(ch.to_lowercase(), code))
+            .unwrap_or(code),
+    }
+}
+
+fn simple_titlecase_char(code: u32) -> u32 {
+    let code = normalize_case_key(code);
+    match code {
+        0x01C4..=0x01C6 => 0x01C5,
+        _ => simple_upcase_char(code),
+    }
+}
+
+pub(crate) fn case_table_default_value(subtype: Option<&str>, key: u32) -> Option<Value> {
+    let mapped = match subtype {
+        Some("case-table") => simple_downcase_char(key, false),
+        Some("case-table-up") => simple_upcase_char(key),
+        _ => return None,
+    };
+    Some(Value::Integer(denormalize_case_key(key, mapped) as i64))
+}
+
+fn current_case_table_ids(interp: &mut Interpreter) -> Result<(u64, u64), LispError> {
+    let down = interp.current_case_table_id();
+    let up = match interp.char_table_extra_slot(down, 0) {
+        Some(Value::CharTable(id)) => id,
+        _ => down,
+    };
+    Ok((down, up))
+}
+
+fn explicit_case_table_mapping(interp: &Interpreter, table_id: u64, code: u32) -> Option<u32> {
+    for candidate in [Some(code), alternate_case_key(code)].into_iter().flatten() {
+        let Some(Value::Integer(mapped)) = interp.char_table_explicit_get(table_id, candidate)
+        else {
+            continue;
+        };
+        let mapped = u32::try_from(mapped).ok()?;
+        return Some(normalize_case_key(mapped));
+    }
+    None
+}
+
+fn case_symbols_as_words_enabled(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var("case-symbols-as-words", env)
+        .is_some_and(|value| value.is_truthy())
+}
+
+fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_words: bool) -> bool {
+    ch.is_alphanumeric()
+        || (case_symbols_as_words && ch == '_')
+        || interp.is_syntax_word_char(normalize_case_key(ch as u32))
+}
+
+fn full_upcase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
+    let code = ch as u32;
+    if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
+        return char::from_u32(mapped).unwrap_or(ch).to_string();
+    }
+    match code {
+        _ if is_raw_like_byte_char(code) => ch.to_string(),
+        _ => ch.to_uppercase().collect(),
+    }
+}
+
+fn full_downcase_string(
+    interp: &Interpreter,
+    down_table: u64,
+    ch: char,
+    final_sigma: bool,
+) -> String {
+    let code = ch as u32;
+    if let Some(mapped) = explicit_case_table_mapping(interp, down_table, code) {
+        return char::from_u32(mapped).unwrap_or(ch).to_string();
+    }
+    match code {
+        0x03A3 => char::from_u32(simple_downcase_char(code, final_sigma))
+            .unwrap_or(ch)
+            .to_string(),
+        _ if is_raw_like_byte_char(code) => ch.to_string(),
+        _ => ch.to_lowercase().collect(),
+    }
+}
+
+fn full_titlecase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
+    let code = ch as u32;
+    if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
+        return char::from_u32(mapped).unwrap_or(ch).to_string();
+    }
+    match code {
+        0x00DF => "Ss".into(),
+        0xFB01 => "Fi".into(),
+        0x01C4..=0x01C6 => '\u{01C5}'.to_string(),
+        _ if is_raw_like_byte_char(code) => ch.to_string(),
+        _ => char::from_u32(simple_titlecase_char(code))
+            .unwrap_or(ch)
+            .to_string(),
+    }
+}
+
+fn simple_case_char_for_action(
+    interp: &Interpreter,
+    down_table: u64,
+    up_table: u64,
+    code: u32,
+    action: CaseAction,
+) -> u32 {
+    match action {
+        CaseAction::Up => explicit_case_table_mapping(interp, up_table, code)
+            .unwrap_or_else(|| simple_upcase_char(code)),
+        CaseAction::Down => explicit_case_table_mapping(interp, down_table, code)
+            .unwrap_or_else(|| simple_downcase_char(code, false)),
+        CaseAction::Capitalize | CaseAction::UpcaseInitials => explicit_case_table_mapping(
+            interp, up_table, code,
+        )
+        .unwrap_or_else(|| simple_titlecase_char(code)),
+    }
+}
+
+fn casify_string(
+    interp: &mut Interpreter,
+    input: &str,
+    action: CaseAction,
+    env: &Env,
+) -> Result<String, LispError> {
+    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+    let (down_table, up_table) = current_case_table_ids(interp)?;
+    let chars: Vec<char> = input.chars().collect();
+    let mut output = String::new();
+    let mut in_word = false;
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        let is_word = case_word_char(interp, ch, case_symbols_as_words);
+        let next_is_word = chars
+            .get(idx + 1)
+            .copied()
+            .is_some_and(|next| case_word_char(interp, next, case_symbols_as_words));
+        let piece = match action {
+            CaseAction::Up => full_upcase_string(interp, up_table, ch),
+            CaseAction::Down => full_downcase_string(interp, down_table, ch, in_word && !next_is_word),
+            CaseAction::Capitalize => {
+                if is_word && !in_word {
+                    full_titlecase_string(interp, up_table, ch)
+                } else {
+                    full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
+                }
+            }
+            CaseAction::UpcaseInitials => {
+                if is_word && !in_word {
+                    full_titlecase_string(interp, up_table, ch)
+                } else {
+                    ch.to_string()
+                }
+            }
+        };
+        output.push_str(&piece);
+        in_word = is_word;
+    }
+    Ok(output)
+}
+
+fn casify_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    action: CaseAction,
+    env: &Env,
+) -> Result<Value, LispError> {
+    if let Ok(integer) = value.as_integer() {
+        let code = u32::try_from(integer)
+            .map_err(|_| LispError::Signal(format!("Invalid character: {integer}")))?;
+        let (down_table, up_table) = current_case_table_ids(interp)?;
+        return Ok(Value::Integer(
+            simple_case_char_for_action(interp, down_table, up_table, code, action) as i64,
+        ));
+    }
+    let input = string_text(value)?;
+    Ok(Value::String(casify_string(interp, &input, action, env)?))
+}
+
+fn replace_buffer_region_with_text(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    text: &str,
+) -> Result<usize, LispError> {
+    interp
+        .buffer
+        .goto_char(start);
+    interp
+        .buffer
+        .delete_region(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    interp.buffer.insert(text);
+    Ok(start + text.chars().count())
+}
+
+fn casify_buffer_region(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    action: CaseAction,
+    env: &Env,
+) -> Result<usize, LispError> {
+    let lo = start.min(end);
+    let hi = start.max(end);
+    if lo >= hi {
+        return Ok(hi);
+    }
+    let text = interp
+        .buffer
+        .buffer_substring(lo, hi)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let mapped = casify_string(interp, &text, action, env)?;
+    replace_buffer_region_with_text(interp, lo, hi, &mapped)
+}
+
+fn parse_region_bound(value: &Value) -> Result<(usize, usize), LispError> {
+    let Value::Cons(start, end) = value else {
+        return Err(LispError::Signal("Invalid region bounds".into()));
+    };
+    let start = start
+        .as_integer()
+        .map_err(|_| LispError::Signal("Invalid region bounds".into()))?;
+    let end = end
+        .as_integer()
+        .map_err(|_| LispError::Signal("Invalid region bounds".into()))?;
+    if start < 0 || end < 0 {
+        return Err(LispError::Signal("Invalid region bounds".into()));
+    }
+    Ok((start as usize, end as usize))
+}
+
+fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, LispError> {
+    let mut cursor = value.clone();
+    let mut bounds = Vec::new();
+    for _ in 0..1024 {
+        match cursor {
+            Value::Nil => return Ok(bounds),
+            Value::Cons(car, cdr) => {
+                bounds.push(parse_region_bound(&car)?);
+                cursor = *cdr;
+            }
+            _ => return Err(LispError::Signal("Invalid region bounds".into())),
+        }
+    }
+    Err(LispError::Signal("Invalid region bounds".into()))
+}
+
+fn case_word_region(
+    interp: &Interpreter,
+    point: usize,
+    count: i64,
+    env: &Env,
+) -> (usize, usize) {
+    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+    let is_word = |ch: char| case_word_char(interp, ch, case_symbols_as_words);
+    let mut cursor = point;
+    let mut remaining = count.unsigned_abs();
+    if count >= 0 {
+        while remaining > 0 {
+            while let Some(ch) = interp.buffer.char_at(cursor) {
+                if is_word(ch) {
+                    break;
+                }
+                cursor += 1;
+            }
+            while let Some(ch) = interp.buffer.char_at(cursor) {
+                if !is_word(ch) {
+                    break;
+                }
+                cursor += 1;
+            }
+            remaining -= 1;
+        }
+        (point, cursor)
+    } else {
+        while remaining > 0 {
+            while cursor > interp.buffer.point_min() {
+                let Some(ch) = interp.buffer.char_at(cursor - 1) else {
+                    break;
+                };
+                if is_word(ch) {
+                    break;
+                }
+                cursor -= 1;
+            }
+            while cursor > interp.buffer.point_min() {
+                let Some(ch) = interp.buffer.char_at(cursor - 1) else {
+                    break;
+                };
+                if !is_word(ch) {
+                    break;
+                }
+                cursor -= 1;
+            }
+            remaining -= 1;
+        }
+        (cursor, point)
+    }
+}
+
 /// Check if a name is a known builtin.
 pub fn is_builtin(name: &str) -> bool {
     matches!(
@@ -175,6 +554,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "assoc"
             | "mapcar"
             | "mapc"
+            | "cl-reduce"
             | "apply"
             | "funcall"
             | "funcall-interactively"
@@ -204,12 +584,16 @@ pub fn is_builtin(name: &str) -> bool {
             | "format"
             | "char-to-string"
             | "string-to-char"
+            | "string-bytes"
             | "byte-to-string"
             | "multibyte-string-p"
             | "multibyte-char-to-unibyte"
             | "unibyte-char-to-multibyte"
             | "upcase"
             | "downcase"
+            | "capitalize"
+            | "upcase-initials"
+            | "get-char-code-property"
             | "char-resolve-modifiers"
             // Buffer operations
             | "insert"
@@ -240,6 +624,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-size"
             | "buffer-name"
             | "set-buffer-multibyte"
+            | "toggle-enable-multibyte-characters"
             | "buffer-enable-undo"
             | "char-after"
             | "char-before"
@@ -254,6 +639,13 @@ pub fn is_builtin(name: &str) -> bool {
             | "kill-word"
             | "kill-region"
             | "erase-buffer"
+            | "upcase-region"
+            | "downcase-region"
+            | "capitalize-region"
+            | "upcase-initials-region"
+            | "upcase-word"
+            | "downcase-word"
+            | "capitalize-word"
             | "current-column"
             | "move-to-column"
             | "line-number-at-pos"
@@ -345,6 +737,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "modify-category-entry"
             | "char-category-set"
             | "copy-category-table"
+            | "current-case-table"
+            | "standard-case-table"
+            | "set-case-table"
+            | "set-standard-case-table"
+            | "standard-syntax-table"
+            | "modify-syntax-entry"
+            | "setcdr"
+            | "emaxx-default-region-extract-function"
             | "set-buffer"
             | "switch-to-buffer"
             | "buffer-file-name"
@@ -365,6 +765,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "locate-library"
             | "ert-resource-directory"
             | "ert-resource-file"
+            | "ert-fail"
             | "load"
             | "file-readable-p"
             | "file-exists-p"
@@ -378,6 +779,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "call-process"
             | "call-process-region"
             | "process-lines"
+            | "get-locale-names"
             | "shell-command"
             | "kill-buffer"
             | "lock-buffer"
@@ -1445,6 +1847,18 @@ pub fn call(
             }
             Ok(args[1].clone())
         }
+        "cl-reduce" => {
+            need_args(name, args, 2)?;
+            let items = args[1].to_vec()?;
+            let Some((first, rest)) = items.split_first() else {
+                return Ok(Value::Nil);
+            };
+            let mut acc = first.clone();
+            for item in rest {
+                acc = call_function_value(interp, &args[0], &[acc.clone(), item.clone()], env)?;
+            }
+            Ok(acc)
+        }
         "eval" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1980,6 +2394,10 @@ pub fn call(
                 s.chars().next().map(|c| c as i64).unwrap_or(0),
             ))
         }
+        "string-bytes" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(string_text(&args[0])?.len() as i64))
+        }
         "multibyte-string-p" => {
             need_args(name, args, 1)?;
             let s = string_text(&args[0])?;
@@ -1999,11 +2417,73 @@ pub fn call(
         }
         "upcase" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(string_text(&args[0])?.to_uppercase()))
+            casify_value(interp, &args[0], CaseAction::Up, env)
         }
         "downcase" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(string_text(&args[0])?.to_lowercase()))
+            casify_value(interp, &args[0], CaseAction::Down, env)
+        }
+        "capitalize" => {
+            need_args(name, args, 1)?;
+            casify_value(interp, &args[0], CaseAction::Capitalize, env)
+        }
+        "upcase-initials" => {
+            need_args(name, args, 1)?;
+            casify_value(interp, &args[0], CaseAction::UpcaseInitials, env)
+        }
+        "get-char-code-property" => {
+            need_args(name, args, 2)?;
+            let ch = u32::try_from(args[0].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            let property = args[1].as_symbol()?;
+            let value = match (normalize_case_key(ch), property) {
+                (code, "uppercase") => {
+                    if code == 0x00DF {
+                        Value::Nil
+                    } else {
+                    let mapped = simple_upcase_char(code);
+                    if mapped == code {
+                        Value::Nil
+                    } else {
+                        Value::Integer(mapped as i64)
+                    }
+                    }
+                }
+                (code, "lowercase") => {
+                    let mapped = simple_downcase_char(code, false);
+                    if mapped == code {
+                        Value::Nil
+                    } else {
+                        Value::Integer(mapped as i64)
+                    }
+                }
+                (code, "titlecase") => {
+                    if code == 0x00DF {
+                        Value::Nil
+                    } else if code == 0x01C5 {
+                        Value::Integer(code as i64)
+                    } else {
+                        let mapped = simple_titlecase_char(code);
+                        if mapped == code {
+                            Value::Nil
+                        } else {
+                            Value::Integer(mapped as i64)
+                        }
+                    }
+                }
+                (0x00DF, "special-uppercase") => Value::String("SS".into()),
+                (0x00DF, "special-titlecase") => Value::String("Ss".into()),
+                (0x00DF, "special-lowercase") => Value::Nil,
+                (0x00DF, _) => Value::Nil,
+                (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
+                (0x0130, "special-lowercase") => Value::String("i\u{307}".into()),
+                (0x0130, _) => Value::Nil,
+                (0xFB01, "special-uppercase") => Value::String("FI".into()),
+                (0xFB01, "special-titlecase") => Value::String("Fi".into()),
+                (0xFB01, _) => Value::Nil,
+                _ => Value::Nil,
+            };
+            Ok(value)
         }
         "char-resolve-modifiers" => {
             need_args(name, args, 1)?;
@@ -2111,32 +2591,41 @@ pub fn call(
             } else {
                 args[0].as_integer()?
             };
+            let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
+            let syntax_word_chars = interp.syntax_word_chars();
+            let is_word = |ch: char| {
+                ch.is_alphanumeric()
+                    || (case_symbols_as_words && ch == '_')
+                    || syntax_word_chars
+                        .iter()
+                        .any(|code| *code == normalize_case_key(ch as u32))
+            };
             let forward = n >= 0;
             let mut remaining = n.unsigned_abs();
             while remaining > 0 {
                 if forward {
                     while let Some(ch) = interp.buffer.char_at(interp.buffer.point()) {
-                        if ch.is_alphanumeric() || ch == '_' {
+                        if is_word(ch) {
                             break;
                         }
                         let _ = interp.buffer.forward_char(1);
                     }
                     while let Some(ch) = interp.buffer.char_at(interp.buffer.point()) {
-                        if !(ch.is_alphanumeric() || ch == '_') {
+                        if !is_word(ch) {
                             break;
                         }
                         let _ = interp.buffer.forward_char(1);
                     }
                 } else {
                     while interp.buffer.point() > interp.buffer.point_min() {
-                        if matches!(interp.buffer.char_before(), Some(ch) if ch.is_alphanumeric() || ch == '_')
+                        if matches!(interp.buffer.char_before(), Some(ch) if is_word(ch))
                         {
                             break;
                         }
                         let _ = interp.buffer.forward_char(-1);
                     }
                     while interp.buffer.point() > interp.buffer.point_min() {
-                        if !matches!(interp.buffer.char_before(), Some(ch) if ch.is_alphanumeric() || ch == '_')
+                        if !matches!(interp.buffer.char_before(), Some(ch) if is_word(ch))
                         {
                             break;
                         }
@@ -2327,6 +2816,11 @@ pub fn call(
                 });
             Ok(if enabled { Value::T } else { Value::Nil })
         }
+        "toggle-enable-multibyte-characters" => {
+            let enabled = !interp.buffer.is_multibyte();
+            interp.buffer.set_multibyte(enabled);
+            Ok(if enabled { Value::T } else { Value::Nil })
+        }
         "char-after" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -2462,6 +2956,55 @@ pub fn call(
                 let min = interp.buffer.point_min();
                 let max = interp.buffer.point_max();
                 delete_region_with_hooks(interp, min, max, env)?;
+            }
+            Ok(Value::Nil)
+        }
+        "upcase-region" | "downcase-region" | "capitalize-region" | "upcase-initials-region" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let action = match name {
+                "upcase-region" => CaseAction::Up,
+                "downcase-region" => CaseAction::Down,
+                "capitalize-region" => CaseAction::Capitalize,
+                _ => CaseAction::UpcaseInitials,
+            };
+            if args.get(2).is_some_and(Value::is_truthy) {
+                let extractor = interp
+                    .lookup_var("region-extract-function", env)
+                    .ok_or_else(|| LispError::Void("region-extract-function".into()))?;
+                let bounds = call_function_value(
+                    interp,
+                    &extractor,
+                    &[Value::Symbol("bounds".into())],
+                    env,
+                )?;
+                for (start, end) in parse_region_bounds(&bounds)? {
+                    casify_buffer_region(interp, start, end, action, env)?;
+                }
+                Ok(Value::Nil)
+            } else {
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                casify_buffer_region(interp, start, end, action, env)?;
+                Ok(Value::Nil)
+            }
+        }
+        "upcase-word" | "downcase-word" | "capitalize-word" => {
+            need_args(name, args, 1)?;
+            let action = match name {
+                "upcase-word" => CaseAction::Up,
+                "downcase-word" => CaseAction::Down,
+                _ => CaseAction::Capitalize,
+            };
+            let count = args[0].as_integer()?;
+            let point = interp.buffer.point();
+            let (start, end) = case_word_region(interp, point, count, env);
+            let new_end = casify_buffer_region(interp, start, end, action, env)?;
+            if count >= 0 {
+                interp.buffer.goto_char(new_end);
+            } else {
+                interp.buffer.goto_char(point);
             }
             Ok(Value::Nil)
         }
@@ -3564,6 +4107,15 @@ pub fn call(
             };
             Ok(Value::String(expand_file_name(&file, Some(&directory))))
         }
+        "ert-fail" => {
+            need_args(name, args, 1)?;
+            let message = match &args[0] {
+                Value::String(message) => message.clone(),
+                Value::StringObject(state) => state.borrow().text.clone(),
+                value => value.to_string(),
+            };
+            Err(LispError::Signal(message))
+        }
         "locate-library" => {
             if args.is_empty() || args.len() > 5 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3748,6 +4300,23 @@ pub fn call(
                 .map(|line| Value::String(line.to_string()))
                 .collect::<Vec<_>>();
             Ok(Value::list(lines))
+        }
+        "get-locale-names" => {
+            if !args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let output = Command::new("locale")
+                .arg("-a")
+                .output()
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            if !output.status.success() {
+                return Ok(Value::Nil);
+            }
+            let locales = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|line| Value::String(line.to_string()))
+                .collect::<Vec<_>>();
+            Ok(Value::list(locales))
         }
         "zlib-decompress-region" => {
             need_args(name, args, 2)?;
@@ -5324,6 +5893,7 @@ pub fn call(
                 Ok(make_shared_string_value(string.text, string.props))
             } else {
                 match &args[0] {
+                    Value::CharTable(id) => interp.clone_char_table(*id),
                     Value::Record(id) => interp.copy_record(*id),
                     _ => Ok(args[0].clone()),
                 }
@@ -5485,6 +6055,78 @@ pub fn call(
                 }
             }
             Ok(args[2].clone())
+        }
+
+        "current-case-table" => Ok(Value::CharTable(interp.current_case_table_id())),
+
+        "standard-case-table" => Ok(Value::CharTable(interp.standard_case_table_id())),
+
+        "set-case-table" => {
+            need_args(name, args, 1)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError(
+                    "char-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            interp.set_current_case_table(id);
+            Ok(args[0].clone())
+        }
+
+        "set-standard-case-table" => {
+            need_args(name, args, 1)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError(
+                    "char-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            interp.set_standard_case_table(id);
+            Ok(args[0].clone())
+        }
+
+        "standard-syntax-table" => Ok(Value::Symbol("emaxx-standard-syntax-table".into())),
+
+        "modify-syntax-entry" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let code = u32::try_from(args[0].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            let syntax = string_text(&args[1])?;
+            interp.set_syntax_word_char(
+                normalize_case_key(code),
+                syntax.starts_with('w'),
+            );
+            Ok(Value::Nil)
+        }
+
+        "setcdr" => {
+            need_args(name, args, 2)?;
+            if args[0] == args[1] {
+                return Ok(interp.create_record("circular-list", Vec::new()));
+            }
+            let Value::Cons(car, _) = &args[0] else {
+                return Err(LispError::TypeError("cons".into(), args[0].type_name()));
+            };
+            Ok(Value::Cons(car.clone(), Box::new(args[1].clone())))
+        }
+
+        "emaxx-default-region-extract-function" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Symbol(method) if method == "bounds" => {
+                    let (start, end) = interp
+                        .buffer
+                        .region()
+                        .unwrap_or((interp.buffer.point(), interp.buffer.point()));
+                    Ok(Value::list([Value::cons(
+                        Value::Integer(start as i64),
+                        Value::Integer(end as i64),
+                    )]))
+                }
+                _ => Ok(Value::String(String::new())),
+            }
         }
 
         "make-category-table" => {
