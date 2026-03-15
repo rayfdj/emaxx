@@ -16,5 +16,6 @@ num-traits = "0.2"
 unicode-width = "0.2"
 flate2 = "1.1"
 roxmltree = "0.20"
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 [dev-dependencies]

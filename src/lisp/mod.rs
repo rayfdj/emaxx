@@ -1,6 +1,7 @@
 pub mod eval;
 pub mod primitives;
 pub mod reader;
+pub mod sqlite;
 pub mod types;
 
 use std::path::Path;

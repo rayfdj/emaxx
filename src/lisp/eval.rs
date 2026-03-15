@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::primitives;
+use super::sqlite::SqliteHandleState;
 use super::types::{Env, LispError, Value};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use regex::{Regex, escape as regex_escape};
@@ -108,6 +109,8 @@ pub struct Interpreter {
     next_char_table_id: u64,
     /// Allocated record objects.
     records: Vec<RecordState>,
+    /// SQLite objects keyed by record ID.
+    sqlite_handles: Vec<(u64, SqliteHandleState)>,
     /// Next record ID for identity tracking.
     next_record_id: u64,
     /// Next finalizer ID for identity tracking.
@@ -185,6 +188,7 @@ impl Interpreter {
             buffer_case_tables: Vec::new(),
             next_char_table_id: 1,
             records: Vec::new(),
+            sqlite_handles: Vec::new(),
             next_record_id: 1,
             next_finalizer_id: 1,
             buffer_local_hooks: Vec::new(),
@@ -578,8 +582,7 @@ impl Interpreter {
             return Some(value);
         }
         if table.default.is_nil()
-            && let Some(value) =
-                primitives::case_table_default_value(table.subtype.as_deref(), key)
+            && let Some(value) = primitives::case_table_default_value(table.subtype.as_deref(), key)
         {
             return Some(value);
         }
@@ -687,6 +690,32 @@ impl Interpreter {
 
     pub fn find_record(&self, id: u64) -> Option<&RecordState> {
         self.records.iter().find(|record| record.id == id)
+    }
+
+    pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
+        if let Some((_, existing)) = self
+            .sqlite_handles
+            .iter_mut()
+            .find(|(record_id, _)| *record_id == id)
+        {
+            *existing = state;
+        } else {
+            self.sqlite_handles.push((id, state));
+        }
+    }
+
+    pub fn find_sqlite_handle(&self, id: u64) -> Option<&SqliteHandleState> {
+        self.sqlite_handles
+            .iter()
+            .find(|(record_id, _)| *record_id == id)
+            .map(|(_, state)| state)
+    }
+
+    pub fn find_sqlite_handle_mut(&mut self, id: u64) -> Option<&mut SqliteHandleState> {
+        self.sqlite_handles
+            .iter_mut()
+            .find(|(record_id, _)| *record_id == id)
+            .map(|(_, state)| state)
     }
 
     pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
@@ -861,8 +890,7 @@ impl Interpreter {
         if let Some(id) = self.standard_case_table_id {
             return id;
         }
-        let Value::CharTable(down_id) =
-            self.make_char_table(Some("case-table".into()), Value::Nil)
+        let Value::CharTable(down_id) = self.make_char_table(Some("case-table".into()), Value::Nil)
         else {
             unreachable!("make_char_table returns a char-table");
         };
