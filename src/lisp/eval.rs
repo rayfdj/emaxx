@@ -2816,6 +2816,9 @@ impl Interpreter {
                 return Ok(v.clone());
             }
         }
+        if let Some(value) = builtin_autoload_function(name) {
+            return Ok(value);
+        }
         if matches!(name, "incf" | "decf") {
             return Ok(Value::BuiltinFunc(name.to_string()));
         }
@@ -5065,25 +5068,54 @@ impl Interpreter {
             ));
         }
         let bindings = items[1].to_vec()?;
+        env.push(Vec::new());
         let mut rebound = Vec::new();
-        for binding in &bindings {
-            let parts = binding.to_vec()?;
-            if parts.len() < 2 {
-                continue;
+        let setup = (|| -> Result<(), LispError> {
+            for binding in &bindings {
+                let parts = binding.to_vec()?;
+                if parts.len() < 2 {
+                    continue;
+                }
+                match &parts[0] {
+                    Value::Symbol(name) => {
+                        let value = Self::stored_value(self.eval(&parts[1], env)?);
+                        let frame = env
+                            .last_mut()
+                            .expect("cl-letf pushes a temporary binding frame");
+                        if let Some((_, existing)) =
+                            frame.iter_mut().rev().find(|(bound, _)| bound == name)
+                        {
+                            *existing = value;
+                        } else {
+                            frame.push((name.clone(), value));
+                        }
+                    }
+                    Value::Cons(_, _) => {
+                        let place = parts[0].to_vec()?;
+                        if !matches!(
+                            place.first(),
+                            Some(Value::Symbol(name)) if name == "symbol-function"
+                        ) {
+                            return Err(LispError::Signal("Unsupported cl-letf place".into()));
+                        }
+                        let Some(target) = place.get(1) else {
+                            return Err(LispError::Signal("Unsupported cl-letf place".into()));
+                        };
+                        let function_name = function_name_from_binding_form(target)?;
+                        let value = self.eval(&parts[1], env)?;
+                        self.functions.push((function_name.clone(), value));
+                        rebound.push(function_name);
+                    }
+                    _ => return Err(LispError::Signal("Unsupported cl-letf place".into())),
+                }
             }
-            let place = parts[0].to_vec()?;
-            if !matches!(place.first(), Some(Value::Symbol(name)) if name == "symbol-function") {
-                return Err(LispError::Signal("Unsupported cl-letf place".into()));
-            }
-            let Some(target) = place.get(1) else {
-                return Err(LispError::Signal("Unsupported cl-letf place".into()));
-            };
-            let function_name = function_name_from_binding_form(target)?;
-            let value = self.eval(&parts[1], env)?;
-            self.functions.push((function_name.clone(), value));
-            rebound.push(function_name);
-        }
-        let result = self.sf_progn(&items[2..], env);
+            Ok(())
+        })();
+        let result = match setup {
+            Ok(()) => self.sf_progn(&items[2..], env),
+            Err(error) => Err(error),
+        };
+        env.pop();
         for name in rebound.into_iter().rev() {
             if let Some(index) = self.functions.iter().rposition(|(fname, _)| *fname == name) {
                 self.functions.remove(index);
@@ -5677,6 +5709,51 @@ fn unquote(value: &Value) -> Value {
             value.clone()
         }
         _ => value.clone(),
+    }
+}
+
+fn builtin_autoload_function(name: &str) -> Option<Value> {
+    match name {
+        "point-to-register" => Some(Value::Lambda(
+            vec!["register".into(), "&optional".into(), "arg".into()],
+            vec![
+                Value::list([
+                    Value::Symbol("interactive".into()),
+                    Value::list([
+                        Value::Symbol("list".into()),
+                        Value::Symbol("last-input-event".into()),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("when".into()),
+                    Value::list([
+                        Value::Symbol("or".into()),
+                        Value::list([
+                            Value::Symbol("eq".into()),
+                            Value::Symbol("register".into()),
+                            Value::Integer(7),
+                        ]),
+                        Value::list([
+                            Value::Symbol("eq".into()),
+                            Value::Symbol("register".into()),
+                            Value::list([
+                                Value::Symbol("quote".into()),
+                                Value::Symbol("escape".into()),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("eq".into()),
+                            Value::Symbol("register".into()),
+                            Value::Integer(27),
+                        ]),
+                    ]),
+                    Value::list([Value::Symbol("keyboard-quit".into())]),
+                ]),
+                Value::Nil,
+            ],
+            Vec::new(),
+        )),
+        _ => None,
     }
 }
 
@@ -6967,6 +7044,28 @@ mod tests {
     }
 
     #[test]
+    fn preloaded_point_to_register_stub_is_fboundp() {
+        let mut interp = Interpreter::new();
+        assert_eq!(eval_str_with(&mut interp, "(fboundp 'point-to-register)"), Value::T);
+    }
+
+    #[test]
+    fn preloaded_point_to_register_quits_on_quit_events() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let ((last-input-event ?\C-g)
+                         (register-alist nil))
+                     (condition-case err
+                         (call-interactively 'point-to-register)
+                       (quit (car err))))"#
+            ),
+            Value::Symbol("quit".into())
+        );
+    }
+
+    #[test]
     fn list_buffers_keeps_file_visiting_internal_names_addressable() {
         let root = std::env::temp_dir().join(format!(
             "emaxx-buffer-menu-{}",
@@ -7107,6 +7206,47 @@ mod tests {
                 Value::Nil,
                 Value::Nil,
                 Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_letf_supports_symbol_places() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar cl-letf-temp 'outer)
+                   (list
+                     (cl-letf ((cl-letf-temp 'inner))
+                       (setq cl-letf-temp 'changed)
+                       cl-letf-temp)
+                     cl-letf-temp))"
+            ),
+            Value::list([
+                Value::Symbol("changed".into()),
+                Value::Symbol("outer".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_letf_can_mix_variable_and_function_rebinding() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar cl-letf-temp 'outer)
+                   (fset 'cl-letf-temp-fn #'identity)
+                   (list
+                     (cl-letf (((symbol-function 'cl-letf-temp-fn) #'ignore)
+                               (cl-letf-temp 'inner))
+                       (list (cl-letf-temp-fn 'value) cl-letf-temp))
+                     (cl-letf-temp-fn 'value)
+                     cl-letf-temp))"
+            ),
+            Value::list([
+                Value::list([Value::Nil, Value::Symbol("inner".into())]),
+                Value::Symbol("value".into()),
+                Value::Symbol("outer".into()),
             ])
         );
     }
@@ -7462,6 +7602,59 @@ mod tests {
                        (list a b))))",
             ),
             &["a", "b"],
+        );
+    }
+
+    #[test]
+    fn call_interactively_autoloads_commands_before_collecting_args() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-callint-autoload-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample-callint.el");
+        std::fs::write(
+            &target,
+            "(defun sample-callint-command (arg)\n  (interactive (list 42))\n  arg)\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        eval_str_with(
+            &mut interp,
+            "(autoload 'sample-callint-command \"sample-callint\" nil t)",
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "(call-interactively 'sample-callint-command)"),
+            Value::Integer(42)
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn keyboard_quit_signals_quit_condition() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = Reader::new("(keyboard-quit)").read_all().unwrap().remove(0);
+        let error = interp.eval(&form, &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "quit");
+    }
+
+    #[test]
+    fn run_with_timer_returns_a_timer_without_firing_immediately() {
+        assert_eq!(
+            eval_str(
+                "(let ((flag nil)
+                       (timer (run-with-timer 1 nil (lambda () (setq flag t)))))
+                   (list (timerp timer) flag))"
+            ),
+            Value::list([Value::T, Value::Nil])
         );
     }
 

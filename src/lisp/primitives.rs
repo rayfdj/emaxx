@@ -683,6 +683,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "funcall"
             | "funcall-interactively"
             | "call-interactively"
+            | "keyboard-quit"
             | "fset"
             | "eval"
             | "read-event"
@@ -1106,7 +1107,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "describe-function"
             | "executable-find"
             | "run-with-timer"
+            | "run-with-idle-timer"
             | "cancel-timer"
+            | "timerp"
             | "lossage-size"
             | "ignore"
             | "make-obsolete"
@@ -2681,7 +2684,13 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), 0));
             }
-            let func = resolve_callable(interp, &args[0], env)?;
+            let mut func = resolve_callable(interp, &args[0], env)?;
+            if let (Some(symbol), Some((file, _, _))) =
+                (args[0].as_symbol().ok(), autoload_parts(&func))
+            {
+                interp.load_target(&file)?;
+                func = interp.lookup_function(symbol, env)?;
+            }
             let interactive_args = collect_interactive_args(interp, &func, env)?;
             let result = invoke_function_value(interp, &func, &interactive_args, env)?;
             if args.get(1).is_some_and(Value::is_truthy)
@@ -2692,6 +2701,10 @@ pub fn call(
             }
             Ok(result)
         }
+        "keyboard-quit" => Err(LispError::SignalValue(Value::list([
+            Value::Symbol("quit".into()),
+            Value::Nil,
+        ]))),
         "read-event" | "read-char" | "read-char-exclusive" => {
             ensure_interaction_allowed(interp, env)?;
             let event = pop_unread_command_event(interp, env)?;
@@ -6677,16 +6690,25 @@ pub fn call(
             }
             Ok(args[0].clone())
         }
-        "run-with-timer" => {
+        "run-with-timer" | "run-with-idle-timer" => {
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let callback = resolve_callable(interp, &args[2], env)?;
-            let callback_args = &args[3..];
-            let _ = invoke_function_value(interp, &callback, callback_args, env)?;
             Ok(Value::String("#<timer>".into()))
         }
         "cancel-timer" => Ok(Value::Nil),
+        "timerp" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(&args[0], Value::String(text) if text == "#<timer>")
+                    || matches!(&args[0], Value::StringObject(state) if state.borrow().text == "#<timer>")
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
         "lossage-size" => {
             if args.is_empty() {
                 return Ok(Value::Integer(interp.lossage_size));
