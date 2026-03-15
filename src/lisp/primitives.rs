@@ -686,6 +686,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "read-char-exclusive"
             | "identity"
             | "mapconcat"
+            | "key-description"
+            | "single-key-description"
             | "seq-take"
             | "seq-position"
             | "treesit-language-available-p"
@@ -1146,6 +1148,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "local-set-key"
             | "global-unset-key"
             | "local-unset-key"
+            | "easy-menu-add-item"
             | "define-widget"
             | "define-button-type"
             | "defined-colors"
@@ -5776,6 +5779,32 @@ pub fn call(
             }
             Ok(Value::list(result))
         }
+        "key-description" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(
+                    "key-description".into(),
+                    args.len(),
+                ));
+            }
+            let mut parts = Vec::new();
+            if let Some(prefix) = args.get(1) {
+                append_key_description_parts(prefix, &mut parts)?;
+            }
+            append_key_description_parts(&args[0], &mut parts)?;
+            Ok(Value::String(parts.join(" ")))
+        }
+        "single-key-description" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(
+                    "single-key-description".into(),
+                    args.len(),
+                ));
+            }
+            let no_angles = args.get(1).is_some_and(Value::is_truthy);
+            Ok(Value::String(single_key_description_text(
+                &args[0], no_angles,
+            )?))
+        }
 
         // ── More buffer ops ──
         "following-char" => match interp.buffer.char_at(interp.buffer.point()) {
@@ -6506,6 +6535,12 @@ pub fn call(
         "global-unset-key" | "local-unset-key" => {
             need_args(name, args, 1)?;
             Ok(Value::Nil)
+        }
+        "easy-menu-add-item" => {
+            if args.len() < 3 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[2].clone())
         }
         "define-widget" => {
             if args.len() < 3 {
@@ -12679,6 +12714,72 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn key_description_formats_follow_prefix_defaults() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let result = call(
+            &mut interp,
+            "key-description",
+            &[Value::String("\u{3}.".into())],
+            &mut env,
+        )
+        .expect("key-description should accept control-char strings");
+        assert_eq!(result, Value::String("C-c .".into()));
+    }
+
+    #[test]
+    fn key_description_matches_upstream_string_and_vector_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let prefixed = call(
+            &mut interp,
+            "key-description",
+            &[
+                Value::list([
+                    Value::Symbol("vector".into()),
+                    Value::Symbol("right".into()),
+                ]),
+                Value::list([Value::Symbol("vector".into()), Value::Integer(0x18)]),
+            ],
+            &mut env,
+        )
+        .expect("key-description should format prefixed vector keys");
+        assert_eq!(prefixed, Value::String("C-x <right>".into()));
+
+        let raw_byte = call(
+            &mut interp,
+            "key-description",
+            &[bytes_to_unibyte_value(&[0xE1])],
+            &mut env,
+        )
+        .expect("key-description should normalize raw unibyte meta bytes");
+        assert_eq!(raw_byte, Value::String("M-a".into()));
+    }
+
+    #[test]
+    fn single_key_description_matches_symbol_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let home = call(
+            &mut interp,
+            "single-key-description",
+            &[Value::Symbol("home".into())],
+            &mut env,
+        )
+        .expect("single-key-description should wrap event symbols");
+        assert_eq!(home, Value::String("<home>".into()));
+
+        let plain = call(
+            &mut interp,
+            "single-key-description",
+            &[Value::Symbol("home".into()), Value::T],
+            &mut env,
+        )
+        .expect("single-key-description should honor no-angles");
+        assert_eq!(plain, Value::String("home".into()));
+    }
 }
 
 fn replacement_content(interp: &Interpreter, source: &Value) -> Result<StringLike, LispError> {
@@ -15504,6 +15605,203 @@ fn first_choice_value(choices: &Value) -> Option<Value> {
         })
 }
 
+const KEY_DESCRIPTION_ALT_BIT: i64 = 0x0400000;
+const KEY_DESCRIPTION_SUPER_BIT: i64 = 0x0800000;
+const KEY_DESCRIPTION_HYPER_BIT: i64 = 0x1000000;
+const KEY_DESCRIPTION_SHIFT_BIT: i64 = 0x2000000;
+const KEY_DESCRIPTION_CTRL_BIT: i64 = 0x4000000;
+const KEY_DESCRIPTION_META_BIT: i64 = 0x8000000;
+const KEY_DESCRIPTION_MODIFIER_MASK: i64 = KEY_DESCRIPTION_ALT_BIT
+    | KEY_DESCRIPTION_SUPER_BIT
+    | KEY_DESCRIPTION_HYPER_BIT
+    | KEY_DESCRIPTION_SHIFT_BIT
+    | KEY_DESCRIPTION_CTRL_BIT
+    | KEY_DESCRIPTION_META_BIT;
+const KEY_DESCRIPTION_META_PREFIX: i64 = 0x1B;
+
+fn append_key_description_parts(
+    sequence: &Value,
+    output: &mut Vec<String>,
+) -> Result<(), LispError> {
+    let events = key_description_events(sequence)?;
+    let mut add_meta = false;
+    for event in events {
+        if add_meta {
+            match event {
+                Value::Integer(code)
+                    if code != KEY_DESCRIPTION_META_PREFIX
+                        && code & KEY_DESCRIPTION_META_BIT == 0 =>
+                {
+                    output.push(describe_key_code(code | KEY_DESCRIPTION_META_BIT));
+                }
+                other => {
+                    output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
+                    if !matches!(other, Value::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX)
+                    {
+                        output.push(single_key_description_text(&other, false)?);
+                    }
+                }
+            }
+            add_meta = false;
+            continue;
+        }
+
+        if matches!(&event, Value::Integer(code) if *code == KEY_DESCRIPTION_META_PREFIX) {
+            add_meta = true;
+            continue;
+        }
+
+        output.push(single_key_description_text(&event, false)?);
+    }
+
+    if add_meta {
+        output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
+    }
+
+    Ok(())
+}
+
+fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
+    if let Some(string) = string_like(sequence) {
+        let mut events = Vec::new();
+        for ch in string.text.chars() {
+            if !string.multibyte {
+                if let Some(byte) = raw_byte_from_regex_char(ch) {
+                    let code = if byte & 0x80 != 0 {
+                        ((byte ^ 0x80) as i64) | KEY_DESCRIPTION_META_BIT
+                    } else {
+                        byte as i64
+                    };
+                    events.push(Value::Integer(code));
+                    continue;
+                }
+                let code = ch as u32;
+                if code <= 0xFF {
+                    let byte = code as u8;
+                    let normalized = if byte & 0x80 != 0 {
+                        ((byte ^ 0x80) as i64) | KEY_DESCRIPTION_META_BIT
+                    } else {
+                        byte as i64
+                    };
+                    events.push(Value::Integer(normalized));
+                    continue;
+                }
+            }
+            events.push(Value::Integer(ch as i64));
+        }
+        return Ok(events);
+    }
+
+    match sequence {
+        Value::Nil => Ok(Vec::new()),
+        Value::Cons(_, _) => Ok(vector_items(sequence)?),
+        Value::Integer(_) | Value::Symbol(_) => Ok(vec![sequence.clone()]),
+        _ => Err(LispError::TypeError("array".into(), sequence.type_name())),
+    }
+}
+
+fn single_key_description_text(key: &Value, no_angles: bool) -> Result<String, LispError> {
+    match key {
+        Value::Integer(code) => Ok(describe_key_code(*code)),
+        Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
+        Value::String(text) => Ok(text.clone()),
+        Value::StringObject(state) => Ok(state.borrow().text.clone()),
+        _ => Err(LispError::TypeError(
+            "integer, symbol, or string".into(),
+            key.type_name(),
+        )),
+    }
+}
+
+fn describe_symbolic_key(symbol: &str, no_angles: bool) -> String {
+    if no_angles {
+        return symbol.to_string();
+    }
+
+    let bytes = symbol.as_bytes();
+    let mut prefix_len = 0usize;
+    while prefix_len + 3 <= bytes.len()
+        && bytes[prefix_len + 1] == b'-'
+        && matches!(bytes[prefix_len], b'C' | b'M' | b'S' | b's' | b'H' | b'A')
+    {
+        prefix_len += 2;
+    }
+
+    format!("{}<{}>", &symbol[..prefix_len], &symbol[prefix_len..])
+}
+
+fn describe_key_code(code: i64) -> String {
+    let mut text = String::new();
+    let mut code = code & (KEY_DESCRIPTION_META_BIT | !-KEY_DESCRIPTION_META_BIT);
+    let base = code & !KEY_DESCRIPTION_MODIFIER_MASK;
+    let Some(_) = char::from_u32(base as u32) else {
+        return format!("[{code}]");
+    };
+
+    let tab_as_ci = base == '\t' as i64 && code & KEY_DESCRIPTION_META_BIT != 0;
+
+    if code & KEY_DESCRIPTION_ALT_BIT != 0 {
+        text.push_str("A-");
+        code &= !KEY_DESCRIPTION_ALT_BIT;
+    }
+    if code & KEY_DESCRIPTION_CTRL_BIT != 0
+        || (base < ' ' as i64
+            && base != KEY_DESCRIPTION_META_PREFIX
+            && base != '\t' as i64
+            && base != '\r' as i64)
+        || tab_as_ci
+    {
+        text.push_str("C-");
+        code &= !KEY_DESCRIPTION_CTRL_BIT;
+    }
+    if code & KEY_DESCRIPTION_HYPER_BIT != 0 {
+        text.push_str("H-");
+        code &= !KEY_DESCRIPTION_HYPER_BIT;
+    }
+    if code & KEY_DESCRIPTION_META_BIT != 0 {
+        text.push_str("M-");
+        code &= !KEY_DESCRIPTION_META_BIT;
+    }
+    if code & KEY_DESCRIPTION_SHIFT_BIT != 0 {
+        text.push_str("S-");
+        code &= !KEY_DESCRIPTION_SHIFT_BIT;
+    }
+    if code & KEY_DESCRIPTION_SUPER_BIT != 0 {
+        text.push_str("s-");
+        code &= !KEY_DESCRIPTION_SUPER_BIT;
+    }
+
+    match code {
+        0x00..=0x1F => {
+            if code == KEY_DESCRIPTION_META_PREFIX {
+                text.push_str("ESC");
+            } else if tab_as_ci {
+                text.push('i');
+            } else if code == '\t' as i64 {
+                text.push_str("TAB");
+            } else if code == '\r' as i64 {
+                text.push_str("RET");
+            } else if (1..=26).contains(&code) {
+                text.push((code as u8 + b'`') as char);
+            } else {
+                text.push((code as u8 + b'@') as char);
+            }
+        }
+        0x20 => text.push_str("SPC"),
+        0x7F => text.push_str("DEL"),
+        0x21..=0x7E => text.push(char::from_u32(code as u32).expect("ascii codepoint is valid")),
+        _ => {
+            if let Some(ch) = char::from_u32(code as u32) {
+                text.push(ch);
+            } else {
+                return format!("[{code}]");
+            }
+        }
+    }
+
+    text
+}
+
 fn seq_subseq(sequence: &Value, start: i64, end: Option<i64>) -> Result<Value, LispError> {
     let start = start.max(0) as usize;
     match sequence {
@@ -17165,7 +17463,9 @@ impl<'a> EdmacroKeyParser<'a> {
 fn parse_edmacro_token(token: &str) -> Result<Vec<Value>, LispError> {
     if token.starts_with("<<") && token.ends_with(">>") && token.len() >= 4 {
         let command = &token[2..token.len() - 2];
-        let mut items = vec![Value::Integer(apply_edmacro_modifiers('x' as i64, false, true))];
+        let mut items = vec![Value::Integer(apply_edmacro_modifiers(
+            'x' as i64, false, true,
+        ))];
         items.extend(command.chars().map(|ch| Value::Integer(ch as i64)));
         items.push(Value::Integer('\r' as i64));
         return Ok(items);
