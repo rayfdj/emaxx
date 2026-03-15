@@ -1,6 +1,14 @@
-use super::types::{LispError, Value};
+use super::types::{LispError, SharedStringState, Value};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+use std::{cell::RefCell, rc::Rc};
+
+const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
+
+fn encode_raw_byte(byte: u8) -> char {
+    char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
+        .expect("raw byte regex marker is a valid private-use character")
+}
 
 /// A simple s-expression reader. Handles the subset of Elisp syntax
 /// that appears in ERT test files: atoms, lists, strings, quotes,
@@ -16,6 +24,10 @@ impl<'a> Reader<'a> {
             input: input.as_bytes(),
             pos: 0,
         }
+    }
+
+    pub fn position(&self) -> usize {
+        self.pos
     }
 
     fn peek(&self) -> Option<u8> {
@@ -167,11 +179,22 @@ impl<'a> Reader<'a> {
     fn read_string(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume opening '"'
         let mut s = String::new();
+        let mut has_explicit_multibyte = false;
+        let mut has_raw_bytes = false;
         loop {
             match self.peek() {
                 None => return Err(LispError::EndOfInput),
                 Some(b'"') => {
                     self.advance();
+                    if has_explicit_multibyte || has_raw_bytes {
+                        return Ok(Some(Value::StringObject(Rc::new(RefCell::new(
+                            SharedStringState {
+                                text: s,
+                                props: Vec::new(),
+                                multibyte: has_explicit_multibyte,
+                            },
+                        )))));
+                    }
                     return Ok(Some(Value::String(s)));
                 }
                 Some(b'\\') => {
@@ -195,7 +218,13 @@ impl<'a> Reader<'a> {
                         Some(b'x') => {
                             // Hex escape: \xNN
                             let hex = self.read_hex_digits(2);
-                            if let Some(c) = char::from_u32(hex) {
+                            if hex <= 0x7F {
+                                s.push(char::from_u32(hex).unwrap_or(char::REPLACEMENT_CHARACTER));
+                            } else if hex <= 0xFF {
+                                has_raw_bytes = true;
+                                s.push(encode_raw_byte(hex as u8));
+                            } else if let Some(c) = char::from_u32(hex) {
+                                has_explicit_multibyte = true;
                                 s.push(c);
                             } else {
                                 s.push(char::REPLACEMENT_CHARACTER);
@@ -205,6 +234,9 @@ impl<'a> Reader<'a> {
                             // Unicode escape: \uNNNN
                             let hex = self.read_hex_digits(4);
                             if let Some(c) = char::from_u32(hex) {
+                                if hex > 0x7F {
+                                    has_explicit_multibyte = true;
+                                }
                                 s.push(c);
                             } else {
                                 s.push(char::REPLACEMENT_CHARACTER);
@@ -214,6 +246,9 @@ impl<'a> Reader<'a> {
                             // Unicode escape: \UNNNNNNNN
                             let hex = self.read_hex_digits(8);
                             if let Some(c) = char::from_u32(hex) {
+                                if hex > 0x7F {
+                                    has_explicit_multibyte = true;
+                                }
                                 s.push(c);
                             } else {
                                 s.push(char::REPLACEMENT_CHARACTER);
@@ -231,7 +266,13 @@ impl<'a> Reader<'a> {
                                     _ => break,
                                 }
                             }
-                            if let Some(c) = char::from_u32(val) {
+                            if val <= 0x7F {
+                                s.push(char::from_u32(val).unwrap_or(char::REPLACEMENT_CHARACTER));
+                            } else if val <= 0xFF {
+                                has_raw_bytes = true;
+                                s.push(encode_raw_byte(val as u8));
+                            } else if let Some(c) = char::from_u32(val) {
+                                has_explicit_multibyte = true;
                                 s.push(c);
                             } else {
                                 s.push(char::REPLACEMENT_CHARACTER);
@@ -249,6 +290,7 @@ impl<'a> Reader<'a> {
                 Some(_) => {
                     // Multi-byte UTF-8: decode properly
                     if let Some(c) = self.read_utf8_char() {
+                        has_explicit_multibyte = true;
                         s.push(c);
                     } else {
                         self.advance(); // skip invalid byte

@@ -315,6 +315,7 @@ impl LispError {
                         Some(Value::Symbol(symbol)) => match symbol.as_str() {
                             "file-error" => Some("file-error"),
                             "file-supersession" => Some("file-supersession"),
+                            "invalid-regexp" => Some("invalid-regexp"),
                             "search-failed" => Some("search-failed"),
                             _ => None,
                         },
@@ -329,6 +330,7 @@ impl LispError {
                             Some(Value::Symbol(symbol)) => match symbol.as_str() {
                                 "file-error" => Some("file-error"),
                                 "file-supersession" => Some("file-supersession"),
+                                "invalid-regexp" => Some("invalid-regexp"),
                                 "search-failed" => Some("search-failed"),
                                 _ => None,
                             },

@@ -5,6 +5,7 @@ use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value}
 use crate::buffer::TextPropertySpan;
 use crate::compat;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
+use fancy_regex::Regex as FancyRegex;
 use flate2::read::GzDecoder;
 use num_bigint::{BigInt, Sign};
 use num_traits::{Signed, ToPrimitive, Zero};
@@ -22,6 +23,7 @@ use std::{cell::RefCell, rc::Rc};
 use unicode_width::UnicodeWidthChar;
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
+const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static LCMS_ORACLE: OnceLock<Option<compat::OracleLocalConfig>> = OnceLock::new();
 
 fn is_lcms_builtin(name: &str) -> bool {
@@ -152,6 +154,24 @@ fn alternate_case_key(key: u32) -> Option<u32> {
     } else {
         None
     }
+}
+
+fn raw_byte_regex_char(byte: u8) -> char {
+    char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
+        .expect("raw byte regex marker is a valid private-use character")
+}
+
+fn raw_byte_from_regex_char(ch: char) -> Option<u8> {
+    let code = ch as u32;
+    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+        Some((code - RAW_BYTE_REGEX_BASE) as u8)
+    } else {
+        None
+    }
+}
+
+fn is_raw_byte_regex_char(ch: char) -> bool {
+    raw_byte_from_regex_char(ch).is_some()
 }
 
 fn single_char_case_mapping(iter: impl Iterator<Item = char>, fallback: u32) -> u32 {
@@ -576,6 +596,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "list"
             | "append"
             | "nth"
+            | "elt"
             | "nthcdr"
             | "length"
             | "reverse"
@@ -611,7 +632,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-to-multibyte"
             | "string-to-number"
             | "number-to-string"
+            | "string-match"
             | "string-match-p"
+            | "split-string"
             | "string-width"
             | "format"
             | "char-to-string"
@@ -641,13 +664,16 @@ pub fn is_builtin(name: &str) -> bool {
             | "forward-char"
             | "backward-char"
             | "forward-word"
+            | "skip-chars-forward"
             | "beginning-of-line"
             | "end-of-line"
             | "forward-line"
             | "search-forward"
             | "search-backward"
             | "re-search-forward"
+            | "re-search-backward"
             | "search-forward-regexp"
+            | "match-string"
             | "match-beginning"
             | "match-end"
             | "buffer-string"
@@ -843,6 +869,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "yes-or-no-p"
             // Reader
             | "read"
+            | "read-from-string"
             // More string/char ops
             | "char-equal"
             | "number-sequence"
@@ -1809,6 +1836,16 @@ pub fn call(
             let list = args[1].to_vec()?;
             Ok(list.get(n).cloned().unwrap_or(Value::Nil))
         }
+        "elt" => {
+            need_args(name, args, 2)?;
+            if matches!(args[0], Value::Nil | Value::Cons(_, _)) {
+                let n = args[1].as_integer()? as usize;
+                let list = args[0].to_vec()?;
+                Ok(list.get(n).cloned().unwrap_or(Value::Nil))
+            } else {
+                call(interp, "aref", args, env)
+            }
+        }
         "nthcdr" => {
             need_args(name, args, 2)?;
             let n = args[0].as_integer()? as usize;
@@ -2095,17 +2132,13 @@ pub fn call(
             }
             Ok(string_like_value(result, merge_string_props(props)))
         }
-        "string-match-p" => {
-            need_args(name, args, 2)?;
-            let pattern = string_text(&args[0])?;
-            let haystack = string_text(&args[1])?;
-            let regex = Regex::new(&translate_elisp_regex(&pattern))
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            Ok(if regex.is_match(&haystack) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+        "string-match" => string_match_impl(interp, args, env, true),
+        "string-match-p" => string_match_impl(interp, args, env, false),
+        "split-string" => {
+            if args.is_empty() || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            split_string_impl(&args[0], args.get(1), args.get(2))
         }
         "string-width" => {
             if args.is_empty() || args.len() > 3 {
@@ -2174,7 +2207,13 @@ pub fn call(
         }
         "string-to-multibyte" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(string_text(&args[0])?))
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            Ok(make_shared_string_value_with_multibyte(
+                string.text,
+                string.props,
+                true,
+            ))
         }
         "multibyte-char-to-unibyte" => {
             need_args(name, args, 1)?;
@@ -2687,6 +2726,12 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "skip-chars-forward" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            skip_chars_forward_impl(interp, &args[0], args.get(1))
+        }
         "backward-char" => {
             let n = if args.is_empty() {
                 1
@@ -2765,37 +2810,9 @@ pub fn call(
             }
         }
         "re-search-forward" | "search-forward-regexp" => {
-            if args.is_empty() || args.len() > 4 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            let pattern = string_text(&args[0])?;
-            let regex = Regex::new(&translate_elisp_regex(&pattern))
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            let start = interp.buffer.point();
-            let tail = interp
-                .buffer
-                .buffer_substring(start, interp.buffer.point_max())
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            let noerror = args.get(2).is_some_and(Value::is_truthy);
-            if let Some(captures) = regex.captures(&tail)
-                && let Some(matched) = captures.get(0)
-            {
-                let pos = start + tail[..matched.end()].chars().count();
-                set_match_data(interp, start, &tail, &captures);
-                interp.buffer.goto_char(pos);
-                Ok(Value::Integer(pos as i64))
-            } else {
-                interp.last_match_data = None;
-                if noerror {
-                    Ok(Value::Nil)
-                } else {
-                    Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("search-failed".into()),
-                        Value::String(pattern),
-                    ])))
-                }
-            }
+            buffer_regex_search(interp, args, env, true)
         }
+        "re-search-backward" => buffer_regex_search(interp, args, env, false),
         "buffer-string" => Ok(string_like_value(
             interp.buffer.buffer_string(),
             interp
@@ -4936,6 +4953,25 @@ pub fn call(
                 None => Err(LispError::EndOfInput),
             }
         }
+        "read-from-string" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let s = string_text(&args[0])?;
+            let chars: Vec<char> = s.chars().collect();
+            let start = normalize_string_index(args.get(1), 0, chars.len() as i64)? as usize;
+            let end = normalize_string_index(args.get(2), chars.len() as i64, chars.len() as i64)?
+                as usize;
+            let slice: String = chars[start..end].iter().collect();
+            let mut reader = super::reader::Reader::new(&slice);
+            match reader.read()? {
+                Some(val) => Ok(Value::cons(
+                    val,
+                    Value::Integer((start + reader.position()) as i64),
+                )),
+                None => Err(LispError::EndOfInput),
+            }
+        }
 
         // ── Misc ──
         "error" => {
@@ -6439,6 +6475,7 @@ pub fn call(
                 .unwrap_or(Value::Nil);
             Ok(result)
         }
+        "match-string" => match_string_impl(interp, args),
 
         "looking-at" => {
             need_args(name, args, 1)?;
@@ -6448,28 +6485,13 @@ pub fn call(
                 Value::String(pattern.clone()),
                 &mut env.clone(),
             );
-            let regex = Regex::new(&translate_elisp_regex(&pattern))
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            let pos = interp.buffer.point();
-            let tail = interp
-                .buffer
-                .buffer_substring(pos, interp.buffer.point_max())
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            if let Some(captures) = regex.captures(&tail)
-                && let Some(matched) = captures.get(0)
-                && matched.start() == 0
-            {
-                set_match_data(interp, pos, &tail, &captures);
-                Ok(Value::T)
-            } else {
-                interp.last_match_data = None;
-                Ok(Value::Nil)
-            }
+            looking_at_impl(interp, &args[0], env)
         }
 
         "replace-match" => {
             need_args(name, args, 1)?;
             let replacement = string_text(&args[0])?;
+            let literal = args.get(2).is_some_and(Value::is_truthy);
             let replace_index = args
                 .get(4)
                 .and_then(|value| value.as_integer().ok())
@@ -6484,6 +6506,7 @@ pub fn call(
                 .and_then(|entry| *entry)
                 .or_else(|| match_data.first().and_then(|entry| *entry))
                 .ok_or_else(|| LispError::Signal("No previous search".into()))?;
+            let replacement = expand_replace_match(interp, &replacement, &match_data, literal)?;
             let replacement_len = replacement.chars().count();
             let overlay_calls =
                 overlay_change_hook_calls(&interp.buffer, start, end, start + replacement_len);
@@ -7207,33 +7230,569 @@ fn compare_buffer_substrings(left: &str, right: &str) -> i64 {
     }
 }
 
+const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\x{2620}]";
+const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\x{2620}]";
+const REGEX_WHITESPACE_CLASS: &str = r"[\p{White_Space}]";
+const REGEX_NON_WHITESPACE_CLASS: &str = r"[^\p{White_Space}]";
+
+#[derive(Clone)]
+enum RegexClassAtom {
+    Char(char),
+    Posix(String),
+}
+
 fn translate_elisp_regex(pattern: &str) -> String {
+    translate_elisp_regex_with_point(pattern, "")
+}
+
+fn translate_elisp_regex_with_point(pattern: &str, point_assertion: &str) -> String {
     let mut translated = String::new();
-    let mut chars = pattern.chars();
+    let mut chars = pattern.chars().peekable();
+    let mut at_branch_start = true;
+    let mut can_repeat_previous = false;
+    let mut last_was_quantifier = false;
     while let Some(ch) = chars.next() {
+        if ch == '[' {
+            translated.push_str(&translate_bracket_expression(&mut chars));
+            at_branch_start = false;
+            can_repeat_previous = true;
+            last_was_quantifier = false;
+            continue;
+        }
         if ch == '\\' {
             match chars.next() {
-                Some('\'') => translated.push('$'),
-                Some('(') => translated.push('('),
-                Some(')') => translated.push(')'),
-                Some('|') => translated.push('|'),
-                Some(other) => {
-                    translated.push('\\');
-                    translated.push(other);
+                Some('`') => {
+                    translated.push_str(r"\A");
+                    can_repeat_previous =
+                        literalize_postfix_after_absolute_anchor(&mut translated, &mut chars);
+                    at_branch_start = false;
+                    last_was_quantifier = false;
                 }
-                None => translated.push('\\'),
+                Some('\'') => {
+                    translated.push_str(&translate_zero_width_assertion(&mut chars, r"\z"));
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('(') => {
+                    if chars.peek() == Some(&'?') {
+                        let mut preview = chars.clone();
+                        preview.next();
+                        if preview.peek() == Some(&':') {
+                            chars.next();
+                            chars.next();
+                            translated.push_str("(?:");
+                            at_branch_start = true;
+                            can_repeat_previous = false;
+                            last_was_quantifier = false;
+                            continue;
+                        }
+                    }
+                    translated.push('(');
+                    at_branch_start = true;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some(')') => {
+                    translated.push(')');
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                Some('|') => {
+                    translated.push('|');
+                    at_branch_start = true;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('{') => {
+                    translated.push('{');
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('}') => {
+                    translated.push('}');
+                    if chars.peek() == Some(&'?') {
+                        chars.next();
+                        if lazy_interval_has_following_context(&chars) {
+                            translated.push('?');
+                        }
+                    } else if let Some(next) = chars.peek().copied()
+                        && matches!(next, '*' | '+')
+                    {
+                        translated.push('\\');
+                        translated.push(next);
+                        chars.next();
+                    }
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = true;
+                }
+                Some('s') => {
+                    translated.push_str(regex_syntax_class(&mut chars, false));
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                Some('S') => {
+                    translated.push_str(regex_syntax_class(&mut chars, true));
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                Some('w') => {
+                    translated.push_str(REGEX_WORD_CLASS);
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                Some('W') => {
+                    translated.push_str(REGEX_NON_WORD_CLASS);
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                Some('b') => {
+                    translated.push_str(&translate_zero_width_assertion(&mut chars, r"\b"));
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('B') => {
+                    translated.push_str(&translate_zero_width_assertion(&mut chars, r"\B"));
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('<') => {
+                    translated.push_str(&translate_zero_width_assertion(
+                        &mut chars,
+                        r"(?<![\p{Alphabetic}\p{Number}_\x{2620}])(?=[\p{Alphabetic}\p{Number}_\x{2620}])",
+                    ));
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('>') => {
+                    translated.push_str(&translate_zero_width_assertion(
+                        &mut chars,
+                        r"(?<=[\p{Alphabetic}\p{Number}_\x{2620}])(?![\p{Alphabetic}\p{Number}_\x{2620}])",
+                    ));
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some('_') => match chars.next() {
+                    Some('<') => {
+                        translated.push_str(&translate_zero_width_assertion(
+                            &mut chars,
+                            r"(?<![\p{Alphabetic}\p{Number}_\x{2620}])(?=[\p{Alphabetic}\p{Number}_\x{2620}])",
+                        ));
+                        at_branch_start = false;
+                        can_repeat_previous = false;
+                        last_was_quantifier = false;
+                    }
+                    Some('>') => {
+                        translated.push_str(&translate_zero_width_assertion(
+                            &mut chars,
+                            r"(?<=[\p{Alphabetic}\p{Number}_\x{2620}])(?![\p{Alphabetic}\p{Number}_\x{2620}])",
+                        ));
+                        at_branch_start = false;
+                        can_repeat_previous = false;
+                        last_was_quantifier = false;
+                    }
+                    Some(other) => {
+                        translated.push_str(r"\_");
+                        translated.push(other);
+                        at_branch_start = false;
+                        can_repeat_previous = true;
+                        last_was_quantifier = false;
+                    }
+                    None => {
+                        translated.push_str(r"\_");
+                        at_branch_start = false;
+                        can_repeat_previous = true;
+                        last_was_quantifier = false;
+                    }
+                },
+                Some('=') => {
+                    translated
+                        .push_str(&translate_zero_width_assertion(&mut chars, point_assertion));
+                    at_branch_start = false;
+                    can_repeat_previous = false;
+                    last_was_quantifier = false;
+                }
+                Some(other) => {
+                    if other.is_ascii_alphabetic() {
+                        translated.push(other);
+                    } else {
+                        translated.push('\\');
+                        translated.push(other);
+                    }
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
+                None => {
+                    translated.push('\\');
+                    at_branch_start = false;
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
+                }
             }
-        } else {
-            match ch {
-                '(' | ')' | '{' | '}' => {
+            continue;
+        }
+
+        match ch {
+            '^' => {
+                if at_branch_start {
+                    translated.push('^');
+                    can_repeat_previous =
+                        literalize_postfix_after_absolute_anchor(&mut translated, &mut chars);
+                } else {
+                    translated.push_str(r"\^");
+                    can_repeat_previous = true;
+                }
+                at_branch_start = false;
+                last_was_quantifier = false;
+            }
+            '$' => {
+                if is_dollar_anchor_position(&chars) {
+                    translated.push_str(&translate_zero_width_assertion(&mut chars, "$"));
+                    can_repeat_previous = false;
+                } else {
+                    translated.push_str(r"\$");
+                    can_repeat_previous = true;
+                }
+                at_branch_start = false;
+                last_was_quantifier = false;
+            }
+            '*' | '+' | '?' => {
+                if can_repeat_previous {
+                    if last_was_quantifier {
+                        match ch {
+                            '?' => translated.push('?'),
+                            '*' => {}
+                            '+' => {
+                                translated.push('\\');
+                                translated.push('+');
+                                can_repeat_previous = true;
+                                last_was_quantifier = false;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        translated.push(ch);
+                        last_was_quantifier = true;
+                    }
+                } else {
                     translated.push('\\');
                     translated.push(ch);
+                    can_repeat_previous = true;
+                    last_was_quantifier = false;
                 }
-                _ => translated.push(ch),
+                at_branch_start = false;
+            }
+            '(' | ')' | '{' | '}' | '|' => {
+                translated.push('\\');
+                translated.push(ch);
+                at_branch_start = false;
+                can_repeat_previous = true;
+                last_was_quantifier = false;
+            }
+            _ => {
+                translated.push(ch);
+                at_branch_start = false;
+                can_repeat_previous = true;
+                last_was_quantifier = false;
             }
         }
     }
     translated
+}
+
+fn is_dollar_anchor_position(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let mut preview = chars.clone();
+    match preview.next() {
+        None => true,
+        Some('\\') => matches!(preview.next(), Some(')') | Some('|')),
+        _ => false,
+    }
+}
+
+fn literalize_postfix_after_absolute_anchor(
+    translated: &mut String,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> bool {
+    if let Some(next) = chars.peek().copied()
+        && matches!(next, '*' | '+' | '?')
+    {
+        translated.push('\\');
+        translated.push(next);
+        chars.next();
+        return true;
+    }
+    false
+}
+
+fn lazy_interval_has_following_context(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let mut preview = chars.clone();
+    match preview.next() {
+        None => false,
+        Some('\\') => !matches!(preview.next(), Some(')') | Some('|')),
+        _ => true,
+    }
+}
+
+fn translate_zero_width_assertion(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    assertion: &str,
+) -> String {
+    match chars.peek().copied() {
+        Some('*') => {
+            chars.next();
+            if chars.peek() == Some(&'?') {
+                chars.next();
+            }
+            if assertion.is_empty() {
+                String::new()
+            } else {
+                format!("(?:{assertion}|)")
+            }
+        }
+        Some('+') => {
+            chars.next();
+            if chars.peek() == Some(&'?') {
+                chars.next();
+            }
+            if assertion.is_empty() {
+                String::new()
+            } else {
+                assertion.to_string()
+            }
+        }
+        Some('?') => {
+            chars.next();
+            if assertion.is_empty() {
+                String::new()
+            } else {
+                format!("(?:{assertion}|)")
+            }
+        }
+        _ => {
+            if assertion.is_empty() {
+                "(?:)".into()
+            } else {
+                format!("(?:{assertion})")
+            }
+        }
+    }
+}
+
+fn regex_syntax_class(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    negated: bool,
+) -> &'static str {
+    match chars.next() {
+        Some('w') => {
+            if negated {
+                REGEX_NON_WORD_CLASS
+            } else {
+                REGEX_WORD_CLASS
+            }
+        }
+        Some('-') => {
+            if negated {
+                REGEX_NON_WHITESPACE_CLASS
+            } else {
+                REGEX_WHITESPACE_CLASS
+            }
+        }
+        Some(_) | None => {
+            if negated {
+                REGEX_NON_WORD_CLASS
+            } else {
+                REGEX_WORD_CLASS
+            }
+        }
+    }
+}
+
+fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
+    match name {
+        "alnum" => Some(r"\p{Alphabetic}\p{Number}"),
+        "alpha" => Some(r"\p{Alphabetic}"),
+        "ascii" => Some(r"\x00-\x7F"),
+        "blank" => Some(r"\t\p{Zs}"),
+        "cntrl" => Some(r"\x00-\x1F"),
+        "digit" => Some("0-9"),
+        "graph" => Some(r"\p{Alphabetic}\p{Number}\p{Punctuation}\p{Symbol}\p{Mark}"),
+        "lower" => Some(r"\p{Lowercase}"),
+        "multibyte" => Some(r"\x{0080}-\x{D7FF}\x{E100}-\x{10FFFF}"),
+        "nonascii" => Some(r"\x{0080}-\x{10FFFF}"),
+        "print" => Some(r"\p{Alphabetic}\p{Number}\p{Punctuation}\p{Symbol}\p{Mark}\p{Zs}"),
+        "punct" => Some(r"\p{Punctuation}"),
+        "space" => Some(r"\p{White_Space}"),
+        "unibyte" => Some(r"\x00-\x7F\x{E080}-\x{E0FF}"),
+        "upper" => Some(r"\p{Uppercase}"),
+        "word" => Some(r"\p{Alphabetic}\p{Number}_\x{2620}"),
+        "xdigit" => Some("0-9A-Fa-f"),
+        _ => None,
+    }
+}
+
+fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut translated = String::from("[");
+    let mut saw_atom = false;
+    if chars.peek() == Some(&'^') {
+        translated.push('^');
+        chars.next();
+    }
+
+    while let Some(ch) = chars.peek().copied() {
+        if ch == ']' && saw_atom {
+            chars.next();
+            translated.push(']');
+            return translated;
+        }
+        let atom_is_first = !saw_atom;
+        if atom_is_first {
+            let mut preview = chars.clone();
+            if preview.next() == Some('-')
+                && preview.next() == Some('-')
+                && preview.peek().copied() != Some(']')
+                && let Some(RegexClassAtom::Char(end)) = consume_regex_class_atom(&mut preview)
+                && let Some(range) = bracket_range_fragment('-', end)
+            {
+                translated.push_str(&range);
+                *chars = preview;
+                saw_atom = true;
+                continue;
+            }
+        }
+        let Some(atom) = consume_regex_class_atom(chars) else {
+            break;
+        };
+        let mut preview = chars.clone();
+        if preview.next() == Some('-')
+            && preview.peek().copied() != Some(']')
+            && !(atom_is_first && matches!(atom, RegexClassAtom::Char('-' | ']')))
+            && let Some(end_atom) = consume_regex_class_atom(&mut preview)
+            && let (RegexClassAtom::Char(start), RegexClassAtom::Char(end)) = (&atom, &end_atom)
+        {
+            if let Some(range) = bracket_range_fragment(*start, *end) {
+                translated.push_str(&range);
+            } else if is_empty_unicode_raw_range(*start, *end) {
+                return "(?!)".into();
+            } else {
+                return "[".into();
+            }
+            *chars = preview;
+            saw_atom = true;
+            continue;
+        }
+        if let Some(fragment) = regex_class_atom_fragment(&atom) {
+            translated.push_str(&fragment);
+        } else {
+            return "[".into();
+        }
+        saw_atom = true;
+    }
+
+    "[".into()
+}
+
+fn consume_regex_class_atom(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Option<RegexClassAtom> {
+    match chars.next()? {
+        '[' if chars.peek() == Some(&':') => {
+            chars.next();
+            let mut name = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == ':' && chars.peek() == Some(&']') {
+                    chars.next();
+                    return Some(RegexClassAtom::Posix(name));
+                }
+                name.push(ch);
+            }
+            Some(RegexClassAtom::Char('['))
+        }
+        '\\' => Some(RegexClassAtom::Char('\\')),
+        ch => Some(RegexClassAtom::Char(ch)),
+    }
+}
+
+fn regex_class_atom_fragment(atom: &RegexClassAtom) -> Option<String> {
+    match atom {
+        RegexClassAtom::Char(ch) => Some(bracket_char_fragment(*ch)),
+        RegexClassAtom::Posix(name) => regex_posix_class_fragment(name)
+            .map(str::to_string)
+            .or(None),
+    }
+}
+
+fn bracket_char_fragment(ch: char) -> String {
+    match ch {
+        '[' => r"\[".into(),
+        '\\' => r"\\".into(),
+        '-' => r"\-".into(),
+        ']' => r"\]".into(),
+        '^' => r"\^".into(),
+        _ => ch.to_string(),
+    }
+}
+
+fn bracket_range_endpoint_fragment(ch: char) -> String {
+    match ch {
+        '\\' => r"\\".into(),
+        ']' => r"\]".into(),
+        _ => ch.to_string(),
+    }
+}
+
+fn bracket_range_fragment(start: char, end: char) -> Option<String> {
+    if (start as u32) <= 0x7F && (end as u32) <= 0x7F && start <= end {
+        let mut expanded = String::new();
+        for code in (start as u32)..=(end as u32) {
+            expanded.push_str(&bracket_char_fragment(char::from_u32(code)?));
+        }
+        return Some(expanded);
+    }
+    match (
+        raw_byte_from_regex_char(start),
+        raw_byte_from_regex_char(end),
+    ) {
+        (Some(start), Some(end)) if start <= end => Some(format!(
+            "{}-{}",
+            bracket_range_endpoint_fragment(raw_byte_regex_char(start)),
+            bracket_range_endpoint_fragment(raw_byte_regex_char(end))
+        )),
+        (None, Some(end)) if (start as u32) <= 0x7F => Some(format!(
+            "{}-\\x7F{}-{}",
+            bracket_range_endpoint_fragment(start),
+            bracket_range_endpoint_fragment(raw_byte_regex_char(0x80)),
+            bracket_range_endpoint_fragment(raw_byte_regex_char(end))
+        )),
+        (None, None) if start <= end => Some(format!(
+            "{}-{}",
+            bracket_range_endpoint_fragment(start),
+            bracket_range_endpoint_fragment(end)
+        )),
+        _ => None,
+    }
+}
+
+fn is_empty_unicode_raw_range(start: char, end: char) -> bool {
+    match (
+        raw_byte_from_regex_char(start),
+        raw_byte_from_regex_char(end),
+    ) {
+        (None, Some(_)) => (start as u32) > 0x7F,
+        (Some(_), None) => (end as u32) > 0x7F,
+        _ => false,
+    }
 }
 
 fn regexp_quote_elisp(pattern: &str) -> String {
@@ -7257,15 +7816,140 @@ fn regexp_quote_elisp(pattern: &str) -> String {
     quoted
 }
 
+fn invalid_regexp_error(message: impl Into<String>) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("invalid-regexp".into()),
+        Value::String(message.into()),
+    ]))
+}
+
+fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
+    let mut chars = pattern.chars().peekable();
+    let mut next_group = 0usize;
+    let mut max_closed_group = 0usize;
+    let mut open_groups = Vec::new();
+    let mut in_class = false;
+    while let Some(ch) = chars.next() {
+        if in_class {
+            match ch {
+                '[' if chars.peek() == Some(&':') => {
+                    chars.next();
+                    let mut name = String::new();
+                    while let Some(next) = chars.next() {
+                        if next == ':' && chars.peek() == Some(&']') {
+                            chars.next();
+                            if regex_posix_class_fragment(&name).is_none() {
+                                return Err(invalid_regexp_error("Invalid character class"));
+                            }
+                            break;
+                        }
+                        name.push(next);
+                    }
+                }
+                '\\' => {
+                    chars.next();
+                }
+                ']' => in_class = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '[' => in_class = true,
+            '\\' => match chars.next() {
+                Some('(') => {
+                    next_group += 1;
+                    open_groups.push(next_group);
+                }
+                Some(')') => {
+                    let Some(group) = open_groups.pop() else {
+                        return Err(invalid_regexp_error("Unmatched )"));
+                    };
+                    max_closed_group = max_closed_group.max(group);
+                }
+                Some(digit @ '1'..='9') => {
+                    let backref = digit.to_digit(10).unwrap_or(0) as usize;
+                    if backref > max_closed_group {
+                        return Err(invalid_regexp_error("Invalid back reference"));
+                    }
+                }
+                Some('{') => {
+                    let mut preview = chars.clone();
+                    let mut found_close = false;
+                    while let Some(next) = preview.next() {
+                        if next == '\\' && preview.next() == Some('}') {
+                            found_close = true;
+                            break;
+                        }
+                    }
+                    if !found_close {
+                        return Err(invalid_regexp_error("Unmatched \\{"));
+                    }
+                }
+                Some(_) | None => {}
+            },
+            _ => {}
+        }
+    }
+    if !open_groups.is_empty() {
+        return Err(invalid_regexp_error("Unmatched ("));
+    }
+    Ok(())
+}
+
+fn enforce_elisp_repeat_limit(pattern: &str) -> Result<(), LispError> {
+    static REPEAT_PATTERN: OnceLock<Regex> = OnceLock::new();
+    let regex = REPEAT_PATTERN.get_or_init(|| {
+        Regex::new(r"\\\{([0-9]+)(?:,([0-9]*))?\\\}").expect("repeat limit regex is valid")
+    });
+    for captures in regex.captures_iter(pattern) {
+        let lower = captures
+            .get(1)
+            .and_then(|value| value.as_str().parse::<usize>().ok())
+            .unwrap_or(0);
+        let upper = captures.get(2).and_then(|value| {
+            let raw = value.as_str();
+            if raw.is_empty() {
+                None
+            } else {
+                raw.parse::<usize>().ok()
+            }
+        });
+        if lower > 65_535 || upper.is_some_and(|value| value > 65_535) {
+            return Err(invalid_regexp_error("Repeat count too large"));
+        }
+    }
+    Ok(())
+}
+
+fn compile_elisp_regex(
+    interp: &Interpreter,
+    pattern: &StringLike,
+    env: &Env,
+    point_assertion: &str,
+) -> Result<FancyRegex, LispError> {
+    enforce_elisp_repeat_limit(&pattern.text)?;
+    let translated = translate_elisp_regex_with_point(&pattern.text, point_assertion);
+    let case_fold = interp
+        .lookup_var("case-fold-search", env)
+        .is_some_and(|value| value.is_truthy());
+    let rendered = if case_fold {
+        format!("(?mi:{translated})")
+    } else {
+        format!("(?m:{translated})")
+    };
+    FancyRegex::new(&rendered).map_err(|error| invalid_regexp_error(error.to_string()))
+}
+
 fn set_match_data(
     interp: &mut Interpreter,
     start_pos: usize,
     haystack: &str,
-    captures: &regex::Captures<'_>,
+    captures: &fancy_regex::Captures<'_>,
 ) {
     interp.last_match_data = Some(
-        captures
-            .iter()
+        (0..captures.len())
+            .map(|index| captures.get(index))
             .map(|matched| {
                 matched.map(|matched| {
                     let start = start_pos + haystack[..matched.start()].chars().count();
@@ -7275,6 +7959,409 @@ fn set_match_data(
             })
             .collect(),
     );
+}
+
+fn string_match_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &Env,
+    update_match_data: bool,
+) -> Result<Value, LispError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs(
+            if update_match_data {
+                "string-match".into()
+            } else {
+                "string-match-p".into()
+            },
+            args.len(),
+        ));
+    }
+    let pattern = string_like(&args[0])
+        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+    let haystack = string_like(&args[1])
+        .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
+    validate_elisp_regex(&pattern.text)?;
+    let haystack_len = haystack.text.chars().count() as i64;
+    let start = normalize_string_index(args.get(2), 0, haystack_len)? as usize;
+    let tail: String = haystack.text.chars().skip(start).collect();
+    let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+    let captures = regex
+        .captures(&tail)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    if let Some(captures) = captures
+        && let Some(matched) = captures.get(0)
+    {
+        let match_start = start + tail[..matched.start()].chars().count();
+        if update_match_data {
+            set_match_data(interp, start, &tail, &captures);
+        }
+        Ok(Value::Integer(match_start as i64))
+    } else {
+        if update_match_data {
+            interp.last_match_data = None;
+        }
+        Ok(Value::Nil)
+    }
+}
+
+fn split_string_impl(
+    string: &Value,
+    separator: Option<&Value>,
+    omit_nulls: Option<&Value>,
+) -> Result<Value, LispError> {
+    let text = string_text(string)?;
+    let separator = separator
+        .filter(|value| !value.is_nil())
+        .map(string_text)
+        .transpose()?;
+    let omit_nulls = omit_nulls.is_some_and(Value::is_truthy);
+    let parts = if let Some(separator) = separator {
+        if separator.is_empty() {
+            text.chars()
+                .map(|ch| ch.to_string())
+                .filter(|part| !(omit_nulls && part.is_empty()))
+                .map(Value::String)
+                .collect::<Vec<_>>()
+        } else {
+            text.split(&separator)
+                .filter(|part| !(omit_nulls && part.is_empty()))
+                .map(|part| Value::String(part.to_string()))
+                .collect::<Vec<_>>()
+        }
+    } else {
+        text.split_whitespace()
+            .map(|part| Value::String(part.to_string()))
+            .collect::<Vec<_>>()
+    };
+    Ok(Value::list(parts))
+}
+
+struct SkipCharsSpec {
+    negate: bool,
+    literals: Vec<char>,
+    ranges: Vec<(char, char)>,
+    classes: Vec<String>,
+}
+
+fn parse_skip_chars_spec(spec: &str) -> SkipCharsSpec {
+    let mut chars = spec.chars().peekable();
+    let negate = if chars.peek() == Some(&'^') {
+        chars.next();
+        true
+    } else {
+        false
+    };
+    let mut literals = Vec::new();
+    let mut ranges = Vec::new();
+    let mut classes = Vec::new();
+
+    while let Some(ch) = chars.next() {
+        if ch == '[' && chars.peek() == Some(&':') {
+            chars.next();
+            let mut name = String::new();
+            while let Some(next) = chars.next() {
+                if next == ':' && chars.peek() == Some(&']') {
+                    chars.next();
+                    classes.push(name);
+                    break;
+                }
+                name.push(next);
+            }
+            continue;
+        }
+        let mut preview = chars.clone();
+        if preview.next() == Some('-')
+            && let Some(end) = preview.next()
+        {
+            chars.next();
+            chars.next();
+            ranges.push((ch, end));
+            continue;
+        }
+        literals.push(ch);
+    }
+
+    SkipCharsSpec {
+        negate,
+        literals,
+        ranges,
+        classes,
+    }
+}
+
+fn skip_char_matches_class(ch: char, class: &str) -> bool {
+    let code = raw_byte_from_regex_char(ch)
+        .map(u32::from)
+        .unwrap_or(ch as u32);
+    match class {
+        "alnum" => ch.is_alphanumeric(),
+        "alpha" => ch.is_alphabetic(),
+        "ascii" => code <= 0x7F,
+        "blank" => matches!(ch, ' ' | '\t') || (ch.is_whitespace() && ch != '\n' && ch != '\r'),
+        "cntrl" => code <= 0x1F,
+        "digit" => ch.is_ascii_digit(),
+        "graph" => !skip_char_matches_class(ch, "space") && !skip_char_matches_class(ch, "cntrl"),
+        "lower" => ch.is_lowercase(),
+        "multibyte" => !is_raw_byte_regex_char(ch) && (ch as u32) > 0xFF,
+        "nonascii" => code > 0x7F || (!is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
+        "print" => {
+            !skip_char_matches_class(ch, "cntrl")
+                && !matches!(ch, '\n' | '\r' | '\t' | '\u{000B}' | '\u{000C}')
+        }
+        "punct" => ch.is_ascii_punctuation(),
+        "space" => ch.is_whitespace(),
+        "unibyte" => code <= 0xFF,
+        "upper" => ch.is_uppercase(),
+        "word" => ch.is_alphanumeric() || ch == '_' || ch == '\u{2620}',
+        "xdigit" => ch.is_ascii_hexdigit(),
+        _ => false,
+    }
+}
+
+fn skip_char_matches_spec(ch: char, spec: &SkipCharsSpec) -> bool {
+    let literal_match = spec.literals.contains(&ch);
+    let range_match = spec
+        .ranges
+        .iter()
+        .any(|(start, end)| *start <= ch && ch <= *end);
+    let class_match = spec
+        .classes
+        .iter()
+        .any(|class| skip_char_matches_class(ch, class));
+    let matched = literal_match || range_match || class_match;
+    if spec.negate { !matched } else { matched }
+}
+
+fn skip_chars_forward_impl(
+    interp: &mut Interpreter,
+    spec_value: &Value,
+    limit_value: Option<&Value>,
+) -> Result<Value, LispError> {
+    let spec = parse_skip_chars_spec(&string_text(spec_value)?);
+    let limit = if let Some(limit_value) = limit_value {
+        if limit_value.is_nil() {
+            interp.buffer.point_max()
+        } else {
+            position_from_value(interp, limit_value)?
+        }
+    } else {
+        interp.buffer.point_max()
+    };
+    let start = interp.buffer.point();
+    while interp.buffer.point() < limit {
+        let Some(ch) = interp.buffer.char_at(interp.buffer.point()) else {
+            break;
+        };
+        if !skip_char_matches_spec(ch, &spec) {
+            break;
+        }
+        let _ = interp.buffer.forward_char(1);
+    }
+    Ok(Value::Integer(
+        interp.buffer.point().saturating_sub(start) as i64
+    ))
+}
+
+fn match_string_impl(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(LispError::WrongNumberOfArgs(
+            "match-string".into(),
+            args.len(),
+        ));
+    }
+    let index = args[0].as_integer()?;
+    if index < 0 {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    let match_data = interp
+        .last_match_data
+        .as_ref()
+        .ok_or_else(|| LispError::Signal("No match data, because no search succeeded".into()))?;
+    let Some((start, end)) = match_data.get(index as usize).and_then(|entry| *entry) else {
+        return Ok(Value::Nil);
+    };
+    if let Some(string) = args.get(1).filter(|value| !value.is_nil()) {
+        let string = string_like(string)
+            .ok_or_else(|| LispError::TypeError("string".into(), string.type_name()))?;
+        let chars: Vec<char> = string.text.chars().collect();
+        if end > chars.len() {
+            return Ok(Value::Nil);
+        }
+        return Ok(Value::String(chars[start..end].iter().collect()));
+    }
+    interp
+        .buffer
+        .buffer_substring(start, end)
+        .map(Value::String)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+fn looking_at_impl(
+    interp: &mut Interpreter,
+    pattern_value: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let pattern = string_like(pattern_value)
+        .ok_or_else(|| LispError::TypeError("string".into(), pattern_value.type_name()))?;
+    let regex = compile_elisp_regex(interp, &pattern, env, r"\A")?;
+    let pos = interp.buffer.point();
+    let tail = interp
+        .buffer
+        .buffer_substring(pos, interp.buffer.point_max())
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    if let Some(captures) = regex
+        .captures(&tail)
+        .map_err(|error| LispError::Signal(error.to_string()))?
+        && let Some(matched) = captures.get(0)
+        && matched.start() == 0
+    {
+        set_match_data(interp, pos, &tail, &captures);
+        Ok(Value::T)
+    } else {
+        interp.last_match_data = None;
+        Ok(Value::Nil)
+    }
+}
+
+fn buffer_regex_search(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &Env,
+    forward: bool,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs(
+            if forward {
+                "re-search-forward".into()
+            } else {
+                "re-search-backward".into()
+            },
+            args.len(),
+        ));
+    }
+    let pattern = string_like(&args[0])
+        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+    let regex = compile_elisp_regex(interp, &pattern, env, if forward { r"\A" } else { r"\z" })?;
+    let noerror = args.get(2).is_some_and(Value::is_truthy);
+
+    if forward {
+        let start = interp.buffer.point();
+        let tail = interp
+            .buffer
+            .buffer_substring(start, interp.buffer.point_max())
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        if let Some(captures) = regex
+            .captures(&tail)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            && let Some(matched) = captures.get(0)
+        {
+            let pos = start + tail[..matched.end()].chars().count();
+            set_match_data(interp, start, &tail, &captures);
+            interp.buffer.goto_char(pos);
+            return Ok(Value::Integer(pos as i64));
+        }
+    } else {
+        let prefix = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let prefix_chars: Vec<char> = prefix.chars().collect();
+        let mut best_match: Option<(usize, usize, usize)> = None;
+        let prefix_len = prefix_chars.len();
+        for offset in 0..=prefix_len {
+            let tail: String = prefix_chars[offset..].iter().collect();
+            let Some(captures) = regex
+                .captures(&tail)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+            else {
+                continue;
+            };
+            let Some(matched) = captures.get(0) else {
+                continue;
+            };
+            let match_start = 1 + offset + tail[..matched.start()].chars().count();
+            let match_end = 1 + offset + tail[..matched.end()].chars().count();
+            if match_end <= interp.buffer.point()
+                && best_match.is_none_or(|(best_start, best_end, _)| {
+                    match_start > best_start || (match_start == best_start && match_end > best_end)
+                })
+            {
+                best_match = Some((match_start, match_end, match_start.saturating_sub(1)));
+            }
+        }
+        if let Some((match_start, _, offset)) = best_match {
+            let tail: String = prefix_chars[offset..].iter().collect();
+            if let Some(captures) = regex
+                .captures(&tail)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+                && captures.get(0).is_some()
+            {
+                let start_pos = 1 + offset;
+                set_match_data(interp, start_pos, &tail, &captures);
+                interp.buffer.goto_char(match_start);
+                return Ok(Value::Integer(match_start as i64));
+            }
+        }
+    }
+
+    interp.last_match_data = None;
+    if noerror {
+        Ok(Value::Nil)
+    } else {
+        Err(LispError::SignalValue(Value::list([
+            Value::Symbol("search-failed".into()),
+            Value::String(pattern.text),
+        ])))
+    }
+}
+
+fn expand_replace_match(
+    interp: &Interpreter,
+    replacement: &str,
+    match_data: &[Option<(usize, usize)>],
+    literal: bool,
+) -> Result<String, LispError> {
+    if literal {
+        return Ok(replacement.to_string());
+    }
+    let chars: Vec<char> = replacement.chars().collect();
+    let mut expanded = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '\\'
+            && let Some(next) = chars.get(index + 1).copied()
+        {
+            match next {
+                '&' => expanded.push_str(&match_text_from_buffer(interp, match_data, 0)?),
+                '1'..='9' => {
+                    let capture_index = next.to_digit(10).unwrap_or(0) as usize;
+                    expanded.push_str(&match_text_from_buffer(interp, match_data, capture_index)?);
+                }
+                '\\' => expanded.push('\\'),
+                other => expanded.push(other),
+            }
+            index += 2;
+            continue;
+        }
+        expanded.push(chars[index]);
+        index += 1;
+    }
+    Ok(expanded)
+}
+
+fn match_text_from_buffer(
+    interp: &Interpreter,
+    match_data: &[Option<(usize, usize)>],
+    index: usize,
+) -> Result<String, LispError> {
+    let Some((start, end)) = match_data.get(index).and_then(|entry| *entry) else {
+        return Ok(String::new());
+    };
+    interp
+        .buffer
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))
 }
 
 fn update_match_data_after_replace(
@@ -8213,6 +9300,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn regex_resource_helper_patterns_compile() {
+        for literal in [
+            r#""\\(?:^\\|[^\\]\\)\\(?:\\\\\\\\\\)*\\\\""#,
+            r#""\\(?:^\\|[^\\]\\)\\(?:\\\\\\\\\\)*\\\\.\\=""#,
+        ] {
+            let pattern = Reader::new(literal)
+                .read()
+                .expect("pattern literal should parse")
+                .expect("pattern literal should contain a value");
+            let pattern = string_text(&pattern).expect("pattern literal should be a string");
+            let translated = translate_elisp_regex(&pattern);
+            let rendered = format!("(?m:{translated})");
+            assert!(
+                FancyRegex::new(&rendered).is_ok(),
+                "failed to compile `{pattern}` as `{rendered}`"
+            );
+        }
+    }
+
+    #[test]
     fn parse_font_names_matches_core_upstream_cases() {
         let cases = [
             (" ", Some(" "), None, None, None, None, None),
@@ -8870,7 +9977,9 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
         Value::String(text) => Some(StringLike {
             text: text.clone(),
             props: Vec::new(),
-            multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
+            multibyte: text
+                .chars()
+                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
         }),
         Value::StringObject(state) => {
             let state = state.borrow();
@@ -8906,7 +10015,9 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 });
                 i += 3;
             }
-            let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
+            let multibyte = text
+                .chars()
+                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
             Some(StringLike {
                 text,
                 props,
@@ -10187,7 +11298,10 @@ fn exact_time_from_old_style(
     items: &[Value],
 ) -> Result<ExactTimeValue, LispError> {
     if !(2..=4).contains(&items.len()) {
-        return Err(LispError::TypeError("time-value".into(), Value::list(items.to_vec()).type_name()));
+        return Err(LispError::TypeError(
+            "time-value".into(),
+            Value::list(items.to_vec()).type_name(),
+        ));
     }
     let high = integer_like_bigint(interp, &items[0])?;
     let low = integer_like_bigint(interp, &items[1])?;
@@ -10401,8 +11515,12 @@ fn parse_posix_zone_string(value: &str) -> Option<ZoneSpec> {
     };
     let mut parts = digits.split(':');
     let hours = parts.next()?.parse::<i32>().ok()?;
-    let minutes = parts.next().map_or(Some(0), |part| part.parse::<i32>().ok())?;
-    let seconds = parts.next().map_or(Some(0), |part| part.parse::<i32>().ok())?;
+    let minutes = parts
+        .next()
+        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
+    let seconds = parts
+        .next()
+        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
     if parts.next().is_some() {
         return None;
     }
@@ -10414,7 +11532,10 @@ fn parse_posix_zone_string(value: &str) -> Option<ZoneSpec> {
     })
 }
 
-fn zone_spec_from_value(zone: &Value, time: Option<&ExactTimeValue>) -> Result<ZoneSpec, LispError> {
+fn zone_spec_from_value(
+    zone: &Value,
+    time: Option<&ExactTimeValue>,
+) -> Result<ZoneSpec, LispError> {
     match zone {
         Value::Nil => Ok(local_zone_spec(time)),
         Value::T => Ok(ZoneSpec {
@@ -10517,7 +11638,10 @@ fn strip_leading_zeros(text: &str) -> String {
     }
 }
 
-fn parse_time_format_spec(spec: &[char], index: &mut usize) -> (bool, char, usize, Option<usize>, char) {
+fn parse_time_format_spec(
+    spec: &[char],
+    index: &mut usize,
+) -> (bool, char, usize, Option<usize>, char) {
     let mut minimal = false;
     let mut pad = '0';
     let mut colons = 0usize;
@@ -10555,7 +11679,13 @@ fn parse_time_format_spec(spec: &[char], index: &mut usize) -> (bool, char, usiz
     (minimal, pad, colons, width, conv)
 }
 
-fn format_zone_offset(offset_seconds: i32, colons: usize, minimal: bool, pad: char, width: Option<usize>) -> String {
+fn format_zone_offset(
+    offset_seconds: i32,
+    colons: usize,
+    minimal: bool,
+    pad: char,
+    width: Option<usize>,
+) -> String {
     let sign = if offset_seconds < 0 { '-' } else { '+' };
     let abs = offset_seconds.abs();
     let hours = abs / 3600;
@@ -10577,8 +11707,16 @@ fn format_zone_offset(offset_seconds: i32, colons: usize, minimal: bool, pad: ch
         };
         format!("{sign}{body}")
     } else {
-        let use_minimal = minimal || width.is_some_and(|target| target < canonical_digits.len() + 1);
-        format!("{sign}{}", if use_minimal { minimal_digits } else { canonical_digits })
+        let use_minimal =
+            minimal || width.is_some_and(|target| target < canonical_digits.len() + 1);
+        format!(
+            "{sign}{}",
+            if use_minimal {
+                minimal_digits
+            } else {
+                canonical_digits
+            }
+        )
     };
     if let Some(target_width) = width
         && rendered.len() < target_width
@@ -10634,7 +11772,11 @@ fn format_time_string_value(
                     digits
                 } else {
                     let fill = if pad == ' ' { ' ' } else { '0' };
-                    format!("{}{}", fill.to_string().repeat(width - digits.len()), digits)
+                    format!(
+                        "{}{}",
+                        fill.to_string().repeat(width - digits.len()),
+                        digits
+                    )
                 }
             }
             'd' => format!("{:02}", datetime.day()),
@@ -10650,7 +11792,11 @@ fn format_time_string_value(
                     trim_trailing_zeros(&digits)
                 } else if pad == ' ' {
                     let trimmed = trim_trailing_zeros(&digits);
-                    format!("{}{}", trimmed, " ".repeat(width.saturating_sub(trimmed.len())))
+                    format!(
+                        "{}{}",
+                        trimmed,
+                        " ".repeat(width.saturating_sub(trimmed.len()))
+                    )
                 } else {
                     digits
                 }
@@ -10731,7 +11877,10 @@ fn time_convert_value(time: &ExactTimeValue, form: &Value) -> Result<Value, Lisp
         Value::BigInteger(value) if value == &BigInt::from(4u8) => exact_time_to_old_style(time),
         Value::Integer(value) => exact_time_to_scaled_pair(time, &BigInt::from(*value)),
         Value::BigInteger(value) => exact_time_to_scaled_pair(time, value),
-        _ => Err(LispError::TypeError("time-convert form".into(), form.type_name())),
+        _ => Err(LispError::TypeError(
+            "time-convert form".into(),
+            form.type_name(),
+        )),
     }
 }
 
@@ -11632,6 +12781,7 @@ fn collect_interactive_args(
     };
     match spec {
         Value::String(spec) => parse_interactive_string(&spec, interp, env),
+        Value::StringObject(state) => parse_interactive_string(&state.borrow().text, interp, env),
         _ => {
             let value = eval_callable_metadata_form(interp, func, &spec, env)?;
             value.to_vec()
