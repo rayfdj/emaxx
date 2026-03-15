@@ -644,6 +644,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "listp"
             | "bufferp"
             | "buffer-live-p"
+            | "minibufferp"
             | "keymapp"
             | "zerop"
             | "natnump"
@@ -678,6 +679,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "mapcar"
             | "cl-mapcar"
             | "cl-mapcan"
+            | "cl-some"
             | "mapc"
             | "cl-reduce"
             | "apply"
@@ -1075,6 +1077,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "frame-parameter"
             | "frame-char-width"
             | "selected-window"
+            | "window-buffer"
             | "selected-frame"
             | "windowp"
             | "window-display-table"
@@ -1169,6 +1172,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "autoload"
             | "autoloadp"
             | "custom-autoload"
+            | "customize-set-variable"
             | "documentation"
             | "documentation-property"
             | "getenv"
@@ -2140,6 +2144,21 @@ pub fn call(
                 },
             )
         }
+        "minibufferp" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let buffer_id = if let Some(buffer) = args.first() {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            let is_minibuffer = interp
+                .get_buffer_by_id(buffer_id)
+                .map(|buffer| buffer.name.starts_with(" *Minibuf"))
+                .unwrap_or(false);
+            Ok(if is_minibuffer { Value::T } else { Value::Nil })
+        }
 
         "zerop" => {
             need_args(name, args, 1)?;
@@ -2462,6 +2481,25 @@ pub fn call(
                 flattened.extend(item.to_vec()?);
             }
             Ok(Value::list(flattened))
+        }
+        "cl-some" => {
+            need_args(name, args, 2)?;
+            let sequences = args[1..]
+                .iter()
+                .map(sequence_values)
+                .collect::<Result<Vec<_>, _>>()?;
+            let len = sequences.iter().map(Vec::len).min().unwrap_or(0);
+            for index in 0..len {
+                let call_args = sequences
+                    .iter()
+                    .map(|sequence| sequence[index].clone())
+                    .collect::<Vec<_>>();
+                let result = call_function_value(interp, &args[0], &call_args, env)?;
+                if result.is_truthy() {
+                    return Ok(result);
+                }
+            }
+            Ok(Value::Nil)
         }
         "mapc" => {
             need_args(name, args, 2)?;
@@ -4826,14 +4864,16 @@ pub fn call(
             match &args[0] {
                 Value::Buffer(id, _) if interp.has_buffer_id(*id) => Ok(args[0].clone()),
                 Value::Buffer(_, _) => Ok(Value::Nil),
-                Value::String(s) => match interp.find_buffer(s) {
-                    Some((id, name)) => Ok(Value::Buffer(id, name)),
-                    None => Ok(Value::Nil),
+                _ => match string_like(&args[0]) {
+                    Some(name) => match interp.find_buffer(&name.text) {
+                        Some((id, buffer_name)) => Ok(Value::Buffer(id, buffer_name)),
+                        None => Ok(Value::Nil),
+                    },
+                    None => Err(LispError::TypeError(
+                        "string-or-buffer".into(),
+                        args[0].type_name(),
+                    )),
                 },
-                _ => Err(LispError::TypeError(
-                    "string-or-buffer".into(),
-                    args[0].type_name(),
-                )),
             }
         }
         "get-buffer-create" => {
@@ -4841,13 +4881,9 @@ pub fn call(
             let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
             let buf_name = match &args[0] {
                 Value::Buffer(_, n) => n.clone(),
-                Value::String(s) => s.clone(),
-                _ => {
-                    return Err(LispError::TypeError(
-                        "string-or-buffer".into(),
-                        args[0].type_name(),
-                    ));
-                }
+                _ => string_text(&args[0]).map_err(|_| {
+                    LispError::TypeError("string-or-buffer".into(), args[0].type_name())
+                })?,
             };
             if let Some((id, name)) = interp.find_buffer(&buf_name) {
                 Ok(Value::Buffer(id, name))
@@ -5504,24 +5540,26 @@ pub fn call(
         }
         "switch-to-buffer" => {
             need_args(name, args, 1)?;
-            let id = match &args[0] {
-                Value::String(name) => interp
-                    .find_buffer(name)
+            let id = if let Some(name) = string_like(&args[0]).map(|string| string.text) {
+                interp
+                    .find_buffer(&name)
                     .map(|(id, _)| id)
-                    .unwrap_or_else(|| interp.create_buffer(name).0),
-                _ => interp.resolve_buffer_id(&args[0])?,
+                    .unwrap_or_else(|| interp.create_buffer(&name).0)
+            } else {
+                interp.resolve_buffer_id(&args[0])?
             };
             interp.switch_to_buffer_id(id)?;
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
         "pop-to-buffer-same-window" => {
             need_args(name, args, 1)?;
-            let id = match &args[0] {
-                Value::String(name) => interp
-                    .find_buffer(name)
+            let id = if let Some(name) = string_like(&args[0]).map(|string| string.text) {
+                interp
+                    .find_buffer(&name)
                     .map(|(id, _)| id)
-                    .unwrap_or_else(|| interp.create_buffer(name).0),
-                _ => interp.resolve_buffer_id(&args[0])?,
+                    .unwrap_or_else(|| interp.create_buffer(&name).0)
+            } else {
+                interp.resolve_buffer_id(&args[0])?
             };
             interp.switch_to_buffer_id(id)?;
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
@@ -6736,6 +6774,20 @@ pub fn call(
         | "lcms-temp->white-point"
         | "lcms2-available-p" => call_lcms_builtin(interp, name, args, env),
         "selected-window" => Ok(Value::Symbol("window".into())),
+        "window-buffer" => {
+            need_args(name, args, 1)?;
+            if is_window_value(interp, &args[0]) {
+                Ok(Value::Buffer(
+                    interp.current_buffer_id(),
+                    interp.buffer.name.clone(),
+                ))
+            } else {
+                Err(LispError::TypeError(
+                    "window".into(),
+                    args[0].type_name(),
+                ))
+            }
+        }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
         "windowp" => {
             need_args(name, args, 1)?;
@@ -6905,6 +6957,11 @@ pub fn call(
             interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
             interp.set_variable(&symbol, value.clone(), &mut Vec::new());
             Ok(value)
+        }
+        "customize-set-variable" => {
+            need_arg_range(name, args, 2, 3)?;
+            let symbol = args[0].as_symbol()?;
+            interp.set_custom_option(symbol, args[1].clone(), env)
         }
         "symbol-value" => {
             need_args(name, args, 1)?;
