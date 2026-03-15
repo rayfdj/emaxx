@@ -108,8 +108,8 @@ impl<'a> Reader<'a> {
                         self.advance();
                         // Only a dot if followed by whitespace or paren
                         match self.peek() {
-                            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
-                            | Some(b')') | Some(0x0C) => {
+                            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') | Some(b')')
+                            | Some(0x0C) => {
                                 let val = self.read()?.ok_or(LispError::EndOfInput)?;
                                 dotted_end = Some(val);
                                 self.skip_whitespace_and_comments();
@@ -339,12 +339,8 @@ impl<'a> Reader<'a> {
                 if modifiers & CTRL_BIT != 0 && value != 0 {
                     value = match value {
                         0x3f => 0x7f,
-                        n if (b'a' as i64..=b'z' as i64).contains(&n) => {
-                            (n - b'a' as i64) + 1
-                        }
-                        n if (b'A' as i64..=b'Z' as i64).contains(&n) => {
-                            (n - b'A' as i64) + 1
-                        }
+                        n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
+                        n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
                         n => n & 0x1f,
                     };
                     modifiers &= !CTRL_BIT;
@@ -396,7 +392,7 @@ impl<'a> Reader<'a> {
                             _ => {
                                 return Err(LispError::ReadError(format!(
                                     "unknown character name {{{name}}}"
-                                )))
+                                )));
                             }
                         };
                         return Ok(ch as i64);
@@ -680,9 +676,7 @@ impl<'a> Reader<'a> {
 }
 
 fn is_integer_token(token: &str) -> bool {
-    let digits = token
-        .strip_prefix(['+', '-'])
-        .unwrap_or(token);
+    let digits = token.strip_prefix(['+', '-']).unwrap_or(token);
     !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
 }
 

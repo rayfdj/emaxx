@@ -7,7 +7,7 @@ use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
 use crate::lisp::types::{Env, Value};
-use crate::perf::{self, PerfRunReport, PERF_RESULT_FILE_ENV};
+use crate::perf::{self, PERF_RESULT_FILE_ENV, PerfRunReport};
 
 #[derive(Clone, Debug, Default)]
 pub struct BatchRunOptions {
@@ -64,10 +64,12 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
             .read_all()
             .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
         for form in forms {
-            if extract_ert_batch_selector(&form).is_none() && extract_perf_request_from_form(&form).is_none() {
-                interpreter
-                    .eval(&form, &mut eval_env)
-                    .map_err(|error| format!("evaluate --eval expression `{expression}`: {error}"))?;
+            if extract_ert_batch_selector(&form).is_none()
+                && extract_perf_request_from_form(&form).is_none()
+            {
+                interpreter.eval(&form, &mut eval_env).map_err(|error| {
+                    format!("evaluate --eval expression `{expression}`: {error}")
+                })?;
             }
         }
     }
@@ -248,7 +250,8 @@ fn report_file_name(path: &Path) -> String {
         Ok(test_directory) => {
             let root = PathBuf::from(test_directory);
             let repo_root = root.parent().unwrap_or(&root);
-            compat::relative_test_path(repo_root, path).unwrap_or_else(|_| path.display().to_string())
+            compat::relative_test_path(repo_root, path)
+                .unwrap_or_else(|_| path.display().to_string())
         }
         Err(_) => path.display().to_string(),
     }

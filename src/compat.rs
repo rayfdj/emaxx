@@ -78,7 +78,11 @@ pub fn selector_aliases(test_native_comp: bool) -> BTreeMap<String, String> {
     } else {
         "(not (or (tag :unstable) (tag :nativecomp)))"
     };
-    let selector_all = if test_native_comp { "t" } else { "(not (tag :nativecomp))" };
+    let selector_all = if test_native_comp {
+        "t"
+    } else {
+        "(not (tag :nativecomp))"
+    };
 
     let mut aliases = BTreeMap::new();
     aliases.insert("default".into(), selector_default.into());
@@ -191,8 +195,8 @@ impl BatchReport {
     }
 
     pub fn read_json(path: &Path) -> Result<Self, String> {
-        let data =
-            fs::read_to_string(path).map_err(|err| format!("read batch report {}: {err}", path.display()))?;
+        let data = fs::read_to_string(path)
+            .map_err(|err| format!("read batch report {}: {err}", path.display()))?;
         serde_json::from_str(&data)
             .map_err(|err| format!("parse batch report {}: {err}", path.display()))
     }
@@ -358,7 +362,9 @@ pub fn resolve_timeout() -> Result<Option<Duration>, String> {
             Ok(Some(Duration::from_secs(seconds)))
         }
         Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err("EMACS_TEST_TIMEOUT is not valid UTF-8".into()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("EMACS_TEST_TIMEOUT is not valid UTF-8".into())
+        }
     }
 }
 
@@ -483,10 +489,7 @@ fn should_visit(entry: &DirEntry, test_root: &Path) -> bool {
     !relative.components().any(|component| match component {
         Component::Normal(name) => {
             let name = name.to_string_lossy();
-            name == "manual"
-                || name == "data"
-                || name == "infra"
-                || name.ends_with("resources")
+            name == "manual" || name == "data" || name == "infra" || name.ends_with("resources")
         }
         _ => false,
     })
@@ -555,7 +558,12 @@ pub fn current_emacs_runtime(emacs_binary: &Path) -> Result<EmacsRuntime, String
     let mut lines = stdout.lines();
     let emacs_version = lines
         .next()
-        .ok_or_else(|| format!("{} --batch produced no emacs version", emacs_binary.display()))?
+        .ok_or_else(|| {
+            format!(
+                "{} --batch produced no emacs version",
+                emacs_binary.display()
+            )
+        })?
         .trim()
         .to_string();
     let system_type = lines
@@ -627,7 +635,11 @@ pub fn validate_oracle(lock: &OracleLock, local: &OracleLocalConfig) -> Result<(
     Ok(())
 }
 
-pub fn filter_files(files: &[PathBuf], repo_root: &Path, needle: Option<&str>) -> Result<Vec<PathBuf>, String> {
+pub fn filter_files(
+    files: &[PathBuf],
+    repo_root: &Path,
+    needle: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
     match needle {
         Some(needle) => files
             .iter()
@@ -645,7 +657,9 @@ pub fn filter_files(files: &[PathBuf], repo_root: &Path, needle: Option<&str>) -
 
 pub fn compile_name_filter(pattern: Option<&str>) -> Result<Option<Regex>, String> {
     pattern
-        .map(|value| Regex::new(value).map_err(|err| format!("invalid --name regex `{value}`: {err}")))
+        .map(|value| {
+            Regex::new(value).map_err(|err| format!("invalid --name regex `{value}`: {err}"))
+        })
         .transpose()
 }
 
@@ -780,11 +794,17 @@ pub fn compare_reports(expected: &BatchReport, actual: &BatchReport) -> Comparis
             }
             (Some(_), None) => issues.push(ComparisonIssue {
                 kind: "missing_test_result".into(),
-                detail: format!("{} reported `{name}` but {} did not", expected.runner, actual.runner),
+                detail: format!(
+                    "{} reported `{name}` but {} did not",
+                    expected.runner, actual.runner
+                ),
             }),
             (None, Some(_)) => issues.push(ComparisonIssue {
                 kind: "extra_test_result".into(),
-                detail: format!("{} reported `{name}` but {} did not", actual.runner, expected.runner),
+                detail: format!(
+                    "{} reported `{name}` but {} did not",
+                    actual.runner, expected.runner
+                ),
             }),
             (None, None) => {}
         }
@@ -809,8 +829,14 @@ fn format_name_diff<T>(left: &[T], right: &[T]) -> String
 where
     T: ToString,
 {
-    let left = left.iter().map(ToString::to_string).collect::<BTreeSet<_>>();
-    let right = right.iter().map(ToString::to_string).collect::<BTreeSet<_>>();
+    let left = left
+        .iter()
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    let right = right
+        .iter()
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
     let missing = left.difference(&right).cloned().collect::<Vec<_>>();
     let extra = right.difference(&left).cloned().collect::<Vec<_>>();
     format!("missing {:?}; extra {:?}", missing, extra)
@@ -836,22 +862,13 @@ mod tests {
             aliases.get("default"),
             Some(&"(not (or (tag :expensive-test) (tag :unstable)))".to_string())
         );
-        assert_eq!(
-            aliases.get("check"),
-            aliases.get("default")
-        );
-        assert_eq!(
-            aliases.get("check-maybe"),
-            aliases.get("default")
-        );
+        assert_eq!(aliases.get("check"), aliases.get("default"));
+        assert_eq!(aliases.get("check-maybe"), aliases.get("default"));
         assert_eq!(
             aliases.get("expensive"),
             Some(&"(not (tag :unstable))".to_string())
         );
-        assert_eq!(
-            aliases.get("check-expensive"),
-            aliases.get("expensive")
-        );
+        assert_eq!(aliases.get("check-expensive"), aliases.get("expensive"));
         assert_eq!(aliases.get("all"), Some(&"t".to_string()));
         assert_eq!(aliases.get("check-all"), aliases.get("all"));
     }
@@ -875,12 +892,7 @@ mod tests {
 
     #[test]
     fn resolve_selector_supports_named_aliases_and_literals() {
-        let lock = OracleLock::current(
-            "deadbeef".into(),
-            "31.0.50".into(),
-            "darwin".into(),
-            true,
-        );
+        let lock = OracleLock::current("deadbeef".into(), "31.0.50".into(), "darwin".into(), true);
         assert_eq!(
             resolve_selector(&lock, "check-expensive").expect("resolve selector"),
             "(not (tag :unstable))"
@@ -951,8 +963,18 @@ mod tests {
         };
         let comparison = compare_reports(&oracle, &actual);
         assert!(!comparison.matches);
-        assert!(comparison.issues.iter().any(|issue| issue.kind == "selected_tests"));
-        assert!(comparison.issues.iter().any(|issue| issue.kind == "test_status"));
+        assert!(
+            comparison
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "selected_tests")
+        );
+        assert!(
+            comparison
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "test_status")
+        );
     }
 
     #[test]
@@ -1027,9 +1049,6 @@ mod tests {
             Some(&Some("/tmp/emacs/test".to_string()))
         );
         assert_eq!(envs.get("EMACSLOADPATH"), Some(&None));
-        assert_eq!(
-            envs.get("EMACS_TEST_VERBOSE"),
-            Some(&Some("1".to_string()))
-        );
+        assert_eq!(envs.get("EMACS_TEST_VERBOSE"), Some(&Some("1".to_string())));
     }
 }

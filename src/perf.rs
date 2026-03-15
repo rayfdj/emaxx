@@ -170,8 +170,8 @@ pub struct PerfScenarioSummary {
 impl PerfScenarioManifest {
     pub fn load() -> Result<Self, String> {
         let path = compat::compat_path(PERF_SCENARIO_MANIFEST_PATH);
-        let data =
-            fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+        let data = fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
         Self::from_json_str(&data).map_err(|error| format!("parse {}: {error}", path.display()))
     }
 
@@ -197,7 +197,10 @@ impl PerfScenarioManifest {
                 return Err(format!("duplicate scenario id `{}`", scenario.id));
             }
             if scenario.oracle_adapter.trim().is_empty() {
-                return Err(format!("scenario `{}` is missing oracle_adapter", scenario.id));
+                return Err(format!(
+                    "scenario `{}` is missing oracle_adapter",
+                    scenario.id
+                ));
             }
             if scenario.warmup == 0 {
                 return Err(format!("scenario `{}` must use warmup >= 1", scenario.id));
@@ -206,7 +209,10 @@ impl PerfScenarioManifest {
                 return Err(format!("scenario `{}` must use samples >= 1", scenario.id));
             }
             if scenario.timeout_secs == 0 {
-                return Err(format!("scenario `{}` must use timeout_secs >= 1", scenario.id));
+                return Err(format!(
+                    "scenario `{}` must use timeout_secs >= 1",
+                    scenario.id
+                ));
             }
             if scenario.tier == PerfTier::Comparable && scenario.emaxx_adapter.is_none() {
                 return Err(format!(
@@ -355,9 +361,10 @@ pub fn read_json<T>(path: &Path, label: &str) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let json =
-        fs::read_to_string(path).map_err(|error| format!("read {label} {}: {error}", path.display()))?;
-    serde_json::from_str(&json).map_err(|error| format!("parse {label} {}: {error}", path.display()))
+    let json = fs::read_to_string(path)
+        .map_err(|error| format!("read {label} {}: {error}", path.display()))?;
+    serde_json::from_str(&json)
+        .map_err(|error| format!("parse {label} {}: {error}", path.display()))
 }
 
 pub fn make_artifact_root() -> Result<PathBuf, String> {
@@ -377,8 +384,7 @@ pub fn scenario_artifact_dir(root: &Path, scenario_id: &str) -> PathBuf {
 pub fn create_temp_home(scenario_dir: &Path) -> Result<PathBuf, String> {
     let home = scenario_dir.join("home");
     if home.exists() {
-        fs::remove_dir_all(&home)
-            .map_err(|error| format!("reset {}: {error}", home.display()))?;
+        fs::remove_dir_all(&home).map_err(|error| format!("reset {}: {error}", home.display()))?;
     }
     fs::create_dir_all(&home).map_err(|error| format!("create {}: {error}", home.display()))?;
     Ok(home)
@@ -427,7 +433,10 @@ pub fn ensure_release_emaxx_binary() -> Result<PathBuf, String> {
     }
     let candidate = project_root.join("target").join("release").join("emaxx");
     if !candidate.exists() {
-        return Err(format!("expected release emaxx binary at {}", candidate.display()));
+        return Err(format!(
+            "expected release emaxx binary at {}",
+            candidate.display()
+        ));
     }
     Ok(candidate)
 }
@@ -596,13 +605,10 @@ pub fn expand_scenario_cases(scenario: &PerfScenario) -> Vec<String> {
             .collect(),
             _ => Vec::new(),
         },
-        "coding_decoder" => vec![
-            "without-optimization",
-            "with-optimization",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
+        "coding_decoder" => vec!["without-optimization", "with-optimization"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -844,9 +850,14 @@ fn seed_scattered_overlays(buffer: &mut Buffer, buffer_id: u64, n: usize, seed: 
         let begin = rng.emacs_overlay_begin(buffer.point_max());
         let len = rng.inclusive(24);
         let end = begin.saturating_add(len);
-        buffer
-            .overlays
-            .push(Overlay::new(overlay_id as u64 + 1, begin, end, buffer_id, false, false));
+        buffer.overlays.push(Overlay::new(
+            overlay_id as u64 + 1,
+            begin,
+            end,
+            buffer_id,
+            false,
+            false,
+        ));
     }
 }
 
@@ -1047,10 +1058,14 @@ mod tests {
 
     #[test]
     fn classification_thresholds_match_policy() {
-        let oracle = PerfCaseReport::completed("case", "seconds", vec![1.0, 1.0, 1.0], 0, 0.0, None);
-        let faster = PerfCaseReport::completed("case", "seconds", vec![0.94, 0.95, 0.96], 0, 0.0, None);
-        let parity = PerfCaseReport::completed("case", "seconds", vec![1.02, 1.0, 1.04], 0, 0.0, None);
-        let slower = PerfCaseReport::completed("case", "seconds", vec![1.06, 1.08, 1.1], 0, 0.0, None);
+        let oracle =
+            PerfCaseReport::completed("case", "seconds", vec![1.0, 1.0, 1.0], 0, 0.0, None);
+        let faster =
+            PerfCaseReport::completed("case", "seconds", vec![0.94, 0.95, 0.96], 0, 0.0, None);
+        let parity =
+            PerfCaseReport::completed("case", "seconds", vec![1.02, 1.0, 1.04], 0, 0.0, None);
+        let slower =
+            PerfCaseReport::completed("case", "seconds", vec![1.06, 1.08, 1.1], 0, 0.0, None);
         assert_eq!(
             classify_case(Some(&oracle), Some(&faster)).0,
             PerfComparisonClass::Faster
@@ -1103,7 +1118,10 @@ mod tests {
             oracle_adapter: "noverlay_suite".into(),
             emaxx_adapter: Some("noverlay_marker_suite".into()),
             load_files: vec!["test/manual/noverlay/overlay-perf.el".into()],
-            params: BTreeMap::from([("suite".into(), JsonValue::String("perf-marker-suite".into()))]),
+            params: BTreeMap::from([(
+                "suite".into(),
+                JsonValue::String("perf-marker-suite".into()),
+            )]),
             warmup: 1,
             samples: 5,
             timeout_secs: 60,

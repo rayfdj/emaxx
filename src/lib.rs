@@ -3,8 +3,8 @@
 
 pub mod batch;
 pub mod buffer;
-pub mod compat;
 pub mod command;
+pub mod compat;
 pub mod display;
 pub mod keymap;
 pub mod lisp;

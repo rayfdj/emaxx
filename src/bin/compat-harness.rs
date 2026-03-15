@@ -186,7 +186,11 @@ fn print_selectors() -> Result<(), String> {
 fn list_tests(args: ListArgs) -> Result<(), String> {
     let context = load_context()?;
     let selector = compat::resolve_selector(&context.lock, &args.selector)?;
-    let files = selected_files(&context.local.emacs_repo, args.scope.into(), args.file.as_deref())?;
+    let files = selected_files(
+        &context.local.emacs_repo,
+        args.scope.into(),
+        args.file.as_deref(),
+    )?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("list")?;
 
@@ -218,7 +222,9 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
                 println!(
                     "{}: load-error {}",
                     filtered.file,
-                    filtered.file_error.unwrap_or_else(|| "unknown load error".into())
+                    filtered
+                        .file_error
+                        .unwrap_or_else(|| "unknown load error".into())
                 );
             }
         }
@@ -230,7 +236,11 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
 fn run_compat(args: RunArgs) -> Result<u8, String> {
     let context = load_context()?;
     let selector = compat::resolve_selector(&context.lock, &args.selector)?;
-    let files = selected_files(&context.local.emacs_repo, args.scope.into(), args.file.as_deref())?;
+    let files = selected_files(
+        &context.local.emacs_repo,
+        args.scope.into(),
+        args.file.as_deref(),
+    )?;
     let timeout = compat::resolve_timeout()?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("run")?;
@@ -319,7 +329,11 @@ fn load_context() -> Result<Context, String> {
     Ok(Context { lock, local })
 }
 
-fn selected_files(repo_root: &Path, scope: Scope, file_filter: Option<&str>) -> Result<Vec<PathBuf>, String> {
+fn selected_files(
+    repo_root: &Path,
+    scope: Scope,
+    file_filter: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
     let files = compat::discover_test_files(repo_root, scope)?;
     let filtered = compat::filter_files(&files, repo_root, file_filter)?;
     if file_filter.is_some() && filtered.is_empty() {
@@ -382,13 +396,8 @@ fn run_oracle(
     command.arg(format!("(emaxx-compat-run (quote {selector}))"));
 
     let process = run_command(command, timeout)?;
-    let report = load_or_synthesize_report(
-        &result_path,
-        "oracle",
-        relative_file,
-        selector,
-        &process,
-    )?;
+    let report =
+        load_or_synthesize_report(&result_path, "oracle", relative_file, selector, &process)?;
     Ok(RunnerArtifacts { report, process })
 }
 
@@ -422,18 +431,11 @@ fn run_emaxx(
     command.arg("-l");
     command.arg(file);
     command.arg("--eval");
-    command.arg(format!(
-        "(ert-run-tests-batch-and-exit (quote {selector}))"
-    ));
+    command.arg(format!("(ert-run-tests-batch-and-exit (quote {selector}))"));
 
     let process = run_command(command, timeout)?;
-    let report = load_or_synthesize_report(
-        &result_path,
-        "emaxx",
-        relative_file,
-        selector,
-        &process,
-    )?;
+    let report =
+        load_or_synthesize_report(&result_path, "emaxx", relative_file, selector, &process)?;
     Ok(RunnerArtifacts { report, process })
 }
 
@@ -468,16 +470,26 @@ fn load_or_synthesize_report(
     } else {
         "process terminated without a status code".to_string()
     };
-    Ok(BatchReport::load_error(runner, relative_file, selector, message))
+    Ok(BatchReport::load_error(
+        runner,
+        relative_file,
+        selector,
+        message,
+    ))
 }
 
 fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<ProcessResult, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| format!("spawn command: {error}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("spawn command: {error}"))?;
     let started = Instant::now();
 
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| format!("wait for command: {error}"))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("wait for command: {error}"))?
+        {
             let stdout = read_pipe(child.stdout.take())?;
             let stderr = read_pipe(child.stderr.take())?;
             return Ok(ProcessResult {
@@ -489,8 +501,12 @@ fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Proces
         }
 
         if timeout.is_some_and(|limit| started.elapsed() > limit) {
-            child.kill().map_err(|error| format!("kill timed out command: {error}"))?;
-            let status = child.wait().map_err(|error| format!("wait after kill: {error}"))?;
+            child
+                .kill()
+                .map_err(|error| format!("kill timed out command: {error}"))?;
+            let status = child
+                .wait()
+                .map_err(|error| format!("wait after kill: {error}"))?;
             let stdout = read_pipe(child.stdout.take())?;
             let stderr = read_pipe(child.stderr.take())?;
             return Ok(ProcessResult {
@@ -535,15 +551,18 @@ fn write_json(path: &Path, value: &impl Serialize, label: &str) -> Result<(), St
         fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-    let json =
-        serde_json::to_string_pretty(value).map_err(|error| format!("serialize {label}: {error}"))?;
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("serialize {label}: {error}"))?;
     fs::write(path, json).map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 fn ensure_emaxx_binary() -> Result<PathBuf, String> {
     let current = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
     let Some(bin_dir) = current.parent() else {
-        return Err(format!("cannot locate binary directory for {}", current.display()));
+        return Err(format!(
+            "cannot locate binary directory for {}",
+            current.display()
+        ));
     };
     let candidate = bin_dir.join("emaxx");
 
@@ -572,6 +591,9 @@ mod tests {
     fn per_file_artifact_directory_preserves_tree_shape() {
         let root = PathBuf::from("/tmp/compat");
         let dir = per_file_artifact_dir(&root, "test/src/buffer-tests.el");
-        assert_eq!(dir, PathBuf::from("/tmp/compat/test/src/buffer-tests.compat"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/tmp/compat/test/src/buffer-tests.compat")
+        );
     }
 }
