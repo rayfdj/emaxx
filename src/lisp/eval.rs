@@ -692,6 +692,10 @@ impl Interpreter {
         self.records.iter().find(|record| record.id == id)
     }
 
+    pub fn find_record_mut(&mut self, id: u64) -> Option<&mut RecordState> {
+        self.records.iter_mut().find(|record| record.id == id)
+    }
+
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
         if let Some((_, existing)) = self
             .sqlite_handles
@@ -3852,12 +3856,12 @@ impl Interpreter {
         }
         match self.eval(&items[1], env) {
             Err(e) => {
-                if let Some(expected_type) = should_error_type(items)
-                    && expected_type != e.condition_type()
+                if let Some(expected_types) = should_error_types(items)
+                    && !expected_types.iter().any(|expected| expected == &e.condition_type())
                 {
                     return Err(LispError::ErtTestFailed(format!(
                         "Test failed: expected error type {} but got {}",
-                        expected_type,
+                        expected_types.join(" or "),
                         e.condition_type()
                     )));
                 }
@@ -3929,7 +3933,7 @@ impl Interpreter {
                     self.test_results.push(TestOutcome {
                         name: test.name.clone(),
                         status,
-                        condition_type: Some(e.condition_type().to_string()),
+                        condition_type: Some(e.condition_type()),
                         message: Some(e.to_string()),
                     });
                 }
@@ -4010,11 +4014,18 @@ fn parse_ert_tags(value: &Value) -> Vec<String> {
     }
 }
 
-fn should_error_type(items: &[Value]) -> Option<String> {
+fn should_error_types(items: &[Value]) -> Option<Vec<String>> {
     let mut cursor = 2;
     while cursor + 1 < items.len() {
         match keyword_symbol_name(&items[cursor]).as_deref() {
-            Some(":type") => return Some(selector_atom(&items[cursor + 1])),
+            Some(":type") => {
+                let raw = unquote(&items[cursor + 1]);
+                if let Ok(values) = raw.to_vec() {
+                    let names = values.into_iter().map(|value| selector_atom(&value)).collect();
+                    return Some(names);
+                }
+                return Some(vec![selector_atom(&raw)]);
+            }
             Some(_) => cursor += 2,
             None => break,
         }
@@ -4296,7 +4307,7 @@ fn feature_name(value: &Value) -> Option<String> {
 fn is_compat_preloaded_feature(feature: &str) -> bool {
     matches!(
         feature,
-        "cl-lib" | "cus-edit" | "cus-load" | "ert-x" | "seq"
+        "cl-lib" | "cus-edit" | "cus-load" | "ert-x" | "map" | "seq" | "subr-x"
     )
 }
 

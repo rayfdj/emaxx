@@ -4,6 +4,9 @@ use num_traits::ToPrimitive;
 use std::{cell::RefCell, rc::Rc};
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
+const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
+const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
+const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
 
 fn encode_raw_byte(byte: u8) -> char {
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
@@ -181,17 +184,18 @@ impl<'a> Reader<'a> {
         let mut s = String::new();
         let mut has_explicit_multibyte = false;
         let mut has_raw_bytes = false;
+        let mut has_invalid_unicode = false;
         loop {
             match self.peek() {
                 None => return Err(LispError::EndOfInput),
                 Some(b'"') => {
                     self.advance();
-                    if has_explicit_multibyte || has_raw_bytes {
+                    if has_explicit_multibyte || has_raw_bytes || has_invalid_unicode {
                         return Ok(Some(Value::StringObject(Rc::new(RefCell::new(
                             SharedStringState {
                                 text: s,
                                 props: Vec::new(),
-                                multibyte: has_explicit_multibyte,
+                                multibyte: has_explicit_multibyte || has_invalid_unicode,
                             },
                         )))));
                     }
@@ -216,42 +220,48 @@ impl<'a> Reader<'a> {
                         Some(b'b') => s.push('\x08'),
                         Some(b'f') => s.push('\x0C'),
                         Some(b'x') => {
-                            // Hex escape: \xNN
-                            let hex = self.read_hex_digits(2);
+                            // Emacs reads as many contiguous hex digits as it can here.
+                            let hex = self.read_hex_digits(usize::MAX);
                             if hex <= 0x7F {
                                 s.push(char::from_u32(hex).unwrap_or(char::REPLACEMENT_CHARACTER));
                             } else if hex <= 0xFF {
                                 has_raw_bytes = true;
                                 s.push(encode_raw_byte(hex as u8));
-                            } else if let Some(c) = char::from_u32(hex) {
+                            } else if valid_unicode_scalar(hex) {
+                                let c = char::from_u32(hex).expect("validated scalar");
                                 has_explicit_multibyte = true;
                                 s.push(c);
                             } else {
-                                s.push(char::REPLACEMENT_CHARACTER);
+                                has_invalid_unicode = true;
+                                s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
                         Some(b'u') => {
                             // Unicode escape: \uNNNN
                             let hex = self.read_hex_digits(4);
-                            if let Some(c) = char::from_u32(hex) {
+                            if valid_unicode_scalar(hex) {
+                                let c = char::from_u32(hex).expect("validated scalar");
                                 if hex > 0x7F {
                                     has_explicit_multibyte = true;
                                 }
                                 s.push(c);
                             } else {
-                                s.push(char::REPLACEMENT_CHARACTER);
+                                has_invalid_unicode = true;
+                                s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
                         Some(b'U') => {
                             // Unicode escape: \UNNNNNNNN
                             let hex = self.read_hex_digits(8);
-                            if let Some(c) = char::from_u32(hex) {
+                            if valid_unicode_scalar(hex) {
+                                let c = char::from_u32(hex).expect("validated scalar");
                                 if hex > 0x7F {
                                     has_explicit_multibyte = true;
                                 }
                                 s.push(c);
                             } else {
-                                s.push(char::REPLACEMENT_CHARACTER);
+                                has_invalid_unicode = true;
+                                s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
                         Some(ch) if ch.is_ascii_digit() => {
@@ -303,7 +313,9 @@ impl<'a> Reader<'a> {
 
     fn read_hex_digits(&mut self, max: usize) -> u32 {
         let mut val: u32 = 0;
-        for _ in 0..max {
+        let mut remaining = max;
+        let unlimited = max == usize::MAX;
+        while unlimited || remaining > 0 {
             match self.peek() {
                 Some(ch) if ch.is_ascii_hexdigit() => {
                     self.advance();
@@ -313,7 +325,10 @@ impl<'a> Reader<'a> {
                         b'A'..=b'F' => ch - b'A' + 10,
                         _ => unreachable!(),
                     };
-                    val = val * 16 + digit as u32;
+                    val = val.saturating_mul(16).saturating_add(digit as u32);
+                    if !unlimited {
+                        remaining -= 1;
+                    }
                 }
                 _ => break,
             }
@@ -499,6 +514,15 @@ impl<'a> Reader<'a> {
                         self.advance();
                         base
                     }
+                    Some(b'=') => {
+                        self.advance();
+                        let _ = self.read()?.ok_or(LispError::EndOfInput)?;
+                        return Ok(Some(Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL)));
+                    }
+                    Some(b'#') => {
+                        self.advance();
+                        return Ok(Some(Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL)));
+                    }
                     _ => {
                         return Err(LispError::ReadError(
                             "unsupported # syntax after numeric prefix".into(),
@@ -590,6 +614,45 @@ impl<'a> Reader<'a> {
                     val = -val;
                 }
                 Ok(Some(normalize_bigint(val)))
+            }
+            Some(b's') | Some(b'S') => {
+                self.advance();
+                self.skip_whitespace_and_comments();
+                if self.peek() != Some(b'(') {
+                    return Err(LispError::ReadError("unsupported #s syntax".into()));
+                }
+                self.advance(); // consume '('
+                self.skip_whitespace_and_comments();
+                let Some(kind) = self.read()? else {
+                    return Err(LispError::EndOfInput);
+                };
+                let Value::Symbol(kind_name) = kind else {
+                    return Err(LispError::ReadError("invalid #s structure name".into()));
+                };
+                if kind_name != "hash-table" {
+                    return Err(LispError::ReadError(format!(
+                        "unsupported #s structure `{kind_name}`"
+                    )));
+                }
+                let mut fields = Vec::new();
+                loop {
+                    self.skip_whitespace_and_comments();
+                    match self.peek() {
+                        None => return Err(LispError::EndOfInput),
+                        Some(b')') => {
+                            self.advance();
+                            break;
+                        }
+                        _ => {
+                            let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                            fields.push(value);
+                        }
+                    }
+                }
+                let literal = Value::list(
+                    std::iter::once(Value::symbol(HASH_TABLE_LITERAL_SYMBOL)).chain(fields),
+                );
+                Ok(Some(Value::list([Value::symbol("quote"), literal])))
             }
             _ => {
                 // Skip unknown hash syntax, try to read as atom
@@ -766,6 +829,10 @@ fn normalize_bigint(value: BigInt) -> Value {
         .unwrap_or(Value::BigInteger(value))
 }
 
+fn valid_unicode_scalar(value: u32) -> bool {
+    value <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&value)
+}
+
 fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
     if !(2..=36).contains(&base) {
         return Err(LispError::ReadError(format!("invalid radix {}", base)));
@@ -897,6 +964,42 @@ mod tests {
     #[test]
     fn reads_hash_radix_integers() {
         assert_eq!(read_one("#16r3FFFFF"), Value::Integer(0x3F_FFFF));
+    }
+
+    #[test]
+    fn reads_reader_labels_as_circular_syntax_placeholders() {
+        assert_eq!(
+            read_one("'#1=((a . 1) . #1#)"),
+            Value::list([
+                Value::Symbol("quote".into()),
+                Value::Symbol(CIRCULAR_READ_SYNTAX_SYMBOL.into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn reads_hash_table_structure_syntax_as_self_evaluating_literal() {
+        assert_eq!(
+            read_one("#s(hash-table test equal data (\"bla\" \"ble\"))"),
+            Value::list([
+                Value::Symbol("quote".into()),
+                Value::list([
+                    Value::Symbol(HASH_TABLE_LITERAL_SYMBOL.into()),
+                    Value::Symbol("test".into()),
+                    Value::Symbol("equal".into()),
+                    Value::Symbol("data".into()),
+                    Value::list([Value::String("bla".into()), Value::String("ble".into())]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn reads_long_hex_string_escapes() {
+        let Value::StringObject(state) = read_one(r#""\x110000""#) else {
+            panic!("expected a string object");
+        };
+        assert_eq!(state.borrow().text, INVALID_UNICODE_SENTINEL.to_string());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod eval;
+pub mod json;
 pub mod primitives;
 pub mod reader;
 pub mod sqlite;

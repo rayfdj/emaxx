@@ -1,4 +1,5 @@
 use super::eval::Interpreter;
+use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::reader::Reader;
 use super::sqlite;
 use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value};
@@ -564,6 +565,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "equal-including-properties"
             | "string="
             | "string-equal"
+            | "string<"
             | "string-search"
             | "xor"
             // Type predicates
@@ -606,6 +608,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "assq"
             | "assoc"
             | "mapcar"
+            | "cl-mapcar"
+            | "cl-mapcan"
             | "mapc"
             | "cl-reduce"
             | "apply"
@@ -639,6 +643,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "format"
             | "char-to-string"
             | "string-to-char"
+            | "string-replace"
             | "string-bytes"
             | "byte-to-string"
             | "multibyte-string-p"
@@ -934,6 +939,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "plist-member"
             // Sorting
             | "sort"
+            | "cl-sort"
             // Misc
             | "error"
             | "signal"
@@ -944,6 +950,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "run-hooks"
             | "mapatoms"
             | "eval-after-load"
+            | "define-error"
             | "describe-function"
             | "executable-find"
             | "run-with-timer"
@@ -979,7 +986,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "group-gid"
             | "group-name"
             | "random"
+            | "make-symbol"
             | "make-hash-table"
+            | "puthash"
+            | "hash-table-count"
+            | "hash-table-keys"
+            | "map-pairs"
             | "profiler-memory-running-p"
             | "profiler-memory-start"
             | "profiler-memory-stop"
@@ -1002,6 +1014,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "delq"
             | "make-list"
             | "looking-at"
+            | "looking-at-p"
             | "replace-match"
             | "replace-region-contents"
             | "transpose-regions"
@@ -1015,6 +1028,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "decode-coding-region"
             | "encode-coding-string"
             | "decode-coding-string"
+            | "json-parse-string"
+            | "json-parse-buffer"
+            | "json-serialize"
+            | "json-insert"
             | "garbage-collect"
             | "undo-boundary"
             | "undo"
@@ -1555,6 +1572,12 @@ pub fn call(
             let b = string_text(&args[1])?;
             Ok(if a == b { Value::T } else { Value::Nil })
         }
+        "string<" => {
+            need_args(name, args, 2)?;
+            let a = string_text(&args[0])?;
+            let b = string_text(&args[1])?;
+            Ok(if a < b { Value::T } else { Value::Nil })
+        }
         "string-search" => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1838,7 +1861,14 @@ pub fn call(
         }
         "elt" => {
             need_args(name, args, 2)?;
-            if matches!(args[0], Value::Nil | Value::Cons(_, _)) {
+            if matches!(args[0], Value::Cons(_, _))
+                && matches!(
+                    args[0].to_vec().ok().and_then(|items| items.first().cloned()),
+                    Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+                )
+            {
+                call(interp, "aref", args, env)
+            } else if matches!(args[0], Value::Nil | Value::Cons(_, _)) {
                 let n = args[1].as_integer()? as usize;
                 let list = args[0].to_vec()?;
                 Ok(list.get(n).cloned().unwrap_or(Value::Nil))
@@ -1919,6 +1949,32 @@ pub fn call(
                 results.push(result);
             }
             Ok(Value::list(results))
+        }
+        "cl-mapcar" => {
+            need_args(name, args, 2)?;
+            let lists = args[1..]
+                .iter()
+                .map(Value::to_vec)
+                .collect::<Result<Vec<_>, _>>()?;
+            let len = lists.iter().map(Vec::len).min().unwrap_or(0);
+            let mut results = Vec::with_capacity(len);
+            for index in 0..len {
+                let call_args = lists
+                    .iter()
+                    .map(|list| list[index].clone())
+                    .collect::<Vec<_>>();
+                results.push(call_function_value(interp, &args[0], &call_args, env)?);
+            }
+            Ok(Value::list(results))
+        }
+        "cl-mapcan" => {
+            need_args(name, args, 2)?;
+            let mapped = call(interp, "cl-mapcar", args, env)?.to_vec()?;
+            let mut flattened = Vec::new();
+            for item in mapped {
+                flattened.extend(item.to_vec()?);
+            }
+            Ok(Value::list(flattened))
         }
         "mapc" => {
             need_args(name, args, 2)?;
@@ -2467,6 +2523,13 @@ pub fn call(
             let c = char::from_u32(n as u32)
                 .ok_or_else(|| LispError::Signal(format!("Invalid character: {}", n)))?;
             Ok(Value::String(c.to_string()))
+        }
+        "string-replace" => {
+            need_args(name, args, 3)?;
+            let from = string_text(&args[0])?;
+            let to = string_text(&args[1])?;
+            let input = string_text(&args[2])?;
+            Ok(Value::String(input.replace(&from, &to)))
         }
         "byte-to-string" => {
             need_args(name, args, 1)?;
@@ -5004,7 +5067,16 @@ pub fn call(
             }
             Err(LispError::Throw(args[0].clone(), args[1].clone()))
         }
+        "define-error" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
+        }
         "intern" => {
+            need_args(name, args, 1)?;
+            let s = args[0].as_string()?;
+            Ok(Value::Symbol(s.to_string()))
+        }
+        "make-symbol" => {
             need_args(name, args, 1)?;
             let s = args[0].as_string()?;
             Ok(Value::Symbol(s.to_string()))
@@ -5075,8 +5147,11 @@ pub fn call(
             need_args(name, args, 2)?;
             let hook_name = args[0].as_symbol()?.to_string();
             let function = args[1].clone();
-            let append = args.get(2).is_some_and(|value| value.is_truthy());
-            let local = args.get(3).is_some_and(|value| value.is_truthy());
+            let append = args
+                .get(2)
+                .is_some_and(|value| value.is_truthy() && !matches!(value, Value::Symbol(symbol) if symbol == ":local"));
+            let local = args.get(2).is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
+                || args.get(3).is_some_and(|value| value.is_truthy());
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
@@ -5110,7 +5185,8 @@ pub fn call(
             need_args(name, args, 2)?;
             let hook_name = args[0].as_symbol()?.to_string();
             let function = args[1].clone();
-            let local = args.get(3).is_some_and(|value| value.is_truthy());
+            let local = args.get(2).is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
+                || args.get(3).is_some_and(|value| value.is_truthy());
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
@@ -5258,16 +5334,63 @@ pub fn call(
             interp.buffer.set_autosaved();
             Ok(Value::Nil)
         }
-        "make-hash-table" => Ok(Value::String("#<hash-table>".into())),
+        "make-hash-table" => {
+            let mut test = "eql".to_string();
+            let mut index = 0usize;
+            while index + 1 < args.len() {
+                let key = args[index].as_symbol()?;
+                if key == ":test" {
+                    test = match &args[index + 1] {
+                        Value::Symbol(name) => name.clone(),
+                        Value::BuiltinFunc(name) => name.clone(),
+                        other => {
+                            return Err(LispError::TypeError(
+                                "symbol".into(),
+                                other.type_name(),
+                            ));
+                        }
+                    };
+                }
+                index += 2;
+            }
+            Ok(json::make_hash_table(interp, &test, Vec::new()))
+        }
         "hash-table-p" => {
             need_args(name, args, 1)?;
-            Ok(
-                if matches!(&args[0], Value::String(text) if text.starts_with("#<hash-table")) {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
+            Ok(if json::is_hash_table(interp, &args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "puthash" => {
+            need_args(name, args, 3)?;
+            json::hash_table_put(interp, &args[2], args[0].clone(), args[1].clone())
+        }
+        "hash-table-count" => {
+            need_args(name, args, 1)?;
+            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                return Err(LispError::TypeError("hash-table".into(), args[0].type_name()));
+            };
+            Ok(Value::Integer(entries.len() as i64))
+        }
+        "hash-table-keys" => {
+            need_args(name, args, 1)?;
+            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                return Err(LispError::TypeError("hash-table".into(), args[0].type_name()));
+            };
+            Ok(Value::list(entries.into_iter().map(|(key, _)| key)))
+        }
+        "map-pairs" => {
+            need_args(name, args, 1)?;
+            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                return Err(LispError::TypeError("hash-table".into(), args[0].type_name()));
+            };
+            Ok(Value::list(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| Value::cons(key, value)),
+            ))
         }
         "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
             Value::T
@@ -5867,6 +5990,44 @@ pub fn call(
                         Value::Nil
                     };
                     // If pred(items[j-1], items[j]) is nil, swap
+                    if result.is_nil() {
+                        items.swap(j - 1, j);
+                        j -= 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            Ok(Value::list(items))
+        }
+        "cl-sort" => {
+            if args.len() < 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let mut key_fn: Option<Value> = None;
+            let mut index = 2usize;
+            while index + 1 < args.len() {
+                if args[index].as_symbol()? == ":key" {
+                    key_fn = Some(args[index + 1].clone());
+                }
+                index += 2;
+            }
+            let mut items = args[0].to_vec()?;
+            let len = items.len();
+            for i in 1..len {
+                let mut j = i;
+                while j > 0 {
+                    let left = if let Some(function) = &key_fn {
+                        call_function_value(interp, function, &[items[j - 1].clone()], env)?
+                    } else {
+                        items[j - 1].clone()
+                    };
+                    let right = if let Some(function) = &key_fn {
+                        call_function_value(interp, function, &[items[j].clone()], env)?
+                    } else {
+                        items[j].clone()
+                    };
+                    let result = call_function_value(interp, &args[1], &[left, right], env)?;
                     if result.is_nil() {
                         items.swap(j - 1, j);
                         j -= 1;
@@ -6487,6 +6648,10 @@ pub fn call(
             );
             looking_at_impl(interp, &args[0], env)
         }
+        "looking-at-p" => {
+            need_args(name, args, 1)?;
+            looking_at_impl(interp, &args[0], env)
+        }
 
         "replace-match" => {
             need_args(name, args, 1)?;
@@ -6831,7 +6996,7 @@ pub fn call(
             if args.len() < 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(args[0].clone())
+            encode_coding_value(&args[0], args[1].as_symbol()?)
         }
 
         "decode-coding-string" => {
@@ -6851,6 +7016,48 @@ pub fn call(
                 let _ = interp.switch_to_buffer_id(saved_buffer_id);
             }
             Ok(Value::String(decoded))
+        }
+        "json-parse-string" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let options = json_parse_options(&args[1..])?;
+            Ok(json::parse_value_source(interp, &args[0], &options, true)?.value)
+        }
+        "json-parse-buffer" => {
+            let options = json_parse_options(args)?;
+            let start = interp.buffer.point();
+            let text = interp
+                .buffer
+                .buffer_substring(start, interp.buffer.point_max())
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let parsed =
+                json::parse_text_source(interp, &text, interp.buffer.is_multibyte(), &options, false)?;
+            interp
+                .buffer
+                .goto_char(start + parsed.consumed_source_pos.saturating_sub(1));
+            Ok(parsed.value)
+        }
+        "json-serialize" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let (null_object, false_object) = json_serialize_options(&args[1..])?;
+            Ok(json::serialize(interp, &args[0], &null_object, &false_object)?.bytes_value)
+        }
+        "json-insert" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let (null_object, false_object) = json_serialize_options(&args[1..])?;
+            let serialized = json::serialize(interp, &args[0], &null_object, &false_object)?;
+            let text = if interp.buffer.is_multibyte() {
+                &serialized.text
+            } else {
+                &serialized.bytes_text
+            };
+            insert_text_with_hooks(interp, text, &[], false, false, env)?;
+            Ok(Value::Nil)
         }
 
         "insert-before-markers" => {
@@ -8433,6 +8640,107 @@ fn expand_symbol_at(haystack: &str, found: usize, prefix: &str) -> Option<String
     } else {
         None
     }
+}
+
+fn encode_coding_value(value: &Value, coding: &str) -> Result<Value, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    match coding {
+        "utf-8" | "utf-8-unix" | "utf-8-emacs" => {
+            let mut bytes = Vec::new();
+            for ch in string.text.chars() {
+                if ch == json::INVALID_UNICODE_SENTINEL {
+                    return Err(LispError::TypeError("character".into(), value.type_name()));
+                }
+                if let Some(byte) = raw_byte_from_regex_char(ch) {
+                    bytes.push(byte);
+                } else {
+                    bytes.extend(ch.to_string().into_bytes());
+                }
+            }
+            Ok(bytes_to_unibyte_value(&bytes))
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
+fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
+    let mut text = String::new();
+    let mut has_raw_bytes = false;
+    for &byte in bytes {
+        if byte <= 0x7F {
+            text.push(byte as char);
+        } else {
+            has_raw_bytes = true;
+            text.push(raw_byte_regex_char(byte));
+        }
+    }
+    if has_raw_bytes {
+        make_shared_string_value_with_multibyte(text, Vec::new(), false)
+    } else {
+        Value::String(text)
+    }
+}
+
+fn json_parse_options(args: &[Value]) -> Result<JsonParseOptions, LispError> {
+    let mut options = JsonParseOptions {
+        object_type: JsonObjectType::HashTable,
+        array_type: JsonArrayType::Vector,
+        null_object: Value::Symbol(":null".into()),
+        false_object: Value::Symbol(":false".into()),
+    };
+    let mut index = 0usize;
+    while index + 1 < args.len() {
+        let key = args[index].as_symbol()?;
+        let value = args[index + 1].clone();
+        match key {
+            ":object-type" => {
+                options.object_type = match &value {
+                    Value::Symbol(symbol) if symbol == "hash-table" => JsonObjectType::HashTable,
+                    Value::Symbol(symbol) if symbol == "alist" => JsonObjectType::Alist,
+                    Value::Symbol(symbol) if symbol == "plist" => JsonObjectType::Plist,
+                    other => {
+                        return Err(LispError::TypeError("symbol".into(), other.type_name()));
+                    }
+                };
+            }
+            ":array-type" => {
+                options.array_type = match &value {
+                    Value::Symbol(symbol) if symbol == "vector" => JsonArrayType::Vector,
+                    Value::Symbol(symbol) if symbol == "list" => JsonArrayType::List,
+                    other => {
+                        return Err(LispError::TypeError("symbol".into(), other.type_name()));
+                    }
+                };
+            }
+            ":null-object" => options.null_object = value,
+            ":false-object" => options.false_object = value,
+            _ => {
+                return Err(LispError::TypeError("json-option".into(), key.into()));
+            }
+        }
+        index += 2;
+    }
+    Ok(options)
+}
+
+fn json_serialize_options(args: &[Value]) -> Result<(Value, Value), LispError> {
+    let mut null_object = Value::Symbol(":null".into());
+    let mut false_object = Value::Symbol(":false".into());
+    let mut index = 0usize;
+    while index + 1 < args.len() {
+        let key = args[index].as_symbol()?;
+        let value = args[index + 1].clone();
+        match key {
+            ":null-object" => null_object = value,
+            ":false-object" => false_object = value,
+            _ => {
+                return Err(LispError::TypeError("json-option".into(), key.into()));
+            }
+        }
+        index += 2;
+    }
+    Ok((null_object, false_object))
 }
 
 fn decode_coding_text(text: &str, coding: &str) -> Result<String, LispError> {
@@ -12647,7 +12955,7 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     Value::list(entries)
 }
 
-fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
+pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         return left_string.text == right_string.text;
     }
