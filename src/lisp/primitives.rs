@@ -1124,6 +1124,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "intern-soft"
             | "autoload"
             | "autoloadp"
+            | "custom-autoload"
             | "documentation"
             | "documentation-property"
             | "getenv"
@@ -6457,6 +6458,29 @@ pub fn call(
             need_args(name, args, 1)?;
             let autoload = autoload_parts(&args[0]).is_some();
             Ok(if autoload { Value::T } else { Value::Nil })
+        }
+        "custom-autoload" => {
+            need_arg_range(name, args, 2, 3)?;
+            let symbol = args[0].as_symbol()?;
+            let load = args[1].clone();
+            let autoload_flag = if args.get(2).is_some_and(Value::is_truthy) {
+                Value::Symbol("noset".into())
+            } else {
+                Value::T
+            };
+            interp.put_symbol_property(symbol, "custom-autoload", autoload_flag);
+
+            let existing = interp
+                .get_symbol_property(symbol, "custom-loads")
+                .unwrap_or(Value::Nil);
+            let already_present = existing
+                .to_vec()
+                .map(|items| items.iter().any(|item| item == &load))
+                .unwrap_or(existing == load);
+            if !already_present {
+                interp.put_symbol_property(symbol, "custom-loads", Value::cons(load, existing));
+            }
+            Ok(Value::Nil)
         }
         "documentation" => {
             need_args(name, args, 1)?;
