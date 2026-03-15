@@ -60,12 +60,289 @@ pub struct RecordState {
     pub slots: Vec<Value>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CodingSystemState {
+    pub name: String,
+    pub base: String,
+    pub kind: String,
+    pub eol_type: Option<i64>,
+    pub plist: Value,
+}
+
 #[derive(Clone, Debug, Default)]
 struct UndoSequenceState {
     original_groups: Vec<Vec<crate::buffer::UndoEntry>>,
     undone_count: usize,
     redo_groups: Vec<Vec<crate::buffer::UndoEntry>>,
     had_error: bool,
+}
+
+fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)>) -> Value {
+    let mut items = vec![
+        Value::Symbol(":mnemonic".into()),
+        Value::Integer(mnemonic as i64),
+    ];
+    for (key, value) in extras {
+        items.push(Value::Symbol(key));
+        items.push(value);
+    }
+    Value::list(items)
+}
+
+fn builtin_coding_systems() -> Vec<CodingSystemState> {
+    vec![
+        CodingSystemState {
+            name: "undecided".into(),
+            base: "undecided".into(),
+            kind: "undecided".into(),
+            eol_type: None,
+            plist: coding_plist('?', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "no-conversion".into(),
+            base: "no-conversion".into(),
+            kind: "raw-text".into(),
+            eol_type: None,
+            plist: coding_plist('=', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "unix".into(),
+            base: "unix".into(),
+            kind: "us-ascii".into(),
+            eol_type: Some(0),
+            plist: coding_plist('U', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "dos".into(),
+            base: "dos".into(),
+            kind: "us-ascii".into(),
+            eol_type: Some(1),
+            plist: coding_plist('D', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "mac".into(),
+            base: "mac".into(),
+            kind: "us-ascii".into(),
+            eol_type: Some(2),
+            plist: coding_plist('M', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "us-ascii".into(),
+            base: "us-ascii".into(),
+            kind: "us-ascii".into(),
+            eol_type: None,
+            plist: coding_plist('A', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "us-ascii-unix".into(),
+            base: "us-ascii".into(),
+            kind: "us-ascii".into(),
+            eol_type: Some(0),
+            plist: coding_plist('A', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "us-ascii-dos".into(),
+            base: "us-ascii".into(),
+            kind: "us-ascii".into(),
+            eol_type: Some(1),
+            plist: coding_plist('A', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "iso-latin-1".into(),
+            base: "iso-latin-1".into(),
+            kind: "iso-latin-1".into(),
+            eol_type: None,
+            plist: coding_plist('L', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "iso-latin-1-unix".into(),
+            base: "iso-latin-1".into(),
+            kind: "iso-latin-1".into(),
+            eol_type: Some(0),
+            plist: coding_plist('L', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "iso-latin-1-dos".into(),
+            base: "iso-latin-1".into(),
+            kind: "iso-latin-1".into(),
+            eol_type: Some(1),
+            plist: coding_plist('L', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8".into(),
+            base: "utf-8".into(),
+            kind: "utf-8".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-unix".into(),
+            base: "utf-8".into(),
+            kind: "utf-8".into(),
+            eol_type: Some(0),
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-dos".into(),
+            base: "utf-8".into(),
+            kind: "utf-8".into(),
+            eol_type: Some(1),
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-mac".into(),
+            base: "utf-8".into(),
+            kind: "utf-8".into(),
+            eol_type: Some(2),
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-with-signature".into(),
+            base: "utf-8-with-signature".into(),
+            kind: "utf-8-with-signature".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-with-signature-unix".into(),
+            base: "utf-8-with-signature".into(),
+            kind: "utf-8-with-signature".into(),
+            eol_type: Some(0),
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-with-signature-dos".into(),
+            base: "utf-8-with-signature".into(),
+            kind: "utf-8-with-signature".into(),
+            eol_type: Some(1),
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-with-signature-mac".into(),
+            base: "utf-8-with-signature".into(),
+            kind: "utf-8-with-signature".into(),
+            eol_type: Some(2),
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-8-auto".into(),
+            base: "utf-8-auto".into(),
+            kind: "utf-8-auto".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "prefer-utf-8".into(),
+            base: "prefer-utf-8".into(),
+            kind: "prefer-utf-8".into(),
+            eol_type: None,
+            plist: coding_plist('p', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "prefer-utf-8-unix".into(),
+            base: "prefer-utf-8".into(),
+            kind: "prefer-utf-8".into(),
+            eol_type: Some(0),
+            plist: coding_plist('p', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "raw-text".into(),
+            base: "raw-text".into(),
+            kind: "raw-text".into(),
+            eol_type: None,
+            plist: coding_plist('r', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "raw-text-unix".into(),
+            base: "raw-text".into(),
+            kind: "raw-text".into(),
+            eol_type: Some(0),
+            plist: coding_plist('r', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "raw-text-dos".into(),
+            base: "raw-text".into(),
+            kind: "raw-text".into(),
+            eol_type: Some(1),
+            plist: coding_plist('r', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "raw-text-mac".into(),
+            base: "raw-text".into(),
+            kind: "raw-text".into(),
+            eol_type: Some(2),
+            plist: coding_plist('r', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "mac-roman-mac".into(),
+            base: "mac-roman".into(),
+            kind: "iso-latin-1".into(),
+            eol_type: Some(2),
+            plist: coding_plist('m', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "euc-jp".into(),
+            base: "euc-jp".into(),
+            kind: "euc-jp".into(),
+            eol_type: None,
+            plist: coding_plist('E', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "euc-jp-dos".into(),
+            base: "euc-jp".into(),
+            kind: "euc-jp".into(),
+            eol_type: Some(1),
+            plist: coding_plist('E', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "iso-2022-7bit".into(),
+            base: "iso-2022-7bit".into(),
+            kind: "iso-2022-7bit".into(),
+            eol_type: None,
+            plist: coding_plist('I', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "sjis".into(),
+            base: "sjis".into(),
+            kind: "sjis".into(),
+            eol_type: None,
+            plist: coding_plist('S', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "big5".into(),
+            base: "big5".into(),
+            kind: "big5".into(),
+            eol_type: None,
+            plist: coding_plist('B', std::iter::empty()),
+        },
+    ]
+}
+
+fn builtin_coding_aliases() -> Vec<(String, String)> {
+    vec![
+        ("iso-8859-1".into(), "iso-latin-1".into()),
+        ("iso-8859-1-unix".into(), "iso-latin-1-unix".into()),
+        ("iso-8859-1-dos".into(), "iso-latin-1-dos".into()),
+        ("binary".into(), "raw-text".into()),
+        ("utf8".into(), "utf-8".into()),
+    ]
+}
+
+fn builtin_coding_priority() -> Vec<String> {
+    vec![
+        "prefer-utf-8".into(),
+        "utf-8".into(),
+        "utf-8-auto".into(),
+        "raw-text".into(),
+        "iso-latin-1".into(),
+        "us-ascii".into(),
+        "undecided".into(),
+        "no-conversion".into(),
+        "sjis".into(),
+        "big5".into(),
+        "euc-jp".into(),
+        "iso-2022-7bit".into(),
+    ]
 }
 
 /// The interpreter state: holds the global environment, the current buffer,
@@ -99,6 +376,16 @@ pub struct Interpreter {
     charset_priority: Vec<String>,
     /// ISO charset associations keyed by (dimension, chars, final).
     iso_charsets: Vec<(i64, i64, u32, String)>,
+    /// Coding systems keyed by canonical name.
+    coding_systems: Vec<CodingSystemState>,
+    /// Coding-system aliases keyed by alias name.
+    coding_aliases: Vec<(String, String)>,
+    /// Current coding-system priority order.
+    coding_priority: Vec<String>,
+    /// Current terminal coding system.
+    terminal_coding: Option<String>,
+    /// Current keyboard coding system.
+    keyboard_coding: Option<String>,
     /// Shared standard category table.
     standard_category_table_id: Option<u64>,
     /// Shared standard case table.
@@ -183,6 +470,11 @@ impl Interpreter {
             charset_plists: Vec::new(),
             charset_priority: vec!["unicode".into(), "ascii".into()],
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
+            coding_systems: builtin_coding_systems(),
+            coding_aliases: builtin_coding_aliases(),
+            coding_priority: builtin_coding_priority(),
+            terminal_coding: None,
+            keyboard_coding: None,
             standard_category_table_id: None,
             standard_case_table_id: None,
             buffer_case_tables: Vec::new(),
@@ -260,6 +552,20 @@ impl Interpreter {
         self.current_load_file.as_deref()
     }
 
+    fn stored_value(value: Value) -> Value {
+        match value {
+            Value::String(_) => {
+                let string = primitives::string_like(&value).expect("string_like handles strings");
+                primitives::make_shared_string_value_with_multibyte(
+                    string.text,
+                    string.props,
+                    string.multibyte,
+                )
+            }
+            other => other,
+        }
+    }
+
     pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
         let direct = PathBuf::from(target);
         if direct.exists() {
@@ -323,7 +629,7 @@ impl Interpreter {
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
         match value {
             Value::Buffer(id, _) if self.has_buffer_id(*id) => Ok(*id),
-            Value::Buffer(_, name) | Value::String(name) => self
+            Value::Buffer(_, name) => self
                 .find_buffer(name)
                 .map(|(id, _)| id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer named {}", name))),
@@ -332,6 +638,11 @@ impl Interpreter {
                 value.type_name(),
             )),
         }
+        .or_else(|error| {
+            primitives::string_like(value)
+                .and_then(|string| self.find_buffer(&string.text).map(|(id, _)| id))
+                .ok_or(error)
+        })
     }
 
     /// Create and register a new empty buffer.
@@ -877,6 +1188,217 @@ impl Interpreter {
             .map(|(_, _, _, charset)| charset.clone())
     }
 
+    pub fn coding_system_canonical_name(&self, name: &str) -> Option<String> {
+        let mut current = name.to_string();
+        for _ in 0..16 {
+            if self
+                .coding_systems
+                .iter()
+                .any(|coding| coding.name == current)
+            {
+                return Some(current);
+            }
+            let (_, target) = self
+                .coding_aliases
+                .iter()
+                .rev()
+                .find(|(alias, _)| alias == &current)?;
+            current = target.clone();
+        }
+        None
+    }
+
+    pub fn has_coding_system(&self, name: &str) -> bool {
+        self.coding_system_canonical_name(name).is_some()
+    }
+
+    pub fn coding_system(&self, name: &str) -> Option<CodingSystemState> {
+        let canonical = self.coding_system_canonical_name(name)?;
+        self.coding_systems
+            .iter()
+            .rev()
+            .find(|coding| coding.name == canonical)
+            .cloned()
+    }
+
+    pub fn coding_system_base_name(&self, name: &str) -> Option<String> {
+        self.coding_system(name).map(|coding| coding.base)
+    }
+
+    pub fn coding_system_kind_name(&self, name: &str) -> Option<String> {
+        self.coding_system(name).map(|coding| coding.kind)
+    }
+
+    pub fn coding_system_eol_type_value(&self, name: &str) -> Option<i64> {
+        self.coding_system(name).and_then(|coding| coding.eol_type)
+    }
+
+    pub fn coding_system_plist_value(&self, name: &str) -> Option<Value> {
+        self.coding_system(name).map(|coding| coding.plist)
+    }
+
+    pub fn set_coding_system_plist_property(
+        &mut self,
+        name: &str,
+        key: &str,
+        value: Value,
+    ) -> Result<(), LispError> {
+        let canonical = self
+            .coding_system_canonical_name(name)
+            .ok_or_else(|| LispError::Void(name.to_string()))?;
+        let Some(coding) = self
+            .coding_systems
+            .iter_mut()
+            .rev()
+            .find(|coding| coding.name == canonical)
+        else {
+            return Err(LispError::Void(name.to_string()));
+        };
+        let mut items = coding.plist.to_vec()?;
+        let key_value = Value::Symbol(key.to_string());
+        if let Some(index) = items.iter().position(|item| item == &key_value) {
+            if index + 1 < items.len() {
+                items[index + 1] = value;
+            } else {
+                items.push(value);
+            }
+        } else {
+            items.push(key_value);
+            items.push(value);
+        }
+        coding.plist = Value::list(items);
+        Ok(())
+    }
+
+    pub fn define_coding_system_alias(
+        &mut self,
+        alias: &str,
+        target: &str,
+    ) -> Result<(), LispError> {
+        let canonical = self
+            .coding_system_canonical_name(target)
+            .ok_or_else(|| LispError::Void(target.to_string()))?;
+        if let Some((_, existing)) = self
+            .coding_aliases
+            .iter_mut()
+            .rev()
+            .find(|(existing_alias, _)| existing_alias == alias)
+        {
+            *existing = canonical;
+        } else {
+            self.coding_aliases.push((alias.to_string(), canonical));
+        }
+        Ok(())
+    }
+
+    pub fn coding_system_alias_list(&self, name: &str) -> Option<Vec<String>> {
+        let canonical = self.coding_system_canonical_name(name)?;
+        let mut aliases = vec![canonical.clone()];
+        for (alias, target) in &self.coding_aliases {
+            if target == &canonical && !aliases.iter().any(|existing| existing == alias) {
+                aliases.push(alias.clone());
+            }
+        }
+        Some(aliases)
+    }
+
+    pub fn coding_system_priority_list(&self) -> Vec<String> {
+        self.coding_priority.clone()
+    }
+
+    pub fn set_coding_system_priority(&mut self, names: &[String]) -> Result<(), LispError> {
+        let mut reordered = Vec::new();
+        for name in names {
+            let canonical = self
+                .coding_system_canonical_name(name)
+                .ok_or_else(|| LispError::Void(name.clone()))?;
+            if !reordered.iter().any(|existing| existing == &canonical) {
+                reordered.push(canonical);
+            }
+        }
+        for default in builtin_coding_priority() {
+            if !reordered.iter().any(|existing| existing == &default) {
+                reordered.push(default);
+            }
+        }
+        self.coding_priority = reordered;
+        Ok(())
+    }
+
+    pub fn coding_system_priority_rank(&self, name: &str) -> usize {
+        let canonical = self
+            .coding_system_canonical_name(name)
+            .unwrap_or_else(|| name.to_string());
+        self.coding_priority
+            .iter()
+            .position(|existing| existing == &canonical)
+            .unwrap_or(usize::MAX)
+    }
+
+    pub fn define_coding_system(
+        &mut self,
+        name: &str,
+        mnemonic: i64,
+        kind: &str,
+        plist: Value,
+        eol_type: Option<i64>,
+    ) -> Result<(), LispError> {
+        let kind_canonical = self
+            .coding_system_canonical_name(kind)
+            .unwrap_or_else(|| kind.to_string());
+        let mut items = plist.to_vec().unwrap_or_default();
+        let mnemonic_key = Value::Symbol(":mnemonic".into());
+        if let Some(index) = items.iter().position(|item| item == &mnemonic_key) {
+            if index + 1 < items.len() {
+                items[index + 1] = Value::Integer(mnemonic);
+            } else {
+                items.push(Value::Integer(mnemonic));
+            }
+        } else {
+            items.push(mnemonic_key);
+            items.push(Value::Integer(mnemonic));
+        }
+        let definition = CodingSystemState {
+            name: name.to_string(),
+            base: name.to_string(),
+            kind: self
+                .coding_system_kind_name(&kind_canonical)
+                .unwrap_or(kind_canonical),
+            eol_type,
+            plist: Value::list(items),
+        };
+        if let Some(existing) = self
+            .coding_systems
+            .iter_mut()
+            .rev()
+            .find(|coding| coding.name == name)
+        {
+            *existing = definition;
+        } else {
+            self.coding_systems.push(definition);
+        }
+        if !self.coding_priority.iter().any(|existing| existing == name) {
+            self.coding_priority.push(name.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn terminal_coding_system(&self) -> Option<String> {
+        self.terminal_coding.clone()
+    }
+
+    pub fn set_terminal_coding_system(&mut self, coding: Option<String>) {
+        self.terminal_coding = coding;
+    }
+
+    pub fn keyboard_coding_system(&self) -> Option<String> {
+        self.keyboard_coding.clone()
+    }
+
+    pub fn set_keyboard_coding_system(&mut self, coding: Option<String>) {
+        self.keyboard_coding = coding;
+    }
+
     pub fn ensure_standard_category_table(&mut self) -> u64 {
         if let Some(id) = self.standard_category_table_id {
             return id;
@@ -1096,6 +1618,7 @@ impl Interpreter {
     }
 
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
+        let value = Self::stored_value(value);
         for (id, var, existing) in self.buffer_locals.iter_mut().rev() {
             if *id == buffer_id && var == name {
                 *existing = value;
@@ -1721,6 +2244,17 @@ impl Interpreter {
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),
+            "buffer-file-coding-system" => Some(
+                self.buffer_local_value(self.current_buffer_id(), "buffer-file-coding-system")
+                    .unwrap_or(Value::Nil),
+            ),
+            "last-coding-system-used" => Some(Value::Nil),
+            "coding-system-for-read" => Some(Value::Nil),
+            "coding-system-for-write" => Some(Value::Nil),
+            "file-coding-system-alist" => Some(Value::Nil),
+            "inhibit-eol-conversion" => Some(Value::Nil),
+            "inhibit-null-byte-detection" => Some(Value::Nil),
+            "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
@@ -1849,10 +2383,12 @@ impl Interpreter {
 
     /// Set a variable in the innermost local frame, or in globals.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
+        let value = Self::stored_value(value);
         if name == "buffer-file-name" {
             self.buffer.file = match value {
                 Value::Nil => None,
                 Value::String(path) => Some(path),
+                Value::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
             return;
@@ -1861,6 +2397,7 @@ impl Interpreter {
             self.buffer.file_truename = match value {
                 Value::Nil => None,
                 Value::String(path) => Some(path),
+                Value::StringObject(state) => Some(state.borrow().text.clone()),
                 other => Some(other.to_string()),
             };
             return;
@@ -2011,6 +2548,7 @@ impl Interpreter {
                         "with-output-to-string" => {
                             return self.sf_with_output_to_string(&items, env);
                         }
+                        "with-temp-file" => return self.sf_with_temp_file(&items, env),
                         "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
                         "with-restriction" => return self.sf_with_restriction(&items, env),
@@ -2019,6 +2557,12 @@ impl Interpreter {
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-current-buffer" => return self.sf_save_current_buffer(&items, env),
                         "save-restriction" => return self.sf_save_restriction(&items, env),
+                        "with-suppressed-warnings" => {
+                            return self.sf_with_suppressed_warnings(&items, env);
+                        }
+                        "with-coding-priority" => {
+                            return self.sf_with_coding_priority(&items, env);
+                        }
                         "with-silent-modifications" => {
                             return self.sf_with_silent_modifications(&items, env);
                         }
@@ -2204,7 +2748,7 @@ impl Interpreter {
                     if rest {
                         // Collect remaining args into a list
                         let rest_args: Vec<Value> = args[arg_idx..].to_vec();
-                        frame.push((param.clone(), Value::list(rest_args)));
+                        frame.push((param.clone(), Self::stored_value(Value::list(rest_args))));
                         break;
                     }
                     let val = if arg_idx < args.len() {
@@ -2217,7 +2761,7 @@ impl Interpreter {
                             args.len(),
                         ));
                     };
-                    frame.push((param.clone(), val));
+                    frame.push((param.clone(), Self::stored_value(val)));
                     arg_idx += 1;
                 }
 
@@ -2408,7 +2952,7 @@ impl Interpreter {
                     } else {
                         Value::Nil
                     };
-                    frame.push((name, val));
+                    frame.push((name, Self::stored_value(val)));
                 }
                 _ => return Err(LispError::ReadError("bad let binding".into())),
             }
@@ -2439,7 +2983,7 @@ impl Interpreter {
                         Value::Nil
                     };
                     let frame = env.last_mut().expect("env frame just pushed");
-                    frame.push((name, val));
+                    frame.push((name, Self::stored_value(val)));
                 }
                 _ => return Err(LispError::ReadError("bad let* binding".into())),
             }
@@ -2474,7 +3018,11 @@ impl Interpreter {
                     return Err(LispError::Signal("pcase-let*: no matching clause".into()));
                 }
                 let frame = env.last_mut().expect("env frame just pushed");
-                frame.extend(frame_bindings);
+                frame.extend(
+                    frame_bindings
+                        .into_iter()
+                        .map(|(name, value)| (name, Self::stored_value(value))),
+                );
             }
             let result = self.sf_progn(&items[2..], env);
             env.pop();
@@ -2492,7 +3040,12 @@ impl Interpreter {
                 return Err(LispError::Signal("pcase-let: no matching clause".into()));
             }
         }
-        env.push(frame);
+        env.push(
+            frame
+                .into_iter()
+                .map(|(name, value)| (name, Self::stored_value(value)))
+                .collect(),
+        );
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         result
@@ -2515,7 +3068,7 @@ impl Interpreter {
                 Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
                 other => other,
             };
-            frame.push((format!(".{symbol}"), value));
+            frame.push((format!(".{symbol}"), Self::stored_value(value)));
         }
         env.push(frame);
         let result = self.sf_progn(&items[2..], env);
@@ -2565,7 +3118,7 @@ impl Interpreter {
             } else {
                 Value::Nil
             };
-            self.globals.push((name, val));
+            self.globals.push((name, Self::stored_value(val)));
         }
         Ok(Value::Nil)
     }
@@ -2740,7 +3293,7 @@ impl Interpreter {
         env.push(vec![(var_name.clone(), Value::Nil)]);
         for item in list_items {
             let frame = env.last_mut().expect("env frame just pushed");
-            frame[0] = (var_name.clone(), item);
+            frame[0] = (var_name.clone(), Self::stored_value(item));
             self.sf_progn(&items[2..], env)?;
         }
         let result = if spec.len() > 2 {
@@ -3127,6 +3680,45 @@ impl Interpreter {
         Ok(output)
     }
 
+    fn sf_with_temp_file(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "with-temp-file".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let file = self.eval(&items[1], env)?;
+        let file = primitives::string_text(&file)?;
+        let saved_buffer_id = self.current_buffer_id;
+        let (temp_id, _) = self.create_buffer(" *temp file*");
+        self.set_buffer_hooks_inhibited(temp_id, true);
+        self.switch_to_buffer_id(temp_id)?;
+        let body_result = self.sf_progn(&items[2..], env);
+        let write_result = if body_result.is_ok() {
+            let mut call_env = Vec::new();
+            crate::lisp::primitives::call(
+                self,
+                "write-region",
+                &[
+                    Value::Nil,
+                    Value::Nil,
+                    Value::String(file),
+                    Value::Nil,
+                    Value::Integer(0),
+                ],
+                &mut call_env,
+            )
+            .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        self.kill_buffer_id(temp_id);
+        let body_value = body_result?;
+        write_result?;
+        Ok(body_value)
+    }
+
     fn sf_ert_with_temp_file(
         &mut self,
         items: &[Value],
@@ -3149,6 +3741,34 @@ impl Interpreter {
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         let _ = fs::remove_file(&path);
+        result
+    }
+
+    fn sf_with_suppressed_warnings(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.sf_progn(&items[2..], env)
+    }
+
+    fn sf_with_coding_priority(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let codings = self.eval(&items[1], env)?.to_vec()?;
+        let saved = self.coding_system_priority_list();
+        let requested = codings
+            .into_iter()
+            .map(|coding| coding.as_symbol().map(|name| name.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.set_coding_system_priority(&requested)?;
+        let result = self.sf_progn(&items[2..], env);
+        let _ = self.set_coding_system_priority(&saved);
         result
     }
 
@@ -4471,6 +5091,18 @@ mod tests {
         result
     }
 
+    fn assert_string_value(value: Value, expected: &str) {
+        assert_eq!(primitives::string_text(&value).unwrap(), expected);
+    }
+
+    fn assert_string_list(value: Value, expected: &[&str]) {
+        let items = value.to_vec().unwrap();
+        assert_eq!(items.len(), expected.len());
+        for (item, expected) in items.iter().zip(expected.iter()) {
+            assert_eq!(primitives::string_text(item).unwrap(), *expected);
+        }
+    }
+
     #[test]
     fn eval_atoms() {
         assert_eq!(eval_str("42"), Value::Integer(42));
@@ -4639,9 +5271,9 @@ mod tests {
 
     #[test]
     fn let_alist_binds_dotted_pair_keys() {
-        assert_eq!(
+        assert_string_value(
             eval_str("(let ((x '((buffer-text . \"hi\")))) (let-alist x .buffer-text))"),
-            Value::String("hi".into())
+            "hi",
         );
     }
 
@@ -4987,7 +5619,7 @@ mod tests {
 
     #[test]
     fn call_interactively_consumes_unread_events_for_k_specs() {
-        assert_eq!(
+        assert_string_list(
             eval_str(
                 "(let ((unread-command-events '(?a ?b))) \
                    (call-interactively \
@@ -4995,7 +5627,7 @@ mod tests {
                        (interactive \"ka\0a: \nkb: \") \
                        (list a b))))"
             ),
-            Value::list([Value::String("a".into()), Value::String("b".into())])
+            &["a", "b"],
         );
     }
 
@@ -5079,14 +5711,14 @@ mod tests {
 
     #[test]
     fn dolist_dotted_pairs() {
-        assert_eq!(
+        assert_string_value(
             eval_str(
                 r#"(let ((result nil))
                      (dolist (pair `((1 . "a") (2 . "b")))
                        (setq result (concat (cdr pair) (or result ""))))
                      result)"#
             ),
-            Value::String("ba".into())
+            "ba",
         );
     }
 
