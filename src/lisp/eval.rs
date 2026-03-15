@@ -1947,6 +1947,7 @@ impl Interpreter {
                         "setq-local" => return self.sf_setq_local(&items, env),
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
+                        "setcar" => return self.sf_setcar(&items, env),
                         "defvar" | "defconst" => return self.sf_defvar(&items, env),
                         "defvar-local" => return self.sf_defvar_local(&items, env),
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
@@ -2577,6 +2578,24 @@ impl Interpreter {
         Ok(updated)
     }
 
+    fn sf_setcar(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() != 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "setcar".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let current = self.lookup(&name, env)?;
+        let Value::Cons(_, cdr) = current else {
+            return Err(LispError::TypeError("cons".into(), items[1].type_name()));
+        };
+        let updated_car = self.eval(&items[2], env)?;
+        let updated = Value::Cons(Box::new(updated_car.clone()), cdr);
+        self.set_variable(&name, updated, env);
+        Ok(updated_car)
+    }
+
     fn sf_add_to_list(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Err(LispError::WrongNumberOfArgs(
@@ -2854,6 +2873,24 @@ impl Interpreter {
                     }
                     result = self.sf_progn(&items[index + 1..], env)?;
                 }
+            }
+            Some(Value::Symbol(kind)) if kind == "collect" => {
+                let collect_expr = items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?;
+                let mut collected = Vec::with_capacity(iterations);
+                for iteration in 0..iterations {
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    for (slot, spec) in frame.iter_mut().zip(&specs) {
+                        *slot = match spec {
+                            LoopSpec::Range(name, values) | LoopSpec::List(name, values) => {
+                                (name.clone(), values[iteration].clone())
+                            }
+                        };
+                    }
+                    collected.push(self.eval(collect_expr, env)?);
+                }
+                result = Value::list(collected);
             }
             Some(Value::Symbol(kind)) if kind == "thereis" => {
                 let thereis_expr = items
