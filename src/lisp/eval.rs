@@ -1736,9 +1736,19 @@ impl Interpreter {
                     })
                     .unwrap_or_else(primitives::default_directory),
             )),
+            "user-login-name" => Some(Value::String(
+                primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
+            )),
+            "user-full-name" => Some(Value::String(
+                primitives::current_user_full_name()
+                    .or_else(primitives::current_user_login_name)
+                    .unwrap_or_else(|| "user".into()),
+            )),
             "default-directory" => Some(Value::String(primitives::default_directory())),
             "installation-directory" => Some(Value::Nil),
             "tab-width" => Some(Value::Integer(8)),
+            "use-dialog-box" => Some(Value::T),
+            "use-file-dialog" => Some(Value::T),
             "system-type" => Some(Value::Symbol(
                 std::env::consts::OS.replace("macos", "darwin"),
             )),
@@ -1896,6 +1906,16 @@ impl Interpreter {
         self.globals.push((name.to_string(), value));
     }
 
+    pub fn push_function_binding(&mut self, name: &str, function: Value) {
+        self.functions.push((name.to_string(), function));
+    }
+
+    pub fn pop_function_binding(&mut self, name: &str) {
+        if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
+            self.functions.remove(index);
+        }
+    }
+
     /// Evaluate an expression.
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
@@ -1984,6 +2004,9 @@ impl Interpreter {
                         }
                         "ert-with-message-capture" => {
                             return self.sf_ert_with_message_capture(&items, env);
+                        }
+                        "with-environment-variables" => {
+                            return self.sf_with_environment_variables(&items, env);
                         }
                         "with-output-to-string" => {
                             return self.sf_with_output_to_string(&items, env);
@@ -3146,6 +3169,56 @@ impl Interpreter {
         result
     }
 
+    fn sf_with_environment_variables(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "with-environment-variables".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut previous = Vec::new();
+        for binding in bindings {
+            let pair = binding.to_vec()?;
+            if pair.len() != 2 {
+                return Err(LispError::Signal(format!(
+                    "Invalid VARIABLES: {}",
+                    binding
+                )));
+            }
+            let name = primitives::string_text(&self.eval(&pair[0], env)?)?;
+            let value = self.eval(&pair[1], env)?;
+            let value = if value.is_nil() {
+                None
+            } else {
+                Some(primitives::string_text(&value)?)
+            };
+            previous.push((name.clone(), std::env::var_os(&name)));
+            unsafe {
+                if let Some(value) = value {
+                    std::env::set_var(&name, value);
+                } else {
+                    std::env::remove_var(&name);
+                }
+            }
+        }
+        let result = self.sf_progn(&items[2..], env);
+        for (name, value) in previous.into_iter().rev() {
+            unsafe {
+                if let Some(value) = value {
+                    std::env::set_var(&name, value);
+                } else {
+                    std::env::remove_var(&name);
+                }
+            }
+        }
+        result
+    }
+
     fn sf_with_restriction(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
@@ -3459,6 +3532,11 @@ impl Interpreter {
                 return Ok(new_value);
             }
             let index = index_value.as_integer()? as usize;
+            if matches!(current, Value::String(_) | Value::StringObject(_)) {
+                let updated = primitives::aset_string_value(&current, index, &new_value)?;
+                self.set_variable(name, updated, env);
+                return Ok(new_value);
+            }
             let mut entries = current.to_vec()?;
             let tagged = matches!(
                 entries.first(),

@@ -14,12 +14,15 @@ use regex::Regex;
 use roxmltree::{Document, Node, NodeType};
 use std::fs;
 use std::io::ErrorKind;
-use std::io::Write;
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use unicode_width::UnicodeWidthChar;
 
@@ -821,7 +824,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-name-nondirectory"
             | "file-name-as-directory"
             | "directory-file-name"
+            | "directory-name-p"
             | "file-name-absolute-p"
+            | "file-name-case-insensitive-p"
             | "file-name-concat"
             | "file-name-unquote"
             | "file-remote-p"
@@ -831,14 +836,22 @@ pub fn is_builtin(name: &str) -> bool {
             | "ert-resource-file"
             | "ert-fail"
             | "load"
+            | "file-directory-p"
             | "file-readable-p"
             | "file-exists-p"
             | "file-executable-p"
+            | "file-symlink-p"
+            | "make-symbolic-link"
             | "delete-file"
+            | "delete-file-internal"
             | "delete-directory"
+            | "delete-directory-internal"
             | "make-directory"
+            | "make-directory-internal"
+            | "make-temp-file-internal"
             | "insert-file-contents"
             | "insert-file-contents-literally"
+            | "set-binary-mode"
             | "write-region"
             | "call-process"
             | "call-process-region"
@@ -975,6 +988,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "documentation"
             | "getenv"
             | "getenv-internal"
+            | "user-login-name"
+            | "user-full-name"
             | "symbol-function"
             | "symbol-name"
             | "macroexp-file-name"
@@ -988,9 +1003,17 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-truename"
             | "save-buffer"
             | "unlock-buffer"
+            | "ask-user-about-supersession-threat"
+            | "advice-add"
+            | "advice-remove"
             | "userlock--handle-unlock-error"
+            | "recent-auto-save-p"
+            | "set-buffer-auto-saved"
+            | "clear-buffer-auto-save-failure"
+            | "next-read-file-uses-dialog-p"
             | "auto-save-mode"
             | "do-auto-save"
+            | "unix-sync"
             | "group-gid"
             | "group-name"
             | "random"
@@ -4203,7 +4226,12 @@ pub fn call(
                     .lookup_var("default-directory", env)
                     .and_then(|value| string_like(&value).map(|string| string.text)),
             };
-            Ok(Value::String(expand_file_name(&path, base.as_deref())))
+            Ok(Value::String(expand_file_name_runtime(
+                interp,
+                env,
+                &path,
+                base.as_deref(),
+            )?))
         }
         "substitute-in-file-name" => {
             need_args(name, args, 1)?;
@@ -4233,6 +4261,14 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::String(directory_file_name(&string_text(&args[0])?)))
         }
+        "directory-name-p" => {
+            need_args(name, args, 1)?;
+            Ok(if directory_name_p(&string_text(&args[0])?) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "file-name-absolute-p" => {
             need_args(name, args, 1)?;
             Ok(if file_name_absolute_p(&string_text(&args[0])?) {
@@ -4240,6 +4276,10 @@ pub fn call(
             } else {
                 Value::Nil
             })
+        }
+        "file-name-case-insensitive-p" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
         }
         "file-name-concat" => Ok(Value::String(file_name_concat(
             &args
@@ -4306,6 +4346,16 @@ pub fn call(
             let _loaded = interp.load_target(&target)?;
             Ok(Value::T)
         }
+        "file-directory-p" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
+            Ok(if fs::metadata(path).map(|metadata| metadata.is_dir()).unwrap_or(false) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "file-readable-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -4318,6 +4368,7 @@ pub fn call(
         "file-exists-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
             Ok(if fs::metadata(path).is_ok() {
                 Value::T
             } else {
@@ -4336,6 +4387,14 @@ pub fn call(
         "delete-file" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
+            fs::remove_file(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
+        "delete-file-internal" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
             fs::remove_file(path).map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(Value::Nil)
         }
@@ -4344,6 +4403,7 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
             if args.get(1).is_some_and(Value::is_truthy) {
                 fs::remove_dir_all(path).map_err(|error| LispError::Signal(error.to_string()))?;
             } else {
@@ -4351,17 +4411,45 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "delete-directory-internal" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
+            fs::remove_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
         "make-directory" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
             if args.get(1).is_some_and(Value::is_truthy) {
                 fs::create_dir_all(path).map_err(|error| LispError::Signal(error.to_string()))?;
             } else {
                 fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
             }
             Ok(Value::Nil)
+        }
+        "make-directory-internal" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
+            fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
+        "make-temp-file-internal" => {
+            need_args(name, args, 4)?;
+            let prefix = string_text(&args[0])?;
+            let suffix = string_text(&args[2])?;
+            validate_file_name(&prefix)?;
+            validate_file_name(&suffix)?;
+            Ok(Value::String(make_temp_file_internal(
+                &prefix,
+                &args[1],
+                &suffix,
+                args.get(3),
+            )?))
         }
         "file-locked-p" => {
             need_args(name, args, 1)?;
@@ -4372,6 +4460,7 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let path = string_text(&args[2])?;
+            validate_file_name(&path)?;
             let text = if string_like(&args[0]).is_some() && args.get(1).is_none_or(Value::is_nil) {
                 string_text(&args[0])?
             } else {
@@ -4382,35 +4471,57 @@ pub fn call(
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?
             };
-            fs::write(&path, text).map_err(|error| LispError::Signal(error.to_string()))?;
+            if args.get(3).is_some_and(Value::is_truthy) {
+                let mut file = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                file.write_all(text.as_bytes())
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            } else {
+                fs::write(&path, text).map_err(|error| LispError::Signal(error.to_string()))?;
+            }
             Ok(Value::String(path.to_string()))
         }
         "insert-file-contents" => {
-            need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
-            let text =
-                fs::read_to_string(&path).map_err(|error| LispError::Signal(error.to_string()))?;
-            let count = text.chars().count();
-            interp.insert_current_buffer(&text);
-            Ok(Value::list([
-                Value::String(path.to_string()),
-                Value::Integer(count as i64),
-            ]))
+            insert_file_contents(interp, env, args, false)
         }
         "insert-file-contents-literally" => {
+            insert_file_contents(interp, env, args, true)
+        }
+        "file-symlink-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
-            let bytes = fs::read(&path).map_err(|error| LispError::Signal(error.to_string()))?;
-            let text = bytes
-                .iter()
-                .map(|byte| char::from(*byte))
-                .collect::<String>();
-            let count = text.chars().count();
-            interp.insert_current_buffer(&text);
-            Ok(Value::list([
-                Value::String(path.to_string()),
-                Value::Integer(count as i64),
-            ]))
+            validate_file_name(&path)?;
+            let target = fs::symlink_metadata(&path)
+                .ok()
+                .filter(|metadata| metadata.file_type().is_symlink())
+                .and_then(|_| fs::read_link(&path).ok());
+            Ok(target
+                .map(|path| Value::String(path.to_string_lossy().into_owned()))
+                .unwrap_or(Value::Nil))
+        }
+        "make-symbolic-link" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let target = string_text(&args[0])?;
+            let link = string_text(&args[1])?;
+            validate_file_name(&target)?;
+            validate_file_name(&link)?;
+            if args.get(2).is_some_and(Value::is_truthy) && fs::symlink_metadata(&link).is_ok() {
+                fs::remove_file(&link).map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+            #[cfg(unix)]
+            {
+                symlink(&target, &link).map_err(|error| LispError::Signal(error.to_string()))?;
+                Ok(Value::Nil)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(LispError::Signal("make-symbolic-link not supported".into()))
+            }
         }
         "call-process" => {
             if args.is_empty() {
@@ -5294,6 +5405,29 @@ pub fn call(
             let s = args[0].as_symbol()?;
             Ok(Value::String(s.to_string()))
         }
+        "user-login-name" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(Value::String(
+                current_user_login_name().unwrap_or_else(|| "user".into()),
+            ))
+        }
+        "user-full-name" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let requested = args.first().and_then(|value| {
+                if value.is_nil() {
+                    None
+                } else {
+                    string_text(value).ok()
+                }
+            });
+            Ok(user_full_name(requested.as_deref())
+                .map(Value::String)
+                .unwrap_or(Value::Nil))
+        }
         "macroexp-file-name" => {
             need_args(name, args, 0)?;
             Ok(interp
@@ -5368,7 +5502,63 @@ pub fn call(
             Ok(Value::Nil)
         }
         "unlock-buffer" => unlock_current_buffer(interp, env),
+        "ask-user-about-supersession-threat" => {
+            need_args(name, args, 1)?;
+            Ok(Value::T)
+        }
+        "advice-add" => {
+            if args.len() < 3 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let function_name = args[0].as_symbol()?.to_string();
+            if args[1].as_symbol()? != ":override" {
+                return Ok(Value::Nil);
+            }
+            let advice = match &args[2] {
+                Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
+                other => other.clone(),
+            };
+            interp.push_function_binding(&function_name, advice);
+            Ok(Value::Nil)
+        }
+        "advice-remove" => {
+            need_args(name, args, 2)?;
+            let function_name = args[0].as_symbol()?.to_string();
+            interp.pop_function_binding(&function_name);
+            Ok(Value::Nil)
+        }
         "userlock--handle-unlock-error" => Ok(Value::Nil),
+        "recent-auto-save-p" => {
+            need_args(name, args, 0)?;
+            Ok(if interp.buffer.is_autosaved() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "set-buffer-auto-saved" => {
+            need_args(name, args, 0)?;
+            interp.buffer.set_autosaved();
+            Ok(Value::Nil)
+        }
+        "clear-buffer-auto-save-failure" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
+        "next-read-file-uses-dialog-p" => {
+            need_args(name, args, 0)?;
+            let use_dialog = interp
+                .lookup_var("use-dialog-box", env)
+                .is_some_and(|value| value.is_truthy());
+            let use_file_dialog = interp
+                .lookup_var("use-file-dialog", env)
+                .is_some_and(|value| value.is_truthy());
+            Ok(if use_dialog && use_file_dialog {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "auto-save-mode" => {
             let enabled = args.first().is_none_or(Value::is_truthy);
             if enabled {
@@ -5402,6 +5592,19 @@ pub fn call(
             );
             interp.buffer.set_autosaved();
             Ok(Value::Nil)
+        }
+        "unix-sync" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
+        "set-binary-mode" => {
+            need_args(name, args, 2)?;
+            match &args[0] {
+                Value::Symbol(stream) if matches!(stream.as_str(), "stdin" | "stdout" | "stderr") => {
+                    Ok(Value::Nil)
+                }
+                _ => Err(LispError::Signal("Invalid stream".into())),
+            }
         }
         "obarray-make" => {
             if args.len() > 1 {
@@ -6456,13 +6659,16 @@ pub fn call(
 
         "setcdr" => {
             need_args(name, args, 2)?;
-            if args[0] == args[1] {
-                return Ok(interp.create_record("circular-list", Vec::new()));
-            }
-            let Value::Cons(car, _) = &args[0] else {
-                return Err(LispError::TypeError("cons".into(), args[0].type_name()));
+            let updated = if args[0] == args[1] {
+                interp.create_record("circular-list", Vec::new())
+            } else {
+                let Value::Cons(car, _) = &args[0] else {
+                    return Err(LispError::TypeError("cons".into(), args[0].type_name()));
+                };
+                Value::Cons(car.clone(), Box::new(args[1].clone()))
             };
-            Ok(Value::Cons(car.clone(), Box::new(args[1].clone())))
+            replace_matching_bindings(env, &args[0], updated.clone());
+            Ok(updated)
         }
 
         "emaxx-default-region-extract-function" => {
@@ -9014,6 +9220,37 @@ fn expand_file_name(path: &str, base: Option<&str>) -> String {
     normalize_path(&absolute).display().to_string()
 }
 
+fn expand_file_name_runtime(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    path: &str,
+    base: Option<&str>,
+) -> Result<String, LispError> {
+    validate_file_name(path)?;
+    if let Some(base) = base {
+        validate_file_name(base)?;
+    }
+    if let Some(handler) = find_file_name_handler(interp, env, path) {
+        let function = match handler {
+            Value::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
+            other => other,
+        };
+        let handled = call_function_value(
+            interp,
+            &function,
+            &[
+                Value::Symbol("expand-file-name".into()),
+                Value::String(path.to_string()),
+                base.map(|value| Value::String(value.to_string()))
+                    .unwrap_or(Value::Nil),
+            ],
+            env,
+        )?;
+        return string_text(&handled);
+    }
+    Ok(expand_file_name(path, base))
+}
+
 fn substitute_in_file_name(path: &str) -> String {
     let mut result = String::new();
     let chars: Vec<char> = path.chars().collect();
@@ -9066,7 +9303,46 @@ fn expand_home_prefix(path: &str) -> String {
     {
         return PathBuf::from(home).join(suffix).display().to_string();
     }
+    if let Some(rest) = path.strip_prefix('~') {
+        let (user, suffix) = rest
+            .split_once('/')
+            .map(|(user, suffix)| (user, Some(suffix)))
+            .unwrap_or((rest, None));
+        if user_exists(user)
+            && let Ok(home) = std::env::var("HOME")
+        {
+            return suffix.map_or(home.clone(), |suffix| {
+                PathBuf::from(home).join(suffix).display().to_string()
+            });
+        }
+    }
     path.to_string()
+}
+
+pub(crate) fn current_user_login_name() -> Option<String> {
+    std::env::var("LOGNAME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("USER").ok().filter(|value| !value.is_empty()))
+}
+
+pub(crate) fn current_user_full_name() -> Option<String> {
+    std::env::var("EMAXX_USER_FULL_NAME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(current_user_login_name)
+}
+
+fn user_exists(name: &str) -> bool {
+    current_user_login_name().is_some_and(|login| login == name)
+}
+
+fn user_full_name(name: Option<&str>) -> Option<String> {
+    match name {
+        None | Some("") => current_user_full_name(),
+        Some(name) if user_exists(name) => current_user_full_name(),
+        _ => None,
+    }
 }
 
 fn file_name_directory(path: &str) -> Option<String> {
@@ -9101,8 +9377,22 @@ fn directory_file_name(path: &str) -> String {
     path.trim_end_matches('/').to_string()
 }
 
+fn directory_name_p(path: &str) -> bool {
+    path.ends_with('/')
+}
+
 fn file_name_absolute_p(path: &str) -> bool {
-    path.starts_with('/') || path.starts_with('~')
+    if path.starts_with('/') {
+        return true;
+    }
+    if path == "~" || path.starts_with("~/") {
+        return true;
+    }
+    if let Some(rest) = path.strip_prefix('~') {
+        let user = rest.split('/').next().unwrap_or_default();
+        return user_exists(user);
+    }
+    false
 }
 
 fn file_name_concat(parts: &[String]) -> String {
@@ -9122,6 +9412,34 @@ fn file_name_concat(parts: &[String]) -> String {
         }
     }
     result
+}
+
+fn validate_file_name(path: &str) -> Result<(), LispError> {
+    if path.contains('\0') {
+        Err(LispError::TypeError("string".into(), path.to_string()))
+    } else {
+        Ok(())
+    }
+}
+
+fn find_file_name_handler(interp: &Interpreter, env: &Env, file: &str) -> Option<Value> {
+    let handlers = interp.lookup_var("file-name-handler-alist", env)?;
+    let entries = handlers.to_vec().ok()?;
+    for entry in entries {
+        let Value::Cons(pattern, handler) = entry else {
+            continue;
+        };
+        let Ok(pattern) = string_text(&pattern) else {
+            continue;
+        };
+        let Ok(regex) = Regex::new(&pattern) else {
+            continue;
+        };
+        if regex.is_match(file) {
+            return Some((*handler).clone());
+        }
+    }
+    None
 }
 
 fn ert_resource_directory(interp: &Interpreter) -> Option<String> {
@@ -10444,6 +10762,37 @@ pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
+}
+
+pub(crate) fn aset_string_value(
+    target: &Value,
+    index: usize,
+    new_value: &Value,
+) -> Result<Value, LispError> {
+    let mut string =
+        string_like(target).ok_or_else(|| LispError::TypeError("string".into(), target.type_name()))?;
+    let code = new_value.as_integer()?;
+    let ch = if !string.multibyte && (0..=255).contains(&code) {
+        let byte = code as u8;
+        if byte <= 0x7F {
+            byte as char
+        } else {
+            raw_byte_regex_char(byte)
+        }
+    } else {
+        char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))?
+    };
+    let mut chars: Vec<char> = string.text.chars().collect();
+    if index >= chars.len() {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    chars[index] = ch;
+    string.text = chars.into_iter().collect();
+    Ok(make_shared_string_value_with_multibyte(
+        string.text,
+        string.props,
+        string.multibyte,
+    ))
 }
 
 fn shared_string_props(props: &[TextPropertySpan]) -> Vec<StringPropertySpan> {
@@ -12527,6 +12876,15 @@ fn file_error_value(message: &str, path: &str) -> Value {
     ])
 }
 
+fn file_error_with_detail_value(message: &str, detail: &str, path: &str) -> Value {
+    Value::list([
+        Value::Symbol("file-error".into()),
+        Value::String(message.into()),
+        Value::String(detail.into()),
+        Value::String(path.into()),
+    ])
+}
+
 fn file_locked_p(path: &str) -> Result<Value, LispError> {
     let lock_path = lock_path_for_file(path);
     match fs::metadata(&lock_path) {
@@ -12543,6 +12901,176 @@ fn file_locked_p(path: &str) -> Result<Value, LispError> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
         Err(error) => Err(LispError::Signal(error.to_string())),
     }
+}
+
+fn replace_matching_bindings(env: &mut Env, original: &Value, replacement: Value) {
+    for frame in env.iter_mut().rev() {
+        for (_, value) in frame.iter_mut().rev() {
+            if *value == *original {
+                *value = replacement.clone();
+            }
+        }
+    }
+}
+
+fn is_circular_list_value(interp: &Interpreter, value: &Value) -> bool {
+    match value {
+        Value::Record(id) => interp
+            .find_record(*id)
+            .is_some_and(|record| record.type_name == "circular-list"),
+        _ => false,
+    }
+}
+
+fn make_temp_file_internal(
+    prefix: &str,
+    dir_flag: &Value,
+    suffix: &str,
+    text: Option<&Value>,
+) -> Result<String, LispError> {
+    let mut attempt = 0u64;
+    loop {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            .as_nanos();
+        let path = format!("{prefix}{stamp:x}{attempt:x}{suffix}");
+        let candidate = PathBuf::from(&path);
+        if candidate.exists() {
+            attempt = attempt.saturating_add(1);
+            continue;
+        }
+        if dir_flag.is_nil() {
+            let mut file =
+                fs::File::create(&candidate).map_err(|error| LispError::Signal(error.to_string()))?;
+            if let Some(text) = text.and_then(string_like) {
+                file.write_all(text.text.as_bytes())
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+        } else if !matches!(dir_flag, Value::Integer(0)) {
+            fs::create_dir(&candidate).map_err(|error| LispError::Signal(error.to_string()))?;
+        }
+        return Ok(path);
+    }
+}
+
+fn maybe_prompt_supersession_threat(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some(path) = current_buffer_file(interp).map(str::to_string) else {
+        return Ok(());
+    };
+    let Some(current_modtime) = file_modtime(&path)? else {
+        return Ok(());
+    };
+    if interp.buffer.visited_file_modtime() != Some(current_modtime) {
+        let _ = call_named_function(
+            interp,
+            "ask-user-about-supersession-threat",
+            &[Value::String(path)],
+            env,
+        )?;
+    }
+    Ok(())
+}
+
+fn decode_inserted_bytes(bytes: &[u8], multibyte: bool, literal: bool) -> String {
+    if literal || !multibyte {
+        return bytes.iter().map(|byte| char::from(*byte)).collect();
+    }
+    String::from_utf8(bytes.to_vec())
+        .unwrap_or_else(|_| bytes.iter().map(|byte| char::from(*byte)).collect())
+}
+
+fn read_insert_file_bytes(
+    path: &str,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Result<Vec<u8>, LispError> {
+    validate_file_name(path)?;
+    let metadata = fs::metadata(path).map_err(|error| LispError::Signal(error.to_string()))?;
+    if metadata.is_dir() {
+        return Err(LispError::SignalValue(file_error_with_detail_value(
+            "Read error",
+            "Is a directory",
+            path,
+        )));
+    }
+    if metadata.file_type().is_file() {
+        let mut bytes = fs::read(path).map_err(|error| LispError::Signal(error.to_string()))?;
+        let start = start.unwrap_or(0).min(bytes.len());
+        let end = end.unwrap_or(bytes.len()).clamp(start, bytes.len());
+        bytes.truncate(end);
+        bytes.drain(..start);
+        return Ok(bytes);
+    }
+    if start.is_some() {
+        return Err(LispError::Signal("Cannot seek in non-regular file".into()));
+    }
+    let limit = end.unwrap_or(8192);
+    let mut file = fs::File::open(path).map_err(|error| LispError::Signal(error.to_string()))?;
+    let mut buffer = vec![0; limit];
+    let read = file
+        .read(&mut buffer)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    buffer.truncate(read);
+    Ok(buffer)
+}
+
+fn insert_file_contents(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+    literal: bool,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 5 {
+        return Err(LispError::WrongNumberOfArgs(
+            if literal {
+                "insert-file-contents-literally".into()
+            } else {
+                "insert-file-contents".into()
+            },
+            args.len(),
+        ));
+    }
+    let path = string_text(&args[0])?;
+    let start = args
+        .get(2)
+        .filter(|value| !value.is_nil())
+        .map(|value| value.as_integer().map(|value| value.max(0) as usize))
+        .transpose()?;
+    let end = args
+        .get(3)
+        .filter(|value| !value.is_nil())
+        .map(|value| value.as_integer().map(|value| value.max(0) as usize))
+        .transpose()?;
+    let replace = args.get(4).is_some_and(Value::is_truthy);
+    let bytes = read_insert_file_bytes(&path, start, end)?;
+    let text = decode_inserted_bytes(&bytes, interp.buffer.is_multibyte(), literal);
+    if replace {
+        maybe_prompt_supersession_threat(interp, env)?;
+        let start = interp.buffer.point_min();
+        let end = interp.buffer.point_max();
+        interp.buffer.goto_char(start);
+        interp
+            .delete_region_current_buffer(start, end)
+            .map_err(LispError::from)?;
+        interp.buffer.goto_char(start);
+    }
+    if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env)
+        && is_circular_list_value(interp, &hooks)
+    {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("circular-list".into()),
+            Value::String("Circular list".into()),
+        ])));
+    }
+    interp.insert_current_buffer(&text);
+    Ok(Value::list([
+        Value::String(path),
+        Value::Integer(text.chars().count() as i64),
+    ]))
 }
 
 fn current_buffer_file(interp: &Interpreter) -> Option<&str> {
