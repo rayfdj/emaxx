@@ -13,7 +13,7 @@ pub const ORACLE_LOCK_PATH: &str = "compat/oracle.lock.json";
 pub const ORACLE_LOCAL_PATH: &str = "compat/oracle.local.json";
 pub const ORACLE_HELPER_PATH: &str = "compat/emacs_compat_runner.el";
 pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
-const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 9] = [
+const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 10] = [
     "test/src/comp-tests.el",
     "test/src/data-tests.el",
     "test/src/emacs-module-tests.el",
@@ -23,6 +23,7 @@ const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 9] = [
     "test/src/print-tests.el",
     "test/src/syntax-tests.el",
     "test/src/thread-tests.el",
+    "test/lisp/image-file-tests.el",
 ];
 pub const SUPPORTED_ENV_VARS: [&str; 4] = [
     "EMACS_TEST_TIMEOUT",
