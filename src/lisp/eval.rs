@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::primitives;
 use super::types::{Env, LispError, Value};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
-use regex::{escape as regex_escape, Regex};
+use regex::{Regex, escape as regex_escape};
 
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
@@ -140,6 +140,7 @@ pub struct Interpreter {
     pub profiler_memory_log_pending: bool,
     pub profiler_cpu_running: bool,
     pub profiler_cpu_log_pending: bool,
+    pub message_capture_stack: Vec<String>,
     pub lossage_size: i64,
     face_inheritance: Vec<(String, Option<String>)>,
     undo_sequence: Option<UndoSequenceState>,
@@ -193,6 +194,7 @@ impl Interpreter {
             profiler_memory_log_pending: false,
             profiler_cpu_running: false,
             profiler_cpu_log_pending: false,
+            message_capture_stack: Vec::new(),
             lossage_size: 300,
             face_inheritance: Vec::new(),
             undo_sequence: None,
@@ -219,7 +221,9 @@ impl Interpreter {
 
     /// Check if a buffer ID exists in the live buffer list.
     pub fn has_buffer_id(&self, id: u64) -> bool {
-        self.buffer_list.iter().any(|(buffer_id, _)| *buffer_id == id)
+        self.buffer_list
+            .iter()
+            .any(|(buffer_id, _)| *buffer_id == id)
     }
 
     /// Find a buffer by name, returning (id, name).
@@ -268,7 +272,9 @@ impl Interpreter {
 
     pub fn load_target(&mut self, target: &str) -> Result<PathBuf, LispError> {
         let Some(path) = self.resolve_load_target(target) else {
-            return Err(LispError::Signal(format!("Cannot open load file: {target}")));
+            return Err(LispError::Signal(format!(
+                "Cannot open load file: {target}"
+            )));
         };
         crate::lisp::load_file_strict(self, &path)?;
         Ok(path)
@@ -283,7 +289,9 @@ impl Interpreter {
             return Ok(Value::Symbol(feature.to_string()));
         }
         let Some(path) = self.resolve_load_target(feature) else {
-            return Err(LispError::Signal(format!("Cannot open load file: {feature}")));
+            return Err(LispError::Signal(format!(
+                "Cannot open load file: {feature}"
+            )));
         };
         self.loading_features.push(feature.to_string());
         let load_result = crate::lisp::load_file_strict(self, &path);
@@ -523,9 +531,9 @@ impl Interpreter {
         end: u32,
         value: Value,
     ) -> Result<(), LispError> {
-        let table = self
-            .find_char_table_mut(id)
-            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let table = self.find_char_table_mut(id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
         table.entries.push(CharTableEntry {
             start: start.min(end),
             end: start.max(end),
@@ -535,9 +543,9 @@ impl Interpreter {
     }
 
     pub fn char_table_set_default(&mut self, id: u64, value: Value) -> Result<(), LispError> {
-        let table = self
-            .find_char_table_mut(id)
-            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let table = self.find_char_table_mut(id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
         table.default = value;
         Ok(())
     }
@@ -587,9 +595,9 @@ impl Interpreter {
     }
 
     pub fn set_char_table_parent(&mut self, id: u64, parent: Option<u64>) -> Result<(), LispError> {
-        let table = self
-            .find_char_table_mut(id)
-            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let table = self.find_char_table_mut(id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
         table.parent = parent;
         Ok(())
     }
@@ -605,9 +613,9 @@ impl Interpreter {
         slot: usize,
         value: Value,
     ) -> Result<(), LispError> {
-        let table = self
-            .find_char_table_mut(id)
-            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let table = self.find_char_table_mut(id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
         while table.extra_slots.len() <= slot {
             table.extra_slots.push(Value::Nil);
         }
@@ -621,10 +629,9 @@ impl Interpreter {
     }
 
     pub fn clone_char_table(&mut self, id: u64) -> Result<Value, LispError> {
-        let source = self
-            .find_char_table(id)
-            .cloned()
-            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let source = self.find_char_table(id).cloned().ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
         let new_id = self.next_char_table_id;
         self.next_char_table_id += 1;
         self.char_tables.push(CharTableState {
@@ -763,14 +770,22 @@ impl Interpreter {
     }
 
     pub fn charset_priority_rank(&self, name: &str) -> usize {
-        let canonical = self.charset_canonical_name(name).unwrap_or_else(|| name.to_string());
+        let canonical = self
+            .charset_canonical_name(name)
+            .unwrap_or_else(|| name.to_string());
         self.charset_priority
             .iter()
             .position(|existing| existing == &canonical)
             .unwrap_or(usize::MAX)
     }
 
-    pub fn declare_iso_charset(&mut self, dimension: i64, chars: i64, final_char: u32, charset: &str) {
+    pub fn declare_iso_charset(
+        &mut self,
+        dimension: i64,
+        chars: i64,
+        final_char: u32,
+        charset: &str,
+    ) {
         let canonical = self
             .charset_canonical_name(charset)
             .unwrap_or_else(|| charset.to_string());
@@ -799,7 +814,9 @@ impl Interpreter {
         if let Some(id) = self.standard_category_table_id {
             return id;
         }
-        let Value::CharTable(id) = self.make_char_table(Some("category-table".into()), Value::String(String::new())) else {
+        let Value::CharTable(id) =
+            self.make_char_table(Some("category-table".into()), Value::String(String::new()))
+        else {
             unreachable!("make_char_table returns a char-table");
         };
         self.standard_category_table_id = Some(id);
@@ -822,9 +839,9 @@ impl Interpreter {
         category: u32,
         doc: String,
     ) -> Result<(), LispError> {
-        let table = self
-            .find_char_table_mut(id)
-            .ok_or_else(|| LispError::TypeError("char-table".into(), format!("char-table<{id}>")))?;
+        let table = self.find_char_table_mut(id).ok_or_else(|| {
+            LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+        })?;
         if table.category_docs.iter().any(|(ch, _)| *ch == category) {
             return Err(LispError::Signal("Category already defined".into()));
         }
@@ -918,12 +935,7 @@ impl Interpreter {
             .map(|(_, _, hooks)| hooks.clone())
     }
 
-    pub fn set_buffer_local_hook(
-        &mut self,
-        buffer_id: u64,
-        hook_name: &str,
-        hooks: Vec<Value>,
-    ) {
+    pub fn set_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str, hooks: Vec<Value>) {
         if let Some((_, _, existing)) = self
             .buffer_local_hooks
             .iter_mut()
@@ -966,13 +978,19 @@ impl Interpreter {
     }
 
     pub fn mark_auto_buffer_local(&mut self, name: &str) {
-        if !self.auto_buffer_locals.iter().any(|existing| existing == name) {
+        if !self
+            .auto_buffer_locals
+            .iter()
+            .any(|existing| existing == name)
+        {
             self.auto_buffer_locals.push(name.to_string());
         }
     }
 
     pub fn is_auto_buffer_local(&self, name: &str) -> bool {
-        self.auto_buffer_locals.iter().any(|existing| existing == name)
+        self.auto_buffer_locals
+            .iter()
+            .any(|existing| existing == name)
     }
 
     pub fn effective_labeled_restriction(
@@ -1230,9 +1248,9 @@ impl Interpreter {
             return Err(error);
         }
         let state = self.undo_sequence.as_mut().expect("sequence active");
-        state
-            .redo_groups
-            .push(latest_generated_undo_group(&self.buffer.undo_entries()[before..]));
+        state.redo_groups.push(latest_generated_undo_group(
+            &self.buffer.undo_entries()[before..],
+        ));
         state.undone_count += 1;
         state.had_error = false;
         Ok(())
@@ -1244,12 +1262,9 @@ impl Interpreter {
 
     fn start_undo_sequence_step(&mut self) -> Result<(), LispError> {
         let original_groups = self.buffer.undo_groups();
-        let group = original_groups
-            .last()
-            .cloned()
-            .ok_or_else(|| {
-                LispError::Signal(crate::buffer::BufferError::NoFurtherUndoInformation.to_string())
-            })?;
+        let group = original_groups.last().cloned().ok_or_else(|| {
+            LispError::Signal(crate::buffer::BufferError::NoFurtherUndoInformation.to_string())
+        })?;
         self.replay_sequence_group(&group)?;
         self.undo_sequence = Some(UndoSequenceState {
             original_groups,
@@ -1488,9 +1503,9 @@ impl Interpreter {
             .iter()
             .find(|ov| ov.id == id)
             .or_else(|| {
-                self.inactive_buffers.iter().find_map(|(_, buffer)| {
-                    buffer.overlays.iter().find(|ov| ov.id == id)
-                })
+                self.inactive_buffers
+                    .iter()
+                    .find_map(|(_, buffer)| buffer.overlays.iter().find(|ov| ov.id == id))
             })
     }
 
@@ -1556,6 +1571,14 @@ impl Interpreter {
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),
+            "buffer-file-truename" => Some(
+                self.buffer
+                    .file_truename
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            "create-lockfiles" => Some(Value::T),
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
@@ -1573,7 +1596,9 @@ impl Interpreter {
             "default-directory" => Some(Value::String(primitives::default_directory())),
             "installation-directory" => Some(Value::Nil),
             "tab-width" => Some(Value::Integer(8)),
-            "system-type" => Some(Value::Symbol(std::env::consts::OS.replace("macos", "darwin"))),
+            "system-type" => Some(Value::Symbol(
+                std::env::consts::OS.replace("macos", "darwin"),
+            )),
             "system-configuration-features" => Some(Value::String(
                 std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES").unwrap_or_default(),
             )),
@@ -1638,7 +1663,9 @@ impl Interpreter {
             }
         }
         if name == "buffer-undo-list" {
-            return Ok(crate::lisp::primitives::buffer_undo_list_value(&self.buffer));
+            return Ok(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer,
+            ));
         }
         self.builtin_var_value(name)
             .ok_or_else(|| LispError::Void(name.to_string()))
@@ -1669,6 +1696,22 @@ impl Interpreter {
 
     /// Set a variable in the innermost local frame, or in globals.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
+        if name == "buffer-file-name" {
+            self.buffer.file = match value {
+                Value::Nil => None,
+                Value::String(path) => Some(path),
+                other => Some(other.to_string()),
+            };
+            return;
+        }
+        if name == "buffer-file-truename" {
+            self.buffer.file_truename = match value {
+                Value::Nil => None,
+                Value::String(path) => Some(path),
+                other => Some(other.to_string()),
+            };
+            return;
+        }
         if name == "buffer-undo-list" {
             if value.is_nil() {
                 self.undo_sequence = None;
@@ -1683,7 +1726,9 @@ impl Interpreter {
             }
             return;
         }
-        if self.buffer_local_value(self.current_buffer_id(), name).is_some()
+        if self
+            .buffer_local_value(self.current_buffer_id(), name)
+            .is_some()
             || self.is_auto_buffer_local(name)
         {
             self.set_buffer_local_value(self.current_buffer_id(), name, value);
@@ -1717,9 +1762,7 @@ impl Interpreter {
             | Value::BigInteger(_)
             | Value::Float(_)
             | Value::String(_)
-            | Value::StringObject(_) => {
-                Ok(expr.clone())
-            }
+            | Value::StringObject(_) => Ok(expr.clone()),
 
             Value::BuiltinFunc(_)
             | Value::Lambda(_, _, _)
@@ -1791,35 +1834,34 @@ impl Interpreter {
                         "condition-case" => return self.sf_condition_case(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
+                        "ert-with-temp-directory" => {
+                            return self.sf_ert_with_temp_directory(&items, env);
+                        }
+                        "ert-with-message-capture" => {
+                            return self.sf_ert_with_message_capture(&items, env);
+                        }
                         "with-output-to-string" => {
-                            return self.sf_with_output_to_string(&items, env)
+                            return self.sf_with_output_to_string(&items, env);
                         }
                         "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
                         "with-restriction" => return self.sf_with_restriction(&items, env),
-                        "without-restriction" => {
-                            return self.sf_without_restriction(&items, env)
-                        }
+                        "without-restriction" => return self.sf_without_restriction(&items, env),
                         "with-selected-window" => return self.sf_progn(&items[2..], env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
+                        "save-current-buffer" => return self.sf_save_current_buffer(&items, env),
                         "save-restriction" => return self.sf_save_restriction(&items, env),
                         "with-silent-modifications" => {
-                            return self.sf_with_silent_modifications(&items, env)
+                            return self.sf_with_silent_modifications(&items, env);
                         }
-                        "combine-change-calls" => {
-                            return self.sf_combine_change_calls(&items, env)
-                        }
+                        "combine-change-calls" => return self.sf_combine_change_calls(&items, env),
                         "cl-destructuring-bind" => {
-                            return self.sf_cl_destructuring_bind(&items, env)
+                            return self.sf_cl_destructuring_bind(&items, env);
                         }
                         "cl-letf" => return self.sf_cl_letf(&items, env),
                         "aset" => return self.sf_aset(&items, env),
-                        "cl-flet" | "cl-labels" => {
-                            return self.sf_cl_flet(&items, env)
-                        }
-                        "cl-macrolet" => {
-                            return self.sf_cl_macrolet(&items, env)
-                        }
+                        "cl-flet" | "cl-labels" => return self.sf_cl_flet(&items, env),
+                        "cl-macrolet" => return self.sf_cl_macrolet(&items, env),
                         "push" => {
                             // (push NEWELT PLACE)
                             if items.len() < 3 {
@@ -1852,13 +1894,15 @@ impl Interpreter {
                                                 return Err(LispError::TypeError(
                                                     "overlay".into(),
                                                     other.type_name(),
-                                                ))
+                                                ));
                                             }
                                         };
                                         let prop_name = prop.as_symbol()?.to_string();
                                         let cur = self
                                             .find_overlay(overlay_id)
-                                            .and_then(|overlay| overlay.get_prop(&prop_name).cloned())
+                                            .and_then(|overlay| {
+                                                overlay.get_prop(&prop_name).cloned()
+                                            })
                                             .unwrap_or(Value::Nil);
                                         let new_val = Value::cons(val, cur);
                                         if let Some(overlay) = self.find_overlay_mut(overlay_id) {
@@ -1893,11 +1937,9 @@ impl Interpreter {
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
                         "skip-unless" | "ert--skip-unless" => {
-                            return self.sf_skip_unless(&items, env)
+                            return self.sf_skip_unless(&items, env);
                         }
-                        "skip-when" | "ert--skip-when" => {
-                            return self.sf_skip_when(&items, env)
-                        }
+                        "skip-when" | "ert--skip-when" => return self.sf_skip_when(&items, env),
                         "rx" => return self.sf_rx(&items),
                         "require" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
@@ -2091,11 +2133,7 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
-    fn sf_pcase_exhaustive(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
+    fn sf_pcase_exhaustive(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
         }
@@ -2120,7 +2158,9 @@ impl Interpreter {
                 return self.sf_progn(&clause_items[1..], env);
             }
         }
-        Err(LispError::Signal("pcase-exhaustive: no matching clause".into()))
+        Err(LispError::Signal(
+            "pcase-exhaustive: no matching clause".into(),
+        ))
     }
 
     fn sf_and(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -2372,7 +2412,11 @@ impl Interpreter {
     fn sf_incf(&mut self, items: &[Value], env: &mut Env, sign: i64) -> Result<Value, LispError> {
         if items.len() < 2 || items.len() > 3 {
             return Err(LispError::WrongNumberOfArgs(
-                if sign >= 0 { "incf".into() } else { "decf".into() },
+                if sign >= 0 {
+                    "incf".into()
+                } else {
+                    "decf".into()
+                },
                 items.len().saturating_sub(1),
             ));
         }
@@ -2401,9 +2445,8 @@ impl Interpreter {
             ));
         }
 
-        let place = quoted_symbol_name(&items[1]).ok_or_else(|| {
-            LispError::TypeError("symbol".into(), unquote(&items[1]).type_name())
-        })?;
+        let place = quoted_symbol_name(&items[1])
+            .ok_or_else(|| LispError::TypeError("symbol".into(), unquote(&items[1]).type_name()))?;
         let value = self.eval(&items[2], env)?;
         let append = if items.len() > 3 {
             self.eval(&items[3], env)?.is_truthy()
@@ -2597,11 +2640,9 @@ impl Interpreter {
                 Some(Value::Symbol(kind)) if kind == "from" => {
                     let start = self
                         .eval(
-                            items
-                                .get(index + 3)
-                                .ok_or_else(|| {
-                                    LispError::Signal("Unsupported cl-loop syntax".into())
-                                })?,
+                            items.get(index + 3).ok_or_else(|| {
+                                LispError::Signal("Unsupported cl-loop syntax".into())
+                            })?,
                             env,
                         )?
                         .as_integer()?;
@@ -2610,11 +2651,9 @@ impl Interpreter {
                     }
                     let end = self
                         .eval(
-                            items
-                                .get(index + 5)
-                                .ok_or_else(|| {
-                                    LispError::Signal("Unsupported cl-loop syntax".into())
-                                })?,
+                            items.get(index + 5).ok_or_else(|| {
+                                LispError::Signal("Unsupported cl-loop syntax".into())
+                            })?,
                             env,
                         )?
                         .as_integer()?;
@@ -2629,11 +2668,9 @@ impl Interpreter {
                 Some(Value::Symbol(kind)) if kind == "in" => {
                     let values = self
                         .eval(
-                            items
-                                .get(index + 3)
-                                .ok_or_else(|| {
-                                    LispError::Signal("Unsupported cl-loop syntax".into())
-                                })?,
+                            items.get(index + 3).ok_or_else(|| {
+                                LispError::Signal("Unsupported cl-loop syntax".into())
+                            })?,
                             env,
                         )?
                         .to_vec()?;
@@ -2682,12 +2719,12 @@ impl Interpreter {
                 let thereis_expr = items
                     .get(index + 1)
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?;
-                let until_expr =
-                    if matches!(items.get(index + 2), Some(Value::Symbol(s)) if s == "until") {
-                        items.get(index + 3)
-                    } else {
-                        None
-                    };
+                let until_expr = if matches!(items.get(index + 2), Some(Value::Symbol(s)) if s == "until")
+                {
+                    items.get(index + 3)
+                } else {
+                    None
+                };
                 for iteration in 0..iterations {
                     let frame = env.last_mut().expect("env frame just pushed");
                     for (slot, spec) in frame.iter_mut().zip(&specs) {
@@ -2785,6 +2822,70 @@ impl Interpreter {
         result
     }
 
+    fn sf_ert_with_temp_directory(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "ert-with-temp-directory".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("emaxx-ert-dir-{}-{}", std::process::id(), stamp));
+        fs::create_dir_all(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+        env.push(vec![(name, Value::String(path.display().to_string()))]);
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        let _ = fs::remove_dir_all(&path);
+        result
+    }
+
+    fn sf_ert_with_message_capture(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "ert-with-message-capture".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        env.push(vec![(name.clone(), Value::String(String::new()))]);
+        self.message_capture_stack.push(String::new());
+        let mut last = Value::Nil;
+        let mut result = Ok(());
+        for form in &items[2..] {
+            match self.eval(form, env) {
+                Ok(value) => {
+                    last = value;
+                    if let Some(captured) = self.message_capture_stack.last().cloned()
+                        && let Some(frame) = env.last_mut()
+                        && let Some((_, binding)) = frame.iter_mut().find(|(var, _)| var == &name)
+                    {
+                        *binding = Value::String(captured);
+                    }
+                }
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        self.message_capture_stack.pop();
+        env.pop();
+        result.map(|()| last)
+    }
+
     fn sf_with_output_to_string(
         &mut self,
         items: &[Value],
@@ -2857,11 +2958,7 @@ impl Interpreter {
         result
     }
 
-    fn sf_with_restriction(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
+    fn sf_with_restriction(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
         }
@@ -2935,8 +3032,8 @@ impl Interpreter {
                 *buffer_id == self.current_buffer_id() && *active_label == label
             });
         let removed = pos.map(|index| self.labeled_restrictions.remove(index));
-        if let Some((start, end)) = self
-            .effective_labeled_restriction(self.current_buffer_id(), None)
+        if let Some((start, end)) =
+            self.effective_labeled_restriction(self.current_buffer_id(), None)
         {
             self.buffer.narrow_to_region(start, end);
         } else {
@@ -2954,6 +3051,19 @@ impl Interpreter {
         let saved_pt = self.buffer.point();
         let result = self.sf_progn(&items[1..], env);
         self.buffer.goto_char(saved_pt);
+        result
+    }
+
+    fn sf_save_current_buffer(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let saved_buffer_id = self.current_buffer_id();
+        let result = self.sf_progn(&items[1..], env);
+        if self.has_buffer_id(saved_buffer_id) {
+            let _ = self.switch_to_buffer_id(saved_buffer_id);
+        }
         result
     }
 
@@ -2976,11 +3086,7 @@ impl Interpreter {
         result
     }
 
-    fn sf_save_restriction(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
+    fn sf_save_restriction(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         let saved_buffer_id = self.current_buffer_id();
         let saved_begv = self.buffer.point_min();
         let saved_zv = self.buffer.point_max();
@@ -2996,10 +3102,14 @@ impl Interpreter {
         };
         let _ = self.set_marker(beg_id, Some(saved_begv), Some(saved_buffer_id));
         let _ = self.set_marker(end_id, Some(saved_zv), Some(saved_buffer_id));
-        self.buffer
-            .push_undo_meta(Value::cons(Value::Marker(beg_id), Value::Integer(-(saved_begv as i64))));
-        self.buffer
-            .push_undo_meta(Value::cons(Value::Marker(end_id), Value::Integer(saved_zv as i64)));
+        self.buffer.push_undo_meta(Value::cons(
+            Value::Marker(beg_id),
+            Value::Integer(-(saved_begv as i64)),
+        ));
+        self.buffer.push_undo_meta(Value::cons(
+            Value::Marker(end_id),
+            Value::Integer(saved_zv as i64),
+        ));
         let result = self.sf_progn(&items[1..], env);
         let restore_begv = self.marker_position(beg_id).unwrap_or(saved_begv);
         let restore_zv = self.marker_position(end_id).unwrap_or(saved_zv);
@@ -3018,10 +3128,11 @@ impl Interpreter {
         let result = self.sf_progn(&items[3..], env)?;
         let entries = self.buffer.take_undo_entries_since(start_undo);
         if !entries.is_empty() {
-            self.buffer.push_undo_entry(crate::buffer::UndoEntry::Combined {
-                display: combined_undo_display(&entries),
-                entries,
-            });
+            self.buffer
+                .push_undo_entry(crate::buffer::UndoEntry::Combined {
+                    display: combined_undo_display(&entries),
+                    entries,
+                });
         }
         Ok(result)
     }
@@ -3109,7 +3220,10 @@ impl Interpreter {
 
     fn sf_cl_letf(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
-            return Err(LispError::WrongNumberOfArgs("cl-letf".into(), items.len() - 1));
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-letf".into(),
+                items.len() - 1,
+            ));
         }
         let bindings = items[1].to_vec()?;
         let mut rebound = Vec::new();
@@ -3141,17 +3255,19 @@ impl Interpreter {
 
     fn sf_aset(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() != 4 {
-            return Err(LispError::WrongNumberOfArgs(
-                "aset".into(),
-                items.len() - 1,
-            ));
+            return Err(LispError::WrongNumberOfArgs("aset".into(), items.len() - 1));
         }
         if let Value::Symbol(name) = &items[1] {
             let current = self.lookup(name, env)?;
             let new_value = self.eval(&items[3], env)?;
             let index_value = self.eval(&items[2], env)?;
             if matches!(current, Value::CharTable(_)) {
-                primitives::call(self, "aset", &[current, index_value, new_value.clone()], env)?;
+                primitives::call(
+                    self,
+                    "aset",
+                    &[current, index_value, new_value.clone()],
+                    env,
+                )?;
                 return Ok(new_value);
             }
             let index = index_value.as_integer()? as usize;
@@ -3180,7 +3296,10 @@ impl Interpreter {
     // (cl-flet ((name (args) body...) ...) body...)
     fn sf_cl_flet(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
-            return Err(LispError::WrongNumberOfArgs("cl-flet".into(), items.len() - 1));
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-flet".into(),
+                items.len() - 1,
+            ));
         }
         let bindings = items[1].to_vec()?;
         let mut frame = Vec::new();
@@ -3476,7 +3595,10 @@ impl Interpreter {
         // items[2] is the param list (always empty for ert-deftest)
         // items[3..] is docstring, keyword metadata, then body forms.
         let mut cursor = 3;
-        if items.get(cursor).is_some_and(|value| matches!(value, Value::String(_))) {
+        if items
+            .get(cursor)
+            .is_some_and(|value| matches!(value, Value::String(_)))
+        {
             cursor += 1;
         }
 
@@ -3736,13 +3858,23 @@ fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
             match symbol_name(&items[0]).as_deref() {
                 Some("tag") => items
                     .get(1)
-                    .map(|tag| test.tags.iter().any(|candidate| candidate == &selector_atom(tag)))
+                    .map(|tag| {
+                        test.tags
+                            .iter()
+                            .any(|candidate| candidate == &selector_atom(tag))
+                    })
                     .unwrap_or(false),
-                Some("not") => items.get(1).is_some_and(|inner| !selector_matches(inner, test)),
+                Some("not") => items
+                    .get(1)
+                    .is_some_and(|inner| !selector_matches(inner, test)),
                 Some("or") => items[1..].iter().any(|inner| selector_matches(inner, test)),
                 Some("and") => items[1..].iter().all(|inner| selector_matches(inner, test)),
-                Some("member") => items[1..].iter().any(|item| selector_atom(item) == test.name),
-                Some("eql") => items.get(1).is_some_and(|item| selector_atom(item) == test.name),
+                Some("member") => items[1..]
+                    .iter()
+                    .any(|item| selector_atom(item) == test.name),
+                Some("eql") => items
+                    .get(1)
+                    .is_some_and(|item| selector_atom(item) == test.name),
                 _ => false,
             }
         }
@@ -3769,10 +3901,7 @@ fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol(name.clone()),
             Value::Integer(*count as i64),
         ]),
-        LispError::EndOfInput => Value::list([
-            Value::Symbol("end-of-file".into()),
-            Value::Nil,
-        ]),
+        LispError::EndOfInput => Value::list([Value::Symbol("end-of-file".into()), Value::Nil]),
         LispError::TestSkipped(message) => Value::list([
             Value::Symbol("ert-test-skipped".into()),
             Value::String(message.clone()),
@@ -3785,11 +3914,9 @@ fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol("error".into()),
             Value::String(message.clone()),
         ]),
-        LispError::Throw(tag, value) => Value::list([
-            Value::Symbol("no-catch".into()),
-            tag.clone(),
-            value.clone(),
-        ]),
+        LispError::Throw(tag, value) => {
+            Value::list([Value::Symbol("no-catch".into()), tag.clone(), value.clone()])
+        }
         LispError::SignalValue(value) => value.clone(),
     }
 }
@@ -3845,7 +3972,9 @@ fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
     }
 }
 
-fn latest_generated_undo_group(entries: &[crate::buffer::UndoEntry]) -> Vec<crate::buffer::UndoEntry> {
+fn latest_generated_undo_group(
+    entries: &[crate::buffer::UndoEntry],
+) -> Vec<crate::buffer::UndoEntry> {
     entries
         .iter()
         .filter(|entry| !matches!(entry, crate::buffer::UndoEntry::Boundary))
@@ -3918,15 +4047,15 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
 }
 
 fn is_function_declare_form(form: &Value) -> bool {
-    form.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(name)) if name == "declare")
-    })
+    form.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "declare"),
+    )
 }
 
 fn is_function_interactive_form(form: &Value) -> bool {
-    form.to_vec().ok().is_some_and(|items| {
-        matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive")
-    })
+    form.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive"),
+    )
 }
 
 fn pcase_pattern_bindings(
@@ -3967,16 +4096,24 @@ fn pcase_pattern_bindings(
 fn feature_name(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(symbol) => Some(symbol.clone()),
-        Value::Cons(_, _) => value.to_vec().ok().and_then(|items| match items.as_slice() {
-            [Value::Symbol(name), Value::Symbol(symbol)] if name == "quote" => Some(symbol.clone()),
-            _ => None,
-        }),
+        Value::Cons(_, _) => value
+            .to_vec()
+            .ok()
+            .and_then(|items| match items.as_slice() {
+                [Value::Symbol(name), Value::Symbol(symbol)] if name == "quote" => {
+                    Some(symbol.clone())
+                }
+                _ => None,
+            }),
         _ => None,
     }
 }
 
 fn is_compat_preloaded_feature(feature: &str) -> bool {
-    matches!(feature, "cus-edit" | "cus-load")
+    matches!(
+        feature,
+        "cl-lib" | "cus-edit" | "cus-load" | "ert-x" | "seq"
+    )
 }
 
 fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
@@ -4033,7 +4170,6 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
         ))),
     }
 }
-
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -4142,7 +4278,10 @@ mod tests {
     fn eval_list_ops() {
         assert_eq!(eval_str("(car '(1 2 3))"), Value::Integer(1));
         assert_eq!(eval_str("(cadr '(1 2 3))"), Value::Integer(2));
-        assert_eq!(eval_str("(cddr '(1 2 3))"), Value::list([Value::Integer(3)]));
+        assert_eq!(
+            eval_str("(cddr '(1 2 3))"),
+            Value::list([Value::Integer(3)])
+        );
         assert_eq!(eval_str("(identity 'ok)"), Value::Symbol("ok".into()));
         assert_eq!(eval_str("(length '(1 2 3))"), Value::Integer(3));
     }
@@ -4206,7 +4345,10 @@ mod tests {
             eval_str_with(&mut interp, "(defconst sample-constant 42)"),
             Value::Nil
         );
-        assert_eq!(eval_str_with(&mut interp, "sample-constant"), Value::Integer(42));
+        assert_eq!(
+            eval_str_with(&mut interp, "sample-constant"),
+            Value::Integer(42)
+        );
     }
 
     #[test]
@@ -4241,9 +4383,7 @@ mod tests {
     #[test]
     fn cl_loop_supports_parallel_in_thereis_until() {
         assert_eq!(
-            eval_str(
-                "(cl-loop for a in '(1 2 3) for b in '(1 3 2) thereis (< a b) until (> a b))"
-            ),
+            eval_str("(cl-loop for a in '(1 2 3) for b in '(1 3 2) thereis (< a b) until (> a b))"),
             Value::T
         );
     }
@@ -4289,7 +4429,10 @@ mod tests {
             (helper-name)
             "#,
         );
-        assert_eq!(eval_str_with(&mut interp, "(helper-name)"), Value::Symbol("loaded".into()));
+        assert_eq!(
+            eval_str_with(&mut interp, "(helper-name)"),
+            Value::Symbol("loaded".into())
+        );
     }
 
     #[test]
@@ -4326,10 +4469,7 @@ mod tests {
             std::env::temp_dir().display(),
             std::path::MAIN_SEPARATOR
         );
-        let expected = std::env::temp_dir()
-            .join("child")
-            .display()
-            .to_string();
+        let expected = std::env::temp_dir().join("child").display().to_string();
         let expr = format!(
             "(let ((default-directory {:?})) (expand-file-name \"child\"))",
             base
@@ -4534,7 +4674,10 @@ mod tests {
     #[test]
     fn require_ert_uses_builtin_feature_and_skip_alias() {
         let mut interp = Interpreter::new();
-        assert_eq!(eval_str_with(&mut interp, "(require 'ert)"), Value::Symbol("ert".into()));
+        assert_eq!(
+            eval_str_with(&mut interp, "(require 'ert)"),
+            Value::Symbol("ert".into())
+        );
         eval_str_with(
             &mut interp,
             r#"
@@ -4614,9 +4757,7 @@ mod tests {
     #[test]
     fn call_interactively_rejects_invalid_control_letters() {
         assert_eq!(
-            eval_str(
-                "(cdr (should-error (call-interactively (lambda () (interactive \"ÿ\")))))"
-            ),
+            eval_str("(cdr (should-error (call-interactively (lambda () (interactive \"ÿ\")))))"),
             Value::list([Value::String(
                 "Invalid control letter `ÿ' (#o377, #x00ff) in interactive calling string".into(),
             )])

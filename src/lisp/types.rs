@@ -311,12 +311,29 @@ impl LispError {
                     .to_vec()
                     .ok()
                     .and_then(|items| match items.first() {
-                        Some(Value::Symbol(symbol)) => Some(symbol == "search-failed"),
+                        Some(Value::Symbol(symbol)) => match symbol.as_str() {
+                            "file-error" => Some("file-error"),
+                            "file-supersession" => Some("file-supersession"),
+                            "search-failed" => Some("search-failed"),
+                            _ => None,
+                        },
                         _ => None,
                     })
-                    .unwrap_or(false)
+                    .is_some()
                 {
-                    "search-failed"
+                    value
+                        .to_vec()
+                        .ok()
+                        .and_then(|items| match items.first() {
+                            Some(Value::Symbol(symbol)) => match symbol.as_str() {
+                                "file-error" => Some("file-error"),
+                                "file-supersession" => Some("file-supersession"),
+                                "search-failed" => Some("search-failed"),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .unwrap_or("error")
                 } else {
                     "error"
                 }

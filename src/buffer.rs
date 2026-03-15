@@ -2,10 +2,16 @@
 
 use crate::lisp::types::Value;
 use ropey::Rope;
+use std::time::SystemTime;
 
 /// Modification counter. Bumped on every edit, used to detect
 /// whether a buffer has changed since some snapshot (e.g. last save).
 pub type ModCount = u64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileModTime {
+    pub modified: SystemTime,
+}
 
 /// A single editing buffer.
 ///
@@ -40,6 +46,9 @@ pub struct Buffer {
     /// Snapshot of buffer text when last marked unmodified.
     saved_text: String,
 
+    /// Explicit modified flag used by `set-buffer-modified-p'.
+    forced_modified: bool,
+
     /// True when the buffer is modified but its contents were auto-saved.
     autosaved: bool,
 
@@ -50,6 +59,12 @@ pub struct Buffer {
 
     /// Path to the visited file, if any.
     pub file: Option<String>,
+
+    /// Canonical path to the visited file, if known.
+    pub file_truename: Option<String>,
+
+    /// Last known on-disk modification time for the visited file.
+    visited_file_modtime: Option<FileModTime>,
 
     /// Undo log. Each entry records enough to reverse one operation.
     undo_list: Vec<UndoEntry>,
@@ -86,7 +101,10 @@ pub enum UndoEntry {
         markers: Vec<UndoMarker>,
     },
     /// A logical grouped change that should appear as a single Lisp undo entry.
-    Combined { display: Value, entries: Vec<UndoEntry> },
+    Combined {
+        display: Value,
+        entries: Vec<UndoEntry>,
+    },
     /// A Lisp-visible undo entry we don't know how to replay.
     Opaque(Value),
     /// Boundary between undo groups.
@@ -149,10 +167,13 @@ impl Buffer {
             modiff: 1,
             save_modiff: 1,
             saved_text: String::new(),
+            forced_modified: false,
             autosaved: false,
             begv: 1,
             zv: 1, // empty buffer: zv = 1
             file: None,
+            file_truename: None,
+            visited_file_modtime: None,
             undo_list: Vec::new(),
             undo_meta: Vec::new(),
             undo_disabled: false,
@@ -177,10 +198,13 @@ impl Buffer {
             modiff: 1,
             save_modiff: 1,
             saved_text: s.to_string(),
+            forced_modified: false,
             autosaved: false,
             begv: 1,
             zv: len + 1,
             file: None,
+            file_truename: None,
+            visited_file_modtime: None,
             undo_list: Vec::new(),
             undo_meta: Vec::new(),
             undo_disabled: false,
@@ -558,7 +582,11 @@ impl Buffer {
         self.insert_with_properties(s, Some(props))
     }
 
-    pub fn insert_with_properties(&mut self, s: &str, props: Option<Vec<(String, Value)>>) -> usize {
+    pub fn insert_with_properties(
+        &mut self,
+        s: &str,
+        props: Option<Vec<(String, Value)>>,
+    ) -> usize {
         let nchars = s.chars().count();
         if nchars == 0 {
             return self.pt;
@@ -736,19 +764,33 @@ impl Buffer {
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
-        self.buffer_string() != self.saved_text
+        self.forced_modified || self.buffer_string() != self.saved_text
     }
 
     pub fn set_unmodified(&mut self) {
         self.save_modiff = self.modiff;
         self.saved_text = self.buffer_string();
+        self.forced_modified = false;
         self.autosaved = false;
+    }
+
+    pub fn saved_text(&self) -> &str {
+        &self.saved_text
+    }
+
+    pub fn visited_file_modtime(&self) -> Option<FileModTime> {
+        self.visited_file_modtime
+    }
+
+    pub fn set_visited_file_modtime(&mut self, modtime: Option<FileModTime>) {
+        self.visited_file_modtime = modtime;
     }
 
     pub fn set_modified(&mut self) {
         if !self.is_modified() {
             self.modiff = self.modiff.saturating_add(1);
         }
+        self.forced_modified = true;
         self.autosaved = false;
     }
 
@@ -1057,7 +1099,10 @@ impl Buffer {
         Ok(group)
     }
 
-    fn pop_undo_group_skipping(&mut self, skip_newest_groups: usize) -> Result<Vec<UndoEntry>, BufferError> {
+    fn pop_undo_group_skipping(
+        &mut self,
+        skip_newest_groups: usize,
+    ) -> Result<Vec<UndoEntry>, BufferError> {
         let mut end = self.undo_list.len();
         while end > 0 && matches!(self.undo_list[end - 1], UndoEntry::Boundary) {
             end -= 1;
@@ -1155,7 +1200,11 @@ impl Buffer {
                 let insert_at = self.point();
                 self.insert(text);
                 for span in props {
-                    self.add_text_properties(insert_at + span.start, insert_at + span.end, &span.props);
+                    self.add_text_properties(
+                        insert_at + span.start,
+                        insert_at + span.end,
+                        &span.props,
+                    );
                 }
                 Ok(())
             }
@@ -1232,9 +1281,9 @@ fn map_position_through_entry(position: usize, entry: &UndoEntry, is_end: bool) 
                 position
             }
         }
-        UndoEntry::Combined { entries, .. } => entries
-            .iter()
-            .fold(position, |mapped, inner| map_position_through_entry(mapped, inner, is_end)),
+        UndoEntry::Combined { entries, .. } => entries.iter().fold(position, |mapped, inner| {
+            map_position_through_entry(mapped, inner, is_end)
+        }),
         UndoEntry::Opaque(_) | UndoEntry::Boundary => position,
     }
 }
@@ -1314,7 +1363,13 @@ fn position_to_byte_in_text(text: &str, pos: usize) -> Option<usize> {
     if pos == 0 || pos > char_len + 1 {
         return None;
     }
-    Some(1 + text.chars().take(pos - 1).map(char::len_utf8).sum::<usize>())
+    Some(
+        1 + text
+            .chars()
+            .take(pos - 1)
+            .map(char::len_utf8)
+            .sum::<usize>(),
+    )
 }
 
 fn byte_to_position_in_text(text: &str, byte: usize) -> Option<usize> {
@@ -1518,7 +1573,10 @@ mod tests {
         assert_eq!(buf.buffer_string(), "ac");
         buf.undo().unwrap();
         assert_eq!(buf.buffer_string(), "abc");
-        assert_eq!(buf.text_property_at(2, "markup"), Some(Value::String("x".into())));
+        assert_eq!(
+            buf.text_property_at(2, "markup"),
+            Some(Value::String("x".into()))
+        );
     }
 
     #[test]
