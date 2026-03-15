@@ -6608,6 +6608,9 @@ mod tests {
         );
         assert_eq!(eval_str(r#"(string= "abc" "abc")"#), Value::T);
         assert_eq!(eval_str(r#"(string= "abc" "def")"#), Value::Nil);
+        assert_eq!(eval_str(r#"(string= "4" nil)"#), Value::Nil);
+        assert_eq!(eval_str(r#"(string= nil nil)"#), Value::T);
+        assert_eq!(eval_str(r#"(string< 'a 'b)"#), Value::T);
         assert_eq!(eval_str(r#"(length "hello")"#), Value::Integer(5));
         assert_string_value(eval_str(r#"(reverse "stressed")"#), "desserts");
         assert_string_value(eval_str(r#"(nreverse "drawer")"#), "reward");
