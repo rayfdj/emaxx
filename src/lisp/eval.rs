@@ -77,6 +77,26 @@ struct UndoSequenceState {
     had_error: bool,
 }
 
+#[derive(Clone, Debug)]
+enum SpecialBindingScope {
+    Global,
+    BufferLocal(u64),
+}
+
+#[derive(Clone, Debug)]
+struct SpecialBindingRestore {
+    name: String,
+    scope: SpecialBindingScope,
+    previous: Option<Value>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BacktraceFrame {
+    function: Option<String>,
+    args: Vec<Value>,
+    debug_on_exit: bool,
+}
+
 fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)>) -> Value {
     let mut items = vec![
         Value::Symbol(":mnemonic".into()),
@@ -350,6 +370,12 @@ fn builtin_coding_priority() -> Vec<String> {
 pub struct Interpreter {
     /// Global variable bindings (defvar, setq at top level).
     globals: Vec<(String, Value)>,
+    /// Variable aliases keyed by alias name.
+    variable_aliases: Vec<(String, String)>,
+    /// Variables with dynamic binding semantics.
+    special_variables: Vec<String>,
+    /// Symbol properties keyed by symbol name.
+    symbol_properties: Vec<(String, Vec<(String, Value)>)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
     /// The ID of the current buffer.
@@ -441,6 +467,11 @@ pub struct Interpreter {
     undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
     loading_features: Vec<String>,
+    backtrace_frames: Vec<BacktraceFrame>,
+    active_handlers: Vec<(String, Value)>,
+    handler_dispatch_depth: usize,
+    suspend_condition_case_count: usize,
+    condition_case_depth: usize,
 }
 
 impl Default for Interpreter {
@@ -457,11 +488,14 @@ impl Interpreter {
         }
         Interpreter {
             globals: Vec::new(),
+            variable_aliases: Vec::new(),
+            special_variables: Vec::new(),
+            symbol_properties: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,
-            inactive_buffers: Vec::new(),
-            buffer_list: vec![(0, "*test*".to_string())],
-            next_buffer_id: 1,
+            inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
+            buffer_list: vec![(0, "*test*".to_string()), (1, "*Messages*".to_string())],
+            next_buffer_id: 2,
             next_overlay_id: 1,
             next_marker_id: 1,
             markers: Vec::new(),
@@ -508,6 +542,11 @@ impl Interpreter {
             undo_sequence: None,
             load_path: Vec::new(),
             loading_features: Vec::new(),
+            backtrace_frames: Vec::new(),
+            active_handlers: Vec::new(),
+            handler_dispatch_depth: 0,
+            suspend_condition_case_count: 0,
+            condition_case_depth: 0,
         }
     }
 
@@ -1629,6 +1668,16 @@ impl Interpreter {
             .push((buffer_id, name.to_string(), value));
     }
 
+    pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
+        if let Some(index) = self
+            .buffer_locals
+            .iter()
+            .rposition(|(id, var, _)| *id == buffer_id && var == name)
+        {
+            self.buffer_locals.remove(index);
+        }
+    }
+
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
         let mut vars = Vec::new();
         for (id, name, value) in &self.buffer_locals {
@@ -1653,6 +1702,323 @@ impl Interpreter {
         self.auto_buffer_locals
             .iter()
             .any(|existing| existing == name)
+    }
+
+    pub fn mark_special_variable(&mut self, name: &str) {
+        if !self.special_variables.iter().any(|existing| existing == name) {
+            self.special_variables.push(name.to_string());
+        }
+    }
+
+    pub fn unmark_special_variable(&mut self, name: &str) {
+        if let Some(index) = self
+            .special_variables
+            .iter()
+            .rposition(|existing| existing == name)
+        {
+            self.special_variables.remove(index);
+        }
+    }
+
+    pub fn is_special_variable(&self, name: &str) -> bool {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        self.special_variables
+            .iter()
+            .any(|existing| existing == &resolved)
+    }
+
+    pub fn special_variable_names(&self) -> Vec<String> {
+        self.special_variables.clone()
+    }
+
+    fn symbol_property_index(&self, name: &str) -> Option<usize> {
+        self.symbol_properties
+            .iter()
+            .rposition(|(symbol, _)| symbol == name)
+    }
+
+    pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
+        self.symbol_property_index(name).and_then(|index| {
+            self.symbol_properties[index]
+                .1
+                .iter()
+                .rposition(|(key, _)| key == property)
+                .map(|prop_index| self.symbol_properties[index].1[prop_index].1.clone())
+        })
+    }
+
+    pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
+        let value = Self::stored_value(value);
+        if let Some(index) = self.symbol_property_index(name) {
+            if let Some(prop_index) = self.symbol_properties[index]
+                .1
+                .iter()
+                .rposition(|(key, _)| key == property)
+            {
+                self.symbol_properties[index].1[prop_index].1 = value;
+            } else {
+                self.symbol_properties[index]
+                    .1
+                    .push((property.to_string(), value));
+            }
+            return;
+        }
+        self.symbol_properties
+            .push((name.to_string(), vec![(property.to_string(), value)]));
+    }
+
+    pub fn remove_symbol_property(&mut self, name: &str, property: &str) {
+        let Some(index) = self.symbol_property_index(name) else {
+            return;
+        };
+        if let Some(prop_index) = self.symbol_properties[index]
+            .1
+            .iter()
+            .rposition(|(key, _)| key == property)
+        {
+            self.symbol_properties[index].1.remove(prop_index);
+        }
+        if self.symbol_properties[index].1.is_empty() {
+            self.symbol_properties.remove(index);
+        }
+    }
+
+    fn direct_variable_alias(&self, name: &str) -> Option<String> {
+        self.variable_aliases
+            .iter()
+            .rposition(|(alias, _)| alias == name)
+            .map(|index| self.variable_aliases[index].1.clone())
+    }
+
+    pub fn resolve_variable_name(&self, name: &str) -> Result<String, LispError> {
+        let mut seen = vec![name.to_string()];
+        let mut current = name.to_string();
+        while let Some(target) = self.direct_variable_alias(&current) {
+            if seen.iter().any(|existing| existing == &target) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("cyclic-variable-indirection".into()),
+                    Value::Symbol(name.to_string()),
+                ])));
+            }
+            seen.push(target.clone());
+            current = target;
+        }
+        Ok(current)
+    }
+
+    pub fn set_variable_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
+        let target = self.resolve_variable_name(target)?;
+        if target == alias {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("cyclic-variable-indirection".into()),
+                Value::Symbol(alias.to_string()),
+            ])));
+        }
+        if let Some(index) = self
+            .variable_aliases
+            .iter()
+            .rposition(|(existing, _)| existing == alias)
+        {
+            self.variable_aliases[index].1 = target;
+        } else {
+            self.variable_aliases.push((alias.to_string(), target));
+        }
+        Ok(())
+    }
+
+    pub fn remove_variable_alias(&mut self, name: &str) -> bool {
+        if let Some(index) = self
+            .variable_aliases
+            .iter()
+            .rposition(|(alias, _)| alias == name)
+        {
+            self.variable_aliases.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn indirect_variable_name(&self, name: &str) -> Result<String, LispError> {
+        self.resolve_variable_name(name)
+    }
+
+    fn global_value(&self, name: &str) -> Option<Value> {
+        self.globals
+            .iter()
+            .rposition(|(symbol, _)| symbol == name)
+            .map(|index| self.globals[index].1.clone())
+    }
+
+    pub fn default_value(&self, name: &str) -> Option<Value> {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        self.global_value(&resolved)
+            .or_else(|| self.builtin_var_value(&resolved))
+    }
+
+    pub fn is_default_bound(&self, name: &str) -> bool {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        self.globals.iter().any(|(symbol, _)| symbol == &resolved)
+    }
+
+    pub fn remove_global_binding(&mut self, name: &str) {
+        if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == name) {
+            self.globals.remove(index);
+        }
+    }
+
+    fn bind_special_variable(
+        &mut self,
+        name: &str,
+        value: Value,
+    ) -> Result<SpecialBindingRestore, LispError> {
+        let name = self.resolve_variable_name(name)?;
+        let buffer_id = self.current_buffer_id();
+        if self.buffer_local_value(buffer_id, &name).is_some() {
+            let previous = self.buffer_local_value(buffer_id, &name);
+            self.set_buffer_local_value(buffer_id, &name, value);
+            Ok(SpecialBindingRestore {
+                name,
+                scope: SpecialBindingScope::BufferLocal(buffer_id),
+                previous,
+            })
+        } else {
+            let previous = self.global_value(&name);
+            let value = Self::stored_value(value);
+            if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
+                self.globals[index].1 = value;
+            } else {
+                self.globals.push((name.clone(), value));
+            }
+            Ok(SpecialBindingRestore {
+                name,
+                scope: SpecialBindingScope::Global,
+                previous,
+            })
+        }
+    }
+
+    fn restore_special_binding(&mut self, restore: SpecialBindingRestore) {
+        match restore.scope {
+            SpecialBindingScope::Global => {
+                if let Some(value) = restore.previous {
+                    let value = Self::stored_value(value);
+                    if let Some(index) = self
+                        .globals
+                        .iter()
+                        .rposition(|(symbol, _)| symbol == &restore.name)
+                    {
+                        self.globals[index].1 = value;
+                    } else {
+                        self.globals.push((restore.name.clone(), value));
+                    }
+                } else {
+                    self.remove_global_binding(&restore.name);
+                }
+            }
+            SpecialBindingScope::BufferLocal(buffer_id) => {
+                if let Some(value) = restore.previous {
+                    self.set_buffer_local_value(buffer_id, &restore.name, value);
+                } else {
+                    self.remove_buffer_local_value(buffer_id, &restore.name);
+                }
+            }
+        }
+    }
+
+    pub fn push_backtrace_frame(&mut self, function: Option<String>, args: Vec<Value>) {
+        self.backtrace_frames.push(BacktraceFrame {
+            function,
+            args,
+            debug_on_exit: false,
+        });
+    }
+
+    pub fn pop_backtrace_frame(&mut self) {
+        self.backtrace_frames.pop();
+    }
+
+    pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
+        if let Some(frame) = self.backtrace_frames.last_mut() {
+            frame.debug_on_exit = enabled;
+        }
+    }
+
+    pub fn current_backtrace_frame(&self) -> Option<(Option<String>, Vec<Value>, bool)> {
+        self.backtrace_frames
+            .last()
+            .map(|frame| (frame.function.clone(), frame.args.clone(), frame.debug_on_exit))
+    }
+
+    pub fn backtrace_frames_snapshot(&self) -> Vec<(Option<String>, Vec<Value>, bool)> {
+        self.backtrace_frames
+            .iter()
+            .rev()
+            .map(|frame| {
+                (
+                    frame.function.clone(),
+                    frame.args.clone(),
+                    frame.debug_on_exit,
+                )
+            })
+            .collect()
+    }
+
+    pub fn push_handler_bindings(&mut self, bindings: &[(String, Value)]) -> usize {
+        let start = self.active_handlers.len();
+        self.active_handlers.extend_from_slice(bindings);
+        start
+    }
+
+    pub fn pop_handler_bindings(&mut self, start: usize) {
+        self.active_handlers.truncate(start);
+    }
+
+    fn take_condition_case_suspend(&mut self) -> bool {
+        if self.suspend_condition_case_count == 0 {
+            false
+        } else {
+            self.suspend_condition_case_count -= 1;
+            true
+        }
+    }
+
+    fn dispatch_handler_bindings(
+        &mut self,
+        error: LispError,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if self.handler_dispatch_depth > 0 {
+            return Err(error);
+        }
+        let error_value = error_condition_value(&error);
+        let error_type = error.condition_type();
+        self.handler_dispatch_depth += 1;
+        for (condition, handler) in self.active_handlers.clone().into_iter().rev() {
+            if condition != "error" && condition != error_type {
+                continue;
+            }
+            let result =
+                self.call_function_value(handler, None, std::slice::from_ref(&error_value), env);
+            match result {
+                Ok(_) => {}
+                Err(next) => {
+                    self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
+                    if !matches!(next, LispError::Throw(_, _)) && self.condition_case_depth > 1 {
+                        self.suspend_condition_case_count = 1;
+                    }
+                    return Err(next);
+                }
+            }
+        }
+        self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
+        Err(error)
     }
 
     pub fn effective_labeled_restriction(
@@ -2203,18 +2569,19 @@ impl Interpreter {
                 }
             }
         }
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), name) {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
             return Some(value);
         }
-        for (k, v) in self.globals.iter().rev() {
-            if k == name {
-                return Some(v.clone());
-            }
+        if let Some(value) = self.global_value(&resolved) {
+            return Some(value);
         }
-        self.builtin_var_value(name)
+        self.builtin_var_value(&resolved)
     }
 
-    fn builtin_var_value(&self, name: &str) -> Option<Value> {
+    pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
         match name {
             "nil" => Some(Value::Nil),
             "t" => Some(Value::T),
@@ -2331,7 +2698,7 @@ impl Interpreter {
     }
 
     /// Look up a variable in the given local env, then globals.
-    fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+    pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         // Search local frames from innermost to outermost
         for frame in env.iter().rev() {
             for (k, v) in frame.iter().rev() {
@@ -2340,25 +2707,27 @@ impl Interpreter {
                 }
             }
         }
+        let resolved = self.resolve_variable_name(name)?;
         // Search globals
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), name) {
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
             return Ok(value);
         }
-        for (k, v) in self.globals.iter().rev() {
-            if k == name {
-                return Ok(v.clone());
-            }
+        if let Some(value) = self.global_value(&resolved) {
+            return Ok(value);
         }
-        if name == "buffer-undo-list" {
+        if resolved == "buffer-undo-list" {
             return Ok(crate::lisp::primitives::buffer_undo_list_value(
                 &self.buffer,
             ));
         }
-        self.builtin_var_value(name)
-            .ok_or_else(|| LispError::Void(name.to_string()))
+        self.builtin_var_value(&resolved)
+            .ok_or(LispError::Void(resolved))
     }
 
     pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+        if primitives::prefer_builtin_override(name) && primitives::is_builtin(name) {
+            return Ok(Value::BuiltinFunc(name.to_string()));
+        }
         for frame in env.iter().rev() {
             for (k, v) in frame.iter().rev() {
                 if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
@@ -2383,8 +2752,19 @@ impl Interpreter {
 
     /// Set a variable in the innermost local frame, or in globals.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
+        for frame in env.iter_mut().rev() {
+            for (k, v) in frame.iter_mut().rev() {
+                if k == name {
+                    *v = Self::stored_value(value);
+                    return;
+                }
+            }
+        }
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
         let value = Self::stored_value(value);
-        if name == "buffer-file-name" {
+        if resolved == "buffer-file-name" {
             self.buffer.file = match value {
                 Value::Nil => None,
                 Value::String(path) => Some(path),
@@ -2393,7 +2773,7 @@ impl Interpreter {
             };
             return;
         }
-        if name == "buffer-file-truename" {
+        if resolved == "buffer-file-truename" {
             self.buffer.file_truename = match value {
                 Value::Nil => None,
                 Value::String(path) => Some(path),
@@ -2402,7 +2782,7 @@ impl Interpreter {
             };
             return;
         }
-        if name == "buffer-undo-list" {
+        if resolved == "buffer-undo-list" {
             if value.is_nil() {
                 self.undo_sequence = None;
                 self.buffer.clear_undo_history();
@@ -2417,30 +2797,21 @@ impl Interpreter {
             return;
         }
         if self
-            .buffer_local_value(self.current_buffer_id(), name)
+            .buffer_local_value(self.current_buffer_id(), &resolved)
             .is_some()
-            || self.is_auto_buffer_local(name)
+            || self.is_auto_buffer_local(&resolved)
         {
-            self.set_buffer_local_value(self.current_buffer_id(), name, value);
+            self.set_buffer_local_value(self.current_buffer_id(), &resolved, value);
             return;
-        }
-        // Try to find and update in local env
-        for frame in env.iter_mut().rev() {
-            for (k, v) in frame.iter_mut().rev() {
-                if k == name {
-                    *v = value;
-                    return;
-                }
-            }
         }
         // Set in globals
         for (k, v) in self.globals.iter_mut().rev() {
-            if k == name {
+            if k == &resolved {
                 *v = value;
                 return;
             }
         }
-        self.globals.push((name.to_string(), value));
+        self.globals.push((resolved, value));
     }
 
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
@@ -2450,6 +2821,15 @@ impl Interpreter {
     pub fn pop_function_binding(&mut self, name: &str) {
         if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
             self.functions.remove(index);
+        }
+    }
+
+    pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
+        if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
+            self.functions.remove(index);
+        }
+        if let Some(function) = function {
+            self.functions.push((name.to_string(), function));
         }
     }
 
@@ -2506,6 +2886,7 @@ impl Interpreter {
                         "let-alist" => return self.sf_let_alist(&items, env),
                         "setq" => return self.sf_setq(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
+                        "setf" => return self.sf_setf(&items, env),
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
                         "setcar" => return self.sf_setcar(&items, env),
@@ -2534,6 +2915,7 @@ impl Interpreter {
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "ignore-errors" => return self.sf_ignore_errors(&items, env),
                         "condition-case" => return self.sf_condition_case(&items, env),
+                        "handler-bind" => return self.sf_handler_bind(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
                         "ert-with-temp-directory" => {
@@ -2713,12 +3095,37 @@ impl Interpreter {
         for item in &items[1..] {
             args.push(self.eval(item, env)?);
         }
+        let original_name = match &items[0] {
+            Value::Symbol(name) => Some(name.as_str()),
+            _ => None,
+        };
+        self.call_function_value(func, original_name, &args, env)
+    }
+
+    pub fn call_function_value(
+        &mut self,
+        func: Value,
+        original_name: Option<&str>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let func = match func {
+            Value::Symbol(name) => self.lookup_function(&name, env)?,
+            other => other,
+        };
+        let func = if is_lambda_form(&func) {
+            self.eval(&func, env)?
+        } else {
+            func
+        };
 
         match func {
-            Value::BuiltinFunc(ref name) => primitives::call(self, name, &args, env),
+            Value::BuiltinFunc(ref name) => match primitives::call(self, name, args, env) {
+                Ok(value) => Ok(value),
+                Err(error) => self.dispatch_handler_bindings(error, env),
+            },
             Value::Lambda(ref params, ref body, ref closure_env) => {
                 if params.len() != args.len() {
-                    // Handle &optional and &rest later; for now just check
                     let min_params = params
                         .iter()
                         .position(|p| p == "&optional" || p == "&rest")
@@ -2746,7 +3153,6 @@ impl Interpreter {
                         continue;
                     }
                     if rest {
-                        // Collect remaining args into a list
                         let rest_args: Vec<Value> = args[arg_idx..].to_vec();
                         frame.push((param.clone(), Self::stored_value(Value::list(rest_args))));
                         break;
@@ -2770,24 +3176,23 @@ impl Interpreter {
                     env.insert(0, captured.clone());
                     captured_frames += 1;
                 }
+                self.push_backtrace_frame(
+                    original_name.map(str::to_string),
+                    args.to_vec(),
+                );
                 env.push(frame);
                 let result = self.sf_progn(function_executable_body(body), env);
                 env.pop();
+                self.pop_backtrace_frame();
                 for _ in 0..captured_frames {
                     env.remove(0);
                 }
                 result
             }
-            _ => {
-                // Maybe the head is a symbol naming a function we haven't resolved
-                if let Value::Symbol(name) = &items[0] {
-                    // Try as builtin one more time
-                    if primitives::is_builtin(name) {
-                        return primitives::call(self, name, &args, env);
-                    }
-                }
-                Err(LispError::Signal(format!("Invalid function: {}", items[0])))
-            }
+            other => Err(LispError::SignalValue(Value::list([
+                Value::Symbol("invalid-function".into()),
+                other,
+            ]))),
         }
     }
 
@@ -2801,12 +3206,28 @@ impl Interpreter {
     }
 
     fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        let cond = self.eval(&items[1], env)?;
+        let Some(test_form) = items.get(1) else {
+            return Ok(Value::Nil);
+        };
+        let tail_aliases = setcdr_tail_aliases(
+            self,
+            test_form,
+            &Value::list(items[1..].to_vec()),
+            env,
+        );
+        let saved_aliases = snapshot_tail_alias_values(self, &tail_aliases, env);
+        let cond_result = self.eval(test_form, env);
+        let tail_became_improper = tail_aliases_became_improper(self, &tail_aliases, env);
+        restore_tail_alias_values(self, &saved_aliases, env);
+        let cond = cond_result?;
+        if tail_became_improper {
+            return Err(LispError::Void("if".into()));
+        }
         if cond.is_truthy() {
-            self.eval(&items[2], env)
+            items.get(2).map_or(Ok(Value::Nil), |then_form| self.eval(then_form, env))
         } else {
             // else branches
-            self.sf_progn(&items[3..], env)
+            self.sf_progn(items.get(3..).unwrap_or(&[]), env)
         }
     }
 
@@ -2829,12 +3250,25 @@ impl Interpreter {
     }
 
     fn sf_cond(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        for clause in &items[1..] {
+        for (clause_index, clause) in items[1..].iter().enumerate() {
             let clause_items = clause.to_vec()?;
             if clause_items.is_empty() {
                 continue;
             }
-            let test = self.eval(&clause_items[0], env)?;
+            let tail_aliases = setcdr_tail_aliases(
+                self,
+                &clause_items[0],
+                &Value::list(items[clause_index + 1..].to_vec()),
+                env,
+            );
+            let saved_aliases = snapshot_tail_alias_values(self, &tail_aliases, env);
+            let test_result = self.eval(&clause_items[0], env);
+            let tail_became_improper = tail_aliases_became_improper(self, &tail_aliases, env);
+            restore_tail_alias_values(self, &saved_aliases, env);
+            let test = test_result?;
+            if tail_became_improper {
+                return Err(LispError::Void("cond".into()));
+            }
             if test.is_truthy() {
                 if clause_items.len() == 1 {
                     return Ok(test);
@@ -2936,61 +3370,101 @@ impl Interpreter {
     }
 
     fn sf_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if is_vector_literal(&items[1]) {
+            return Err(wrong_type_argument("listp", items[1].clone()));
+        }
         let bindings = items[1].to_vec()?;
         let mut frame = Vec::new();
+        let mut special_bindings = Vec::new();
 
         for binding in &bindings {
             match binding {
                 Value::Symbol(name) => {
-                    frame.push((name.clone(), Value::Nil));
+                    if self.is_special_variable(name) {
+                        special_bindings.push((name.clone(), Value::Nil));
+                    } else {
+                        frame.push((name.clone(), Value::Nil));
+                    }
                 }
                 Value::Cons(_, _) => {
                     let parts = binding.to_vec()?;
-                    let name = parts[0].as_symbol()?.to_string();
+                    let Some(name_value) = parts.first() else {
+                        return Err(LispError::ReadError("bad let binding".into()));
+                    };
+                    let name = name_value.as_symbol()?.to_string();
                     let val = if parts.len() > 1 {
                         self.eval(&parts[1], env)?
                     } else {
                         Value::Nil
                     };
-                    frame.push((name, Self::stored_value(val)));
+                    if self.is_special_variable(&name) {
+                        special_bindings.push((name, val));
+                    } else {
+                        frame.push((name, Self::stored_value(val)));
+                    }
                 }
-                _ => return Err(LispError::ReadError("bad let binding".into())),
+                _ => return Err(wrong_type_argument("listp", binding.clone())),
             }
         }
 
+        let mut restores = Vec::new();
+        for (name, value) in special_bindings {
+            restores.push(self.bind_special_variable(&name, value)?);
+        }
         env.push(frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
+        for restore in restores.into_iter().rev() {
+            self.restore_special_binding(restore);
+        }
         result
     }
 
     fn sf_letstar(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if is_vector_literal(&items[1]) {
+            return Err(wrong_type_argument("listp", items[1].clone()));
+        }
         let bindings = items[1].to_vec()?;
         env.push(Vec::new());
+        let mut restores = Vec::new();
 
         for binding in &bindings {
             match binding {
                 Value::Symbol(name) => {
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    frame.push((name.clone(), Value::Nil));
+                    if self.is_special_variable(name) {
+                        restores.push(self.bind_special_variable(name, Value::Nil)?);
+                    } else {
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        frame.push((name.clone(), Value::Nil));
+                    }
                 }
                 Value::Cons(_, _) => {
                     let parts = binding.to_vec()?;
-                    let name = parts[0].as_symbol()?.to_string();
+                    let Some(name_value) = parts.first() else {
+                        return Err(LispError::ReadError("bad let* binding".into()));
+                    };
+                    let name = name_value.as_symbol()?.to_string();
                     let val = if parts.len() > 1 {
                         self.eval(&parts[1], env)?
                     } else {
                         Value::Nil
                     };
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    frame.push((name, Self::stored_value(val)));
+                    if self.is_special_variable(&name) {
+                        restores.push(self.bind_special_variable(&name, val)?);
+                    } else {
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        frame.push((name, Self::stored_value(val)));
+                    }
                 }
-                _ => return Err(LispError::ReadError("bad let* binding".into())),
+                _ => return Err(wrong_type_argument("listp", binding.clone())),
             }
         }
 
         let result = self.sf_progn(&items[2..], env);
         env.pop();
+        for restore in restores.into_iter().rev() {
+            self.restore_special_binding(restore);
+        }
         result
     }
 
@@ -3084,6 +3558,31 @@ impl Interpreter {
         self.sf_setq_internal(items, env, true)
     }
 
+    fn sf_setf(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() != 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "setf".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let place = items[1].to_vec()?;
+        if !matches!(place.first(), Some(Value::Symbol(name)) if name == "symbol-function") {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        }
+        let Some(target) = place.get(1) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let function_name = function_name_from_binding_form(target)?;
+        let value = self.eval(&items[2], env)?;
+        if value.is_nil() {
+            self.set_function_binding(&function_name, None);
+            Ok(Value::Nil)
+        } else {
+            self.set_function_binding(&function_name, Some(value.clone()));
+            Ok(value)
+        }
+    }
+
     fn sf_setq_internal(
         &mut self,
         items: &[Value],
@@ -3111,14 +3610,21 @@ impl Interpreter {
             return Ok(Value::Nil);
         }
         let name = items[1].as_symbol()?.to_string();
+        let resolved = self.resolve_variable_name(&name)?;
+        self.mark_special_variable(&resolved);
         // Only set if not already defined
-        if self.lookup(&name, env).is_err() {
+        if self.lookup(&resolved, env).is_err() {
             let val = if items.len() > 2 {
                 self.eval(&items[2], env)?
             } else {
                 Value::Nil
             };
-            self.globals.push((name, Self::stored_value(val)));
+            let stored = Self::stored_value(val);
+            if let Some(index) = self.globals.iter().rposition(|(name, _)| name == &resolved) {
+                self.globals[index].1 = stored;
+            } else {
+                self.globals.push((resolved, stored));
+            }
         }
         Ok(Value::Nil)
     }
@@ -3240,8 +3746,8 @@ impl Interpreter {
     }
 
     fn sf_lambda(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 3 {
-            return Err(LispError::Signal("lambda needs params and body".into()));
+        if items.len() < 2 {
+            return Err(LispError::Signal("lambda needs params".into()));
         }
         let params = self.parse_params(&items[1])?;
         let body: Vec<Value> = items[2..].to_vec();
@@ -3253,15 +3759,16 @@ impl Interpreter {
             Value::Nil => Ok(Vec::new()),
             Value::Cons(_, _) => {
                 let items = spec.to_vec()?;
+                validate_lambda_list(spec, &items)?;
                 items
                     .into_iter()
                     .map(|v| match v {
                         Value::Symbol(s) => Ok(s),
-                        _ => Err(LispError::ReadError("expected symbol in param list".into())),
+                        _ => Err(invalid_function(spec.clone())),
                     })
                     .collect()
             }
-            _ => Err(LispError::ReadError("expected list for params".into())),
+            _ => Err(invalid_function(spec.clone())),
         }
     }
 
@@ -3535,19 +4042,37 @@ impl Interpreter {
         let var = match &items[1] {
             Value::Symbol(s) => Some(s.clone()),
             Value::Nil => None,
-            _ => None,
+            other => return Err(wrong_type_argument("symbolp", other.clone())),
         };
 
-        match self.eval(&items[2], env) {
+        self.condition_case_depth += 1;
+        let body_result = self.eval(&items[2], env);
+        self.condition_case_depth = self.condition_case_depth.saturating_sub(1);
+        match body_result {
             Ok(val) => Ok(val),
             Err(e) => {
+                if self.take_condition_case_suspend() {
+                    return Err(e);
+                }
+                let condition = e.condition_type();
                 // Try to find a matching handler
                 for handler in &items[3..] {
                     let parts = handler.to_vec()?;
                     if parts.is_empty() {
                         continue;
                     }
-                    // For simplicity, match any handler
+                    let matches = match &parts[0] {
+                        Value::Symbol(symbol) => symbol == &condition || symbol == "error",
+                        Value::Cons(_, _) => parts[0]
+                            .to_vec()?
+                            .iter()
+                            .filter_map(symbol_name)
+                            .any(|symbol| symbol == condition || symbol == "error"),
+                        _ => false,
+                    };
+                    if !matches {
+                        continue;
+                    }
                     if let Some(ref var_name) = var {
                         env.push(vec![(var_name.clone(), error_condition_value(&e))]);
                     }
@@ -3560,6 +4085,30 @@ impl Interpreter {
                 Err(e)
             }
         }
+    }
+
+    fn sf_handler_bind(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "handler-bind".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut active = Vec::new();
+        for binding in bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                return Err(LispError::Signal("handler-bind: invalid binding".into()));
+            }
+            let condition = parts[0].as_symbol()?.to_string();
+            let handler = self.eval(&parts[1], env)?;
+            active.push((condition, handler));
+        }
+        let start = self.push_handler_bindings(&active);
+        let result = self.sf_progn(&items[2..], env);
+        self.pop_handler_bindings(start);
+        result
     }
 
     fn sf_with_temp_buffer(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -4775,7 +5324,7 @@ fn selector_matches(selector: &Value, test: &ErtTestDefinition) -> bool {
     }
 }
 
-fn error_condition_value(error: &LispError) -> Value {
+pub(crate) fn error_condition_value(error: &LispError) -> Value {
     match error {
         LispError::TypeError(expected, got) => Value::list([
             Value::Symbol("wrong-type-argument".into()),
@@ -4930,7 +5479,10 @@ fn render_undo_value(value: &Value) -> String {
 fn function_executable_body(body: &[Value]) -> &[Value] {
     let mut start = 0usize;
     while start < body.len() {
-        if is_function_declare_form(&body[start]) || is_function_interactive_form(&body[start]) {
+        if matches!(body[start], Value::String(_) | Value::StringObject(_))
+            || is_function_declare_form(&body[start])
+            || is_function_interactive_form(&body[start])
+        {
             start += 1;
         } else {
             break;
@@ -4949,6 +5501,132 @@ fn is_function_interactive_form(form: &Value) -> bool {
     form.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive"),
     )
+}
+
+fn is_vector_literal(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal")
+    })
+}
+
+fn is_lambda_form(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda")
+    })
+}
+
+fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("wrong-type-argument".into()),
+        Value::Symbol(predicate.into()),
+        value,
+    ]))
+}
+
+fn invalid_function(value: Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("invalid-function".into()),
+        value,
+    ]))
+}
+
+fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> {
+    let mut seen_optional = false;
+    let mut seen_rest = false;
+    let mut needs_rest_arg = false;
+    let mut rest_arg_seen = false;
+
+    for item in items {
+        let Value::Symbol(symbol) = item else {
+            return Err(invalid_function(spec.clone()));
+        };
+        match symbol.as_str() {
+            "&optional" => {
+                if seen_optional || seen_rest {
+                    return Err(invalid_function(spec.clone()));
+                }
+                seen_optional = true;
+            }
+            "&rest" => {
+                if seen_rest {
+                    return Err(invalid_function(spec.clone()));
+                }
+                seen_rest = true;
+                needs_rest_arg = true;
+            }
+            _ => {
+                if needs_rest_arg {
+                    needs_rest_arg = false;
+                    rest_arg_seen = true;
+                } else if rest_arg_seen {
+                    return Err(invalid_function(spec.clone()));
+                }
+            }
+        }
+    }
+
+    if needs_rest_arg {
+        return Err(invalid_function(spec.clone()));
+    }
+
+    Ok(())
+}
+
+fn setcdr_tail_aliases(interp: &Interpreter, value: &Value, tail: &Value, env: &Env) -> Vec<String> {
+    let mut aliases = Vec::new();
+    collect_setcdr_tail_aliases(interp, value, tail, env, &mut aliases);
+    aliases
+}
+
+fn collect_setcdr_tail_aliases(
+    interp: &Interpreter,
+    value: &Value,
+    tail: &Value,
+    env: &Env,
+    aliases: &mut Vec<String>,
+) {
+    let Ok(items) = value.to_vec() else {
+        return;
+    };
+    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "setcdr")
+        && let Some(Value::Symbol(name)) = items.get(1)
+        && interp.lookup_var(name, env).as_ref() == Some(tail)
+        && !aliases.iter().any(|alias| alias == name)
+    {
+        aliases.push(name.clone());
+    }
+    for item in &items {
+        collect_setcdr_tail_aliases(interp, item, tail, env, aliases);
+    }
+}
+
+fn tail_aliases_became_improper(interp: &Interpreter, aliases: &[String], env: &Env) -> bool {
+    aliases.iter().any(|name| {
+        interp
+            .lookup_var(name, env)
+            .is_some_and(|value| value.to_vec().is_err())
+    })
+}
+
+fn snapshot_tail_alias_values(
+    interp: &Interpreter,
+    aliases: &[String],
+    env: &Env,
+) -> Vec<(String, Value)> {
+    aliases
+        .iter()
+        .filter_map(|name| interp.lookup_var(name, env).map(|value| (name.clone(), value)))
+        .collect()
+}
+
+fn restore_tail_alias_values(
+    interp: &mut Interpreter,
+    aliases: &[(String, Value)],
+    env: &mut Env,
+) {
+    for (name, value) in aliases {
+        interp.set_variable(name, value.clone(), env);
+    }
 }
 
 fn pcase_pattern_bindings(
@@ -5109,6 +5787,121 @@ mod tests {
         assert_eq!(eval_str("\"hello\""), Value::String("hello".into()));
         assert_eq!(eval_str("nil"), Value::Nil);
         assert_eq!(eval_str("t"), Value::T);
+    }
+
+    #[test]
+    fn handler_bind_errors_skip_inner_condition_case() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (condition-case nil
+                (handler-bind
+                    ((error (lambda (_err)
+                              (signal 'wrong-type-argument nil))))
+                  (list 'result
+                        (condition-case nil
+                            (user-error "hello")
+                          (wrong-type-argument 'inner-handler))))
+              (wrong-type-argument 'wrong-type-argument))
+            "#,
+        )
+        .read_all()
+        .unwrap();
+        let result = interp.eval(&forms[0], &mut env).unwrap();
+        assert_eq!(result, Value::Symbol("wrong-type-argument".into()));
+    }
+
+    #[test]
+    fn full_handler_bind_regression_sequence() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (equal (catch 'tag
+                       (handler-bind ((error (lambda (_err) (throw 'tag 'wow))))
+                         'noerror))
+                     'noerror)
+              (equal (catch 'tag
+                       (handler-bind ((error (lambda (_err) (throw 'tag 'err))))
+                         (list 'inner-catch
+                               (catch 'tag
+                                 (user-error "hello")))))
+                     '(inner-catch err))
+              (condition-case nil
+                  (handler-bind
+                      ((error (lambda (_err)
+                                (signal 'wrong-type-argument nil))))
+                    (list 'result
+                          (condition-case nil
+                              (user-error "hello")
+                            (wrong-type-argument 'inner-handler))))
+                (wrong-type-argument 'wrong-type-argument)))
+            "#,
+        )
+        .read_all()
+        .unwrap();
+        let result = interp.eval(&forms[0], &mut env).unwrap();
+        assert_eq!(result, Value::Symbol("wrong-type-argument".into()));
+    }
+
+    #[test]
+    fn handler_bind_handlers_do_not_apply_inside_handlers() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (condition-case nil
+                (handler-bind
+                    ((error (lambda (_err)
+                              (signal 'wrong-type-argument nil)))
+                     (wrong-type-argument
+                      (lambda (_err) (user-error "wrong-type-argument"))))
+                  (user-error "hello"))
+              (wrong-type-argument 'wrong-type-argument)
+              (error 'plain-error))
+            "#,
+        )
+        .read_all()
+        .unwrap();
+        let result = interp.eval(&forms[0], &mut env).unwrap();
+        assert_eq!(result, Value::Symbol("wrong-type-argument".into()));
+    }
+
+    #[test]
+    fn lambda_without_body_still_reports_invalid_function_for_bad_args() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(r#"(eval '(funcall (lambda (&rest &optional))) nil)"#)
+            .read_all()
+            .unwrap();
+        let error = interp.eval(&forms[0], &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "invalid-function");
+    }
+
+    #[test]
+    fn mutating_if_tail_reports_void_variable() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((if-tail (list '(setcdr if-tail "abc") t)))
+                  (list
+                   (condition-case nil
+                       (progn (eval (cons 'if if-tail) nil) 'ok)
+                     (void-variable 'void-variable)
+                     (wrong-type-argument 'wrong-type-argument))
+                   (condition-case nil
+                       (progn (eval (cons 'if if-tail) t) 'ok)
+                     (void-variable 'void-variable)
+                     (wrong-type-argument 'wrong-type-argument))))
+                "#
+            ),
+            Value::list([
+                Value::Symbol("void-variable".into()),
+                Value::Symbol("void-variable".into()),
+            ])
+        );
     }
 
     #[test]
