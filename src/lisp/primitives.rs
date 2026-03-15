@@ -607,6 +607,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "member"
             | "assq"
             | "assoc"
+            | "cl-set-exclusive-or"
             | "mapcar"
             | "cl-mapcar"
             | "cl-mapcan"
@@ -871,7 +872,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "princ"
             | "print"
             | "read-char-choice"
+            | "y-or-n-p"
             | "yes-or-no-p"
+            | "read-from-minibuffer"
+            | "read-no-blanks-input"
             // Reader
             | "read"
             | "read-from-string"
@@ -889,6 +893,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "frame-char-width"
             | "selected-window"
             | "selected-frame"
+            | "windowp"
             | "transient-mark-mode"
             | "font-lock-mode"
             | "find-image"
@@ -911,6 +916,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "color-values-from-color-spec"
             | "facemenu-add-face"
             | "get-buffer-window"
+            | "minibuffer-window"
+            | "active-minibuffer-window"
             | "set-window-start"
             | "set-window-point"
             | "read-string"
@@ -963,6 +970,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "define-obsolete-variable-alias"
             | "macroexp-warn-and-return"
             | "intern"
+            | "intern-soft"
             | "autoloadp"
             | "documentation"
             | "getenv"
@@ -987,10 +995,15 @@ pub fn is_builtin(name: &str) -> bool {
             | "group-name"
             | "random"
             | "make-symbol"
+            | "obarray-make"
             | "make-hash-table"
+            | "gethash"
             | "puthash"
             | "hash-table-count"
             | "hash-table-keys"
+            | "try-completion"
+            | "all-completions"
+            | "test-completion"
             | "map-pairs"
             | "profiler-memory-running-p"
             | "profiler-memory-start"
@@ -1938,6 +1951,33 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "cl-set-exclusive-or" => {
+            if args.len() < 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let left = args[0].to_vec()?;
+            let right = args[1].to_vec()?;
+            let mut test = Value::BuiltinFunc("equal".into());
+            let mut index = 2usize;
+            while index + 1 < args.len() {
+                if matches!(&args[index], Value::Symbol(keyword) if keyword == ":test") {
+                    test = resolve_callable(interp, &args[index + 1], env)?;
+                }
+                index += 2;
+            }
+            let mut result = Vec::new();
+            for item in &left {
+                if !list_contains_with(interp, &right, item, &test, env)? {
+                    result.push(item.clone());
+                }
+            }
+            for item in &right {
+                if !list_contains_with(interp, &left, item, &test, env)? {
+                    result.push(item.clone());
+                }
+            }
+            Ok(Value::list(result))
+        }
         "mapcar" => {
             need_args(name, args, 2)?;
             let list = args[1].to_vec()?;
@@ -2107,16 +2147,17 @@ pub fn call(
             Ok(result)
         }
         "read-event" | "read-char" | "read-char-exclusive" => {
-            if interp
-                .lookup_var("inhibit-interaction", env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                return Err(LispError::Signal("Interaction inhibited".into()));
-            }
+            ensure_interaction_allowed(interp, env)?;
             let event = pop_unread_command_event(interp, env)?;
             Ok(Value::Integer(event as i64))
         }
-        "read-string" => Ok(Value::String(String::new())),
+        "read-string" | "read-from-minibuffer" | "read-no-blanks-input" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            ensure_interaction_allowed(interp, env)?;
+            Ok(Value::String(String::new()))
+        }
 
         // ── Allocation ──
         "make-string" => {
@@ -4742,10 +4783,12 @@ pub fn call(
         }
         "read-char-choice" => {
             need_args(name, args, 2)?;
+            ensure_interaction_allowed(interp, env)?;
             Ok(first_choice_value(&args[1]).unwrap_or(Value::Integer('y' as i64)))
         }
-        "yes-or-no-p" => {
+        "y-or-n-p" | "yes-or-no-p" => {
             need_args(name, args, 1)?;
+            ensure_interaction_allowed(interp, env)?;
             let _ = call(interp, "message", args, env)?;
             Ok(Value::T)
         }
@@ -4995,7 +5038,16 @@ pub fn call(
         | "lcms2-available-p" => call_lcms_builtin(interp, name, args, env),
         "selected-window" => Ok(Value::Symbol("window".into())),
         "selected-frame" => Ok(Value::Symbol("frame".into())),
-        "get-buffer-window" => Ok(Value::Symbol("window".into())),
+        "windowp" => {
+            need_args(name, args, 1)?;
+            Ok(if is_window_value(interp, &args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "get-buffer-window" | "minibuffer-window" => Ok(Value::Symbol("window".into())),
+        "active-minibuffer-window" => Ok(Value::Nil),
         "set-window-start" | "set-window-point" => Ok(Value::T),
         "facemenu-add-face" => {
             need_args(name, args, 3)?;
@@ -5072,9 +5124,26 @@ pub fn call(
             Ok(args[0].clone())
         }
         "intern" => {
-            need_args(name, args, 1)?;
-            let s = args[0].as_string()?;
-            Ok(Value::Symbol(s.to_string()))
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let symbol_name = string_text(&args[0])?;
+            match args.get(1) {
+                Some(obarray) if !obarray.is_nil() => intern_in_obarray(interp, obarray, &symbol_name),
+                _ => Ok(Value::Symbol(symbol_name)),
+            }
+        }
+        "intern-soft" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let symbol_name = string_text(&args[0])?;
+            match args.get(1) {
+                Some(obarray) if !obarray.is_nil() => {
+                    intern_soft_in_obarray(interp, obarray, &symbol_name)
+                }
+                _ => Ok(default_intern_soft_result(interp, &symbol_name, env)),
+            }
         }
         "make-symbol" => {
             need_args(name, args, 1)?;
@@ -5334,6 +5403,17 @@ pub fn call(
             interp.buffer.set_autosaved();
             Ok(Value::Nil)
         }
+        "obarray-make" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            if let Some(size) = args.first()
+                && size.as_integer()? < 0
+            {
+                return Err(LispError::TypeError("natnump".into(), size.type_name()));
+            }
+            Ok(make_obarray(interp))
+        }
         "make-hash-table" => {
             let mut test = "eql".to_string();
             let mut index = 0usize;
@@ -5363,6 +5443,27 @@ pub fn call(
                 Value::Nil
             })
         }
+        "gethash" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                return Err(LispError::TypeError("hash-table".into(), args[1].type_name()));
+            };
+            let default = args.get(2).cloned().unwrap_or(Value::Nil);
+            let value = entries
+                .into_iter()
+                .find(|(existing_key, _)| {
+                    if test == "equal" {
+                        values_equal(interp, existing_key, &args[0])
+                    } else {
+                        existing_key == &args[0]
+                    }
+                })
+                .map(|(_, value)| value)
+                .unwrap_or(default);
+            Ok(value)
+        }
         "puthash" => {
             need_args(name, args, 3)?;
             json::hash_table_put(interp, &args[2], args[0].clone(), args[1].clone())
@@ -5381,6 +5482,9 @@ pub fn call(
             };
             Ok(Value::list(entries.into_iter().map(|(key, _)| key)))
         }
+        "try-completion" => try_completion(interp, args, env),
+        "all-completions" => all_completions(interp, args, env),
+        "test-completion" => test_completion(interp, args, env),
         "map-pairs" => {
             need_args(name, args, 1)?;
             let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
@@ -13122,6 +13226,398 @@ fn history_args_for_call(
         }
     }
     Ok(recorded)
+}
+
+const OBARRAY_RECORD_TYPE: &str = "obarray";
+
+#[derive(Clone)]
+struct CompletionCandidate {
+    name: String,
+    predicate_args: Vec<Value>,
+}
+
+fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
+    if interp
+        .lookup_var("inhibit-interaction", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("inhibited-interaction".into()),
+            Value::String("Interaction inhibited".into()),
+        ])));
+    }
+    Ok(())
+}
+
+fn is_window_value(interp: &Interpreter, value: &Value) -> bool {
+    matches!(value, Value::Symbol(symbol) if symbol == "window")
+        || matches!(value, Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.type_name == "window"))
+}
+
+fn make_obarray(interp: &mut Interpreter) -> Value {
+    interp.create_record(OBARRAY_RECORD_TYPE, vec![Value::Nil])
+}
+
+fn obarray_symbols(interp: &Interpreter, obarray: &Value) -> Result<Vec<Value>, LispError> {
+    let Value::Record(id) = obarray else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    let Some(record) = interp.find_record(*id) else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    if record.type_name != OBARRAY_RECORD_TYPE {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    }
+    record
+        .slots
+        .first()
+        .cloned()
+        .unwrap_or(Value::Nil)
+        .to_vec()
+}
+
+fn intern_in_obarray(
+    interp: &mut Interpreter,
+    obarray: &Value,
+    symbol_name: &str,
+) -> Result<Value, LispError> {
+    let Value::Record(id) = obarray else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    let Some(record) = interp.find_record_mut(*id) else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    if record.type_name != OBARRAY_RECORD_TYPE {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    }
+    let mut symbols = record
+        .slots
+        .first()
+        .cloned()
+        .unwrap_or(Value::Nil)
+        .to_vec()?;
+    if let Some(existing) = symbols
+        .iter()
+        .find(|value| matches!(value, Value::Symbol(name) if name == symbol_name))
+        .cloned()
+    {
+        return Ok(existing);
+    }
+    let symbol = Value::Symbol(symbol_name.into());
+    symbols.push(symbol.clone());
+    if record.slots.is_empty() {
+        record.slots.push(Value::list(symbols));
+    } else {
+        record.slots[0] = Value::list(symbols);
+    }
+    Ok(symbol)
+}
+
+fn intern_soft_in_obarray(
+    interp: &Interpreter,
+    obarray: &Value,
+    symbol_name: &str,
+) -> Result<Value, LispError> {
+    Ok(obarray_symbols(interp, obarray)?
+        .into_iter()
+        .find(|value| matches!(value, Value::Symbol(name) if name == symbol_name))
+        .unwrap_or(Value::Nil))
+}
+
+fn default_intern_soft_result(interp: &Interpreter, symbol_name: &str, env: &Env) -> Value {
+    if matches!(symbol_name, "nil" | "t")
+        || symbol_name.starts_with(':')
+        || interp.lookup_var(symbol_name, env).is_some()
+        || interp.lookup_function(symbol_name, env).is_ok()
+        || is_builtin(symbol_name)
+    {
+        Value::Symbol(symbol_name.into())
+    } else {
+        Value::Nil
+    }
+}
+
+fn completion_display_name(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::String(_) | Value::StringObject(_) => string_text(value),
+        Value::Symbol(symbol) => Ok(symbol.clone()),
+        _ => Err(LispError::TypeError(
+            "string-or-symbol".into(),
+            value.type_name(),
+        )),
+    }
+}
+
+fn completion_candidates(
+    interp: &Interpreter,
+    collection: &Value,
+) -> Result<Vec<CompletionCandidate>, LispError> {
+    if let Some((_, entries)) = json::hash_table_entries(interp, collection) {
+        return entries
+            .into_iter()
+            .map(|(key, value)| {
+                Ok(CompletionCandidate {
+                    name: completion_display_name(&key)?,
+                    predicate_args: vec![key, value],
+                })
+            })
+            .collect();
+    }
+    match obarray_symbols(interp, collection) {
+        Ok(symbols) => {
+            return symbols
+                .into_iter()
+                .map(|symbol| {
+                    Ok(CompletionCandidate {
+                        name: completion_display_name(&symbol)?,
+                        predicate_args: vec![symbol],
+                    })
+                })
+                .collect();
+        }
+        Err(LispError::TypeError(expected, _)) if expected == "obarray" => {}
+        Err(error) => return Err(error),
+    }
+    collection
+        .to_vec()?
+        .into_iter()
+        .map(|item| {
+            if matches!(item, Value::Cons(_, _)) {
+                let key = item.car()?;
+                Ok(CompletionCandidate {
+                    name: completion_display_name(&key)?,
+                    predicate_args: vec![item],
+                })
+            } else {
+                Ok(CompletionCandidate {
+                    name: completion_display_name(&item)?,
+                    predicate_args: vec![item],
+                })
+            }
+        })
+        .collect()
+}
+
+fn completion_ignores_case(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var("completion-ignore-case", env)
+        .is_some_and(|value| value.is_truthy())
+}
+
+fn completion_matches_prefix(input: &str, candidate: &str, ignore_case: bool) -> bool {
+    let input_chars: Vec<char> = input.chars().collect();
+    let candidate_chars: Vec<char> = candidate.chars().collect();
+    input_chars.len() <= candidate_chars.len()
+        && input_chars
+            .iter()
+            .zip(candidate_chars.iter())
+            .all(|(left, right)| {
+                if ignore_case {
+                    left.eq_ignore_ascii_case(right)
+                } else {
+                    left == right
+                }
+            })
+}
+
+fn completion_strings_equal(left: &str, right: &str, ignore_case: bool) -> bool {
+    if ignore_case {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+fn completion_regex_matches(
+    interp: &Interpreter,
+    env: &Env,
+    candidate: &str,
+    pattern: &Value,
+) -> Result<bool, LispError> {
+    let pattern = string_like(pattern)
+        .ok_or_else(|| LispError::TypeError("string".into(), pattern.type_name()))?;
+    let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+    regex
+        .is_match(candidate)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+fn completion_common_prefix(
+    matches: &[CompletionCandidate],
+    input: &str,
+    ignore_case: bool,
+) -> String {
+    let match_chars = matches
+        .iter()
+        .map(|candidate| candidate.name.chars().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let input_chars = input.chars().collect::<Vec<_>>();
+    let mut prefix = String::new();
+    let max_len = match_chars.iter().map(Vec::len).min().unwrap_or(0);
+
+    for index in 0..max_len {
+        let first = match_chars[0][index];
+        let same_actual = match_chars.iter().all(|chars| chars[index] == first);
+        let same_folded = match_chars.iter().all(|chars| {
+            if ignore_case {
+                chars[index].eq_ignore_ascii_case(&first)
+            } else {
+                chars[index] == first
+            }
+        });
+        if !same_folded {
+            break;
+        }
+        if !ignore_case || same_actual {
+            prefix.push(first);
+            continue;
+        }
+        if let Some(input_char) = input_chars
+            .get(index)
+            .copied()
+            .filter(|input_char| input_char.eq_ignore_ascii_case(&first))
+        {
+            prefix.push(input_char);
+        } else {
+            prefix.push(first.to_ascii_lowercase());
+        }
+    }
+
+    prefix
+}
+
+fn filtered_completion_matches(
+    interp: &mut Interpreter,
+    input: &str,
+    collection: &Value,
+    predicate: Option<&Value>,
+    env: &mut Env,
+) -> Result<Vec<CompletionCandidate>, LispError> {
+    let ignore_case = completion_ignores_case(interp, env);
+    let regexp_list = interp
+        .lookup_var("completion-regexp-list", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let predicate = predicate.filter(|value| !value.is_nil()).cloned();
+    let mut matches = Vec::new();
+
+    for candidate in completion_candidates(interp, collection)? {
+        if !completion_matches_prefix(input, &candidate.name, ignore_case) {
+            continue;
+        }
+        let mut regex_match = true;
+        for pattern in &regexp_list {
+            if !completion_regex_matches(interp, env, &candidate.name, pattern)? {
+                regex_match = false;
+                break;
+            }
+        }
+        if !regex_match {
+            continue;
+        }
+        if let Some(predicate) = &predicate {
+            let predicate = resolve_callable(interp, predicate, env)?;
+            if !invoke_function_value(interp, &predicate, &candidate.predicate_args, env)?
+                .is_truthy()
+            {
+                continue;
+            }
+        }
+        matches.push(candidate);
+    }
+
+    Ok(matches)
+}
+
+fn try_completion(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs("try-completion".into(), args.len()));
+    }
+    let input = string_text(&args[0])?;
+    let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
+    if matches.is_empty() {
+        return Ok(Value::Nil);
+    }
+
+    let ignore_case = completion_ignores_case(interp, env);
+    if ignore_case {
+        if let Some(candidate) = matches.iter().find(|candidate| candidate.name == input) {
+            if matches.len() == 1 {
+                return Ok(Value::T);
+            }
+            return Ok(Value::String(candidate.name.clone()));
+        }
+        if let Some(candidate) = matches
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(&input))
+        {
+            return Ok(Value::String(candidate.name.clone()));
+        }
+    } else if matches.len() == 1 && matches[0].name == input {
+        return Ok(Value::T);
+    }
+
+    Ok(Value::String(completion_common_prefix(
+        &matches,
+        &input,
+        ignore_case,
+    )))
+}
+
+fn all_completions(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs("all-completions".into(), args.len()));
+    }
+    let input = string_text(&args[0])?;
+    Ok(Value::list(
+        filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?
+            .into_iter()
+            .map(|candidate| Value::String(candidate.name)),
+    ))
+}
+
+fn test_completion(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(LispError::WrongNumberOfArgs("test-completion".into(), args.len()));
+    }
+    let input = string_text(&args[0])?;
+    let ignore_case = completion_ignores_case(interp, env);
+    let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
+    Ok(if matches
+        .iter()
+        .any(|candidate| completion_strings_equal(&candidate.name, &input, ignore_case))
+    {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+fn list_contains_with(
+    interp: &mut Interpreter,
+    items: &[Value],
+    needle: &Value,
+    test: &Value,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    for item in items {
+        if call_function_value(interp, test, &[needle.clone(), item.clone()], env)?.is_truthy() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn interactive_spec_form(func: &Value) -> Option<Value> {
