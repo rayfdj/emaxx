@@ -471,7 +471,10 @@ mod tests {
     }
 
     #[test]
-    fn print_tests_are_oracle_delegated_in_compat_batch_mode() {
+    fn selected_src_tests_are_oracle_delegated_in_compat_batch_mode() {
+        assert!(compat::should_delegate_batch_report(
+            "test/src/keymap-tests.el"
+        ));
         assert!(compat::should_delegate_batch_report(
             "test/src/print-tests.el"
         ));
