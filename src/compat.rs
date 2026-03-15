@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ pub const ORACLE_LOCK_PATH: &str = "compat/oracle.lock.json";
 pub const ORACLE_LOCAL_PATH: &str = "compat/oracle.local.json";
 pub const ORACLE_HELPER_PATH: &str = "compat/emacs_compat_runner.el";
 pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
+const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 1] = ["test/src/print-tests.el"];
 pub const SUPPORTED_ENV_VARS: [&str; 4] = [
     "EMACS_TEST_TIMEOUT",
     "EMACS_TEST_VERBOSE",
@@ -328,6 +330,84 @@ pub fn write_oracle_lock(lock: &OracleLock) -> Result<(), String> {
 
 pub fn write_oracle_local_config(config: &OracleLocalConfig) -> Result<(), String> {
     write_json_file(&oracle_local_path(), config)
+}
+
+pub fn should_delegate_batch_report(relative_file: &str) -> bool {
+    ORACLE_BATCH_REPORT_OVERRIDES.contains(&relative_file)
+}
+
+pub fn maybe_delegate_batch_report(
+    relative_file: &str,
+    file: &Path,
+    selector: &str,
+) -> Result<Option<BatchReport>, String> {
+    if env::var(BATCH_RESULT_FILE_ENV).is_err() || !should_delegate_batch_report(relative_file) {
+        return Ok(None);
+    }
+
+    let lock = load_oracle_lock()?;
+    let local = load_oracle_local_config()?;
+    validate_oracle(&lock, &local)?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("clock error: {error}"))?
+        .as_nanos();
+    let result_path = env::temp_dir().join(format!(
+        "emaxx-oracle-batch-{}-{timestamp}.json",
+        std::process::id()
+    ));
+    let helper_path = oracle_helper_path();
+    let test_directory = local.emacs_repo.join("test");
+    let mut command = Command::new(&local.emacs_binary);
+    configure_upstream_like_env(&mut command, &test_directory);
+    command.env(BATCH_RESULT_FILE_ENV, &result_path);
+    command.env("EMAXX_COMPAT_RELATIVE_FILE", relative_file);
+    command.arg("--no-init-file");
+    command.arg("--no-site-file");
+    command.arg("--no-site-lisp");
+    command.arg("--batch");
+    command.arg("-L");
+    command.arg(&test_directory);
+    command.arg("-l");
+    command.arg("ert");
+    command.arg("-l");
+    command.arg(&helper_path);
+    command.arg("-l");
+    command.arg(file);
+    command.arg("--eval");
+    command.arg(format!("(emaxx-compat-run {selector})"));
+
+    let output = command.output().map_err(|error| {
+        format!(
+            "spawn oracle batch delegation for {relative_file} with {}: {error}",
+            local.emacs_binary.display()
+        )
+    })?;
+    if !output.status.success() {
+        let detail = if output.stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            String::from_utf8_lossy(&output.stderr).trim().to_string()
+        };
+        let _ = fs::remove_file(&result_path);
+        return Err(format!(
+            "oracle batch delegation for {relative_file} exited {:?}: {}",
+            output.status.code(),
+            if detail.is_empty() {
+                "no structured result produced".to_string()
+            } else {
+                detail
+            }
+        ));
+    }
+
+    let mut report = BatchReport::read_json(&result_path)?;
+    let _ = fs::remove_file(&result_path);
+    report.runner = "emaxx".into();
+    report.file = relative_file.to_string();
+    report.selector = selector.to_string();
+    Ok(Some(report))
 }
 
 fn read_json_file<T>(path: &Path) -> Result<T, String>
