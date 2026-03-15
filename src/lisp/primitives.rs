@@ -845,6 +845,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "add-text-properties"
             | "set-text-properties"
             | "remove-list-of-text-properties"
+            | "font-lock-append-text-property"
             | "font-lock-prepend-text-property"
             | "font-lock--remove-face-from-text-property"
             | "put"
@@ -1358,6 +1359,9 @@ pub fn call(
             | "add-text-properties"
             | "set-text-properties"
             | "remove-list-of-text-properties"
+            | "font-lock-append-text-property"
+            | "font-lock-prepend-text-property"
+            | "font-lock--remove-face-from-text-property"
             | "set-buffer-multibyte"
             | "write-region"
             | "save-buffer"
@@ -4625,39 +4629,43 @@ pub fn call(
             }
             Ok(Value::T)
         }
-        "font-lock-prepend-text-property" => {
-            need_args(name, args, 5)?;
-            let start = args[0].as_integer()?.max(0) as usize;
-            let end = args[1].as_integer()?.max(0) as usize;
-            let prop = args[2].as_symbol()?.to_string();
-            let face = args[3].clone();
-            modify_shared_string_properties(&args[4], start, end, |mut current| {
-                if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == &prop) {
-                    *existing = prepend_face_value(existing.clone(), &face);
-                } else {
-                    current.push((prop.clone(), face.clone()));
-                }
-                current
-            })?;
-            Ok(Value::Nil)
-        }
+        "font-lock-append-text-property" => font_lock_add_text_property(interp, name, args, true),
+        "font-lock-prepend-text-property" => font_lock_add_text_property(interp, name, args, false),
         "font-lock--remove-face-from-text-property" => {
-            need_args(name, args, 5)?;
-            let start = args[0].as_integer()?.max(0) as usize;
-            let end = args[1].as_integer()?.max(0) as usize;
+            need_arg_range(name, args, 4, 5)?;
             let prop = args[2].as_symbol()?.to_string();
             let face = args[3].clone();
-            modify_shared_string_properties(&args[4], start, end, |mut current| {
-                if let Some(index) = current.iter().position(|(key, _)| key == &prop) {
-                    let updated = remove_face_value(current[index].1.clone(), &face);
-                    if updated.is_nil() {
-                        current.remove(index);
-                    } else {
-                        current[index].1 = updated;
+            if let Some(object) = args.get(4)
+                && string_like(object).is_some()
+            {
+                let start = args[0].as_integer()?.max(0) as usize;
+                let end = args[1].as_integer()?.max(0) as usize;
+                modify_shared_string_properties(object, start, end, |mut current| {
+                    if let Some(index) = current.iter().position(|(key, _)| key == &prop) {
+                        let updated = remove_face_value(current[index].1.clone(), &face);
+                        if updated.is_nil() {
+                            current.remove(index);
+                        } else {
+                            current[index].1 = updated;
+                        }
                     }
-                }
-                current
-            })?;
+                    current
+                })?;
+                return Ok(Value::Nil);
+            }
+
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
+            let mut cursor = start;
+            while cursor < end {
+                let (previous, next) =
+                    font_lock_buffer_segment(interp, buffer_id, cursor, end, &prop)?;
+                let updated = remove_face_value(previous, &face);
+                font_lock_put_buffer_property(interp, buffer_id, cursor, next, &prop, updated)?;
+                cursor = next;
+            }
+            font_lock_push_buffer_undo_entry(interp, buffer_id)?;
             Ok(Value::Nil)
         }
         "put" => {
@@ -13986,6 +13994,68 @@ mod tests {
     }
 
     #[test]
+    fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "foo");
+        let mut env = Vec::new();
+
+        call(
+            &mut interp,
+            "add-text-properties",
+            &[
+                Value::Integer(1),
+                Value::Integer(3),
+                Value::list([Value::Symbol("face".into()), Value::Symbol("italic".into())]),
+            ],
+            &mut env,
+        )
+        .expect("add-text-properties should seed a face property");
+
+        call(
+            &mut interp,
+            "font-lock-append-text-property",
+            &[
+                Value::Integer(1),
+                Value::Integer(3),
+                Value::Symbol("face".into()),
+                Value::list([Value::Symbol(":strike-through".into()), Value::T]),
+            ],
+            &mut env,
+        )
+        .expect("font-lock-append-text-property should accept an omitted object");
+
+        assert_eq!(
+            interp.buffer.text_property_at(1, "face"),
+            Some(Value::list([
+                Value::Symbol("italic".into()),
+                Value::list([Value::Symbol(":strike-through".into()), Value::T,]),
+            ]))
+        );
+
+        call(
+            &mut interp,
+            "font-lock-prepend-text-property",
+            &[
+                Value::Integer(1),
+                Value::Integer(3),
+                Value::Symbol("face".into()),
+                Value::list([Value::Symbol(":underline".into()), Value::T]),
+            ],
+            &mut env,
+        )
+        .expect("font-lock-prepend-text-property should accept an omitted object");
+
+        assert_eq!(
+            interp.buffer.text_property_at(1, "face"),
+            Some(Value::list([
+                Value::list([Value::Symbol(":underline".into()), Value::T]),
+                Value::Symbol("italic".into()),
+                Value::list([Value::Symbol(":strike-through".into()), Value::T,]),
+            ]))
+        );
+    }
+
+    #[test]
     fn bidi_override_positions_match_upstream_cases() {
         let cases = [
             (
@@ -14822,14 +14892,196 @@ fn inhibit_read_only_matches(inhibit: &Value, property: &Value) -> bool {
     inhibit == property
 }
 
-fn prepend_face_value(existing: Value, face: &Value) -> Value {
-    match face_list_items(&existing) {
-        Ok(mut items) => {
-            items.insert(0, face.clone());
-            Value::list(items)
+fn font_lock_add_text_property(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    append: bool,
+) -> Result<Value, LispError> {
+    need_arg_range(name, args, 4, 5)?;
+    let prop = args[2].as_symbol()?.to_string();
+    let value = args[3].clone();
+    if let Some(object) = args.get(4)
+        && string_like(object).is_some()
+    {
+        let start = args[0].as_integer()?.max(0) as usize;
+        let end = args[1].as_integer()?.max(0) as usize;
+        let mut cursor = start;
+        while cursor < end {
+            let previous = string_property_at(object, cursor, &prop).unwrap_or(Value::Nil);
+            let next = font_lock_next_string_property_change(object, cursor, end, &prop);
+            let updated = combine_font_lock_property_value(&prop, previous, &value, append);
+            modify_shared_string_properties(object, cursor, next, |mut current| {
+                current.retain(|(key, _)| key != &prop);
+                current.push((prop.clone(), updated.clone()));
+                current
+            })?;
+            cursor = next;
         }
-        Err(_) => Value::list([face.clone(), existing]),
+        return Ok(Value::Nil);
     }
+
+    let start = position_from_value(interp, &args[0])?;
+    let end = position_from_value(interp, &args[1])?;
+    let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
+    let mut cursor = start;
+    while cursor < end {
+        let (previous, next) = font_lock_buffer_segment(interp, buffer_id, cursor, end, &prop)?;
+        let updated = combine_font_lock_property_value(&prop, previous, &value, append);
+        font_lock_put_buffer_property(interp, buffer_id, cursor, next, &prop, updated)?;
+        cursor = next;
+    }
+    font_lock_push_buffer_undo_entry(interp, buffer_id)?;
+    Ok(Value::Nil)
+}
+
+fn font_lock_target_buffer_id(
+    interp: &Interpreter,
+    object: Option<&Value>,
+) -> Result<u64, LispError> {
+    match object {
+        Some(value) if !value.is_nil() => interp.resolve_buffer_id(value),
+        _ => Ok(interp.current_buffer_id()),
+    }
+}
+
+fn font_lock_buffer_segment(
+    interp: &Interpreter,
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    prop: &str,
+) -> Result<(Value, usize), LispError> {
+    let buffer = interp
+        .get_buffer_by_id(buffer_id)
+        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+    let previous = buffer.text_property_at(start, prop).unwrap_or(Value::Nil);
+    let next = font_lock_next_buffer_property_change(buffer, start, end, prop);
+    Ok((previous, next))
+}
+
+fn font_lock_put_buffer_property(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    prop: &str,
+    value: Value,
+) -> Result<(), LispError> {
+    if buffer_id == interp.current_buffer_id() {
+        if value.is_nil() {
+            interp
+                .buffer
+                .remove_list_of_text_properties(start, end, &[prop.to_string()]);
+        } else {
+            interp.buffer.put_text_property(start, end, prop, value);
+        }
+        return Ok(());
+    }
+
+    let buffer = interp
+        .get_buffer_by_id_mut(buffer_id)
+        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+    if value.is_nil() {
+        buffer.remove_list_of_text_properties(start, end, &[prop.to_string()]);
+    } else {
+        buffer.put_text_property(start, end, prop, value);
+    }
+    Ok(())
+}
+
+fn font_lock_push_buffer_undo_entry(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+) -> Result<(), LispError> {
+    let entry = crate::buffer::UndoEntry::Combined {
+        display: Value::Nil,
+        entries: Vec::new(),
+    };
+    if buffer_id == interp.current_buffer_id() {
+        interp.buffer.push_undo_entry(entry);
+        return Ok(());
+    }
+    let buffer = interp
+        .get_buffer_by_id_mut(buffer_id)
+        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+    buffer.push_undo_entry(entry);
+    Ok(())
+}
+
+fn font_lock_next_buffer_property_change(
+    buffer: &crate::buffer::Buffer,
+    start: usize,
+    end: usize,
+    prop: &str,
+) -> usize {
+    let initial = buffer.text_property_at(start, prop).unwrap_or(Value::Nil);
+    for cursor in start.saturating_add(1)..end {
+        if buffer.text_property_at(cursor, prop).unwrap_or(Value::Nil) != initial {
+            return cursor;
+        }
+    }
+    end
+}
+
+fn font_lock_next_string_property_change(
+    value: &Value,
+    start: usize,
+    end: usize,
+    prop: &str,
+) -> usize {
+    let initial = string_property_at(value, start, prop).unwrap_or(Value::Nil);
+    for cursor in start.saturating_add(1)..end {
+        if string_property_at(value, cursor, prop).unwrap_or(Value::Nil) != initial {
+            return cursor;
+        }
+    }
+    end
+}
+
+fn combine_font_lock_property_value(
+    prop: &str,
+    previous: Value,
+    value: &Value,
+    append: bool,
+) -> Value {
+    let mut previous_items = font_lock_previous_property_items(prop, previous);
+    let mut value_items = font_lock_value_items(value);
+    if append {
+        previous_items.append(&mut value_items);
+        Value::list(previous_items)
+    } else {
+        value_items.append(&mut previous_items);
+        Value::list(value_items)
+    }
+}
+
+fn font_lock_previous_property_items(prop: &str, previous: Value) -> Vec<Value> {
+    if matches!(prop, "face" | "font-lock-face") && anonymous_font_lock_face(&previous) {
+        return vec![previous];
+    }
+    previous.to_vec().unwrap_or_else(|_| vec![previous])
+}
+
+fn font_lock_value_items(value: &Value) -> Vec<Value> {
+    match value.to_vec() {
+        Ok(items) if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol.starts_with(':')) => {
+            items
+        }
+        _ => vec![value.clone()],
+    }
+}
+
+fn anonymous_font_lock_face(value: &Value) -> bool {
+    let Ok(items) = value.to_vec() else {
+        return false;
+    };
+    matches!(
+        items.first(),
+        Some(Value::Symbol(symbol))
+            if symbol.starts_with(':')
+                || matches!(symbol.as_str(), "foreground-color" | "background-color")
+    )
 }
 
 fn remove_face_value(existing: Value, face: &Value) -> Value {
