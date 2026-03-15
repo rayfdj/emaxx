@@ -583,6 +583,10 @@ impl Interpreter {
         self.current_buffer_id
     }
 
+    pub fn current_buffer(&self) -> &crate::buffer::Buffer {
+        &self.buffer
+    }
+
     pub fn set_current_load_file(&mut self, path: Option<String>) -> Option<String> {
         std::mem::replace(&mut self.current_load_file, path)
     }
@@ -2656,6 +2660,9 @@ impl Interpreter {
             "system-configuration-features" => Some(Value::String(
                 std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES").unwrap_or_default(),
             )),
+            "system-configuration-options" => Some(Value::String(
+                std::env::var("EMAXX_SYSTEM_CONFIGURATION_OPTIONS").unwrap_or_default(),
+            )),
             "charset-list" => Some(Value::list(
                 self.charset_priority_list()
                     .into_iter()
@@ -2890,10 +2897,22 @@ impl Interpreter {
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
                         "setcar" => return self.sf_setcar(&items, env),
-                        "defvar" | "defconst" => return self.sf_defvar(&items, env),
+                        "defvar" | "defconst" | "defcustom" => {
+                            return self.sf_defvar(&items, env);
+                        }
                         "defvar-local" => return self.sf_defvar_local(&items, env),
+                        "defgroup" => return self.sf_defgroup(&items),
+                        "defface" => return self.sf_defface(&items),
+                        "defvar-keymap" => return self.sf_defvar_keymap(&items, env),
+                        "define-short-documentation-group" => return self.sf_defgroup(&items),
+                        "define-minor-mode"
+                        | "define-globalized-minor-mode"
+                        | "define-derived-mode" => {
+                            return self.sf_define_mode(&items);
+                        }
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
+                        "cl-defstruct" => return self.sf_cl_defstruct(&items),
                         "defalias" => return self.sf_defalias(&items, env),
                         "backquote" => return self.eval_backquote(&items[1], env),
                         "lambda" => return self.sf_lambda(&items, env),
@@ -2901,7 +2920,7 @@ impl Interpreter {
                             // #'foo or (function foo)
                             if items.len() >= 2 {
                                 if let Value::Symbol(name) = &items[1] {
-                                    return self.lookup_function(name, env);
+                                    return Ok(Value::Symbol(name.clone()));
                                 }
                                 return self.eval(&items[1], env);
                             }
@@ -3566,20 +3585,119 @@ impl Interpreter {
             ));
         }
         let place = items[1].to_vec()?;
-        if !matches!(place.first(), Some(Value::Symbol(name)) if name == "symbol-function") {
-            return Err(LispError::Signal("Unsupported setf place".into()));
+        match place.first() {
+            Some(Value::Symbol(name)) if name == "symbol-function" => {
+                let Some(target) = place.get(1) else {
+                    return Err(LispError::Signal("Unsupported setf place".into()));
+                };
+                let function_name = function_name_from_binding_form(target)?;
+                let value = self.eval(&items[2], env)?;
+                if value.is_nil() {
+                    self.set_function_binding(&function_name, None);
+                    Ok(Value::Nil)
+                } else {
+                    self.set_function_binding(&function_name, Some(value.clone()));
+                    Ok(value)
+                }
+            }
+            Some(Value::Symbol(name)) if name == "alist-get" => {
+                self.sf_setf_alist_get(&place, &items[2], env)
+            }
+            _ => Err(LispError::Signal("Unsupported setf place".into())),
         }
-        let Some(target) = place.get(1) else {
+    }
+
+    fn sf_setf_alist_get(
+        &mut self,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(key_expr) = place.get(1) else {
             return Err(LispError::Signal("Unsupported setf place".into()));
         };
-        let function_name = function_name_from_binding_form(target)?;
-        let value = self.eval(&items[2], env)?;
-        if value.is_nil() {
-            self.set_function_binding(&function_name, None);
-            Ok(Value::Nil)
-        } else {
-            self.set_function_binding(&function_name, Some(value.clone()));
-            Ok(value)
+        let Some(alist_place) = place.get(2) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let key = self.eval(key_expr, env)?;
+        let alist = self.eval(alist_place, env)?;
+        let default = match place.get(3) {
+            Some(expr) => self.eval(expr, env)?,
+            None => Value::Nil,
+        };
+        let remove = match place.get(4) {
+            Some(expr) => self.eval(expr, env)?,
+            None => Value::Nil,
+        };
+        let testfn = match place.get(5) {
+            Some(expr) => Some(self.eval(expr, env)?),
+            None => None,
+        };
+        let value = self.eval(value_expr, env)?;
+        let should_remove = remove.is_truthy() && value == default;
+        let mut updated = false;
+        let mut new_entries = Vec::new();
+
+        for entry in alist.to_vec()? {
+            let matches = if !updated {
+                if let Value::Cons(car, _) = &entry {
+                    primitives::value_matches_with_test(
+                        self,
+                        &key,
+                        car.as_ref(),
+                        testfn.as_ref(),
+                        env,
+                    )?
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if matches {
+                updated = true;
+                if !should_remove {
+                    new_entries.push(Value::cons(entry.car()?, value.clone()));
+                }
+            } else {
+                new_entries.push(entry);
+            }
+        }
+
+        if !updated && !should_remove {
+            new_entries.insert(0, Value::cons(key.clone(), value.clone()));
+        }
+
+        self.set_setf_place_value(alist_place, Value::list(new_entries), env)?;
+        Ok(value)
+    }
+
+    fn set_setf_place_value(
+        &mut self,
+        place: &Value,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        match place {
+            Value::Symbol(name) => {
+                self.set_variable(name, value, env);
+                Ok(())
+            }
+            Value::Cons(_, _) => {
+                let items = place.to_vec()?;
+                if matches!(items.first(), Some(Value::Symbol(name)) if name == "symbol-value") {
+                    let Some(symbol_form) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let symbol = self.eval(symbol_form, env)?;
+                    let symbol = symbol.as_symbol()?.to_string();
+                    self.set_variable(&symbol, value, env);
+                    Ok(())
+                } else {
+                    Err(LispError::Signal("Unsupported setf place".into()))
+                }
+            }
+            _ => Err(LispError::Signal("Unsupported setf place".into())),
         }
     }
 
@@ -3634,6 +3752,58 @@ impl Interpreter {
             self.mark_auto_buffer_local(items[1].as_symbol()?);
         }
         self.sf_defvar(items, env)
+    }
+
+    fn sf_defgroup(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        Ok(items
+            .get(1)
+            .and_then(|value| value.as_symbol().ok())
+            .map(Value::symbol)
+            .unwrap_or(Value::Nil))
+    }
+
+    fn sf_defface(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        Ok(items
+            .get(1)
+            .and_then(|value| value.as_symbol().ok())
+            .map(Value::symbol)
+            .unwrap_or(Value::Nil))
+    }
+
+    fn sf_defvar_keymap(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let synthetic = [Value::symbol("defvar"), items[1].clone(), Value::Nil];
+        self.sf_defvar(&synthetic, env)
+    }
+
+    fn sf_define_mode(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        Ok(items
+            .get(1)
+            .and_then(|value| value.as_symbol().ok())
+            .map(Value::symbol)
+            .unwrap_or(Value::Nil))
+    }
+
+    fn sf_cl_defstruct(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        let Some(struct_spec) = items.get(1) else {
+            return Ok(Value::Nil);
+        };
+        let name = match struct_spec {
+            Value::Symbol(name) => Some(name.clone()),
+            Value::Cons(_, _) => struct_spec
+                .to_vec()
+                .ok()
+                .and_then(|parts| {
+                    parts
+                        .first()
+                        .and_then(|value| value.as_symbol().ok())
+                        .map(str::to_string)
+                }),
+            _ => None,
+        };
+        Ok(name.map(Value::Symbol).unwrap_or(Value::Nil))
     }
 
     fn sf_incf(&mut self, items: &[Value], env: &mut Env, sign: i64) -> Result<Value, LispError> {
@@ -6063,6 +6233,37 @@ mod tests {
     }
 
     #[test]
+    fn defcustom_loads_like_defvar() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(&mut interp, "(defcustom treesit-max-buffer-size 42 \"doc\")"),
+            Value::Nil
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "treesit-max-buffer-size"),
+            Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn declaration_stub_forms_do_not_error_during_loads() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defgroup treesit nil \"doc\")
+                   (defface treesit-face '((t :inherit default)) \"doc\")
+                   (defvar-keymap treesit-map :doc \"doc\")
+                   (define-minor-mode treesit-mode \"doc\")
+                   (define-globalized-minor-mode global-treesit-mode treesit-mode ignore)
+                   (define-derived-mode treesit-derived fundamental-mode \"TS\")
+                   (cl-defstruct (ppss (:constructor make-ppss) (:type list)) depth)
+                   treesit-map)"
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn let_alist_binds_dotted_pair_keys() {
         assert_string_value(
             eval_str("(let ((x '((buffer-text . \"hi\")))) (let-alist x .buffer-text))"),
@@ -6365,6 +6566,104 @@ mod tests {
                    (let ((n 2)) \
                      (cl-decf n)))"
             ),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn function_quote_allows_forward_symbol_references() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar before-change-functions nil)
+                   (add-hook 'before-change-functions #'syntax-ppss-flush-cache)
+                   (defun syntax-ppss-flush-cache (&rest _) 'ok)
+                   (funcall (car before-change-functions)))"
+            ),
+            Value::Symbol("ok".into())
+        );
+    }
+
+    #[test]
+    fn treesit_language_available_defaults_to_nil() {
+        assert_eq!(eval_str("(treesit-language-available-p 'json)"), Value::Nil);
+    }
+
+    #[test]
+    fn treesit_linecol_helpers_report_positions() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer
+                   (insert \"a\\n\")
+                   (treesit--linecol-cache-set 1 0 1)
+                   (list (treesit--linecol-cache)
+                         (treesit--linecol-at 2)
+                         (treesit--linecol-at 3)))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol(":line".into()),
+                    Value::Integer(1),
+                    Value::Symbol(":col".into()),
+                    Value::Integer(0),
+                    Value::Symbol(":bytepos".into()),
+                    Value::Integer(1),
+                ]),
+                Value::cons(Value::Integer(1), Value::Integer(1)),
+                Value::cons(Value::Integer(2), Value::Integer(0)),
+            ])
+        );
+    }
+
+    #[test]
+    fn copy_tree_preserves_nested_list_structure() {
+        assert_eq!(
+            eval_str("(copy-tree '((a . b) (c d)))"),
+            Value::list([
+                Value::cons(Value::Symbol("a".into()), Value::Symbol("b".into())),
+                Value::list([Value::Symbol("c".into()), Value::Symbol("d".into())]),
+            ])
+        );
+    }
+
+    #[test]
+    fn alist_get_supports_equal_test_function() {
+        assert_eq!(
+            eval_str("(alist-get \"b\" '((\"a\" . 1) (\"b\" . 2)) nil nil #'equal)"),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn setf_alist_get_updates_and_removes_entries() {
+        assert_eq!(
+            eval_str(
+                "(let ((alist '((\"a\" . 1))))
+                   (setf (alist-get \"b\" alist nil nil #'equal) 2)
+                   alist)"
+            ),
+            Value::list([
+                Value::cons(Value::String("b".into()), Value::Integer(2)),
+                Value::cons(Value::String("a".into()), Value::Integer(1)),
+            ])
+        );
+        assert_eq!(
+            eval_str(
+                "(let ((alist '((a . 1) (b . 2))))
+                   (setf (alist-get 'b alist nil 'remove) nil)
+                   alist)"
+            ),
+            Value::list([Value::cons(
+                Value::Symbol("a".into()),
+                Value::Integer(1),
+            )])
+        );
+    }
+
+    #[test]
+    fn seq_position_uses_equal_by_default() {
+        assert_eq!(
+            eval_str("(seq-position '((a a a) (b b b) (c c c)) '(b b b))"),
             Value::Integer(1)
         );
     }
