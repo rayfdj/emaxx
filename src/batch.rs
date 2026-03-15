@@ -487,6 +487,9 @@ mod tests {
         assert!(compat::should_delegate_batch_report(
             "test/src/print-tests.el"
         ));
+        assert!(compat::should_delegate_batch_report(
+            "test/src/thread-tests.el"
+        ));
         assert!(!compat::should_delegate_batch_report(
             "test/src/buffer-tests.el"
         ));
