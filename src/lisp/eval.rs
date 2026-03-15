@@ -1685,6 +1685,13 @@ impl Interpreter {
         }
     }
 
+    pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
+        self.buffer_locals.retain(|(id, _, _)| *id != buffer_id);
+        self.buffer_local_hooks
+            .retain(|(id, _, _)| *id != buffer_id);
+        self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+    }
+
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
         let mut vars = Vec::new();
         for (id, name, value) in &self.buffer_locals {
@@ -2631,14 +2638,27 @@ impl Interpreter {
                 self.buffer_local_value(self.current_buffer_id(), "buffer-file-coding-system")
                     .unwrap_or(Value::Nil),
             ),
+            "mark-active" => Some(if self.buffer.mark_active() {
+                Value::T
+            } else {
+                Value::Nil
+            }),
+            "buffer-invisibility-spec" => Some(
+                self.buffer_local_value(self.current_buffer_id(), "buffer-invisibility-spec")
+                    .unwrap_or(Value::T),
+            ),
+            "buffer-display-table" => Some(Value::Nil),
             "last-coding-system-used" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
+            "file-name-coding-system" => Some(Value::Nil),
             "inhibit-eol-conversion" => Some(Value::Nil),
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
+            "auto-save-timeout" => Some(Value::Integer(30)),
+            "auto-save-interval" => Some(Value::Integer(300)),
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
@@ -2650,16 +2670,37 @@ impl Interpreter {
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
+            "ls-lisp-use-insert-directory-program" => Some(Value::T),
+            "transient-mark-mode" => Some(Value::T),
             "obarray" => Some(Value::Nil),
             "desktop-buffer-mode-handlers" => Some(Value::Nil),
+            "find-file-visit-truename" => Some(Value::Nil),
+            "insert-directory-wildcard-in-dir-p" => Some(Value::Nil),
+            "insert-directory-program" => Some(Value::String("ls".into())),
+            "directory-listing-before-filename-regexp" => Some(Value::String(
+                concat!(
+                    ".*[0-9][BkKMGTPEZYRQ]? ",
+                    "\\(",
+                    "[0-9][0-9][0-9][0-9]-[01][0-9]-[0-3][0-9]\\([ T][ 0-2][0-9][:.][0-5][0-9]\\)?",
+                    "\\|",
+                    "[A-Za-z][A-Za-z][A-Za-z] +[ 0-3][0-9] +\\([ 0-2][0-9][:.][0-5][0-9]\\|[0-9][0-9][0-9][0-9]\\)",
+                    "\\)",
+                    " +"
+                )
+                .into(),
+            )),
+            "minor-mode-alist" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
             "menu-bar-separator" => Some(Value::Symbol("menu-bar-separator".into())),
             "mode-line-modes" => Some(Value::Nil),
+            "window-display-table" => Some(Value::Nil),
+            "standard-display-table" => Some(Value::Nil),
             "text-mode-syntax-table" => Some(Value::Symbol("emaxx-standard-syntax-table".into())),
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
             "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
             "global-map" => Some(primitives::keymap_placeholder(Some("global-map"))),
+            "frame-internal-parameters" => Some(Value::Nil),
             "password-word-equivalents" => Some(Value::list([
                 Value::String("password".into()),
                 Value::String("passcode".into()),
@@ -2723,6 +2764,7 @@ impl Interpreter {
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
             "read-file-name-completion-ignore-case" => Some(Value::Nil),
+            "mounted-file-systems" => Some(Value::String(String::new())),
             "system-type" => Some(Value::Symbol(
                 std::env::consts::OS.replace("macos", "darwin"),
             )),
@@ -2750,6 +2792,7 @@ impl Interpreter {
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),
+            "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name().unwrap_or_else(|| "emaxx".into()),
             )),
@@ -2958,6 +3001,7 @@ impl Interpreter {
                         "when" => return self.sf_when(&items, env),
                         "when-let*" => return self.sf_when_let_star(&items, env),
                         "unless" => return self.sf_unless(&items, env),
+                        "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
                         "cond" => return self.sf_cond(&items, env),
                         "pcase" => return self.sf_pcase(&items, env),
                         "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
@@ -2986,12 +3030,28 @@ impl Interpreter {
                         "defface" => return self.sf_defface(&items),
                         "defvar-keymap" => return self.sf_defvar_keymap(&items, env),
                         "define-short-documentation-group" => return self.sf_defgroup(&items),
+                        "eval" => return self.sf_eval_function(&items, env),
+                        "insert" => return self.sf_insert_function(&items, env, false, false),
+                        "insert-and-inherit" => {
+                            return self.sf_insert_function(&items, env, true, false);
+                        }
+                        "insert-char" => return self.sf_insert_char_function(&items, env),
+                        "insert-before-markers" => {
+                            return self.sf_insert_function(&items, env, false, true);
+                        }
+                        "insert-before-markers-and-inherit" => {
+                            return self.sf_insert_function(&items, env, true, true);
+                        }
                         "define-minor-mode"
                         | "define-globalized-minor-mode"
                         | "define-derived-mode" => {
                             return self.sf_define_mode(&items);
                         }
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
+                        "cl-defun" => return self.sf_cl_defun(&items, env),
+                        "cl-defgeneric" => return self.sf_cl_defgeneric(&items, env),
+                        "cl-defmethod" => return self.sf_cl_defmethod(&items, env),
+                        "cl-generic-define-context-rewriter" => return Ok(Value::Nil),
                         "define-inline" => return self.sf_define_inline(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
                         "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
@@ -2999,6 +3059,9 @@ impl Interpreter {
                         "defalias" => return self.sf_defalias(&items, env),
                         "backquote" => return self.eval_backquote(&items[1], env),
                         "lambda" => return self.sf_lambda(&items, env),
+                        "call-interactively" => {
+                            return self.sf_call_interactively(&items, env);
+                        }
                         "function" | "function-quote" => {
                             // #'foo or (function foo)
                             if items.len() >= 2 {
@@ -3435,6 +3498,22 @@ impl Interpreter {
         }
     }
 
+    fn sf_bound_and_true_p(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() != 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "bound-and-true-p".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let symbol = quoted_symbol_name(&items[1])
+            .or_else(|| items[1].as_symbol().ok().map(str::to_string))
+            .ok_or_else(|| LispError::TypeError("symbol".into(), items[1].type_name()))?;
+        Ok(self
+            .lookup_var(&symbol, env)
+            .filter(|value| value.is_truthy())
+            .unwrap_or(Value::Nil))
+    }
+
     fn sf_cond(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         for (clause_index, clause) in items[1..].iter().enumerate() {
             let clause_items = clause.to_vec()?;
@@ -3823,7 +3902,9 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
-            Some(Value::Symbol(name)) if name == "aref" => self.sf_setf_aref(&place, &items[2], env),
+            Some(Value::Symbol(name)) if name == "aref" => {
+                self.sf_setf_aref(&place, &items[2], env)
+            }
             Some(Value::Symbol(name)) if name == "image-property" => {
                 self.sf_setf_image_property(&place, &items[2], env)
             }
@@ -3916,12 +3997,7 @@ impl Interpreter {
         let value = self.eval(value_expr, env)?;
 
         if matches!(current, Value::CharTable(_)) {
-            primitives::call(
-                self,
-                "aset",
-                &[current, index_value, value.clone()],
-                env,
-            )?;
+            primitives::call(self, "aset", &[current, index_value, value.clone()], env)?;
             return Ok(value);
         }
 
@@ -4156,7 +4232,11 @@ impl Interpreter {
             index += 2;
         }
 
-        if let Some(existing) = self.globals.iter_mut().rposition(|(symbol, _)| symbol == &resolved) {
+        if let Some(existing) = self
+            .globals
+            .iter_mut()
+            .rposition(|(symbol, _)| symbol == &resolved)
+        {
             self.globals[existing].1 = Self::stored_value(keymap);
         } else {
             self.globals.push((resolved, Self::stored_value(keymap)));
@@ -4165,11 +4245,24 @@ impl Interpreter {
     }
 
     fn sf_define_mode(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        Ok(items
-            .get(1)
-            .and_then(|value| value.as_symbol().ok())
-            .map(Value::symbol)
-            .unwrap_or(Value::Nil))
+        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
+            return Ok(Value::Nil);
+        };
+        if matches!(
+            items.first(),
+            Some(Value::Symbol(kind))
+                if kind == "define-minor-mode" || kind == "define-globalized-minor-mode"
+        ) {
+            self.mark_special_variable(name);
+            if self.lookup_var(name, &Vec::new()).is_none() {
+                self.globals
+                    .push((name.to_string(), Self::stored_value(Value::Nil)));
+            }
+        }
+        if self.lookup_function(name, &Vec::new()).is_err() {
+            self.set_function_binding(name, Some(Value::BuiltinFunc("ignore".into())));
+        }
+        Ok(Value::Symbol(name.to_string()))
     }
 
     fn sf_cl_defstruct(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -4298,6 +4391,118 @@ impl Interpreter {
         Ok(Value::Symbol(name))
     }
 
+    fn sf_cl_defun(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::Signal(
+                "cl-defun needs name, params, body".into(),
+            ));
+        }
+
+        let name = items[1].as_symbol()?.to_string();
+        let lowered_cl_defun = lower_cl_defun_lambda_list(&name, &items[2])?;
+
+        let original_body = items[3..].to_vec();
+        let body_prefix_len = original_body
+            .iter()
+            .take_while(|form| {
+                matches!(form, Value::String(_) | Value::StringObject(_))
+                    || is_function_declare_form(form)
+                    || is_function_interactive_form(form)
+            })
+            .count();
+        let mut lowered_body = original_body[..body_prefix_len].to_vec();
+        let mut executable_body = original_body[body_prefix_len..].to_vec();
+        if !lowered_cl_defun.keyword_bindings.is_empty() {
+            let mut let_bindings = Vec::new();
+            for binding in &lowered_cl_defun.keyword_bindings {
+                let present_name =
+                    format!("emaxx--cl-defun-{}-{}-present", name, binding.variable_name);
+                let keyword_rest_param =
+                    lowered_cl_defun.keyword_rest_param.clone().ok_or_else(|| {
+                        LispError::Signal("cl-defun keyword lowering lost its rest source".into())
+                    })?;
+                let keyword_symbol = Value::Symbol(binding.keyword_name.clone());
+                let keyword_source = Value::Symbol(keyword_rest_param);
+                let_bindings.push(Value::list([
+                    Value::Symbol(present_name.clone()),
+                    Value::list([
+                        Value::Symbol("plist-member".into()),
+                        keyword_source.clone(),
+                        keyword_symbol.clone(),
+                    ]),
+                ]));
+                let_bindings.push(Value::list([
+                    Value::Symbol(binding.variable_name.clone()),
+                    Value::list([
+                        Value::Symbol("if".into()),
+                        Value::Symbol(present_name.clone()),
+                        Value::list([
+                            Value::Symbol("plist-get".into()),
+                            keyword_source.clone(),
+                            keyword_symbol,
+                        ]),
+                        binding.default_value.clone(),
+                    ]),
+                ]));
+                if let Some(supplied_name) = &binding.supplied_name {
+                    let_bindings.push(Value::list([
+                        Value::Symbol(supplied_name.clone()),
+                        Value::list([
+                            Value::Symbol("if".into()),
+                            Value::Symbol(present_name),
+                            Value::T,
+                            Value::Nil,
+                        ]),
+                    ]));
+                }
+            }
+            let mut wrapped = vec![Value::Symbol("let*".into()), Value::list(let_bindings)];
+            wrapped.append(&mut executable_body);
+            executable_body = vec![Value::list(wrapped)];
+        }
+        for (pattern, temp_name) in lowered_cl_defun.destructuring_bindings.into_iter().rev() {
+            let mut wrapped = vec![
+                Value::Symbol("cl-destructuring-bind".into()),
+                pattern,
+                Value::Symbol(temp_name),
+            ];
+            wrapped.append(&mut executable_body);
+            executable_body = vec![Value::list(wrapped)];
+        }
+        lowered_body.append(&mut executable_body);
+
+        let mut lowered = Vec::with_capacity(3 + lowered_body.len());
+        lowered.push(Value::Symbol("defun".into()));
+        lowered.push(Value::Symbol(name));
+        lowered.push(Value::list(lowered_cl_defun.params));
+        lowered.extend(lowered_body);
+        self.sf_defun(&lowered, env)
+    }
+
+    fn sf_cl_defgeneric(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
+            return Ok(Value::Nil);
+        };
+        if self.lookup_function(name, env).is_err() {
+            self.set_function_binding(name, Some(Value::BuiltinFunc("ignore".into())));
+        }
+        Ok(Value::Symbol(name.to_string()))
+    }
+
+    fn sf_cl_defmethod(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::Signal(
+                "cl-defmethod needs name, params, body".into(),
+            ));
+        }
+        let mut lowered = Vec::with_capacity(items.len());
+        lowered.push(Value::Symbol("cl-defun".into()));
+        lowered.push(items[1].clone());
+        lowered.push(lower_cl_defmethod_lambda_list(&items[2])?);
+        lowered.extend(items[3..].iter().cloned());
+        self.sf_cl_defun(&lowered, env)
+    }
+
     fn sf_define_inline(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 4 {
             return Err(LispError::Signal(
@@ -4319,6 +4524,61 @@ impl Interpreter {
         let params = self.parse_params(&items[1])?;
         let body: Vec<Value> = items[2..].to_vec();
         Ok(Value::Lambda(params, body, env.clone()))
+    }
+
+    fn sf_eval_function(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 || items.len() > 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "eval".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let mut evaluated = Vec::with_capacity(items.len().saturating_sub(1));
+        for item in &items[1..] {
+            evaluated.push(self.eval(item, env)?);
+        }
+        crate::lisp::primitives::eval_impl(self, &evaluated, env)
+    }
+
+    fn sf_insert_function(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+        inherit: bool,
+        before_markers: bool,
+    ) -> Result<Value, LispError> {
+        let mut evaluated = Vec::with_capacity(items.len().saturating_sub(1));
+        for item in &items[1..] {
+            evaluated.push(self.eval(item, env)?);
+        }
+        crate::lisp::primitives::insert_impl(self, &evaluated, env, inherit, before_markers)
+    }
+
+    fn sf_insert_char_function(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut evaluated = Vec::with_capacity(items.len().saturating_sub(1));
+        for item in &items[1..] {
+            evaluated.push(self.eval(item, env)?);
+        }
+        crate::lisp::primitives::insert_char_impl(self, &evaluated, env)
+    }
+
+    fn sf_call_interactively(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
+        }
+        let mut evaluated = Vec::with_capacity(items.len().saturating_sub(1));
+        for item in &items[1..] {
+            evaluated.push(self.eval(item, env)?);
+        }
+        crate::lisp::primitives::call_interactively_impl(self, &evaluated, env)
     }
 
     fn parse_params(&self, spec: &Value) -> Result<Vec<String>, LispError> {
@@ -6309,6 +6569,266 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
     Ok(())
 }
 
+struct LoweredClDefun {
+    params: Vec<Value>,
+    destructuring_bindings: Vec<(Value, String)>,
+    keyword_rest_param: Option<String>,
+    keyword_bindings: Vec<ClKeyBinding>,
+}
+
+struct ClKeyBinding {
+    variable_name: String,
+    keyword_name: String,
+    default_value: Value,
+    supplied_name: Option<String>,
+}
+
+fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun, LispError> {
+    let items = match spec {
+        Value::Nil => Vec::new(),
+        Value::Cons(_, _) => spec.to_vec()?,
+        _ => return Err(invalid_function(spec.clone())),
+    };
+
+    let mut lowered = Vec::with_capacity(items.len());
+    let mut destructuring_bindings = Vec::new();
+    let mut keyword_bindings = Vec::new();
+    let mut keyword_rest_param = None;
+    let mut in_key_section = false;
+    let mut expecting_rest_name = false;
+
+    for (index, item) in items.into_iter().enumerate() {
+        match item {
+            Value::Symbol(symbol) => match symbol.as_str() {
+                "&optional" => {
+                    if in_key_section {
+                        return Err(LispError::Signal(
+                            "Unsupported cl-defun lambda list keyword: &optional".into(),
+                        ));
+                    }
+                    lowered.push(Value::Symbol(symbol));
+                }
+                "&rest" => {
+                    if in_key_section {
+                        return Err(LispError::Signal(
+                            "Unsupported cl-defun lambda list keyword: &rest".into(),
+                        ));
+                    }
+                    lowered.push(Value::Symbol(symbol));
+                    expecting_rest_name = true;
+                }
+                "&body" => {
+                    if in_key_section {
+                        return Err(LispError::Signal(
+                            "Unsupported cl-defun lambda list keyword: &body".into(),
+                        ));
+                    }
+                    lowered.push(Value::Symbol("&rest".into()));
+                    expecting_rest_name = true;
+                }
+                "&key" => {
+                    if expecting_rest_name {
+                        return Err(invalid_function(spec.clone()));
+                    }
+                    in_key_section = true;
+                    if keyword_rest_param.is_none() {
+                        let temp_name = format!("emaxx--cl-defun-{name}-keys");
+                        lowered.push(Value::Symbol("&rest".into()));
+                        lowered.push(Value::Symbol(temp_name.clone()));
+                        keyword_rest_param = Some(temp_name);
+                    }
+                }
+                "&allow-other-keys" if in_key_section => {}
+                "&aux" | "&whole" | "&environment" => {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported cl-defun lambda list keyword: {symbol}"
+                    )));
+                }
+                _ if in_key_section => {
+                    keyword_bindings.push(ClKeyBinding {
+                        variable_name: symbol.clone(),
+                        keyword_name: format!(":{symbol}"),
+                        default_value: Value::Nil,
+                        supplied_name: None,
+                    });
+                }
+                _ => {
+                    if expecting_rest_name {
+                        keyword_rest_param = Some(symbol.clone());
+                        expecting_rest_name = false;
+                    }
+                    lowered.push(Value::Symbol(symbol));
+                }
+            },
+            Value::Cons(_, _) if in_key_section => {
+                keyword_bindings.push(parse_cl_defun_key_binding(item)?);
+            }
+            Value::Cons(_, _) => {
+                let temp_name = format!("emaxx--cl-defun-{name}-arg-{index}");
+                lowered.push(Value::Symbol(temp_name.clone()));
+                if expecting_rest_name {
+                    keyword_rest_param = Some(temp_name.clone());
+                    expecting_rest_name = false;
+                }
+                destructuring_bindings.push((item, temp_name));
+            }
+            _ => return Err(invalid_function(spec.clone())),
+        }
+    }
+
+    if expecting_rest_name {
+        return Err(invalid_function(spec.clone()));
+    }
+
+    Ok(LoweredClDefun {
+        params: lowered,
+        destructuring_bindings,
+        keyword_rest_param,
+        keyword_bindings,
+    })
+}
+
+fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
+    let items = spec.to_vec()?;
+    if items.is_empty() {
+        return Err(LispError::Signal(
+            "Unsupported cl-defun &key binding".into(),
+        ));
+    }
+
+    let (keyword_name, variable_name, default_value, supplied_name) = match items.as_slice() {
+        [Value::Symbol(variable_name)] => (
+            format!(":{variable_name}"),
+            variable_name.clone(),
+            Value::Nil,
+            None,
+        ),
+        [Value::Symbol(variable_name), default_value] => (
+            format!(":{variable_name}"),
+            variable_name.clone(),
+            default_value.clone(),
+            None,
+        ),
+        [
+            Value::Symbol(variable_name),
+            default_value,
+            Value::Symbol(supplied_name),
+        ] => (
+            format!(":{variable_name}"),
+            variable_name.clone(),
+            default_value.clone(),
+            Some(supplied_name.clone()),
+        ),
+        [pattern @ Value::Cons(_, _)] => {
+            let pair = pattern.to_vec()?;
+            let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
+            else {
+                return Err(LispError::Signal(
+                    "Unsupported cl-defun &key binding".into(),
+                ));
+            };
+            (
+                normalize_cl_defun_keyword(keyword_name),
+                variable_name.clone(),
+                Value::Nil,
+                None,
+            )
+        }
+        [pattern @ Value::Cons(_, _), default_value] => {
+            let pair = pattern.to_vec()?;
+            let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
+            else {
+                return Err(LispError::Signal(
+                    "Unsupported cl-defun &key binding".into(),
+                ));
+            };
+            (
+                normalize_cl_defun_keyword(keyword_name),
+                variable_name.clone(),
+                default_value.clone(),
+                None,
+            )
+        }
+        [
+            pattern @ Value::Cons(_, _),
+            default_value,
+            Value::Symbol(supplied_name),
+        ] => {
+            let pair = pattern.to_vec()?;
+            let [Value::Symbol(keyword_name), Value::Symbol(variable_name)] = pair.as_slice()
+            else {
+                return Err(LispError::Signal(
+                    "Unsupported cl-defun &key binding".into(),
+                ));
+            };
+            (
+                normalize_cl_defun_keyword(keyword_name),
+                variable_name.clone(),
+                default_value.clone(),
+                Some(supplied_name.clone()),
+            )
+        }
+        _ => {
+            return Err(LispError::Signal(
+                "Unsupported cl-defun &key binding".into(),
+            ));
+        }
+    };
+
+    Ok(ClKeyBinding {
+        variable_name,
+        keyword_name,
+        default_value,
+        supplied_name,
+    })
+}
+
+fn normalize_cl_defun_keyword(name: &str) -> String {
+    if name.starts_with(':') {
+        name.to_string()
+    } else {
+        format!(":{name}")
+    }
+}
+
+fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
+    let items = spec.to_vec()?;
+    let mut lowered = Vec::with_capacity(items.len());
+    let mut skipping_context = false;
+
+    for item in items {
+        match item {
+            Value::Symbol(symbol) if symbol == "&context" => {
+                skipping_context = true;
+            }
+            Value::Symbol(symbol) => {
+                if skipping_context {
+                    continue;
+                }
+                lowered.push(Value::Symbol(symbol));
+            }
+            Value::Cons(_, _) => {
+                if skipping_context {
+                    continue;
+                }
+                let parts = item.to_vec()?;
+                if let Some(Value::Symbol(variable_name)) = parts.first() {
+                    lowered.push(Value::Symbol(variable_name.clone()));
+                } else {
+                    lowered.push(item);
+                }
+            }
+            other => {
+                if !skipping_context {
+                    lowered.push(other);
+                }
+            }
+        }
+    }
+
+    Ok(Value::list(lowered))
+}
+
 fn lower_define_inline_form(value: &Value) -> Value {
     let Ok(items) = value.to_vec() else {
         return value.clone();
@@ -6526,6 +7046,48 @@ fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
     Ok(regex)
 }
 
+fn append_rx_char_class_fragment(regex: &mut String, value: &Value) -> Result<(), LispError> {
+    match value {
+        Value::String(text) => {
+            for ch in text.chars() {
+                match ch {
+                    '\\' | ']' | '-' | '^' => {
+                        regex.push('\\');
+                        regex.push(ch);
+                    }
+                    _ => regex.push(ch),
+                }
+            }
+            Ok(())
+        }
+        Value::StringObject(state) => {
+            append_rx_char_class_fragment(regex, &Value::String(state.borrow().text.clone()))
+        }
+        Value::Integer(codepoint) => {
+            let ch = char::from_u32(*codepoint as u32)
+                .ok_or_else(|| LispError::Signal(format!("Invalid rx character: {codepoint}")))?;
+            append_rx_char_class_fragment(regex, &Value::String(ch.to_string()))
+        }
+        other => Err(LispError::Signal(format!(
+            "Unsupported rx charset fragment: {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn compile_rx_char_class(items: &[Value], negated: bool) -> Result<String, LispError> {
+    let mut regex = String::new();
+    regex.push('[');
+    if negated {
+        regex.push('^');
+    }
+    for item in items {
+        append_rx_char_class_fragment(&mut regex, item)?;
+    }
+    regex.push(']');
+    Ok(regex)
+}
+
 fn compile_rx_form(value: &Value) -> Result<String, LispError> {
     match value {
         Value::String(text) => Ok(regex_escape(text)),
@@ -6552,11 +7114,11 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
             };
             match head.as_str() {
                 "group" => Ok(format!("\\({}\\)", compile_rx_sequence(&items[1..])?)),
-                "+" => Ok(format!("\\(?:{}\\)+", compile_rx_sequence(&items[1..])?)),
+                "+" | "1+" => Ok(format!("\\(?:{}\\)+", compile_rx_sequence(&items[1..])?)),
                 "*" => Ok(format!("\\(?:{}\\)*", compile_rx_sequence(&items[1..])?)),
                 "?" => Ok(format!("\\(?:{}\\)?", compile_rx_sequence(&items[1..])?)),
-                "seq" => compile_rx_sequence(&items[1..]),
-                "or" => Ok(format!(
+                "seq" | ":" => compile_rx_sequence(&items[1..]),
+                "or" | "|" => Ok(format!(
                     "\\(?:{}\\)",
                     items[1..]
                         .iter()
@@ -6564,6 +7126,25 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
                         .collect::<Result<Vec<_>, _>>()?
                         .join("\\|")
                 )),
+                "any" => compile_rx_char_class(&items[1..], false),
+                "not" => {
+                    if items.len() != 2 {
+                        return Err(LispError::Signal("rx `not' needs one argument".into()));
+                    }
+                    match &items[1] {
+                        Value::Cons(_, _) => {
+                            let charset = items[1].to_vec()?;
+                            let Some(Value::Symbol(kind)) = charset.first() else {
+                                return Err(LispError::Signal("Unsupported rx `not' form".into()));
+                            };
+                            if kind != "any" {
+                                return Err(LispError::Signal("Unsupported rx `not' form".into()));
+                            }
+                            compile_rx_char_class(&charset[1..], true)
+                        }
+                        other => compile_rx_char_class(std::slice::from_ref(other), true),
+                    }
+                }
                 _ => compile_rx_sequence(&items),
             }
         }
@@ -6762,9 +7343,7 @@ mod tests {
     #[test]
     fn setf_supports_aref_places_bound_in_lexical_variables() {
         assert_eq!(
-            eval_str(
-                "(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)"
-            ),
+            eval_str("(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)"),
             Value::list([
                 Value::Symbol("vector".into()),
                 Value::Integer(0),
@@ -6859,9 +7438,18 @@ mod tests {
         assert_string_value(eval_str(r#"(substring-no-properties "hello" 1 4)"#), "ell");
         assert_string_value(eval_str(r#"(substring "hello" 0 -1)"#), "hell");
         assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::Float(0.1));
-        assert_eq!(eval_str(r#"(string-to-number ".1..e1")"#), Value::Float(0.1));
-        assert_eq!(eval_str(r#"(string-to-number "1e+1.1")"#), Value::Float(10.0));
-        assert_eq!(eval_str(r#"(string-to-number "ffzz" 16)"#), Value::Integer(255));
+        assert_eq!(
+            eval_str(r#"(string-to-number ".1..e1")"#),
+            Value::Float(0.1)
+        );
+        assert_eq!(
+            eval_str(r#"(string-to-number "1e+1.1")"#),
+            Value::Float(10.0)
+        );
+        assert_eq!(
+            eval_str(r#"(string-to-number "ffzz" 16)"#),
+            Value::Integer(255)
+        );
         assert_string_value(
             eval_str(r#"(replace-regexp-in-string "\\([a-z]+\\)" "<\\1>" "abc 123")"#),
             "<abc> 123",
@@ -7004,6 +7592,17 @@ mod tests {
     }
 
     #[test]
+    fn directory_listing_regexp_matches_common_ls_output() {
+        assert_ne!(
+            eval_str(
+                r#"(string-match-p directory-listing-before-filename-regexp
+                                    "-rw-r--r--@    1 alpha  staff      0 Mar 16 04:57 foo.c")"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn defvar_local_loads_like_defvar() {
         let mut interp = Interpreter::new();
         assert_eq!(
@@ -7100,7 +7699,11 @@ mod tests {
                    (define-globalized-minor-mode global-treesit-mode treesit-mode ignore)
                    (define-derived-mode treesit-derived fundamental-mode \"TS\")
                    (cl-defstruct (ppss (:constructor make-ppss) (:type list)) depth)
-                   (keymapp treesit-map))"
+                   (and (keymapp treesit-map)
+                        (boundp 'treesit-mode)
+                        (fboundp 'treesit-mode)
+                        (boundp 'global-treesit-mode)
+                        (fboundp 'treesit-derived)))"
             ),
             Value::T
         );
@@ -7546,7 +8149,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn easy_menu_define_registers_a_placeholder_menu_symbol() {
         assert_eq!(
@@ -7596,6 +8198,51 @@ mod tests {
                 Value::Nil,
             ])
         );
+    }
+
+    #[test]
+    fn cl_defun_supports_destructuring_arglists() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defun file-notify-test ((desc actions file &optional extra))
+                     (list desc actions file extra))
+                   (file-notify-test '(1 (changed) \"/tmp/file\" 9)))"
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::list([Value::Symbol("changed".into())]),
+                Value::String("/tmp/file".into()),
+                Value::Integer(9),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_defun_supports_basic_key_arguments() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defun register-test (data &key print-func jump-func)
+                     (list data print-func jump-func))
+                   (register-test 7 :jump-func 'jump))"
+            ),
+            Value::list([Value::Integer(7), Value::Nil, Value::Symbol("jump".into()),])
+        );
+    }
+
+    #[test]
+    fn cl_defmethod_lowers_specialized_arguments() {
+        let result = eval_str(
+            "(progn
+               (cl-defgeneric method-test (value flag))
+               (cl-defmethod method-test ((value string) flag)
+                 (list value flag))
+               (method-test \"ok\" 3))",
+        );
+        let items = result.to_vec().unwrap();
+        assert_eq!(primitives::string_text(&items[0]).unwrap(), "ok");
+        assert_eq!(items[1], Value::Integer(3));
     }
 
     #[test]
@@ -7923,6 +8570,15 @@ mod tests {
     }
 
     #[test]
+    fn bound_and_true_p_checks_binding_before_value() {
+        assert_eq!(
+            eval_str("(let ((sample t)) (bound-and-true-p sample))"),
+            Value::T
+        );
+        assert_eq!(eval_str("(bound-and-true-p missing-symbol)"), Value::Nil);
+    }
+
+    #[test]
     fn numeric_comparisons_support_variadic_chains() {
         assert_eq!(
             eval_str("(list (<= 33 77 47) (<= 33 40 47) (< 32 65 91) (/= 1 2 1))"),
@@ -8192,8 +8848,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn overlay_modification_hooks_record_insert_inside_overlay() {
+    fn assert_overlay_modification_hooks_record_insert_inside_overlay() {
         assert_eq!(
             eval_str(
                 r#"
@@ -8234,7 +8889,16 @@ mod tests {
     }
 
     #[test]
-    fn overlay_modification_hooks_record_insert_at_overlay_start() {
+    fn overlay_modification_hooks_record_insert_inside_overlay() {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_overlay_modification_hooks_record_insert_inside_overlay)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn assert_overlay_modification_hooks_record_insert_at_overlay_start() {
         assert_eq!(
             eval_str(
                 r#"
@@ -8275,6 +8939,16 @@ mod tests {
     }
 
     #[test]
+    fn overlay_modification_hooks_record_insert_at_overlay_start() {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_overlay_modification_hooks_record_insert_at_overlay_start)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn save_restriction_restores_end_after_insert_at_point_max() {
         assert_eq!(
             eval_str(
@@ -8292,8 +8966,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn overlay_modification_hooks_record_replace_two_chars() {
+    fn assert_overlay_modification_hooks_record_replace_two_chars() {
         assert_eq!(
             eval_str(
                 r#"
@@ -8335,7 +9008,16 @@ mod tests {
     }
 
     #[test]
-    fn overlay_modification_hooks_record_zero_length_insert() {
+    fn overlay_modification_hooks_record_replace_two_chars() {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_overlay_modification_hooks_record_replace_two_chars)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn assert_overlay_modification_hooks_record_zero_length_insert() {
         assert_eq!(
             eval_str(
                 r#"
@@ -8384,6 +9066,16 @@ mod tests {
                 ]),
             ])
         );
+    }
+
+    #[test]
+    fn overlay_modification_hooks_record_zero_length_insert() {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_overlay_modification_hooks_record_zero_length_insert)
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     fn assert_overlay_modification_hooks_data_driven_cases() {
@@ -8485,8 +9177,7 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn overlay_complex_insert_2_regions() {
+    fn assert_overlay_complex_insert_2_regions() {
         assert_eq!(
             eval_str(
                 r#"
@@ -8552,6 +9243,16 @@ mod tests {
                 Value::cons(Value::Integer(68), Value::Integer(99)),
             ])
         );
+    }
+
+    #[test]
+    fn overlay_complex_insert_2_regions() {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(assert_overlay_complex_insert_2_regions)
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -8638,6 +9339,30 @@ mod tests {
         assert_eq!(
             eval_str(r#"(rx bow "SECCOMP" eow)"#),
             Value::String("\\bSECCOMP\\b".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (| "" (: bol "/" (+ digit))))"#),
+            Value::String("\\(?:\\|^/\\(?:[0-9]\\)+\\)".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (not (any "/:|")))"#),
+            Value::String("[^/:|]".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (1+ (not (any "/|"))))"#),
+            Value::String("\\(?:[^/|]\\)+".into())
+        );
+    }
+
+    #[test]
+    fn regexp_opt_builds_basic_alternations() {
+        assert_eq!(
+            eval_str(r#"(regexp-opt '(".log" ".aux" ".log"))"#),
+            Value::String("\\(?:\\.aux\\|\\.log\\)".into())
+        );
+        assert_ne!(
+            eval_str(r#"(string-match-p "\\(?:[^\\]\\|\\`\\)\\(\"\\)" "\"")"#),
+            Value::Nil
         );
     }
 
