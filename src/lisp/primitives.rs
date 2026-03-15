@@ -1161,7 +1161,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "clear-buffer-auto-save-failure"
             | "define-key"
             | "define-key-after"
+            | "keymap-set"
+            | "keymap-unset"
             | "lookup-key"
+            | "keymap-lookup"
             | "keymap-parent"
             | "set-keymap-parent"
             | "suppress-keymap"
@@ -1980,7 +1983,7 @@ pub fn call(
         }
         "keymapp" => {
             need_args(name, args, 1)?;
-            Ok(if is_keymap_placeholder(&args[0]) {
+            Ok(if is_keymap_value(interp, &args[0]) {
                 Value::T
             } else {
                 Value::Nil
@@ -2768,7 +2771,8 @@ pub fn call(
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(keymap_placeholder(
+            Ok(make_runtime_keymap(
+                interp,
                 args.first()
                     .and_then(string_like)
                     .map(|string| string.text)
@@ -2802,7 +2806,16 @@ pub fn call(
         }
         "copy-keymap" => {
             need_args(name, args, 1)?;
-            Ok(args[0].clone())
+            match &args[0] {
+                Value::Record(id)
+                    if interp
+                        .find_record(*id)
+                        .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                {
+                    interp.copy_record(*id)
+                }
+                _ => Ok(args[0].clone()),
+            }
         }
         "record" => {
             need_args(name, args, 1)?;
@@ -6834,24 +6847,56 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
-        "define-key" | "define-key-after" => {
+        "define-key" | "define-key-after" | "keymap-set" => {
             if args.len() < 3 || args.len() > 5 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            let key = string_text(&args[1])?;
+            keymap_define_binding(interp, &args[0], &key, args[2].clone())?;
             Ok(args[2].clone())
         }
-        "lookup-key" => {
+        "keymap-unset" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let key = string_text(&args[1])?;
+            keymap_remove_binding(interp, &args[0], &key)?;
+            Ok(Value::Nil)
+        }
+        "lookup-key" | "keymap-lookup" => {
             if args.len() < 2 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(Value::Nil)
+            let key = string_text(&args[1])?;
+            keymap_lookup_binding(interp, &args[0], &key)
         }
         "keymap-parent" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            match &args[0] {
+                Value::Record(id)
+                    if interp
+                        .find_record(*id)
+                        .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+                {
+                    Ok(interp
+                        .find_record(*id)
+                        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
+                        .unwrap_or(Value::Nil))
+                }
+                _ => Ok(Value::Nil),
+            }
         }
         "set-keymap-parent" => {
             need_args(name, args, 2)?;
+            if let Value::Record(id) = &args[0]
+                && let Some(record) = interp.find_record_mut(*id)
+                && record.type_name == KEYMAP_RECORD_TYPE
+            {
+                if record.slots.len() <= KEYMAP_PARENT_SLOT {
+                    record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
+                }
+                record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
+            }
             Ok(Value::Nil)
         }
         "suppress-keymap" => {
@@ -16977,10 +17022,125 @@ pub(crate) fn keymap_placeholder(name: Option<&str>) -> Value {
     Value::list(items)
 }
 
+const KEYMAP_RECORD_TYPE: &str = "keymap";
+const KEYMAP_PARENT_SLOT: usize = 1;
+const KEYMAP_BINDINGS_SLOT: usize = 2;
+
+pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
+    interp.create_record(
+        KEYMAP_RECORD_TYPE,
+        vec![
+            name.map(Value::string).unwrap_or(Value::Nil),
+            Value::Nil,
+            Value::Nil,
+        ],
+    )
+}
+
 fn is_keymap_placeholder(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap"),
     )
+}
+
+fn keymap_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
+    let Value::Record(id) = value else {
+        return None;
+    };
+    interp
+        .find_record(*id)
+        .filter(|record| record.type_name == KEYMAP_RECORD_TYPE)
+        .map(|_| *id)
+}
+
+pub(crate) fn is_keymap_value(interp: &Interpreter, value: &Value) -> bool {
+    is_keymap_placeholder(value) || keymap_record_id(interp, value).is_some()
+}
+
+fn keymap_bindings(record: &super::eval::RecordState) -> Result<Vec<(String, Value)>, LispError> {
+    let bindings = record
+        .slots
+        .get(KEYMAP_BINDINGS_SLOT)
+        .cloned()
+        .unwrap_or(Value::Nil);
+    let mut result = Vec::new();
+    for entry in bindings.to_vec()? {
+        let key = string_text(&entry.car()?)?;
+        result.push((key, entry.cdr()?));
+    }
+    Ok(result)
+}
+
+fn keymap_bindings_value(bindings: Vec<(String, Value)>) -> Value {
+    Value::list(
+        bindings
+            .into_iter()
+            .map(|(key, value)| Value::cons(Value::String(key), value)),
+    )
+}
+
+pub(crate) fn keymap_define_binding(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    key: &str,
+    binding: Value,
+) -> Result<(), LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(());
+    };
+    let Some(record) = interp.find_record_mut(id) else {
+        return Ok(());
+    };
+    let mut bindings = keymap_bindings(record)?;
+    bindings.retain(|(existing, _)| existing != key);
+    bindings.push((key.to_string(), binding));
+    if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
+        record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
+    }
+    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+    Ok(())
+}
+
+pub(crate) fn keymap_remove_binding(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    key: &str,
+) -> Result<(), LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(());
+    };
+    let Some(record) = interp.find_record_mut(id) else {
+        return Ok(());
+    };
+    let mut bindings = keymap_bindings(record)?;
+    bindings.retain(|(existing, _)| existing != key);
+    if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
+        record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
+    }
+    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+    Ok(())
+}
+
+pub(crate) fn keymap_lookup_binding(
+    interp: &Interpreter,
+    keymap: &Value,
+    key: &str,
+) -> Result<Value, LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(Value::Nil);
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Ok(Value::Nil);
+    };
+    for (existing, binding) in keymap_bindings(record)?.into_iter().rev() {
+        if existing == key {
+            return Ok(binding);
+        }
+    }
+    match record.slots.get(KEYMAP_PARENT_SLOT) {
+        Some(Value::Nil) | None => Ok(Value::Nil),
+        Some(parent) => keymap_lookup_binding(interp, parent, key),
+    }
 }
 
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {

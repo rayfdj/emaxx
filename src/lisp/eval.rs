@@ -2971,6 +2971,7 @@ impl Interpreter {
                         "let-alist" => return self.sf_let_alist(&items, env),
                         "setq" => return self.sf_setq(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
+                        "setopt" => return self.sf_setopt(&items, env),
                         "setf" => return self.sf_setf(&items, env),
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
@@ -3751,6 +3752,46 @@ impl Interpreter {
         self.sf_setq_internal(items, env, true)
     }
 
+    fn sf_setopt(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() == 1 {
+            return Ok(Value::Nil);
+        }
+        if items.len().is_multiple_of(2) {
+            return Err(LispError::WrongNumberOfArgs(
+                "setopt".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        let mut result = Value::Nil;
+        let mut index = 1;
+        while index + 1 < items.len() {
+            let symbol = items[index].as_symbol()?.to_string();
+            let resolved = self.resolve_variable_name(&symbol)?;
+            let value = self.eval(&items[index + 1], env)?;
+            result = value.clone();
+
+            if let Some(setter) = self.get_symbol_property(&resolved, "custom-set") {
+                self.call_function_value(
+                    setter,
+                    None,
+                    &[Value::Symbol(resolved.clone()), value.clone()],
+                    env,
+                )?;
+            } else {
+                self.call_function_value(
+                    Value::BuiltinFunc("set-default".into()),
+                    Some("set-default"),
+                    &[Value::Symbol(resolved), value.clone()],
+                    env,
+                )?;
+            }
+            index += 2;
+        }
+
+        Ok(result)
+    }
+
     fn sf_setf(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() != 3 {
             return Err(LispError::WrongNumberOfArgs(
@@ -3958,6 +3999,9 @@ impl Interpreter {
         }
         let name = items[1].as_symbol()?.to_string();
         let resolved = self.resolve_variable_name(&name)?;
+        if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "defcustom") {
+            self.record_defcustom_properties(&resolved, items, env)?;
+        }
         self.mark_special_variable(&resolved);
         // Only set if not already defined
         if self.lookup(&resolved, env).is_err() {
@@ -3974,6 +4018,38 @@ impl Interpreter {
             }
         }
         Ok(Value::Nil)
+    }
+
+    fn record_defcustom_properties(
+        &mut self,
+        symbol: &str,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let mut index = if matches!(
+            items.get(3),
+            Some(Value::String(_) | Value::StringObject(_))
+        ) {
+            4
+        } else {
+            3
+        };
+        while index + 1 < items.len() {
+            let keyword = items[index].as_symbol()?;
+            match keyword {
+                ":set" => {
+                    let setter = self.eval(&items[index + 1], env)?;
+                    self.put_symbol_property(symbol, "custom-set", setter);
+                }
+                ":type" => {
+                    let custom_type = self.eval(&items[index + 1], env)?;
+                    self.put_symbol_property(symbol, "custom-type", custom_type);
+                }
+                _ => {}
+            }
+            index += 2;
+        }
+        Ok(())
     }
 
     fn sf_defvar_local(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -4003,8 +4079,39 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        let synthetic = [Value::symbol("defvar"), items[1].clone(), Value::Nil];
-        self.sf_defvar(&synthetic, env)
+        let name = items[1].as_symbol()?.to_string();
+        let resolved = self.resolve_variable_name(&name)?;
+        self.mark_special_variable(&resolved);
+        if self.lookup(&resolved, env).is_ok() {
+            return Ok(Value::Nil);
+        }
+
+        let keymap = crate::lisp::primitives::make_runtime_keymap(self, Some(&resolved));
+        let mut index = 2;
+        while index + 1 < items.len() {
+            if matches!(&items[index], Value::Symbol(keyword) if keyword.starts_with(':')) {
+                index += 2;
+                continue;
+            }
+
+            let key = match self.eval(&items[index], env)? {
+                Value::String(text) => text,
+                Value::StringObject(state) => state.borrow().text.clone(),
+                other => {
+                    return Err(LispError::TypeError("string".into(), other.type_name()));
+                }
+            };
+            let definition = self.eval(&items[index + 1], env)?;
+            crate::lisp::primitives::keymap_define_binding(self, &keymap, &key, definition)?;
+            index += 2;
+        }
+
+        if let Some(existing) = self.globals.iter_mut().rposition(|(symbol, _)| symbol == &resolved) {
+            self.globals[existing].1 = Self::stored_value(keymap);
+        } else {
+            self.globals.push((resolved, Self::stored_value(keymap)));
+        }
+        Ok(Value::Nil)
     }
 
     fn sf_define_mode(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -6852,6 +6959,62 @@ mod tests {
     }
 
     #[test]
+    fn setopt_runs_defcustom_setter() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (defun sample-setter (symbol value)
+                     (set-default symbol value)
+                     (setq sample-setter-result value))
+                   (defcustom sample-option nil \"doc\" :set #'sample-setter :type 'boolean)
+                   (setopt sample-option t)
+                   (list sample-option
+                         sample-setter-result
+                         (get 'sample-option 'custom-set)
+                         (get 'sample-option 'custom-type)))"
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::Symbol("sample-setter".into()),
+                Value::Symbol("boolean".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn defvar_keymap_supports_custom_setters_toggling_bindings() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defun sample-option-setter (symbol value)
+                     (if value
+                         (keymap-unset sample-map \"C-c <left>\")
+                       (keymap-set sample-map \"C-c <left>\" #'sample-command))
+                     (set-default symbol value))
+                   (defcustom sample-flag nil \"doc\" :set #'sample-option-setter)
+                   (defvar-keymap sample-map :doc \"doc\")
+                   (setopt sample-flag sample-flag)
+                   (list
+                    (keymap-lookup sample-map \"C-c <left>\")
+                    (progn
+                      (setopt sample-flag t)
+                      (keymap-lookup sample-map \"C-c <left>\"))
+                    (progn
+                      (setopt sample-flag nil)
+                      (keymap-lookup sample-map \"C-c <left>\"))))"
+            ),
+            Value::list([
+                Value::Symbol("sample-command".into()),
+                Value::Nil,
+                Value::Symbol("sample-command".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn declaration_stub_forms_do_not_error_during_loads() {
         assert_eq!(
             eval_str(
@@ -6863,9 +7026,9 @@ mod tests {
                    (define-globalized-minor-mode global-treesit-mode treesit-mode ignore)
                    (define-derived-mode treesit-derived fundamental-mode \"TS\")
                    (cl-defstruct (ppss (:constructor make-ppss) (:type list)) depth)
-                   treesit-map)"
+                   (keymapp treesit-map))"
             ),
-            Value::Nil
+            Value::T
         );
     }
 
@@ -7278,7 +7441,7 @@ mod tests {
                 Value::T,
                 Value::T,
                 Value::Symbol("foo".into()),
-                Value::Nil,
+                Value::Symbol("foo".into()),
                 Value::T,
                 Value::Nil,
             ])
