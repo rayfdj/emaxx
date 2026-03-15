@@ -2604,6 +2604,7 @@ impl Interpreter {
                 "emaxx-default-region-extract-function".into(),
             )),
             "case-symbols-as-words" => Some(Value::Nil),
+            "float-e" => Some(Value::Float(std::f64::consts::E)),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
             "most-negative-fixnum" => Some(Value::Integer(-2_305_843_009_213_693_952)),
@@ -6857,6 +6858,10 @@ mod tests {
         assert_string_value(eval_str(r#"(nreverse "drawer")"#), "reward");
         assert_string_value(eval_str(r#"(substring-no-properties "hello" 1 4)"#), "ell");
         assert_string_value(eval_str(r#"(substring "hello" 0 -1)"#), "hell");
+        assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::Float(0.1));
+        assert_eq!(eval_str(r#"(string-to-number ".1..e1")"#), Value::Float(0.1));
+        assert_eq!(eval_str(r#"(string-to-number "1e+1.1")"#), Value::Float(10.0));
+        assert_eq!(eval_str(r#"(string-to-number "ffzz" 16)"#), Value::Integer(255));
         assert_string_value(
             eval_str(r#"(replace-regexp-in-string "\\([a-z]+\\)" "<\\1>" "abc 123")"#),
             "<abc> 123",
@@ -6990,6 +6995,12 @@ mod tests {
             eval_str_with(&mut interp, "sample-constant"),
             Value::Integer(42)
         );
+    }
+
+    #[test]
+    fn float_constants_are_available_as_builtin_variables() {
+        assert_eq!(eval_str("float-e"), Value::Float(std::f64::consts::E));
+        assert_eq!(eval_str("float-pi"), Value::Float(std::f64::consts::PI));
     }
 
     #[test]
@@ -7496,6 +7507,8 @@ mod tests {
                         (keymapp (copy-keymap map))
                         (define-key map "a" 'foo)
                         (lookup-key map "a")
+                        (define-key map (kbd "<return>") 'bar)
+                        (lookup-key map (kbd "<return>"))
                         (eq (suppress-keymap map) map)
                         (keymap-parent map)))
                 "#,
@@ -7505,11 +7518,34 @@ mod tests {
                 Value::T,
                 Value::Symbol("foo".into()),
                 Value::Symbol("foo".into()),
+                Value::Symbol("bar".into()),
+                Value::Symbol("bar".into()),
                 Value::T,
                 Value::Nil,
             ])
         );
     }
+
+    #[test]
+    fn kbd_parses_multi_event_and_symbolic_key_specs() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (list (length (kbd "IS"))
+                      (aref (kbd "IS") 0)
+                      (aref (kbd "<up>") 0)
+                      (key-description (kbd "ESC ESC ESC")))
+                "#
+            ),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer('I' as i64),
+                Value::Symbol("up".into()),
+                Value::String("<escape> <escape> <escape>".into()),
+            ])
+        );
+    }
+
 
     #[test]
     fn easy_menu_define_registers_a_placeholder_menu_symbol() {

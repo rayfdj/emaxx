@@ -693,6 +693,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "read-char-exclusive"
             | "identity"
             | "mapconcat"
+            | "kbd"
             | "key-description"
             | "single-key-description"
             | "ensure-list"
@@ -2267,6 +2268,9 @@ pub fn call(
                     Ok(Value::Integer(string_text(value)?.chars().count() as i64))
                 }
                 Value::Nil => Ok(Value::Integer(0)),
+                Value::Cons(_, _) if is_vector_value(&args[0]) => {
+                    Ok(Value::Integer(vector_items(&args[0])?.len() as i64))
+                }
                 Value::Cons(_, _) => Ok(Value::Integer(args[0].to_vec()?.len() as i64)),
                 Value::Record(id) => {
                     let record = interp.find_record(*id).ok_or_else(|| {
@@ -2965,15 +2969,15 @@ pub fn call(
             })
         }
         "string-to-number" => {
-            need_args(name, args, 1)?;
-            let s = string_text(&args[0])?;
-            if let Ok(n) = s.parse::<i64>() {
-                Ok(Value::Integer(n))
-            } else if let Ok(n) = s.parse::<BigInt>() {
-                Ok(normalize_bigint_value(n))
-            } else {
-                Ok(Value::Integer(0))
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            let s = string_text(&args[0])?;
+            let base = match args.get(1) {
+                None | Some(Value::Nil) => None,
+                Some(value) => Some(value.as_integer()?),
+            };
+            parse_string_to_number_value(&s, base)
         }
         "number-to-string" => {
             need_args(name, args, 1)?;
@@ -6098,6 +6102,10 @@ pub fn call(
             }
             Ok(Value::list(result))
         }
+        "kbd" => {
+            need_args(name, args, 1)?;
+            parse_kbd_sequence(&string_text(&args[0])?)
+        }
         "key-description" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(
@@ -6851,7 +6859,7 @@ pub fn call(
             if args.len() < 3 || args.len() > 5 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let key = string_text(&args[1])?;
+            let key = key_sequence_binding_text(&args[1])?;
             keymap_define_binding(interp, &args[0], &key, args[2].clone())?;
             Ok(args[2].clone())
         }
@@ -6859,7 +6867,7 @@ pub fn call(
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let key = string_text(&args[1])?;
+            let key = key_sequence_binding_text(&args[1])?;
             keymap_remove_binding(interp, &args[0], &key)?;
             Ok(Value::Nil)
         }
@@ -6867,7 +6875,7 @@ pub fn call(
             if args.len() < 2 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let key = string_text(&args[1])?;
+            let key = key_sequence_binding_text(&args[1])?;
             keymap_lookup_binding(interp, &args[0], &key)
         }
         "keymap-parent" => {
@@ -13501,7 +13509,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 multibyte: state.multibyte,
             })
         }
-        Value::Cons(_, _) => {
+        Value::Cons(_, _) if is_vector_value(value) => {
             let items = vector_items(value).ok()?;
             let Value::String(text) = items.first()?.clone() else {
                 return None;
@@ -13528,6 +13536,7 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 multibyte,
             })
         }
+        Value::Cons(_, _) => None,
         _ => None,
     }
 }
@@ -15620,6 +15629,136 @@ fn numeric_gte(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool
     Ok(integer_like_i64(interp, left)? >= integer_like_i64(interp, right)?)
 }
 
+fn parse_string_to_number_value(text: &str, base: Option<i64>) -> Result<Value, LispError> {
+    match base.unwrap_or(10) {
+        10 => Ok(parse_decimal_string_to_number(text)),
+        base if (2..=16).contains(&base) => Ok(parse_integer_string_with_base(text, base as u32)),
+        _ => Err(LispError::Signal("Args out of range".into())),
+    }
+}
+
+fn parse_decimal_string_to_number(text: &str) -> Value {
+    let text = text.trim_start_matches([' ', '\t']);
+    let Some(prefix) = decimal_number_prefix(text) else {
+        return Value::Integer(0);
+    };
+    if prefix.contains(['.', 'e', 'E']) {
+        prefix
+            .parse::<f64>()
+            .map(Value::Float)
+            .unwrap_or(Value::Integer(0))
+    } else if let Ok(value) = prefix.parse::<i64>() {
+        Value::Integer(value)
+    } else if let Ok(value) = prefix.parse::<BigInt>() {
+        normalize_bigint_value(value)
+    } else {
+        Value::Integer(0)
+    }
+}
+
+fn decimal_number_prefix(text: &str) -> Option<&str> {
+    let mut index = 0usize;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    if let Some((_, sign)) = chars.get(index)
+        && matches!(sign, '+' | '-')
+    {
+        index += 1;
+    }
+
+    let integer_start = index;
+    while let Some((_, ch)) = chars.get(index)
+        && ch.is_ascii_digit()
+    {
+        index += 1;
+    }
+    let integer_digits = index - integer_start;
+
+    let mut fractional_digits = 0usize;
+    if let Some((_, '.')) = chars.get(index) {
+        index += 1;
+        let fraction_start = index;
+        while let Some((_, ch)) = chars.get(index)
+            && ch.is_ascii_digit()
+        {
+            index += 1;
+        }
+        fractional_digits = index - fraction_start;
+    }
+
+    if integer_digits == 0 && fractional_digits == 0 {
+        return None;
+    }
+
+    let mut end = index;
+    if matches!(chars.get(index), Some((_, 'e' | 'E'))) {
+        let exponent_marker = index;
+        index += 1;
+        if let Some((_, sign)) = chars.get(index)
+            && matches!(sign, '+' | '-')
+        {
+            index += 1;
+        }
+        let exponent_start = index;
+        while let Some((_, ch)) = chars.get(index)
+            && ch.is_ascii_digit()
+        {
+            index += 1;
+        }
+        if index > exponent_start {
+            end = index;
+        } else {
+            end = exponent_marker;
+        }
+    }
+
+    Some(&text[..chars.get(end).map_or(text.len(), |(offset, _)| *offset)])
+}
+
+fn parse_integer_string_with_base(text: &str, base: u32) -> Value {
+    let text = text.trim_start_matches([' ', '\t']);
+    let mut chars = text.chars().peekable();
+    let negative = match chars.peek() {
+        Some('+') => {
+            chars.next();
+            false
+        }
+        Some('-') => {
+            chars.next();
+            true
+        }
+        _ => false,
+    };
+
+    let mut value = BigInt::zero();
+    let mut saw_digit = false;
+    while let Some(&ch) = chars.peek() {
+        let Some(digit) = digit_value_for_base(ch, base) else {
+            break;
+        };
+        saw_digit = true;
+        value = value * base + BigInt::from(digit);
+        chars.next();
+    }
+
+    if !saw_digit {
+        return Value::Integer(0);
+    }
+    if negative {
+        value = -value;
+    }
+    normalize_bigint_value(value)
+}
+
+fn digit_value_for_base(ch: char, base: u32) -> Option<u32> {
+    let digit = match ch {
+        '0'..='9' => ch as u32 - '0' as u32,
+        'a'..='f' => 10 + (ch as u32 - 'a' as u32),
+        'A'..='F' => 10 + (ch as u32 - 'A' as u32),
+        _ => return None,
+    };
+    (digit < base).then_some(digit)
+}
+
 fn number_to_string(value: &Value) -> Result<String, LispError> {
     match value {
         Value::Integer(n) => Ok(n.to_string()),
@@ -16279,6 +16418,121 @@ const KEY_DESCRIPTION_MODIFIER_MASK: i64 = KEY_DESCRIPTION_ALT_BIT
     | KEY_DESCRIPTION_CTRL_BIT
     | KEY_DESCRIPTION_META_BIT;
 const KEY_DESCRIPTION_META_PREFIX: i64 = 0x1B;
+
+fn parse_kbd_sequence(text: &str) -> Result<Value, LispError> {
+    let mut items = vec![Value::Symbol("vector".into())];
+    for token in text.split_whitespace() {
+        items.extend(parse_kbd_token(token));
+    }
+    Ok(Value::list(items))
+}
+
+fn parse_kbd_token(token: &str) -> Vec<Value> {
+    if token.chars().count() == 1 {
+        return token
+            .chars()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect();
+    }
+    let (modifiers, rest, saw_prefix) = parse_kbd_prefixes(token);
+    if saw_prefix {
+        if rest.starts_with('<') && rest.ends_with('>') && rest.len() >= 2 {
+            return vec![Value::Symbol(symbolic_kbd_event(
+                modifiers,
+                &rest[1..rest.len() - 1],
+            ))];
+        }
+        if rest == "ESC" {
+            return vec![Value::Symbol(symbolic_kbd_event(modifiers, "escape"))];
+        }
+        if let Some(code) = named_kbd_key_code(rest) {
+            return vec![Value::Integer(code | modifiers)];
+        }
+        if rest.chars().count() == 1 {
+            return rest
+                .chars()
+                .map(|ch| Value::Integer(ch as i64 | modifiers))
+                .collect();
+        }
+        return vec![Value::Symbol(symbolic_kbd_event(modifiers, rest))];
+    }
+    if token.starts_with('<') && token.ends_with('>') && token.len() >= 2 {
+        return vec![Value::Symbol(token[1..token.len() - 1].to_string())];
+    }
+    if token == "ESC" {
+        return vec![Value::Symbol("escape".into())];
+    }
+    if let Some(code) = named_kbd_key_code(token) {
+        return vec![Value::Integer(code)];
+    }
+    token.chars().map(|ch| Value::Integer(ch as i64)).collect()
+}
+
+fn parse_kbd_prefixes(token: &str) -> (i64, &str, bool) {
+    let mut modifiers = 0;
+    let mut rest = token;
+    let mut saw_prefix = false;
+    while rest.len() >= 3 && rest.as_bytes()[1] == b'-' {
+        let prefix = rest.as_bytes()[0] as char;
+        let bit = match prefix {
+            'A' => KEY_DESCRIPTION_ALT_BIT,
+            'C' => KEY_DESCRIPTION_CTRL_BIT,
+            'H' => KEY_DESCRIPTION_HYPER_BIT,
+            'M' => KEY_DESCRIPTION_META_BIT,
+            'S' => KEY_DESCRIPTION_SHIFT_BIT,
+            's' => KEY_DESCRIPTION_SUPER_BIT,
+            _ => break,
+        };
+        modifiers |= bit;
+        rest = &rest[2..];
+        saw_prefix = true;
+    }
+    (modifiers, rest, saw_prefix)
+}
+
+fn named_kbd_key_code(token: &str) -> Option<i64> {
+    match token {
+        "RET" => Some('\r' as i64),
+        "LFD" => Some('\n' as i64),
+        "TAB" => Some('\t' as i64),
+        "DEL" => Some(0x7F),
+        "SPC" => Some(0x20),
+        _ => None,
+    }
+}
+
+fn symbolic_kbd_event(modifiers: i64, name: &str) -> String {
+    let mut symbol = String::new();
+    if modifiers & KEY_DESCRIPTION_ALT_BIT != 0 {
+        symbol.push_str("A-");
+    }
+    if modifiers & KEY_DESCRIPTION_CTRL_BIT != 0 {
+        symbol.push_str("C-");
+    }
+    if modifiers & KEY_DESCRIPTION_HYPER_BIT != 0 {
+        symbol.push_str("H-");
+    }
+    if modifiers & KEY_DESCRIPTION_META_BIT != 0 {
+        symbol.push_str("M-");
+    }
+    if modifiers & KEY_DESCRIPTION_SHIFT_BIT != 0 {
+        symbol.push_str("S-");
+    }
+    if modifiers & KEY_DESCRIPTION_SUPER_BIT != 0 {
+        symbol.push_str("s-");
+    }
+    symbol.push_str(name);
+    symbol
+}
+
+fn key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
+    if string_like(value).is_some() {
+        return string_text(value);
+    }
+    let mut parts = Vec::new();
+    append_key_description_parts(value, &mut parts)?;
+    Ok(parts.join(" "))
+}
 
 fn append_key_description_parts(
     sequence: &Value,
