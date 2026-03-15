@@ -29,6 +29,7 @@ use unicode_width::UnicodeWidthChar;
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static LCMS_ORACLE: OnceLock<Option<compat::OracleLocalConfig>> = OnceLock::new();
+static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
@@ -610,6 +611,7 @@ pub fn is_builtin(name: &str) -> bool {
             | ">="
             | "/="
             | "version<="
+            | "emacs-version"
             // Equality
             | "eq"
             | "eql"
@@ -1728,6 +1730,10 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "emacs-version" => {
+            need_args(name, args, 0)?;
+            Ok(Value::String(emacs_version_description()))
         }
         "<" => {
             if args.is_empty() {
@@ -3781,7 +3787,8 @@ pub fn call(
                 .unwrap_or(Value::Nil))
         }
         "c-mode" => {
-            if !interp.has_feature("newcomment") && interp.resolve_load_target("newcomment").is_some()
+            if !interp.has_feature("newcomment")
+                && interp.resolve_load_target("newcomment").is_some()
             {
                 interp.load_target("newcomment")?;
             }
@@ -4034,7 +4041,10 @@ pub fn call(
         "current-indentation" => {
             let saved = interp.buffer.point();
             interp.buffer.beginning_of_line();
-            while matches!(interp.buffer.char_at(interp.buffer.point()), Some(' ' | '\t')) {
+            while matches!(
+                interp.buffer.char_at(interp.buffer.point()),
+                Some(' ' | '\t')
+            ) {
                 let _ = interp.buffer.forward_char(1);
             }
             let pt = interp.buffer.point();
@@ -10577,7 +10587,9 @@ fn forward_comment_impl(
             return Ok(Value::Nil);
         }
         set_match_data(interp, pos, &tail, &captures);
-        interp.buffer.goto_char(pos + tail[..matched.end()].chars().count());
+        interp
+            .buffer
+            .goto_char(pos + tail[..matched.end()].chars().count());
 
         let Some(end_skip) = interp.lookup_var("comment-end-skip", env) else {
             return Ok(Value::Nil);
@@ -10601,7 +10613,9 @@ fn forward_comment_impl(
             return Ok(Value::Nil);
         };
         set_match_data(interp, pos, &tail, &captures);
-        interp.buffer.goto_char(pos + tail[..matched.end()].chars().count());
+        interp
+            .buffer
+            .goto_char(pos + tail[..matched.end()].chars().count());
         remaining -= 1;
     }
     Ok(Value::T)
@@ -11744,6 +11758,30 @@ pub(crate) fn default_directory() -> String {
     path_to_directory_string(&cwd)
 }
 
+fn default_system_configuration() -> String {
+    let machine = uname_value("-m").unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    match std::env::consts::OS {
+        "macos" => {
+            let release = uname_value("-r").unwrap_or_else(|| "0".into());
+            format!("{machine}-apple-darwin{release}")
+        }
+        "linux" => format!("{machine}-unknown-linux-gnu"),
+        "freebsd" => format!("{machine}-unknown-freebsd"),
+        "windows" => format!("{machine}-pc-windows-msvc"),
+        os => format!("{machine}-{os}"),
+    }
+}
+
+fn uname_value(flag: &str) -> Option<String> {
+    let output = Command::new("uname").arg(flag).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 fn compat_repo_root_from_test_directory(test_directory: &str) -> Option<PathBuf> {
     PathBuf::from(test_directory)
         .parent()
@@ -11930,6 +11968,32 @@ pub(crate) fn current_user_full_name() -> Option<String> {
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(current_user_login_name)
+}
+
+pub(crate) fn emacs_version_value() -> String {
+    std::env::var("EMAXX_EMACS_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
+pub(crate) fn system_configuration() -> String {
+    if let Ok(value) = std::env::var("EMAXX_SYSTEM_CONFIGURATION")
+        && !value.is_empty()
+    {
+        return value;
+    }
+    SYSTEM_CONFIGURATION
+        .get_or_init(default_system_configuration)
+        .clone()
+}
+
+pub(crate) fn emacs_version_description() -> String {
+    format!(
+        "GNU Emacs {} ({})",
+        emacs_version_value(),
+        system_configuration()
+    )
 }
 
 fn user_exists(name: &str) -> bool {

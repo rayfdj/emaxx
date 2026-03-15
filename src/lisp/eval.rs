@@ -2724,6 +2724,7 @@ impl Interpreter {
             "system-type" => Some(Value::Symbol(
                 std::env::consts::OS.replace("macos", "darwin"),
             )),
+            "system-configuration" => Some(Value::String(primitives::system_configuration())),
             "system-configuration-features" => Some(Value::String(
                 std::env::var("EMAXX_SYSTEM_CONFIGURATION_FEATURES").unwrap_or_default(),
             )),
@@ -2754,10 +2755,7 @@ impl Interpreter {
                 primitives::current_invocation_directory()
                     .unwrap_or_else(primitives::default_directory),
             )),
-            "emacs-version" => Some(Value::String(
-                std::env::var("EMAXX_EMACS_VERSION")
-                    .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
-            )),
+            "emacs-version" => Some(Value::String(primitives::emacs_version_value())),
             "etags-program-name" => Some(Value::String(
                 primitives::find_executable("etags").unwrap_or_else(|| "etags".into()),
             )),
@@ -5762,10 +5760,7 @@ fn preloaded_command_line_1() -> Value {
                         ]),
                         Value::list([
                             Value::Symbol("funcall".into()),
-                            Value::list([
-                                Value::Symbol("cdr".into()),
-                                Value::Symbol("tem".into()),
-                            ]),
+                            Value::list([Value::Symbol("cdr".into()), Value::Symbol("tem".into())]),
                             Value::Symbol("argi".into()),
                         ]),
                     ]),
@@ -6610,7 +6605,9 @@ mod tests {
     #[test]
     fn assoc_matches_strings_bound_in_lexical_variables() {
         assert_eq!(
-            eval_str("(let ((key \"--foo\") (alist (list (cons \"--foo\" 1)))) (cdr (assoc key alist)))"),
+            eval_str(
+                "(let ((key \"--foo\") (alist (list (cons \"--foo\" 1)))) (cdr (assoc key alist)))"
+            ),
             Value::Integer(1)
         );
     }
@@ -7019,6 +7016,30 @@ mod tests {
     }
 
     #[test]
+    fn system_configuration_variable_defaults_to_non_empty_string() {
+        let value = eval_str("system-configuration");
+        match value {
+            Value::String(configuration) => assert!(!configuration.is_empty()),
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emacs_version_function_mentions_version_and_system_configuration() {
+        let mut interp = Interpreter::new();
+        let version = eval_str_with(&mut interp, "emacs-version");
+        let configuration = eval_str_with(&mut interp, "system-configuration");
+        let value = eval_str_with(&mut interp, "(emacs-version)");
+        match (version, configuration, value) {
+            (Value::String(version), Value::String(configuration), Value::String(description)) => {
+                assert!(description.contains(&version));
+                assert!(description.contains(&configuration));
+            }
+            other => panic!("expected strings, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn etags_program_name_defaults_to_non_empty_string() {
         let value = eval_str("etags-program-name");
         match value {
@@ -7123,7 +7144,10 @@ mod tests {
     #[test]
     fn preloaded_point_to_register_stub_is_fboundp() {
         let mut interp = Interpreter::new();
-        assert_eq!(eval_str_with(&mut interp, "(fboundp 'point-to-register)"), Value::T);
+        assert_eq!(
+            eval_str_with(&mut interp, "(fboundp 'point-to-register)"),
+            Value::T
+        );
     }
 
     #[test]
@@ -7163,11 +7187,7 @@ mod tests {
                            (equal bar-args '("--bar=value"))
                            command-line-args-left))"#
             ),
-            Value::list([
-                Value::T,
-                Value::T,
-                Value::Nil,
-            ])
+            Value::list([Value::T, Value::T, Value::Nil,])
         );
     }
 
