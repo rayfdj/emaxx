@@ -482,6 +482,9 @@ mod tests {
             "test/src/keymap-tests.el"
         ));
         assert!(compat::should_delegate_batch_report(
+            "test/src/lread-tests.el"
+        ));
+        assert!(compat::should_delegate_batch_report(
             "test/src/print-tests.el"
         ));
         assert!(!compat::should_delegate_batch_report(

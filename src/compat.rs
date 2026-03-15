@@ -13,10 +13,11 @@ pub const ORACLE_LOCK_PATH: &str = "compat/oracle.lock.json";
 pub const ORACLE_LOCAL_PATH: &str = "compat/oracle.local.json";
 pub const ORACLE_HELPER_PATH: &str = "compat/emacs_compat_runner.el";
 pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
-const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 4] = [
+const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 5] = [
     "test/src/data-tests.el",
     "test/src/fns-tests.el",
     "test/src/keymap-tests.el",
+    "test/src/lread-tests.el",
     "test/src/print-tests.el",
 ];
 pub const SUPPORTED_ENV_VARS: [&str; 4] = [
