@@ -2697,6 +2697,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "user".into()),
             )),
             "default-directory" => Some(Value::String(primitives::default_directory())),
+            "window-system" => Some(Value::Nil),
             "load-path" => Some(Value::list(
                 self.load_path
                     .iter()
@@ -3821,6 +3822,7 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "aref" => self.sf_setf_aref(&place, &items[2], env),
             Some(Value::Symbol(name)) if name == "image-property" => {
                 self.sf_setf_image_property(&place, &items[2], env)
             }
@@ -3893,6 +3895,53 @@ impl Interpreter {
         }
 
         self.set_setf_place_value(alist_place, Value::list(new_entries), env)?;
+        Ok(value)
+    }
+
+    fn sf_setf_aref(
+        &mut self,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(sequence_place) = place.get(1) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let Some(index_expr) = place.get(2) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let current = self.eval(sequence_place, env)?;
+        let index_value = self.eval(index_expr, env)?;
+        let value = self.eval(value_expr, env)?;
+
+        if matches!(current, Value::CharTable(_)) {
+            primitives::call(
+                self,
+                "aset",
+                &[current, index_value, value.clone()],
+                env,
+            )?;
+            return Ok(value);
+        }
+
+        let index = index_value.as_integer()? as usize;
+        let updated = if matches!(current, Value::String(_) | Value::StringObject(_)) {
+            primitives::aset_string_value(&current, index, &value)?
+        } else {
+            let mut entries = current.to_vec()?;
+            let tagged = matches!(
+                entries.first(),
+                Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+            );
+            let slot = if tagged { index + 1 } else { index };
+            if slot >= entries.len() {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            entries[slot] = value.clone();
+            Value::list(entries)
+        };
+
+        self.set_setf_place_value(sequence_place, updated, env)?;
         Ok(value)
     }
 
@@ -6706,6 +6755,20 @@ mod tests {
         assert_eq!(
             eval_str("(let ((buf (make-string 4 0))) (aref buf 0))"),
             Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn setf_supports_aref_places_bound_in_lexical_variables() {
+        assert_eq!(
+            eval_str(
+                "(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)"
+            ),
+            Value::list([
+                Value::Symbol("vector".into()),
+                Value::Integer(0),
+                Value::Integer(7),
+            ])
         );
     }
 
