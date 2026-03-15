@@ -5483,4 +5483,67 @@ mod tests {
             Value::String("\\bSECCOMP\\b".into())
         );
     }
+
+    #[test]
+    fn minibuffer_completion_primitives_cover_batch_cases() {
+        assert_eq!(
+            eval_str(r#"(try-completion "a" '("abc" "abba" "def"))"#),
+            Value::String("ab".into())
+        );
+        assert_eq!(
+            eval_str(r#"(all-completions "a" '("abc" "abba" "def"))"#),
+            Value::list([Value::String("abc".into()), Value::String("abba".into())])
+        );
+        assert_eq!(
+            eval_str(r#"(null (cl-set-exclusive-or '("abc" "abba") '("abba" "abc") :test #'equal))"#),
+            Value::T
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((ob (obarray-make 7)))
+                  (intern "abc" ob)
+                  (intern "abba" ob)
+                  (all-completions "a" ob))
+                "#
+            ),
+            Value::list([Value::String("abc".into()), Value::String("abba".into())])
+        );
+        assert_eq!(
+            eval_str(
+                r#"(let ((completion-ignore-case t)) (try-completion "bar" '("bAr" "barfoo")))"#
+            ),
+            Value::String("bAr".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"(let ((completion-ignore-case t)) (try-completion "baz" '("baz" "bAz")))"#
+            ),
+            Value::String("baz".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((ht (make-hash-table :test #'equal)))
+                  (puthash "abc" 1 ht)
+                  (gethash "abc" ht))
+                "#
+            ),
+            Value::Integer(1)
+        );
+        assert_eq!(eval_str(r#"(active-minibuffer-window)"#), Value::Nil);
+        assert_eq!(eval_str(r#"(windowp (minibuffer-window))"#), Value::T);
+    }
+
+    #[test]
+    fn inhibited_interaction_uses_expected_condition_type() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = Reader::new(r#"(let ((inhibit-interaction t)) (read-from-minibuffer "foo: "))"#)
+            .read()
+            .unwrap()
+            .unwrap();
+        let error = interp.eval(&form, &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "inhibited-interaction");
+    }
 }
