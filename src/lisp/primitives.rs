@@ -597,7 +597,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "fround"
             | "ftruncate"
             | "ash"
+            | "logand"
             | "logior"
+            | "logxor"
+            | "lognot"
             // Comparison
             | "="
             | "<"
@@ -1661,12 +1664,32 @@ pub fn call(
             };
             Ok(normalize_bigint_value(shifted))
         }
+        "logand" => {
+            let mut result = BigInt::from(-1);
+            for arg in args {
+                result &= integer_like_bigint(interp, arg)?;
+            }
+            Ok(normalize_bigint_value(result))
+        }
         "logior" => {
             let mut result = 0i64;
             for arg in args {
                 result |= arg.as_integer()?;
             }
             Ok(Value::Integer(result))
+        }
+        "logxor" => {
+            let mut result = BigInt::from(0);
+            for arg in args {
+                result ^= integer_like_bigint(interp, arg)?;
+            }
+            Ok(normalize_bigint_value(result))
+        }
+        "lognot" => {
+            need_args(name, args, 1)?;
+            Ok(normalize_bigint_value(!integer_like_bigint(
+                interp, &args[0],
+            )?))
         }
 
         // ── Comparison ──
@@ -2419,11 +2442,13 @@ pub fn call(
         }
         "ensure-list" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].is_nil() || matches!(args[0], Value::Cons(_, _)) {
-                args[0].clone()
-            } else {
-                Value::list([args[0].clone()])
-            })
+            Ok(
+                if args[0].is_nil() || matches!(args[0], Value::Cons(_, _)) {
+                    args[0].clone()
+                } else {
+                    Value::list([args[0].clone()])
+                },
+            )
         }
         "seq-find" => {
             if args.len() < 2 || args.len() > 3 {
@@ -2447,7 +2472,7 @@ pub fn call(
                 Ok(Value::Nil)
             } else if let Some(string) = sequence_string_like(&args[1]) {
                 for ch in string.text.chars() {
-                    let item = Value::Integer(ch as i64);
+                    let item = string_sequence_value(&string, ch);
                     if interp
                         .call_function_value(
                             predicate.clone(),
@@ -2483,17 +2508,11 @@ pub fn call(
                 }
                 Ok(Value::Nil)
             } else if let Some(string) = sequence_string_like(&args[0]) {
-                let target = match &args[1] {
-                    Value::Integer(code) => char::from_u32(*code as u32),
-                    _ => None,
-                };
                 for ch in string.text.chars() {
-                    let candidate = Value::Integer(ch as i64);
+                    let candidate = string_sequence_value(&string, ch);
                     let matches = if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
                     {
                         value_matches_with_test(interp, &candidate, &args[1], Some(testfn), env)?
-                    } else if let Some(target) = target {
-                        ch == target
                     } else {
                         values_equal(interp, &candidate, &args[1])
                     };
@@ -2537,17 +2556,11 @@ pub fn call(
                 }
                 Ok(Value::Nil)
             } else if let Some(string) = string_like(&args[0]) {
-                let target = match &args[1] {
-                    Value::Integer(code) => char::from_u32(*code as u32),
-                    _ => None,
-                };
                 for (index, ch) in string.text.chars().enumerate() {
-                    let candidate = Value::Integer(ch as i64);
+                    let candidate = string_sequence_value(&string, ch);
                     let matches = if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
                     {
                         value_matches_with_test(interp, &candidate, &args[1], Some(testfn), env)?
-                    } else if let Some(target) = target {
-                        ch == target
                     } else {
                         values_equal(interp, &candidate, &args[1])
                     };
@@ -2604,7 +2617,7 @@ pub fn call(
             let last = &args[args.len() - 1];
             let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
             if let Some(string) = string_like(last) {
-                all_args.extend(string.text.chars().map(|ch| Value::Integer(ch as i64)));
+                all_args.extend(string_sequence_values(&string));
             } else {
                 all_args.extend(vector_items(last)?);
             }
@@ -2733,7 +2746,7 @@ pub fn call(
                     continue;
                 }
                 if let Some(string) = string_like(value) {
-                    items.extend(string.text.chars().map(|ch| Value::Integer(ch as i64)));
+                    items.extend(string_sequence_values(&string));
                     continue;
                 }
                 match value {
@@ -2842,13 +2855,7 @@ pub fn call(
             need_args(name, args, 1)?;
             let string = string_like(&args[0])
                 .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-            Ok(Value::list(
-                string
-                    .text
-                    .chars()
-                    .map(|ch| Value::Integer(ch as i64))
-                    .collect::<Vec<_>>(),
-            ))
+            Ok(Value::list(string_sequence_values(&string)))
         }
         "substring" | "substring-no-properties" => {
             if args.is_empty() || args.len() > 3 {
@@ -3325,10 +3332,14 @@ pub fn call(
         }
         "string-to-char" => {
             need_args(name, args, 1)?;
-            let s = string_text(&args[0])?;
-            Ok(Value::Integer(
-                s.chars().next().map(|c| c as i64).unwrap_or(0),
-            ))
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            Ok(string
+                .text
+                .chars()
+                .next()
+                .map(|ch| string_sequence_value(&string, ch))
+                .unwrap_or(Value::Integer(0)))
         }
         "string-bytes" => {
             need_args(name, args, 1)?;
@@ -7964,10 +7975,14 @@ pub fn call(
             let idx = args[1].as_integer()? as usize;
             // Support both list-vectors and strings
             match &args[0] {
-                Value::String(s) => match s.chars().nth(idx) {
-                    Some(c) => Ok(Value::Integer(c as i64)),
-                    None => Err(LispError::Signal("Args out of range".into())),
-                },
+                Value::String(_) | Value::StringObject(_) => {
+                    match string_like(&args[0])
+                        .and_then(|string| string.text.chars().nth(idx).map(|ch| (string, ch)))
+                    {
+                        Some((string, ch)) => Ok(string_sequence_value(&string, ch)),
+                        None => Err(LispError::Signal("Args out of range".into())),
+                    }
+                }
                 Value::CharTable(id) => {
                     let key = args[1].as_integer()? as u32;
                     Ok(interp.char_table_get(*id, key).unwrap_or(Value::Nil))
@@ -15929,14 +15944,29 @@ fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
 
 fn sequence_values(sequence: &Value) -> Result<Vec<Value>, LispError> {
     if let Some(string) = sequence_string_like(sequence) {
-        Ok(string
-            .text
-            .chars()
-            .map(|ch| Value::Integer(ch as i64))
-            .collect())
+        Ok(string_sequence_values(&string))
     } else {
         vector_items(sequence)
     }
+}
+
+fn string_sequence_values(string: &StringLike) -> Vec<Value> {
+    string
+        .text
+        .chars()
+        .map(|ch| string_sequence_value(string, ch))
+        .collect()
+}
+
+fn string_sequence_value(string: &StringLike, ch: char) -> Value {
+    let code = if !string.multibyte {
+        raw_byte_from_regex_char(ch)
+            .map(i64::from)
+            .unwrap_or(ch as i64)
+    } else {
+        ch as i64
+    };
+    Value::Integer(code)
 }
 
 fn sequence_string_like(value: &Value) -> Option<StringLike> {
