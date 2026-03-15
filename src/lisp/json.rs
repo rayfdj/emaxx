@@ -77,7 +77,11 @@ impl<'a> JsonParser<'a> {
     fn parse_value(&mut self) -> Result<JsonNode, LispError> {
         self.skip_whitespace();
         match self.peek() {
-            None => Err(json_error("json-end-of-file", "Unexpected end of JSON input", self.pos())),
+            None => Err(json_error(
+                "json-end-of-file",
+                "Unexpected end of JSON input",
+                self.pos(),
+            )),
             Some(b'n') => self.parse_literal(b"null", JsonNode::Null),
             Some(b'f') => self.parse_literal(b"false", JsonNode::False),
             Some(b't') => self.parse_literal(b"true", JsonNode::True),
@@ -272,8 +276,8 @@ impl<'a> JsonParser<'a> {
                             self.pos(),
                         ));
                     }
-                    let code = 0x1_0000
-                        + (((first as u32 - 0xD800) << 10) | (second as u32 - 0xDC00));
+                    let code =
+                        0x1_0000 + (((first as u32 - 0xD800) << 10) | (second as u32 - 0xDC00));
                     let ch = char::from_u32(code).ok_or_else(|| {
                         json_error(
                             "json-utf8-decode-error",
@@ -548,8 +552,10 @@ pub(crate) fn parse_text_source(
         parser.skip_whitespace();
         if parser.peek().is_some() {
             let condition = if before_skip == parser.index
-                && matches!(parser.peek(), Some(b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-            {
+                && matches!(
+                    parser.peek(),
+                    Some(b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_')
+                ) {
                 "json-parse-error"
             } else {
                 "json-trailing-content"
@@ -755,10 +761,7 @@ fn node_to_lisp(interp: &mut Interpreter, node: JsonNode, options: &JsonParseOpt
                 )
             }
             JsonObjectType::Alist => Value::list(entries.into_iter().map(|(key, value)| {
-                Value::cons(
-                    Value::Symbol(key),
-                    node_to_lisp(interp, value, options),
-                )
+                Value::cons(Value::Symbol(key), node_to_lisp(interp, value, options))
             })),
             JsonObjectType::Plist => {
                 let mut items = Vec::new();
@@ -799,7 +802,9 @@ fn serialize_value(
             "Circular list is not serializable as JSON",
             1,
         )),
-        Value::Record(_) if is_hash_table(interp, value) => serialize_hash_table(interp, value, options),
+        Value::Record(_) if is_hash_table(interp, value) => {
+            serialize_hash_table(interp, value, options)
+        }
         Value::Cons(_, _) => {
             if let Some(rendered) = serialize_hash_table_literal(interp, value, options)? {
                 return Ok(rendered);
@@ -837,7 +842,10 @@ fn serialize_string(value: &Value) -> Result<String, LispError> {
     let mut rendered = String::from("\"");
     for ch in string.text.chars() {
         if ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some() {
-            return Err(LispError::TypeError("json-string".into(), value.type_name()));
+            return Err(LispError::TypeError(
+                "json-string".into(),
+                value.type_name(),
+            ));
         }
         match ch {
             '"' => rendered.push_str("\\\""),
@@ -869,12 +877,7 @@ fn serialize_hash_table(
         interp,
         entries
             .iter()
-            .map(|(key, value)| {
-                Ok((
-                    hash_table_key_string(key)?,
-                    value,
-                ))
-            })
+            .map(|(key, value)| Ok((hash_table_key_string(key)?, value)))
             .collect::<Result<Vec<_>, LispError>>()?,
         options,
         false,
@@ -890,7 +893,8 @@ fn serialize_hash_table_literal(
     let Some(items) = items else {
         return Ok(None);
     };
-    if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == HASH_TABLE_LITERAL_SYMBOL) {
+    if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == HASH_TABLE_LITERAL_SYMBOL)
+    {
         return Ok(None);
     }
     let mut test = "eql".to_string();
@@ -937,18 +941,42 @@ fn serialize_list_object(
             let name = object_key_string(&key)?;
             entries.push((name, entry_value));
         }
-        return serialize_object_entries(interp, entries.iter().map(|(name, value)| (name.clone(), value)).collect(), options, true);
+        return serialize_object_entries(
+            interp,
+            entries
+                .iter()
+                .map(|(name, value)| (name.clone(), value))
+                .collect(),
+            options,
+            true,
+        );
     }
-    if items.len().is_multiple_of(2) && items.iter().step_by(2).all(|item| matches!(item, Value::Symbol(_))) {
+    if items.len().is_multiple_of(2)
+        && items
+            .iter()
+            .step_by(2)
+            .all(|item| matches!(item, Value::Symbol(_)))
+    {
         let mut entries = Vec::new();
         let mut index = 0usize;
         while index + 1 < items.len() {
             entries.push((object_key_string(&items[index])?, items[index + 1].clone()));
             index += 2;
         }
-        return serialize_object_entries(interp, entries.iter().map(|(name, value)| (name.clone(), value)).collect(), options, true);
+        return serialize_object_entries(
+            interp,
+            entries
+                .iter()
+                .map(|(name, value)| (name.clone(), value))
+                .collect(),
+            options,
+            true,
+        );
     }
-    Err(LispError::TypeError("json-object".into(), value.type_name()))
+    Err(LispError::TypeError(
+        "json-object".into(),
+        value.type_name(),
+    ))
 }
 
 fn serialize_object_entries(
@@ -992,7 +1020,11 @@ fn object_key_string(value: &Value) -> Result<String, LispError> {
 fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
     let string = string_like(value)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
-    if string.text.chars().any(|ch| ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some()) {
+    if string
+        .text
+        .chars()
+        .any(|ch| ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some())
+    {
         return Err(LispError::TypeError("string".into(), value.type_name()));
     }
     Ok(string.text)
@@ -1034,11 +1066,9 @@ fn list_to_entries(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
     value
         .to_vec()?
         .into_iter()
-        .map(|entry| {
-            match entry {
-                Value::Cons(key, value) => Ok((*key, *value)),
-                other => Err(LispError::TypeError("cons".into(), other.type_name())),
-            }
+        .map(|entry| match entry {
+            Value::Cons(key, value) => Ok((*key, *value)),
+            other => Err(LispError::TypeError("cons".into(), other.type_name())),
         })
         .collect()
 }
@@ -1085,7 +1115,12 @@ mod tests {
         )
         .expect("serialization should succeed");
         assert_eq!(serialized.text, "\"abcα\"");
-        assert!(serialized.bytes_text.chars().any(|ch| raw_byte_from_regex_char(ch).is_some()));
+        assert!(
+            serialized
+                .bytes_text
+                .chars()
+                .any(|ch| raw_byte_from_regex_char(ch).is_some())
+        );
     }
 
     #[test]
