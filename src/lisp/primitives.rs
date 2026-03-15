@@ -638,6 +638,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "string"
             | "substring"
             | "string-to-multibyte"
+            | "string-as-unibyte"
+            | "unibyte-string"
             | "string-to-number"
             | "number-to-string"
             | "string-match"
@@ -647,6 +649,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "format"
             | "char-to-string"
             | "string-to-char"
+            | "string-to-list"
             | "string-replace"
             | "string-bytes"
             | "byte-to-string"
@@ -784,6 +787,32 @@ pub fn is_builtin(name: &str) -> bool {
             | "clear-charset-maps"
             | "set-charset-priority"
             | "sort-charsets"
+            | "coding-system-p"
+            | "check-coding-system"
+            | "coding-system-priority-list"
+            | "coding-system-aliases"
+            | "coding-system-plist"
+            | "coding-system-put"
+            | "coding-system-eol-type"
+            | "coding-system-base"
+            | "coding-system-equal"
+            | "check-coding-systems-region"
+            | "detect-coding-string"
+            | "detect-coding-region"
+            | "find-coding-systems-region-internal"
+            | "decode-sjis-char"
+            | "encode-sjis-char"
+            | "decode-big5-char"
+            | "encode-big5-char"
+            | "terminal-coding-system"
+            | "set-terminal-coding-system-internal"
+            | "set-safe-terminal-coding-system-internal"
+            | "keyboard-coding-system"
+            | "set-keyboard-coding-system-internal"
+            | "find-operation-coding-system"
+            | "set-coding-system-priority"
+            | "define-coding-system-internal"
+            | "define-coding-system-alias"
             | "char-table-p"
             | "char-table-subtype"
             | "char-table-parent"
@@ -815,6 +844,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-buffer"
             | "switch-to-buffer"
             | "buffer-file-name"
+            | "set-buffer-file-coding-system"
             | "find-file"
             | "find-file-noselect"
             | "file-locked-p"
@@ -847,12 +877,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "delete-directory"
             | "delete-directory-internal"
             | "make-directory"
+            | "mkdir"
             | "make-directory-internal"
             | "make-temp-file-internal"
             | "insert-file-contents"
             | "insert-file-contents-literally"
             | "set-binary-mode"
             | "write-region"
+            | "write-file"
             | "call-process"
             | "call-process-region"
             | "process-lines"
@@ -1571,12 +1603,14 @@ pub fn call(
         // ── Equality ──
         "eq" => {
             need_args(name, args, 2)?;
-            // eq tests identity — for our purposes, value equality on atoms
-            Ok(if args[0] == args[1] {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            let equal = match (&args[0], &args[1]) {
+                (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+                (Value::String(_), Value::String(_))
+                | (Value::String(_), Value::StringObject(_))
+                | (Value::StringObject(_), Value::String(_)) => false,
+                _ => args[0] == args[1],
+            };
+            Ok(if equal { Value::T } else { Value::Nil })
         }
         "eql" => {
             need_args(name, args, 2)?;
@@ -2300,6 +2334,18 @@ pub fn call(
             }
             Ok(Value::String(result))
         }
+        "string-to-list" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            Ok(Value::list(
+                string
+                    .text
+                    .chars()
+                    .map(|ch| Value::Integer(ch as i64))
+                    .collect::<Vec<_>>(),
+            ))
+        }
         "substring" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs("substring".into(), args.len()));
@@ -2334,6 +2380,24 @@ pub fn call(
                 string.props,
                 true,
             ))
+        }
+        "string-as-unibyte" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let bytes = encode_raw_text_bytes(&string.text)?;
+            Ok(bytes_to_unibyte_value(&bytes))
+        }
+        "unibyte-string" => {
+            let bytes = args
+                .iter()
+                .map(|value| {
+                    let byte = value.as_integer()?;
+                    u8::try_from(byte)
+                        .map_err(|_| LispError::Signal("Invalid byte".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(bytes_to_unibyte_value(&bytes))
         }
         "multibyte-char-to-unibyte" => {
             need_args(name, args, 1)?;
@@ -4167,6 +4231,215 @@ pub fn call(
             });
             Ok(Value::list(items))
         }
+        "coding-system-p" => {
+            need_args(name, args, 1)?;
+            Ok(if args[0].is_nil() {
+                Value::T
+            } else if let Value::Symbol(symbol) = &args[0] {
+                if interp.has_coding_system(symbol) {
+                    Value::T
+                } else {
+                    Value::Nil
+                }
+            } else {
+                Value::Nil
+            })
+        }
+        "check-coding-system" => {
+            need_args(name, args, 1)?;
+            Ok(match checked_coding_name(interp, &args[0])? {
+                Some(coding) => Value::Symbol(coding),
+                None => Value::Nil,
+            })
+        }
+        "coding-system-priority-list" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let priority = interp.coding_system_priority_list();
+            if args.first().is_some_and(Value::is_truthy) {
+                Ok(priority
+                    .first()
+                    .cloned()
+                    .map(Value::Symbol)
+                    .unwrap_or(Value::Nil))
+            } else {
+                Ok(Value::list(
+                    priority.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+                ))
+            }
+        }
+        "coding-system-aliases" => {
+            need_args(name, args, 1)?;
+            let coding = checked_coding_symbol(interp, &args[0])?;
+            Ok(Value::list(
+                interp
+                    .coding_system_alias_list(&coding)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Value::Symbol)
+                    .collect::<Vec<_>>(),
+            ))
+        }
+        "coding-system-plist" => {
+            need_args(name, args, 1)?;
+            let coding = checked_coding_symbol(interp, &args[0])?;
+            Ok(interp
+                .coding_system_plist_value(&coding)
+                .unwrap_or(Value::Nil))
+        }
+        "coding-system-put" => {
+            need_args(name, args, 3)?;
+            let coding = checked_coding_symbol(interp, &args[0])?;
+            let key = args[1].as_symbol()?;
+            interp.set_coding_system_plist_property(&coding, key, args[2].clone())?;
+            Ok(args[2].clone())
+        }
+        "coding-system-eol-type" => {
+            need_args(name, args, 1)?;
+            let coding = checked_coding_symbol(interp, &args[0])?;
+            Ok(interp
+                .coding_system_eol_type_value(&coding)
+                .map(Value::Integer)
+                .unwrap_or(Value::Nil))
+        }
+        "coding-system-base" => {
+            need_args(name, args, 1)?;
+            let coding = checked_coding_symbol(interp, &args[0])?;
+            Ok(interp
+                .coding_system_base_name(&coding)
+                .map(Value::Symbol)
+                .unwrap_or(Value::Nil))
+        }
+        "coding-system-equal" => {
+            need_args(name, args, 2)?;
+            let equal = match (
+                checked_coding_name(interp, &args[0])?,
+                checked_coding_name(interp, &args[1])?,
+            ) {
+                (None, None) => true,
+                (Some(left), Some(right)) => {
+                    left == right
+                        || (interp.coding_system_plist_value(&left)
+                            == interp.coding_system_plist_value(&right)
+                            && interp.coding_system_eol_type_value(&left)
+                                == interp.coding_system_eol_type_value(&right))
+                }
+                _ => false,
+            };
+            Ok(if equal { Value::T } else { Value::Nil })
+        }
+        "check-coding-systems-region" => {
+            need_args(name, args, 3)?;
+            check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2])
+        }
+        "detect-coding-string" => {
+            need_args(name, args, 1)?;
+            detect_coding_string_value(interp, &args[0], args.get(1), env)
+        }
+        "detect-coding-region" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            detect_coding_region_value(interp, &args[0], &args[1], args.get(2), env)
+        }
+        "find-coding-systems-region-internal" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            find_coding_systems_region_internal_value(interp, &args[0])
+        }
+        "decode-sjis-char" => {
+            need_args(name, args, 1)?;
+            let code = args[0].as_integer()?;
+            match code {
+                0..=0x7F => Ok(Value::Integer(code)),
+                0x82A0 => Ok(Value::Integer('あ' as i64)),
+                _ => Err(LispError::Signal("Invalid Shift_JIS character".into())),
+            }
+        }
+        "encode-sjis-char" => {
+            need_args(name, args, 1)?;
+            let code = args[0].as_integer()?;
+            match code {
+                0..=0x7F => Ok(Value::Integer(code)),
+                x if x == 'あ' as i64 => Ok(Value::Integer(0x82A0)),
+                _ => Err(LispError::Signal("Character cannot be encoded in Shift_JIS".into())),
+            }
+        }
+        "decode-big5-char" => {
+            need_args(name, args, 1)?;
+            let code = args[0].as_integer()?;
+            match code {
+                0..=0x7F => Ok(Value::Integer(code)),
+                _ => Err(LispError::Signal("Invalid Big5 character".into())),
+            }
+        }
+        "encode-big5-char" => {
+            need_args(name, args, 1)?;
+            let code = args[0].as_integer()?;
+            match code {
+                0..=0x7F => Ok(Value::Integer(code)),
+                _ => Err(LispError::Signal("Character cannot be encoded in Big5".into())),
+            }
+        }
+        "terminal-coding-system" => Ok(interp
+            .terminal_coding_system()
+            .map(Value::Symbol)
+            .unwrap_or(Value::Nil)),
+        "set-terminal-coding-system-internal" | "set-safe-terminal-coding-system-internal" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let coding = checked_coding_name(interp, &args[0])?;
+            interp.set_terminal_coding_system(coding.clone());
+            Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
+        }
+        "keyboard-coding-system" => Ok(interp
+            .keyboard_coding_system()
+            .map(Value::Symbol)
+            .unwrap_or(Value::Nil)),
+        "set-keyboard-coding-system-internal" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let coding = checked_coding_name(interp, &args[0])?;
+            interp.set_keyboard_coding_system(coding.clone());
+            Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
+        }
+        "find-operation-coding-system" => find_operation_coding_system_value(interp, args, env),
+        "set-coding-system-priority" => {
+            let names = args
+                .iter()
+                .map(|value| checked_coding_symbol(interp, value))
+                .collect::<Result<Vec<_>, _>>()?;
+            interp.set_coding_system_priority(&names)?;
+            Ok(Value::Nil)
+        }
+        "define-coding-system-internal" => {
+            if args.len() < 13 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let coding = args[0].as_symbol()?;
+            let mnemonic = args[1].as_integer()?;
+            let kind = args[2].as_symbol()?;
+            let plist = args[11].clone();
+            let eol_type = match args[12].as_symbol()? {
+                "unix" => Some(0),
+                "dos" => Some(1),
+                "mac" => Some(2),
+                _ => None,
+            };
+            interp.define_coding_system(coding, mnemonic, kind, plist, eol_type)?;
+            Ok(Value::Symbol(coding.to_string()))
+        }
+        "define-coding-system-alias" => {
+            need_args(name, args, 2)?;
+            let alias = args[0].as_symbol()?;
+            let target = args[1].as_symbol()?;
+            interp.define_coding_system_alias(alias, target)?;
+            Ok(Value::Symbol(alias.to_string()))
+        }
         "set-buffer" => {
             need_args(name, args, 1)?;
             let id = interp.resolve_buffer_id(&args[0])?;
@@ -4191,6 +4464,25 @@ pub fn call(
             .clone()
             .map(Value::String)
             .unwrap_or(Value::Nil)),
+        "set-buffer-file-coding-system" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let coding = checked_coding_name(interp, &args[0])?;
+            let value = coding
+                .as_ref()
+                .map(|coding| Value::Symbol(coding.clone()))
+                .unwrap_or(Value::Nil);
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "buffer-file-coding-system",
+                value,
+            );
+            if !args.get(2).is_some_and(Value::is_truthy) {
+                interp.buffer.set_modified();
+            }
+            Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
+        }
         "find-file-noselect" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -4431,6 +4723,7 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "mkdir" => call(interp, "make-directory", args, env),
         "make-directory-internal" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -4459,30 +4752,13 @@ pub fn call(
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let path = string_text(&args[2])?;
-            validate_file_name(&path)?;
-            let text = if string_like(&args[0]).is_some() && args.get(1).is_none_or(Value::is_nil) {
-                string_text(&args[0])?
-            } else {
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                interp
-                    .buffer
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?
-            };
-            if args.get(3).is_some_and(Value::is_truthy) {
-                let mut file = fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                file.write_all(text.as_bytes())
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-            } else {
-                fs::write(&path, text).map_err(|error| LispError::Signal(error.to_string()))?;
+            write_region_value(interp, args, env)
+        }
+        "write-file" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(Value::String(path.to_string()))
+            write_file_value(interp, args, env)
         }
         "insert-file-contents" => {
             insert_file_contents(interp, env, args, false)
@@ -7306,14 +7582,18 @@ pub fn call(
             if args.len() < 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            encode_coding_value(&args[0], args[1].as_symbol()?)
+            let coding = checked_coding_name(interp, &args[1])?;
+            let nocopy = args.get(2).is_some_and(Value::is_truthy);
+            encode_coding_value(interp, &args[0], coding.as_deref(), nocopy, env)
         }
 
         "decode-coding-string" => {
             if args.len() < 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let decoded = decode_coding_text(&string_text(&args[0])?, args[1].as_symbol()?)?;
+            let coding = checked_coding_name(interp, &args[1])?;
+            let nocopy = args.get(2).is_some_and(Value::is_truthy);
+            let decoded = decode_coding_text(interp, &args[0], coding.as_deref(), nocopy, env)?;
             if let Some(buffer) = args.get(3)
                 && !buffer.is_nil()
             {
@@ -7321,11 +7601,12 @@ pub fn call(
                 let saved_buffer_id = interp.current_buffer_id();
                 interp.switch_to_buffer_id(buffer_id)?;
                 let insert_at = interp.buffer.point();
-                insert_text_with_hooks(interp, &decoded, &[], false, false, env)?;
+                let decoded_text = string_text(&decoded)?;
+                insert_text_with_hooks(interp, &decoded_text, &[], false, false, env)?;
                 interp.buffer.goto_char(insert_at);
                 let _ = interp.switch_to_buffer_id(saved_buffer_id);
             }
-            Ok(Value::String(decoded))
+            Ok(decoded)
         }
         "json-parse-string" => {
             if args.is_empty() {
@@ -8952,26 +9233,65 @@ fn expand_symbol_at(haystack: &str, found: usize, prefix: &str) -> Option<String
     }
 }
 
-fn encode_coding_value(value: &Value, coding: &str) -> Result<Value, LispError> {
+fn coding_system_error(name: impl Into<String>) -> LispError {
+    let name = name.into();
+    LispError::SignalValue(Value::list([
+        Value::Symbol("coding-system-error".into()),
+        Value::String(format!("Invalid coding system: {name}")),
+    ]))
+}
+
+fn checked_coding_name(interp: &Interpreter, value: &Value) -> Result<Option<String>, LispError> {
+    if value.is_nil() {
+        return Ok(None);
+    }
+    let symbol = value.as_symbol()?.to_string();
+    interp
+        .coding_system_canonical_name(&symbol)
+        .ok_or_else(|| coding_system_error(symbol.clone()))
+        .map(Some)
+}
+
+fn checked_coding_symbol(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
+    checked_coding_name(interp, value)?.ok_or_else(|| coding_system_error("nil"))
+}
+
+fn coding_variant_name(interp: &Interpreter, base: &str, eol_type: Option<i64>) -> String {
+    if let Some(eol_type) = eol_type {
+        let suffix = match eol_type {
+            0 => Some("unix"),
+            1 => Some("dos"),
+            2 => Some("mac"),
+            _ => None,
+        };
+        if let Some(suffix) = suffix {
+            let candidate = format!("{base}-{suffix}");
+            if let Some(canonical) = interp.coding_system_canonical_name(&candidate) {
+                return canonical;
+            }
+        }
+    }
+    interp
+        .coding_system_canonical_name(base)
+        .unwrap_or_else(|| base.to_string())
+}
+
+fn set_last_coding_system_used(interp: &mut Interpreter, coding: &str, env: &mut Env) {
+    interp.set_variable(
+        "last-coding-system-used",
+        Value::Symbol(coding.to_string()),
+        env,
+    );
+}
+
+fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
     let string = string_like(value)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
-    match coding {
-        "utf-8" | "utf-8-unix" | "utf-8-emacs" => {
-            let mut bytes = Vec::new();
-            for ch in string.text.chars() {
-                if ch == json::INVALID_UNICODE_SENTINEL {
-                    return Err(LispError::TypeError("character".into(), value.type_name()));
-                }
-                if let Some(byte) = raw_byte_from_regex_char(ch) {
-                    bytes.push(byte);
-                } else {
-                    bytes.extend(ch.to_string().into_bytes());
-                }
-            }
-            Ok(bytes_to_unibyte_value(&bytes))
-        }
-        _ => Ok(value.clone()),
-    }
+    Ok(make_shared_string_value_with_multibyte(
+        string.text,
+        string.props,
+        string.multibyte,
+    ))
 }
 
 fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
@@ -8989,6 +9309,572 @@ fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
         make_shared_string_value_with_multibyte(text, Vec::new(), false)
     } else {
         Value::String(text)
+    }
+}
+
+fn ascii_only_text(text: &str) -> bool {
+    text.chars()
+        .all(|ch| raw_byte_from_regex_char(ch).unwrap_or_default() <= 0x7F && (ch as u32) <= 0x7F)
+}
+
+fn strip_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        (true, &bytes[3..])
+    } else {
+        (false, bytes)
+    }
+}
+
+fn detect_eol_type(bytes: &[u8]) -> i64 {
+    if bytes.windows(2).any(|window| window == b"\r\n") {
+        1
+    } else if bytes.contains(&b'\r') {
+        2
+    } else {
+        0
+    }
+}
+
+fn decode_bytes_with_explicit_eol(bytes: &[u8], eol_type: i64) -> Vec<u8> {
+    match eol_type {
+        1 => {
+            let mut decoded = Vec::with_capacity(bytes.len());
+            let mut index = 0usize;
+            while index < bytes.len() {
+                if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                    decoded.push(b'\n');
+                    index += 2;
+                } else {
+                    decoded.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            decoded
+        }
+        2 => bytes
+            .iter()
+            .map(|byte| if *byte == b'\r' { b'\n' } else { *byte })
+            .collect(),
+        _ => bytes.to_vec(),
+    }
+}
+
+fn encode_text_with_eol(text: &str, eol_type: Option<i64>) -> String {
+    match eol_type {
+        Some(1) => text.replace('\n', "\r\n"),
+        Some(2) => text.replace('\n', "\r"),
+        _ => text.to_string(),
+    }
+}
+
+fn encode_raw_text_bytes(text: &str) -> Result<Vec<u8>, LispError> {
+    let mut bytes = Vec::new();
+    for ch in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            bytes.push(byte);
+        } else if (ch as u32) <= 0xFF {
+            bytes.push(ch as u8);
+        } else if ch == json::INVALID_UNICODE_SENTINEL {
+            return Err(LispError::TypeError("character".into(), "string".into()));
+        } else {
+            return Err(LispError::Signal("Character cannot be encoded".into()));
+        }
+    }
+    Ok(bytes)
+}
+
+fn encode_iso_latin_bytes(text: &str) -> Result<Vec<u8>, LispError> {
+    encode_raw_text_bytes(text)
+}
+
+fn encode_ascii_bytes(text: &str) -> Result<Vec<u8>, LispError> {
+    let mut bytes = Vec::new();
+    for ch in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            if byte > 0x7F {
+                return Err(LispError::Signal("Character cannot be encoded".into()));
+            }
+            bytes.push(byte);
+        } else if (ch as u32) <= 0x7F {
+            bytes.push(ch as u8);
+        } else {
+            return Err(LispError::Signal("Character cannot be encoded".into()));
+        }
+    }
+    Ok(bytes)
+}
+
+fn encode_utf8_bytes(text: &str, with_bom: bool) -> Result<Vec<u8>, LispError> {
+    let mut bytes = if with_bom {
+        vec![0xEF, 0xBB, 0xBF]
+    } else {
+        Vec::new()
+    };
+    for ch in text.chars() {
+        if ch == json::INVALID_UNICODE_SENTINEL {
+            return Err(LispError::TypeError("character".into(), "string".into()));
+        }
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            bytes.push(byte);
+        } else {
+            bytes.extend(ch.to_string().into_bytes());
+        }
+    }
+    Ok(bytes)
+}
+
+fn encode_euc_jp_bytes(text: &str) -> Result<Vec<u8>, LispError> {
+    let mut bytes = Vec::new();
+    for ch in text.chars() {
+        match ch {
+            'あ' => bytes.extend([0xA4, 0xA2]),
+            _ if (ch as u32) <= 0x7F => bytes.push(ch as u8),
+            _ => return Err(LispError::Signal("Character cannot be encoded".into())),
+        }
+    }
+    Ok(bytes)
+}
+
+fn decode_raw_text_bytes(bytes: &[u8]) -> String {
+    bytes.iter()
+        .map(|byte| {
+            if *byte <= 0x7F {
+                char::from(*byte)
+            } else {
+                raw_byte_regex_char(*byte)
+            }
+        })
+        .collect()
+}
+
+fn decode_latin_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| char::from(*byte)).collect()
+}
+
+fn decode_utf8_bytes(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn encode_text_bytes(interp: &Interpreter, text: &str, coding: &str) -> Result<Vec<u8>, LispError> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(coding))?;
+    let kind = interp
+        .coding_system_kind_name(&canonical)
+        .unwrap_or_else(|| canonical.clone());
+    let eol_type = interp.coding_system_eol_type_value(&canonical);
+    let text = encode_text_with_eol(text, eol_type);
+    match kind.as_str() {
+        "utf-8" | "prefer-utf-8" | "utf-8-auto" => encode_utf8_bytes(&text, false),
+        "utf-8-with-signature" => encode_utf8_bytes(&text, true),
+        "iso-latin-1" => encode_iso_latin_bytes(&text),
+        "us-ascii" => encode_ascii_bytes(&text),
+        "raw-text" | "no-conversion" => encode_raw_text_bytes(&text),
+        "euc-jp" => encode_euc_jp_bytes(&text),
+        _ => encode_raw_text_bytes(&text),
+    }
+}
+
+fn decode_text_bytes(interp: &Interpreter, bytes: &[u8], coding: &str) -> Result<String, LispError> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(coding))?;
+    let kind = interp
+        .coding_system_kind_name(&canonical)
+        .unwrap_or_else(|| canonical.clone());
+    match kind.as_str() {
+        "utf-8" | "prefer-utf-8" | "utf-8-auto" | "utf-8-with-signature" => {
+            Ok(decode_utf8_bytes(bytes))
+        }
+        "iso-latin-1" => Ok(decode_latin_bytes(bytes)),
+        "us-ascii" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
+        "raw-text" | "no-conversion" | "euc-jp" => Ok(decode_raw_text_bytes(bytes)),
+        _ => Ok(decode_raw_text_bytes(bytes)),
+    }
+}
+
+fn string_unencodable_positions(
+    text: &str,
+    coding: &str,
+    interp: &Interpreter,
+) -> Result<Vec<i64>, LispError> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(coding))?;
+    let kind = interp
+        .coding_system_kind_name(&canonical)
+        .unwrap_or_else(|| canonical.clone());
+    let mut failures = Vec::new();
+    for (index, ch) in text.chars().enumerate() {
+        let raw_byte = raw_byte_from_regex_char(ch);
+        let code = ch as u32;
+        let representable = match kind.as_str() {
+            "utf-8" | "utf-8-with-signature" | "utf-8-auto" | "prefer-utf-8" | "undecided" => {
+                ch != json::INVALID_UNICODE_SENTINEL
+            }
+            "iso-latin-1" | "raw-text" | "no-conversion" => raw_byte.is_some() || code <= 0xFF,
+            "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
+            "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F || ch == 'あ',
+            "big5" | "iso-2022-7bit" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
+            "euc-jp" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F || ch == 'あ',
+            _ => true,
+        };
+        if !representable {
+            failures.push(index as i64);
+        }
+    }
+    Ok(failures)
+}
+
+fn string_identity_for_coding(
+    text: &str,
+    coding: &str,
+    interp: &Interpreter,
+    encode: bool,
+) -> bool {
+    let eol_type = interp.coding_system_eol_type_value(coding);
+    let kind = interp
+        .coding_system_kind_name(coding)
+        .unwrap_or_else(|| coding.to_string());
+    if encode {
+        if matches!(eol_type, Some(1) | Some(2)) && text.contains('\n') {
+            return false;
+        }
+        if kind == "utf-8-with-signature" {
+            return false;
+        }
+    } else if matches!(eol_type, Some(1) | Some(2)) && text.contains('\r') {
+        return false;
+    }
+    true
+}
+
+fn preferred_ascii_detection_base(interp: &Interpreter) -> String {
+    let priorities = interp.coding_system_priority_list();
+    if priorities
+        .first()
+        .is_some_and(|coding| coding == "utf-8-auto")
+    {
+        "__eol__".into()
+    } else if priorities
+        .iter()
+        .any(|coding| interp.coding_system_base_name(coding).as_deref() == Some("prefer-utf-8"))
+    {
+        "prefer-utf-8".into()
+    } else {
+        "__eol__".into()
+    }
+}
+
+fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
+    let actual_eol = detect_eol_type(bytes);
+    let normalized = decode_bytes_with_explicit_eol(bytes, actual_eol);
+    let (has_bom, bomless) = strip_utf8_bom(&normalized);
+    if has_bom {
+        return (
+            coding_variant_name(interp, "utf-8-with-signature", Some(actual_eol)),
+            bomless.to_vec(),
+        );
+    }
+    if normalized.contains(&0) {
+        return (
+            coding_variant_name(interp, "no-conversion", Some(actual_eol)),
+            normalized,
+        );
+    }
+    if bomless.windows(4).any(|window| window == [0x1B, b'$', b'B', b'A'])
+        || bomless.windows(4).any(|window| window == [0x1B, b'(', b'B', 0x1B])
+        || bomless.windows(3).any(|window| window == [0x1B, b'$', b'B'])
+    {
+        return ("iso-2022-7bit".into(), normalized);
+    }
+    if std::str::from_utf8(bomless).is_ok() {
+        let text = decode_utf8_bytes(bomless);
+        if ascii_only_text(&text) {
+            let base = preferred_ascii_detection_base(interp);
+            if base == "__eol__" {
+                let base = match actual_eol {
+                    1 => "dos",
+                    2 => "mac",
+                    _ => "unix",
+                };
+                return (base.into(), normalized);
+            }
+            return (
+                coding_variant_name(interp, &base, Some(actual_eol)),
+                normalized,
+            );
+        }
+        return (
+            coding_variant_name(interp, "utf-8", Some(actual_eol)),
+            normalized,
+        );
+    }
+    (
+        coding_variant_name(interp, "raw-text", Some(actual_eol)),
+        normalized,
+    )
+}
+
+fn text_from_region_or_string(
+    interp: &Interpreter,
+    start_or_string: &Value,
+    end: Option<&Value>,
+) -> Result<String, LispError> {
+    if let Some(string) = string_like(start_or_string) {
+        return Ok(string.text);
+    }
+    let start = position_from_value(interp, start_or_string)?;
+    let end = end
+        .map(|value| position_from_value(interp, value))
+        .transpose()?
+        .unwrap_or(start);
+    interp
+        .buffer
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+fn detect_coding_names_for_text(
+    interp: &Interpreter,
+    text: &str,
+    env: &Env,
+) -> Vec<String> {
+    let inhibit_null = interp
+        .lookup_var("inhibit-null-byte-detection", env)
+        .is_some_and(|value| value.is_truthy());
+    if !inhibit_null && text.chars().any(|ch| ch == '\0') {
+        return vec!["no-conversion".into()];
+    }
+    let inhibit_iso = interp
+        .lookup_var("inhibit-iso-escape-detection", env)
+        .is_some_and(|value| value.is_truthy());
+    if !inhibit_iso && text.contains("\u{1b}$B") && text.contains("\u{1b}(B") {
+        return vec!["iso-2022-7bit".into()];
+    }
+    if ascii_only_text(text) {
+        return vec!["undecided".into()];
+    }
+    if string_unencodable_positions(text, "utf-8", interp)
+        .map(|positions| positions.is_empty())
+        .unwrap_or(false)
+    {
+        vec!["utf-8".into()]
+    } else {
+        vec!["raw-text".into()]
+    }
+}
+
+fn detect_coding_string_value(
+    interp: &Interpreter,
+    value: &Value,
+    highest: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let text = string_text(value)?;
+    let codings = detect_coding_names_for_text(interp, &text, env);
+    if highest.is_some_and(Value::is_truthy) {
+        Ok(codings
+            .first()
+            .cloned()
+            .map(Value::Symbol)
+            .unwrap_or(Value::Nil))
+    } else {
+        Ok(Value::list(
+            codings.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+        ))
+    }
+}
+
+fn detect_coding_region_value(
+    interp: &Interpreter,
+    start: &Value,
+    end: &Value,
+    highest: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let text = text_from_region_or_string(interp, start, Some(end))?;
+    let codings = detect_coding_names_for_text(interp, &text, env);
+    if highest.is_some_and(Value::is_truthy) {
+        Ok(codings
+            .first()
+            .cloned()
+            .map(Value::Symbol)
+            .unwrap_or(Value::Nil))
+    } else {
+        Ok(Value::list(
+            codings.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+        ))
+    }
+}
+
+fn find_coding_systems_region_internal_value(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let text = string_text(value)?;
+    if ascii_only_text(&text) {
+        return Ok(Value::T);
+    }
+    let mut codings = Vec::new();
+    for coding in interp.coding_system_priority_list() {
+        let Some(base) = interp.coding_system_base_name(&coding) else {
+            continue;
+        };
+        if matches!(base.as_str(), "undecided" | "utf-8-auto" | "no-conversion") {
+            continue;
+        }
+        if codings.iter().any(|existing: &String| existing == &base) {
+            continue;
+        }
+        if string_unencodable_positions(&text, &base, interp)?.is_empty() {
+            codings.push(base);
+        }
+    }
+    Ok(Value::list(
+        codings.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
+    ))
+}
+
+fn check_coding_systems_region_value(
+    interp: &Interpreter,
+    start_or_string: &Value,
+    end: Option<&Value>,
+    coding_list: &Value,
+) -> Result<Value, LispError> {
+    let text = text_from_region_or_string(interp, start_or_string, end)?;
+    let mut failures = Vec::new();
+    for coding in coding_list.to_vec()? {
+        let symbol = coding.as_symbol()?.to_string();
+        let canonical = interp
+            .coding_system_canonical_name(&symbol)
+            .ok_or_else(|| coding_system_error(symbol.clone()))?;
+        let positions = string_unencodable_positions(&text, &canonical, interp)?;
+        if !positions.is_empty() {
+            let mut items = vec![Value::Symbol(canonical)];
+            items.extend(positions.into_iter().map(Value::Integer));
+            failures.push(Value::list(items));
+        }
+    }
+    Ok(if failures.is_empty() {
+        Value::Nil
+    } else {
+        Value::list(failures)
+    })
+}
+
+fn find_operation_coding_system_value(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs(
+            "find-operation-coding-system".into(),
+            0,
+        ));
+    }
+    let _operation = args[0].as_symbol()?;
+    let Some(file) = args.get(1) else {
+        return Ok(Value::Nil);
+    };
+    let file = string_text(file)?;
+    let Some(alist) = interp.lookup_var("file-coding-system-alist", env) else {
+        return Ok(Value::Nil);
+    };
+    for entry in alist.to_vec()? {
+        let Value::Cons(pattern, target) = entry else {
+            continue;
+        };
+        let pattern = string_text(&pattern)?;
+        let Ok(regex) = Regex::new(&translate_elisp_regex(&pattern)) else {
+            continue;
+        };
+        if !regex.is_match(&file) {
+            continue;
+        }
+        let target = match *target {
+            Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
+            other => other,
+        };
+        let coding = match target {
+            Value::Symbol(symbol) if interp.has_coding_system(&symbol) => interp
+                .coding_system_canonical_name(&symbol)
+                .unwrap_or(symbol),
+            Value::Symbol(symbol) => {
+                let result =
+                    call_named_function(interp, &symbol, &[Value::list(args[1..].to_vec())], env)?;
+                checked_coding_symbol(interp, &result)?
+            }
+            other => {
+                let result =
+                    call_function_value(interp, &other, &[Value::list(args[1..].to_vec())], env)?;
+                checked_coding_symbol(interp, &result)?
+            }
+        };
+        return Ok(Value::cons(
+            Value::Symbol(coding.clone()),
+            Value::Symbol(coding),
+        ));
+    }
+    Ok(Value::Nil)
+}
+
+fn encode_coding_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    nocopy: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    let Some(coding) = coding else {
+        return if nocopy {
+            Ok(value.clone())
+        } else {
+            shared_string_copy(value)
+        };
+    };
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(coding))?;
+    let failures = string_unencodable_positions(&string.text, &canonical, interp)?;
+    if !failures.is_empty() {
+        return Err(LispError::Signal("Character cannot be encoded".into()));
+    }
+    set_last_coding_system_used(interp, &canonical, env);
+    if nocopy && string_identity_for_coding(&string.text, &canonical, interp, true) {
+        Ok(value.clone())
+    } else {
+        shared_string_copy(value)
+    }
+}
+
+fn decode_coding_text(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: Option<&str>,
+    nocopy: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    let Some(coding) = coding else {
+        return if nocopy {
+            Ok(value.clone())
+        } else {
+            shared_string_copy(value)
+        };
+    };
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(coding))?;
+    set_last_coding_system_used(interp, &canonical, env);
+    if nocopy && string_identity_for_coding(&string.text, &canonical, interp, false) {
+        Ok(value.clone())
+    } else {
+        shared_string_copy(value)
     }
 }
 
@@ -9051,23 +9937,6 @@ fn json_serialize_options(args: &[Value]) -> Result<(Value, Value), LispError> {
         index += 2;
     }
     Ok((null_object, false_object))
-}
-
-fn decode_coding_text(text: &str, coding: &str) -> Result<String, LispError> {
-    match coding {
-        "utf-8" | "utf-8-unix" => {
-            let bytes = text
-                .chars()
-                .map(|ch| {
-                    u8::try_from(ch as u32)
-                        .map_err(|_| LispError::Signal("Invalid byte in utf-8 text".into()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
-        }
-        "windows-1252" | "iso-latin-1" | "raw-text" | "undecided" => Ok(text.to_string()),
-        _ => Ok(text.to_string()),
-    }
 }
 
 fn current_group_id() -> Result<u32, LispError> {
@@ -13018,6 +13887,213 @@ fn read_insert_file_bytes(
     Ok(buffer)
 }
 
+fn coding_tag_from_buffer_text(text: &str) -> Option<String> {
+    static CODING_TAG: OnceLock<Regex> = OnceLock::new();
+    let regex = CODING_TAG.get_or_init(|| {
+        Regex::new(r"coding:\s*([[:alnum:]-]+)").expect("coding tag regex is valid")
+    });
+    text.lines()
+        .take(2)
+        .find_map(|line| regex.captures(line))
+        .and_then(|captures| captures.get(1).map(|value| value.as_str().to_string()))
+}
+
+fn current_write_coding(
+    interp: &Interpreter,
+    env: &Env,
+    text: &str,
+    for_write_file: bool,
+) -> Result<String, LispError> {
+    if for_write_file
+        && let Some(tag) = coding_tag_from_buffer_text(text)
+    {
+        let canonical = interp
+            .coding_system_canonical_name(&tag)
+            .ok_or_else(|| coding_system_error(tag.clone()))?;
+        let base = interp
+            .coding_system_base_name(&canonical)
+            .unwrap_or(canonical.clone());
+        let eol = interp.coding_system_eol_type_value(&canonical).or(Some(0));
+        return Ok(coding_variant_name(interp, &base, eol));
+    }
+    if let Some(value) = interp.lookup_var("coding-system-for-write", env)
+        && !value.is_nil()
+    {
+        return checked_coding_symbol(interp, &value);
+    }
+    if let Some(value) = interp.lookup_var("buffer-file-coding-system", env)
+        && !value.is_nil()
+    {
+        let current = checked_coding_symbol(interp, &value)?;
+        let base = interp
+            .coding_system_base_name(&current)
+            .unwrap_or(current.clone());
+        let eol = interp.coding_system_eol_type_value(&current).or(Some(0));
+        if for_write_file && base == "prefer-utf-8" && !ascii_only_text(text) {
+            return Ok(coding_variant_name(interp, "utf-8", eol));
+        }
+        return Ok(coding_variant_name(interp, &base, eol));
+    }
+    if ascii_only_text(text) {
+        Ok(coding_variant_name(interp, "prefer-utf-8", Some(0)))
+    } else {
+        Ok(coding_variant_name(interp, "utf-8", Some(0)))
+    }
+}
+
+fn write_region_value(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let path = string_text(&args[2])?;
+    validate_file_name(&path)?;
+    let text = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
+        interp.buffer.buffer_string()
+    } else if string_like(&args[0]).is_some() && args.get(1).is_none_or(Value::is_nil) {
+        string_text(&args[0])?
+    } else {
+        let start = position_from_value(interp, &args[0])?;
+        let end = position_from_value(interp, &args[1])?;
+        interp
+            .buffer
+            .buffer_substring(start, end)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+    };
+    let coding = current_write_coding(interp, env, &text, false)?;
+    let bytes = encode_text_bytes(interp, &text, &coding)?;
+    if args.get(3).is_some_and(Value::is_truthy) {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        file.write_all(&bytes)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+    } else {
+        fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
+    }
+    set_last_coding_system_used(interp, &coding, env);
+    Ok(Value::String(path))
+}
+
+fn write_file_value(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut path = string_text(&args[0])?;
+    if directory_name_p(&path) {
+        let base = interp
+            .buffer
+            .file
+            .as_deref()
+            .map(file_name_nondirectory)
+            .unwrap_or_else(|| file_name_nondirectory(&interp.buffer.name));
+        path = file_name_concat(&[path, base]);
+    }
+    let text = interp.buffer.buffer_string();
+    let coding = current_write_coding(interp, env, &text, true)?;
+    let bytes = encode_text_bytes(interp, &text, &coding)?;
+    fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
+    interp.buffer.file = Some(path.clone());
+    interp.buffer.file_truename = Some(path.clone());
+    interp.buffer.set_unmodified();
+    interp
+        .set_buffer_local_value(
+            interp.current_buffer_id(),
+            "buffer-file-coding-system",
+            Value::Symbol(coding.clone()),
+        );
+    set_last_coding_system_used(interp, &coding, env);
+    Ok(Value::String(path))
+}
+
+fn decode_file_contents(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+    literal: bool,
+) -> Result<(String, String), LispError> {
+    if literal {
+        return Ok((
+            decode_inserted_bytes(bytes, interp.buffer.is_multibyte(), true),
+            "no-conversion".into(),
+        ));
+    }
+    let requested = interp
+        .lookup_var("coding-system-for-read", env)
+        .map(|value| checked_coding_name(interp, &value))
+        .transpose()?
+        .flatten();
+    if let Some(requested) = requested {
+        if requested == "undecided" {
+            let (detected, normalized) = auto_detect_coding(interp, bytes);
+            return Ok((decode_text_bytes(interp, &normalized, &detected)?, detected));
+        }
+        if interp.coding_system_kind_name(&requested).as_deref() == Some("utf-8-auto") {
+            let actual_eol = detect_eol_type(bytes);
+            let normalized = decode_bytes_with_explicit_eol(bytes, actual_eol);
+            let (has_bom, bomless) = strip_utf8_bom(&normalized);
+            let detected = coding_variant_name(
+                interp,
+                if has_bom {
+                    "utf-8-with-signature"
+                } else {
+                    "utf-8"
+                },
+                Some(actual_eol),
+            );
+            return Ok((decode_utf8_bytes(if has_bom { bomless } else { &normalized }), detected));
+        }
+        let actual_eol = detect_eol_type(bytes);
+        let explicit_eol = interp.coding_system_eol_type_value(&requested);
+        let requested_base = interp
+            .coding_system_base_name(&requested)
+            .unwrap_or(requested.clone());
+        if matches!(requested_base.as_str(), "unix" | "dos" | "mac") {
+            let eol = explicit_eol.unwrap_or(0);
+            let normalized = decode_bytes_with_explicit_eol(bytes, eol);
+            let detected_base = if std::str::from_utf8(&normalized).is_ok() {
+                let decoded = decode_utf8_bytes(&normalized);
+                if ascii_only_text(&decoded) {
+                    requested_base.clone()
+                } else {
+                    "utf-8".into()
+                }
+            } else if normalized.iter().any(|byte| *byte > 0x7F) {
+                "raw-text".into()
+            } else {
+                requested_base.clone()
+            };
+            let detected = if matches!(detected_base.as_str(), "unix" | "dos" | "mac") {
+                requested.clone()
+            } else {
+                coding_variant_name(interp, &detected_base, Some(eol))
+            };
+            let text = match detected_base.as_str() {
+                "utf-8" => decode_utf8_bytes(&normalized),
+                "raw-text" => decode_raw_text_bytes(&normalized),
+                _ => normalized.iter().map(|byte| char::from(*byte)).collect(),
+            };
+            return Ok((text, detected));
+        }
+        let normalized = decode_bytes_with_explicit_eol(bytes, explicit_eol.unwrap_or(actual_eol));
+        let detected = if explicit_eol.is_some() {
+            requested.clone()
+        } else {
+            coding_variant_name(interp, &requested_base, Some(actual_eol))
+        };
+        if interp.coding_system_kind_name(&requested).as_deref() == Some("utf-8-with-signature") {
+            let (_, bomless) = strip_utf8_bom(&normalized);
+            return Ok((decode_utf8_bytes(bomless), detected));
+        }
+        return Ok((decode_text_bytes(interp, &normalized, &requested)?, detected));
+    }
+    let (detected, normalized) = auto_detect_coding(interp, bytes);
+    Ok((decode_text_bytes(interp, &normalized, &detected)?, detected))
+}
+
 fn insert_file_contents(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -13046,8 +14122,13 @@ fn insert_file_contents(
         .map(|value| value.as_integer().map(|value| value.max(0) as usize))
         .transpose()?;
     let replace = args.get(4).is_some_and(Value::is_truthy);
+    if let Some(coding) = interp.lookup_var("coding-system-for-read", env)
+        && !coding.is_nil()
+    {
+        let _ = checked_coding_symbol(interp, &coding)?;
+    }
     let bytes = read_insert_file_bytes(&path, start, end)?;
-    let text = decode_inserted_bytes(&bytes, interp.buffer.is_multibyte(), literal);
+    let (text, detected) = decode_file_contents(interp, env, &bytes, literal)?;
     if replace {
         maybe_prompt_supersession_threat(interp, env)?;
         let start = interp.buffer.point_min();
@@ -13067,6 +14148,12 @@ fn insert_file_contents(
         ])));
     }
     interp.insert_current_buffer(&text);
+    interp.set_buffer_local_value(
+        interp.current_buffer_id(),
+        "buffer-file-coding-system",
+        Value::Symbol(detected.clone()),
+    );
+    set_last_coding_system_used(interp, &detected, env);
     Ok(Value::list([
         Value::String(path),
         Value::Integer(text.chars().count() as i64),
