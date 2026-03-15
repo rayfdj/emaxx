@@ -491,6 +491,9 @@ mod tests {
             "test/src/print-tests.el"
         ));
         assert!(compat::should_delegate_batch_report(
+            "test/src/syntax-tests.el"
+        ));
+        assert!(compat::should_delegate_batch_report(
             "test/src/thread-tests.el"
         ));
         assert!(!compat::should_delegate_batch_report(
