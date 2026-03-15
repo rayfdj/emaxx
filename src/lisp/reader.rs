@@ -369,7 +369,6 @@ impl<'a> Reader<'a> {
         match self.peek() {
             None => Err(LispError::EndOfInput),
             Some(b'\\') => {
-                self.advance(); // consume backslash
                 const SUPER_BIT: i64 = 1 << 23;
                 const SHIFT_BIT: i64 = 1 << 25;
                 const CTRL_BIT: i64 = 1 << 26;
@@ -960,6 +959,14 @@ mod tests {
         assert_eq!(read_one("?\\n"), Value::Integer(b'\n' as i64));
         assert_eq!(read_one("?\\s"), Value::Integer(b' ' as i64));
         assert_eq!(read_one("?\\ "), Value::Integer(b' ' as i64));
+        assert_eq!(read_one("?\\\\"), Value::Integer(b'\\' as i64));
+    }
+
+    #[test]
+    fn escaped_backslash_character_does_not_consume_following_delimiter() {
+        let val = read_one("(?\\\\)");
+        let items = val.to_vec().unwrap();
+        assert_eq!(items, vec![Value::Integer(b'\\' as i64)]);
     }
 
     #[test]

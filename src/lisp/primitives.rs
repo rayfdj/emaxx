@@ -29,6 +29,7 @@ use unicode_width::UnicodeWidthChar;
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static LCMS_ORACLE: OnceLock<Option<compat::OracleLocalConfig>> = OnceLock::new();
+const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 
 fn is_lcms_builtin(name: &str) -> bool {
     matches!(
@@ -75,6 +76,41 @@ fn is_time_builtin(name: &str) -> bool {
             | "time-less-p"
             | "time-subtract"
     )
+}
+
+fn treesit_linecol_cache_value(line: i64, col: i64, bytepos: i64) -> Value {
+    Value::list([
+        Value::Symbol(":line".into()),
+        Value::Integer(line),
+        Value::Symbol(":col".into()),
+        Value::Integer(col),
+        Value::Symbol(":bytepos".into()),
+        Value::Integer(bytepos),
+    ])
+}
+
+fn treesit_default_linecol_cache() -> Value {
+    treesit_linecol_cache_value(0, 0, 0)
+}
+
+fn treesit_linecol_at(interp: &Interpreter, pos: usize) -> Result<Value, LispError> {
+    let buffer = interp.current_buffer();
+    if pos < buffer.point_min() || pos > buffer.point_max() {
+        return Err(LispError::Signal("args-out-of-range".into()));
+    }
+    let mut line = 1i64;
+    let mut col = 0i64;
+    for current in buffer.point_min()..pos {
+        match buffer.char_at(current) {
+            Some('\n') => {
+                line += 1;
+                col = 0;
+            }
+            Some(_) => col += 1,
+            None => {}
+        }
+    }
+    Ok(Value::cons(Value::Integer(line), Value::Integer(col)))
 }
 
 fn lcms_oracle() -> Option<&'static compat::OracleLocalConfig> {
@@ -615,11 +651,13 @@ pub fn is_builtin(name: &str) -> bool {
             | "last"
             | "length"
             | "reverse"
+            | "copy-tree"
             | "delete-dups"
             | "memq"
             | "member"
             | "assq"
             | "assoc"
+            | "alist-get"
             | "cl-set-exclusive-or"
             | "mapcar"
             | "cl-mapcar"
@@ -637,6 +675,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "identity"
             | "mapconcat"
             | "seq-take"
+            | "seq-position"
+            | "treesit-language-available-p"
+            | "treesit--linecol-cache"
+            | "treesit--linecol-cache-set"
+            | "treesit--linecol-at"
             // Allocation
             | "make-string"
             | "make-vector"
@@ -2080,6 +2123,10 @@ pub fn call(
             items.reverse();
             Ok(Value::list(items))
         }
+        "copy-tree" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
+        }
         "delete-dups" => {
             need_args(name, args, 1)?;
             let mut deduped = Vec::new();
@@ -2109,6 +2156,23 @@ pub fn call(
                 }
             }
             Ok(Value::Nil)
+        }
+        "alist-get" => {
+            if args.len() < 2 || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let default = args.get(2).cloned().unwrap_or(Value::Nil);
+            let testfn = args.get(4);
+            let items = args[1].to_vec()?;
+            for item in items {
+                let Value::Cons(car, cdr) = item else {
+                    continue;
+                };
+                if value_matches_with_test(interp, &args[0], car.as_ref(), testfn, env)? {
+                    return Ok(*cdr);
+                }
+            }
+            Ok(default)
         }
         "cl-set-exclusive-or" => {
             if args.len() < 2 {
@@ -2255,6 +2319,83 @@ pub fn call(
             } else {
                 Err(LispError::TypeError("sequence".into(), args[0].type_name()))
             }
+        }
+        "seq-position" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            if let Ok(items) = args[0].to_vec() {
+                for (index, item) in items.into_iter().enumerate() {
+                    let matches = if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
+                    {
+                        value_matches_with_test(interp, &item, &args[1], Some(testfn), env)?
+                    } else {
+                        values_equal(interp, &item, &args[1])
+                    };
+                    if matches {
+                        return Ok(Value::Integer(index as i64));
+                    }
+                }
+                Ok(Value::Nil)
+            } else if let Some(string) = string_like(&args[0]) {
+                let target = match &args[1] {
+                    Value::Integer(code) => char::from_u32(*code as u32),
+                    _ => None,
+                };
+                for (index, ch) in string.text.chars().enumerate() {
+                    let candidate = Value::Integer(ch as i64);
+                    let matches = if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
+                    {
+                        value_matches_with_test(interp, &candidate, &args[1], Some(testfn), env)?
+                    } else if let Some(target) = target {
+                        ch == target
+                    } else {
+                        values_equal(interp, &candidate, &args[1])
+                    };
+                    if matches {
+                        return Ok(Value::Integer(index as i64));
+                    }
+                }
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::TypeError("sequence".into(), args[0].type_name()))
+            }
+        }
+        "treesit-language-available-p" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "treesit--linecol-cache" => {
+            need_args(name, args, 0)?;
+            Ok(interp
+                .buffer_local_value(interp.current_buffer_id(), TREESIT_LINECOL_CACHE_VAR)
+                .unwrap_or_else(treesit_default_linecol_cache))
+        }
+        "treesit--linecol-cache-set" => {
+            need_args(name, args, 3)?;
+            let cache = treesit_linecol_cache_value(
+                args[0].as_integer()?,
+                args[1].as_integer()?,
+                args[2].as_integer()?,
+            );
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                TREESIT_LINECOL_CACHE_VAR,
+                cache,
+            );
+            Ok(Value::Nil)
+        }
+        "treesit--linecol-at" => {
+            if args.is_empty() || args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let pos = args
+                .first()
+                .map(Value::as_integer)
+                .transpose()?
+                .map(|value| value.max(1) as usize)
+                .unwrap_or_else(|| interp.current_buffer().point());
+            treesit_linecol_at(interp, pos)
         }
         "apply" => {
             if args.len() < 2 {
@@ -15239,6 +15380,37 @@ fn resolve_callable(interp: &Interpreter, value: &Value, env: &Env) -> Result<Va
     match value {
         Value::Symbol(name) => interp.lookup_function(name, env),
         _ => Ok(value.clone()),
+    }
+}
+
+pub(crate) fn value_matches_with_test(
+    interp: &mut Interpreter,
+    left: &Value,
+    right: &Value,
+    testfn: Option<&Value>,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    match testfn.filter(|value| !value.is_nil()) {
+        None => Ok(left == right),
+        Some(Value::Symbol(name)) | Some(Value::BuiltinFunc(name)) => match name.as_str() {
+            "eq" | "eql" => Ok(left == right),
+            "equal" => Ok(values_equal(interp, left, right)),
+            _ => {
+                let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
+                Ok(invoke_function_value(
+                    interp,
+                    &func,
+                    &[left.clone(), right.clone()],
+                    env,
+                )?
+                .is_truthy())
+            }
+        },
+        Some(other) => {
+            let func = resolve_callable(interp, other, env)?;
+            Ok(invoke_function_value(interp, &func, &[left.clone(), right.clone()], env)?
+                .is_truthy())
+        }
     }
 }
 
