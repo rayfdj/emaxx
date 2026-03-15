@@ -4940,6 +4940,7 @@ impl Interpreter {
         };
         let _ = self.set_marker(beg_id, Some(saved_begv), Some(saved_buffer_id));
         let _ = self.set_marker(end_id, Some(saved_zv), Some(saved_buffer_id));
+        self.set_marker_insertion_type(end_id, true);
         self.buffer.push_undo_meta(Value::cons(
             Value::Marker(beg_id),
             Value::Integer(-(saved_begv as i64)),
@@ -6558,6 +6559,21 @@ mod tests {
     }
 
     #[test]
+    fn string_match_failure_preserves_existing_match_data() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (string-match "a\\(b\\)" "ab")
+                  (string-match "z" "ab")
+                  (match-string 1 "ab"))
+                "#
+            ),
+            Value::String("b".into())
+        );
+    }
+
+    #[test]
     fn eval_list_ops() {
         assert_eq!(eval_str("(car '(1 2 3))"), Value::Integer(1));
         assert_eq!(eval_str("(cadr '(1 2 3))"), Value::Integer(2));
@@ -6594,6 +6610,27 @@ mod tests {
                  (insert "hello")
                  (should (= (point) 6))
                  (should (string= (buffer-string) "hello")))"#,
+        );
+    }
+
+    #[test]
+    fn c_mode_sets_c_comment_defaults() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (c-mode)
+                  (equal
+                   (list major-mode mode-name comment-start comment-end
+                         comment-start-skip comment-end-skip comment-use-syntax
+                         comment-style comment-multi-line)
+                   '(c-mode "C" "/* " " */"
+                     "\\(?://+\\|/\\*+\\)\\s *"
+                     "[ \t]*\\*+/"
+                     nil indent t)))
+                "#
+            ),
+            Value::T
         );
     }
 
@@ -7633,6 +7670,24 @@ mod tests {
                     Value::list([Value::Nil, Value::Integer(2), Value::Integer(2)]),
                 ]),
             ])
+        );
+    }
+
+    #[test]
+    fn save_restriction_restores_end_after_insert_at_point_max() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "ab")
+                  (save-restriction
+                    (narrow-to-region 1 3)
+                    (goto-char (point-max))
+                    (insert "c"))
+                  (buffer-string))
+                "#
+            ),
+            Value::String("abc".into())
         );
     }
 

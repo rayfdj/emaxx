@@ -585,6 +585,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "log"
             | "sqrt"
             | "float"
+            | "prefix-numeric-value"
             | "frexp"
             | "ldexp"
             | "logb"
@@ -761,6 +762,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "backward-char"
             | "forward-word"
             | "skip-chars-forward"
+            | "skip-chars-backward"
+            | "skip-syntax-forward"
+            | "skip-syntax-backward"
             | "beginning-of-line"
             | "end-of-line"
             | "forward-line"
@@ -769,6 +773,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "re-search-forward"
             | "re-search-backward"
             | "search-forward-regexp"
+            | "forward-comment"
             | "match-string"
             | "match-beginning"
             | "match-end"
@@ -801,6 +806,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "downcase-word"
             | "capitalize-word"
             | "current-column"
+            | "current-indentation"
             | "move-to-column"
             | "line-number-at-pos"
             | "line-beginning-position"
@@ -819,6 +825,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "position-bytes"
             | "byte-to-position"
             | "max-char"
+            | "c-mode"
             | "get-pos-property"
             | "get-char-property"
             | "get-text-property"
@@ -1690,6 +1697,10 @@ pub fn call(
             Ok(normalize_bigint_value(!integer_like_bigint(
                 interp, &args[0],
             )?))
+        }
+        "prefix-numeric-value" => {
+            need_args(name, args, 1)?;
+            prefix_numeric_value(&args[0])
         }
 
         // ── Comparison ──
@@ -3588,6 +3599,24 @@ pub fn call(
             }
             skip_chars_forward_impl(interp, &args[0], args.get(1))
         }
+        "skip-chars-backward" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            skip_chars_backward_impl(interp, &args[0], args.get(1))
+        }
+        "skip-syntax-forward" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            skip_syntax_impl(interp, &args[0], args.get(1), true)
+        }
+        "skip-syntax-backward" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            skip_syntax_impl(interp, &args[0], args.get(1), false)
+        }
         "backward-char" => {
             let n = if args.is_empty() {
                 1
@@ -3669,6 +3698,12 @@ pub fn call(
             buffer_regex_search(interp, args, env, true)
         }
         "re-search-backward" => buffer_regex_search(interp, args, env, false),
+        "forward-comment" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            forward_comment_impl(interp, args.first(), env)
+        }
         "buffer-string" => Ok(string_like_value(
             interp.buffer.buffer_string(),
             interp
@@ -3720,6 +3755,35 @@ pub fn call(
             Ok(byte_to_position(interp, byte as usize)
                 .map(|pos| Value::Integer(pos as i64))
                 .unwrap_or(Value::Nil))
+        }
+        "c-mode" => {
+            if !interp.has_feature("newcomment") && interp.resolve_load_target("newcomment").is_some()
+            {
+                interp.load_target("newcomment")?;
+            }
+            let buffer_id = interp.current_buffer_id();
+            interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol("c-mode".into()));
+            interp.set_buffer_local_value(buffer_id, "mode-name", Value::String("C".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("/* ".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(" */".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String("\\(?://+\\|/\\*+\\)\\s *".into()),
+            );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-end-skip",
+                Value::String("[ \t]*\\*+/".into()),
+            );
+            interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::Nil);
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-style",
+                Value::Symbol("indent".into()),
+            );
+            interp.set_buffer_local_value(buffer_id, "comment-multi-line", Value::T);
+            Ok(Value::Nil)
         }
         "buffer-name" => {
             if !args.is_empty()
@@ -3942,6 +4006,24 @@ pub fn call(
                 bol
             };
             Ok(Value::Integer(column_at(interp, env, bol, pt) as i64))
+        }
+        "current-indentation" => {
+            let saved = interp.buffer.point();
+            interp.buffer.beginning_of_line();
+            while matches!(interp.buffer.char_at(interp.buffer.point()), Some(' ' | '\t')) {
+                let _ = interp.buffer.forward_char(1);
+            }
+            let pt = interp.buffer.point();
+            let bol = {
+                let saved = interp.buffer.point();
+                interp.buffer.beginning_of_line();
+                let bol = interp.buffer.point();
+                interp.buffer.goto_char(saved);
+                bol
+            };
+            let indentation = column_at(interp, env, bol, pt) as i64;
+            interp.buffer.goto_char(saved);
+            Ok(Value::Integer(indentation))
         }
         "move-to-column" => {
             need_args(name, args, 1)?;
@@ -10158,9 +10240,6 @@ fn string_match_impl(
         }
         Ok(Value::Integer(match_start as i64))
     } else {
-        if update_match_data {
-            interp.last_match_data = None;
-        }
         Ok(Value::Nil)
     }
 }
@@ -10321,6 +10400,172 @@ fn skip_chars_forward_impl(
     Ok(Value::Integer(
         interp.buffer.point().saturating_sub(start) as i64
     ))
+}
+
+fn skip_chars_backward_impl(
+    interp: &mut Interpreter,
+    spec_value: &Value,
+    limit_value: Option<&Value>,
+) -> Result<Value, LispError> {
+    let spec = parse_skip_chars_spec(&string_text(spec_value)?);
+    let limit = if let Some(limit_value) = limit_value {
+        if limit_value.is_nil() {
+            interp.buffer.point_min()
+        } else {
+            position_from_value(interp, limit_value)?
+        }
+    } else {
+        interp.buffer.point_min()
+    };
+    let start = interp.buffer.point();
+    while interp.buffer.point() > limit {
+        let Some(ch) = interp.buffer.char_before() else {
+            break;
+        };
+        if !skip_char_matches_spec(ch, &spec) {
+            break;
+        }
+        let _ = interp.buffer.forward_char(-1);
+    }
+    Ok(Value::Integer(interp.buffer.point() as i64 - start as i64))
+}
+
+fn syntax_class_matches(spec: &str, ch: char) -> bool {
+    match spec {
+        " " => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}'),
+        _ => false,
+    }
+}
+
+fn skip_syntax_impl(
+    interp: &mut Interpreter,
+    syntax_value: &Value,
+    limit_value: Option<&Value>,
+    forward: bool,
+) -> Result<Value, LispError> {
+    let syntax = string_text(syntax_value)?;
+    let limit = if let Some(limit_value) = limit_value {
+        if limit_value.is_nil() {
+            if forward {
+                interp.buffer.point_max()
+            } else {
+                interp.buffer.point_min()
+            }
+        } else {
+            position_from_value(interp, limit_value)?
+        }
+    } else if forward {
+        interp.buffer.point_max()
+    } else {
+        interp.buffer.point_min()
+    };
+    let start = interp.buffer.point();
+    if forward {
+        while interp.buffer.point() < limit {
+            let Some(ch) = interp.buffer.char_at(interp.buffer.point()) else {
+                break;
+            };
+            if !syntax_class_matches(&syntax, ch) {
+                break;
+            }
+            let _ = interp.buffer.forward_char(1);
+        }
+    } else {
+        while interp.buffer.point() > limit {
+            let Some(ch) = interp.buffer.char_before() else {
+                break;
+            };
+            if !syntax_class_matches(&syntax, ch) {
+                break;
+            }
+            let _ = interp.buffer.forward_char(-1);
+        }
+    }
+    Ok(Value::Integer(interp.buffer.point() as i64 - start as i64))
+}
+
+fn forward_comment_impl(
+    interp: &mut Interpreter,
+    count_value: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let count = count_value.map_or(Ok(1), Value::as_integer)?;
+    if count < 0 {
+        return Ok(Value::Nil);
+    }
+    let mut remaining = count as usize;
+    while remaining > 0 {
+        let _ = skip_syntax_impl(interp, &Value::String(" ".into()), None, true)?;
+        let Some(start_skip) = interp.lookup_var("comment-start-skip", env) else {
+            return Ok(Value::Nil);
+        };
+        let Some(start_skip) = string_like(&start_skip) else {
+            return Ok(Value::Nil);
+        };
+        let regex = compile_elisp_regex(interp, &start_skip, env, r"\A")?;
+        let pos = interp.buffer.point();
+        let tail = interp
+            .buffer
+            .buffer_substring(pos, interp.buffer.point_max())
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let Some(captures) = regex
+            .captures(&tail)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+        else {
+            return Ok(Value::Nil);
+        };
+        let Some(matched) = captures.get(0) else {
+            return Ok(Value::Nil);
+        };
+        if matched.start() != 0 {
+            return Ok(Value::Nil);
+        }
+        set_match_data(interp, pos, &tail, &captures);
+        interp.buffer.goto_char(pos + tail[..matched.end()].chars().count());
+
+        let Some(end_skip) = interp.lookup_var("comment-end-skip", env) else {
+            return Ok(Value::Nil);
+        };
+        let Some(end_skip) = string_like(&end_skip) else {
+            return Ok(Value::Nil);
+        };
+        let regex = compile_elisp_regex(interp, &end_skip, env, "")?;
+        let pos = interp.buffer.point();
+        let tail = interp
+            .buffer
+            .buffer_substring(pos, interp.buffer.point_max())
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let Some(captures) = regex
+            .captures(&tail)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+        else {
+            return Ok(Value::Nil);
+        };
+        let Some(matched) = captures.get(0) else {
+            return Ok(Value::Nil);
+        };
+        set_match_data(interp, pos, &tail, &captures);
+        interp.buffer.goto_char(pos + tail[..matched.end()].chars().count());
+        remaining -= 1;
+    }
+    Ok(Value::T)
+}
+
+fn prefix_numeric_value(value: &Value) -> Result<Value, LispError> {
+    match value {
+        Value::Nil => Ok(Value::Integer(1)),
+        Value::Integer(_) | Value::BigInteger(_) => Ok(value.clone()),
+        Value::Symbol(symbol) if symbol == "-" => Ok(Value::Integer(-1)),
+        Value::Cons(_, _) => {
+            let items = value.to_vec()?;
+            if items.len() == 1 {
+                prefix_numeric_value(&items[0])
+            } else {
+                Err(LispError::TypeError("number".into(), value.type_name()))
+            }
+        }
+        _ => Err(LispError::TypeError("number".into(), value.type_name())),
+    }
 }
 
 fn match_string_impl(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
