@@ -1,4 +1,4 @@
-use super::eval::Interpreter;
+use super::eval::{Interpreter, error_condition_value};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::reader::Reader;
 use super::sqlite;
@@ -22,7 +22,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use unicode_width::UnicodeWidthChar;
 
@@ -118,6 +118,10 @@ fn oracle_reports_lcms2(local: &compat::OracleLocalConfig) -> Result<bool, Strin
 
 pub(crate) fn compat_lcms2_available() -> bool {
     lcms_oracle().is_some()
+}
+
+pub(crate) fn prefer_builtin_override(name: &str) -> bool {
+    matches!(name, "user-error" | "byte-compile" | "byte-compile-check-lambda-list")
 }
 
 const RAW_BYTE8_BASE: u32 = 0x3FFF00;
@@ -579,8 +583,13 @@ pub fn is_builtin(name: &str) -> bool {
             | "floatp"
             | "stringp"
             | "symbolp"
+            | "functionp"
+            | "closurep"
+            | "commandp"
             | "boundp"
             | "fboundp"
+            | "default-boundp"
+            | "special-variable-p"
             | "featurep"
             | "consp"
             | "listp"
@@ -603,6 +612,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "nth"
             | "elt"
             | "nthcdr"
+            | "last"
             | "length"
             | "reverse"
             | "delete-dups"
@@ -662,6 +672,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "upcase-initials"
             | "get-char-code-property"
             | "char-resolve-modifiers"
+            | "string-trim"
             // Buffer operations
             | "insert"
             | "insert-and-inherit"
@@ -766,6 +777,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-swap-text"
             | "buffer-local-value"
             | "buffer-local-variables"
+            | "kill-local-variable"
             | "buffer-list"
             | "decode-char"
             | "char-charset"
@@ -994,12 +1006,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-sort"
             // Misc
             | "error"
+            | "user-error"
             | "signal"
             | "throw"
             | "take"
             | "add-hook"
             | "remove-hook"
             | "run-hooks"
+            | "run-hook-wrapped"
             | "mapatoms"
             | "eval-after-load"
             | "define-error"
@@ -1018,12 +1032,16 @@ pub fn is_builtin(name: &str) -> bool {
             | "intern-soft"
             | "autoloadp"
             | "documentation"
+            | "documentation-property"
             | "getenv"
             | "getenv-internal"
             | "user-login-name"
             | "user-full-name"
+            | "symbol-value"
             | "symbol-function"
             | "symbol-name"
+            | "default-value"
+            | "interactive-form"
             | "macroexp-file-name"
             | "hash-table-p"
             | "char-from-name"
@@ -1049,7 +1067,19 @@ pub fn is_builtin(name: &str) -> bool {
             | "group-gid"
             | "group-name"
             | "random"
+            | "set"
+            | "set-default"
+            | "get"
+            | "makunbound"
+            | "defvaralias"
+            | "indirect-variable"
+            | "internal-delete-indirect-variable"
+            | "internal--define-uninitialized-variable"
+            | "defvar-1"
+            | "defconst-1"
+            | "internal-make-var-non-special"
             | "make-symbol"
+            | "make-interpreted-closure"
             | "obarray-make"
             | "make-hash-table"
             | "gethash"
@@ -1101,6 +1131,17 @@ pub fn is_builtin(name: &str) -> bool {
             | "json-serialize"
             | "json-insert"
             | "garbage-collect"
+            | "byte-compile"
+            | "byte-compile-check-lambda-list"
+            | "funcall-with-delayed-message"
+            | "handler-bind-1"
+            | "debugger-trap"
+            | "backtrace-frame--internal"
+            | "backtrace-debug"
+            | "backtrace-eval"
+            | "backtrace--locals"
+            | "current-thread"
+            | "backtrace--frames-from-thread"
             | "undo-boundary"
             | "undo"
             | "undo-more"
@@ -1744,6 +1785,32 @@ pub fn call(
                 Value::Nil
             })
         }
+        "functionp" => {
+            need_args(name, args, 1)?;
+            let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
+            Ok(if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "closurep" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(args[0], Value::Lambda(_, _, _)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "commandp" => {
+            need_args(name, args, 1)?;
+            let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
+            Ok(if interactive_spec_form(&value).is_some() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "boundp" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
@@ -1760,6 +1827,24 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "default-boundp" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(if interp.is_default_bound(symbol) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "special-variable-p" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(if interp.is_special_variable(symbol) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "fboundp" => {
             need_args(name, args, 1)?;
@@ -1954,6 +2039,23 @@ pub fn call(
                 current = current.cdr()?;
             }
             Ok(current)
+        }
+        "last" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let n = args
+                .get(1)
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1)
+                .max(0) as usize;
+            let items = args[0].to_vec()?;
+            if items.is_empty() {
+                return Ok(Value::Nil);
+            }
+            let start = items.len().saturating_sub(n.max(1));
+            Ok(Value::list(items[start..].iter().cloned()))
         }
         "length" => {
             need_args(name, args, 1)?;
@@ -2162,24 +2264,18 @@ pub fn call(
             let last = &args[args.len() - 1];
             let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
             all_args.extend(last.to_vec()?);
-
-            // Build a call expression
-            let mut call_items = vec![func.clone()];
-            for a in &all_args {
-                call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
-            }
-            interp.eval(&Value::list(call_items), env)
+            interp.call_function_value(resolve_callable(interp, func, env)?, None, &all_args, env)
         }
         "funcall" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("funcall".into(), 0));
             }
-            let func = &args[0];
-            let mut call_items = vec![func.clone()];
-            for a in &args[1..] {
-                call_items.push(Value::list([Value::symbol("quote"), a.clone()]));
-            }
-            interp.eval(&Value::list(call_items), env)
+            interp.call_function_value(
+                resolve_callable(interp, &args[0], env)?,
+                None,
+                &args[1..],
+                env,
+            )
         }
         "funcall-interactively" => {
             if args.is_empty() {
@@ -2658,6 +2754,10 @@ pub fn call(
             let to = string_text(&args[1])?;
             let input = string_text(&args[2])?;
             Ok(Value::String(input.replace(&from, &to)))
+        }
+        "string-trim" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(string_text(&args[0])?.trim().to_string()))
         }
         "byte-to-string" => {
             need_args(name, args, 1)?;
@@ -3678,7 +3778,13 @@ pub fn call(
             })?;
             Ok(Value::Nil)
         }
-        "put" => Ok(Value::Nil),
+        "put" => {
+            need_args(name, args, 3)?;
+            let symbol = args[0].as_symbol()?;
+            let property = args[1].as_symbol()?;
+            interp.put_symbol_property(symbol, property, args[2].clone());
+            Ok(args[2].clone())
+        }
         "compare-buffer-substrings" => {
             need_args(name, args, 6)?;
             let left_id = interp.resolve_buffer_id(&args[0])?;
@@ -4030,6 +4136,12 @@ pub fn call(
                 buffer_undo_list_value(&interp.buffer),
             ));
             Ok(Value::list(vars))
+        }
+        "kill-local-variable" => {
+            need_args(name, args, 1)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+            Ok(Value::Symbol(symbol))
         }
         "buffer-list" => {
             let bufs: Vec<Value> = interp
@@ -5487,6 +5599,19 @@ pub fn call(
             };
             Err(LispError::Signal(msg))
         }
+        "user-error" => {
+            let msg = if args.is_empty() {
+                "user-error".to_string()
+            } else if let Ok(fmt) = string_text(&args[0]) {
+                fmt
+            } else {
+                args[0].to_string()
+            };
+            Err(LispError::SignalValue(Value::list([
+                Value::Symbol("user-error".into()),
+                Value::String(msg),
+            ])))
+        }
         "signal" => {
             if args.is_empty() {
                 return Err(LispError::Signal("signal".into()));
@@ -5537,6 +5662,39 @@ pub fn call(
             let s = args[0].as_string()?;
             Ok(Value::Symbol(s.to_string()))
         }
+        "set" => {
+            need_args(name, args, 2)?;
+            let symbol = args[0].as_symbol()?;
+            let value = args[1].clone();
+            interp.set_variable(symbol, value.clone(), env);
+            Ok(value)
+        }
+        "set-default" => {
+            need_args(name, args, 2)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let value = args[1].clone();
+            interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+            interp.set_variable(&symbol, value.clone(), &mut Vec::new());
+            Ok(value)
+        }
+        "symbol-value" => {
+            need_args(name, args, 1)?;
+            interp.lookup(args[0].as_symbol()?, env)
+        }
+        "default-value" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            interp
+                .default_value(symbol)
+                .ok_or_else(|| LispError::Void(symbol.to_string()))
+        }
+        "interactive-form" => {
+            need_args(name, args, 1)?;
+            let value = resolve_callable(interp, &args[0], env)?;
+            Ok(interactive_spec_form(&value)
+                .map(|spec| Value::list([Value::Symbol("interactive".into()), spec]))
+                .unwrap_or(Value::Nil))
+        }
         "autoloadp" => {
             need_args(name, args, 1)?;
             let autoload = args[0]
@@ -5548,11 +5706,149 @@ pub fn call(
         }
         "documentation" => {
             need_args(name, args, 1)?;
-            let symbol = match &args[0] {
-                Value::Symbol(name) => name.clone(),
-                other => other.to_string(),
-            };
-            Ok(Value::String(format!("Documentation for {symbol}.")))
+            let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
+            Ok(function_documentation(interp, &value, env).unwrap_or(Value::Nil))
+        }
+        "documentation-property" => {
+            need_args(name, args, 2)?;
+            let symbol = args[0].as_symbol()?;
+            let property = args[1].as_symbol()?;
+            Ok(interp
+                .get_symbol_property(symbol, property)
+                .unwrap_or(Value::Nil))
+        }
+        "get" => {
+            need_args(name, args, 2)?;
+            let symbol = args[0].as_symbol()?;
+            let property = args[1].as_symbol()?;
+            Ok(interp
+                .get_symbol_property(symbol, property)
+                .unwrap_or(Value::Nil))
+        }
+        "makunbound" => {
+            need_args(name, args, 1)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            if interp
+                .buffer_local_value(interp.current_buffer_id(), &symbol)
+                .is_some()
+            {
+                interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+            } else {
+                interp.remove_global_binding(&symbol);
+            }
+            Ok(Value::Symbol(symbol))
+        }
+        "defvaralias" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let alias = args[0].as_symbol()?.to_string();
+            let target = args[1].as_symbol()?.to_string();
+            let alias_value = interp.lookup_var(&alias, env);
+            let target_value = interp.lookup_var(&target, env);
+            interp.set_variable_alias(&alias, &target)?;
+            interp.remove_global_binding(&alias);
+            interp.remove_buffer_local_value(interp.current_buffer_id(), &alias);
+            if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
+                interp.put_symbol_property(&alias, "variable-documentation", doc.clone());
+            }
+            if alias_value
+                .as_ref()
+                .zip(target_value.as_ref())
+                .is_some_and(|(left, right)| left != right)
+            {
+                let warning = Value::list([
+                    Value::Symbol("defvaralias".into()),
+                    Value::Symbol("losing-value".into()),
+                    Value::Symbol(alias.clone()),
+                ]);
+                call_named_function(interp, "display-warning", &[warning], env)?;
+            }
+            Ok(Value::Symbol(alias))
+        }
+        "indirect-variable" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(Value::Symbol(interp.indirect_variable_name(symbol)?))
+        }
+        "internal-delete-indirect-variable" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            if !interp.remove_variable_alias(symbol) {
+                return Err(LispError::Signal("Variable is not indirect".into()));
+            }
+            interp.remove_global_binding(symbol);
+            interp.remove_buffer_local_value(interp.current_buffer_id(), symbol);
+            interp.remove_symbol_property(symbol, "variable-documentation");
+            Ok(Value::Symbol(symbol.to_string()))
+        }
+        "internal--define-uninitialized-variable" => {
+            need_args(name, args, 2)?;
+            let symbol = args[0].as_symbol()?;
+            interp.mark_special_variable(symbol);
+            if !args[1].is_nil() {
+                interp.put_symbol_property(symbol, "variable-documentation", args[1].clone());
+            }
+            Ok(Value::Symbol(symbol.to_string()))
+        }
+        "defvar-1" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let symbol = args[0].as_symbol()?;
+            interp.mark_special_variable(symbol);
+            if interp.lookup_var(symbol, env).is_none() {
+                interp.set_variable(symbol, args[1].clone(), &mut Vec::new());
+            }
+            if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
+                interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+            }
+            Ok(Value::Symbol(symbol.to_string()))
+        }
+        "defconst-1" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let symbol = args[0].as_symbol()?;
+            interp.mark_special_variable(symbol);
+            interp.set_variable(symbol, args[1].clone(), &mut Vec::new());
+            if let Some(doc) = args.get(2).filter(|value| !value.is_nil()) {
+                interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
+            }
+            interp.put_symbol_property(symbol, "risky-local-variable", Value::T);
+            Ok(Value::Symbol(symbol.to_string()))
+        }
+        "internal-make-var-non-special" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            interp.unmark_special_variable(symbol);
+            Ok(Value::Symbol(symbol.to_string()))
+        }
+        "make-interpreted-closure" => {
+            need_arg_range(name, args, 3, 5)?;
+            let params = parse_lambda_params_value(&args[0])?;
+            let body = args[1].to_vec()?;
+            let captured_env = closure_env_from_alist(&args[2])?;
+            let mut lambda_body = Vec::new();
+            if let Some(doc) = args.get(3).filter(|value| !value.is_nil()) {
+                lambda_body.push(doc.clone());
+            }
+            if let Some(spec) = args.get(4).filter(|value| !value.is_nil()) {
+                if spec
+                    .to_vec()
+                    .ok()
+                    .is_some_and(|items| matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "interactive"))
+                {
+                    lambda_body.push(spec.clone());
+                } else {
+                    lambda_body.push(Value::list([
+                        Value::Symbol("interactive".into()),
+                        spec.clone(),
+                    ]));
+                }
+            }
+            lambda_body.extend(body);
+            Ok(Value::Lambda(params, lambda_body, captured_env))
         }
         "getenv" | "getenv-internal" => {
             need_args(name, args, 1)?;
@@ -5633,6 +5929,26 @@ pub fn call(
             Ok(Value::Nil)
         }
         "run-hooks" | "eval-after-load" => Ok(Value::Nil),
+        "run-hook-wrapped" => {
+            if args.len() < 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let hook_name = args[0].as_symbol()?;
+            let wrapper = resolve_callable(interp, &args[1], env)?;
+            let hook_values = interp
+                .lookup_var(hook_name, env)
+                .map(|value| value.to_vec().unwrap_or_default())
+                .unwrap_or_default();
+            for hook in hook_values {
+                let mut wrapper_args = vec![hook];
+                wrapper_args.extend_from_slice(&args[2..]);
+                let value = interp.call_function_value(wrapper.clone(), None, &wrapper_args, env)?;
+                if value.is_truthy() {
+                    return Ok(value);
+                }
+            }
+            Ok(Value::Nil)
+        }
         "mapatoms" => {
             need_args(name, args, 1)?;
             Ok(Value::Nil)
@@ -6038,6 +6354,160 @@ pub fn call(
                 Ok(Value::Nil)
             }
         }
+        "byte-compile-check-lambda-list" => {
+            need_args(name, args, 1)?;
+            validate_lambda_params(&args[0])?;
+            Ok(Value::Nil)
+        }
+        "byte-compile" => {
+            need_args(name, args, 1)?;
+            if is_lambda_value(&args[0]) {
+                validate_lambda_form(&args[0])?;
+            }
+            Ok(args[0].clone())
+        }
+        "funcall-with-delayed-message" => {
+            need_args(name, args, 3)?;
+            let timeout = numeric_to_f64(interp, &args[0])?;
+            let delayed = string_text(&args[1])?;
+            let callback = resolve_callable(interp, &args[2], env)?;
+            let buffer_id = interp
+                .find_buffer("*Messages*")
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer("*Messages*").0);
+            let before = interp
+                .get_buffer_by_id(buffer_id)
+                .map(|buffer| buffer.buffer_string())
+                .unwrap_or_default();
+            let start = Instant::now();
+            let result = interp.call_function_value(callback, None, &[], env)?;
+            let elapsed = start.elapsed().as_secs_f64();
+            if elapsed >= timeout
+                && let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id)
+            {
+                let current = buffer.buffer_string();
+                let suffix = current
+                    .strip_prefix(&before)
+                    .map(str::to_string)
+                    .unwrap_or(current);
+                let rewritten = if suffix.is_empty() {
+                    format!("{delayed}\n")
+                } else {
+                    format!("{delayed}\n{suffix}")
+                };
+                let end = buffer.point_max();
+                let _ = buffer.delete_region(1, end);
+                buffer.goto_char(1);
+                buffer.insert(&(before + &rewritten));
+            }
+            Ok(result)
+        }
+        "handler-bind-1" => {
+            if args.len() != 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let thunk = resolve_callable(interp, &args[0], env)?;
+            let condition = args[1].as_symbol()?.to_string();
+            let handler = resolve_callable(interp, &args[2], env)?;
+            match interp.call_function_value(thunk, None, &[], env) {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    let error_type = error.condition_type();
+                    if condition != "error" && condition != error_type {
+                        return Err(error);
+                    }
+                    let error_value = error_condition_value(&error);
+                    let _ = interp.call_function_value(handler, None, &[error_value], env)?;
+                    Err(error)
+                }
+            }
+        }
+        "debugger-trap" => Ok(Value::Nil),
+        "backtrace-frame--internal" => {
+            need_args(name, args, 3)?;
+            let callback = resolve_callable(interp, &args[0], env)?;
+            let Some((function, frame_args, debug_on_exit)) = interp.current_backtrace_frame() else {
+                return Ok(Value::Nil);
+            };
+            let flags = if debug_on_exit {
+                Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
+            } else {
+                Value::Nil
+            };
+            let function = function.map(Value::Symbol).unwrap_or(Value::Nil);
+            interp.call_function_value(
+                callback,
+                None,
+                &[Value::T, function, Value::list(frame_args), flags],
+                env,
+            )
+        }
+        "backtrace-debug" => {
+            need_arg_range(name, args, 2, 3)?;
+            interp.set_current_backtrace_debug(args[1].is_truthy());
+            Ok(Value::Nil)
+        }
+        "backtrace-eval" => {
+            need_args(name, args, 3)?;
+            interp.lookup(args[0].as_symbol()?, env)
+        }
+        "backtrace--locals" => {
+            need_args(name, args, 2)?;
+            let mut locals = Vec::new();
+            for frame in env.iter().rev() {
+                for (name, value) in frame.iter().rev() {
+                    if !locals.iter().any(|entry: &Value| {
+                        entry.to_vec().ok().and_then(|items| items.first().cloned())
+                            == Some(Value::Symbol(name.clone()))
+                    }) {
+                        locals.push(Value::cons(Value::Symbol(name.clone()), value.clone()));
+                    }
+                }
+            }
+            for name in interp.special_variable_names() {
+                if locals.iter().any(|entry: &Value| {
+                    entry.to_vec().ok().and_then(|items| items.first().cloned())
+                        == Some(Value::Symbol(name.clone()))
+                }) {
+                    continue;
+                }
+                if let Some(value) = interp.lookup_var(&name, env) {
+                    locals.push(Value::cons(Value::Symbol(name), value));
+                }
+            }
+            Ok(Value::list(locals))
+        }
+        "current-thread" => Ok(Value::Symbol("main-thread".into())),
+        "backtrace--frames-from-thread" => {
+            need_args(name, args, 1)?;
+            let frames = interp
+                .backtrace_frames_snapshot()
+                .into_iter()
+                .map(|(function, frame_args, debug_on_exit)| {
+                    let flags = if debug_on_exit {
+                        Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
+                    } else {
+                        Value::Nil
+                    };
+                    Value::list([
+                        Value::T,
+                        function.map(Value::Symbol).unwrap_or(Value::Symbol("identity".into())),
+                        Value::list(frame_args),
+                        flags,
+                    ])
+                })
+                .collect::<Vec<_>>();
+            Ok(Value::list(if frames.is_empty() {
+                vec![Value::list([
+                    Value::T,
+                    Value::Symbol("identity".into()),
+                    Value::Nil,
+                    Value::Nil,
+                ])]
+            } else {
+                frames
+            }))
+        }
         "regexp-quote" => {
             need_args(name, args, 1)?;
             Ok(Value::String(regexp_quote_elisp(&string_text(&args[0])?)))
@@ -6054,6 +6524,7 @@ pub fn call(
                 Value::String(_) => "string",
                 Value::StringObject(_) => "string",
                 Value::Symbol(_) => "symbol",
+                Value::Cons(_, _) if is_vector_value(&args[0]) => "vector",
                 Value::Cons(_, _) => "cons",
                 Value::BuiltinFunc(_) => "subr",
                 Value::Lambda(_, _, _) => "cons", // Emacs closures are cons cells
@@ -11892,17 +12363,13 @@ where
     Ok(())
 }
 
-fn call_function_value(
+pub(crate) fn call_function_value(
     interp: &mut Interpreter,
     function: &Value,
     args: &[Value],
     env: &mut super::types::Env,
 ) -> Result<Value, LispError> {
-    let mut items = vec![function.clone()];
-    for arg in args {
-        items.push(Value::list([Value::symbol("quote"), arg.clone()]));
-    }
-    interp.eval(&Value::list(items), env)
+    interp.call_function_value(function.clone(), None, args, env)
 }
 
 fn run_change_hooks(
@@ -14781,11 +15248,7 @@ fn invoke_function_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut call_items = vec![func.clone()];
-    for arg in args {
-        call_items.push(Value::list([Value::symbol("quote"), arg.clone()]));
-    }
-    interp.eval(&Value::list(call_items), env)
+    interp.call_function_value(func.clone(), None, args, env)
 }
 
 fn callable_name(original: &Value, resolved: &Value) -> Option<String> {
@@ -15240,6 +15703,9 @@ fn interactive_spec_form(func: &Value) -> Option<Value> {
         return None;
     };
     for form in body {
+        if matches!(form, Value::String(_) | Value::StringObject(_)) {
+            continue;
+        }
         if is_declare_form(form) {
             continue;
         }
@@ -15260,6 +15726,9 @@ fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
     };
     let mut overrides = Vec::new();
     for form in body {
+        if matches!(form, Value::String(_) | Value::StringObject(_)) {
+            continue;
+        }
         if !is_declare_form(form) {
             break;
         }
@@ -15286,6 +15755,131 @@ fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
         }
     }
     overrides
+}
+
+fn function_documentation(interp: &Interpreter, value: &Value, env: &Env) -> Option<Value> {
+    let value = match value {
+        Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
+        other => other.clone(),
+    };
+    let Value::Lambda(_, body, _) = value else {
+        return None;
+    };
+    body.iter().find_map(|form| match form {
+        Value::String(text) => Some(Value::String(text.clone())),
+        Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
+        _ => None,
+    })
+}
+
+fn is_vector_value(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        matches!(
+            items.first(),
+            Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+        )
+    })
+}
+
+fn is_lambda_value(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda")
+    })
+}
+
+fn validate_lambda_params(params: &Value) -> Result<(), LispError> {
+    let items = params.to_vec()?;
+    validate_lambda_list_items(params, &items)
+}
+
+fn validate_lambda_form(form: &Value) -> Result<(), LispError> {
+    let items = form.to_vec()?;
+    let Some(params) = items.get(1) else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-function".into()),
+            form.clone(),
+        ])));
+    };
+    validate_lambda_params(params)
+}
+
+fn validate_lambda_list_items(spec: &Value, items: &[Value]) -> Result<(), LispError> {
+    let invalid = || {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-function".into()),
+            spec.clone(),
+        ]))
+    };
+    let mut seen_optional = false;
+    let mut seen_rest = false;
+    let mut needs_rest_arg = false;
+    let mut rest_arg_seen = false;
+
+    for item in items {
+        let Value::Symbol(symbol) = item else {
+            return Err(invalid());
+        };
+        match symbol.as_str() {
+            "&optional" => {
+                if seen_optional || seen_rest {
+                    return Err(invalid());
+                }
+                seen_optional = true;
+            }
+            "&rest" => {
+                if seen_rest {
+                    return Err(invalid());
+                }
+                seen_rest = true;
+                needs_rest_arg = true;
+            }
+            _ => {
+                if needs_rest_arg {
+                    needs_rest_arg = false;
+                    rest_arg_seen = true;
+                } else if rest_arg_seen {
+                    return Err(invalid());
+                }
+            }
+        }
+    }
+
+    if needs_rest_arg {
+        return Err(invalid());
+    }
+
+    Ok(())
+}
+
+fn parse_lambda_params_value(value: &Value) -> Result<Vec<String>, LispError> {
+    let items = value.to_vec()?;
+    validate_lambda_list_items(value, &items)?;
+    items
+        .into_iter()
+        .map(|item| match item {
+            Value::Symbol(symbol) => Ok(symbol),
+            _ => Err(LispError::Signal("Invalid lambda parameter".into())),
+        })
+        .collect()
+}
+
+fn closure_env_from_alist(value: &Value) -> Result<Env, LispError> {
+    let entries = value.to_vec()?;
+    let mut frame = Vec::new();
+    for entry in entries {
+        match entry {
+            Value::Cons(car, cdr) => {
+                let name = car.as_symbol()?.to_string();
+                let value = match *cdr {
+                    Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
+                    other => other,
+                };
+                frame.push((name, value));
+            }
+            _ => continue,
+        }
+    }
+    Ok(if frame.is_empty() { Vec::new() } else { vec![frame] })
 }
 
 fn eval_callable_metadata_form(
