@@ -1,5 +1,6 @@
 use super::eval::Interpreter;
 use super::reader::Reader;
+use super::sqlite;
 use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value};
 use crate::buffer::TextPropertySpan;
 use crate::compat;
@@ -32,6 +33,24 @@ fn is_lcms_builtin(name: &str) -> bool {
             | "lcms-cam02-ucs"
             | "lcms-temp->white-point"
             | "lcms2-available-p"
+    )
+}
+
+fn is_sqlite_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "sqlite-open"
+            | "sqlite-close"
+            | "sqlite-execute"
+            | "sqlite-select"
+            | "sqlite-execute-batch"
+            | "sqlite-load-extension"
+            | "sqlite-next"
+            | "sqlite-more-p"
+            | "sqlite-finalize"
+            | "sqlite-version"
+            | "sqlitep"
+            | "sqlite-available-p"
     )
 }
 
@@ -269,10 +288,10 @@ fn simple_case_char_for_action(
             .unwrap_or_else(|| simple_upcase_char(code)),
         CaseAction::Down => explicit_case_table_mapping(interp, down_table, code)
             .unwrap_or_else(|| simple_downcase_char(code, false)),
-        CaseAction::Capitalize | CaseAction::UpcaseInitials => explicit_case_table_mapping(
-            interp, up_table, code,
-        )
-        .unwrap_or_else(|| simple_titlecase_char(code)),
+        CaseAction::Capitalize | CaseAction::UpcaseInitials => {
+            explicit_case_table_mapping(interp, up_table, code)
+                .unwrap_or_else(|| simple_titlecase_char(code))
+        }
     }
 }
 
@@ -295,7 +314,9 @@ fn casify_string(
             .is_some_and(|next| case_word_char(interp, next, case_symbols_as_words));
         let piece = match action {
             CaseAction::Up => full_upcase_string(interp, up_table, ch),
-            CaseAction::Down => full_downcase_string(interp, down_table, ch, in_word && !next_is_word),
+            CaseAction::Down => {
+                full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
+            }
             CaseAction::Capitalize => {
                 if is_word && !in_word {
                     full_titlecase_string(interp, up_table, ch)
@@ -327,9 +348,9 @@ fn casify_value(
         let code = u32::try_from(integer)
             .map_err(|_| LispError::Signal(format!("Invalid character: {integer}")))?;
         let (down_table, up_table) = current_case_table_ids(interp)?;
-        return Ok(Value::Integer(
-            simple_case_char_for_action(interp, down_table, up_table, code, action) as i64,
-        ));
+        return Ok(Value::Integer(simple_case_char_for_action(
+            interp, down_table, up_table, code, action,
+        ) as i64));
     }
     let input = string_text(value)?;
     Ok(Value::String(casify_string(interp, &input, action, env)?))
@@ -341,9 +362,7 @@ fn replace_buffer_region_with_text(
     end: usize,
     text: &str,
 ) -> Result<usize, LispError> {
-    interp
-        .buffer
-        .goto_char(start);
+    interp.buffer.goto_char(start);
     interp
         .buffer
         .delete_region(start, end)
@@ -404,12 +423,7 @@ fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, LispError> 
     Err(LispError::Signal("Invalid region bounds".into()))
 }
 
-fn case_word_region(
-    interp: &Interpreter,
-    point: usize,
-    count: i64,
-    env: &Env,
-) -> (usize, usize) {
+fn case_word_region(interp: &Interpreter, point: usize, count: i64, env: &Env) -> (usize, usize) {
     let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
     let is_word = |ch: char| case_word_char(interp, ch, case_symbols_as_words);
     let mut cursor = point;
@@ -505,6 +519,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "<="
             | ">="
             | "/="
+            | "version<="
             // Equality
             | "eq"
             | "eql"
@@ -962,6 +977,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "undo-more"
     ) || is_composed_accessor_name(name)
         || (compat_lcms2_available() && is_lcms_builtin(name))
+        || is_sqlite_builtin(name)
 }
 
 /// Dispatch a builtin function call.
@@ -974,6 +990,10 @@ pub fn call(
     // Helper: check if any argument is a float
     let has_float = |args: &[Value]| args.iter().any(|a| matches!(a, Value::Float(_)));
     let has_big_integer = |args: &[Value]| args.iter().any(|a| matches!(a, Value::BigInteger(_)));
+
+    if sqlite::is_builtin(name) {
+        return sqlite::call(interp, name, args, env);
+    }
 
     if matches!(
         name,
@@ -1398,6 +1418,16 @@ pub fn call(
                     },
                 )
             }
+        }
+        "version<=" => {
+            need_args(name, args, 2)?;
+            Ok(
+                if version_leq(&string_text(&args[0])?, &string_text(&args[1])?) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "<" => {
             need_args(name, args, 2)?;
@@ -1871,14 +1901,18 @@ pub fn call(
             }
             let list = call(interp, "mapcar", &args[..2], env)?.to_vec()?;
             let sep = if args.len() == 3 {
+                let text = string_text(&args[2])?;
+                let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
                 string_like(&args[2]).unwrap_or(StringLike {
-                    text: string_text(&args[2])?,
+                    text,
                     props: Vec::new(),
+                    multibyte,
                 })
             } else {
                 StringLike {
                     text: String::new(),
                     props: Vec::new(),
+                    multibyte: false,
                 }
             };
             let mut result = String::new();
@@ -2400,8 +2434,9 @@ pub fn call(
         }
         "multibyte-string-p" => {
             need_args(name, args, 1)?;
-            let s = string_text(&args[0])?;
-            Ok(if s.chars().any(|ch| (ch as u32) > 0x7F) {
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            Ok(if string.multibyte {
                 Value::T
             } else {
                 Value::Nil
@@ -2441,12 +2476,12 @@ pub fn call(
                     if code == 0x00DF {
                         Value::Nil
                     } else {
-                    let mapped = simple_upcase_char(code);
-                    if mapped == code {
-                        Value::Nil
-                    } else {
-                        Value::Integer(mapped as i64)
-                    }
+                        let mapped = simple_upcase_char(code);
+                        if mapped == code {
+                            Value::Nil
+                        } else {
+                            Value::Integer(mapped as i64)
+                        }
                     }
                 }
                 (code, "lowercase") => {
@@ -2618,15 +2653,13 @@ pub fn call(
                     }
                 } else {
                     while interp.buffer.point() > interp.buffer.point_min() {
-                        if matches!(interp.buffer.char_before(), Some(ch) if is_word(ch))
-                        {
+                        if matches!(interp.buffer.char_before(), Some(ch) if is_word(ch)) {
                             break;
                         }
                         let _ = interp.buffer.forward_char(-1);
                     }
                     while interp.buffer.point() > interp.buffer.point_min() {
-                        if !matches!(interp.buffer.char_before(), Some(ch) if is_word(ch))
-                        {
+                        if !matches!(interp.buffer.char_before(), Some(ch) if is_word(ch)) {
                             break;
                         }
                         let _ = interp.buffer.forward_char(-1);
@@ -5890,7 +5923,11 @@ pub fn call(
         "copy-sequence" => {
             need_args(name, args, 1)?;
             if let Some(string) = string_like(&args[0]) {
-                Ok(make_shared_string_value(string.text, string.props))
+                Ok(make_shared_string_value_with_multibyte(
+                    string.text,
+                    string.props,
+                    string.multibyte,
+                ))
             } else {
                 match &args[0] {
                     Value::CharTable(id) => interp.clone_char_table(*id),
@@ -6094,10 +6131,7 @@ pub fn call(
             let code = u32::try_from(args[0].as_integer()?)
                 .map_err(|_| LispError::Signal("Invalid character".into()))?;
             let syntax = string_text(&args[1])?;
-            interp.set_syntax_word_char(
-                normalize_case_key(code),
-                syntax.starts_with('w'),
-            );
+            interp.set_syntax_word_char(normalize_case_key(code), syntax.starts_with('w'));
             Ok(Value::Nil)
         }
 
@@ -6932,7 +6966,7 @@ fn marker_target(
     }
 }
 
-fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
+pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     let items = value.to_vec()?;
     if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal")
     {
@@ -8770,10 +8804,12 @@ fn replacement_content(interp: &Interpreter, source: &Value) -> Result<StringLik
             let buffer = interp
                 .get_buffer_by_id(*id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))?;
+            let text = buffer
+                .buffer_substring(buffer.point_min(), buffer.point_max())
+                .map_err(|e| LispError::Signal(e.to_string()))?;
             Ok(StringLike {
-                text: buffer
-                    .buffer_substring(buffer.point_min(), buffer.point_max())
-                    .map_err(|e| LispError::Signal(e.to_string()))?,
+                multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
+                text,
                 props: buffer.substring_property_spans(buffer.point_min(), buffer.point_max()),
             })
         }
@@ -8786,10 +8822,12 @@ fn replacement_content(interp: &Interpreter, source: &Value) -> Result<StringLik
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+                let text = buffer
+                    .buffer_substring(start, end)
+                    .map_err(|e| LispError::Signal(e.to_string()))?;
                 Ok(StringLike {
-                    text: buffer
-                        .buffer_substring(start, end)
-                        .map_err(|e| LispError::Signal(e.to_string()))?,
+                    multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
+                    text,
                     props: buffer.substring_property_spans(start, end),
                 })
             } else {
@@ -8803,16 +8841,18 @@ fn replacement_content(interp: &Interpreter, source: &Value) -> Result<StringLik
 }
 
 #[derive(Clone, Debug)]
-struct StringLike {
-    text: String,
-    props: Vec<TextPropertySpan>,
+pub(crate) struct StringLike {
+    pub(crate) text: String,
+    pub(crate) props: Vec<TextPropertySpan>,
+    pub(crate) multibyte: bool,
 }
 
-fn string_like(value: &Value) -> Option<StringLike> {
+pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value {
         Value::String(text) => Some(StringLike {
             text: text.clone(),
             props: Vec::new(),
+            multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
         }),
         Value::StringObject(state) => {
             let state = state.borrow();
@@ -8827,6 +8867,7 @@ fn string_like(value: &Value) -> Option<StringLike> {
                         props: span.props.clone(),
                     })
                     .collect(),
+                multibyte: state.multibyte,
             })
         }
         Value::Cons(_, _) => {
@@ -8847,13 +8888,18 @@ fn string_like(value: &Value) -> Option<StringLike> {
                 });
                 i += 3;
             }
-            Some(StringLike { text, props })
+            let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
+            Some(StringLike {
+                text,
+                props,
+                multibyte,
+            })
         }
         _ => None,
     }
 }
 
-fn string_text(value: &Value) -> Result<String, LispError> {
+pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
@@ -8870,10 +8916,15 @@ fn shared_string_props(props: &[TextPropertySpan]) -> Vec<StringPropertySpan> {
         .collect()
 }
 
-fn make_shared_string_value(text: String, props: Vec<TextPropertySpan>) -> Value {
+pub(crate) fn make_shared_string_value_with_multibyte(
+    text: String,
+    props: Vec<TextPropertySpan>,
+    multibyte: bool,
+) -> Value {
     Value::StringObject(Rc::new(RefCell::new(SharedStringState {
         text,
         props: shared_string_props(&props),
+        multibyte,
     })))
 }
 
@@ -9657,6 +9708,7 @@ fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispError> {
         }
     }
     Ok(StringLike {
+        multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
         text,
         props: merge_string_props(props),
     })
@@ -9675,6 +9727,40 @@ fn normalize_bigint_value(value: BigInt) -> Value {
         .to_i64()
         .map(Value::Integer)
         .unwrap_or(Value::BigInteger(value))
+}
+
+fn version_leq(left: &str, right: &str) -> bool {
+    let left = parse_version_components(left);
+    let right = parse_version_components(right);
+    let width = left.len().max(right.len());
+    for index in 0..width {
+        let a = *left.get(index).unwrap_or(&0);
+        let b = *right.get(index).unwrap_or(&0);
+        if a < b {
+            return true;
+        }
+        if a > b {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_version_components(version: &str) -> Vec<i64> {
+    version
+        .split('.')
+        .map(|segment| {
+            let digits = segment
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>();
+            if digits.is_empty() {
+                0
+            } else {
+                digits.parse::<i64>().unwrap_or(0)
+            }
+        })
+        .collect()
 }
 
 fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {

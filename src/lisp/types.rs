@@ -16,6 +16,7 @@ pub struct StringPropertySpan {
 pub struct SharedStringState {
     pub text: String,
     pub props: Vec<StringPropertySpan>,
+    pub multibyte: bool,
 }
 
 /// A Lisp value. This covers the subset we need for ERT tests.
