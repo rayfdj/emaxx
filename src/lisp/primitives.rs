@@ -1823,8 +1823,8 @@ pub fn call(
         }
         "string=" | "string-equal" => {
             need_args(name, args, 2)?;
-            let a = string_text(&args[0])?;
-            let b = string_text(&args[1])?;
+            let a = string_comparison_text(&args[0])?;
+            let b = string_comparison_text(&args[1])?;
             Ok(if a == b { Value::T } else { Value::Nil })
         }
         "string-equal-ignore-case" => {
@@ -1839,8 +1839,8 @@ pub fn call(
         }
         "string<" => {
             need_args(name, args, 2)?;
-            let a = string_text(&args[0])?;
-            let b = string_text(&args[1])?;
+            let a = string_comparison_text(&args[0])?;
+            let b = string_comparison_text(&args[1])?;
             Ok(if a < b { Value::T } else { Value::Nil })
         }
         "string-search" => {
@@ -13417,6 +13417,15 @@ pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
+}
+
+fn string_comparison_text(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::Nil => Ok("nil".into()),
+        Value::T => Ok("t".into()),
+        Value::Symbol(name) => Ok(name.clone()),
+        _ => string_text(value),
+    }
 }
 
 pub(crate) fn aset_string_value(
