@@ -534,6 +534,10 @@ impl Buffer {
         });
     }
 
+    pub fn set_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
+        self.modify_text_properties(start, end, |_| props.to_vec());
+    }
+
     pub fn remove_list_of_text_properties(&mut self, start: usize, end: usize, names: &[String]) {
         self.modify_text_properties(start, end, |current| {
             current
