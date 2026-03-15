@@ -11192,7 +11192,7 @@ fn group_name_from_gid(gid: i64) -> Result<Option<String>, LispError> {
     Ok(None)
 }
 
-fn find_executable(name: &str) -> Option<String> {
+pub(crate) fn find_executable(name: &str) -> Option<String> {
     if name.contains(std::path::MAIN_SEPARATOR) && std::path::Path::new(name).exists() {
         return Some(name.to_string());
     }
