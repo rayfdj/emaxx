@@ -673,6 +673,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "mapc"
             | "cl-reduce"
             | "apply"
+            | "apply-partially"
             | "funcall"
             | "funcall-interactively"
             | "call-interactively"
@@ -1131,12 +1132,17 @@ pub fn is_builtin(name: &str) -> bool {
             | "keymap-parent"
             | "set-keymap-parent"
             | "use-local-map"
+            | "current-local-map"
+            | "copy-keymap"
             | "current-global-map"
             | "global-set-key"
             | "local-set-key"
             | "global-unset-key"
             | "local-unset-key"
+            | "define-widget"
             | "define-button-type"
+            | "defined-colors"
+            | "color-defined-p"
             | "next-read-file-uses-dialog-p"
             | "auto-save-mode"
             | "do-auto-save"
@@ -1163,6 +1169,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "puthash"
             | "hash-table-count"
             | "hash-table-keys"
+            | "completion-table-case-fold"
             | "try-completion"
             | "all-completions"
             | "test-completion"
@@ -2492,6 +2499,20 @@ pub fn call(
             let original_name = func.as_symbol().ok();
             interp.call_function_value(resolved, original_name, &all_args, env)
         }
+        "apply-partially" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            let rest_name = "__emaxx-apply-partially-rest".to_string();
+            let mut body = vec![Value::Symbol("apply".into()), literal_form(&args[0])];
+            body.extend(args[1..].iter().map(literal_form));
+            body.push(Value::Symbol(rest_name.clone()));
+            Ok(Value::Lambda(
+                vec!["&rest".into(), rest_name],
+                vec![Value::list(body)],
+                env.clone(),
+            ))
+        }
         "funcall" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("funcall".into(), 0));
@@ -2590,6 +2611,10 @@ pub fn call(
         "make-mode-line-mouse-map" => {
             need_args(name, args, 2)?;
             Ok(keymap_placeholder(Some("mode-line-mouse-map")))
+        }
+        "copy-keymap" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
         }
         "record" => {
             need_args(name, args, 1)?;
@@ -6384,6 +6409,10 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::Nil)
         }
+        "current-local-map" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
         "current-global-map" => {
             need_args(name, args, 0)?;
             Ok(keymap_placeholder(Some("global-map")))
@@ -6396,9 +6425,47 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::Nil)
         }
+        "define-widget" => {
+            if args.len() < 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let name = args[0].as_symbol()?;
+            let class = args[1].clone();
+            let doc = args[2].clone();
+            let widget_type = if args.len() > 3 {
+                Value::cons(class, Value::list(args[3..].to_vec()))
+            } else {
+                Value::list([class])
+            };
+            interp.put_symbol_property(name, "widget-type", widget_type);
+            interp.put_symbol_property(name, "widget-documentation", doc);
+            Ok(Value::Symbol(name.to_string()))
+        }
         "define-button-type" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
+        }
+        "defined-colors" => {
+            need_args(name, args, 0)?;
+            Ok(Value::list([
+                Value::String("black".into()),
+                Value::String("white".into()),
+                Value::String("red".into()),
+                Value::String("green".into()),
+                Value::String("blue".into()),
+            ]))
+        }
+        "color-defined-p" => {
+            need_args(name, args, 1)?;
+            let color = string_text(&args[0])?;
+            Ok(if ["black", "white", "red", "green", "blue"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&color))
+            {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "symbol-function" => {
             need_args(name, args, 1)?;
@@ -6694,6 +6761,12 @@ pub fn call(
         "puthash" => {
             need_args(name, args, 3)?;
             json::hash_table_put(interp, &args[2], args[0].clone(), args[1].clone())
+        }
+        "completion-table-case-fold" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[0].clone())
         }
         "hash-table-count" => {
             need_args(name, args, 1)?;
@@ -11025,6 +11098,13 @@ fn compat_repo_root_from_test_directory(test_directory: &str) -> Option<PathBuf>
         .map(Path::to_path_buf)
 }
 
+pub(crate) fn compat_data_directory() -> Option<String> {
+    std::env::var("EMACS_TEST_DIRECTORY")
+        .ok()
+        .and_then(|test_directory| compat_repo_root_from_test_directory(&test_directory))
+        .map(|repo_root| path_to_directory_string(&repo_root.join("etc")))
+}
+
 fn compat_invocation_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
     let repo_root = compat_repo_root_from_test_directory(test_directory)?;
     let candidate = repo_root.join("src").join("emacs");
@@ -11430,7 +11510,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
-fn path_to_directory_string(path: &Path) -> String {
+pub(crate) fn path_to_directory_string(path: &Path) -> String {
     let mut rendered = normalize_path(path).display().to_string();
     if !rendered.ends_with(std::path::MAIN_SEPARATOR) {
         rendered.push(std::path::MAIN_SEPARATOR);
@@ -15786,6 +15866,15 @@ fn resolve_callable(interp: &Interpreter, value: &Value, env: &Env) -> Result<Va
     match value {
         Value::Symbol(name) => interp.lookup_function(name, env),
         _ => Ok(value.clone()),
+    }
+}
+
+fn literal_form(value: &Value) -> Value {
+    match value {
+        Value::Cons(_, _) | Value::Symbol(_) => {
+            Value::list([Value::Symbol("quote".into()), value.clone()])
+        }
+        other => other.clone(),
     }
 }
 

@@ -2642,11 +2642,13 @@ impl Interpreter {
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
+            "obarray" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
             "mode-line-modes" => Some(Value::Nil),
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
             "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
+            "global-map" => Some(primitives::keymap_placeholder(Some("global-map"))),
             "password-word-equivalents" => Some(Value::list([
                 Value::String("password".into()),
                 Value::String("passcode".into()),
@@ -2673,6 +2675,10 @@ impl Interpreter {
                     })
                     .unwrap_or_else(primitives::default_directory),
             )),
+            "data-directory" | "doc-directory" => Some(Value::String(
+                primitives::compat_data_directory()
+                    .unwrap_or_else(primitives::default_directory),
+            )),
             "user-login-name" => Some(Value::String(
                 primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
             )),
@@ -2682,10 +2688,30 @@ impl Interpreter {
                     .unwrap_or_else(|| "user".into()),
             )),
             "default-directory" => Some(Value::String(primitives::default_directory())),
+            "load-path" => Some(Value::list(
+                self.load_path
+                    .iter()
+                    .map(|path| Value::String(primitives::path_to_directory_string(path)))
+                    .collect::<Vec<_>>(),
+            )),
+            "image-load-path" => Some(Value::list([
+                Value::String(
+                    primitives::compat_data_directory()
+                        .map(|path| {
+                            let mut path = std::path::PathBuf::from(path);
+                            path.push("images");
+                            primitives::path_to_directory_string(&path)
+                        })
+                        .unwrap_or_else(primitives::default_directory),
+                ),
+                Value::Symbol("data-directory".into()),
+                Value::Symbol("load-path".into()),
+            ])),
             "installation-directory" => Some(Value::Nil),
             "tab-width" => Some(Value::Integer(8)),
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
+            "read-file-name-completion-ignore-case" => Some(Value::Nil),
             "system-type" => Some(Value::Symbol(
                 std::env::consts::OS.replace("macos", "darwin"),
             )),
@@ -5170,11 +5196,8 @@ impl Interpreter {
         let name = quoted_symbol_name(&items[1])
             .or_else(|| items[1].as_symbol().ok().map(str::to_string))
             .ok_or_else(|| LispError::TypeError("symbol".into(), items[1].type_name()))?;
-        let function = match &items[2] {
-            Value::Symbol(symbol) => self.lookup_function(symbol, env)?,
-            other => self.eval(other, env)?,
-        };
-        self.functions.push((name.clone(), function));
+        let function = self.eval(&items[2], env)?;
+        self.set_function_binding(&name, Some(function));
         Ok(Value::Symbol(name))
     }
 
@@ -6704,12 +6727,14 @@ mod tests {
                 r#"
                 (let ((map (make-sparse-keymap "demo")))
                   (list (keymapp map)
+                        (keymapp (copy-keymap map))
                         (define-key map "a" 'foo)
                         (lookup-key map "a")
                         (keymap-parent map)))
                 "#,
             ),
             Value::list([
+                Value::T,
                 Value::T,
                 Value::Symbol("foo".into()),
                 Value::Nil,
@@ -6898,6 +6923,19 @@ mod tests {
     fn fset_can_define_function_aliases() {
         assert_eq!(
             eval_str("(progn (fset 'sample-head #'car) (sample-head '(1 2 3)))"),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn defalias_evaluates_symbol_definition_forms() {
+        assert_eq!(
+            eval_str(
+                "(progn \
+                   (defvar sample-definition 'car) \
+                   (defalias 'sample-head sample-definition) \
+                   (sample-head '(1 2 3)))"
+            ),
             Value::Integer(1)
         );
     }
