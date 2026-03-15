@@ -370,29 +370,56 @@ impl<'a> Reader<'a> {
             None => Err(LispError::EndOfInput),
             Some(b'\\') => {
                 self.advance(); // consume backslash
+                const SUPER_BIT: i64 = 1 << 23;
                 const SHIFT_BIT: i64 = 1 << 25;
                 const CTRL_BIT: i64 = 1 << 26;
                 const META_BIT: i64 = 1 << 27;
 
                 let mut modifiers = 0i64;
+                let mut saw_modifier = false;
                 loop {
+                    if self.peek() == Some(b'\\')
+                        && matches!(
+                            self.input.get(self.pos + 1).copied(),
+                            Some(b'S' | b'C' | b'M' | b's' | b'^')
+                        )
+                    {
+                        self.advance();
+                    }
                     match (self.peek(), self.input.get(self.pos + 1).copied()) {
                         (Some(b'S'), Some(b'-')) => {
+                            saw_modifier = true;
                             modifiers |= SHIFT_BIT;
                             self.pos += 2;
                         }
                         (Some(b'C'), Some(b'-')) => {
+                            saw_modifier = true;
                             modifiers |= CTRL_BIT;
                             self.pos += 2;
                         }
                         (Some(b'M'), Some(b'-')) => {
+                            saw_modifier = true;
                             modifiers |= META_BIT;
                             self.pos += 2;
+                        }
+                        (Some(b's'), Some(b'-')) => {
+                            saw_modifier = true;
+                            modifiers |= SUPER_BIT;
+                            self.pos += 2;
+                        }
+                        (Some(b'^'), _) => {
+                            saw_modifier = true;
+                            modifiers |= CTRL_BIT;
+                            self.pos += 1;
                         }
                         _ => break,
                     }
                 }
-                let mut value = self.read_escaped_character_code()?;
+                let mut value = if !saw_modifier || self.peek() == Some(b'\\') {
+                    self.read_escaped_character_code()?
+                } else {
+                    self.read_literal_character_code()?
+                };
                 if modifiers & CTRL_BIT != 0 && value != 0 {
                     value = match value {
                         0x3f => 0x7f,
@@ -411,11 +438,24 @@ impl<'a> Reader<'a> {
             }
             Some(_) => {
                 // Multi-byte UTF-8 character like ?± or ?Ā
+                Ok(Some(Value::Integer(self.read_literal_character_code()?)))
+            }
+        }
+    }
+
+    fn read_literal_character_code(&mut self) -> Result<i64, LispError> {
+        match self.peek() {
+            None => Err(LispError::EndOfInput),
+            Some(ch) if ch < 0x80 => {
+                self.advance();
+                Ok(ch as i64)
+            }
+            Some(_) => {
                 if let Some(c) = self.read_utf8_char() {
-                    Ok(Some(Value::Integer(c as i64)))
+                    Ok(c as i64)
                 } else {
-                    let b = self.advance().expect("peek confirmed byte exists");
-                    Ok(Some(Value::Integer(b as i64)))
+                    let byte = self.advance().ok_or(LispError::EndOfInput)?;
+                    Ok(byte as i64)
                 }
             }
         }
@@ -430,6 +470,7 @@ impl<'a> Reader<'a> {
             Some(b'n') => Ok('\n' as i64),
             Some(b't') => Ok('\t' as i64),
             Some(b'r') => Ok('\r' as i64),
+            Some(b's') => Ok(' ' as i64),
             Some(b' ') => Ok(' ' as i64),
             Some(b'\\') => Ok('\\' as i64),
             Some(b'N') => {
@@ -917,7 +958,22 @@ mod tests {
     fn characters() {
         assert_eq!(read_one("?a"), Value::Integer(b'a' as i64));
         assert_eq!(read_one("?\\n"), Value::Integer(b'\n' as i64));
+        assert_eq!(read_one("?\\s"), Value::Integer(b' ' as i64));
         assert_eq!(read_one("?\\ "), Value::Integer(b' ' as i64));
+    }
+
+    #[test]
+    fn characters_with_modifiers() {
+        assert_eq!(read_one("?\\C-x"), Value::Integer(24));
+        assert_eq!(read_one("?\\M-c"), Value::Integer((1 << 27) | ('c' as i64)));
+        assert_eq!(read_one("?\\^C"), Value::Integer(3));
+        assert_eq!(read_one("?\\^?"), Value::Integer(127));
+        assert_eq!(read_one("?\\s-c"), Value::Integer((1 << 23) | ('c' as i64)));
+        assert_eq!(read_one("?\\S-c"), Value::Integer((1 << 25) | ('c' as i64)));
+        assert_eq!(
+            read_one("?\\M-\\C-x"),
+            Value::Integer((1 << 27) | 24)
+        );
     }
 
     #[test]
