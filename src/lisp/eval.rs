@@ -6051,7 +6051,7 @@ fn feature_name(value: &Value) -> Option<String> {
 fn is_compat_preloaded_feature(feature: &str) -> bool {
     matches!(
         feature,
-        "cl-lib" | "cus-edit" | "cus-load" | "ert-x" | "map" | "seq" | "subr-x"
+        "cl-lib" | "cus-edit" | "cus-load" | "edmacro" | "ert-x" | "map" | "seq" | "subr-x"
     )
 }
 
@@ -6485,6 +6485,25 @@ mod tests {
                    treesit-map)"
             ),
             Value::Nil
+        );
+    }
+
+    #[test]
+    fn require_edmacro_supports_edmacro_parse_keys_cases() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (require 'edmacro)
+                    (and
+                    (equal (edmacro-parse-keys \"\") [])
+                    (equal (edmacro-parse-keys \"x ;; ignored\") [?x])
+                    (equal (edmacro-parse-keys \"<<goto-line>>\")
+                           [?\\M-x ?g ?o ?t ?o ?- ?l ?i ?n ?e ?\\r])
+                    (equal (edmacro-parse-keys \"3*C-m\") [?\\C-m ?\\C-m ?\\C-m])
+                    (equal (edmacro-parse-keys \"10*foo\")
+                           (apply #'vconcat (make-list 10 [?f ?o ?o])))))"
+            ),
+            Value::T
         );
     }
 

@@ -698,6 +698,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-keymap"
             | "make-sparse-keymap"
             | "make-mode-line-mouse-map"
+            | "vconcat"
             | "record"
             | "make-record"
             | "make-finalizer"
@@ -721,6 +722,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-to-list"
             | "string-replace"
             | "replace-regexp-in-string"
+            | "edmacro-parse-keys"
             | "string-bytes"
             | "byte-to-string"
             | "multibyte-string-p"
@@ -2617,6 +2619,27 @@ pub fn call(
             need_args(name, args, 2)?;
             Ok(keymap_placeholder(Some("mode-line-mouse-map")))
         }
+        "vconcat" => {
+            let mut items = vec![Value::symbol("vector")];
+            for value in args {
+                if let Ok(vector) = vector_items(value) {
+                    items.extend(vector);
+                    continue;
+                }
+                if let Some(string) = string_like(value) {
+                    items.extend(string.text.chars().map(|ch| Value::Integer(ch as i64)));
+                    continue;
+                }
+                match value {
+                    Value::Nil => {}
+                    Value::Cons(_, _) => items.extend(value.to_vec()?),
+                    _ => {
+                        return Err(LispError::TypeError("sequence".into(), value.type_name()));
+                    }
+                }
+            }
+            Ok(Value::list(items))
+        }
         "copy-keymap" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
@@ -3099,6 +3122,10 @@ pub fn call(
 
             result.push_str(&tail);
             Ok(Value::String(result))
+        }
+        "edmacro-parse-keys" => {
+            need_arg_range(name, args, 1, 2)?;
+            parse_edmacro_key_sequence(&string_text(&args[0])?)
         }
         "string-trim" => {
             need_args(name, args, 1)?;
@@ -17022,6 +17049,210 @@ fn render_lisp_literal(
     })
 }
 
+fn parse_edmacro_key_sequence(source: &str) -> Result<Value, LispError> {
+    let mut parser = EdmacroKeyParser::new(source);
+    let items = parser.parse()?;
+    let mut vector = vec![Value::symbol("vector")];
+    vector.extend(items);
+    Ok(Value::list(vector))
+}
+
+struct EdmacroKeyParser<'a> {
+    source: &'a str,
+    pos: usize,
+}
+
+impl<'a> EdmacroKeyParser<'a> {
+    fn new(source: &'a str) -> Self {
+        Self { source, pos: 0 }
+    }
+
+    fn parse(&mut self) -> Result<Vec<Value>, LispError> {
+        let mut items = Vec::new();
+        while self.pos < self.source.len() {
+            self.skip_whitespace();
+            if self.pos >= self.source.len() {
+                break;
+            }
+            if self.starts_comment() {
+                self.skip_comment();
+                continue;
+            }
+            let repeat = self.parse_repeat_prefix()?;
+            if self.starts_comment() {
+                self.skip_comment();
+                continue;
+            }
+            let token = self.read_token();
+            if token.is_empty() {
+                break;
+            }
+            let parsed = parse_edmacro_token(token)?;
+            for _ in 0..repeat {
+                items.extend(parsed.iter().cloned());
+            }
+        }
+        Ok(items)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(ch) = self.peek_char() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+    }
+
+    fn starts_comment(&self) -> bool {
+        let rest = &self.source[self.pos..];
+        if rest.starts_with(";;") {
+            return true;
+        }
+        if !rest.starts_with("REM") {
+            return false;
+        }
+        match rest.get(3..).and_then(|tail| tail.chars().next()) {
+            None => true,
+            Some(ch) => ch.is_whitespace(),
+        }
+    }
+
+    fn skip_comment(&mut self) {
+        while let Some(ch) = self.peek_char() {
+            self.pos += ch.len_utf8();
+            if ch == '\n' {
+                break;
+            }
+        }
+    }
+
+    fn parse_repeat_prefix(&mut self) -> Result<usize, LispError> {
+        let start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if !ch.is_ascii_digit() {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+        if self.pos == start || self.peek_char() != Some('*') {
+            self.pos = start;
+            return Ok(1);
+        }
+        let count = self.source[start..self.pos]
+            .parse::<usize>()
+            .map_err(|error| LispError::Signal(format!("Invalid repetition count: {error}")))?;
+        self.pos += 1;
+        Ok(count)
+    }
+
+    fn read_token(&mut self) -> &'a str {
+        let start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if ch.is_whitespace() {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+        &self.source[start..self.pos]
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.source[self.pos..].chars().next()
+    }
+}
+
+fn parse_edmacro_token(token: &str) -> Result<Vec<Value>, LispError> {
+    if token.starts_with("<<") && token.ends_with(">>") && token.len() >= 4 {
+        let command = &token[2..token.len() - 2];
+        let mut items = vec![Value::Integer(apply_edmacro_modifiers('x' as i64, false, true))];
+        items.extend(command.chars().map(|ch| Value::Integer(ch as i64)));
+        items.push(Value::Integer('\r' as i64));
+        return Ok(items);
+    }
+
+    if let Some(key) = parse_modified_edmacro_key(token)? {
+        return Ok(vec![Value::Integer(key)]);
+    }
+
+    if let Some(key) = parse_named_edmacro_key(token) {
+        return Ok(vec![Value::Integer(key)]);
+    }
+
+    Ok(token.chars().map(|ch| Value::Integer(ch as i64)).collect())
+}
+
+fn parse_modified_edmacro_key(token: &str) -> Result<Option<i64>, LispError> {
+    let mut ctrl = false;
+    let mut meta = false;
+    let mut shift = false;
+    let mut super_key = false;
+    let mut rest = token;
+
+    loop {
+        let Some((prefix, tail)) = rest.split_once('-') else {
+            break;
+        };
+        match prefix {
+            "C" => ctrl = true,
+            "M" => meta = true,
+            "S" => shift = true,
+            "s" => super_key = true,
+            _ => return Ok(None),
+        }
+        rest = tail;
+    }
+
+    if !(ctrl || meta || shift || super_key) {
+        return Ok(None);
+    }
+
+    let base = if let Some(key) = parse_named_edmacro_key(rest) {
+        key
+    } else if rest.chars().count() == 1 {
+        rest.chars().next().expect("count checked") as i64
+    } else {
+        return Ok(None);
+    };
+
+    let mut key = apply_edmacro_modifiers(base, ctrl, meta);
+    if shift {
+        key |= 1 << 25;
+    }
+    if super_key {
+        key |= 1 << 23;
+    }
+    Ok(Some(key))
+}
+
+fn apply_edmacro_modifiers(mut value: i64, ctrl: bool, meta: bool) -> i64 {
+    if ctrl && value != 0 {
+        value = match value {
+            0x3f => 0x7f,
+            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
+            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
+            n => n & 0x1f,
+        };
+    }
+    if meta {
+        value |= 1 << 27;
+    }
+    value
+}
+
+fn parse_named_edmacro_key(token: &str) -> Option<i64> {
+    match token {
+        "NUL" => Some(0),
+        "TAB" => Some('\t' as i64),
+        "LFD" => Some('\n' as i64),
+        "RET" => Some('\r' as i64),
+        "ESC" => Some(0x1b),
+        "SPC" => Some(' ' as i64),
+        "DEL" => Some(0x7f),
+        _ => None,
+    }
+}
+
 fn is_composed_accessor_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     bytes.len() >= 3
@@ -17081,5 +17312,39 @@ mod lcms_response_tests {
             Err(error) => error,
         };
         assert_eq!(error.to_string(), "error: Invalid color");
+    }
+
+    #[test]
+    fn edmacro_parser_handles_comments_commands_and_repetition() {
+        assert_eq!(
+            parse_edmacro_key_sequence("x REM ignored").expect("parse x with comment"),
+            Value::list([Value::symbol("vector"), Value::Integer('x' as i64),])
+        );
+        assert_eq!(
+            parse_edmacro_key_sequence("<<goto-line>>").expect("parse command shortcut"),
+            Value::list([
+                Value::symbol("vector"),
+                Value::Integer((1 << 27) | ('x' as i64)),
+                Value::Integer('g' as i64),
+                Value::Integer('o' as i64),
+                Value::Integer('t' as i64),
+                Value::Integer('o' as i64),
+                Value::Integer('-' as i64),
+                Value::Integer('l' as i64),
+                Value::Integer('i' as i64),
+                Value::Integer('n' as i64),
+                Value::Integer('e' as i64),
+                Value::Integer('\r' as i64),
+            ])
+        );
+        assert_eq!(
+            parse_edmacro_key_sequence("3*C-m").expect("parse repeated control key"),
+            Value::list([
+                Value::symbol("vector"),
+                Value::Integer('\r' as i64),
+                Value::Integer('\r' as i64),
+                Value::Integer('\r' as i64),
+            ])
+        );
     }
 }
