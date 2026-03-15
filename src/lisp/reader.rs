@@ -464,6 +464,12 @@ impl<'a> Reader<'a> {
         if self.peek() == Some(b'\\') {
             self.advance();
         }
+        if self.peek().is_some_and(|ch| ch >= 0x80) {
+            return self
+                .read_utf8_char()
+                .map(|ch| ch as i64)
+                .ok_or_else(|| LispError::ReadError("invalid UTF-8 in character literal".into()));
+        }
         match self.advance() {
             None => Err(LispError::EndOfInput),
             Some(b'n') => Ok('\n' as i64),
@@ -967,6 +973,13 @@ mod tests {
         let val = read_one("(?\\\\)");
         let items = val.to_vec().unwrap();
         assert_eq!(items, vec![Value::Integer(b'\\' as i64)]);
+    }
+
+    #[test]
+    fn escaped_multibyte_character_literal_consumes_full_scalar() {
+        let val = read_one("(?\\‘)");
+        let items = val.to_vec().unwrap();
+        assert_eq!(items, vec![Value::Integer('‘' as i64)]);
     }
 
     #[test]

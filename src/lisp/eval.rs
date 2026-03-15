@@ -2638,13 +2638,18 @@ impl Interpreter {
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
+            "auto-mode-alist" => Some(Value::Nil),
+            "completion-ignored-extensions" => Some(Value::Nil),
             "custom-current-group-alist" => Some(Value::Nil),
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
             "obarray" => Some(Value::Nil),
+            "desktop-buffer-mode-handlers" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
+            "menu-bar-separator" => Some(Value::Symbol("menu-bar-separator".into())),
             "mode-line-modes" => Some(Value::Nil),
+            "text-mode-syntax-table" => Some(Value::Symbol("emaxx-standard-syntax-table".into())),
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
             "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
@@ -2941,7 +2946,9 @@ impl Interpreter {
                     match name.as_str() {
                         "quote" => return self.sf_quote(&items),
                         "if" => return self.sf_if(&items, env),
+                        "if-let*" => return self.sf_if_let_star(&items, env),
                         "when" => return self.sf_when(&items, env),
+                        "when-let*" => return self.sf_when_let_star(&items, env),
                         "unless" => return self.sf_unless(&items, env),
                         "cond" => return self.sf_cond(&items, env),
                         "pcase" => return self.sf_pcase(&items, env),
@@ -2978,6 +2985,7 @@ impl Interpreter {
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
                         "define-inline" => return self.sf_define_inline(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
+                        "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
                         "cl-defstruct" => return self.sf_cl_defstruct(&items),
                         "defalias" => return self.sf_defalias(&items, env),
                         "backquote" => return self.eval_backquote(&items[1], env),
@@ -3134,6 +3142,7 @@ impl Interpreter {
                             }
                             return Ok(Value::Nil);
                         }
+                        "with-eval-after-load" => return Ok(Value::Nil),
                         "with-no-warnings" => return self.sf_progn(&items[1..], env),
                         "declare"
                         | "declare-function"
@@ -3340,6 +3349,72 @@ impl Interpreter {
         } else {
             Ok(Value::Nil)
         }
+    }
+
+    fn sf_if_let_star(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "if-let*".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let bindings = items[1].to_vec()?;
+        env.push(Vec::new());
+        for binding in bindings {
+            let value = match binding {
+                Value::Symbol(name) => self.lookup(&name, env)?,
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    match parts.as_slice() {
+                        [expr] => self.eval(expr, env)?,
+                        [Value::Symbol(name), expr] => {
+                            let value = self.eval(expr, env)?;
+                            if name != "_"
+                                && let Some(frame) = env.last_mut()
+                            {
+                                frame.push((name.clone(), Self::stored_value(value.clone())));
+                            }
+                            value
+                        }
+                        _ => {
+                            env.pop();
+                            return Err(LispError::Signal("Invalid if-let* binding".into()));
+                        }
+                    }
+                }
+                _ => {
+                    env.pop();
+                    return Err(LispError::Signal("Invalid if-let* binding".into()));
+                }
+            };
+
+            if !value.is_truthy() {
+                env.pop();
+                return self.sf_progn(items.get(3..).unwrap_or(&[]), env);
+            }
+        }
+
+        let result = self.eval(&items[2], env);
+        env.pop();
+        result
+    }
+
+    fn sf_when_let_star(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "when-let*".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let rewritten = Value::list(
+            std::iter::once(Value::symbol("if-let*"))
+                .chain(std::iter::once(items[1].clone()))
+                .chain(std::iter::once(Value::list(
+                    std::iter::once(Value::symbol("progn")).chain(items[2..].iter().cloned()),
+                )))
+                .chain(std::iter::once(Value::Nil)),
+        );
+        self.eval(&rewritten, env)
     }
 
     fn sf_unless(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -3681,7 +3756,10 @@ impl Interpreter {
         match place.first() {
             Some(Value::Symbol(name)) if name == "symbol-function" => {
                 let Some(target) = place.get(1) else {
-                    return Err(LispError::Signal("Unsupported setf place".into()));
+                    return Err(LispError::Signal(format!(
+                        "Unsupported setf place: {}",
+                        items[1]
+                    )));
                 };
                 let function_name = function_name_from_binding_form(target)?;
                 let value = self.eval(&items[2], env)?;
@@ -3696,7 +3774,13 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
-            _ => Err(LispError::Signal("Unsupported setf place".into())),
+            Some(Value::Symbol(name)) if name == "image-property" => {
+                self.sf_setf_image_property(&place, &items[2], env)
+            }
+            _ => Err(LispError::Signal(format!(
+                "Unsupported setf place: {}",
+                items[1]
+            ))),
         }
     }
 
@@ -3762,6 +3846,52 @@ impl Interpreter {
         }
 
         self.set_setf_place_value(alist_place, Value::list(new_entries), env)?;
+        Ok(value)
+    }
+
+    fn sf_setf_image_property(
+        &mut self,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(image_place) = place.get(1) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let Some(property_expr) = place.get(2) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let image = self.eval(image_place, env)?;
+        let property = self.eval(property_expr, env)?;
+        let value = self.eval(value_expr, env)?;
+        let mut descriptor = image.to_vec()?;
+        if descriptor.is_empty() {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        }
+
+        let mut property_index = None;
+        let mut cursor = 1;
+        while cursor + 1 < descriptor.len() {
+            if descriptor[cursor] == property {
+                property_index = Some(cursor);
+                break;
+            }
+            cursor += 2;
+        }
+
+        match property_index {
+            Some(index) if value.is_nil() => {
+                descriptor.drain(index..=index + 1);
+            }
+            Some(index) => descriptor[index + 1] = value.clone(),
+            None if !value.is_nil() => {
+                descriptor.push(property);
+                descriptor.push(value.clone());
+            }
+            None => {}
+        }
+
+        self.set_setf_place_value(image_place, Value::list(descriptor), env)?;
         Ok(value)
     }
 
@@ -5190,6 +5320,36 @@ impl Interpreter {
         let body: Vec<Value> = items[body_start..].to_vec();
         self.macros.push((name.clone(), params, body));
         Ok(Value::Symbol(name))
+    }
+
+    fn sf_easy_menu_define(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() != 5 {
+            return Err(LispError::WrongNumberOfArgs(
+                "easy-menu-define".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let Some(symbol_name) = (match &items[1] {
+            Value::Nil => None,
+            Value::Symbol(name) => Some(name.clone()),
+            other => {
+                return Err(LispError::TypeError("symbol".into(), other.type_name()));
+            }
+        }) else {
+            return Ok(Value::Nil);
+        };
+
+        if self.lookup_var(&symbol_name, env).is_none() {
+            self.set_variable(
+                &symbol_name,
+                crate::lisp::primitives::keymap_placeholder(Some(&symbol_name)),
+                env,
+            );
+        }
+        if self.lookup_function(&symbol_name, env).is_err() {
+            self.set_function_binding(&symbol_name, Some(Value::BuiltinFunc("ignore".into())));
+        }
+        Ok(Value::Symbol(symbol_name))
     }
 
     fn sf_defalias(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -6803,6 +6963,7 @@ mod tests {
                         (keymapp (copy-keymap map))
                         (define-key map "a" 'foo)
                         (lookup-key map "a")
+                        (eq (suppress-keymap map) map)
                         (keymap-parent map)))
                 "#,
             ),
@@ -6811,8 +6972,24 @@ mod tests {
                 Value::T,
                 Value::Symbol("foo".into()),
                 Value::Nil,
+                Value::T,
                 Value::Nil,
             ])
+        );
+    }
+
+    #[test]
+    fn easy_menu_define_registers_a_placeholder_menu_symbol() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap "demo")))
+                  (easy-menu-define demo-menu map "Demo menu" '("Demo" ["Item" ignore t]))
+                  (list (keymapp demo-menu)
+                        (fboundp 'demo-menu)))
+                "#,
+            ),
+            Value::list([Value::T, Value::T])
         );
     }
 
@@ -7097,6 +7274,49 @@ mod tests {
                    alist)"
             ),
             Value::list([Value::cons(Value::Symbol("a".into()), Value::Integer(1),)])
+        );
+    }
+
+    #[test]
+    fn setf_image_property_updates_image_descriptors() {
+        assert_eq!(
+            eval_str(
+                "(let ((image '(image :type png :file \"demo.png\")))
+                   (setf (image-property image :type) nil)
+                   (setf (image-property image :data) \"payload\")
+                   image)"
+            ),
+            Value::list([
+                Value::Symbol("image".into()),
+                Value::Symbol(":file".into()),
+                Value::String("demo.png".into()),
+                Value::Symbol(":data".into()),
+                Value::String("payload".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn if_let_star_and_when_let_star_short_circuit_on_nil() {
+        assert_eq!(
+            eval_str("(if-let* ((a 1) (b 2)) (+ a b) 'fallback)"),
+            Value::Integer(3)
+        );
+        assert_eq!(
+            eval_str("(if-let* ((a 1) (_ nil) (b 2)) (+ a b) 'fallback)"),
+            Value::Symbol("fallback".into())
+        );
+        assert_eq!(
+            eval_str("(when-let* ((a 1) (b 2)) (+ a b))"),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn numeric_comparisons_support_variadic_chains() {
+        assert_eq!(
+            eval_str("(list (<= 33 77 47) (<= 33 40 47) (< 32 65 91) (/= 1 2 1))"),
+            Value::list([Value::Nil, Value::T, Value::T, Value::Nil])
         );
     }
 

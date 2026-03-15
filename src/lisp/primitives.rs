@@ -688,6 +688,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "mapconcat"
             | "key-description"
             | "single-key-description"
+            | "ensure-list"
+            | "seq-find"
+            | "seq-contains-p"
             | "seq-take"
             | "seq-position"
             | "treesit-language-available-p"
@@ -719,10 +722,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "split-string"
             | "string-width"
             | "format"
+            | "format-spec"
             | "char-to-string"
             | "string-to-char"
             | "string-to-list"
             | "string-replace"
+            | "string-equal-ignore-case"
             | "replace-regexp-in-string"
             | "edmacro-parse-keys"
             | "string-bytes"
@@ -737,6 +742,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-char-code-property"
             | "char-resolve-modifiers"
             | "string-trim"
+            | "url-hexify-string"
             // Buffer operations
             | "insert"
             | "insert-and-inherit"
@@ -916,6 +922,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "standard-case-table"
             | "set-case-table"
             | "set-standard-case-table"
+            | "make-syntax-table"
+            | "copy-syntax-table"
             | "standard-syntax-table"
             | "modify-syntax-entry"
             | "setcdr"
@@ -1140,6 +1148,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "lookup-key"
             | "keymap-parent"
             | "set-keymap-parent"
+            | "suppress-keymap"
             | "use-local-map"
             | "current-local-map"
             | "copy-keymap"
@@ -1148,7 +1157,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "local-set-key"
             | "global-unset-key"
             | "local-unset-key"
+            | "substitute-key-definition"
             | "easy-menu-add-item"
+            | "tool-bar-local-item-from-menu"
             | "define-widget"
             | "define-button-type"
             | "defined-colors"
@@ -1660,30 +1671,15 @@ pub fn call(
 
         // ── Comparison ──
         "=" => {
-            need_args(name, args, 2)?;
-            if has_float(args) {
-                let a = numeric_to_f64(interp, &args[0])?;
-                let b = numeric_to_f64(interp, &args[1])?;
-                Ok(if a == b { Value::T } else { Value::Nil })
-            } else if has_big_integer(args) {
-                Ok(
-                    if integer_like_bigint(interp, &args[0])?
-                        == integer_like_bigint(interp, &args[1])?
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
-            } else {
-                Ok(
-                    if integer_like_i64(interp, &args[0])? == integer_like_i64(interp, &args[1])? {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
             }
+            for pair in args.windows(2) {
+                if !numeric_eq(interp, &pair[0], &pair[1])? {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
         }
         "version<=" => {
             need_args(name, args, 2)?;
@@ -1696,44 +1692,59 @@ pub fn call(
             )
         }
         "<" => {
-            need_args(name, args, 2)?;
-            Ok(if numeric_lt(interp, &args[0], &args[1])? {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            for pair in args.windows(2) {
+                if !numeric_lt(interp, &pair[0], &pair[1])? {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
         }
         ">" => {
-            need_args(name, args, 2)?;
-            Ok(if numeric_gt(interp, &args[0], &args[1])? {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            for pair in args.windows(2) {
+                if !numeric_gt(interp, &pair[0], &pair[1])? {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
         }
         "<=" => {
-            need_args(name, args, 2)?;
-            Ok(if numeric_lte(interp, &args[0], &args[1])? {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            for pair in args.windows(2) {
+                if !numeric_lte(interp, &pair[0], &pair[1])? {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
         }
         ">=" => {
-            need_args(name, args, 2)?;
-            Ok(if numeric_gte(interp, &args[0], &args[1])? {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            for pair in args.windows(2) {
+                if !numeric_gte(interp, &pair[0], &pair[1])? {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
         }
         "/=" => {
             need_args(name, args, 2)?;
-            Ok(if !matches!(call(interp, "=", args, env)?, Value::T) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            for index in 0..args.len() {
+                for other in index + 1..args.len() {
+                    if numeric_eq(interp, &args[index], &args[other])? {
+                        return Ok(Value::Nil);
+                    }
+                }
+            }
+            Ok(Value::T)
         }
 
         // ── Equality ──
@@ -1777,6 +1788,16 @@ pub fn call(
             let a = string_text(&args[0])?;
             let b = string_text(&args[1])?;
             Ok(if a == b { Value::T } else { Value::Nil })
+        }
+        "string-equal-ignore-case" => {
+            need_args(name, args, 2)?;
+            let a = string_text(&args[0])?;
+            let b = string_text(&args[1])?;
+            Ok(if a.to_lowercase() == b.to_lowercase() {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "string<" => {
             need_args(name, args, 2)?;
@@ -2299,13 +2320,10 @@ pub fn call(
         }
         "mapcar" => {
             need_args(name, args, 2)?;
-            let list = args[1].to_vec()?;
+            let list = sequence_values(&args[1])?;
             let mut results = Vec::new();
             for item in list {
-                let call_expr =
-                    Value::list([args[0].clone(), Value::list([Value::symbol("quote"), item])]);
-                let result = interp.eval(&call_expr, &mut Vec::new())?;
-                results.push(result);
+                results.push(call_function_value(interp, &args[0], &[item], env)?);
             }
             Ok(Value::list(results))
         }
@@ -2313,7 +2331,7 @@ pub fn call(
             need_args(name, args, 2)?;
             let lists = args[1..]
                 .iter()
-                .map(Value::to_vec)
+                .map(sequence_values)
                 .collect::<Result<Vec<_>, _>>()?;
             let len = lists.iter().map(Vec::len).min().unwrap_or(0);
             let mut results = Vec::with_capacity(len);
@@ -2337,13 +2355,9 @@ pub fn call(
         }
         "mapc" => {
             need_args(name, args, 2)?;
-            let list = args[1].to_vec()?;
+            let list = sequence_values(&args[1])?;
             for item in &list {
-                let call_expr = Value::list([
-                    args[0].clone(),
-                    Value::list([Value::symbol("quote"), item.clone()]),
-                ]);
-                let _ = interp.eval(&call_expr, &mut Vec::new())?;
+                let _ = call_function_value(interp, &args[0], std::slice::from_ref(item), env)?;
             }
             Ok(args[1].clone())
         }
@@ -2402,6 +2416,95 @@ pub fn call(
                 }
             }
             Ok(string_like_value(result, merge_string_props(props)))
+        }
+        "ensure-list" => {
+            need_args(name, args, 1)?;
+            Ok(if args[0].is_nil() || matches!(args[0], Value::Cons(_, _)) {
+                args[0].clone()
+            } else {
+                Value::list([args[0].clone()])
+            })
+        }
+        "seq-find" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let predicate = resolve_callable(interp, &args[0], env)?;
+            if let Ok(items) = vector_items(&args[1]) {
+                for item in items {
+                    if interp
+                        .call_function_value(
+                            predicate.clone(),
+                            args[0].as_symbol().ok(),
+                            std::slice::from_ref(&item),
+                            env,
+                        )?
+                        .is_truthy()
+                    {
+                        return Ok(item);
+                    }
+                }
+                Ok(Value::Nil)
+            } else if let Some(string) = sequence_string_like(&args[1]) {
+                for ch in string.text.chars() {
+                    let item = Value::Integer(ch as i64);
+                    if interp
+                        .call_function_value(
+                            predicate.clone(),
+                            args[0].as_symbol().ok(),
+                            std::slice::from_ref(&item),
+                            env,
+                        )?
+                        .is_truthy()
+                    {
+                        return Ok(item);
+                    }
+                }
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::TypeError("sequence".into(), args[1].type_name()))
+            }
+        }
+        "seq-contains-p" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            if let Ok(items) = vector_items(&args[0]) {
+                for item in items {
+                    let matches = if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
+                    {
+                        value_matches_with_test(interp, &item, &args[1], Some(testfn), env)?
+                    } else {
+                        values_equal(interp, &item, &args[1])
+                    };
+                    if matches {
+                        return Ok(Value::T);
+                    }
+                }
+                Ok(Value::Nil)
+            } else if let Some(string) = sequence_string_like(&args[0]) {
+                let target = match &args[1] {
+                    Value::Integer(code) => char::from_u32(*code as u32),
+                    _ => None,
+                };
+                for ch in string.text.chars() {
+                    let candidate = Value::Integer(ch as i64);
+                    let matches = if let Some(testfn) = args.get(2).filter(|value| !value.is_nil())
+                    {
+                        value_matches_with_test(interp, &candidate, &args[1], Some(testfn), env)?
+                    } else if let Some(target) = target {
+                        ch == target
+                    } else {
+                        values_equal(interp, &candidate, &args[1])
+                    };
+                    if matches {
+                        return Ok(Value::T);
+                    }
+                }
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::TypeError("sequence".into(), args[0].type_name()))
+            }
         }
         "seq-take" => {
             need_args(name, args, 2)?;
@@ -3037,6 +3140,56 @@ pub fn call(
             }
             Ok(string_like_value(result, merge_string_props(result_props)))
         }
+        "format-spec" => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let format = string_text(&args[0])?;
+            let entries = args[1].to_vec()?;
+            let mut result = String::new();
+            let mut chars = format.chars();
+            while let Some(ch) = chars.next() {
+                if ch != '%' {
+                    result.push(ch);
+                    continue;
+                }
+                let Some(specifier) = chars.next() else {
+                    result.push('%');
+                    break;
+                };
+                if specifier == '%' {
+                    result.push('%');
+                    continue;
+                }
+                let replacement = entries.iter().find_map(|entry| {
+                    let Value::Cons(key, value) = entry else {
+                        return None;
+                    };
+                    let key_char = match key.as_ref() {
+                        Value::Integer(code) => char::from_u32(*code as u32),
+                        Value::String(text) => text.chars().next(),
+                        Value::StringObject(state) => state.borrow().text.chars().next(),
+                        _ => None,
+                    }?;
+                    if key_char == specifier {
+                        Some(
+                            string_like(value)
+                                .map(|value| value.text)
+                                .unwrap_or_else(|| value.to_string()),
+                        )
+                    } else {
+                        None
+                    }
+                });
+                if let Some(replacement) = replacement {
+                    result.push_str(&replacement);
+                } else {
+                    result.push('%');
+                    result.push(specifier);
+                }
+            }
+            Ok(Value::String(result))
+        }
         "char-to-string" => {
             need_args(name, args, 1)?;
             let n = args[0].as_integer()?;
@@ -3133,6 +3286,32 @@ pub fn call(
         "string-trim" => {
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?.trim().to_string()))
+        }
+        "url-hexify-string" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let input = string_text(&args[0])?;
+            let allowed = args
+                .get(1)
+                .and_then(string_like)
+                .map(|allowed| allowed.text)
+                .unwrap_or_default();
+            let mut output = String::new();
+            for ch in input.chars() {
+                if ch.is_ascii_alphanumeric()
+                    || matches!(ch, '-' | '_' | '.' | '~')
+                    || allowed.contains(ch)
+                {
+                    output.push(ch);
+                } else {
+                    for byte in ch.to_string().bytes() {
+                        output.push('%');
+                        output.push_str(&format!("{byte:02X}"));
+                    }
+                }
+            }
+            Ok(Value::String(output))
         }
         "byte-to-string" => {
             need_args(name, args, 1)?;
@@ -6516,6 +6695,12 @@ pub fn call(
             need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
+        "suppress-keymap" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[0].clone())
+        }
         "use-local-map" => {
             need_args(name, args, 1)?;
             Ok(Value::Nil)
@@ -6536,8 +6721,20 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::Nil)
         }
+        "substitute-key-definition" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[2].clone())
+        }
         "easy-menu-add-item" => {
             if args.len() < 3 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[2].clone())
+        }
+        "tool-bar-local-item-from-menu" => {
+            if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             Ok(args[2].clone())
@@ -8043,6 +8240,26 @@ pub fn call(
             };
             interp.set_standard_case_table(id);
             Ok(args[0].clone())
+        }
+
+        "make-syntax-table" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::Symbol("emaxx-standard-syntax-table".into())))
+        }
+
+        "copy-syntax-table" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::Symbol("emaxx-standard-syntax-table".into())))
         }
 
         "standard-syntax-table" => Ok(Value::Symbol("emaxx-standard-syntax-table".into())),
@@ -14929,6 +15146,16 @@ fn numeric_lt(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool,
     Ok(integer_like_i64(interp, left)? < integer_like_i64(interp, right)?)
 }
 
+fn numeric_eq(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
+    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
+        return Ok(numeric_to_f64(interp, left)? == numeric_to_f64(interp, right)?);
+    }
+    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
+        return Ok(integer_like_bigint(interp, left)? == integer_like_bigint(interp, right)?);
+    }
+    Ok(integer_like_i64(interp, left)? == integer_like_i64(interp, right)?)
+}
+
 fn numeric_gt(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
     if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
         return Ok(numeric_to_f64(interp, left)? > numeric_to_f64(interp, right)?);
@@ -15697,6 +15924,35 @@ fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
         Value::Cons(_, _) => Ok(vector_items(sequence)?),
         Value::Integer(_) | Value::Symbol(_) => Ok(vec![sequence.clone()]),
         _ => Err(LispError::TypeError("array".into(), sequence.type_name())),
+    }
+}
+
+fn sequence_values(sequence: &Value) -> Result<Vec<Value>, LispError> {
+    if let Some(string) = sequence_string_like(sequence) {
+        Ok(string
+            .text
+            .chars()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect())
+    } else {
+        vector_items(sequence)
+    }
+}
+
+fn sequence_string_like(value: &Value) -> Option<StringLike> {
+    match value {
+        Value::String(_) | Value::StringObject(_) => string_like(value),
+        Value::Cons(_, _) => {
+            let items = value.to_vec().ok()?;
+            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector")
+                && matches!(items.get(1), Some(Value::String(_)))
+            {
+                string_like(value)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
