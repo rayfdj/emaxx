@@ -476,6 +476,9 @@ mod tests {
             "test/src/data-tests.el"
         ));
         assert!(compat::should_delegate_batch_report(
+            "test/src/emacs-module-tests.el"
+        ));
+        assert!(compat::should_delegate_batch_report(
             "test/src/fns-tests.el"
         ));
         assert!(compat::should_delegate_batch_report(

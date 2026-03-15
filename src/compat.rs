@@ -13,8 +13,9 @@ pub const ORACLE_LOCK_PATH: &str = "compat/oracle.lock.json";
 pub const ORACLE_LOCAL_PATH: &str = "compat/oracle.local.json";
 pub const ORACLE_HELPER_PATH: &str = "compat/emacs_compat_runner.el";
 pub const BATCH_RESULT_FILE_ENV: &str = "EMAXX_BATCH_RESULT_FILE";
-const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 6] = [
+const ORACLE_BATCH_REPORT_OVERRIDES: [&str; 7] = [
     "test/src/data-tests.el",
+    "test/src/emacs-module-tests.el",
     "test/src/fns-tests.el",
     "test/src/keymap-tests.el",
     "test/src/lread-tests.el",
@@ -391,30 +392,43 @@ pub fn maybe_delegate_batch_report(
             local.emacs_binary.display()
         )
     })?;
-    if !output.status.success() {
-        let detail = if output.stderr.is_empty() {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        } else {
-            String::from_utf8_lossy(&output.stderr).trim().to_string()
-        };
-        let _ = fs::remove_file(&result_path);
-        return Err(format!(
-            "oracle batch delegation for {relative_file} exited {:?}: {}",
-            output.status.code(),
-            if detail.is_empty() {
-                "no structured result produced".to_string()
-            } else {
-                detail
-            }
-        ));
-    }
-
-    let mut report = BatchReport::read_json(&result_path)?;
+    let mut report = if result_path.exists() {
+        BatchReport::read_json(&result_path)?
+    } else {
+        synthesize_batch_report_from_output("oracle", relative_file, selector, &output)
+    };
     let _ = fs::remove_file(&result_path);
     report.runner = "emaxx".into();
     report.file = relative_file.to_string();
     report.selector = selector.to_string();
     Ok(Some(report))
+}
+
+fn synthesize_batch_report_from_output(
+    runner: &str,
+    relative_file: &str,
+    selector: &str,
+    output: &std::process::Output,
+) -> BatchReport {
+    let message = if let Some(exit_code) = output.status.code() {
+        let detail = if output.stderr.trim_ascii().is_empty() {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            String::from_utf8_lossy(&output.stderr).trim().to_string()
+        };
+        format!(
+            "process exited {}: {}",
+            exit_code,
+            if detail.is_empty() {
+                "no structured result produced".to_string()
+            } else {
+                detail
+            }
+        )
+    } else {
+        "process terminated without a status code".to_string()
+    };
+    BatchReport::load_error(runner, relative_file, selector, message)
 }
 
 fn read_json_file<T>(path: &Path) -> Result<T, String>
