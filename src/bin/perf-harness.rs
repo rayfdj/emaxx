@@ -9,8 +9,8 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use emaxx::compat::{self, OracleLocalConfig, OracleLock};
 use emaxx::perf::{
-    self, PerfComparisonReport, PerfRunReport, PerfScenario, PerfScenarioManifest, PerfScenarioSummary,
-    PerfSummaryReport, PerfTier,
+    self, PerfComparisonReport, PerfRunReport, PerfScenario, PerfScenarioManifest,
+    PerfScenarioSummary, PerfSummaryReport, PerfTier,
 };
 
 #[derive(Debug, Parser)]
@@ -127,9 +127,14 @@ fn run_perf(args: RunArgs) -> Result<u8, String> {
             RunnerArg::Oracle => None,
             RunnerArg::Both => {
                 let result = match &emaxx_binary {
-                    Some(binary) if scenario.emaxx_adapter.is_some() => {
-                        run_emaxx_scenario(binary, &context.local.emacs_repo, &scenario, &scenario_dir, &home, timeout)?
-                    }
+                    Some(binary) if scenario.emaxx_adapter.is_some() => run_emaxx_scenario(
+                        binary,
+                        &context.local.emacs_repo,
+                        &scenario,
+                        &scenario_dir,
+                        &home,
+                        timeout,
+                    )?,
                     _ => RunArtifacts {
                         report: PerfRunReport::unsupported(
                             "emaxx",
@@ -170,7 +175,12 @@ fn run_perf(args: RunArgs) -> Result<u8, String> {
             )?;
         }
 
-        update_summary(&mut run_summary, &scenario, &oracle.report, comparison.as_ref());
+        update_summary(
+            &mut run_summary,
+            &scenario,
+            &oracle.report,
+            comparison.as_ref(),
+        );
         scenario_summaries.push(PerfScenarioSummary {
             scenario_id: scenario.id.clone(),
             tier: scenario.tier,
@@ -221,7 +231,8 @@ fn select_scenarios(
     if all {
         return Ok(manifest.scenarios.clone());
     }
-    let scenario_id = scenario.ok_or_else(|| "either --all or --scenario is required".to_string())?;
+    let scenario_id =
+        scenario.ok_or_else(|| "either --all or --scenario is required".to_string())?;
     manifest
         .find(scenario_id)
         .cloned()
@@ -351,11 +362,16 @@ fn load_or_synthesize_report(
 
 fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<ProcessResult, String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| format!("spawn command: {error}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("spawn command: {error}"))?;
     let started = Instant::now();
 
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| format!("wait for command: {error}"))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("wait for command: {error}"))?
+        {
             let stdout = read_pipe(child.stdout.take())?;
             let stderr = read_pipe(child.stderr.take())?;
             return Ok(ProcessResult {
@@ -367,8 +383,12 @@ fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Proces
         }
 
         if timeout.is_some_and(|limit| started.elapsed() > limit) {
-            child.kill().map_err(|error| format!("kill timed out command: {error}"))?;
-            let status = child.wait().map_err(|error| format!("wait after kill: {error}"))?;
+            child
+                .kill()
+                .map_err(|error| format!("kill timed out command: {error}"))?;
+            let status = child
+                .wait()
+                .map_err(|error| format!("wait after kill: {error}"))?;
             let stdout = read_pipe(child.stdout.take())?;
             let stderr = read_pipe(child.stderr.take())?;
             return Ok(ProcessResult {
