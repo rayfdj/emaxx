@@ -1696,8 +1696,8 @@ impl Interpreter {
             )),
             "case-symbols-as-words" => Some(Value::Nil),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
-            "most-positive-fixnum" => Some(Value::Integer(i64::MAX)),
-            "most-negative-fixnum" => Some(Value::Integer(i64::MIN)),
+            "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
+            "most-negative-fixnum" => Some(Value::Integer(-2_305_843_009_213_693_952)),
             "enable-multibyte-characters" => Some(if self.buffer.is_multibyte() {
                 Value::T
             } else {
@@ -1970,6 +1970,7 @@ impl Interpreter {
                         "dotimes" => return self.sf_dotimes(&items, env),
                         "cl-loop" => return self.sf_cl_loop(&items, env),
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
+                        "ignore-errors" => return self.sf_ignore_errors(&items, env),
                         "condition-case" => return self.sf_condition_case(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
@@ -2900,6 +2901,13 @@ impl Interpreter {
             let _ = self.eval(form, env);
         }
         result
+    }
+
+    fn sf_ignore_errors(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        match self.sf_progn(&items[1..], env) {
+            Ok(value) => Ok(value),
+            Err(_) => Ok(Value::Nil),
+        }
     }
 
     fn sf_condition_case(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
