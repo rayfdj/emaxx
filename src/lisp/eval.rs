@@ -6919,6 +6919,26 @@ mod tests {
     }
 
     #[test]
+    fn custom_autoload_records_expected_symbol_properties() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (custom-autoload 'ps-paper-type \"ps-print\" t)
+                   (custom-autoload 'ps-paper-type \"ps-print\" t)
+                   (list
+                    (get 'ps-paper-type 'custom-autoload)
+                    (get 'ps-paper-type 'custom-loads)))"
+            ),
+            Value::list([
+                Value::Symbol("noset".into()),
+                Value::list([Value::String("ps-print".into())]),
+            ])
+        );
+    }
+
+    #[test]
     fn autoloaded_functions_load_on_funcall() {
         let root = std::env::temp_dir().join(format!(
             "emaxx-autoload-{}",
