@@ -301,51 +301,27 @@ pub enum LispError {
 }
 
 impl LispError {
-    pub fn condition_type(&self) -> &'static str {
+    pub fn condition_type(&self) -> String {
         match self {
-            LispError::TypeError(_, _) => "wrong-type-argument",
-            LispError::Void(_) => "void-variable",
-            LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments",
-            LispError::Signal(_) => "error",
+            LispError::TypeError(_, _) => "wrong-type-argument".into(),
+            LispError::Void(_) => "void-variable".into(),
+            LispError::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
+            LispError::Signal(_) => "error".into(),
             LispError::SignalValue(value) => {
-                if value
+                value
                     .to_vec()
                     .ok()
                     .and_then(|items| match items.first() {
-                        Some(Value::Symbol(symbol)) => match symbol.as_str() {
-                            "file-error" => Some("file-error"),
-                            "file-supersession" => Some("file-supersession"),
-                            "invalid-regexp" => Some("invalid-regexp"),
-                            "search-failed" => Some("search-failed"),
-                            _ => None,
-                        },
+                        Some(Value::Symbol(symbol)) => Some(symbol.clone()),
                         _ => None,
                     })
-                    .is_some()
-                {
-                    value
-                        .to_vec()
-                        .ok()
-                        .and_then(|items| match items.first() {
-                            Some(Value::Symbol(symbol)) => match symbol.as_str() {
-                                "file-error" => Some("file-error"),
-                                "file-supersession" => Some("file-supersession"),
-                                "invalid-regexp" => Some("invalid-regexp"),
-                                "search-failed" => Some("search-failed"),
-                                _ => None,
-                            },
-                            _ => None,
-                        })
-                        .unwrap_or("error")
-                } else {
-                    "error"
-                }
+                    .unwrap_or_else(|| "error".into())
             }
-            LispError::ErtTestFailed(_) => "ert-test-failed",
-            LispError::Throw(_, _) => "no-catch",
-            LispError::TestSkipped(_) => "ert-test-skipped",
-            LispError::EndOfInput => "end-of-file",
-            LispError::ReadError(_) => "invalid-read-syntax",
+            LispError::ErtTestFailed(_) => "ert-test-failed".into(),
+            LispError::Throw(_, _) => "no-catch".into(),
+            LispError::TestSkipped(_) => "ert-test-skipped".into(),
+            LispError::EndOfInput => "end-of-file".into(),
+            LispError::ReadError(_) => "invalid-read-syntax".into(),
         }
     }
 }
