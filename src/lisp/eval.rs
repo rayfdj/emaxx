@@ -4164,6 +4164,10 @@ impl Interpreter {
                 primitives::current_invocation_directory()
                     .unwrap_or_else(primitives::default_directory),
             )),
+            "shell-file-name" => Some(Value::String(
+                primitives::find_executable("sh").unwrap_or_else(|| "/bin/sh".into()),
+            )),
+            "shell-command-switch" => Some(Value::String("-c".into())),
             "emacs-version" => Some(Value::String(primitives::emacs_version_value())),
             "etags-program-name" => Some(Value::String(
                 primitives::find_executable("etags").unwrap_or_else(|| "etags".into()),
@@ -4457,6 +4461,7 @@ impl Interpreter {
                         "cl-generic-define-context-rewriter" => return Ok(Value::Nil),
                         "define-inline" => return self.sf_define_inline(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
+                        "with-memoization" => return self.sf_with_memoization(&items, env),
                         "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
                         "cl-defstruct" => return self.sf_cl_defstruct(&items),
                         "defalias" => return self.sf_defalias(&items, env),
@@ -5425,6 +5430,9 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "gethash" => {
+                self.sf_setf_gethash(&place, &items[2], env)
+            }
             Some(Value::Symbol(name)) if name == "aref" => {
                 self.sf_setf_aref(&place, &items[2], env)
             }
@@ -5494,6 +5502,25 @@ impl Interpreter {
         }
 
         self.set_setf_place_value(alist_place, Value::list(new_entries), env)?;
+        Ok(value)
+    }
+
+    fn sf_setf_gethash(
+        &mut self,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(key_expr) = place.get(1) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let Some(table_expr) = place.get(2) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let key = self.eval(key_expr, env)?;
+        let table = self.eval(table_expr, env)?;
+        let value = self.eval(value_expr, env)?;
+        primitives::call(self, "puthash", &[key, value.clone(), table], env)?;
         Ok(value)
     }
 
@@ -5613,6 +5640,17 @@ impl Interpreter {
                     let symbol = self.eval(symbol_form, env)?;
                     let symbol = symbol.as_symbol()?.to_string();
                     self.set_symbol_value_cell(&symbol, value);
+                    Ok(())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "gethash") {
+                    let Some(key_expr) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(table_expr) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let key = self.eval(key_expr, env)?;
+                    let table = self.eval(table_expr, env)?;
+                    primitives::call(self, "puthash", &[key, value, table], env)?;
                     Ok(())
                 } else {
                     Err(LispError::Signal("Unsupported setf place".into()))
@@ -7778,6 +7816,22 @@ impl Interpreter {
         Ok(Value::String(compile_rx_sequence(&items[1..])?))
     }
 
+    fn sf_with_memoization(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "with-memoization".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let current = self.eval(&items[1], env)?;
+        if current.is_truthy() {
+            return Ok(current);
+        }
+        let value = self.sf_progn(&items[2..], env)?;
+        self.set_setf_place_value(&items[1], value.clone(), env)?;
+        Ok(value)
+    }
+
     fn sf_with_mutex(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs(
@@ -9022,6 +9076,29 @@ fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
     Ok(regex)
 }
 
+fn rx_char_class_name(symbol: &str) -> Option<&'static str> {
+    match symbol {
+        "digit" | "numeric" | "num" => Some("digit"),
+        "control" | "cntrl" => Some("cntrl"),
+        "hex-digit" | "hex" | "xdigit" => Some("xdigit"),
+        "blank" => Some("blank"),
+        "graphic" | "graph" => Some("graph"),
+        "printing" | "print" => Some("print"),
+        "alphanumeric" | "alnum" => Some("alnum"),
+        "letter" | "alphabetic" | "alpha" => Some("alpha"),
+        "ascii" => Some("ascii"),
+        "nonascii" => Some("nonascii"),
+        "lower" | "lower-case" => Some("lower"),
+        "punctuation" | "punct" => Some("punct"),
+        "space" | "whitespace" | "white" => Some("space"),
+        "upper" | "upper-case" => Some("upper"),
+        "word" | "wordchar" => Some("word"),
+        "unibyte" => Some("unibyte"),
+        "multibyte" => Some("multibyte"),
+        _ => None,
+    }
+}
+
 fn append_rx_char_class_fragment(regex: &mut String, value: &Value) -> Result<(), LispError> {
     match value {
         Value::String(text) => {
@@ -9044,6 +9121,18 @@ fn append_rx_char_class_fragment(regex: &mut String, value: &Value) -> Result<()
                 .ok_or_else(|| LispError::Signal(format!("Invalid rx character: {codepoint}")))?;
             append_rx_char_class_fragment(regex, &Value::String(ch.to_string()))
         }
+        Value::Symbol(symbol) => rx_char_class_name(symbol)
+            .map(|name| {
+                regex.push_str("[:");
+                regex.push_str(name);
+                regex.push_str(":]");
+            })
+            .ok_or_else(|| {
+                LispError::Signal(format!(
+                    "Unsupported rx charset fragment: {}",
+                    value.type_name()
+                ))
+            }),
         other => Err(LispError::Signal(format!(
             "Unsupported rx charset fragment: {}",
             other.type_name()
@@ -9081,18 +9170,33 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
             "xdigit" => Ok("[0-9A-Fa-f]".into()),
             "blank" => Ok("[[:blank:]]".into()),
             "space" => Ok("[[:space:]]".into()),
+            "nonl" | "not-newline" => Ok(".".into()),
+            "symbol-start" => Ok("\\_<".into()),
+            "symbol-end" => Ok("\\_>".into()),
+            other if rx_char_class_name(other).is_some() => Ok(format!(
+                "[[:{}:]]",
+                rx_char_class_name(other).unwrap_or_default()
+            )),
             other => Err(LispError::Signal(format!("Unsupported rx atom: {other}"))),
         },
         Value::Cons(_, _) => {
             let items = value.to_vec()?;
-            let Some(Value::Symbol(head)) = items.first() else {
+            let head = match items.first() {
+                Some(Value::Symbol(head)) => Some(head.as_str()),
+                Some(Value::Integer(codepoint)) if *codepoint == ' ' as i64 => Some("?"),
+                _ => None,
+            };
+            let Some(head) = head else {
                 return compile_rx_sequence(&items);
             };
-            match head.as_str() {
+            match head {
                 "group" => Ok(format!("\\({}\\)", compile_rx_sequence(&items[1..])?)),
                 "+" | "1+" => Ok(format!("\\(?:{}\\)+", compile_rx_sequence(&items[1..])?)),
+                "+?" => Ok(format!("\\(?:{}\\)+?", compile_rx_sequence(&items[1..])?)),
                 "*" => Ok(format!("\\(?:{}\\)*", compile_rx_sequence(&items[1..])?)),
+                "*?" => Ok(format!("\\(?:{}\\)*?", compile_rx_sequence(&items[1..])?)),
                 "?" => Ok(format!("\\(?:{}\\)?", compile_rx_sequence(&items[1..])?)),
+                "??" => Ok(format!("\\(?:{}\\)??", compile_rx_sequence(&items[1..])?)),
                 "seq" | ":" => compile_rx_sequence(&items[1..]),
                 "or" | "|" => Ok(format!(
                     "\\(?:{}\\)",
@@ -9120,6 +9224,20 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
                         }
                         other => compile_rx_char_class(std::slice::from_ref(other), true),
                     }
+                }
+                ">=" => {
+                    if items.len() < 3 {
+                        return Err(LispError::Signal("rx `>=' needs a count and a form".into()));
+                    }
+                    let count = items[1].as_integer()?;
+                    if count < 0 {
+                        return Err(LispError::Signal("rx repetition count must be >= 0".into()));
+                    }
+                    Ok(format!(
+                        "\\(?:{}\\)\\{{{},\\}}",
+                        compile_rx_sequence(&items[2..])?,
+                        count
+                    ))
                 }
                 _ => compile_rx_sequence(&items),
             }
@@ -9485,16 +9603,17 @@ mod tests {
 
     #[test]
     fn string_match_failure_preserves_existing_match_data() {
+        let value = eval_str(
+            r#"
+            (progn
+              (string-match "a\\(b\\)" "ab")
+              (string-match "z" "ab")
+              (match-string 1 "ab"))
+            "#,
+        );
         assert_eq!(
-            eval_str(
-                r#"
-                (progn
-                  (string-match "a\\(b\\)" "ab")
-                  (string-match "z" "ab")
-                  (match-string 1 "ab"))
-                "#
-            ),
-            Value::String("b".into())
+            primitives::string_text(&value).expect("match-string result"),
+            "b"
         );
     }
 
@@ -12105,6 +12224,29 @@ mod tests {
     }
 
     #[test]
+    fn rx_supports_pcomplete_help_regex_forms() {
+        assert_eq!(
+            eval_str(r#"(string-match-p (rx "-" (+ (any "-" alnum)) (? "=")) "--tofu-policy=")"#),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            eval_str(r#"(string-match-p (rx (? " ") (seq "<" (+? nonl) ">")) " <path>")"#),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            eval_str(
+                r#"(string-match-p (rx (* nonl) (* "\n" (>= 9 " ") (* nonl)))
+                                   " make a signature\n         wrapped")"#
+            ),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            eval_str(r#"(string-match-p (rx ", " symbol-start) ", --sign")"#),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
     fn regexp_opt_builds_basic_alternations() {
         assert_eq!(
             eval_str(r#"(regexp-opt '(".log" ".aux" ".log"))"#),
@@ -12161,6 +12303,29 @@ mod tests {
                 "#
             ),
             Value::Integer(1)
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((calls 0)
+                      (cache (make-hash-table :test #'equal)))
+                  (list
+                    (with-memoization (gethash "k" cache)
+                      (setq calls (+ calls 1))
+                      'cached)
+                    (with-memoization (gethash "k" cache)
+                      (setq calls (+ calls 1))
+                      'missed)
+                    calls
+                    (gethash "k" cache)))
+                "#
+            ),
+            Value::list([
+                Value::Symbol("cached".into()),
+                Value::Symbol("cached".into()),
+                Value::Integer(1),
+                Value::Symbol("cached".into()),
+            ])
         );
         assert_eq!(eval_str(r#"(active-minibuffer-window)"#), Value::Nil);
         assert_eq!(eval_str(r#"(windowp (minibuffer-window))"#), Value::T);
