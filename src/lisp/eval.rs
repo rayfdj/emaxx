@@ -4007,6 +4007,7 @@ impl Interpreter {
             "coding-system-for-write" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
             "file-name-coding-system" => Some(Value::Nil),
+            "default-file-name-coding-system" => Some(Value::Nil),
             "inhibit-eol-conversion" => Some(Value::Nil),
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
@@ -5125,8 +5126,16 @@ impl Interpreter {
             return Ok(Value::Nil);
         }
         let result = self.eval(&items[1], env)?;
+        let tracked_symbol = items[1].as_symbol().ok().map(str::to_string);
         for expr in &items[2..] {
             self.eval(expr, env)?;
+        }
+        if let Some(symbol) = tracked_symbol
+            && crate::lisp::primitives::is_vector_like_value(self, &result)
+            && let Ok(current) = self.lookup(&symbol, env)
+            && crate::lisp::primitives::is_vector_like_value(self, &current)
+        {
+            return Ok(current);
         }
         Ok(result)
     }
@@ -5720,8 +5729,12 @@ impl Interpreter {
         }
         self.mark_special_variable(&resolved);
         // Only set if not already defined
-        if self.default_toplevel_value(&resolved).is_none() && items.len() > 2 {
-            let val = self.eval(&items[2], env)?;
+        if self.default_toplevel_value(&resolved).is_none() {
+            let val = if items.len() > 2 {
+                self.eval(&items[2], env)?
+            } else {
+                Value::Nil
+            };
             self.set_default_toplevel_value(&resolved, val);
         }
         Ok(Value::Nil)
@@ -9627,6 +9640,67 @@ mod tests {
     }
 
     #[test]
+    fn aset_mutates_vectors_bound_in_lexical_variables() {
+        assert_eq!(
+            eval_str("(let ((stats (make-vector 2 nil))) (aset stats 1 'ok) stats)"),
+            Value::list([
+                Value::Symbol("vector".into()),
+                Value::Nil,
+                Value::Symbol("ok".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn prog1_returns_vectors_after_in_place_mutation() {
+        assert_eq!(
+            eval_str("(let ((stats (make-vector 2 nil))) (prog1 stats (aset stats 1 'ok)))"),
+            Value::list([
+                Value::Symbol("vector".into()),
+                Value::Nil,
+                Value::Symbol("ok".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn make_temp_name_preserves_prefix_and_changes_across_calls() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((a (make-temp-name "x-dnd-test-"))
+                         (b (make-temp-name "x-dnd-test-")))
+                     (list (string-prefix-p "x-dnd-test-" a)
+                           (string-prefix-p "x-dnd-test-" b)
+                           (equal a b)))"#
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn write_region_accepts_string_data_even_with_numeric_end_argument() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((path (make-temp-name temporary-file-directory)))
+                     (unwind-protect
+                         (progn
+                           (write-region "" 0 path)
+                           (file-exists-p path))
+                       (ignore-errors (delete-file path))))"#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn url_encode_url_preserves_reserved_chars_and_escapes_spaces() {
+        assert_eq!(
+            eval_str(r#"(url-encode-url "file:///tmp/a b?x=1#frag")"#),
+            Value::String("file:///tmp/a%20b?x=1#frag".into())
+        );
+    }
+
+    #[test]
     fn assoc_matches_strings_bound_in_lexical_variables() {
         assert_eq!(
             eval_str(
@@ -9739,6 +9813,15 @@ mod tests {
         assert_string_value(
             eval_str(r#"(replace-regexp-in-string "[0-9]+" "x" "a1b22" t t)"#),
             "axbx",
+        );
+        assert_string_value(
+            eval_str(
+                r#"(replace-regexp-in-string "%[[:xdigit:]][[:xdigit:]]"
+                                              (lambda (_match) "/")
+                                              "file:///tmp/a%20b"
+                                              t t)"#,
+            ),
+            "file:///tmp/a/b",
         );
         assert_eq!(
             eval_str(r#"(equal (mapcar #'reverse '("abc" "abd")) '("cba" "dba"))"#),
@@ -9893,6 +9976,16 @@ mod tests {
             eval_str_with(&mut interp, "sample-constant"),
             Value::Integer(42)
         );
+    }
+
+    #[test]
+    fn defvar_without_initializer_defaults_to_nil() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(&mut interp, "(defvar sample-unbound)"),
+            Value::Nil
+        );
+        assert_eq!(eval_str_with(&mut interp, "sample-unbound"), Value::Nil);
     }
 
     #[test]
@@ -11733,6 +11826,70 @@ mod tests {
             Value::list([
                 Value::list([Value::Integer(137), Value::Integer(65)]),
                 Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn base64_decode_string_ignores_wrapped_input() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((decoded (base64-decode-string "SGVsbG8s
+IHdvcmxkIQ==")))
+                     (list (string-to-list decoded)
+                           (multibyte-string-p decoded)))"#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Integer(72),
+                    Value::Integer(101),
+                    Value::Integer(108),
+                    Value::Integer(108),
+                    Value::Integer(111),
+                    Value::Integer(44),
+                    Value::Integer(32),
+                    Value::Integer(119),
+                    Value::Integer(111),
+                    Value::Integer(114),
+                    Value::Integer(108),
+                    Value::Integer(100),
+                    Value::Integer(33),
+                ]),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn base64_decode_string_returns_unibyte_raw_bytes() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((decoded (base64-decode-string "/wA=")))
+                     (list (string-to-list decoded)
+                           (multibyte-string-p decoded)))"#
+            ),
+            Value::list([
+                Value::list([Value::Integer(255), Value::Integer(0)]),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn base64_decode_string_supports_url_variant_and_invalid_handling() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                    (base64-decode-string "SGVsbG8" t)
+                    (condition-case _
+                        (base64-decode-string "!")
+                      (error 'caught))
+                    (string-bytes (base64-decode-string "!" nil t)))"#
+            ),
+            Value::list([
+                Value::String("Hello".into()),
+                Value::Symbol("caught".into()),
+                Value::Integer(0),
             ])
         );
     }
