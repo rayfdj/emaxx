@@ -19,5 +19,7 @@ unicode-width = "0.2"
 flate2 = "1.1"
 roxmltree = "0.20"
 rusqlite = { version = "0.34", features = ["bundled"] }
+lcms2 = "6.1.1"
+lcms2-sys = "4.0.6"
 
 [dev-dependencies]

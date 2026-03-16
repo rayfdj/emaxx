@@ -525,7 +525,7 @@ impl Interpreter {
             change_hooks_running: 0,
             macros: Vec::new(),
             functions: Vec::new(),
-            provided_features: vec!["emaxx".into(), "ert".into()],
+            provided_features: vec!["emaxx".into(), "ert".into(), "lcms2".into()],
             current_load_file: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
