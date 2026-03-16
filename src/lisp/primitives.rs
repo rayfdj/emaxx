@@ -27,6 +27,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
+use unicode_general_category::get_general_category;
+use unicode_names2::name as unicode_name;
 use unicode_width::UnicodeWidthChar;
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
@@ -236,6 +238,69 @@ fn simple_titlecase_char(code: u32) -> u32 {
     match code {
         0x01C4..=0x01C6 => 0x01C5,
         _ => simple_upcase_char(code),
+    }
+}
+
+fn unicode_character_name(code: u32) -> Option<String> {
+    char::from_u32(code)
+        .and_then(unicode_name)
+        .map(|name| name.to_string())
+}
+
+fn unicode_general_category_symbol(code: u32) -> Option<&'static str> {
+    if (0xD800..=0xDFFF).contains(&code) {
+        Some("Cs")
+    } else {
+        char::from_u32(code).map(|ch| get_general_category(ch).abbreviation())
+    }
+}
+
+fn unicode_general_category_description(symbol: &str) -> Option<&'static str> {
+    match symbol {
+        "Lu" => Some("Letter, Uppercase"),
+        "Ll" => Some("Letter, Lowercase"),
+        "Lt" => Some("Letter, Titlecase"),
+        "Lm" => Some("Letter, Modifier"),
+        "Lo" => Some("Letter, Other"),
+        "Mn" => Some("Mark, Nonspacing"),
+        "Mc" => Some("Mark, Spacing Combining"),
+        "Me" => Some("Mark, Enclosing"),
+        "Nd" => Some("Number, Decimal Digit"),
+        "Nl" => Some("Number, Letter"),
+        "No" => Some("Number, Other"),
+        "Pc" => Some("Punctuation, Connector"),
+        "Pd" => Some("Punctuation, Dash"),
+        "Ps" => Some("Punctuation, Open"),
+        "Pe" => Some("Punctuation, Close"),
+        "Pi" => Some("Punctuation, Initial quote"),
+        "Pf" => Some("Punctuation, Final quote"),
+        "Po" => Some("Punctuation, Other"),
+        "Sm" => Some("Symbol, Math"),
+        "Sc" => Some("Symbol, Currency"),
+        "Sk" => Some("Symbol, Modifier"),
+        "So" => Some("Symbol, Other"),
+        "Zs" => Some("Separator, Space"),
+        "Zl" => Some("Separator, Line"),
+        "Zp" => Some("Separator, Paragraph"),
+        "Cc" => Some("Other, Control"),
+        "Cf" => Some("Other, Format"),
+        "Cs" => Some("Other, Surrogate"),
+        "Co" => Some("Other, Private Use"),
+        "Cn" => Some("Other, Not Assigned"),
+        _ => None,
+    }
+}
+
+fn unicode_property_description(property: &str, value: &Value) -> Option<&'static str> {
+    match property {
+        "general-category" => match value {
+            Value::Nil => Some("Unknown"),
+            Value::Symbol(symbol) => unicode_general_category_description(symbol),
+            _ => {
+                string_like(value).and_then(|text| unicode_general_category_description(&text.text))
+            }
+        },
+        _ => None,
     }
 }
 
@@ -768,6 +833,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "capitalize"
             | "upcase-initials"
             | "get-char-code-property"
+            | "char-code-property-description"
             | "char-resolve-modifiers"
             | "string-trim"
             | "string-clean-whitespace"
@@ -4099,54 +4165,69 @@ pub fn call(
             let ch = u32::try_from(args[0].as_integer()?)
                 .map_err(|_| LispError::Signal("Invalid character".into()))?;
             let property = args[1].as_symbol()?;
-            let value = match (normalize_case_key(ch), property) {
-                (code, "uppercase") => {
-                    if code == 0x00DF {
-                        Value::Nil
-                    } else {
-                        let mapped = simple_upcase_char(code);
+            let value = match property {
+                "name" => unicode_character_name(ch)
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+                "general-category" => unicode_general_category_symbol(ch)
+                    .map(|symbol| Value::Symbol(symbol.into()))
+                    .unwrap_or(Value::Nil),
+                _ => match (normalize_case_key(ch), property) {
+                    (code, "uppercase") => {
+                        if code == 0x00DF {
+                            Value::Nil
+                        } else {
+                            let mapped = simple_upcase_char(code);
+                            if mapped == code {
+                                Value::Nil
+                            } else {
+                                Value::Integer(mapped as i64)
+                            }
+                        }
+                    }
+                    (code, "lowercase") => {
+                        let mapped = simple_downcase_char(code, false);
                         if mapped == code {
                             Value::Nil
                         } else {
                             Value::Integer(mapped as i64)
                         }
                     }
-                }
-                (code, "lowercase") => {
-                    let mapped = simple_downcase_char(code, false);
-                    if mapped == code {
-                        Value::Nil
-                    } else {
-                        Value::Integer(mapped as i64)
-                    }
-                }
-                (code, "titlecase") => {
-                    if code == 0x00DF {
-                        Value::Nil
-                    } else if code == 0x01C5 {
-                        Value::Integer(code as i64)
-                    } else {
-                        let mapped = simple_titlecase_char(code);
-                        if mapped == code {
+                    (code, "titlecase") => {
+                        if code == 0x00DF {
                             Value::Nil
+                        } else if code == 0x01C5 {
+                            Value::Integer(code as i64)
                         } else {
-                            Value::Integer(mapped as i64)
+                            let mapped = simple_titlecase_char(code);
+                            if mapped == code {
+                                Value::Nil
+                            } else {
+                                Value::Integer(mapped as i64)
+                            }
                         }
                     }
-                }
-                (0x00DF, "special-uppercase") => Value::String("SS".into()),
-                (0x00DF, "special-titlecase") => Value::String("Ss".into()),
-                (0x00DF, "special-lowercase") => Value::Nil,
-                (0x00DF, _) => Value::Nil,
-                (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
-                (0x0130, "special-lowercase") => Value::String("i\u{307}".into()),
-                (0x0130, _) => Value::Nil,
-                (0xFB01, "special-uppercase") => Value::String("FI".into()),
-                (0xFB01, "special-titlecase") => Value::String("Fi".into()),
-                (0xFB01, _) => Value::Nil,
-                _ => Value::Nil,
+                    (0x00DF, "special-uppercase") => Value::String("SS".into()),
+                    (0x00DF, "special-titlecase") => Value::String("Ss".into()),
+                    (0x00DF, "special-lowercase") => Value::Nil,
+                    (0x00DF, _) => Value::Nil,
+                    (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
+                    (0x0130, "special-lowercase") => Value::String("i\u{307}".into()),
+                    (0x0130, _) => Value::Nil,
+                    (0xFB01, "special-uppercase") => Value::String("FI".into()),
+                    (0xFB01, "special-titlecase") => Value::String("Fi".into()),
+                    (0xFB01, _) => Value::Nil,
+                    _ => Value::Nil,
+                },
             };
             Ok(value)
+        }
+        "char-code-property-description" => {
+            need_args(name, args, 2)?;
+            let property = args[0].as_symbol()?;
+            Ok(unicode_property_description(property, &args[1])
+                .map(|description| Value::String(description.into()))
+                .unwrap_or(Value::Nil))
         }
         "char-resolve-modifiers" => {
             need_args(name, args, 1)?;
@@ -17021,6 +17102,45 @@ mod tests {
                 Value::Symbol("unicode".into())
             ]
         );
+    }
+
+    #[test]
+    fn unicode_char_property_helpers_cover_names_and_general_categories() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let name = call(
+            &mut interp,
+            "get-char-code-property",
+            &[
+                Value::Integer('\u{2026}' as i64),
+                Value::Symbol("name".into()),
+            ],
+            &mut env,
+        )
+        .expect("get-char-code-property should return Unicode names");
+        assert_eq!(name, Value::String("HORIZONTAL ELLIPSIS".into()));
+
+        let category = call(
+            &mut interp,
+            "get-char-code-property",
+            &[
+                Value::Integer('\u{2026}' as i64),
+                Value::Symbol("general-category".into()),
+            ],
+            &mut env,
+        )
+        .expect("get-char-code-property should return Unicode general categories");
+        assert_eq!(category, Value::Symbol("Po".into()));
+
+        let description = call(
+            &mut interp,
+            "char-code-property-description",
+            &[Value::Symbol("general-category".into()), category],
+            &mut env,
+        )
+        .expect("char-code-property-description should describe general categories");
+        assert_eq!(description, Value::String("Punctuation, Other".into()));
     }
 
     #[test]
