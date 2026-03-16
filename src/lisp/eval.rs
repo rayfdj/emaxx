@@ -490,6 +490,7 @@ impl Interpreter {
             globals: Vec::new(),
             variable_aliases: Vec::new(),
             special_variables: vec![
+                "case-fold-search".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
             ],
@@ -522,7 +523,7 @@ impl Interpreter {
             next_finalizer_id: 1,
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
-            auto_buffer_locals: Vec::new(),
+            auto_buffer_locals: vec!["case-fold-search".into()],
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
@@ -2610,6 +2611,7 @@ impl Interpreter {
             "region-extract-function" => Some(Value::Symbol(
                 "emaxx-default-region-extract-function".into(),
             )),
+            "case-fold-search" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
             "float-e" => Some(Value::Float(std::f64::consts::E)),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
@@ -2792,6 +2794,7 @@ impl Interpreter {
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),
+            "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
             "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name().unwrap_or_else(|| "emaxx".into()),
@@ -7252,6 +7255,7 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
 mod tests {
     use super::*;
     use crate::lisp::reader::Reader;
+    use std::thread;
 
     fn eval_str(src: &str) -> Value {
         let mut interp = Interpreter::new();
@@ -7284,6 +7288,15 @@ mod tests {
         for (item, expected) in items.iter().zip(expected.iter()) {
             assert_eq!(primitives::string_text(item).unwrap(), *expected);
         }
+    }
+
+    fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
+        thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(test)
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -7684,6 +7697,56 @@ mod tests {
     }
 
     #[test]
+    fn case_fold_search_is_special_and_auto_buffer_local() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(progn
+                     (defun case-fold-helper ()
+                       (string-match-p "A" "a"))
+                     (list
+                      (let ((case-fold-search nil))
+                        (case-fold-helper))
+                      (with-temp-buffer
+                        (setq case-fold-search nil)
+                        (default-value 'case-fold-search))
+                      case-fold-search))"#
+            ),
+            Value::list([Value::Nil, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn locate_user_emacs_file_uses_user_emacs_directory() {
+        assert_eq!(
+            eval_str(r#"(locate-user-emacs-file "ido.last" ".ido.last")"#),
+            Value::String("/nonexistent/.emacs.d/ido.last".into())
+        );
+    }
+
+    #[test]
+    fn seq_some_returns_first_truthy_result() {
+        assert_eq!(
+            eval_str(r#"(seq-some #'identity '(nil nil ok))"#),
+            Value::Symbol("ok".into())
+        );
+    }
+
+    #[test]
+    fn remove_function_is_a_safe_noop_for_nil_function_slots() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (setq read-file-name-function nil)
+                     (remove-function read-file-name-function #'ignore)
+                     read-file-name-function)"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn directory_listing_regexp_matches_common_ls_output() {
         assert_ne!(
             eval_str(
@@ -7751,25 +7814,27 @@ mod tests {
 
     #[test]
     fn customize_set_variable_runs_defcustom_setter() {
-        let mut interp = Interpreter::new();
-        let mut env = Vec::new();
-        eval_str_with(
-            &mut interp,
-            "(defun sample-setter (symbol value)
-               (set-default symbol value)
-               (setq sample-setter-result value))",
-        );
-        eval_str_with(
-            &mut interp,
-            "(defcustom sample-option nil \"doc\" :set #'sample-setter :type 'boolean)",
-        );
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            let mut env = Vec::new();
+            eval_str_with(
+                &mut interp,
+                "(defun sample-setter (symbol value)
+                   (set-default symbol value)
+                   (setq sample-setter-result value))",
+            );
+            eval_str_with(
+                &mut interp,
+                "(defcustom sample-option nil \"doc\" :set #'sample-setter :type 'boolean)",
+            );
 
-        let forms = Reader::new("(customize-set-variable 'sample-option t)")
-            .read_all()
-            .expect("parse customize-set-variable form");
-        assert_eq!(interp.eval(&forms[0], &mut env).unwrap(), Value::T);
-        assert_eq!(interp.lookup("sample-option", &env).unwrap(), Value::T);
-        assert_eq!(interp.lookup("sample-setter-result", &env).unwrap(), Value::T);
+            let forms = Reader::new("(customize-set-variable 'sample-option t)")
+                .read_all()
+                .expect("parse customize-set-variable form");
+            assert_eq!(interp.eval(&forms[0], &mut env).unwrap(), Value::T);
+            assert_eq!(interp.lookup("sample-option", &env).unwrap(), Value::T);
+            assert_eq!(interp.lookup("sample-setter-result", &env).unwrap(), Value::T);
+        });
     }
 
     #[test]
@@ -8296,6 +8361,45 @@ mod tests {
                 Value::Symbol("bar".into()),
                 Value::T,
                 Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn key_binding_resolves_minor_mode_remaps() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setq sample-mode t)
+                  (let ((map (make-sparse-keymap "demo")))
+                    (define-key map [remap display-buffer-other-frame] 'demo-display)
+                    (setq sample-mode-map-entry (cons 'sample-mode map))
+                    (add-to-list 'minor-mode-map-alist sample-mode-map-entry)
+                    (key-binding (kbd "C-x 5 C-o"))))
+                "#
+            ),
+            Value::Symbol("demo-display".into())
+        );
+    }
+
+    #[test]
+    fn commandp_accepts_bare_interactive_forms() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (defun sample-command ()
+                    "doc"
+                    (interactive)
+                    nil)
+                  (list (commandp #'sample-command)
+                        (interactive-form #'sample-command)))
+                "#
+            ),
+            Value::list([
+                Value::T,
+                Value::list([Value::Symbol("interactive".into())]),
             ])
         );
     }

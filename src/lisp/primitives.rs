@@ -680,6 +680,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-mapcar"
             | "cl-mapcan"
             | "cl-some"
+            | "seq-some"
             | "mapc"
             | "cl-reduce"
             | "apply"
@@ -983,6 +984,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-name-unquote"
             | "file-remote-p"
             | "shell-quote-argument"
+            | "locate-user-emacs-file"
             | "locate-library"
             | "ert-resource-directory"
             | "ert-resource-file"
@@ -1198,6 +1200,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "ask-user-about-supersession-threat"
             | "advice-add"
             | "advice-remove"
+            | "remove-function"
             | "userlock--handle-unlock-error"
             | "recent-auto-save-p"
             | "set-buffer-auto-saved"
@@ -1207,6 +1210,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "keymap-set"
             | "keymap-unset"
             | "lookup-key"
+            | "key-binding"
             | "keymap-lookup"
             | "keymap-parent"
             | "set-keymap-parent"
@@ -2047,7 +2051,7 @@ pub fn call(
             need_args(name, args, 1)?;
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
             Ok(
-                if autoload_command_p(&value) || interactive_spec_form(&value).is_some() {
+                if autoload_command_p(&value) || interactive_form_items(&value).is_some() {
                     Value::T
                 } else {
                     Value::Nil
@@ -2099,6 +2103,17 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "seq-some" => {
+            need_args(name, args, 2)?;
+            let predicate = args[0].clone();
+            for element in args[1].to_vec()? {
+                let result = call_function_value(interp, &predicate, &[element], env)?;
+                if result.is_truthy() {
+                    return Ok(result);
+                }
+            }
+            Ok(Value::Nil)
         }
         "featurep" => {
             need_args(name, args, 1)?;
@@ -5753,6 +5768,43 @@ pub fn call(
             let argument = string_text(&args[0])?;
             Ok(Value::String(shell_quote_argument(&argument)))
         }
+        "locate-user-emacs-file" => {
+            need_arg_range(name, args, 1, 2)?;
+            let user_emacs_directory = interp
+                .lookup_var("user-emacs-directory", env)
+                .and_then(|value| string_like(&value).map(|string| string.text))
+                .unwrap_or_else(default_directory);
+            let resolved = match &args[0] {
+                Value::Nil => {
+                    return Err(LispError::TypeError("stringp".into(), args[0].type_name()));
+                }
+                Value::Cons(_, _) => {
+                    let names = args[0]
+                        .to_vec()?
+                        .into_iter()
+                        .map(|value| string_text(&value))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let Some(default_name) = names.first() else {
+                        return Err(LispError::TypeError("consp".into(), args[0].type_name()));
+                    };
+                    names
+                        .iter()
+                        .rev()
+                        .map(|name| expand_file_name(name, Some(&user_emacs_directory)))
+                        .find(|path| Path::new(path).exists())
+                        .unwrap_or_else(|| expand_file_name(default_name, Some(&user_emacs_directory)))
+                }
+                _ => expand_file_name(&string_text(&args[0])?, Some(&user_emacs_directory)),
+            };
+            if let Some(old_name) = args.get(1).filter(|value| !value.is_nil()) {
+                let home = expand_home_prefix("~");
+                let legacy = expand_file_name(&string_text(old_name)?, Some(&home));
+                if !file_readable_p(&resolved) && file_readable_p(&legacy) {
+                    return Ok(Value::String(legacy));
+                }
+            }
+            Ok(Value::String(resolved))
+        }
         "ert-resource-directory" => {
             need_args(name, args, 0)?;
             Ok(ert_resource_directory(interp)
@@ -6983,8 +7035,8 @@ pub fn call(
                 interp.load_target(&file)?;
                 value = interp.lookup_function(symbol, env)?;
             }
-            Ok(interactive_spec_form(&value)
-                .map(|spec| Value::list([Value::Symbol("interactive".into()), spec]))
+            Ok(interactive_form_items(&value)
+                .map(Value::list)
                 .unwrap_or(Value::Nil))
         }
         "autoloadp" => {
@@ -7365,6 +7417,11 @@ pub fn call(
             let key = key_sequence_binding_text(&args[1])?;
             keymap_lookup_binding(interp, &args[0], &key)
         }
+        "key-binding" => {
+            need_arg_range(name, args, 1, 3)?;
+            let key = key_sequence_binding_text(&args[0])?;
+            key_binding(interp, &key, env)
+        }
         "keymap-parent" => {
             need_args(name, args, 1)?;
             match &args[0] {
@@ -7629,6 +7686,10 @@ pub fn call(
             need_args(name, args, 2)?;
             let function_name = args[0].as_symbol()?.to_string();
             interp.pop_function_binding(&function_name);
+            Ok(Value::Nil)
+        }
+        "remove-function" => {
+            need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
         "userlock--handle-unlock-error" => Ok(Value::Nil),
@@ -18475,6 +18536,65 @@ pub(crate) fn keymap_lookup_binding(
     }
 }
 
+fn active_minor_mode_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>, LispError> {
+    let Some(alist) = interp.lookup_var("minor-mode-map-alist", env) else {
+        return Ok(Vec::new());
+    };
+    let mut maps = Vec::new();
+    for entry in alist.to_vec()? {
+        let Value::Cons(mode, map) = entry else {
+            continue;
+        };
+        let Value::Symbol(mode_name) = *mode else {
+            continue;
+        };
+        if interp
+            .lookup_var(&mode_name, env)
+            .is_some_and(|value| value.is_truthy())
+            && is_keymap_value(interp, &map)
+        {
+            maps.push(*map);
+        }
+    }
+    Ok(maps)
+}
+
+fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
+    match key {
+        "C-x 4 d" => Some("dired-other-window"),
+        "C-x 5 d" => Some("dired-other-frame"),
+        "C-x 5 C-o" => Some("display-buffer-other-frame"),
+        _ => None,
+    }
+}
+
+fn remap_key_binding_text(command: &str) -> String {
+    format!("<remap> <{command}>")
+}
+
+fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<Value, LispError> {
+    let maps = active_minor_mode_maps(interp, env)?;
+    for map in &maps {
+        let binding = keymap_lookup_binding(interp, map, key)?;
+        if !binding.is_nil() {
+            return Ok(binding);
+        }
+    }
+
+    let Some(command) = default_global_binding_for_key(key) else {
+        return Ok(Value::Nil);
+    };
+    let remap_key = remap_key_binding_text(command);
+    for map in &maps {
+        let binding = keymap_lookup_binding(interp, map, &remap_key)?;
+        if !binding.is_nil() {
+            return Ok(binding);
+        }
+    }
+
+    Ok(Value::Symbol(command.into()))
+}
+
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let items = value.to_vec().ok()?;
     if !matches!(items.first(), Some(Value::Symbol(name)) if name == "autoload") {
@@ -19109,7 +19229,7 @@ fn list_contains_with(
     Ok(false)
 }
 
-fn interactive_spec_form(func: &Value) -> Option<Value> {
+fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     let Value::Lambda(_, body, _) = func else {
         return None;
     };
@@ -19124,11 +19244,16 @@ fn interactive_spec_form(func: &Value) -> Option<Value> {
             break;
         };
         if matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive") {
-            return items.get(1).cloned();
+            return Some(items);
         }
         break;
     }
     None
+}
+
+fn interactive_spec_form(func: &Value) -> Option<Value> {
+    interactive_form_items(func)
+        .map(|items| items.get(1).cloned().unwrap_or(Value::Nil))
 }
 
 fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
