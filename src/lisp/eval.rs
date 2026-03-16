@@ -674,14 +674,24 @@ impl Interpreter {
         let main_thread_id = 1u64;
         let standard_syntax_table_id = 1u64;
         Interpreter {
-            globals: vec![("main-thread".into(), Value::Record(main_thread_id))],
+            globals: vec![
+                ("main-thread".into(), Value::Record(main_thread_id)),
+                ("cl--proclaims-deferred".into(), Value::Nil),
+                ("file-name-handler-alist".into(), Value::Nil),
+                ("inhibit-file-name-handlers".into(), Value::Nil),
+                ("inhibit-file-name-operation".into(), Value::Nil),
+            ],
             variable_aliases: Vec::new(),
             special_variables: vec![
                 "case-fold-search".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
+                "cl--proclaims-deferred".into(),
                 "display-hourglass".into(),
+                "file-name-handler-alist".into(),
                 "gc-cons-threshold".into(),
+                "inhibit-file-name-handlers".into(),
+                "inhibit-file-name-operation".into(),
                 "initial-window-system".into(),
                 "last-coding-system-used".into(),
                 "line-spacing".into(),
@@ -3999,6 +4009,17 @@ impl Interpreter {
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
+            "image-types" => Some(Value::list([
+                Value::Symbol("pbm".into()),
+                Value::Symbol("png".into()),
+                Value::Symbol("jpeg".into()),
+                Value::Symbol("gif".into()),
+                Value::Symbol("svg".into()),
+                Value::Symbol("xbm".into()),
+                Value::Symbol("xpm".into()),
+                Value::Symbol("webp".into()),
+                Value::Symbol("tiff".into()),
+            ])),
             "ls-lisp-use-insert-directory-program" => Some(Value::T),
             "transient-mark-mode" => Some(Value::T),
             "obarray" => Some(Value::Nil),
@@ -4371,11 +4392,11 @@ impl Interpreter {
                 if let Value::Symbol(ref name) = items[0] {
                     match name.as_str() {
                         "quote" => return self.sf_quote(&items),
-                        "if" => return self.sf_if(&items, env),
+                        "if" | "static-if" => return self.sf_if(&items, env),
                         "if-let*" => return self.sf_if_let_star(&items, env),
-                        "when" => return self.sf_when(&items, env),
+                        "when" | "static-when" => return self.sf_when(&items, env),
                         "when-let*" => return self.sf_when_let_star(&items, env),
-                        "unless" => return self.sf_unless(&items, env),
+                        "unless" | "static-unless" => return self.sf_unless(&items, env),
                         "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
                         "cond" => return self.sf_cond(&items, env),
                         "pcase" => return self.sf_pcase(&items, env),
@@ -4456,6 +4477,7 @@ impl Interpreter {
                         "dotimes" => return self.sf_dotimes(&items, env),
                         "cl-loop" => return self.sf_cl_loop(&items, env),
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
+                        "ignore-error" => return self.sf_ignore_error(&items, env),
                         "ignore-errors" => return self.sf_ignore_errors(&items, env),
                         "condition-case" => return self.sf_condition_case(&items, env),
                         "handler-bind" => return self.sf_handler_bind(&items, env),
@@ -6682,6 +6704,32 @@ impl Interpreter {
         }
     }
 
+    fn sf_ignore_error(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "ignore-error".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        match self.sf_progn(&items[2..], env) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let condition = error.condition_type();
+                let matches = match &items[1] {
+                    Value::Symbol(symbol) => symbol == &condition || symbol == "error",
+                    Value::Cons(_, _) => items[1]
+                        .to_vec()?
+                        .iter()
+                        .filter_map(symbol_name)
+                        .any(|symbol| symbol == condition || symbol == "error"),
+                    _ => false,
+                };
+                if matches { Ok(Value::Nil) } else { Err(error) }
+            }
+        }
+    }
+
     fn sf_condition_case(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         // (condition-case var bodyform handlers...)
         if items.len() < 3 {
@@ -7483,77 +7531,71 @@ impl Interpreter {
     // ── Backquote ──
 
     fn eval_backquote(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        self.eval_backquote_with_depth(expr, env, 0)
+    }
+
+    fn eval_backquote_with_depth(
+        &mut self,
+        expr: &Value,
+        env: &mut Env,
+        depth: usize,
+    ) -> Result<Value, LispError> {
+        if let Some((kind, value)) = backquote_unquote_form(expr) {
+            if depth == 0 {
+                return self.eval(&value, env);
+            }
+            return Ok(Value::list([
+                Value::Symbol(kind.into()),
+                self.eval_backquote_with_depth(&value, env, depth - 1)?,
+            ]));
+        }
+
+        if let Some(body) = nested_backquote_body(expr) {
+            return Ok(Value::list([
+                Value::Symbol("backquote".into()),
+                self.eval_backquote_with_depth(&body, env, depth + 1)?,
+            ]));
+        }
+
         match expr {
             Value::Cons(_, _) => {
-                let (car, cdr) = expr.cons_values().expect("cons");
-                // Check for (comma expr) or (comma-at expr) at the top level
-                if let Value::Symbol(s) = &car
-                    && (s == "comma" || s == "comma-at")
-                    && let Some((val, rest)) = cdr.cons_values()
-                    && matches!(rest, Value::Nil)
-                {
-                    return self.eval(&val, env);
-                }
-                // Walk the cons structure, handling splicing and dotted pairs
                 let mut result: Vec<Value> = Vec::new();
                 let mut current = expr.clone();
                 loop {
+                    if backquote_unquote_form(&current).is_some() {
+                        let tail = self.eval_backquote_with_depth(&current, env, depth)?;
+                        return Ok(cons_list_with_tail(result, tail));
+                    }
+
                     match current {
                         Value::Cons(car, cdr) => {
                             let car_value = car.borrow().clone();
                             let cdr_value = cdr.borrow().clone();
-                            // Is current itself a (comma x) or (comma-at x)?
-                            if let Value::Symbol(s) = &car_value
-                                && (s == "comma" || s == "comma-at")
-                                && let Some((val, rest)) = cdr_value.cons_values()
-                                && matches!(rest, Value::Nil)
+
+                            if depth == 0
+                                && let Some(("comma-at", value)) =
+                                    backquote_unquote_form(&car_value)
                             {
-                                // This is a comma form used as a dotted tail
-                                let tail = self.eval(&val, env)?;
-                                let mut out = tail;
-                                for item in result.into_iter().rev() {
-                                    out = Value::cons(item, out);
+                                let evaled = self.eval(&value, env)?;
+                                if let Ok(elems) = evaled.to_vec() {
+                                    result.extend(elems);
                                 }
-                                return Ok(out);
+                                current = cdr_value;
+                                continue;
                             }
-                            // Check if car is (comma x) or (comma-at x)
-                            if let Some((inner_car, inner_cdr)) = car_value.cons_values()
-                                && let Value::Symbol(s) = &inner_car
-                                && let Some((val, rest)) = inner_cdr.cons_values()
-                                && matches!(rest, Value::Nil)
-                            {
-                                if s == "comma" {
-                                    result.push(self.eval(&val, env)?);
-                                    current = cdr_value;
-                                    continue;
-                                }
-                                if s == "comma-at" {
-                                    let evaled = self.eval(&val, env)?;
-                                    if let Ok(elems) = evaled.to_vec() {
-                                        result.extend(elems);
-                                    }
-                                    current = cdr_value;
-                                    continue;
-                                }
-                            }
-                            result.push(self.eval_backquote(&car_value, env)?);
+
+                            result.push(self.eval_backquote_with_depth(&car_value, env, depth)?);
                             current = cdr_value;
                         }
                         Value::Nil => break,
                         other => {
-                            // Dotted pair tail (non-cons) — evaluate and attach
-                            let tail = self.eval_backquote(&other, env)?;
-                            let mut out = tail;
-                            for item in result.into_iter().rev() {
-                                out = Value::cons(item, out);
-                            }
-                            return Ok(out);
+                            let tail = self.eval_backquote_with_depth(&other, env, depth)?;
+                            return Ok(cons_list_with_tail(result, tail));
                         }
                     }
                 }
                 Ok(Value::list(result))
             }
-            // Non-list: return as-is (like quote)
             _ => Ok(expr.clone()),
         }
     }
@@ -8396,6 +8438,31 @@ fn invalid_function(value: Value) -> LispError {
     ]))
 }
 
+fn backquote_unquote_form(value: &Value) -> Option<(&'static str, Value)> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(symbol), value] if symbol == "comma" => Some(("comma", value.clone())),
+        [Value::Symbol(symbol), value] if symbol == "comma-at" => Some(("comma-at", value.clone())),
+        _ => None,
+    }
+}
+
+fn nested_backquote_body(value: &Value) -> Option<Value> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(symbol), body] if symbol == "backquote" => Some(body.clone()),
+        _ => None,
+    }
+}
+
+fn cons_list_with_tail(items: Vec<Value>, tail: Value) -> Value {
+    let mut out = tail;
+    for item in items.into_iter().rev() {
+        out = Value::cons(item, out);
+    }
+    out
+}
+
 fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> {
     let mut seen_optional = false;
     let mut seen_rest = false;
@@ -8918,6 +8985,7 @@ fn is_compat_preloaded_feature(feature: &str) -> bool {
     matches!(
         feature,
         "cl-extra"
+            | "cl-generic"
             | "cl-lib"
             | "cus-edit"
             | "cus-load"
@@ -10480,6 +10548,30 @@ mod tests {
     }
 
     #[test]
+    fn insert_file_contents_leaves_point_at_insert_start() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-insert-file-contents-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "abc").unwrap();
+
+        let path_literal = path.display().to_string().replace('\\', "\\\\");
+        assert_eq!(
+            eval_str(&format!(
+                "(with-temp-buffer \
+                   (insert-file-contents-literally \"{path_literal}\") \
+                   (list (point) (point-min) (point-max)))"
+            )),
+            Value::list([Value::Integer(1), Value::Integer(1), Value::Integer(4)])
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn define_inline_lowers_inline_wrappers_into_a_runtime_function() {
         let mut interp = Interpreter::new();
         eval_str_with(
@@ -10522,6 +10614,25 @@ mod tests {
                 Value::T,
                 Value::Nil,
             ])
+        );
+    }
+
+    #[test]
+    fn cl_lib_compat_preload_seeds_proclaim_state() {
+        let interp = Interpreter::new();
+        assert!(is_compat_preloaded_feature("cl-lib"));
+        assert!(is_compat_preloaded_feature("cl-generic"));
+        assert_eq!(
+            interp.lookup_var("cl--proclaims-deferred", &Vec::new()),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_var("inhibit-file-name-handlers", &Vec::new()),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_var("inhibit-file-name-operation", &Vec::new()),
+            Some(Value::Nil)
         );
     }
 
@@ -11243,6 +11354,54 @@ mod tests {
     }
 
     #[test]
+    fn ignore_error_catches_requested_conditions() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                     (ignore-error wrong-type-argument
+                       (signal 'wrong-type-argument nil))
+                     (condition-case nil
+                         (ignore-error search-failed
+                           (signal 'wrong-type-argument nil))
+                       (wrong-type-argument 'caught)))"#
+            ),
+            Value::list([Value::Nil, Value::Symbol("caught".into())])
+        );
+    }
+
+    #[test]
+    fn encode_coding_region_returns_region_text_when_requested() {
+        assert_string_value(
+            eval_str(
+                r#"(with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert "ABC")
+                     (encode-coding-region (point-min) (point-max) 'binary t))"#,
+            ),
+            "ABC",
+        );
+    }
+
+    #[test]
+    fn encode_coding_region_binary_returns_unibyte_string() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (set-buffer-multibyte t)
+                     (insert (string #x89 ?A))
+                     (let ((encoded (encode-coding-region
+                                     (point-min) (point-max) 'binary t)))
+                       (list (string-to-list encoded)
+                             (multibyte-string-p encoded))))"#
+            ),
+            Value::list([
+                Value::list([Value::Integer(137), Value::Integer(65)]),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
     fn format_binary_negative() {
         assert_eq!(
             eval_str(r#"(format "%b" #x-5A)"#),
@@ -11276,6 +11435,52 @@ mod tests {
                      result)"#,
             ),
             "ba",
+        );
+    }
+
+    #[test]
+    fn nested_backquote_preserves_inner_unquote() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (defmacro nested-single-comma () ``(,x))
+                     (let ((x 1))
+                       (nested-single-comma)))"#
+            ),
+            Value::list([Value::Integer(1)])
+        );
+    }
+
+    #[test]
+    fn nested_backquote_decrements_unquote_depth() {
+        let expected = Reader::new("`(,1)")
+            .read()
+            .expect("read succeeds")
+            .expect("form is present");
+        assert_eq!(
+            eval_str(
+                r#"(let ((x 1))
+                     (eval '``(,,x)))"#
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn nested_backquote_preserves_inner_splice() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (defmacro nested-splice () ``(,@args ,val))
+                     (let ((args '(a i))
+                           (val 'v))
+                       (nested-splice)))"#
+            ),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("i".into()),
+                Value::Symbol("v".into()),
+            ])
         );
     }
 

@@ -862,6 +862,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "font-lock-prepend-text-property"
             | "font-lock--remove-face-from-text-property"
             | "put"
+            | "define-symbol-prop"
+            | "function-put"
+            | "function-get"
             | "symbol-plist"
             | "setplist"
             | "zlib-available-p"
@@ -5249,7 +5252,7 @@ pub fn call(
             font_lock_push_buffer_undo_entry(interp, buffer_id)?;
             Ok(Value::Nil)
         }
-        "put" => {
+        "put" | "define-symbol-prop" | "function-put" => {
             need_args(name, args, 3)?;
             let symbol = args[0].as_symbol()?;
             let property = args[1].as_symbol()?;
@@ -7872,8 +7875,8 @@ pub fn call(
                 .get_symbol_property(symbol, property)
                 .unwrap_or(Value::Nil))
         }
-        "get" => {
-            need_args(name, args, 2)?;
+        "get" | "function-get" => {
+            need_arg_range(name, args, 2, 3)?;
             let symbol = args[0].as_symbol()?;
             let property = args[1].as_symbol()?;
             Ok(interp
@@ -10986,10 +10989,29 @@ pub fn call(
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let _ = position_from_value(interp, &args[0])?;
-            let _ = position_from_value(interp, &args[1])?;
-            let _ = args[2].as_symbol()?;
-            Ok(Value::Nil)
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let coding = checked_coding_name(interp, &args[2])?;
+            let region = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let region = make_shared_string_value_with_multibyte(
+                region,
+                Vec::new(),
+                interp.buffer.is_multibyte(),
+            );
+            let destination = args.get(3).is_some_and(Value::is_truthy);
+            let transformed = if name == "encode-coding-region" {
+                encode_coding_value(interp, &region, coding.as_deref(), destination, env)?
+            } else {
+                decode_coding_text(interp, &region, coding.as_deref(), destination, env)?
+            };
+            if destination {
+                Ok(transformed)
+            } else {
+                Ok(Value::Nil)
+            }
         }
 
         "encode-coding-string" => {
@@ -14605,11 +14627,22 @@ fn encode_coding_value(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(coding))?;
+    set_last_coding_system_used(interp, &canonical, env);
+    if interp
+        .coding_system(&canonical)
+        .is_some_and(|coding| coding.kind == "raw-text")
+    {
+        let text = decode_raw_text_bytes(&encode_text_bytes(interp, &string.text, &canonical)?);
+        return Ok(make_shared_string_value_with_multibyte(
+            text,
+            string.props,
+            false,
+        ));
+    }
     let failures = string_unencodable_positions(&string.text, &canonical, interp)?;
     if !failures.is_empty() {
         return Err(LispError::Signal("Character cannot be encoded".into()));
     }
-    set_last_coding_system_used(interp, &canonical, env);
     if nocopy && string_identity_for_coding(&string.text, &canonical, interp, true) {
         Ok(value.clone())
     } else {
@@ -20025,7 +20058,9 @@ fn insert_file_contents(
             Value::String("Circular list".into()),
         ])));
     }
+    let insert_at = interp.buffer.point();
     interp.insert_current_buffer(&text);
+    interp.buffer.goto_char(insert_at);
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
         "buffer-file-coding-system",
