@@ -218,6 +218,10 @@ impl PartialEq for Value {
             (Value::StringObject(a), Value::StringObject(b)) => Rc::ptr_eq(a, b),
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
             (Value::Cons(a1, a2), Value::Cons(b1, b2)) => a1 == b1 && a2 == b2,
+            (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+            (Value::Lambda(a_params, a_body, a_env), Value::Lambda(b_params, b_body, b_env)) => {
+                a_params == b_params && a_body == b_body && a_env == b_env
+            }
             (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
             (Value::Marker(a), Value::Marker(b)) => a == b,
             (Value::Overlay(a), Value::Overlay(b)) => a == b,
