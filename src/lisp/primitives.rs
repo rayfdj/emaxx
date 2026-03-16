@@ -8320,13 +8320,33 @@ pub fn call(
         }
         "current-global-map" => {
             need_args(name, args, 0)?;
-            Ok(keymap_placeholder(Some("global-map")))
+            Ok(interp
+                .lookup_var("global-map", env)
+                .unwrap_or_else(|| keymap_placeholder(Some("global-map"))))
         }
-        "global-set-key" | "local-set-key" => {
+        "global-set-key" => {
+            need_args(name, args, 2)?;
+            let key = key_sequence_binding_text(&args[0])?;
+            let global_map = interp
+                .lookup_var("global-map", env)
+                .unwrap_or_else(|| keymap_placeholder(Some("global-map")));
+            keymap_define_binding(interp, &global_map, &key, args[1].clone())?;
+            Ok(args[1].clone())
+        }
+        "local-set-key" => {
             need_args(name, args, 2)?;
             Ok(args[1].clone())
         }
-        "global-unset-key" | "local-unset-key" => {
+        "global-unset-key" => {
+            need_args(name, args, 1)?;
+            let key = key_sequence_binding_text(&args[0])?;
+            let global_map = interp
+                .lookup_var("global-map", env)
+                .unwrap_or_else(|| keymap_placeholder(Some("global-map")));
+            keymap_remove_binding(interp, &global_map, &key)?;
+            Ok(Value::Nil)
+        }
+        "local-unset-key" => {
             need_args(name, args, 1)?;
             Ok(Value::Nil)
         }
@@ -20496,9 +20516,71 @@ fn single_key_description_text(key: &Value, no_angles: bool) -> Result<String, L
         Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
         Value::String(text) => Ok(text.clone()),
         Value::StringObject(state) => Ok(state.borrow().text.clone()),
+        Value::Cons(_, _) => list_event_key_description_text(key, no_angles),
         _ => Err(LispError::TypeError(
             "integer, symbol, or string".into(),
             key.type_name(),
+        )),
+    }
+}
+
+fn list_event_key_description_text(key: &Value, no_angles: bool) -> Result<String, LispError> {
+    let items = key.to_vec()?;
+    let Some((base, modifiers)) = items.split_last() else {
+        return Err(LispError::TypeError(
+            "integer, symbol, or string".into(),
+            key.type_name(),
+        ));
+    };
+
+    let mut bits = 0;
+    for modifier in modifiers {
+        bits |= match modifier.as_symbol()? {
+            "alt" => KEY_DESCRIPTION_ALT_BIT,
+            "control" => KEY_DESCRIPTION_CTRL_BIT,
+            "hyper" => KEY_DESCRIPTION_HYPER_BIT,
+            "meta" => KEY_DESCRIPTION_META_BIT,
+            "shift" => KEY_DESCRIPTION_SHIFT_BIT,
+            "super" => KEY_DESCRIPTION_SUPER_BIT,
+            _ => {
+                return Err(LispError::TypeError(
+                    "event modifier".into(),
+                    modifier.type_name(),
+                ));
+            }
+        };
+    }
+
+    match base {
+        Value::Integer(code) => Ok(describe_key_code(*code | bits)),
+        Value::Symbol(symbol) => Ok(describe_symbolic_key(
+            &symbolic_kbd_event(bits, symbol),
+            no_angles,
+        )),
+        Value::String(text) => {
+            if bits == 0 {
+                Ok(text.clone())
+            } else {
+                Ok(describe_symbolic_key(
+                    &symbolic_kbd_event(bits, text),
+                    no_angles,
+                ))
+            }
+        }
+        Value::StringObject(state) => {
+            let text = state.borrow().text.clone();
+            if bits == 0 {
+                Ok(text)
+            } else {
+                Ok(describe_symbolic_key(
+                    &symbolic_kbd_event(bits, &text),
+                    no_angles,
+                ))
+            }
+        }
+        _ => Err(LispError::TypeError(
+            "integer, symbol, or string".into(),
+            base.type_name(),
         )),
     }
 }
@@ -21647,6 +21729,15 @@ fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<Value, Lisp
     let maps = active_minor_mode_maps(interp, env)?;
     for map in &maps {
         let binding = keymap_lookup_binding(interp, map, key)?;
+        if !binding.is_nil() {
+            return Ok(binding);
+        }
+    }
+
+    if let Some(global_map) = interp.lookup_var("global-map", env)
+        && is_keymap_value(interp, &global_map)
+    {
+        let binding = keymap_lookup_binding(interp, &global_map, key)?;
         if !binding.is_nil() {
             return Ok(binding);
         }
