@@ -12,6 +12,7 @@ use regex::{Regex, escape as regex_escape};
 pub struct ErtTestDefinition {
     pub name: String,
     pub body: Value,
+    pub source_file: Option<String>,
     pub tags: Vec<String>,
     pub expected_result: String,
 }
@@ -7842,6 +7843,7 @@ impl Interpreter {
         self.ert_tests.push(ErtTestDefinition {
             name,
             body,
+            source_file: self.current_load_file.clone(),
             tags,
             expected_result,
         });
@@ -7931,7 +7933,10 @@ impl Interpreter {
 
         for test in &tests {
             let mut env: Env = Vec::new();
-            match self.eval(&test.body, &mut env) {
+            let previous = self.set_current_load_file(test.source_file.clone());
+            let result = self.eval(&test.body, &mut env);
+            self.set_current_load_file(previous);
+            match result {
                 Ok(_) => {
                     summary.passed += 1;
                     if test.expected_result == ":failed" {
@@ -9567,6 +9572,28 @@ mod tests {
                 (should (string= (buffer-string) "hello"))))
             "#,
         );
+        let (passed, failed, total) = interp.run_ert_tests();
+        assert_eq!(total, 1);
+        assert_eq!(passed, 1);
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn ert_resource_file_uses_test_defining_file_during_execution() {
+        let mut interp = Interpreter::new();
+        let test_file = "/tmp/emaxx-pcmpl-linux-tests.el";
+        let expected = "/tmp/emaxx-pcmpl-linux-resources/fs";
+        interp.set_current_load_file(Some(test_file.into()));
+        eval_str_with(
+            &mut interp,
+            &format!(
+                r#"
+                (ert-deftest ert-resource-file-keeps-defining-file ()
+                  (should (string= (ert-resource-file "fs") "{expected}")))
+                "#
+            ),
+        );
+        interp.set_current_load_file(None);
         let (passed, failed, total) = interp.run_ert_tests();
         assert_eq!(total, 1);
         assert_eq!(passed, 1);

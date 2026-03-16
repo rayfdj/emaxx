@@ -586,6 +586,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "sxhash-equal-including-properties"
             | "string="
             | "string-equal"
+            | "string-lessp"
             | "string<"
             | "string-search"
             | "xor"
@@ -1028,6 +1029,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "ert-resource-file"
             | "ert-fail"
             | "load"
+            | "directory-files"
             | "file-directory-p"
             | "file-accessible-directory-p"
             | "file-readable-p"
@@ -1175,6 +1177,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "plist-put"
             | "plist-member"
             // Sorting
+            | "seq-uniq"
             | "sort"
             | "cl-sort"
             // Misc
@@ -2023,7 +2026,7 @@ pub fn call(
                 Value::Nil
             })
         }
-        "string<" => {
+        "string-lessp" | "string<" => {
             need_args(name, args, 2)?;
             let a = string_comparison_text(&args[0])?;
             let b = string_comparison_text(&args[1])?;
@@ -6601,6 +6604,20 @@ pub fn call(
             let _loaded = interp.load_target(&target)?;
             Ok(Value::T)
         }
+        "directory-files" => {
+            need_arg_range(name, args, 1, 5)?;
+            let directory = string_text(&args[0])?;
+            let full = args.get(1).is_some_and(Value::is_truthy);
+            let matcher = args.get(2).filter(|value| !value.is_nil());
+            let nosort = args.get(3).is_some_and(Value::is_truthy);
+            let count = args
+                .get(4)
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .map(|value| value.max(0) as usize);
+            directory_files(interp, &directory, full, matcher, nosort, count, env)
+        }
         "file-directory-p" | "file-accessible-directory-p" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -9794,6 +9811,11 @@ pub fn call(
                     _ => return Ok(Value::Nil),
                 }
             }
+        }
+
+        "seq-uniq" => {
+            need_arg_range(name, args, 1, 2)?;
+            seq_uniq(interp, &args[0], args.get(1), env)
         }
 
         // ── Sort ──
@@ -15223,6 +15245,56 @@ fn ert_resource_directory_for(testfile: &str) -> String {
     path_to_directory_string(&resource_dir)
 }
 
+fn directory_files(
+    interp: &Interpreter,
+    directory: &str,
+    full: bool,
+    matcher: Option<&Value>,
+    nosort: bool,
+    count: Option<usize>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    validate_file_name(directory)?;
+    let mut entries = vec![".".to_string(), "..".to_string()];
+    let iter = fs::read_dir(directory).map_err(|error| LispError::Signal(error.to_string()))?;
+    for entry in iter {
+        let entry = entry.map_err(|error| LispError::Signal(error.to_string()))?;
+        entries.push(entry.file_name().to_string_lossy().into_owned());
+    }
+    if let Some(matcher) = matcher {
+        let pattern = string_like(matcher)
+            .ok_or_else(|| LispError::TypeError("string".into(), matcher.type_name()))?;
+        validate_elisp_regex(&pattern.text)?;
+        let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+        let mut filtered = Vec::new();
+        for entry in entries {
+            if regex
+                .is_match(&entry)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+            {
+                filtered.push(entry);
+            }
+        }
+        entries = filtered;
+    }
+    if !nosort {
+        entries.sort();
+    }
+    if let Some(count) = count {
+        entries.truncate(count);
+    }
+    Ok(Value::list(entries.into_iter().map(|entry| {
+        Value::String(if full {
+            Path::new(directory)
+                .join(&entry)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            entry
+        })
+    })))
+}
+
 fn charset_for_char(code: u32) -> &'static str {
     if code <= 0x7f { "ascii" } else { "unicode" }
 }
@@ -16504,6 +16576,65 @@ mod tests {
         assert_eq!(
             ert_resource_directory_for("/tmp/bookmark.el"),
             "/tmp/bookmark-resources/"
+        );
+    }
+
+    #[test]
+    fn directory_files_returns_sorted_names_with_dot_entries() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("emaxx-directory-files-{unique}"));
+        std::fs::create_dir_all(directory.join("ext4")).expect("create ext4 fixture");
+
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let result = call(
+            &mut interp,
+            "directory-files",
+            &[Value::String(directory.display().to_string())],
+            &mut env,
+        )
+        .expect("directory-files should succeed");
+
+        assert_eq!(
+            result,
+            Value::list([
+                Value::String(".".into()),
+                Value::String("..".into()),
+                Value::String("ext4".into()),
+            ])
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn seq_uniq_preserves_first_occurrence_order() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let result = call(
+            &mut interp,
+            "seq-uniq",
+            &[Value::list([
+                Value::String("/".into()),
+                Value::String("/proc".into()),
+                Value::String("/".into()),
+                Value::String("/dev".into()),
+                Value::String("/proc".into()),
+            ])],
+            &mut env,
+        )
+        .expect("seq-uniq should succeed");
+
+        assert_eq!(
+            result,
+            Value::list([
+                Value::String("/".into()),
+                Value::String("/proc".into()),
+                Value::String("/dev".into()),
+            ])
         );
     }
 
@@ -21537,6 +21668,28 @@ pub(crate) fn value_matches_with_test(
             )
         }
     }
+}
+
+fn seq_uniq(
+    interp: &mut Interpreter,
+    sequence: &Value,
+    testfn: Option<&Value>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut unique = Vec::new();
+    for item in sequence.to_vec()? {
+        let mut seen = false;
+        for existing in &unique {
+            if value_matches_with_test(interp, &item, existing, testfn, env)? {
+                seen = true;
+                break;
+            }
+        }
+        if !seen {
+            unique.push(item);
+        }
+    }
+    Ok(Value::list(unique))
 }
 
 fn invoke_function_value(
