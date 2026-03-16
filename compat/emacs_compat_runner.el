@@ -1,8 +1,17 @@
+;;; emacs_compat_runner.el --- Oracle compat batch helper -*- lexical-binding: t; -*-
+
 (require 'ert)
 (require 'json)
 
 (defvar emaxx-compat--tests-before-load nil
   "Names of ERT tests bound before the target file was loaded.")
+
+(defvar emaxx-compat--selector
+  (or (getenv "EMAXX_COMPAT_SELECTOR") "(quote t)")
+  "Stringified selector used when synthesizing load-error reports.")
+
+(defvar emaxx-compat--command-error-default-function command-error-function
+  "Original command error function installed before the compat wrapper.")
 
 (setq emaxx-compat--tests-before-load
       (sort
@@ -60,6 +69,37 @@
                                 (directory-file-name
                                  (getenv "EMACS_TEST_DIRECTORY")))))
       "unknown"))
+
+(defun emaxx-compat--load-error-report (data)
+  (list
+   (cons 'runner "oracle")
+   (cons 'file (emaxx-compat--relative-file))
+   (cons 'selector emaxx-compat--selector)
+   (cons 'file_status "load_error")
+   (cons 'file_error (error-message-string data))
+   (cons 'discovered_tests [])
+   (cons 'selected_tests [])
+   (cons 'results [])
+   (cons 'summary
+         '((total . 0)
+           (passed . 0)
+           (failed . 0)
+           (skipped . 0)
+           (unexpected . 0)))))
+
+(defun emaxx-compat--maybe-write-load-error-report (data)
+  (let ((result-file (getenv "EMAXX_BATCH_RESULT_FILE")))
+    (when (and result-file
+               (not (file-exists-p result-file)))
+      (with-temp-file result-file
+        (insert (json-encode (emaxx-compat--load-error-report data)))))))
+
+(defun emaxx-compat--command-error-function (data context signal)
+  (ignore-errors
+    (emaxx-compat--maybe-write-load-error-report data))
+  (funcall emaxx-compat--command-error-default-function data context signal))
+
+(setq command-error-function #'emaxx-compat--command-error-function)
 
 (defun emaxx-compat--report (selector)
   (cl-destructuring-bind (discovered selected stats)

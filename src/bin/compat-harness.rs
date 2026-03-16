@@ -380,6 +380,7 @@ fn run_oracle(
     compat::configure_upstream_like_env(&mut command, &test_directory);
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     command.env("EMAXX_COMPAT_RELATIVE_FILE", relative_file);
+    command.env("EMAXX_COMPAT_SELECTOR", format!("(quote {selector})"));
     command.arg("--no-init-file");
     command.arg("--no-site-file");
     command.arg("--no-site-lisp");

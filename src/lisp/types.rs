@@ -340,6 +340,24 @@ impl fmt::Display for LispError {
             }
             LispError::Signal(msg) => write!(f, "{}", msg),
             LispError::SignalValue(value) => match value.to_vec() {
+                Ok(items)
+                    if items.len() >= 4
+                        && matches!(items.first(), Some(Value::Symbol(kind)) if kind == "file-error" || kind == "file-missing") =>
+                {
+                    let message = match &items[1] {
+                        Value::String(text) => text.as_str(),
+                        _ => return write!(f, "{}", value),
+                    };
+                    let detail = match &items[2] {
+                        Value::String(text) => text.as_str(),
+                        _ => return write!(f, "{}", value),
+                    };
+                    let path = match &items[3] {
+                        Value::String(text) => text.as_str(),
+                        _ => return write!(f, "{}", value),
+                    };
+                    write!(f, "{}: {}, {}", message, detail, path)
+                }
                 Ok(items) if items.len() >= 2 => write!(f, "{}", items[1]),
                 _ => write!(f, "{}", value),
             },
