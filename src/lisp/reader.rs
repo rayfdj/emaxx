@@ -219,6 +219,22 @@ impl<'a> Reader<'a> {
                         Some(b'a') => s.push('\x07'),
                         Some(b'b') => s.push('\x08'),
                         Some(b'f') => s.push('\x0C'),
+                        Some(b'^') => {
+                            let code = self.read_string_control_escape()?;
+                            if code <= 0x7F {
+                                s.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
+                            } else if code <= 0xFF {
+                                has_raw_bytes = true;
+                                s.push(encode_raw_byte(code as u8));
+                            } else if valid_unicode_scalar(code) {
+                                let c = char::from_u32(code).expect("validated scalar");
+                                has_explicit_multibyte = true;
+                                s.push(c);
+                            } else {
+                                has_invalid_unicode = true;
+                                s.push(INVALID_UNICODE_SENTINEL);
+                            }
+                        }
                         Some(b'x') => {
                             // Emacs reads as many contiguous hex digits as it can here.
                             let hex = self.read_hex_digits(usize::MAX);
@@ -309,6 +325,18 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+    }
+
+    fn read_string_control_escape(&mut self) -> Result<u32, LispError> {
+        let Some(ch) = self.advance() else {
+            return Err(LispError::EndOfInput);
+        };
+        Ok(match ch {
+            b'?' => 0x7F,
+            b'a'..=b'z' => (ch - b'a' + 1) as u32,
+            b'A'..=b'Z' => (ch - b'A' + 1) as u32,
+            _ => (ch & 0x1F) as u32,
+        })
     }
 
     fn read_hex_digits(&mut self, max: usize) -> u32 {
@@ -930,6 +958,7 @@ mod tests {
         assert_eq!(read_one(r#""a\nb""#), Value::String("a\nb".into()));
         assert_eq!(read_one(r#""a\"b""#), Value::String("a\"b".into()));
         assert_eq!(read_one("\"a\\\nb\""), Value::String("ab".into()));
+        assert_eq!(read_one(r#""\^@\^H\^?""#), Value::String("\0\x08\x7f".into()));
     }
 
     #[test]
