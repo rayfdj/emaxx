@@ -5691,11 +5691,51 @@ impl Interpreter {
     }
 
     fn sf_defgroup(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        Ok(items
-            .get(1)
-            .and_then(|value| value.as_symbol().ok())
-            .map(Value::symbol)
-            .unwrap_or(Value::Nil))
+        let Some(Value::Symbol(name)) = items.get(1) else {
+            return Ok(Value::Nil);
+        };
+
+        if let Some(doc) = items.get(3)
+            && let Some(text) = match doc {
+                Value::String(text) => Some(text.clone()),
+                Value::StringObject(shared) => Some(shared.borrow().text.clone()),
+                _ => None,
+            }
+        {
+            self.put_symbol_property(name, "group-documentation", Value::String(text));
+        }
+
+        if let Some(members) = items.get(2)
+            && let Ok(entries) = members.to_vec()
+        {
+            for entry in entries {
+                let Ok(parts) = entry.to_vec() else {
+                    continue;
+                };
+                if parts.len() < 2 {
+                    continue;
+                }
+                crate::lisp::primitives::custom_add_to_group(
+                    self,
+                    name,
+                    parts[0].clone(),
+                    parts[1].clone(),
+                );
+            }
+        }
+
+        let mut index = 4usize;
+        while index + 1 < items.len() {
+            if let Value::Symbol(keyword) = &items[index]
+                && keyword == ":prefix"
+            {
+                self.put_symbol_property(name, "custom-prefix", items[index + 1].clone());
+            }
+            index += 2;
+        }
+
+        crate::lisp::primitives::custom_set_current_group(self, name);
+        Ok(Value::Symbol(name.clone()))
     }
 
     fn sf_defface(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -9699,6 +9739,23 @@ mod tests {
     }
 
     #[test]
+    fn defvar_keymap_supports_read_only_filter_bindings() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar-keymap sample-read-only-map
+                     \"RET\" (keymap-read-only-bind #'ignore))
+                   (let ((binding (keymap-lookup sample-read-only-map \"RET\")))
+                     (and (consp binding)
+                          (equal (car binding) 'menu-item)
+                          (equal (nth 2 binding) #'ignore)
+                          (equal (car (last binding)) '(function keymap--read-only-filter)))))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
     fn declaration_stub_forms_do_not_error_during_loads() {
         assert_eq!(
             eval_str(
@@ -11847,5 +11904,75 @@ mod tests {
             .unwrap();
         let error = interp.eval(&form, &mut env).unwrap_err();
         assert_eq!(error.condition_type(), "inhibited-interaction");
+    }
+
+    #[test]
+    fn native_comp_capability_probes_are_honest() {
+        assert_eq!(eval_str("(native-comp-available-p)"), Value::Nil);
+        assert_eq!(eval_str("(featurep 'native-compile)"), Value::Nil);
+        assert_eq!(
+            eval_str("(native-comp-function-p (symbol-function 'car))"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn nconc_supports_dotted_tails() {
+        assert_eq!(
+            eval_str("(nconc '(a b) 'tail)"),
+            Value::cons(
+                Value::symbol("a"),
+                Value::cons(Value::symbol("b"), Value::symbol("tail"))
+            )
+        );
+    }
+
+    #[test]
+    fn sxhash_eql_matches_equal_bignums() {
+        assert_eq!(
+            eval_str(
+                "(let* ((a (1+ most-positive-fixnum)) (b (+ most-positive-fixnum 1))) (= (sxhash-eql a) (sxhash-eql b)))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn sort_coding_systems_uses_priority_order() {
+        assert_eq!(
+            eval_str(
+                "(progn (set-coding-system-priority 'utf-8 'iso-latin-1) (sort-coding-systems '(iso-latin-1 undecided utf-8)))"
+            ),
+            Value::list([
+                Value::symbol("utf-8"),
+                Value::symbol("iso-latin-1"),
+                Value::symbol("undecided"),
+            ])
+        );
+    }
+
+    #[test]
+    fn defgroup_tracks_current_group_and_members() {
+        let mut interp = Interpreter::new();
+        interp.set_current_load_file(Some("/tmp/custom-group.el".into()));
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (defgroup demo nil \"Doc.\" :prefix \"demo-\")
+                   (custom-add-to-group 'demo 'demo-option 'custom-variable)
+                   (list (custom-current-group)
+                         (equal (get 'demo 'custom-prefix) \"demo-\")
+                         (get 'demo 'custom-group)))"
+            ),
+            Value::list([
+                Value::symbol("demo"),
+                Value::T,
+                Value::list([Value::list([
+                    Value::symbol("demo-option"),
+                    Value::symbol("custom-variable"),
+                ])]),
+            ])
+        );
     }
 }

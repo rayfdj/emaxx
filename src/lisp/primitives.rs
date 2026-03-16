@@ -578,6 +578,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "eql"
             | "equal"
             | "equal-including-properties"
+            | "sxhash"
+            | "sxhash-eq"
+            | "sxhash-eql"
+            | "sxhash-equal"
+            | "sxhash-equal-including-properties"
             | "string="
             | "string-equal"
             | "string<"
@@ -644,6 +649,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cdr-safe"
             | "list"
             | "append"
+            | "nconc"
             | "nth"
             | "elt"
             | "nthcdr"
@@ -898,6 +904,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "subr-arity"
             | "subr-name"
             | "subr-native-lambda-list"
+            | "native-comp-available-p"
+            | "native-comp-function-p"
             | "subr-native-comp-unit"
             | "native-comp-unit-file"
             | "native-comp-unit-set-file"
@@ -925,6 +933,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "coding-system-p"
             | "check-coding-system"
             | "coding-system-priority-list"
+            | "sort-coding-systems"
             | "coding-system-aliases"
             | "coding-system-plist"
             | "coding-system-put"
@@ -1202,6 +1211,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "autoload"
             | "autoloadp"
             | "custom-autoload"
+            | "custom-add-to-group"
+            | "custom-current-group"
             | "customize-set-variable"
             | "documentation"
             | "documentation-property"
@@ -1249,6 +1260,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "lookup-key"
             | "key-binding"
             | "keymap-lookup"
+            | "keymap-read-only-bind"
+            | "keymap--read-only-filter"
             | "keymap-parent"
             | "set-keymap-parent"
             | "suppress-keymap"
@@ -1971,6 +1984,25 @@ pub fn call(
                 Value::Nil
             })
         }
+        "sxhash" | "sxhash-equal" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(sxhash_value(&args[0], HashMode::Equal)))
+        }
+        "sxhash-eq" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(sxhash_value(&args[0], HashMode::Eq)))
+        }
+        "sxhash-eql" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(sxhash_value(&args[0], HashMode::Eql)))
+        }
+        "sxhash-equal-including-properties" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(sxhash_value(
+                &args[0],
+                HashMode::EqualIncludingProperties,
+            )))
+        }
         "string=" | "string-equal" => {
             need_args(name, args, 2)?;
             let a = string_comparison_text(&args[0])?;
@@ -2614,6 +2646,7 @@ pub fn call(
             Ok(args[0].clone())
         }
         "list" => Ok(Value::list(args.iter().cloned())),
+        "nconc" => nconc_values(args),
         "append" => {
             let mut items: Vec<Value> = Vec::new();
             for (i, a) in args.iter().enumerate() {
@@ -5778,6 +5811,14 @@ pub fn call(
                 other => Err(LispError::TypeError("subr".into(), other.type_name())),
             }
         }
+        "native-comp-available-p" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
+        "native-comp-function-p" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
         "subr-native-comp-unit" => {
             need_args(name, args, 1)?;
             match &args[0] {
@@ -6063,6 +6104,18 @@ pub fn call(
                     priority.into_iter().map(Value::Symbol).collect::<Vec<_>>(),
                 ))
             }
+        }
+        "sort-coding-systems" => {
+            need_args(name, args, 1)?;
+            let mut items = args[0].to_vec()?;
+            items.sort_by_key(|value| {
+                value
+                    .as_symbol()
+                    .ok()
+                    .map(|name| interp.coding_system_priority_rank(name))
+                    .unwrap_or(usize::MAX)
+            });
+            Ok(Value::list(items))
         }
         "coding-system-aliases" => {
             need_args(name, args, 1)?;
@@ -7789,6 +7842,20 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "custom-add-to-group" => {
+            need_args(name, args, 3)?;
+            custom_add_to_group(
+                interp,
+                args[0].as_symbol()?,
+                args[1].clone(),
+                args[2].clone(),
+            );
+            Ok(Value::Nil)
+        }
+        "custom-current-group" => {
+            need_args(name, args, 0)?;
+            Ok(custom_current_group(interp).unwrap_or(Value::Nil))
+        }
         "documentation" => {
             need_args(name, args, 1)?;
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
@@ -8172,6 +8239,30 @@ pub fn call(
             }
             let key = key_sequence_binding_text(&args[1])?;
             keymap_lookup_binding(interp, &args[0], &key)
+        }
+        "keymap--read-only-filter" => {
+            need_args(name, args, 1)?;
+            if interp
+                .lookup_var("buffer-read-only", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                Ok(args[0].clone())
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        "keymap-read-only-bind" => {
+            need_args(name, args, 1)?;
+            Ok(Value::list([
+                Value::Symbol("menu-item".into()),
+                Value::String(String::new()),
+                args[0].clone(),
+                Value::Symbol(":filter".into()),
+                Value::list([
+                    Value::Symbol("function".into()),
+                    Value::Symbol("keymap--read-only-filter".into()),
+                ]),
+            ]))
         }
         "key-binding" => {
             need_arg_range(name, args, 1, 3)?;
@@ -20908,6 +20999,305 @@ fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
         }
         _ => left == right,
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HashMode {
+    Eq,
+    Eql,
+    Equal,
+    EqualIncludingProperties,
+}
+
+fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
+
+    let mut prefix = Vec::new();
+    for value in &args[..args.len().saturating_sub(1)] {
+        if value.is_nil() {
+            continue;
+        }
+        prefix.extend(value.to_vec()?);
+    }
+
+    let mut result = args.last().cloned().unwrap_or(Value::Nil);
+    for item in prefix.into_iter().rev() {
+        result = Value::cons(item, result);
+    }
+    Ok(result)
+}
+
+fn sxhash_value(value: &Value, mode: HashMode) -> i64 {
+    let mut state = 0xcbf2_9ce4_8422_2325u64;
+    hash_value_recursive(&mut state, value, mode);
+    (state & 0x7fff_ffff_ffff_ffff) as i64
+}
+
+fn hash_mix(state: &mut u64, value: u64) {
+    *state ^= value;
+    *state = state.wrapping_mul(0x0000_0100_0000_01b3);
+}
+
+fn hash_str(state: &mut u64, text: &str) {
+    for byte in text.as_bytes() {
+        hash_mix(state, u64::from(*byte));
+    }
+}
+
+fn hash_props(state: &mut u64, props: &[StringPropertySpan]) {
+    hash_mix(state, props.len() as u64);
+    for span in props {
+        hash_mix(state, span.start as u64);
+        hash_mix(state, span.end as u64);
+        hash_mix(state, span.props.len() as u64);
+        for (key, value) in &span.props {
+            hash_str(state, key);
+            hash_value_recursive(state, value, HashMode::EqualIncludingProperties);
+        }
+    }
+}
+
+fn hash_value_recursive(state: &mut u64, value: &Value, mode: HashMode) {
+    match mode {
+        HashMode::Eq => hash_value_eq(state, value),
+        HashMode::Eql => hash_value_eql(state, value),
+        HashMode::Equal | HashMode::EqualIncludingProperties => {
+            hash_value_equal(state, value, mode == HashMode::EqualIncludingProperties)
+        }
+    }
+}
+
+fn hash_value_eq(state: &mut u64, value: &Value) {
+    match value {
+        Value::Nil => hash_mix(state, 0),
+        Value::T => hash_mix(state, 1),
+        Value::Integer(number) => {
+            hash_mix(state, 2);
+            hash_mix(state, *number as u64);
+        }
+        Value::Symbol(symbol) => {
+            hash_mix(state, 3);
+            hash_str(state, symbol);
+        }
+        Value::StringObject(shared) => {
+            hash_mix(state, 4);
+            hash_mix(state, Rc::as_ptr(shared) as usize as u64);
+        }
+        Value::String(text) => {
+            hash_mix(state, 5);
+            hash_mix(state, text.as_ptr() as usize as u64);
+            hash_mix(state, text.len() as u64);
+        }
+        Value::BuiltinFunc(name) => {
+            hash_mix(state, 6);
+            hash_str(state, name);
+        }
+        Value::Lambda(_, _, env) => {
+            hash_mix(state, 7);
+            hash_mix(state, env.as_ptr() as usize as u64);
+        }
+        Value::Buffer(id, _) => {
+            hash_mix(state, 8);
+            hash_mix(state, *id);
+        }
+        Value::Marker(id) => {
+            hash_mix(state, 9);
+            hash_mix(state, *id);
+        }
+        Value::Overlay(id) => {
+            hash_mix(state, 10);
+            hash_mix(state, *id);
+        }
+        Value::CharTable(id) => {
+            hash_mix(state, 11);
+            hash_mix(state, *id);
+        }
+        Value::Record(id) => {
+            hash_mix(state, 12);
+            hash_mix(state, *id);
+        }
+        Value::Finalizer(id) => {
+            hash_mix(state, 13);
+            hash_mix(state, *id);
+        }
+        Value::BigInteger(number) => {
+            hash_mix(state, 14);
+            hash_str(state, &number.to_string());
+        }
+        Value::Float(number) => {
+            hash_mix(state, 15);
+            hash_mix(state, number.to_bits());
+        }
+        Value::Cons(car, cdr) => {
+            hash_mix(state, 16);
+            hash_value_eq(state, car);
+            hash_value_eq(state, cdr);
+        }
+    }
+}
+
+fn hash_value_eql(state: &mut u64, value: &Value) {
+    match value {
+        Value::Float(number) => {
+            hash_mix(state, 21);
+            hash_mix(state, number.to_bits());
+        }
+        Value::BigInteger(number) => {
+            hash_mix(state, 22);
+            hash_str(state, &number.to_string());
+        }
+        other => hash_value_eq(state, other),
+    }
+}
+
+fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
+    match value {
+        Value::Nil => hash_mix(state, 30),
+        Value::T => hash_mix(state, 31),
+        Value::Integer(number) => {
+            hash_mix(state, 32);
+            hash_mix(state, *number as u64);
+        }
+        Value::BigInteger(number) => {
+            hash_mix(state, 33);
+            hash_str(state, &number.to_string());
+        }
+        Value::Float(number) => {
+            hash_mix(state, 34);
+            hash_mix(state, number.to_bits());
+        }
+        Value::String(text) => {
+            hash_mix(state, 35);
+            hash_str(state, text);
+        }
+        Value::StringObject(shared) => {
+            hash_mix(state, 36);
+            let shared = shared.borrow();
+            hash_str(state, &shared.text);
+            if include_properties {
+                hash_props(state, &shared.props);
+            }
+        }
+        Value::Symbol(symbol) => {
+            hash_mix(state, 37);
+            hash_str(state, symbol);
+        }
+        Value::Cons(car, cdr) => {
+            hash_mix(state, 38);
+            hash_value_equal(state, car, include_properties);
+            hash_value_equal(state, cdr, include_properties);
+        }
+        Value::BuiltinFunc(name) => {
+            hash_mix(state, 39);
+            hash_str(state, name);
+        }
+        Value::Lambda(params, body, _) => {
+            hash_mix(state, 40);
+            for param in params {
+                hash_str(state, param);
+            }
+            for form in body {
+                hash_value_equal(state, form, include_properties);
+            }
+        }
+        Value::Buffer(id, name) => {
+            hash_mix(state, 41);
+            hash_mix(state, *id);
+            hash_str(state, name);
+        }
+        Value::Marker(id) => {
+            hash_mix(state, 42);
+            hash_mix(state, *id);
+        }
+        Value::Overlay(id) => {
+            hash_mix(state, 43);
+            hash_mix(state, *id);
+        }
+        Value::CharTable(id) => {
+            hash_mix(state, 44);
+            hash_mix(state, *id);
+        }
+        Value::Record(id) => {
+            hash_mix(state, 45);
+            hash_mix(state, *id);
+        }
+        Value::Finalizer(id) => {
+            hash_mix(state, 46);
+            hash_mix(state, *id);
+        }
+    }
+}
+
+fn custom_current_group_file(interp: &Interpreter) -> Option<String> {
+    interp.current_load_file().map(str::to_string)
+}
+
+fn custom_group_assoc_cdr(list: &Value, key: &str) -> Option<Value> {
+    let entries = list.to_vec().ok()?;
+    for entry in entries {
+        if let Value::Cons(car, cdr) = entry
+            && string_text(&car).ok().as_deref() == Some(key)
+        {
+            return Some(*cdr);
+        }
+    }
+    None
+}
+
+pub(crate) fn custom_current_group(interp: &Interpreter) -> Option<Value> {
+    let file = custom_current_group_file(interp)?;
+    let alist = interp
+        .symbol_value_cell("custom-current-group-alist")
+        .ok()?;
+    custom_group_assoc_cdr(&alist, &file)
+}
+
+pub(crate) fn custom_set_current_group(interp: &mut Interpreter, group: &str) {
+    let Some(file) = custom_current_group_file(interp) else {
+        return;
+    };
+    let entry = Value::cons(Value::String(file.clone()), Value::Symbol(group.into()));
+    let existing = interp
+        .symbol_value_cell("custom-current-group-alist")
+        .unwrap_or(Value::Nil);
+    let mut entries = existing.to_vec().unwrap_or_default();
+    if let Some(index) = entries.iter().position(|value| match value {
+        Value::Cons(car, _) => string_text(car).ok().as_deref() == Some(file.as_str()),
+        _ => false,
+    }) {
+        entries[index] = entry;
+    } else {
+        entries.insert(0, entry);
+    }
+    interp.set_global_binding("custom-current-group-alist", Value::list(entries));
+}
+
+pub(crate) fn custom_add_to_group(
+    interp: &mut Interpreter,
+    group: &str,
+    option: Value,
+    widget: Value,
+) {
+    let entry = Value::list([option, widget]);
+    let members = interp
+        .get_symbol_property(group, "custom-group")
+        .unwrap_or(Value::Nil);
+    let existing = members.to_vec().unwrap_or_default();
+    if existing
+        .iter()
+        .any(|value| values_equal(interp, value, &entry))
+    {
+        return;
+    }
+    let updated = if members.is_nil() {
+        Value::list([entry])
+    } else {
+        nconc_values(&[members, Value::list([entry.clone()])])
+            .unwrap_or_else(|_| Value::list([entry]))
+    };
+    interp.put_symbol_property(group, "custom-group", updated);
 }
 
 fn markers_equal(interp: &Interpreter, left_id: u64, right_id: u64) -> bool {
