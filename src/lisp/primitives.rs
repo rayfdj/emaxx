@@ -737,6 +737,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "format-spec"
             | "char-to-string"
             | "string-to-char"
+            | "char-syntax"
+            | "string-to-syntax"
+            | "syntax-class-to-char"
             | "string-to-list"
             | "string-replace"
             | "string-equal-ignore-case"
@@ -782,6 +785,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "re-search-backward"
             | "search-forward-regexp"
             | "forward-comment"
+            | "scan-lists"
+            | "parse-partial-sexp"
             | "match-string"
             | "match-beginning"
             | "match-end"
@@ -970,6 +975,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-syntax-table"
             | "copy-syntax-table"
             | "standard-syntax-table"
+            | "set-syntax-table"
             | "modify-syntax-entry"
             | "setcdr"
             | "emaxx-default-region-extract-function"
@@ -3921,6 +3927,50 @@ pub fn call(
                 .map(|ch| string_sequence_value(&string, ch))
                 .unwrap_or(Value::Integer(0)))
         }
+        "char-syntax" => {
+            need_args(name, args, 1)?;
+            let code = u32::try_from(args[0].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            let class = syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class;
+            Ok(Value::Integer(syntax_class_char(class) as i64))
+        }
+        "string-to-syntax" => {
+            need_args(name, args, 1)?;
+            let spec = string_text(&args[0])?;
+            let Some(entry) = parse_syntax_spec(&spec) else {
+                return Ok(Value::Nil);
+            };
+            Ok(Value::cons(
+                Value::Integer(entry.class as i64),
+                entry
+                    .matching
+                    .map(|matching| Value::Integer(matching as i64))
+                    .unwrap_or(Value::Nil),
+            ))
+        }
+        "syntax-class-to-char" => {
+            need_args(name, args, 1)?;
+            let class = match args[0].as_integer()? {
+                0 => SyntaxClass::Whitespace,
+                1 => SyntaxClass::Punctuation,
+                2 => SyntaxClass::Word,
+                3 => SyntaxClass::Symbol,
+                4 => SyntaxClass::OpenParen,
+                5 => SyntaxClass::CloseParen,
+                6 => SyntaxClass::Quote,
+                7 => SyntaxClass::StringQuote,
+                8 => SyntaxClass::PairedDelimiter,
+                9 => SyntaxClass::Escape,
+                10 => SyntaxClass::CharQuote,
+                11 => SyntaxClass::CommentStart,
+                12 => SyntaxClass::CommentEnd,
+                13 => SyntaxClass::Inherit,
+                14 => SyntaxClass::GenericCommentDelimiter,
+                15 => SyntaxClass::GenericStringDelimiter,
+                _ => return Err(LispError::Signal("Invalid syntax class".into())),
+            };
+            Ok(Value::Integer(syntax_class_char(class) as i64))
+        }
         "string-bytes" => {
             need_args(name, args, 1)?;
             Ok(Value::Integer(string_text(&args[0])?.len() as i64))
@@ -4241,6 +4291,21 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             forward_comment_impl(interp, args.first(), env)
+        }
+        "scan-lists" => scan_lists_impl(interp, args, env),
+        "parse-partial-sexp" => {
+            if args.len() < 2 || args.len() > 6 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let from = position_from_value(interp, &args[0])?;
+            let to = position_from_value(interp, &args[1])?;
+            let target_depth = match args.get(2) {
+                Some(Value::Nil) | None => None,
+                Some(value) => Some(value.as_integer()?),
+            };
+            let oldstate = args.get(4).filter(|value| !value.is_nil());
+            let commentstop = args.get(5).is_some_and(Value::is_truthy);
+            parse_forward(interp, from, to, target_depth, oldstate, commentstop, env)
         }
         "buffer-string" => Ok(string_like_value(
             interp.buffer.buffer_string(),
@@ -10127,23 +10192,48 @@ pub fn call(
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(args
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::Symbol("emaxx-standard-syntax-table".into())))
+            let parent = match args.first() {
+                Some(Value::CharTable(id)) => Some(*id),
+                Some(Value::Nil) | None => Some(interp.standard_syntax_table_id()),
+                Some(other) => {
+                    return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                }
+            };
+            let table = interp.make_char_table(Some("syntax-table".into()), Value::Nil);
+            let Value::CharTable(id) = table else {
+                unreachable!("make_char_table returns a char-table");
+            };
+            interp.set_char_table_parent(id, parent)?;
+            Ok(Value::CharTable(id))
         }
 
         "copy-syntax-table" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(args
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::Symbol("emaxx-standard-syntax-table".into())))
+            let source = match args.first() {
+                Some(Value::CharTable(id)) => *id,
+                Some(Value::Nil) | None => interp.current_syntax_table_id(),
+                Some(other) => {
+                    return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                }
+            };
+            interp.clone_char_table(source)
         }
 
-        "standard-syntax-table" => Ok(Value::Symbol("emaxx-standard-syntax-table".into())),
+        "standard-syntax-table" => Ok(Value::CharTable(interp.standard_syntax_table_id())),
+
+        "set-syntax-table" => {
+            need_args(name, args, 1)?;
+            let Value::CharTable(id) = args[0] else {
+                return Err(LispError::TypeError(
+                    "char-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            interp.set_current_syntax_table(id);
+            Ok(args[0].clone())
+        }
 
         "modify-syntax-entry" => {
             if args.len() < 2 || args.len() > 3 {
@@ -10152,7 +10242,19 @@ pub fn call(
             let code = u32::try_from(args[0].as_integer()?)
                 .map_err(|_| LispError::Signal("Invalid character".into()))?;
             let syntax = string_text(&args[1])?;
-            interp.set_syntax_word_char(normalize_case_key(code), syntax.starts_with('w'));
+            let table_id = match args.get(2) {
+                Some(Value::CharTable(id)) => *id,
+                Some(other) => {
+                    return Err(LispError::TypeError("char-table".into(), other.type_name()));
+                }
+                None => interp.current_syntax_table_id(),
+            };
+            interp.char_table_set(table_id, code, Value::String(syntax.clone()))?;
+            if table_id == interp.standard_syntax_table_id()
+                || table_id == interp.current_syntax_table_id()
+            {
+                interp.set_syntax_word_char(normalize_case_key(code), syntax.starts_with('w'));
+            }
             Ok(Value::Nil)
         }
 
@@ -12333,9 +12435,761 @@ fn skip_chars_backward_impl(
     Ok(Value::Integer(interp.buffer.point() as i64 - start as i64))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyntaxClass {
+    Whitespace = 0,
+    Punctuation = 1,
+    Word = 2,
+    Symbol = 3,
+    OpenParen = 4,
+    CloseParen = 5,
+    Quote = 6,
+    StringQuote = 7,
+    PairedDelimiter = 8,
+    Escape = 9,
+    CharQuote = 10,
+    CommentStart = 11,
+    CommentEnd = 12,
+    Inherit = 13,
+    GenericCommentDelimiter = 14,
+    GenericStringDelimiter = 15,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SyntaxEntry {
+    class: SyntaxClass,
+    matching: Option<char>,
+    start_first: bool,
+    start_second: bool,
+    end_first: bool,
+    end_second: bool,
+    nested: bool,
+    style_b: bool,
+}
+
+impl Default for SyntaxEntry {
+    fn default() -> Self {
+        Self {
+            class: SyntaxClass::Punctuation,
+            matching: None,
+            start_first: false,
+            start_second: false,
+            end_first: false,
+            end_second: false,
+            nested: false,
+            style_b: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommentKind {
+    Single {
+        line: bool,
+    },
+    Block {
+        end_first: char,
+        end_second: char,
+        nested: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommentStart {
+    kind: CommentKind,
+    len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommentState {
+    kind: CommentKind,
+    start_pos: usize,
+    depth: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParseStackEntry {
+    open_pos: usize,
+    close_char: char,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ParseState {
+    stack: Vec<ParseStackEntry>,
+    comment: Option<CommentState>,
+}
+
+impl ParseState {
+    fn depth(&self) -> usize {
+        self.stack.len()
+    }
+}
+
+fn syntax_class_from_char(ch: char) -> Option<SyntaxClass> {
+    Some(match ch {
+        ' ' => SyntaxClass::Whitespace,
+        '.' => SyntaxClass::Punctuation,
+        'w' => SyntaxClass::Word,
+        '_' => SyntaxClass::Symbol,
+        '(' => SyntaxClass::OpenParen,
+        ')' => SyntaxClass::CloseParen,
+        '\'' => SyntaxClass::Quote,
+        '"' => SyntaxClass::StringQuote,
+        '$' => SyntaxClass::PairedDelimiter,
+        '\\' => SyntaxClass::Escape,
+        '/' => SyntaxClass::CharQuote,
+        '<' => SyntaxClass::CommentStart,
+        '>' => SyntaxClass::CommentEnd,
+        '@' => SyntaxClass::Inherit,
+        '!' => SyntaxClass::GenericCommentDelimiter,
+        '|' => SyntaxClass::GenericStringDelimiter,
+        _ => return None,
+    })
+}
+
+fn syntax_class_char(class: SyntaxClass) -> char {
+    match class {
+        SyntaxClass::Whitespace => ' ',
+        SyntaxClass::Punctuation => '.',
+        SyntaxClass::Word => 'w',
+        SyntaxClass::Symbol => '_',
+        SyntaxClass::OpenParen => '(',
+        SyntaxClass::CloseParen => ')',
+        SyntaxClass::Quote => '\'',
+        SyntaxClass::StringQuote => '"',
+        SyntaxClass::PairedDelimiter => '$',
+        SyntaxClass::Escape => '\\',
+        SyntaxClass::CharQuote => '/',
+        SyntaxClass::CommentStart => '<',
+        SyntaxClass::CommentEnd => '>',
+        SyntaxClass::Inherit => '@',
+        SyntaxClass::GenericCommentDelimiter => '!',
+        SyntaxClass::GenericStringDelimiter => '|',
+    }
+}
+
+fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
+    let chars: Vec<char> = spec.chars().collect();
+    let class = syntax_class_from_char(*chars.first()?)?;
+    let mut entry = SyntaxEntry {
+        class,
+        ..SyntaxEntry::default()
+    };
+    let mut index = 1usize;
+    if matches!(class, SyntaxClass::OpenParen | SyntaxClass::CloseParen) && chars.len() > 1 {
+        entry.matching = Some(chars[1]);
+        index = 2;
+    }
+    for flag in chars.iter().skip(index) {
+        match flag {
+            '1' => entry.start_first = true,
+            '2' => entry.start_second = true,
+            '3' => entry.end_first = true,
+            '4' => entry.end_second = true,
+            'n' => entry.nested = true,
+            'b' => entry.style_b = true,
+            _ => {}
+        }
+    }
+    Some(entry)
+}
+
+fn default_syntax_entry(ch: char) -> SyntaxEntry {
+    let class = match ch {
+        ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}' => SyntaxClass::Whitespace,
+        '_' => SyntaxClass::Symbol,
+        ch if ch.is_alphanumeric() => SyntaxClass::Word,
+        _ => SyntaxClass::Punctuation,
+    };
+    SyntaxEntry {
+        class,
+        ..SyntaxEntry::default()
+    }
+}
+
+fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> SyntaxEntry {
+    let Some(ch) = char::from_u32(code) else {
+        return SyntaxEntry::default();
+    };
+    interp
+        .char_table_get(table_id, code)
+        .and_then(|value| string_like(&value).and_then(|value| parse_syntax_spec(&value.text)))
+        .unwrap_or_else(|| default_syntax_entry(ch))
+}
+
+fn syntax_entry_for_char(interp: &Interpreter, table_id: u64, ch: char) -> SyntaxEntry {
+    syntax_entry_for_code(interp, table_id, ch as u32)
+}
+
+fn matching_close_char(ch: char, entry: SyntaxEntry) -> Option<char> {
+    entry.matching.or(match ch {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        _ => None,
+    })
+}
+
+fn matching_open_char(ch: char, entry: SyntaxEntry) -> Option<char> {
+    entry.matching.or(match ch {
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        _ => None,
+    })
+}
+
+fn newline_ends_comments(interp: &Interpreter, table_id: u64) -> bool {
+    syntax_entry_for_code(interp, table_id, '\n' as u32).class == SyntaxClass::CommentEnd
+}
+
+fn comment_start_at(
+    interp: &Interpreter,
+    table_id: u64,
+    chars: &[char],
+    idx: usize,
+) -> Option<CommentStart> {
+    let ch = *chars.get(idx)?;
+    let entry = syntax_entry_for_char(interp, table_id, ch);
+    if entry.class == SyntaxClass::CommentStart {
+        return Some(CommentStart {
+            kind: CommentKind::Single {
+                line: entry.style_b && newline_ends_comments(interp, table_id),
+            },
+            len: 1,
+        });
+    }
+    let next = *chars.get(idx + 1)?;
+    let next_entry = syntax_entry_for_char(interp, table_id, next);
+    if !(entry.start_first && next_entry.start_second) {
+        return None;
+    }
+    if ch == next && entry.style_b && next_entry.style_b && newline_ends_comments(interp, table_id)
+    {
+        return Some(CommentStart {
+            kind: CommentKind::Single { line: true },
+            len: 2,
+        });
+    }
+    if !next_entry.end_first {
+        return None;
+    }
+    let end_second = if entry.end_second {
+        ch
+    } else {
+        entry.matching.unwrap_or(ch)
+    };
+    Some(CommentStart {
+        kind: CommentKind::Block {
+            end_first: next,
+            end_second,
+            nested: entry.nested || next_entry.nested,
+        },
+        len: 2,
+    })
+}
+
+fn preceded_by_odd_backslashes(chars: &[char], idx: usize) -> bool {
+    let mut count = 0usize;
+    let mut cursor = idx;
+    while cursor > 0 && chars[cursor - 1] == '\\' {
+        count += 1;
+        cursor -= 1;
+    }
+    count % 2 == 1
+}
+
+fn skip_comment_with_status(
+    interp: &Interpreter,
+    table_id: u64,
+    chars: &[char],
+    idx: usize,
+    start: CommentStart,
+    comment_end_can_be_escaped: bool,
+) -> (usize, bool) {
+    let mut cursor = idx + start.len;
+    match start.kind {
+        CommentKind::Single { line } => {
+            while cursor < chars.len() {
+                let entry = syntax_entry_for_char(interp, table_id, chars[cursor]);
+                if entry.class == SyntaxClass::CommentEnd {
+                    if line
+                        && chars[cursor] == '\n'
+                        && comment_end_can_be_escaped
+                        && preceded_by_odd_backslashes(chars, cursor)
+                    {
+                        cursor += 1;
+                        continue;
+                    }
+                    return (cursor + 1, true);
+                }
+                cursor += 1;
+            }
+            (chars.len(), false)
+        }
+        CommentKind::Block {
+            end_first,
+            end_second,
+            nested,
+        } => {
+            let mut depth = 1usize;
+            while cursor < chars.len() {
+                if nested
+                    && let Some(nested_start) = comment_start_at(interp, table_id, chars, cursor)
+                    && matches!(
+                        nested_start.kind,
+                        CommentKind::Block {
+                            end_first: nested_end_first,
+                            end_second: nested_end_second,
+                            ..
+                        } if nested_end_first == end_first && nested_end_second == end_second
+                    )
+                {
+                    depth += 1;
+                    cursor += nested_start.len;
+                    continue;
+                }
+                if cursor + 1 < chars.len()
+                    && chars[cursor] == end_first
+                    && chars[cursor + 1] == end_second
+                {
+                    if comment_end_can_be_escaped && preceded_by_odd_backslashes(chars, cursor) {
+                        cursor += 1;
+                        continue;
+                    }
+                    depth -= 1;
+                    cursor += 2;
+                    if depth == 0 {
+                        return (cursor, true);
+                    }
+                    continue;
+                }
+                cursor += 1;
+            }
+            (chars.len(), false)
+        }
+    }
+}
+
+fn skip_whitespace_forward(
+    interp: &Interpreter,
+    table_id: u64,
+    chars: &[char],
+    pos: usize,
+) -> usize {
+    let mut idx = pos.saturating_sub(1);
+    while idx < chars.len() {
+        let entry = syntax_entry_for_char(interp, table_id, chars[idx]);
+        if entry.class != SyntaxClass::Whitespace
+            && !(entry.class == SyntaxClass::CommentEnd && chars[idx] == '\n')
+        {
+            break;
+        }
+        idx += 1;
+    }
+    idx + 1
+}
+
+fn skip_whitespace_backward(
+    interp: &Interpreter,
+    table_id: u64,
+    chars: &[char],
+    pos: usize,
+) -> usize {
+    let mut idx = pos.saturating_sub(1);
+    while idx > 0 {
+        let entry = syntax_entry_for_char(interp, table_id, chars[idx - 1]);
+        if entry.class != SyntaxClass::Whitespace
+            && !(entry.class == SyntaxClass::CommentEnd && chars[idx - 1] == '\n')
+        {
+            break;
+        }
+        idx -= 1;
+    }
+    idx + 1
+}
+
+fn comment_state_value(comment: CommentState) -> Value {
+    match comment.kind {
+        CommentKind::Block { nested: true, .. } => Value::Integer(comment.depth as i64),
+        _ => Value::T,
+    }
+}
+
+fn encode_parse_state(state: &ParseState) -> Value {
+    let stack_value = Value::list(state.stack.iter().map(|entry| {
+        Value::cons(
+            Value::Integer(entry.open_pos as i64),
+            Value::Integer(entry.close_char as i64),
+        )
+    }));
+    let comment_value = match state.comment {
+        Some(CommentState {
+            kind: CommentKind::Single { line },
+            start_pos,
+            depth,
+        }) => Value::list([
+            if line {
+                Value::Symbol("line".into())
+            } else {
+                Value::Symbol("single".into())
+            },
+            Value::Integer(start_pos as i64),
+            Value::Integer(depth as i64),
+        ]),
+        Some(CommentState {
+            kind:
+                CommentKind::Block {
+                    end_first,
+                    end_second,
+                    nested,
+                },
+            start_pos,
+            depth,
+        }) => Value::list([
+            Value::Symbol("block".into()),
+            Value::Integer(start_pos as i64),
+            Value::Integer(depth as i64),
+            Value::Integer(end_first as i64),
+            Value::Integer(end_second as i64),
+            if nested { Value::T } else { Value::Nil },
+        ]),
+        None => Value::Nil,
+    };
+    Value::list([
+        Value::Integer(state.depth() as i64),
+        state
+            .stack
+            .last()
+            .map(|entry| Value::Integer(entry.open_pos as i64))
+            .unwrap_or(Value::Nil),
+        Value::Nil,
+        Value::Nil,
+        state.comment.map(comment_state_value).unwrap_or(Value::Nil),
+        Value::Nil,
+        Value::Integer(0),
+        Value::Nil,
+        state
+            .comment
+            .map(|comment| Value::Integer(comment.start_pos as i64))
+            .unwrap_or(Value::Nil),
+        Value::Nil,
+        Value::list([stack_value, comment_value]),
+    ])
+}
+
+fn decode_parse_state(value: Option<&Value>) -> ParseState {
+    let Some(value) = value else {
+        return ParseState::default();
+    };
+    let Ok(items) = value.to_vec() else {
+        return ParseState::default();
+    };
+    let Some(hidden) = items.get(10) else {
+        return ParseState::default();
+    };
+    let Ok(hidden_items) = hidden.to_vec() else {
+        return ParseState::default();
+    };
+    let mut state = ParseState::default();
+    if let Some(stack_value) = hidden_items.first()
+        && let Ok(entries) = stack_value.to_vec()
+    {
+        for entry in entries {
+            let Value::Cons(open_pos, close_char) = entry else {
+                continue;
+            };
+            let Ok(open_pos) = open_pos.as_integer() else {
+                continue;
+            };
+            let Ok(close_char) = close_char.as_integer() else {
+                continue;
+            };
+            let Some(close_char) = char::from_u32(close_char as u32) else {
+                continue;
+            };
+            state.stack.push(ParseStackEntry {
+                open_pos: open_pos.max(1) as usize,
+                close_char,
+            });
+        }
+    }
+    if let Some(comment_value) = hidden_items.get(1)
+        && !comment_value.is_nil()
+        && let Ok(entries) = comment_value.to_vec()
+        && let Some(Value::Symbol(kind)) = entries.first()
+    {
+        let start_pos = entries
+            .get(1)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(1)
+            .max(1) as usize;
+        let depth = entries
+            .get(2)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(1)
+            .max(1) as usize;
+        state.comment = match kind.as_str() {
+            "single" => Some(CommentState {
+                kind: CommentKind::Single { line: false },
+                start_pos,
+                depth,
+            }),
+            "line" => Some(CommentState {
+                kind: CommentKind::Single { line: true },
+                start_pos,
+                depth,
+            }),
+            "block" => {
+                let end_first = entries
+                    .get(3)
+                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| char::from_u32(value as u32));
+                let end_second = entries
+                    .get(4)
+                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| char::from_u32(value as u32));
+                match (end_first, end_second) {
+                    (Some(end_first), Some(end_second)) => Some(CommentState {
+                        kind: CommentKind::Block {
+                            end_first,
+                            end_second,
+                            nested: entries.get(5).is_some_and(Value::is_truthy),
+                        },
+                        start_pos,
+                        depth,
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+    }
+    state
+}
+
+fn parse_forward(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    target_depth: Option<i64>,
+    oldstate: Option<&Value>,
+    commentstop: bool,
+    env: &Env,
+) -> Result<Value, LispError> {
+    if from > to {
+        return Err(LispError::Signal("`from` is greater than `to`".into()));
+    }
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let table_id = interp.current_syntax_table_id();
+    let comment_end_can_be_escaped = interp
+        .lookup_var("comment-end-can-be-escaped", env)
+        .is_some_and(|value| value.is_truthy());
+    let mut state = decode_parse_state(oldstate);
+    let mut idx = from.saturating_sub(1);
+    let end = to.saturating_sub(1).min(chars.len());
+
+    while idx < end {
+        if let Some(comment) = state.comment {
+            match comment.kind {
+                CommentKind::Single { line } => {
+                    let entry = syntax_entry_for_char(interp, table_id, chars[idx]);
+                    if entry.class == SyntaxClass::CommentEnd {
+                        if line
+                            && chars[idx] == '\n'
+                            && comment_end_can_be_escaped
+                            && preceded_by_odd_backslashes(&chars, idx)
+                        {
+                            idx += 1;
+                            continue;
+                        }
+                        idx += 1;
+                        state.comment = None;
+                        if commentstop {
+                            interp.buffer.goto_char(idx + 1);
+                            return Ok(encode_parse_state(&state));
+                        }
+                        continue;
+                    }
+                    idx += 1;
+                    continue;
+                }
+                CommentKind::Block {
+                    end_first,
+                    end_second,
+                    nested,
+                } => {
+                    if nested
+                        && let Some(start) = comment_start_at(interp, table_id, &chars, idx)
+                        && matches!(
+                            start.kind,
+                            CommentKind::Block {
+                                end_first: nested_end_first,
+                                end_second: nested_end_second,
+                                ..
+                            } if nested_end_first == end_first && nested_end_second == end_second
+                        )
+                    {
+                        if let Some(comment) = state.comment.as_mut() {
+                            comment.depth += 1;
+                        }
+                        idx += start.len;
+                        continue;
+                    }
+                    if idx + 1 < chars.len()
+                        && chars[idx] == end_first
+                        && chars[idx + 1] == end_second
+                    {
+                        if comment_end_can_be_escaped && preceded_by_odd_backslashes(&chars, idx) {
+                            idx += 1;
+                            continue;
+                        }
+                        if let Some(comment) = state.comment.as_mut()
+                            && comment.depth > 1
+                        {
+                            comment.depth -= 1;
+                            idx += 2;
+                            continue;
+                        }
+                        idx += 2;
+                        state.comment = None;
+                        if commentstop {
+                            interp.buffer.goto_char(idx + 1);
+                            return Ok(encode_parse_state(&state));
+                        }
+                        continue;
+                    }
+                    idx += 1;
+                    continue;
+                }
+            }
+        }
+
+        if let Some(start) = comment_start_at(interp, table_id, &chars, idx) {
+            state.comment = Some(CommentState {
+                kind: start.kind,
+                start_pos: idx + 1,
+                depth: 1,
+            });
+            idx += start.len;
+            if commentstop {
+                interp.buffer.goto_char(idx + 1);
+                return Ok(encode_parse_state(&state));
+            }
+            continue;
+        }
+
+        let ch = chars[idx];
+        let entry = syntax_entry_for_char(interp, table_id, ch);
+        match entry.class {
+            SyntaxClass::OpenParen => {
+                let close_char = matching_close_char(ch, entry)
+                    .ok_or_else(|| LispError::Signal("Unbalanced parentheses".into()))?;
+                state.stack.push(ParseStackEntry {
+                    open_pos: idx + 1,
+                    close_char,
+                });
+                idx += 1;
+            }
+            SyntaxClass::CloseParen => {
+                let Some(open) = state.stack.last() else {
+                    return Err(LispError::Signal("Unbalanced parentheses".into()));
+                };
+                if open.close_char != ch
+                    && matching_open_char(ch, entry)
+                        .is_some_and(|open_char| open_char != chars[open.open_pos - 1])
+                {
+                    return Err(LispError::Signal("Unbalanced parentheses".into()));
+                }
+                state.stack.pop();
+                idx += 1;
+                if target_depth.is_some_and(|depth| depth == state.depth() as i64) {
+                    interp.buffer.goto_char(idx + 1);
+                    return Ok(encode_parse_state(&state));
+                }
+            }
+            _ => idx += 1,
+        }
+    }
+
+    interp.buffer.goto_char(end + 1);
+    Ok(encode_parse_state(&state))
+}
+
+fn find_comment_ending_at(
+    interp: &Interpreter,
+    table_id: u64,
+    chars: &[char],
+    point: usize,
+    comment_end_can_be_escaped: bool,
+) -> Option<usize> {
+    if point <= 1 {
+        return None;
+    }
+    let mut best_start = None;
+    let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
+    loop {
+        if let Some(start) = comment_start_at(interp, table_id, chars, idx) {
+            let (end, closed) = skip_comment_with_status(
+                interp,
+                table_id,
+                chars,
+                idx,
+                start,
+                comment_end_can_be_escaped,
+            );
+            if closed && end + 1 == point {
+                best_start = Some(idx + 1);
+            }
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+    }
+    if best_start.is_some() {
+        return best_start;
+    }
+
+    if point >= 3 && point - 2 < chars.len() {
+        let end_first = chars[point - 3];
+        let end_second = chars[point - 2];
+        let mut line_start = point.saturating_sub(2).min(chars.len().saturating_sub(1));
+        while line_start > 0 && chars[line_start - 1] != '\n' {
+            line_start -= 1;
+        }
+        let mut fallback = None;
+        let mut idx = point.saturating_sub(2).min(chars.len().saturating_sub(1));
+        loop {
+            if let Some(start) = comment_start_at(interp, table_id, chars, idx)
+                && let CommentKind::Block {
+                    end_first: candidate_end_first,
+                    end_second: candidate_end_second,
+                    ..
+                } = start.kind
+                && candidate_end_first == end_first
+                && candidate_end_second == end_second
+                && point >= idx + start.len + 3
+                && !(comment_end_can_be_escaped && preceded_by_odd_backslashes(chars, point - 3))
+            {
+                fallback = Some(idx + 1);
+            }
+            if idx == line_start {
+                break;
+            }
+            idx -= 1;
+        }
+        return fallback;
+    }
+
+    None
+}
+
 fn syntax_class_matches(spec: &str, ch: char) -> bool {
     match spec {
         " " => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}'),
+        "w" => ch.is_alphanumeric(),
+        "_" => ch == '_',
         _ => false,
     }
 }
@@ -12387,74 +13241,322 @@ fn skip_syntax_impl(
     Ok(Value::Integer(interp.buffer.point() as i64 - start as i64))
 }
 
+fn scan_lists_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &Env,
+) -> Result<Value, LispError> {
+    need_args("scan-lists", args, 3)?;
+    let start_pos = position_from_value(interp, &args[0])?;
+    let count = args[1].as_integer()?;
+    let depth = args[2].as_integer()?;
+    if depth != 0 || !matches!(count, -1 | 1) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unsupported scan-lists request".into()),
+        ])));
+    }
+
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let table_id = interp.current_syntax_table_id();
+    let comment_end_can_be_escaped = interp
+        .lookup_var("comment-end-can-be-escaped", env)
+        .is_some_and(|value| value.is_truthy());
+
+    if count > 0 {
+        let idx = start_pos.saturating_sub(1);
+        let Some(&ch) = chars.get(idx) else {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("scan-error".into()),
+                Value::String("Unbalanced parentheses".into()),
+            ])));
+        };
+        let entry = syntax_entry_for_char(interp, table_id, ch);
+        if entry.class != SyntaxClass::OpenParen {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("scan-error".into()),
+                Value::String("Unbalanced parentheses".into()),
+            ])));
+        }
+        let close_char = matching_close_char(ch, entry).ok_or_else(|| {
+            LispError::SignalValue(Value::list([
+                Value::Symbol("scan-error".into()),
+                Value::String("Unbalanced parentheses".into()),
+            ]))
+        })?;
+        let mut state = ParseState {
+            stack: vec![ParseStackEntry {
+                open_pos: start_pos,
+                close_char,
+            }],
+            comment: None,
+        };
+        let mut cursor = idx + 1;
+        while cursor < chars.len() {
+            if let Some(comment) = state.comment {
+                match comment.kind {
+                    CommentKind::Single { line } => {
+                        let entry = syntax_entry_for_char(interp, table_id, chars[cursor]);
+                        if entry.class == SyntaxClass::CommentEnd {
+                            if line
+                                && chars[cursor] == '\n'
+                                && comment_end_can_be_escaped
+                                && preceded_by_odd_backslashes(&chars, cursor)
+                            {
+                                cursor += 1;
+                                continue;
+                            }
+                            state.comment = None;
+                        }
+                        cursor += 1;
+                        continue;
+                    }
+                    CommentKind::Block {
+                        end_first,
+                        end_second,
+                        nested,
+                    } => {
+                        if nested
+                            && let Some(start) = comment_start_at(interp, table_id, &chars, cursor)
+                            && matches!(
+                                start.kind,
+                                CommentKind::Block {
+                                    end_first: nested_end_first,
+                                    end_second: nested_end_second,
+                                    ..
+                                } if nested_end_first == end_first && nested_end_second == end_second
+                            )
+                        {
+                            if let Some(comment) = state.comment.as_mut() {
+                                comment.depth += 1;
+                            }
+                            cursor += start.len;
+                            continue;
+                        }
+                        if cursor + 1 < chars.len()
+                            && chars[cursor] == end_first
+                            && chars[cursor + 1] == end_second
+                        {
+                            if comment_end_can_be_escaped
+                                && preceded_by_odd_backslashes(&chars, cursor)
+                            {
+                                cursor += 1;
+                                continue;
+                            }
+                            if let Some(comment) = state.comment.as_mut()
+                                && comment.depth > 1
+                            {
+                                comment.depth -= 1;
+                                cursor += 2;
+                                continue;
+                            }
+                            state.comment = None;
+                            cursor += 2;
+                            continue;
+                        }
+                        cursor += 1;
+                        continue;
+                    }
+                }
+            }
+            if let Some(start) = comment_start_at(interp, table_id, &chars, cursor) {
+                state.comment = Some(CommentState {
+                    kind: start.kind,
+                    start_pos: cursor + 1,
+                    depth: 1,
+                });
+                cursor += start.len;
+                continue;
+            }
+            let ch = chars[cursor];
+            let entry = syntax_entry_for_char(interp, table_id, ch);
+            match entry.class {
+                SyntaxClass::OpenParen => {
+                    let close_char = matching_close_char(ch, entry).ok_or_else(|| {
+                        LispError::SignalValue(Value::list([
+                            Value::Symbol("scan-error".into()),
+                            Value::String("Unbalanced parentheses".into()),
+                        ]))
+                    })?;
+                    state.stack.push(ParseStackEntry {
+                        open_pos: cursor + 1,
+                        close_char,
+                    });
+                    cursor += 1;
+                }
+                SyntaxClass::CloseParen => {
+                    let Some(open) = state.stack.pop() else {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("scan-error".into()),
+                            Value::String("Unbalanced parentheses".into()),
+                        ])));
+                    };
+                    if open.close_char != ch {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("scan-error".into()),
+                            Value::String("Unbalanced parentheses".into()),
+                        ])));
+                    }
+                    cursor += 1;
+                    if state.stack.is_empty() {
+                        return Ok(Value::Integer((cursor + 1) as i64));
+                    }
+                }
+                _ => cursor += 1,
+            }
+        }
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unbalanced parentheses".into()),
+        ])));
+    }
+
+    if start_pos <= 1 {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unbalanced parentheses".into()),
+        ])));
+    }
+    let close_idx = start_pos - 2;
+    let Some(&close_char) = chars.get(close_idx) else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unbalanced parentheses".into()),
+        ])));
+    };
+    let close_entry = syntax_entry_for_char(interp, table_id, close_char);
+    if close_entry.class != SyntaxClass::CloseParen {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unbalanced parentheses".into()),
+        ])));
+    }
+    let expected_open = matching_open_char(close_char, close_entry).ok_or_else(|| {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unbalanced parentheses".into()),
+        ]))
+    })?;
+    let mut stack = vec![expected_open];
+    let mut cursor = close_idx;
+    while cursor > 0 {
+        if let Some(comment_start) = find_comment_ending_at(
+            interp,
+            table_id,
+            &chars,
+            cursor + 2,
+            comment_end_can_be_escaped,
+        ) {
+            cursor = comment_start.saturating_sub(1);
+            continue;
+        }
+        cursor -= 1;
+        let ch = chars[cursor];
+        let entry = syntax_entry_for_char(interp, table_id, ch);
+        match entry.class {
+            SyntaxClass::CloseParen => {
+                let expected = matching_open_char(ch, entry).ok_or_else(|| {
+                    LispError::SignalValue(Value::list([
+                        Value::Symbol("scan-error".into()),
+                        Value::String("Unbalanced parentheses".into()),
+                    ]))
+                })?;
+                stack.push(expected);
+            }
+            SyntaxClass::OpenParen => {
+                let Some(expected) = stack.pop() else {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("scan-error".into()),
+                        Value::String("Unbalanced parentheses".into()),
+                    ])));
+                };
+                if ch != expected {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("scan-error".into()),
+                        Value::String("Unbalanced parentheses".into()),
+                    ])));
+                }
+                if stack.is_empty() {
+                    return Ok(Value::Integer((cursor + 1) as i64));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(LispError::SignalValue(Value::list([
+        Value::Symbol("scan-error".into()),
+        Value::String("Unbalanced parentheses".into()),
+    ])))
+}
+
 fn forward_comment_impl(
     interp: &mut Interpreter,
     count_value: Option<&Value>,
     env: &Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
-    if count < 0 {
+    if count == 0 {
+        return Ok(Value::T);
+    }
+
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let table_id = interp.current_syntax_table_id();
+    let comment_end_can_be_escaped = interp
+        .lookup_var("comment-end-can-be-escaped", env)
+        .is_some_and(|value| value.is_truthy());
+    let original_point = interp.buffer.point();
+
+    if count > 0 {
+        let mut point = original_point;
+        for _ in 0..count {
+            let candidate = skip_whitespace_forward(interp, table_id, &chars, point);
+            let idx = candidate.saturating_sub(1);
+            let Some(start) = comment_start_at(interp, table_id, &chars, idx) else {
+                interp.buffer.goto_char(original_point);
+                return Ok(Value::Nil);
+            };
+            let (end, closed) = skip_comment_with_status(
+                interp,
+                table_id,
+                &chars,
+                idx,
+                start,
+                comment_end_can_be_escaped,
+            );
+            point = end + 1;
+            if !closed {
+                interp.buffer.goto_char(point);
+                return Ok(Value::Nil);
+            }
+        }
+        interp.buffer.goto_char(point);
+        return Ok(Value::T);
+    }
+
+    let mut point = original_point;
+    for _ in 0..count.unsigned_abs() {
+        if let Some(start_pos) =
+            find_comment_ending_at(interp, table_id, &chars, point, comment_end_can_be_escaped)
+        {
+            point = start_pos;
+            continue;
+        }
+        let candidate = skip_whitespace_backward(interp, table_id, &chars, point);
+        if let Some(start_pos) = find_comment_ending_at(
+            interp,
+            table_id,
+            &chars,
+            candidate,
+            comment_end_can_be_escaped,
+        ) {
+            point = start_pos;
+            continue;
+        }
+        interp.buffer.goto_char(candidate);
         return Ok(Value::Nil);
     }
-    let mut remaining = count as usize;
-    while remaining > 0 {
-        let _ = skip_syntax_impl(interp, &Value::String(" ".into()), None, true)?;
-        let Some(start_skip) = interp.lookup_var("comment-start-skip", env) else {
-            return Ok(Value::Nil);
-        };
-        let Some(start_skip) = string_like(&start_skip) else {
-            return Ok(Value::Nil);
-        };
-        let regex = compile_elisp_regex(interp, &start_skip, env, r"\A")?;
-        let pos = interp.buffer.point();
-        let tail = interp
-            .buffer
-            .buffer_substring(pos, interp.buffer.point_max())
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        let Some(captures) = regex
-            .captures(&tail)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-        else {
-            return Ok(Value::Nil);
-        };
-        let Some(matched) = captures.get(0) else {
-            return Ok(Value::Nil);
-        };
-        if matched.start() != 0 {
-            return Ok(Value::Nil);
-        }
-        set_match_data(interp, pos, &tail, &captures);
-        interp
-            .buffer
-            .goto_char(pos + tail[..matched.end()].chars().count());
-
-        let Some(end_skip) = interp.lookup_var("comment-end-skip", env) else {
-            return Ok(Value::Nil);
-        };
-        let Some(end_skip) = string_like(&end_skip) else {
-            return Ok(Value::Nil);
-        };
-        let regex = compile_elisp_regex(interp, &end_skip, env, "")?;
-        let pos = interp.buffer.point();
-        let tail = interp
-            .buffer
-            .buffer_substring(pos, interp.buffer.point_max())
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        let Some(captures) = regex
-            .captures(&tail)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-        else {
-            return Ok(Value::Nil);
-        };
-        let Some(matched) = captures.get(0) else {
-            return Ok(Value::Nil);
-        };
-        set_match_data(interp, pos, &tail, &captures);
-        interp
-            .buffer
-            .goto_char(pos + tail[..matched.end()].chars().count());
-        remaining -= 1;
-    }
+    interp.buffer.goto_char(point);
     Ok(Value::T)
 }
 
@@ -12578,13 +13680,14 @@ fn buffer_regex_search(
             .buffer
             .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let prefix_chars: Vec<char> = prefix.chars().collect();
         let mut best_match: Option<(usize, usize, usize)> = None;
-        let prefix_len = prefix_chars.len();
-        for offset in 0..=prefix_len {
-            let tail: String = prefix_chars[offset..].iter().collect();
+        for start_byte in prefix
+            .char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(prefix.len()))
+        {
             let Some(captures) = regex
-                .captures(&tail)
+                .captures_from_pos(&prefix, start_byte)
                 .map_err(|error| LispError::Signal(error.to_string()))?
             else {
                 continue;
@@ -12592,28 +13695,28 @@ fn buffer_regex_search(
             let Some(matched) = captures.get(0) else {
                 continue;
             };
-            let match_start = 1 + offset + tail[..matched.start()].chars().count();
-            let match_end = 1 + offset + tail[..matched.end()].chars().count();
-            if match_end <= interp.buffer.point()
-                && best_match.is_none_or(|(best_start, best_end, _)| {
-                    match_start > best_start || (match_start == best_start && match_end > best_end)
-                })
-            {
-                best_match = Some((match_start, match_end, match_start.saturating_sub(1)));
+            if matched.start() != start_byte {
+                continue;
+            }
+            let match_start = 1 + prefix[..matched.start()].chars().count();
+            let match_end = 1 + prefix[..matched.end()].chars().count();
+            if best_match.is_none_or(|(best_start, best_end, _)| {
+                match_start > best_start || (match_start == best_start && match_end > best_end)
+            }) {
+                best_match = Some((match_start, match_end, start_byte));
             }
         }
-        if let Some((match_start, _, offset)) = best_match {
-            let tail: String = prefix_chars[offset..].iter().collect();
-            if let Some(captures) = regex
-                .captures(&tail)
+        if let Some((match_start, _, start_byte)) = best_match
+            && let Some(captures) = regex
+                .captures_from_pos(&prefix, start_byte)
                 .map_err(|error| LispError::Signal(error.to_string()))?
-                && captures.get(0).is_some()
-            {
-                let start_pos = 1 + offset;
-                set_match_data(interp, start_pos, &tail, &captures);
-                interp.buffer.goto_char(match_start);
-                return Ok(Value::Integer(match_start as i64));
-            }
+            && captures
+                .get(0)
+                .is_some_and(|matched| matched.start() == start_byte)
+        {
+            set_match_data(interp, interp.buffer.point_min(), &prefix, &captures);
+            interp.buffer.goto_char(match_start);
+            return Ok(Value::Integer(match_start as i64));
         }
     }
 

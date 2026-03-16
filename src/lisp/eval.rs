@@ -53,6 +53,90 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
+fn syntax_spec_value(spec: &str) -> Value {
+    Value::String(spec.to_string())
+}
+
+fn standard_syntax_table_entries() -> Vec<CharTableEntry> {
+    vec![
+        CharTableEntry {
+            start: ' ' as u32,
+            end: ' ' as u32,
+            value: syntax_spec_value(" "),
+        },
+        CharTableEntry {
+            start: '\t' as u32,
+            end: '\t' as u32,
+            value: syntax_spec_value(" "),
+        },
+        CharTableEntry {
+            start: '\n' as u32,
+            end: '\n' as u32,
+            value: syntax_spec_value(" "),
+        },
+        CharTableEntry {
+            start: '\r' as u32,
+            end: '\r' as u32,
+            value: syntax_spec_value(" "),
+        },
+        CharTableEntry {
+            start: '\u{0c}' as u32,
+            end: '\u{0c}' as u32,
+            value: syntax_spec_value(" "),
+        },
+        CharTableEntry {
+            start: '_' as u32,
+            end: '_' as u32,
+            value: syntax_spec_value("_"),
+        },
+        CharTableEntry {
+            start: '\\' as u32,
+            end: '\\' as u32,
+            value: syntax_spec_value("\\"),
+        },
+        CharTableEntry {
+            start: '\'' as u32,
+            end: '\'' as u32,
+            value: syntax_spec_value("'"),
+        },
+        CharTableEntry {
+            start: '"' as u32,
+            end: '"' as u32,
+            value: syntax_spec_value("\""),
+        },
+        CharTableEntry {
+            start: '(' as u32,
+            end: '(' as u32,
+            value: syntax_spec_value("()"),
+        },
+        CharTableEntry {
+            start: ')' as u32,
+            end: ')' as u32,
+            value: syntax_spec_value(")("),
+        },
+        CharTableEntry {
+            start: '[' as u32,
+            end: '[' as u32,
+            value: syntax_spec_value("(]"),
+        },
+        CharTableEntry {
+            start: ']' as u32,
+            end: ']' as u32,
+            value: syntax_spec_value(")["),
+        },
+        CharTableEntry {
+            start: '{' as u32,
+            end: '{' as u32,
+            value: syntax_spec_value("(}"),
+        },
+        CharTableEntry {
+            start: '}' as u32,
+            end: '}' as u32,
+            value: syntax_spec_value("){"),
+        },
+    ]
+}
+
 #[derive(Clone, Debug)]
 pub struct RecordState {
     pub id: u64,
@@ -526,6 +610,8 @@ pub struct Interpreter {
     buffer_local_hooks: Vec<(u64, String, Vec<Value>)>,
     /// Buffer-local variable values keyed by (buffer id, variable name).
     buffer_locals: Vec<(u64, String, Value)>,
+    /// Buffer-local syntax tables keyed by buffer id.
+    buffer_syntax_tables: Vec<(u64, u64)>,
     /// Variables that automatically become buffer-local when set.
     auto_buffer_locals: Vec<String>,
     /// Active dynamic special bindings in stack order.
@@ -560,6 +646,7 @@ pub struct Interpreter {
     pub lossage_size: i64,
     face_inheritance: Vec<(String, Option<String>)>,
     syntax_word_chars: Vec<u32>,
+    standard_syntax_table_id: u64,
     undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
     loading_features: Vec<String>,
@@ -585,6 +672,7 @@ impl Default for Interpreter {
 impl Interpreter {
     pub fn new() -> Self {
         let main_thread_id = 1u64;
+        let standard_syntax_table_id = 1u64;
         Interpreter {
             globals: vec![("main-thread".into(), Value::Record(main_thread_id))],
             variable_aliases: Vec::new(),
@@ -613,7 +701,15 @@ impl Interpreter {
             next_overlay_id: 1,
             next_marker_id: 1,
             markers: Vec::new(),
-            char_tables: Vec::new(),
+            char_tables: vec![CharTableState {
+                id: standard_syntax_table_id,
+                subtype: Some("syntax-table".into()),
+                default: Value::Nil,
+                parent: None,
+                extra_slots: Vec::new(),
+                entries: standard_syntax_table_entries(),
+                category_docs: Vec::new(),
+            }],
             charset_aliases: Vec::new(),
             charset_plists: Vec::new(),
             charset_priority: vec!["unicode".into(), "ascii".into()],
@@ -626,7 +722,7 @@ impl Interpreter {
             standard_category_table_id: None,
             standard_case_table_id: None,
             buffer_case_tables: Vec::new(),
-            next_char_table_id: 1,
+            next_char_table_id: 2,
             records: vec![RecordState {
                 id: main_thread_id,
                 type_name: "thread".into(),
@@ -637,6 +733,7 @@ impl Interpreter {
             next_finalizer_id: 1,
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
+            buffer_syntax_tables: Vec::new(),
             auto_buffer_locals: vec![
                 "case-fold-search".into(),
                 "cursor-in-non-selected-windows".into(),
@@ -671,6 +768,7 @@ impl Interpreter {
             lossage_size: 300,
             face_inheritance: Vec::new(),
             syntax_word_chars: Vec::new(),
+            standard_syntax_table_id,
             undo_sequence: None,
             load_path: Vec::new(),
             loading_features: Vec::new(),
@@ -2303,6 +2401,34 @@ impl Interpreter {
         self.standard_case_table_id = Some(id);
     }
 
+    pub fn standard_syntax_table_id(&self) -> u64 {
+        self.standard_syntax_table_id
+    }
+
+    pub fn current_syntax_table_id(&self) -> u64 {
+        self.buffer_syntax_tables
+            .iter()
+            .rev()
+            .find_map(|(buffer_id, table_id)| {
+                (*buffer_id == self.current_buffer_id()).then_some(*table_id)
+            })
+            .unwrap_or(self.standard_syntax_table_id())
+    }
+
+    pub fn set_current_syntax_table(&mut self, id: u64) {
+        let current_buffer_id = self.current_buffer_id();
+        if let Some((_, table_id)) = self
+            .buffer_syntax_tables
+            .iter_mut()
+            .rev()
+            .find(|(buffer_id, _)| *buffer_id == current_buffer_id)
+        {
+            *table_id = id;
+        } else {
+            self.buffer_syntax_tables.push((current_buffer_id, id));
+        }
+    }
+
     pub fn set_syntax_word_char(&mut self, code: u32, enabled: bool) {
         if enabled {
             if !self.syntax_word_chars.contains(&code) {
@@ -3899,7 +4025,7 @@ impl Interpreter {
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
             "text-mode-syntax-table" | "emacs-lisp-mode-syntax-table" => {
-                Some(Value::Symbol("emaxx-standard-syntax-table".into()))
+                Some(Value::CharTable(self.standard_syntax_table_id()))
             }
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
@@ -4577,6 +4703,22 @@ impl Interpreter {
                 Ok(value) => Ok(value),
                 Err(error) => self.dispatch_handler_bindings(error, env),
             },
+            Value::Record(id)
+                if self
+                    .find_record(id)
+                    .is_some_and(|record| record.type_name == "byte-code-function") =>
+            {
+                let Some(record) = self.find_record(id) else {
+                    unreachable!("checked record presence");
+                };
+                let Some(inner) = record.slots.first() else {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("invalid-function".into()),
+                        Value::Record(id),
+                    ])));
+                };
+                self.call_function_value(inner.clone(), original_name, args, env)
+            }
             Value::Lambda(ref params, ref body, ref closure_env) => {
                 if params.len() != args.len() {
                     let min_params = params
@@ -6139,6 +6281,7 @@ impl Interpreter {
         enum LoopSpec {
             Range { name: String, values: Vec<Value> },
             List { name: String, values: Vec<Value> },
+            From { name: String, start: i64 },
             Assign { name: String, expr: Value },
         }
 
@@ -6179,36 +6322,41 @@ impl Interpreter {
                                     env,
                                 )?
                                 .as_integer()?;
-                            let bound_kind = items
+                            match items
                                 .get(index + 4)
-                                .ok_or_else(|| {
-                                    LispError::Signal("Unsupported cl-loop syntax".into())
-                                })?
-                                .as_symbol()?;
-                            let end = self
-                                .eval(
-                                    items.get(index + 5).ok_or_else(|| {
-                                        LispError::Signal("Unsupported cl-loop syntax".into())
-                                    })?,
-                                    env,
-                                )?
-                                .as_integer()?;
-                            let values = match bound_kind {
-                                "to" | "upto" if start <= end => {
-                                    (start..=end).map(Value::Integer).collect()
+                                .and_then(|value| value.as_symbol().ok())
+                            {
+                                Some("to") | Some("upto") | Some("below") => {
+                                    let bound_kind =
+                                        items[index + 4].as_symbol().expect("checked symbol");
+                                    let end = self
+                                        .eval(
+                                            items.get(index + 5).ok_or_else(|| {
+                                                LispError::Signal(
+                                                    "Unsupported cl-loop syntax".into(),
+                                                )
+                                            })?,
+                                            env,
+                                        )?
+                                        .as_integer()?;
+                                    let values = match bound_kind {
+                                        "to" | "upto" if start <= end => {
+                                            (start..=end).map(Value::Integer).collect()
+                                        }
+                                        "below" if start < end => {
+                                            (start..end).map(Value::Integer).collect()
+                                        }
+                                        "to" | "upto" | "below" => Vec::new(),
+                                        _ => unreachable!(),
+                                    };
+                                    specs.push(LoopSpec::Range { name, values });
+                                    index += 6;
                                 }
-                                "below" if start < end => {
-                                    (start..end).map(Value::Integer).collect()
-                                }
-                                "to" | "upto" | "below" => Vec::new(),
                                 _ => {
-                                    return Err(LispError::Signal(
-                                        "Unsupported cl-loop syntax".into(),
-                                    ));
+                                    specs.push(LoopSpec::From { name, start });
+                                    index += 4;
                                 }
-                            };
-                            specs.push(LoopSpec::Range { name, values });
-                            index += 6;
+                            }
                         }
                         Some(Value::Symbol(kind))
                             if matches!(kind.as_str(), "to" | "upto" | "below") =>
@@ -6241,6 +6389,18 @@ impl Interpreter {
                                     env,
                                 )?
                                 .to_vec()?;
+                            specs.push(LoopSpec::List { name, values });
+                            index += 4;
+                        }
+                        Some(Value::Symbol(kind)) if kind == "across" => {
+                            let string = crate::lisp::primitives::string_text(&self.eval(
+                                items.get(index + 3).ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?,
+                                env,
+                            )?)?;
+                            let values =
+                                string.chars().map(|ch| Value::Integer(ch as i64)).collect();
                             specs.push(LoopSpec::List { name, values });
                             index += 4;
                         }
@@ -6280,7 +6440,7 @@ impl Interpreter {
                 LoopSpec::Range { values, .. } | LoopSpec::List { values, .. } => {
                     Some(values.len())
                 }
-                LoopSpec::Assign { .. } => None,
+                LoopSpec::From { .. } | LoopSpec::Assign { .. } => None,
             })
             .min()
             .unwrap_or(1);
@@ -6290,6 +6450,7 @@ impl Interpreter {
             .map(|spec| match spec {
                 LoopSpec::Range { name, .. }
                 | LoopSpec::List { name, .. }
+                | LoopSpec::From { name, .. }
                 | LoopSpec::Assign { name, .. } => (name.clone(), Value::Nil),
             })
             .collect::<Vec<_>>();
@@ -6359,6 +6520,13 @@ impl Interpreter {
                     LoopSpec::Range { name, values } | LoopSpec::List { name, values } => {
                         direct_updates.push((slot, name.clone(), values[iteration].clone()));
                     }
+                    LoopSpec::From { name, start } => {
+                        direct_updates.push((
+                            slot,
+                            name.clone(),
+                            Value::Integer(*start + iteration as i64),
+                        ));
+                    }
                     LoopSpec::Assign { .. } => {}
                 }
             }
@@ -6384,7 +6552,7 @@ impl Interpreter {
             }
 
             match &action {
-                LoopAction::Do(body) => result = self.sf_progn(body, env)?,
+                LoopAction::Do(body) => result = self.eval_cl_loop_do_body(body, env)?,
                 LoopAction::Collect(expr) => collected.push(self.eval(expr, env)?),
                 LoopAction::Thereis { expr, until } => {
                     if let Some(until_expr) = until
@@ -6427,6 +6595,39 @@ impl Interpreter {
             LoopAction::Sum(_) => Value::Integer(sum),
             _ => result,
         })
+    }
+
+    fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        let mut result = Value::Nil;
+        let mut index = 0usize;
+        while index < body.len() {
+            match body.get(index) {
+                Some(Value::Symbol(symbol)) if symbol == "when" => {
+                    let condition = body
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?;
+                    if !matches!(body.get(index + 2), Some(Value::Symbol(kind)) if kind == "do") {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                    index += 3;
+                    let clause_start = index;
+                    while index < body.len()
+                        && !matches!(body.get(index), Some(Value::Symbol(keyword)) if keyword == "when")
+                    {
+                        index += 1;
+                    }
+                    if self.eval(condition, env)?.is_truthy() {
+                        result = self.sf_progn(&body[clause_start..index], env)?;
+                    }
+                }
+                Some(form) => {
+                    result = self.eval(form, env)?;
+                    index += 1;
+                }
+                None => break,
+            }
+        }
+        Ok(result)
     }
 
     fn sf_unwind_protect(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -9669,7 +9870,301 @@ mod tests {
     fn emacs_lisp_mode_syntax_table_defaults_to_placeholder() {
         assert_eq!(
             eval_str("emacs-lisp-mode-syntax-table"),
-            Value::Symbol("emaxx-standard-syntax-table".into())
+            Value::CharTable(1)
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_across_with_unbounded_from() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let (pairs)
+                  (cl-loop for char across "ab"
+                           for i from 0
+                           do (setq pairs (cons (list char i) pairs)))
+                  (nreverse pairs))
+                "#
+            ),
+            Value::list([
+                Value::list([Value::Integer('a' as i64), Value::Integer(0)]),
+                Value::list([Value::Integer('b' as i64), Value::Integer(1)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn byte_compile_wraps_lambdas_in_byte_code_function_records() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (type-of (byte-compile (lambda (x) (char-syntax x))))
+                "#
+            ),
+            Value::Symbol("byte-code-function".into())
+        );
+    }
+
+    #[test]
+    fn forward_comment_moves_over_c_comments_in_both_directions() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (set-syntax-table (make-syntax-table))
+                  (setq comment-end-can-be-escaped t)
+                  (modify-syntax-entry ?/ ". 124b")
+                  (modify-syntax-entry ?* ". 23")
+                  (modify-syntax-entry ?\n "> b")
+                  (insert "1/* comment */1")
+                  (let ((after-comment 15))
+                    (goto-char 2)
+                    (list (forward-comment 1)
+                          (point)
+                          (progn
+                            (goto-char after-comment)
+                            (forward-comment -1))
+                          (point))))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(15), Value::T, Value::Integer(2),])
+        );
+    }
+
+    #[test]
+    fn scan_lists_backward_skips_line_comments() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (setq parse-sexp-ignore-comments t)
+                  (modify-syntax-entry ?\n "> b")
+                  (modify-syntax-entry ?\; "< b")
+                  (insert "(; comment\n)")
+                  (scan-lists (point-max) -1 0))
+                "#
+            ),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn forward_comment_moves_backward_over_lisp_line_comments() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (set-syntax-table (make-syntax-table))
+                  (modify-syntax-entry ?\n "> b")
+                  (modify-syntax-entry ?\; "< b")
+                  (insert "; comment\nx")
+                  (goto-char (point-min))
+                  (search-forward "x")
+                  (backward-char)
+                  (list (forward-comment -1) (point)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(1)])
+        );
+    }
+
+    #[test]
+    fn forward_comment_matches_syntax_tests_lisp_backward_case() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (set-syntax-table (make-syntax-table))
+                  (modify-syntax-entry ?\; "<")
+                  (modify-syntax-entry ?\n ">")
+                  (insert "31; Comment\n31")
+                  (goto-char (point-max))
+                  (re-search-backward "\\_<31\\_>")
+                  (list (forward-comment -1) (point)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(3)])
+        );
+    }
+
+    #[test]
+    fn forward_comment_matches_syntax_tests_c_forward_case() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (set-syntax-table (make-syntax-table))
+                  (modify-syntax-entry ?\{ "(}")
+                  (modify-syntax-entry ?\} "){")
+                  (modify-syntax-entry ?/ ". 124b")
+                  (modify-syntax-entry ?* ". 23")
+                  (modify-syntax-entry ?\n ">")
+                  (modify-syntax-entry ?\\ "\\")
+                  (insert "1/* comment */1")
+                  (goto-char (point-min))
+                  (re-search-forward "\\_<1\\_>")
+                  (list (point) (forward-comment 1) (point)))
+                "#
+            ),
+            Value::list([Value::Integer(2), Value::T, Value::Integer(15)])
+        );
+    }
+
+    #[test]
+    fn modify_syntax_entry_defaults_to_current_table() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((standard (standard-syntax-table))
+                      (table (make-syntax-table)))
+                  (set-syntax-table table)
+                  (modify-syntax-entry ?\; "<")
+                  (list (char-syntax ?\;)
+                        (progn
+                          (set-syntax-table standard)
+                          (char-syntax ?\;))))
+                "#
+            ),
+            Value::list([Value::Integer('<' as i64), Value::Integer('.' as i64),])
+        );
+    }
+
+    #[test]
+    fn forward_comment_ignores_non_comment_double_slash_under_block_comment_syntax() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (modify-syntax-entry ?/ ". 124")
+                  (modify-syntax-entry ?* ". 23b")
+                  (modify-syntax-entry ?\n ">")
+                  (modify-syntax-entry ?\; "<")
+                  (insert "// not a comment here\n31; Comment\n31")
+                  (goto-char (point-max))
+                  (re-search-backward "\\_<31\\_>")
+                  (list (forward-comment -1) (point)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(25)])
+        );
+    }
+
+    #[test]
+    fn re_search_backward_respects_line_end_anchors() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "1x1\n111\n")
+                  (goto-char (point-max))
+                  (re-search-backward "\\(^\\|[^0-9]\\)\\(1\\)$")
+                  (list (point) (match-beginning 2) (match-end 2)))
+                "#
+            ),
+            Value::list([Value::Integer(2), Value::Integer(3), Value::Integer(4),])
+        );
+    }
+
+    #[test]
+    fn forward_comment_finds_local_nested_comment_despite_earlier_unterminated_one() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (modify-syntax-entry ?# ". 14")
+                  (modify-syntax-entry ?| ". 23n")
+                  (modify-syntax-entry ?\; "< b")
+                  (modify-syntax-entry ?\n "> b")
+                  (insert "101#|#\n102#||#102")
+                  (goto-char (point-max))
+                  (re-search-backward "\\_<102\\_>")
+                  (list (forward-comment -1) (point)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(11)])
+        );
+    }
+
+    #[test]
+    fn forward_comment_uses_leftmost_line_comment_start() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (modify-syntax-entry ?\n ">")
+                  (modify-syntax-entry ?\; "<")
+                  (insert "32;;;;;;;;;\n32")
+                  (goto-char (point-max))
+                  (re-search-backward "\\_<32\\_>")
+                  (list (forward-comment -1) (point)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(3)])
+        );
+    }
+
+    #[test]
+    fn forward_comment_uses_outer_pascal_comment_start() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (modify-syntax-entry ?{ "<")
+                  (modify-syntax-entry ?} ">")
+                  (insert "24{\n25{25\n}24")
+                  (goto-char (point-max))
+                  (re-search-backward "\\_<24\\_>")
+                  (list (forward-comment -1) (point)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(3)])
+        );
+    }
+
+    #[test]
+    fn forward_comment_backward_prefers_outer_nested_comment_start() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (with-temp-buffer
+                  (modify-syntax-entry ?# ". 14")
+                  (modify-syntax-entry ?| ". 23n")
+                  (goto-char (point-min))
+                  (insert "#|#|#")
+                  (goto-char (point-max))
+                  (list (forward-comment -1) (point)))
+                "##
+            ),
+            Value::list([Value::T, Value::Integer(1)])
+        );
+    }
+
+    #[test]
+    fn forward_comment_backward_rejects_overlapping_and_escaped_c_end_markers() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (setq comment-end-can-be-escaped t)
+                  (modify-syntax-entry ?/ ". 124b")
+                  (modify-syntax-entry ?* ". 23")
+                  (modify-syntax-entry ?\n "> b")
+                  (insert "5/*/5\n7/* \\*/7")
+                  (goto-char (point-min))
+                  (search-forward "5")
+                  (search-forward "5")
+                  (backward-char)
+                  (let ((overlap (list (forward-comment -1) (point))))
+                    (goto-char (point-max))
+                    (search-backward "7")
+                    (let ((escaped (list (forward-comment -1) (point))))
+                      (list overlap escaped))))
+                "#
+            ),
+            Value::list([
+                Value::list([Value::Nil, Value::Integer(5)]),
+                Value::list([Value::Nil, Value::Integer(14)]),
+            ])
         );
     }
 
