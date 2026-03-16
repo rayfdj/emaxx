@@ -1066,6 +1066,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-binary-mode"
             | "write-region"
             | "write-file"
+            | "set-file-modes"
             | "call-process"
             | "call-process-region"
             | "process-lines"
@@ -1099,6 +1100,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "sit-for"
             | "accept-process-output"
             | "substitute-command-keys"
+            | "prin1"
             | "prin1-to-string"
             | "princ"
             | "print"
@@ -1110,6 +1112,7 @@ pub fn is_builtin(name: &str) -> bool {
             // Reader
             | "read"
             | "read-from-string"
+            | "md5"
             // More string/char ops
             | "char-equal"
             | "number-sequence"
@@ -6869,6 +6872,22 @@ pub fn call(
             }
             write_file_value(interp, args, env)
         }
+        "set-file-modes" => {
+            need_args(name, args, 2)?;
+            let path = string_text(&args[0])?;
+            validate_file_name(&path)?;
+            let mode = args[1].as_integer()?;
+            #[cfg(unix)]
+            {
+                let mut permissions = fs::metadata(&path)
+                    .map_err(|error| LispError::Signal(error.to_string()))?
+                    .permissions();
+                permissions.set_mode(mode as u32);
+                fs::set_permissions(&path, permissions)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+            Ok(Value::Nil)
+        }
         "insert-directory" => {
             need_arg_range(name, args, 2, 4)?;
             let file = string_text(&args[0])?;
@@ -7327,6 +7346,12 @@ pub fn call(
             interp.drive_threads(env, true)?;
             Ok(Value::T)
         }
+        "prin1" => {
+            need_arg_range(name, args, 1, 3)?;
+            let rendered = render_prin1(interp, &args[0], env)?;
+            write_printer_output(interp, &rendered, args.get(1))?;
+            Ok(args[0].clone())
+        }
         "princ" | "print" => {
             if args.is_empty() {
                 Ok(Value::Nil)
@@ -7658,12 +7683,7 @@ pub fn call(
         // ── Reader ──
         "read" => {
             need_args(name, args, 1)?;
-            let s = string_text(&args[0])?;
-            let mut reader = super::reader::Reader::new(&s);
-            match reader.read()? {
-                Some(val) => Ok(val),
-                None => Err(LispError::EndOfInput),
-            }
+            read_from_lisp_source(interp, &args[0])
         }
         "read-from-string" => {
             if args.is_empty() || args.len() > 3 {
@@ -7683,6 +7703,17 @@ pub fn call(
                 )),
                 None => Err(LispError::EndOfInput),
             }
+        }
+        "md5" => {
+            need_arg_range(name, args, 1, 4)?;
+            let text = md5_source_text(interp, &args[0], args.get(1), args.get(2))?;
+            let bytes = match args.get(3) {
+                Some(coding) if !coding.is_nil() => {
+                    encode_text_bytes(interp, &text, &checked_coding_symbol(interp, coding)?)?
+                }
+                _ => text.into_bytes(),
+            };
+            Ok(Value::String(format!("{:x}", md5::compute(bytes))))
         }
 
         // ── Misc ──
@@ -7737,7 +7768,10 @@ pub fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let symbol_name = string_text(&args[0])?;
+            let symbol_name = match &args[0] {
+                Value::Symbol(symbol) => symbol.clone(),
+                _ => string_text(&args[0])?,
+            };
             match args.get(1) {
                 Some(obarray) if !obarray.is_nil() => {
                     intern_in_obarray(interp, obarray, &symbol_name)
@@ -7749,7 +7783,13 @@ pub fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let symbol_name = string_text(&args[0])?;
+            let symbol_name = match &args[0] {
+                Value::Symbol(symbol) if args.get(1).is_none_or(Value::is_nil) => {
+                    return Ok(Value::Symbol(symbol.clone()));
+                }
+                Value::Symbol(symbol) => symbol.clone(),
+                _ => string_text(&args[0])?,
+            };
             match args.get(1) {
                 Some(obarray) if !obarray.is_nil() => {
                     intern_soft_in_obarray(interp, obarray, &symbol_name)
@@ -20156,6 +20196,58 @@ fn write_file_value(
     Ok(Value::String(path))
 }
 
+fn write_printer_output(
+    interp: &mut Interpreter,
+    text: &str,
+    stream: Option<&Value>,
+) -> Result<(), LispError> {
+    match stream {
+        None | Some(Value::Nil | Value::T) => {
+            interp.buffer.insert(text);
+            Ok(())
+        }
+        Some(Value::Buffer(_, _)) => {
+            let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
+            let buffer = interp
+                .get_buffer_by_id_mut(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            buffer.insert(text);
+            Ok(())
+        }
+        Some(Value::Marker(id)) => {
+            let (buffer_id, position) = {
+                let marker = interp.find_marker(*id).ok_or_else(|| {
+                    LispError::TypeError("marker".into(), format!("marker<{id}>"))
+                })?;
+                let buffer_id = marker
+                    .buffer_id
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+                let position = marker
+                    .position
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+                (buffer_id, position)
+            };
+            let new_position = {
+                let buffer = interp
+                    .get_buffer_by_id_mut(buffer_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+                let saved_point = buffer.point();
+                buffer.goto_char(position);
+                buffer.insert(text);
+                let new_position = buffer.point();
+                buffer.goto_char(saved_point);
+                new_position
+            };
+            interp.set_marker(*id, Some(new_position), Some(buffer_id))?;
+            Ok(())
+        }
+        Some(other) => Err(LispError::TypeError(
+            "output-stream".into(),
+            other.type_name(),
+        )),
+    }
+}
+
 fn decode_file_contents(
     interp: &Interpreter,
     env: &Env,
@@ -21058,6 +21150,109 @@ fn render_prin1(
             Ok(value.to_string())
         }
         _ => Ok(value.to_string()),
+    }
+}
+
+fn read_one_form(text: &str) -> Result<(Value, usize), LispError> {
+    let mut reader = super::reader::Reader::new(text);
+    let value = match reader.read()? {
+        Some(value) => value,
+        None => return Err(LispError::EndOfInput),
+    };
+    let consumed = text[..reader.position()].chars().count();
+    Ok((value, consumed))
+}
+
+fn read_from_lisp_source(interp: &mut Interpreter, source: &Value) -> Result<Value, LispError> {
+    match source {
+        Value::Buffer(_, _) => {
+            let buffer_id = interp.resolve_buffer_id(source)?;
+            let (start, end, text) = {
+                let buffer = interp
+                    .get_buffer_by_id(buffer_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+                let start = buffer.point();
+                let end = buffer.point_max();
+                (
+                    start,
+                    end,
+                    buffer
+                        .buffer_substring(start, end)
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                )
+            };
+            let (value, consumed) = read_one_form(&text)?;
+            if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                buffer.goto_char((start + consumed).min(end));
+            }
+            Ok(value)
+        }
+        Value::Marker(id) => {
+            let (buffer_id, start) = {
+                let marker = interp.find_marker(*id).ok_or_else(|| {
+                    LispError::TypeError("marker".into(), format!("marker<{id}>"))
+                })?;
+                let buffer_id = marker
+                    .buffer_id
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+                let start = marker
+                    .position
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+                (buffer_id, start)
+            };
+            let end = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
+                .point_max();
+            let text = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let (value, consumed) = read_one_form(&text)?;
+            interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
+            Ok(value)
+        }
+        _ => {
+            let s = string_text(source)?;
+            read_one_form(&s).map(|(value, _)| value)
+        }
+    }
+}
+
+fn md5_source_text(
+    interp: &mut Interpreter,
+    source: &Value,
+    start: Option<&Value>,
+    end: Option<&Value>,
+) -> Result<String, LispError> {
+    match source {
+        Value::Buffer(_, _) => {
+            let buffer_id = interp.resolve_buffer_id(source)?;
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            let start = start
+                .filter(|value| !value.is_nil())
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| buffer.point_min());
+            let end = end
+                .filter(|value| !value.is_nil())
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| buffer.point_max());
+            buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))
+        }
+        _ => {
+            let text = string_text(source)?;
+            let chars: Vec<char> = text.chars().collect();
+            let start = normalize_string_index(start, 0, chars.len() as i64)? as usize;
+            let end = normalize_string_index(end, chars.len() as i64, chars.len() as i64)? as usize;
+            Ok(chars[start..end].iter().collect())
+        }
     }
 }
 
