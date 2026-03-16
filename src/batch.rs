@@ -30,7 +30,6 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
     let perf_request = parse_perf_request(&options.eval)?;
     let selector_string = selector.to_string();
-    let compat_batch_report = env::var(compat::BATCH_RESULT_FILE_ENV).is_ok();
 
     for target in &options.load {
         if target == "ert" {
@@ -39,12 +38,6 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
         let resolved = resolve_load_target(target, &options.load_path)?;
         if loaded_test_file.is_none() {
             loaded_test_file = Some(resolved.clone());
-        }
-        if saw_ert_runner
-            && compat_batch_report
-            && compat::should_delegate_batch_report(&report_file_name(&resolved))
-        {
-            continue;
         }
         if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
             let report = BatchReport {
@@ -102,23 +95,17 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
 
     let relative_file = report_file_name(&test_file);
     let report = if saw_ert_runner {
-        if let Some(report) =
-            compat::maybe_delegate_batch_report(&relative_file, &test_file, &selector_string)?
-        {
-            report
-        } else {
-            let summary = interpreter.run_ert_tests_with_selector(Some(&selector));
-            BatchReport {
-                runner: "emaxx".into(),
-                file: relative_file.clone(),
-                selector: selector_string,
-                file_status: FileStatus::Loaded,
-                file_error: None,
-                discovered_tests: interpreter.discovered_tests(),
-                selected_tests: interpreter.last_selected_tests.clone(),
-                results: apply_backtrace_limit(interpreter.test_results.clone()),
-                summary,
-            }
+        let summary = interpreter.run_ert_tests_with_selector(Some(&selector));
+        BatchReport {
+            runner: "emaxx".into(),
+            file: relative_file.clone(),
+            selector: selector_string,
+            file_status: FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: interpreter.discovered_tests(),
+            selected_tests: interpreter.last_selected_tests.clone(),
+            results: apply_backtrace_limit(interpreter.test_results.clone()),
+            summary,
         }
     } else {
         BatchReport {
@@ -470,37 +457,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn selected_src_tests_are_oracle_delegated_in_compat_batch_mode() {
-        assert!(compat::should_delegate_batch_report(
-            "test/src/data-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/emacs-module-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/fns-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/keymap-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/lread-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/print-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/syntax-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/src/thread-tests.el"
-        ));
-        assert!(compat::should_delegate_batch_report(
-            "test/lisp/kmacro-tests.el"
-        ));
-        assert!(!compat::should_delegate_batch_report(
-            "test/src/buffer-tests.el"
-        ));
-    }
 }

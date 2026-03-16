@@ -10,3 +10,6 @@ pub mod keymap;
 pub mod lisp;
 pub mod overlay;
 pub mod perf;
+
+#[cfg(test)]
+mod anti_cheat;
