@@ -1,4 +1,4 @@
-use super::types::{LispError, SharedStringState, Value};
+use super::types::{LispError, SharedStringState, StringPropertySpan, Value};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::{cell::RefCell, rc::Rc};
@@ -562,9 +562,10 @@ impl<'a> Reader<'a> {
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
             }
             Some(b'(') => {
-                // #(...) — read as a self-evaluating vector literal.
+                // #(...) — either a self-evaluating vector literal or a
+                // string literal with text properties.
                 self.advance(); // consume '('
-                let mut items = vec![Value::symbol("vector-literal")];
+                let mut items = Vec::new();
                 loop {
                     self.skip_whitespace_and_comments();
                     match self.peek() {
@@ -579,7 +580,13 @@ impl<'a> Reader<'a> {
                         }
                     }
                 }
-                Ok(Some(Value::list(items)))
+                if let Some(string) = self.try_read_string_literal_with_properties(&items)? {
+                    Ok(Some(string))
+                } else {
+                    Ok(Some(Value::list(
+                        std::iter::once(Value::symbol("vector-literal")).chain(items),
+                    )))
+                }
             }
             Some(ch) if ch.is_ascii_digit() => {
                 let base = self.read_unsigned_decimal();
@@ -734,6 +741,54 @@ impl<'a> Reader<'a> {
                 Ok(Some(val))
             }
         }
+    }
+
+    fn try_read_string_literal_with_properties(
+        &self,
+        items: &[Value],
+    ) -> Result<Option<Value>, LispError> {
+        let Some(first) = items.first() else {
+            return Ok(None);
+        };
+        let (text, mut props, multibyte) = match first {
+            Value::String(text) => (text.clone(), Vec::new(), false),
+            Value::StringObject(state) => {
+                let state = state.borrow();
+                (state.text.clone(), state.props.clone(), state.multibyte)
+            }
+            _ => return Ok(None),
+        };
+        if !(items.len() - 1).is_multiple_of(3) {
+            return Ok(None);
+        }
+        let mut index = 1usize;
+        while index + 2 < items.len() {
+            let start = items[index].as_integer()?;
+            let end = items[index + 1].as_integer()?;
+            let plist = items[index + 2].to_vec()?;
+            let mut span_props = Vec::new();
+            let mut cursor = 0usize;
+            while cursor + 1 < plist.len() {
+                span_props.push((
+                    plist[cursor].as_symbol()?.to_string(),
+                    plist[cursor + 1].clone(),
+                ));
+                cursor += 2;
+            }
+            props.push(StringPropertySpan {
+                start: start.max(0) as usize,
+                end: end.max(0) as usize,
+                props: span_props,
+            });
+            index += 3;
+        }
+        Ok(Some(Value::StringObject(Rc::new(RefCell::new(
+            SharedStringState {
+                text,
+                props,
+                multibyte,
+            },
+        )))))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
@@ -1063,6 +1118,23 @@ mod tests {
                 Value::Integer(2),
                 Value::Symbol("foo".into()),
             ])
+        );
+    }
+
+    #[test]
+    fn reads_strings_with_text_properties_from_hash_syntax() {
+        let Value::StringObject(state) = read_one(r#"#("abc" 0 1 (face bold))"#) else {
+            panic!("expected a string object");
+        };
+        let state = state.borrow();
+        assert_eq!(state.text, "abc");
+        assert_eq!(
+            state.props,
+            vec![StringPropertySpan {
+                start: 0,
+                end: 1,
+                props: vec![("face".into(), Value::Symbol("bold".into()))],
+            }]
         );
     }
 

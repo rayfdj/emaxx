@@ -765,6 +765,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-char-code-property"
             | "char-resolve-modifiers"
             | "string-trim"
+            | "string-clean-whitespace"
             | "url-hexify-string"
             // Buffer operations
             | "insert"
@@ -3858,7 +3859,7 @@ pub fn call(
             let source_len = source.text.chars().count() as i64;
             let start = normalize_string_index(args.get(6), 0, source_len)? as usize;
             validate_elisp_regex(&pattern.text)?;
-            let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+            let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
             let mut result = source.text.chars().take(start).collect::<String>();
             let mut search_pos = start;
             let mut tail = source.text.chars().skip(start).collect::<String>();
@@ -3921,6 +3922,14 @@ pub fn call(
         "string-trim" => {
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?.trim().to_string()))
+        }
+        "string-clean-whitespace" => {
+            need_args(name, args, 1)?;
+            let cleaned = string_text(&args[0])?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(Value::String(cleaned))
         }
         "url-hexify-string" => {
             if args.is_empty() || args.len() > 2 {
@@ -5050,13 +5059,19 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let prop = args[2].as_symbol()?.to_string();
+            let prop_value = match &args[3] {
+                Value::StringObject(state) if state.borrow().props.is_empty() => {
+                    Value::String(state.borrow().text.clone())
+                }
+                _ => args[3].clone(),
+            };
             if let Some(object) = args.get(4) {
                 if string_like(object).is_some() {
                     let start = args[0].as_integer()?.max(0) as usize;
                     let end = args[1].as_integer()?.max(0) as usize;
                     modify_shared_string_properties(object, start, end, |mut current| {
                         current.retain(|(key, _)| key != &prop);
-                        current.push((prop.clone(), args[3].clone()));
+                        current.insert(0, (prop.clone(), prop_value.clone()));
                         current
                     })?;
                 } else {
@@ -5064,7 +5079,7 @@ pub fn call(
                     let end = position_from_value(interp, &args[1])?;
                     interp
                         .buffer
-                        .put_text_property(start, end, &prop, args[3].clone());
+                        .put_text_property(start, end, &prop, prop_value);
                     interp
                         .buffer
                         .push_undo_entry(crate::buffer::UndoEntry::Combined {
@@ -5077,7 +5092,7 @@ pub fn call(
                 let end = position_from_value(interp, &args[1])?;
                 interp
                     .buffer
-                    .put_text_property(start, end, &prop, args[3].clone());
+                    .put_text_property(start, end, &prop, prop_value);
                 interp
                     .buffer
                     .push_undo_entry(crate::buffer::UndoEntry::Combined {
@@ -11632,6 +11647,7 @@ fn compare_buffer_substrings(left: &str, right: &str) -> i64 {
 
 const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\x{2620}]";
 const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\x{2620}]";
+const REGEX_SYMBOL_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\-\x{2620}]";
 const REGEX_WHITESPACE_CLASS: &str = r"[\p{White_Space}]";
 const REGEX_NON_WHITESPACE_CLASS: &str = r"[^\p{White_Space}]";
 
@@ -11642,10 +11658,14 @@ enum RegexClassAtom {
 }
 
 fn translate_elisp_regex(pattern: &str) -> String {
-    translate_elisp_regex_with_point(pattern, "")
+    translate_elisp_regex_with_point(pattern, "", r"\A")
 }
 
-fn translate_elisp_regex_with_point(pattern: &str, point_assertion: &str) -> String {
+fn translate_elisp_regex_with_point(
+    pattern: &str,
+    point_assertion: &str,
+    absolute_start_assertion: &str,
+) -> String {
     let mut translated = String::new();
     let mut chars = pattern.chars().peekable();
     let mut at_branch_start = true;
@@ -11662,7 +11682,7 @@ fn translate_elisp_regex_with_point(pattern: &str, point_assertion: &str) -> Str
         if ch == '\\' {
             match chars.next() {
                 Some('`') => {
-                    translated.push_str(r"\A");
+                    translated.push_str(absolute_start_assertion);
                     can_repeat_previous =
                         literalize_postfix_after_absolute_anchor(&mut translated, &mut chars);
                     at_branch_start = false;
@@ -11787,7 +11807,7 @@ fn translate_elisp_regex_with_point(pattern: &str, point_assertion: &str) -> Str
                     Some('<') => {
                         translated.push_str(&translate_zero_width_assertion(
                             &mut chars,
-                            r"(?<![\p{Alphabetic}\p{Number}_\x{2620}])(?=[\p{Alphabetic}\p{Number}_\x{2620}])",
+                            &format!("(?<!{})(?={})", REGEX_SYMBOL_CLASS, REGEX_SYMBOL_CLASS),
                         ));
                         at_branch_start = false;
                         can_repeat_previous = false;
@@ -11796,7 +11816,7 @@ fn translate_elisp_regex_with_point(pattern: &str, point_assertion: &str) -> Str
                     Some('>') => {
                         translated.push_str(&translate_zero_width_assertion(
                             &mut chars,
-                            r"(?<=[\p{Alphabetic}\p{Number}_\x{2620}])(?![\p{Alphabetic}\p{Number}_\x{2620}])",
+                            &format!("(?<={})(?!{})", REGEX_SYMBOL_CLASS, REGEX_SYMBOL_CLASS),
                         ));
                         at_branch_start = false;
                         can_repeat_previous = false;
@@ -12119,7 +12139,31 @@ fn consume_regex_class_atom(
             }
             Some(RegexClassAtom::Char('['))
         }
-        '\\' => Some(RegexClassAtom::Char('\\')),
+        '\\' => {
+            let Some(next) = chars.peek().copied() else {
+                return Some(RegexClassAtom::Char('\\'));
+            };
+            match next {
+                '-' | '\\' | '^' => {
+                    chars.next();
+                    Some(RegexClassAtom::Char(next))
+                }
+                ']' => {
+                    let mut preview = chars.clone();
+                    preview.next();
+                    if preview.peek() == Some(&']') {
+                        chars.next();
+                        Some(RegexClassAtom::Char(']'))
+                    } else {
+                        Some(RegexClassAtom::Char('\\'))
+                    }
+                }
+                _ => {
+                    chars.next();
+                    Some(RegexClassAtom::Char(next))
+                }
+            }
+        }
         ch => Some(RegexClassAtom::Char(ch)),
     }
 }
@@ -12324,9 +12368,14 @@ fn compile_elisp_regex(
     pattern: &StringLike,
     env: &Env,
     point_assertion: &str,
+    at_absolute_start: bool,
 ) -> Result<FancyRegex, LispError> {
     enforce_elisp_repeat_limit(&pattern.text)?;
-    let translated = translate_elisp_regex_with_point(&pattern.text, point_assertion);
+    let translated = translate_elisp_regex_with_point(
+        &pattern.text,
+        point_assertion,
+        if at_absolute_start { r"\A" } else { r"(?!)" },
+    );
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
@@ -12382,7 +12431,7 @@ fn string_match_impl(
     let haystack_len = haystack.text.chars().count() as i64;
     let start = normalize_string_index(args.get(2), 0, haystack_len)? as usize;
     let tail: String = haystack.text.chars().skip(start).collect();
-    let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+    let regex = compile_elisp_regex(interp, &pattern, env, "", start == 0)?;
     let captures = regex
         .captures(&tail)
         .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -13752,13 +13801,25 @@ fn match_string_impl(interp: &Interpreter, args: &[Value]) -> Result<Value, Lisp
         if end > chars.len() {
             return Ok(Value::Nil);
         }
-        return Ok(Value::String(chars[start..end].iter().collect()));
+        let text = chars[start..end].iter().collect::<String>();
+        return Ok(make_shared_string_value_with_multibyte(
+            text,
+            Vec::new(),
+            string.multibyte,
+        ));
     }
-    interp
+    let text = interp
         .buffer
         .buffer_substring(start, end)
-        .map(Value::String)
-        .map_err(|error| LispError::Signal(error.to_string()))
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let multibyte = text
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+    Ok(make_shared_string_value_with_multibyte(
+        text,
+        Vec::new(),
+        multibyte,
+    ))
 }
 
 fn looking_at_impl(
@@ -13768,8 +13829,14 @@ fn looking_at_impl(
 ) -> Result<Value, LispError> {
     let pattern = string_like(pattern_value)
         .ok_or_else(|| LispError::TypeError("string".into(), pattern_value.type_name()))?;
-    let regex = compile_elisp_regex(interp, &pattern, env, r"\A")?;
     let pos = interp.buffer.point();
+    let regex = compile_elisp_regex(
+        interp,
+        &pattern,
+        env,
+        r"\A",
+        pos == interp.buffer.point_min(),
+    )?;
     let tail = interp
         .buffer
         .buffer_substring(pos, interp.buffer.point_max())
@@ -13806,7 +13873,17 @@ fn buffer_regex_search(
     }
     let pattern = string_like(&args[0])
         .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-    let regex = compile_elisp_regex(interp, &pattern, env, if forward { r"\A" } else { r"\z" })?;
+    let regex = compile_elisp_regex(
+        interp,
+        &pattern,
+        env,
+        if forward { r"\A" } else { r"\z" },
+        if forward {
+            interp.buffer.point() == interp.buffer.point_min()
+        } else {
+            true
+        },
+    )?;
     let noerror = args.get(2).is_some_and(Value::is_truthy);
 
     if forward {
@@ -15265,7 +15342,7 @@ fn directory_files(
         let pattern = string_like(matcher)
             .ok_or_else(|| LispError::TypeError("string".into(), matcher.type_name()))?;
         validate_elisp_regex(&pattern.text)?;
-        let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+        let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
         let mut filtered = Vec::new();
         for entry in entries {
             if regex
@@ -16117,6 +16194,20 @@ mod tests {
                 "failed to compile `{pattern}` as `{rendered}`"
             );
         }
+    }
+
+    #[test]
+    fn translate_elisp_regex_handles_rx_generated_hyphen_classes() {
+        let pattern = r"-\(?:[\-[:alnum:]]\)+\(?:=\)?";
+        let translated = translate_elisp_regex(pattern);
+        let rendered = format!("(?m:{translated})");
+        let regex = FancyRegex::new(&rendered).expect("translated regex should compile");
+        assert!(
+            regex
+                .is_match("--tofu-policy=")
+                .expect("match result should be available"),
+            "translated `{pattern}` into `{translated}`"
+        );
     }
 
     #[test]
@@ -22352,7 +22443,7 @@ fn completion_regex_matches(
 ) -> Result<bool, LispError> {
     let pattern = string_like(pattern)
         .ok_or_else(|| LispError::TypeError("string".into(), pattern.type_name()))?;
-    let regex = compile_elisp_regex(interp, &pattern, env, "")?;
+    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
     regex
         .is_match(candidate)
         .map_err(|error| LispError::Signal(error.to_string()))
