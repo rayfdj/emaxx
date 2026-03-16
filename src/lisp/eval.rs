@@ -784,15 +784,17 @@ impl Interpreter {
 
     pub fn load_target(&mut self, target: &str) -> Result<PathBuf, LispError> {
         let Some(path) = self.resolve_load_target(target) else {
-            return Err(LispError::Signal(format!(
-                "Cannot open load file: {target}"
-            )));
+            return Err(load_file_missing_error(target));
         };
         crate::lisp::load_file_strict(self, &path)?;
         Ok(path)
     }
 
-    fn require_feature(&mut self, feature: &str) -> Result<Value, LispError> {
+    fn require_feature_with_target(
+        &mut self,
+        feature: &str,
+        target: Option<&str>,
+    ) -> Result<Value, LispError> {
         if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
             return Ok(Value::Symbol(feature.to_string()));
         }
@@ -800,10 +802,9 @@ impl Interpreter {
             self.provide_feature(feature);
             return Ok(Value::Symbol(feature.to_string()));
         }
-        let Some(path) = self.resolve_load_target(feature) else {
-            return Err(LispError::Signal(format!(
-                "Cannot open load file: {feature}"
-            )));
+        let load_target = target.unwrap_or(feature);
+        let Some(path) = self.resolve_load_target(load_target) else {
+            return Err(load_file_missing_error(load_target));
         };
         self.loading_features.push(feature.to_string());
         let load_result = crate::lisp::load_file_strict(self, &path);
@@ -3897,7 +3898,9 @@ impl Interpreter {
             "mode-line-modes" => Some(Value::Nil),
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
-            "text-mode-syntax-table" => Some(Value::Symbol("emaxx-standard-syntax-table".into())),
+            "text-mode-syntax-table" | "emacs-lisp-mode-syntax-table" => {
+                Some(Value::Symbol("emaxx-standard-syntax-table".into()))
+            }
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
             "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
@@ -4250,6 +4253,7 @@ impl Interpreter {
                         "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
                         "cond" => return self.sf_cond(&items, env),
                         "pcase" => return self.sf_pcase(&items, env),
+                        "pcase-defmacro" => return self.sf_pcase_defmacro(&items, env),
                         "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
@@ -4452,7 +4456,19 @@ impl Interpreter {
                         "rx" => return self.sf_rx(&items),
                         "require" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
-                                return self.require_feature(&feature);
+                                let target = match items.get(2) {
+                                    Some(expr) => {
+                                        let value = self.eval(expr, env)?;
+                                        if value.is_nil() {
+                                            None
+                                        } else {
+                                            Some(primitives::string_text(&value)?)
+                                        }
+                                    }
+                                    None => None,
+                                };
+                                return self
+                                    .require_feature_with_target(&feature, target.as_deref());
                             }
                             return Ok(Value::Nil);
                         }
@@ -4795,6 +4811,39 @@ impl Interpreter {
 
     fn sf_pcase(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_pcase_like(items, env, false)
+    }
+
+    fn sf_pcase_defmacro(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::WrongNumberOfArgs(
+                "pcase-defmacro".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let params = self.parse_params(&items[2])?;
+        let body_start = if items.len() > 4 {
+            if let Value::String(_) = &items[3] {
+                4
+            } else {
+                3
+            }
+        } else {
+            3
+        };
+        let body_start = if body_start < items.len() && is_function_declare_form(&items[body_start])
+        {
+            body_start + 1
+        } else {
+            body_start
+        };
+        let body = items[body_start..].to_vec();
+        let expander_name = format!("{name}--pcase-macroexpander");
+        let expander = Value::Lambda(params, body, env.clone());
+        self.validate_function_binding(&expander_name, &expander)?;
+        self.set_function_binding(&expander_name, Some(expander));
+        self.put_symbol_property(&name, "pcase-macroexpander", Value::Symbol(expander_name));
+        Ok(Value::Symbol(name))
     }
 
     fn sf_pcase_exhaustive(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -8091,6 +8140,15 @@ fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
     ]))
 }
 
+fn load_file_missing_error(target: &str) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("file-missing".into()),
+        Value::String("Cannot open load file".into()),
+        Value::String("No such file or directory".into()),
+        Value::String(target.into()),
+    ]))
+}
+
 fn invalid_function(value: Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("invalid-function".into()),
@@ -9608,6 +9666,14 @@ mod tests {
     }
 
     #[test]
+    fn emacs_lisp_mode_syntax_table_defaults_to_placeholder() {
+        assert_eq!(
+            eval_str("emacs-lisp-mode-syntax-table"),
+            Value::Symbol("emaxx-standard-syntax-table".into())
+        );
+    }
+
+    #[test]
     fn emacs_version_variable_defaults_to_non_empty_string() {
         let value = eval_str("emacs-version");
         match value {
@@ -9895,6 +9961,28 @@ mod tests {
     }
 
     #[test]
+    fn tool_bar_helpers_accept_placeholder_keymaps_during_load() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap "demo"))
+                      (menu-map (make-sparse-keymap "menu")))
+                  (list
+                   (eq (tool-bar-local-item "close" 'quit-window 'quit map
+                                            :help "Quit help" :vert-only t)
+                       map)
+                   (eq (tool-bar-local-item-from-menu 'help-go-back "left-arrow"
+                                                      map menu-map
+                                                      :rtl "right-arrow"
+                                                      :vert-only t)
+                       map)))
+                "#,
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
     fn key_binding_resolves_minor_mode_remaps() {
         assert_eq!(
             eval_str(
@@ -10111,6 +10199,22 @@ mod tests {
                        (pcase 'other ('gnu/linux 1) (_ 2)))"
             ),
             Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn pcase_defmacro_registers_a_macroexpander_property() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (pcase-defmacro sample (pattern) pattern)
+                   (list (get 'sample 'pcase-macroexpander)
+                         (fboundp 'sample--pcase-macroexpander)))"
+            ),
+            Value::list([
+                Value::Symbol("sample--pcase-macroexpander".into()),
+                Value::T
+            ])
         );
     }
 
@@ -10414,6 +10518,22 @@ mod tests {
         assert_eq!(
             interp.test_results[0].condition_type.as_deref(),
             Some("ert-test-skipped")
+        );
+    }
+
+    #[test]
+    fn require_uses_explicit_file_targets_in_file_missing_errors() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = Reader::new("(require 'mod-test \"/tmp/emaxx-missing-mod-test\")")
+            .read_all()
+            .expect("read require")
+            .remove(0);
+        let error = interp.eval(&form, &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "file-missing");
+        assert_eq!(
+            error.to_string(),
+            "Cannot open load file: No such file or directory, /tmp/emaxx-missing-mod-test"
         );
     }
 

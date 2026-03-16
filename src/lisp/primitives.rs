@@ -1256,6 +1256,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "local-unset-key"
             | "substitute-key-definition"
             | "easy-menu-add-item"
+            | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
             | "define-widget"
             | "define-button-type"
@@ -8178,6 +8179,12 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             Ok(args[2].clone())
+        }
+        "tool-bar-local-item" => {
+            if args.len() < 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(args[3].clone())
         }
         "tool-bar-local-item-from-menu" => {
             if args.len() < 3 {
