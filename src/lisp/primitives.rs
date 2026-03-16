@@ -3955,16 +3955,8 @@ pub fn call(
                 };
                 let full_start = search_pos + tail[..full_match.start()].chars().count();
                 let full_end = search_pos + tail[..full_match.end()].chars().count();
-                let match_data = (0..captures.len())
-                    .map(|index| {
-                        captures.get(index).map(|matched| {
-                            (
-                                search_pos + tail[..matched.start()].chars().count(),
-                                search_pos + tail[..matched.end()].chars().count(),
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>();
+                let match_data =
+                    match_data_from_captures(search_pos, &tail, &captures, regex.capture_mapping());
                 let (replace_start, replace_end) = match_data
                     .get(subexp)
                     .and_then(|entry| *entry)
@@ -3980,7 +3972,13 @@ pub fn call(
                         &source.text,
                     )?);
                 } else {
-                    set_match_data(interp, search_pos, &tail, &captures);
+                    set_match_data(
+                        interp,
+                        search_pos,
+                        &tail,
+                        &captures,
+                        regex.capture_mapping(),
+                    );
                     let matched_text = slice_string_chars(&source.text, replace_start, replace_end);
                     let value =
                         call_function_value(interp, &args[1], &[Value::String(matched_text)], env)?;
@@ -8244,9 +8242,25 @@ pub fn call(
         "getenv" | "getenv-internal" => {
             need_args(name, args, 1)?;
             let variable = string_text(&args[0])?;
-            Ok(std::env::var(&variable)
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
+            let from_explicit_env = args.get(1).is_some_and(|value| !value.is_nil());
+            let mut process_environment = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .cloned()
+                .unwrap_or_else(|| {
+                    interp
+                        .lookup_var("process-environment", env)
+                        .unwrap_or(Value::Nil)
+                });
+            if let Some((Value::Symbol(symbol), environment)) = process_environment.cons_values()
+                && symbol == "environment"
+            {
+                process_environment = environment;
+            }
+            Ok(
+                getenv_in_environment(&variable, &process_environment, from_explicit_env)?
+                    .unwrap_or(Value::Nil),
+            )
         }
         "ignore" => Ok(Value::Nil),
         "make-obsolete"
@@ -10908,6 +10922,31 @@ pub fn call(
                 .and_then(|entry| *entry)
                 .or_else(|| match_data.first().and_then(|entry| *entry))
                 .ok_or_else(|| LispError::Signal("No previous search".into()))?;
+            if let Some(source) = args.get(3).filter(|value| !value.is_nil()) {
+                let source = string_like(source)
+                    .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
+                let replacement =
+                    expand_replace_match_text(&replacement, &match_data, literal, &source.text)?;
+                let source_len = source.text.chars().count();
+                let updated = format!(
+                    "{}{}{}",
+                    slice_string_chars(&source.text, 0, start),
+                    replacement,
+                    slice_string_chars(&source.text, end, source_len)
+                );
+                interp.last_match_data = Some(update_match_data_after_replace(
+                    &match_data,
+                    replace_index,
+                    start,
+                    end,
+                    replacement.chars().count(),
+                ));
+                return Ok(make_shared_string_value_with_multibyte(
+                    updated,
+                    Vec::new(),
+                    source.multibyte,
+                ));
+            }
             let replacement = expand_replace_match(interp, &replacement, &match_data, literal)?;
             let replacement_len = replacement.chars().count();
             let overlay_calls =
@@ -11838,6 +11877,54 @@ fn translate_elisp_regex(pattern: &str) -> String {
     translate_elisp_regex_with_point(pattern, "", r"\A")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegexGroupPrefix {
+    Capturing(Option<usize>),
+    NonCapturing,
+}
+
+fn consume_regex_group_prefix(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Result<RegexGroupPrefix, LispError> {
+    if chars.peek() != Some(&'?') {
+        return Ok(RegexGroupPrefix::Capturing(None));
+    }
+
+    let mut preview = chars.clone();
+    preview.next();
+    if preview.peek() == Some(&':') {
+        chars.next();
+        chars.next();
+        return Ok(RegexGroupPrefix::NonCapturing);
+    }
+
+    let mut digits = String::new();
+    while let Some(ch) = preview.peek().copied() {
+        if !ch.is_ascii_digit() {
+            break;
+        }
+        digits.push(ch);
+        preview.next();
+    }
+    if digits.is_empty() || preview.peek() != Some(&':') {
+        return Ok(RegexGroupPrefix::Capturing(None));
+    }
+
+    let explicit = digits
+        .parse::<usize>()
+        .map_err(|_| invalid_regexp_error("Invalid explicit regexp group number"))?;
+    if explicit == 0 {
+        return Err(invalid_regexp_error("Invalid explicit regexp group number"));
+    }
+
+    chars.next();
+    for _ in 0..digits.len() {
+        chars.next();
+    }
+    chars.next();
+    Ok(RegexGroupPrefix::Capturing(Some(explicit)))
+}
+
 fn translate_elisp_regex_with_point(
     pattern: &str,
     point_assertion: &str,
@@ -11872,18 +11959,16 @@ fn translate_elisp_regex_with_point(
                     last_was_quantifier = false;
                 }
                 Some('(') => {
-                    if chars.peek() == Some(&'?') {
-                        let mut preview = chars.clone();
-                        preview.next();
-                        if preview.peek() == Some(&':') {
-                            chars.next();
-                            chars.next();
+                    match consume_regex_group_prefix(&mut chars) {
+                        Ok(RegexGroupPrefix::NonCapturing) => {
                             translated.push_str("(?:");
                             at_branch_start = true;
                             can_repeat_previous = false;
                             last_was_quantifier = false;
                             continue;
                         }
+                        Ok(RegexGroupPrefix::Capturing(_)) => {}
+                        Err(_) => return "(".into(),
                     }
                     translated.push('(');
                     at_branch_start = true;
@@ -12446,9 +12531,9 @@ fn invalid_regexp_error(message: impl Into<String>) -> LispError {
 
 fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
     let mut chars = pattern.chars().peekable();
-    let mut next_group = 0usize;
+    let mut max_group = 0usize;
     let mut max_closed_group = 0usize;
-    let mut open_groups = Vec::new();
+    let mut open_groups: Vec<Option<usize>> = Vec::new();
     let mut in_class = false;
     while let Some(ch) = chars.next() {
         if in_class {
@@ -12475,15 +12560,21 @@ fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
         match ch {
             '[' => in_class = true,
             '\\' => match chars.next() {
-                Some('(') => {
-                    next_group += 1;
-                    open_groups.push(next_group);
-                }
+                Some('(') => match consume_regex_group_prefix(&mut chars)? {
+                    RegexGroupPrefix::NonCapturing => open_groups.push(None),
+                    RegexGroupPrefix::Capturing(explicit) => {
+                        let group = explicit.unwrap_or(max_group + 1);
+                        max_group = max_group.max(group);
+                        open_groups.push(Some(group));
+                    }
+                },
                 Some(')') => {
                     let Some(group) = open_groups.pop() else {
                         return Err(invalid_regexp_error("Unmatched )"));
                     };
-                    max_closed_group = max_closed_group.max(group);
+                    if let Some(group) = group {
+                        max_closed_group = max_closed_group.max(group);
+                    }
                 }
                 Some(digit @ '1'..='9') => {
                     let backref = digit.to_digit(10).unwrap_or(0) as usize;
@@ -12540,13 +12631,86 @@ fn enforce_elisp_repeat_limit(pattern: &str) -> Result<(), LispError> {
     Ok(())
 }
 
+fn elisp_capture_mapping(pattern: &str) -> Result<Vec<usize>, LispError> {
+    let mut chars = pattern.chars().peekable();
+    let mut max_group = 0usize;
+    let mut mapping = Vec::new();
+    let mut in_class = false;
+    while let Some(ch) = chars.next() {
+        if in_class {
+            match ch {
+                '[' if chars.peek() == Some(&':') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == ':' && chars.peek() == Some(&']') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                ']' => in_class = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '[' => in_class = true,
+            '\\' => {
+                if chars.next() == Some('(') {
+                    match consume_regex_group_prefix(&mut chars)? {
+                        RegexGroupPrefix::NonCapturing => {}
+                        RegexGroupPrefix::Capturing(explicit) => {
+                            let group = explicit.unwrap_or(max_group + 1);
+                            max_group = max_group.max(group);
+                            mapping.push(group);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(mapping)
+}
+
+struct CompiledElispRegex {
+    regex: FancyRegex,
+    capture_mapping: Vec<usize>,
+}
+
+impl CompiledElispRegex {
+    fn captures<'h>(
+        &self,
+        haystack: &'h str,
+    ) -> Result<Option<fancy_regex::Captures<'h>>, fancy_regex::Error> {
+        self.regex.captures(haystack)
+    }
+
+    fn captures_from_pos<'h>(
+        &self,
+        haystack: &'h str,
+        start: usize,
+    ) -> Result<Option<fancy_regex::Captures<'h>>, fancy_regex::Error> {
+        self.regex.captures_from_pos(haystack, start)
+    }
+
+    fn is_match(&self, haystack: &str) -> Result<bool, fancy_regex::Error> {
+        self.regex.is_match(haystack)
+    }
+
+    fn capture_mapping(&self) -> &[usize] {
+        &self.capture_mapping
+    }
+}
+
 fn compile_elisp_regex(
     interp: &Interpreter,
     pattern: &StringLike,
     env: &Env,
     point_assertion: &str,
     at_absolute_start: bool,
-) -> Result<FancyRegex, LispError> {
+) -> Result<CompiledElispRegex, LispError> {
     enforce_elisp_repeat_limit(&pattern.text)?;
     let translated = translate_elisp_regex_with_point(
         &pattern.text,
@@ -12561,7 +12725,39 @@ fn compile_elisp_regex(
     } else {
         format!("(?m:{translated})")
     };
-    FancyRegex::new(&rendered).map_err(|error| invalid_regexp_error(error.to_string()))
+    Ok(CompiledElispRegex {
+        regex: FancyRegex::new(&rendered)
+            .map_err(|error| invalid_regexp_error(error.to_string()))?,
+        capture_mapping: elisp_capture_mapping(&pattern.text)?,
+    })
+}
+
+fn match_data_from_captures(
+    start_pos: usize,
+    haystack: &str,
+    captures: &fancy_regex::Captures<'_>,
+    capture_mapping: &[usize],
+) -> Vec<Option<(usize, usize)>> {
+    let mut match_data = vec![None; capture_mapping.iter().copied().max().unwrap_or(0) + 1];
+    for index in 0..captures.len() {
+        let Some(matched) = captures.get(index) else {
+            continue;
+        };
+        let start = start_pos + haystack[..matched.start()].chars().count();
+        let end = start_pos + haystack[..matched.end()].chars().count();
+        let target_index = if index == 0 {
+            0
+        } else {
+            capture_mapping.get(index - 1).copied().unwrap_or(index)
+        };
+        if match_data.len() <= target_index {
+            match_data.resize(target_index + 1, None);
+        }
+        if match_data[target_index].is_none() {
+            match_data[target_index] = Some((start, end));
+        }
+    }
+    match_data
 }
 
 fn set_match_data(
@@ -12569,19 +12765,14 @@ fn set_match_data(
     start_pos: usize,
     haystack: &str,
     captures: &fancy_regex::Captures<'_>,
+    capture_mapping: &[usize],
 ) {
-    interp.last_match_data = Some(
-        (0..captures.len())
-            .map(|index| captures.get(index))
-            .map(|matched| {
-                matched.map(|matched| {
-                    let start = start_pos + haystack[..matched.start()].chars().count();
-                    let end = start_pos + haystack[..matched.end()].chars().count();
-                    (start, end)
-                })
-            })
-            .collect(),
-    );
+    interp.last_match_data = Some(match_data_from_captures(
+        start_pos,
+        haystack,
+        captures,
+        capture_mapping,
+    ));
 }
 
 fn string_match_impl(
@@ -12617,7 +12808,7 @@ fn string_match_impl(
     {
         let match_start = start + tail[..matched.start()].chars().count();
         if update_match_data {
-            set_match_data(interp, start, &tail, &captures);
+            set_match_data(interp, start, &tail, &captures, regex.capture_mapping());
         }
         Ok(Value::Integer(match_start as i64))
     } else {
@@ -14024,7 +14215,7 @@ fn looking_at_impl(
         && let Some(matched) = captures.get(0)
         && matched.start() == 0
     {
-        set_match_data(interp, pos, &tail, &captures);
+        set_match_data(interp, pos, &tail, &captures, regex.capture_mapping());
         Ok(Value::T)
     } else {
         interp.last_match_data = None;
@@ -14075,7 +14266,7 @@ fn buffer_regex_search(
             && let Some(matched) = captures.get(0)
         {
             let pos = start + tail[..matched.end()].chars().count();
-            set_match_data(interp, start, &tail, &captures);
+            set_match_data(interp, start, &tail, &captures, regex.capture_mapping());
             interp.buffer.goto_char(pos);
             return Ok(Value::Integer(pos as i64));
         }
@@ -14118,7 +14309,13 @@ fn buffer_regex_search(
                 .get(0)
                 .is_some_and(|matched| matched.start() == start_byte)
         {
-            set_match_data(interp, interp.buffer.point_min(), &prefix, &captures);
+            set_match_data(
+                interp,
+                interp.buffer.point_min(),
+                &prefix,
+                &captures,
+                regex.capture_mapping(),
+            );
             interp.buffer.goto_char(match_start);
             return Ok(Value::Integer(match_start as i64));
         }
@@ -15888,18 +16085,76 @@ fn apply_process_environment(interp: &Interpreter, env: &Env, command: &mut Comm
     let Some(process_environment) = interp.lookup_var("process-environment", env) else {
         return;
     };
-    let Ok(items) = process_environment.to_vec() else {
+    let Ok(entries) = process_environment_entries(&process_environment) else {
         return;
     };
     command.env_clear();
-    for item in items {
-        let Ok(entry) = string_text(&item) else {
-            continue;
-        };
+    for entry in entries {
         if let Some((name, value)) = entry.split_once('=') {
             command.env(name, value);
         }
     }
+}
+
+pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, LispError> {
+    value
+        .to_vec()?
+        .into_iter()
+        .map(|item| string_text(&item))
+        .collect()
+}
+
+pub(crate) fn process_environment_from_entries(entries: &[String]) -> Value {
+    Value::list(entries.iter().cloned().map(Value::String))
+}
+
+pub(crate) fn setenv_in_environment_entries(
+    entries: &mut Vec<String>,
+    variable: &str,
+    value: Option<&str>,
+    keep_empty: bool,
+) {
+    let prefix = format!("{variable}=");
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| entry == variable || entry.starts_with(&prefix))
+    {
+        match value {
+            Some(value) => entries[index] = format!("{variable}={value}"),
+            None if keep_empty => entries[index] = variable.to_string(),
+            None => {
+                entries.remove(index);
+            }
+        }
+        return;
+    }
+
+    if let Some(value) = value {
+        entries.insert(0, format!("{variable}={value}"));
+    } else if keep_empty {
+        entries.insert(0, variable.to_string());
+    }
+}
+
+fn getenv_in_environment(
+    variable: &str,
+    environment: &Value,
+    negative_entry_is_truthy: bool,
+) -> Result<Option<Value>, LispError> {
+    let prefix = format!("{variable}=");
+    for entry in process_environment_entries(environment)? {
+        if let Some(value) = entry.strip_prefix(&prefix) {
+            return Ok(Some(Value::String(value.to_string())));
+        }
+        if entry == variable {
+            return Ok(Some(if negative_entry_is_truthy {
+                Value::T
+            } else {
+                Value::Nil
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn write_process_output(
