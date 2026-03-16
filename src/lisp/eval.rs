@@ -6569,15 +6569,13 @@ fn render_undo_value(value: &Value) -> String {
 
 fn function_executable_body(body: &[Value]) -> &[Value] {
     let mut start = 0usize;
-    while start < body.len() {
-        if matches!(body[start], Value::String(_) | Value::StringObject(_))
-            || is_function_declare_form(&body[start])
-            || is_function_interactive_form(&body[start])
-        {
-            start += 1;
-        } else {
-            break;
-        }
+    if body.len() > 1 && matches!(body.first(), Some(Value::String(_) | Value::StringObject(_))) {
+        start = 1;
+    }
+    while start < body.len()
+        && (is_function_declare_form(&body[start]) || is_function_interactive_form(&body[start]))
+    {
+        start += 1;
     }
     &body[start..]
 }
@@ -7396,6 +7394,18 @@ mod tests {
             .unwrap();
         let error = interp.eval(&forms[0], &mut env).unwrap_err();
         assert_eq!(error.condition_type(), "invalid-function");
+    }
+
+    #[test]
+    fn lambda_with_only_string_body_returns_that_string() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let form = Reader::new(r#"(funcall (lambda () "foo"))"#)
+            .read()
+            .unwrap()
+            .unwrap();
+        let result = interp.eval(&form, &mut env).unwrap();
+        assert_eq!(result, Value::String("foo".into()));
     }
 
     #[test]
