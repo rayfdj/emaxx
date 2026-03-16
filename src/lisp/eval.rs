@@ -522,6 +522,10 @@ fn builtin_coding_aliases() -> Vec<(String, String)> {
         ("iso-8859-1-dos".into(), "iso-latin-1-dos".into()),
         ("binary".into(), "raw-text".into()),
         ("utf8".into(), "utf-8".into()),
+        ("utf-8-emacs".into(), "utf-8".into()),
+        ("utf-8-emacs-unix".into(), "utf-8-unix".into()),
+        ("utf-8-emacs-dos".into(), "utf-8-dos".into()),
+        ("utf-8-emacs-mac".into(), "utf-8-mac".into()),
     ]
 }
 
@@ -4518,6 +4522,9 @@ impl Interpreter {
                         "with-suppressed-warnings" => {
                             return self.sf_with_suppressed_warnings(&items, env);
                         }
+                        "with-demoted-errors" => {
+                            return self.sf_with_demoted_errors(&items, env);
+                        }
                         "with-coding-priority" => {
                             return self.sf_with_coding_priority(&items, env);
                         }
@@ -7039,6 +7046,46 @@ impl Interpreter {
         self.sf_progn(&items[2..], env)
     }
 
+    fn sf_with_demoted_errors(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let default_format = Value::String("Error: %S".into());
+        let (format_form, body) = if items.len() >= 3 {
+            (&items[1], &items[2..])
+        } else {
+            (&default_format, &items[1..])
+        };
+        if self
+            .lookup_var("debug-on-error", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            return self.sf_progn(body, env);
+        }
+        match self.sf_progn(body, env) {
+            Ok(value) => Ok(value),
+            Err(LispError::Throw(tag, value)) => Err(LispError::Throw(tag, value)),
+            Err(error) => {
+                let format = if std::ptr::eq(format_form, &default_format) {
+                    default_format
+                } else {
+                    self.eval(format_form, env)?
+                };
+                let _ = primitives::call(
+                    self,
+                    "message",
+                    &[format, error_condition_value(&error)],
+                    env,
+                )?;
+                Ok(Value::Nil)
+            }
+        }
+    }
+
     fn sf_with_coding_priority(
         &mut self,
         items: &[Value],
@@ -9304,6 +9351,65 @@ mod tests {
         assert_eq!(eval_str("\"hello\""), Value::String("hello".into()));
         assert_eq!(eval_str("nil"), Value::Nil);
         assert_eq!(eval_str("t"), Value::T);
+    }
+
+    #[test]
+    fn with_demoted_errors_returns_nil_after_catching_errors() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str("(with-demoted-errors \"%S\" (error \"boom\"))"),
+                Value::Nil
+            );
+        });
+    }
+
+    #[test]
+    fn prin1_writes_to_buffer_streams() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer \
+                   (prin1 '(alpha \"beta\") (current-buffer)) \
+                   (buffer-string))"
+            ),
+            Value::String("(alpha \"beta\")".into())
+        );
+    }
+
+    #[test]
+    fn read_accepts_buffer_and_marker_streams() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer \
+                   (insert \"(1 2)\") \
+                   (goto-char 1) \
+                   (list (read (current-buffer)) (point) (read (point-min-marker))))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::Integer(6),
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn md5_accepts_buffer_sources_and_coding_symbols() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer \
+                   (insert \"abc\") \
+                   (md5 (current-buffer) nil nil 'utf-8-emacs-unix))"
+            ),
+            Value::String("900150983cd24fb0d6963f7d28e17f72".into())
+        );
+    }
+
+    #[test]
+    fn intern_soft_accepts_symbol_arguments() {
+        assert_eq!(
+            eval_str("(intern-soft 'sample-symbol)"),
+            Value::Symbol("sample-symbol".into())
+        );
     }
 
     #[test]
