@@ -77,7 +77,7 @@ struct UndoSequenceState {
     had_error: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SpecialBindingScope {
     Global,
     BufferLocal(u64),
@@ -87,6 +87,7 @@ enum SpecialBindingScope {
 struct SpecialBindingRestore {
     name: String,
     scope: SpecialBindingScope,
+    binding_buffer_id: Option<u64>,
     previous: Option<Value>,
 }
 
@@ -376,6 +377,8 @@ pub struct Interpreter {
     special_variables: Vec<String>,
     /// Symbol properties keyed by symbol name.
     symbol_properties: Vec<(String, Vec<(String, Value)>)>,
+    /// Variable watchers keyed by canonical variable name.
+    variable_watchers: Vec<(String, Vec<Value>)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
     /// The ID of the current buffer.
@@ -434,6 +437,8 @@ pub struct Interpreter {
     buffer_locals: Vec<(u64, String, Value)>,
     /// Variables that automatically become buffer-local when set.
     auto_buffer_locals: Vec<String>,
+    /// Active dynamic special bindings in stack order.
+    active_special_restores: Vec<SpecialBindingRestore>,
     /// Active labeled restrictions keyed by (buffer id, label, start, end).
     labeled_restrictions: Vec<(u64, String, usize, usize)>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
@@ -489,8 +494,19 @@ impl Interpreter {
                 "case-fold-search".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
+                "display-hourglass".into(),
+                "gc-cons-threshold".into(),
+                "initial-window-system".into(),
+                "last-coding-system-used".into(),
+                "line-spacing".into(),
+                "left-margin".into(),
+                "overwrite-mode".into(),
+                "scroll-up-aggressively".into(),
+                "standard-output".into(),
+                "vertical-scroll-bar".into(),
             ],
             symbol_properties: Vec::new(),
+            variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
@@ -519,7 +535,16 @@ impl Interpreter {
             next_finalizer_id: 1,
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
-            auto_buffer_locals: vec!["case-fold-search".into()],
+            auto_buffer_locals: vec![
+                "case-fold-search".into(),
+                "cursor-in-non-selected-windows".into(),
+                "left-margin".into(),
+                "line-spacing".into(),
+                "overwrite-mode".into(),
+                "scroll-up-aggressively".into(),
+                "vertical-scroll-bar".into(),
+            ],
+            active_special_restores: Vec::new(),
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
@@ -1755,6 +1780,25 @@ impl Interpreter {
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
+        if property == "choice" {
+            match name {
+                "vertical-scroll-bar" => {
+                    return Some(Value::list([
+                        Value::Nil,
+                        Value::Symbol("left".into()),
+                        Value::Symbol("right".into()),
+                    ]));
+                }
+                "overwrite-mode" => {
+                    return Some(Value::list([
+                        Value::Nil,
+                        Value::Symbol("overwrite-mode-textual".into()),
+                        Value::Symbol("overwrite-mode-binary".into()),
+                    ]));
+                }
+                _ => {}
+            }
+        }
         self.symbol_property_index(name).and_then(|index| {
             self.symbol_properties[index]
                 .1
@@ -1798,6 +1842,127 @@ impl Interpreter {
         if self.symbol_properties[index].1.is_empty() {
             self.symbol_properties.remove(index);
         }
+    }
+
+    pub fn symbol_plist(&self, name: &str) -> Value {
+        let Some(index) = self.symbol_property_index(name) else {
+            return Value::Nil;
+        };
+        let mut items = Vec::new();
+        for (property, value) in &self.symbol_properties[index].1 {
+            items.push(Value::Symbol(property.clone()));
+            items.push(value.clone());
+        }
+        Value::list(items)
+    }
+
+    pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
+        let items = plist.to_vec()?;
+        let mut props = Vec::new();
+        let mut index = 0usize;
+        while index + 1 < items.len() {
+            props.push((
+                items[index].as_symbol()?.to_string(),
+                Self::stored_value(items[index + 1].clone()),
+            ));
+            index += 2;
+        }
+        if props.is_empty() {
+            if let Some(existing) = self.symbol_property_index(name) {
+                self.symbol_properties.remove(existing);
+            }
+        } else if let Some(existing) = self.symbol_property_index(name) {
+            self.symbol_properties[existing].1 = props;
+        } else {
+            self.symbol_properties.push((name.to_string(), props));
+        }
+        Ok(plist)
+    }
+
+    fn variable_watcher_index(&self, name: &str) -> Option<usize> {
+        self.variable_watchers
+            .iter()
+            .rposition(|(symbol, _)| symbol == name)
+    }
+
+    pub fn variable_watchers(&self, name: &str) -> Vec<Value> {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        self.variable_watcher_index(&resolved)
+            .map(|index| self.variable_watchers[index].1.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<Value, LispError> {
+        let resolved = self.resolve_variable_name(name)?;
+        if let Some(index) = self.variable_watcher_index(&resolved) {
+            if !self.variable_watchers[index]
+                .1
+                .iter()
+                .any(|existing| existing == &watcher)
+            {
+                self.variable_watchers[index].1.push(watcher.clone());
+            }
+        } else {
+            self.variable_watchers
+                .push((resolved.clone(), vec![watcher.clone()]));
+        }
+        Ok(watcher)
+    }
+
+    pub fn remove_variable_watcher(
+        &mut self,
+        name: &str,
+        watcher: &Value,
+    ) -> Result<Value, LispError> {
+        let resolved = self.resolve_variable_name(name)?;
+        if let Some(index) = self.variable_watcher_index(&resolved) {
+            self.variable_watchers[index]
+                .1
+                .retain(|existing| existing != watcher);
+            if self.variable_watchers[index].1.is_empty() {
+                self.variable_watchers.remove(index);
+            }
+        }
+        Ok(watcher.clone())
+    }
+
+    pub fn clear_variable_watchers(&mut self, name: &str) {
+        if let Some(index) = self.variable_watcher_index(name) {
+            self.variable_watchers.remove(index);
+        }
+    }
+
+    pub fn notify_variable_watchers(
+        &mut self,
+        name: &str,
+        value: Value,
+        action: &str,
+        buffer_id: Option<u64>,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let Some(index) = self.variable_watcher_index(name) else {
+            return Ok(());
+        };
+        let watchers = self.variable_watchers[index].1.clone();
+        let buffer = buffer_id
+            .and_then(|id| self.buffer_identity_value(id))
+            .unwrap_or(Value::Nil);
+        for watcher in watchers {
+            self.call_function_value(
+                watcher,
+                None,
+                &[
+                    Value::Symbol(name.to_string()),
+                    value.clone(),
+                    Value::Symbol(action.to_string()),
+                    buffer.clone(),
+                ],
+                env,
+            )?;
+        }
+        Ok(())
     }
 
     fn direct_variable_alias(&self, name: &str) -> Option<String> {
@@ -1888,40 +2053,282 @@ impl Interpreter {
         }
     }
 
+    pub fn set_global_binding(&mut self, name: &str, value: Value) {
+        let name = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        let value = Self::stored_value(value);
+        if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
+            self.globals[index].1 = value;
+        } else {
+            self.globals.push((name, value));
+        }
+    }
+
+    pub fn buffer_identity_value(&self, buffer_id: u64) -> Option<Value> {
+        self.buffer_list
+            .iter()
+            .find(|(id, _)| *id == buffer_id)
+            .map(|(id, name)| Value::Buffer(*id, name.clone()))
+    }
+
+    fn active_special_assignment_scope(&self, name: &str) -> Option<SpecialBindingScope> {
+        let index = self
+            .active_special_restores
+            .iter()
+            .rposition(|restore| restore.name == name)?;
+        let restore = &self.active_special_restores[index];
+        match restore.scope {
+            SpecialBindingScope::Global
+                if self.is_auto_buffer_local(name)
+                    && restore.binding_buffer_id != Some(self.current_buffer_id()) =>
+            {
+                None
+            }
+            _ => Some(restore.scope.clone()),
+        }
+    }
+
+    fn active_global_toplevel_value(&self, name: &str) -> Option<Option<Value>> {
+        self.active_special_restores
+            .iter()
+            .find(|restore| {
+                restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
+            })
+            .map(|restore| restore.previous.clone())
+    }
+
+    fn active_buffer_local_toplevel_value(
+        &self,
+        buffer_id: u64,
+        name: &str,
+    ) -> Option<Option<Value>> {
+        self.active_special_restores
+            .iter()
+            .find(|restore| {
+                restore.name == name
+                    && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
+            })
+            .map(|restore| restore.previous.clone())
+    }
+
+    fn set_active_global_toplevel_value(&mut self, name: &str, value: Option<Value>) -> bool {
+        let Some(index) = self.active_special_restores.iter().position(|restore| {
+            restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
+        }) else {
+            return false;
+        };
+        self.active_special_restores[index].previous = value.map(Self::stored_value);
+        true
+    }
+
+    fn set_active_buffer_local_toplevel_value(
+        &mut self,
+        buffer_id: u64,
+        name: &str,
+        value: Option<Value>,
+    ) -> bool {
+        let Some(index) = self.active_special_restores.iter().position(|restore| {
+            restore.name == name
+                && matches!(restore.scope, SpecialBindingScope::BufferLocal(id) if id == buffer_id)
+        }) else {
+            return false;
+        };
+        self.active_special_restores[index].previous = value.map(Self::stored_value);
+        true
+    }
+
+    pub fn default_toplevel_value(&self, name: &str) -> Option<Value> {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if let Some(previous) = self.active_global_toplevel_value(&resolved) {
+            return previous.or_else(|| self.builtin_var_value(&resolved));
+        }
+        self.global_value(&resolved)
+            .or_else(|| self.builtin_var_value(&resolved))
+    }
+
+    pub fn set_default_toplevel_value(&mut self, name: &str, value: Value) {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if !self.set_active_global_toplevel_value(&resolved, Some(value.clone())) {
+            self.set_global_binding(&resolved, value);
+        }
+    }
+
+    pub fn buffer_local_toplevel_value(&self, buffer_id: u64, name: &str) -> Option<Value> {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if let Some(previous) = self.active_buffer_local_toplevel_value(buffer_id, &resolved) {
+            return previous;
+        }
+        self.buffer_local_value(buffer_id, &resolved)
+    }
+
+    pub fn set_buffer_local_toplevel_value(&mut self, buffer_id: u64, name: &str, value: Value) {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if !self.set_active_buffer_local_toplevel_value(buffer_id, &resolved, Some(value.clone())) {
+            self.set_buffer_local_value(buffer_id, &resolved, value);
+        }
+    }
+
+    fn assignment_scope(&self, name: &str) -> Option<SpecialBindingScope> {
+        let resolved = self
+            .resolve_variable_name(name)
+            .unwrap_or_else(|_| name.to_string());
+        if self
+            .buffer_local_value(self.current_buffer_id(), &resolved)
+            .is_some()
+        {
+            return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
+        }
+        if let Some(scope) = self.active_special_assignment_scope(&resolved) {
+            return Some(scope);
+        }
+        if self.is_auto_buffer_local(&resolved) {
+            return Some(SpecialBindingScope::BufferLocal(self.current_buffer_id()));
+        }
+        None
+    }
+
+    pub fn assignment_buffer_id(&self, name: &str) -> Option<u64> {
+        match self.assignment_scope(name) {
+            Some(SpecialBindingScope::BufferLocal(buffer_id)) => Some(buffer_id),
+            _ => None,
+        }
+    }
+
+    pub fn prepare_variable_assignment(
+        &self,
+        name: &str,
+        value: Value,
+    ) -> Result<Value, LispError> {
+        if matches!(
+            name,
+            "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
+        ) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("setting-constant".into()),
+                Value::Symbol(name.to_string()),
+            ])));
+        }
+        if name.starts_with(':') {
+            return if value == Value::Symbol(name.to_string()) {
+                Ok(value)
+            } else {
+                Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("setting-constant".into()),
+                    Value::Symbol(name.to_string()),
+                ])))
+            };
+        }
+        match name {
+            "display-hourglass" => Ok(if value.is_nil() { Value::Nil } else { Value::T }),
+            "gc-cons-threshold" => match value {
+                Value::Integer(_) | Value::BigInteger(_) => Ok(value),
+                other => Err(wrong_type_argument("integerp", other)),
+            },
+            "scroll-up-aggressively" => match value {
+                Value::Nil => Ok(Value::Nil),
+                Value::Integer(number) if (0..=1).contains(&number) => Ok(Value::Integer(number)),
+                Value::Float(number) if (0.0..=1.0).contains(&number) => Ok(Value::Float(number)),
+                other => Err(wrong_type_argument("numberp", other)),
+            },
+            "vertical-scroll-bar" => match value {
+                Value::Nil => Ok(Value::Nil),
+                Value::Symbol(ref symbol) if matches!(symbol.as_str(), "left" | "right") => {
+                    Ok(value)
+                }
+                other => Err(wrong_type_argument("symbolp", other)),
+            },
+            "overwrite-mode" => match value {
+                Value::Nil => Ok(Value::Nil),
+                Value::Symbol(ref symbol)
+                    if matches!(
+                        symbol.as_str(),
+                        "overwrite-mode-textual" | "overwrite-mode-binary"
+                    ) =>
+                {
+                    Ok(value)
+                }
+                other => Err(wrong_type_argument("symbolp", other)),
+            },
+            _ => Ok(value),
+        }
+    }
+
     fn bind_special_variable(
         &mut self,
         name: &str,
         value: Value,
+        env: &mut Env,
     ) -> Result<SpecialBindingRestore, LispError> {
         let name = self.resolve_variable_name(name)?;
+        let value = self.prepare_variable_assignment(&name, value)?;
         let buffer_id = self.current_buffer_id();
-        if self.buffer_local_value(buffer_id, &name).is_some() {
+        let restore = if self.buffer_local_value(buffer_id, &name).is_some() {
             let previous = self.buffer_local_value(buffer_id, &name);
+            self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
             self.set_buffer_local_value(buffer_id, &name, value);
-            Ok(SpecialBindingRestore {
+            SpecialBindingRestore {
                 name,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
+                binding_buffer_id: None,
                 previous,
-            })
+            }
         } else {
             let previous = self.global_value(&name);
+            let binding_buffer_id = if self.is_auto_buffer_local(&name) {
+                Some(buffer_id)
+            } else {
+                None
+            };
+            self.notify_variable_watchers(&name, value.clone(), "let", None, env)?;
             let value = Self::stored_value(value);
             if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
                 self.globals[index].1 = value;
             } else {
                 self.globals.push((name.clone(), value));
             }
-            Ok(SpecialBindingRestore {
+            SpecialBindingRestore {
                 name,
                 scope: SpecialBindingScope::Global,
+                binding_buffer_id,
                 previous,
-            })
-        }
+            }
+        };
+        self.active_special_restores.push(restore.clone());
+        Ok(restore)
     }
 
-    fn restore_special_binding(&mut self, restore: SpecialBindingRestore) {
+    fn restore_special_binding(
+        &mut self,
+        restore: SpecialBindingRestore,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let restore = if let Some(index) = self
+            .active_special_restores
+            .iter()
+            .rposition(|active| active.name == restore.name && active.scope == restore.scope)
+        {
+            self.active_special_restores.remove(index)
+        } else {
+            restore
+        };
         match restore.scope {
             SpecialBindingScope::Global => {
+                self.notify_variable_watchers(
+                    &restore.name,
+                    restore.previous.clone().unwrap_or(Value::Nil),
+                    "unlet",
+                    None,
+                    env,
+                )?;
                 if let Some(value) = restore.previous {
                     let value = Self::stored_value(value);
                     if let Some(index) = self
@@ -1938,6 +2345,13 @@ impl Interpreter {
                 }
             }
             SpecialBindingScope::BufferLocal(buffer_id) => {
+                self.notify_variable_watchers(
+                    &restore.name,
+                    restore.previous.clone().unwrap_or(Value::Nil),
+                    "unlet",
+                    Some(buffer_id),
+                    env,
+                )?;
                 if let Some(value) = restore.previous {
                     self.set_buffer_local_value(buffer_id, &restore.name, value);
                 } else {
@@ -1945,6 +2359,7 @@ impl Interpreter {
                 }
             }
         }
+        Ok(())
     }
 
     pub fn push_backtrace_frame(&mut self, function: Option<String>, args: Vec<Value>) {
@@ -2600,6 +3015,25 @@ impl Interpreter {
         self.builtin_var_value(&resolved)
     }
 
+    pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
+        let resolved = self.resolve_variable_name(name)?;
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
+            return Ok(value);
+        }
+        if let Some(value) = self.global_value(&resolved) {
+            return Ok(value);
+        }
+        if let Some(value) = self.builtin_var_value(&resolved) {
+            return Ok(value);
+        }
+        if resolved == "buffer-undo-list" {
+            return Ok(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer,
+            ));
+        }
+        Err(LispError::Void(resolved))
+    }
+
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
         match name {
             "nil" => Some(Value::Nil),
@@ -2655,6 +3089,8 @@ impl Interpreter {
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
+            "display-hourglass" => Some(Value::Nil),
+            "gc-cons-threshold" => Some(Value::Integer(800_000)),
             "auto-save-timeout" => Some(Value::Integer(30)),
             "auto-save-interval" => Some(Value::Integer(300)),
             "temporary-file-directory" => {
@@ -2738,6 +3174,13 @@ impl Interpreter {
             )),
             "default-directory" => Some(Value::String(primitives::default_directory())),
             "window-system" => Some(Value::Nil),
+            "initial-window-system" => Some(Value::Nil),
+            "left-margin" => Some(Value::Integer(0)),
+            "line-spacing" => Some(Value::Nil),
+            "scroll-up-aggressively" => Some(Value::Nil),
+            "vertical-scroll-bar" => Some(Value::Symbol("right".into())),
+            "overwrite-mode" => Some(Value::Symbol("overwrite-mode-binary".into())),
+            "cursor-in-non-selected-windows" => Some(Value::Nil),
             "load-path" => Some(Value::list(
                 self.load_path
                     .iter()
@@ -2886,6 +3329,10 @@ impl Interpreter {
                 }
             }
         }
+        self.set_symbol_value_cell(name, value);
+    }
+
+    pub fn set_symbol_value_cell(&mut self, name: &str, value: Value) {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
@@ -2922,12 +3369,15 @@ impl Interpreter {
             }
             return;
         }
-        if self
-            .buffer_local_value(self.current_buffer_id(), &resolved)
-            .is_some()
-            || self.is_auto_buffer_local(&resolved)
-        {
-            self.set_buffer_local_value(self.current_buffer_id(), &resolved, value);
+        if let Some(scope) = self.assignment_scope(&resolved) {
+            match scope {
+                SpecialBindingScope::Global => {
+                    self.set_global_binding(&resolved, value);
+                }
+                SpecialBindingScope::BufferLocal(buffer_id) => {
+                    self.set_buffer_local_value(buffer_id, &resolved, value);
+                }
+            }
             return;
         }
         // Set in globals
@@ -2956,6 +3406,35 @@ impl Interpreter {
         }
         if let Some(function) = function {
             self.functions.push((name.to_string(), function));
+        }
+    }
+
+    pub fn validate_function_binding(&self, name: &str, function: &Value) -> Result<(), LispError> {
+        let Value::Symbol(current) = function else {
+            return Ok(());
+        };
+        let mut current = current.clone();
+        let mut seen = vec![name.to_string()];
+        loop {
+            if seen.iter().any(|existing| existing == &current) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("cyclic-function-indirection".into()),
+                    Value::Symbol(name.to_string()),
+                ])));
+            }
+            seen.push(current.clone());
+            let Some((_, value)) = self
+                .functions
+                .iter()
+                .rev()
+                .find(|(function_name, _)| function_name == &current)
+            else {
+                return Ok(());
+            };
+            let Value::Symbol(next) = value else {
+                return Ok(());
+            };
+            current = next.clone();
         }
     }
 
@@ -3011,10 +3490,12 @@ impl Interpreter {
                         "prog1" => return self.sf_prog1(&items, env),
                         "let" => return self.sf_let(&items, env),
                         "let*" => return self.sf_letstar(&items, env),
+                        "cl-progv" => return self.sf_cl_progv(&items, env),
                         "pcase-let" => return self.sf_pcase_let(&items, env, false),
                         "pcase-let*" => return self.sf_pcase_let(&items, env, true),
                         "let-alist" => return self.sf_let_alist(&items, env),
                         "setq" => return self.sf_setq(&items, env),
+                        "setq-default" => return self.sf_setq_default(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
                         "setopt" => return self.sf_setopt(&items, env),
                         "setf" => return self.sf_setf(&items, env),
@@ -3683,13 +4164,13 @@ impl Interpreter {
 
         let mut restores = Vec::new();
         for (name, value) in special_bindings {
-            restores.push(self.bind_special_variable(&name, value)?);
+            restores.push(self.bind_special_variable(&name, value, env)?);
         }
         env.push(frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         for restore in restores.into_iter().rev() {
-            self.restore_special_binding(restore);
+            self.restore_special_binding(restore, env)?;
         }
         result
     }
@@ -3706,7 +4187,7 @@ impl Interpreter {
             match binding {
                 Value::Symbol(name) => {
                     if self.is_special_variable(name) {
-                        restores.push(self.bind_special_variable(name, Value::Nil)?);
+                        restores.push(self.bind_special_variable(name, Value::Nil, env)?);
                     } else {
                         let frame = env.last_mut().expect("env frame just pushed");
                         frame.push((name.clone(), Value::Nil));
@@ -3724,7 +4205,7 @@ impl Interpreter {
                         Value::Nil
                     };
                     if self.is_special_variable(&name) {
-                        restores.push(self.bind_special_variable(&name, val)?);
+                        restores.push(self.bind_special_variable(&name, val, env)?);
                     } else {
                         let frame = env.last_mut().expect("env frame just pushed");
                         frame.push((name, Self::stored_value(val)));
@@ -3737,7 +4218,29 @@ impl Interpreter {
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         for restore in restores.into_iter().rev() {
-            self.restore_special_binding(restore);
+            self.restore_special_binding(restore, env)?;
+        }
+        result
+    }
+
+    fn sf_cl_progv(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-progv".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let symbols = self.eval(&items[1], env)?.to_vec()?;
+        let values = self.eval(&items[2], env)?.to_vec()?;
+        let mut restores = Vec::new();
+        for (index, symbol) in symbols.iter().enumerate() {
+            let name = symbol.as_symbol()?;
+            let value = values.get(index).cloned().unwrap_or(Value::Nil);
+            restores.push(self.bind_special_variable(name, value, env)?);
+        }
+        let result = self.sf_progn(&items[3..], env);
+        for restore in restores.into_iter().rev() {
+            self.restore_special_binding(restore, env)?;
         }
         result
     }
@@ -3828,6 +4331,22 @@ impl Interpreter {
         self.sf_setq_internal(items, env, false)
     }
 
+    fn sf_setq_default(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        let mut result = Value::Nil;
+        let mut index = 1usize;
+        while index + 1 < items.len() {
+            let name = assignment_target_name(&items[index])?;
+            let resolved = self.resolve_variable_name(&name)?;
+            let evaluated = self.eval(&items[index + 1], env)?;
+            let value = self.prepare_variable_assignment(&resolved, evaluated)?;
+            result = value.clone();
+            self.notify_variable_watchers(&resolved, value.clone(), "set", None, env)?;
+            self.set_global_binding(&resolved, value);
+            index += 2;
+        }
+        Ok(result)
+    }
+
     fn sf_setq_local(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_setq_internal(items, env, true)
     }
@@ -3887,6 +4406,14 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
+        if matches!(items.get(1), Some(Value::Symbol(_) | Value::Nil | Value::T)) {
+            let setq_items = [
+                Value::Symbol("setq".into()),
+                items[1].clone(),
+                items[2].clone(),
+            ];
+            return self.sf_setq(&setq_items, env);
+        }
         let place = items[1].to_vec()?;
         match place.first() {
             Some(Value::Symbol(name)) if name == "symbol-function" => {
@@ -3902,6 +4429,7 @@ impl Interpreter {
                     self.set_function_binding(&function_name, None);
                     Ok(Value::Nil)
                 } else {
+                    self.validate_function_binding(&function_name, &value)?;
                     self.set_function_binding(&function_name, Some(value.clone()));
                     Ok(value)
                 }
@@ -4003,7 +4531,15 @@ impl Interpreter {
         let index_value = self.eval(index_expr, env)?;
         let value = self.eval(value_expr, env)?;
 
-        if matches!(current, Value::CharTable(_)) {
+        if matches!(current, Value::CharTable(_))
+            || matches!(
+                &current,
+                Value::Record(id)
+                    if self
+                        .find_record(*id)
+                        .is_some_and(|record| record.type_name == "bool-vector")
+            )
+        {
             primitives::call(self, "aset", &[current, index_value, value.clone()], env)?;
             return Ok(value);
         }
@@ -4094,7 +4630,7 @@ impl Interpreter {
                     };
                     let symbol = self.eval(symbol_form, env)?;
                     let symbol = symbol.as_symbol()?.to_string();
-                    self.set_variable(&symbol, value, env);
+                    self.set_symbol_value_cell(&symbol, value);
                     Ok(())
                 } else {
                     Err(LispError::Signal("Unsupported setf place".into()))
@@ -4113,13 +4649,24 @@ impl Interpreter {
         let mut result = Value::Nil;
         let mut i = 1;
         while i + 1 < items.len() {
-            let name = items[i].as_symbol()?.to_string();
-            let val = self.eval(&items[i + 1], env)?;
+            let name = assignment_target_name(&items[i])?;
+            let resolved = self.resolve_variable_name(&name)?;
+            let evaluated = self.eval(&items[i + 1], env)?;
+            let val = self.prepare_variable_assignment(&resolved, evaluated)?;
             result = val.clone();
             if local_only {
-                self.set_buffer_local_value(self.current_buffer_id(), &name, val);
+                self.notify_variable_watchers(
+                    &resolved,
+                    val.clone(),
+                    "set",
+                    Some(self.current_buffer_id()),
+                    env,
+                )?;
+                self.set_buffer_local_value(self.current_buffer_id(), &resolved, val);
             } else {
-                self.set_variable(&name, val, env);
+                let buffer_id = self.assignment_buffer_id(&resolved);
+                self.notify_variable_watchers(&resolved, val.clone(), "set", buffer_id, env)?;
+                self.set_variable(&resolved, val, env);
             }
             i += 2;
         }
@@ -4137,18 +4684,9 @@ impl Interpreter {
         }
         self.mark_special_variable(&resolved);
         // Only set if not already defined
-        if self.lookup(&resolved, env).is_err() {
-            let val = if items.len() > 2 {
-                self.eval(&items[2], env)?
-            } else {
-                Value::Nil
-            };
-            let stored = Self::stored_value(val);
-            if let Some(index) = self.globals.iter().rposition(|(name, _)| name == &resolved) {
-                self.globals[index].1 = stored;
-            } else {
-                self.globals.push((resolved, stored));
-            }
+        if self.default_toplevel_value(&resolved).is_none() && items.len() > 2 {
+            let val = self.eval(&items[2], env)?;
+            self.set_default_toplevel_value(&resolved, val);
         }
         Ok(Value::Nil)
     }
@@ -4781,11 +5319,21 @@ impl Interpreter {
 
     fn sf_cl_loop(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         enum LoopSpec {
-            Range(String, Vec<Value>),
-            List(String, Vec<Value>),
+            Range { name: String, values: Vec<Value> },
+            List { name: String, values: Vec<Value> },
+            Assign { name: String, expr: Value },
         }
 
-        if items.len() < 5 {
+        enum LoopAction {
+            Do(Vec<Value>),
+            Collect(Value),
+            Thereis { expr: Value, until: Option<Value> },
+            Always(Value),
+            Sum(Value),
+            UnlessDo { condition: Value, body: Vec<Value> },
+        }
+
+        if items.len() < 3 {
             return Err(LispError::WrongNumberOfArgs(
                 "cl-loop".into(),
                 items.len().saturating_sub(1),
@@ -4793,55 +5341,114 @@ impl Interpreter {
         }
 
         let mut specs = Vec::new();
-        let mut index = 1;
-        while index < items.len() && matches!(&items[index], Value::Symbol(s) if s == "for") {
-            let var_name = items
-                .get(index + 1)
-                .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                .as_symbol()?
-                .to_string();
-            match items.get(index + 2) {
-                Some(Value::Symbol(kind)) if kind == "from" => {
-                    let start = self
-                        .eval(
-                            items.get(index + 3).ok_or_else(|| {
-                                LispError::Signal("Unsupported cl-loop syntax".into())
-                            })?,
-                            env,
-                        )?
-                        .as_integer()?;
-                    if !matches!(items.get(index + 4), Some(Value::Symbol(s)) if s == "to") {
-                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+        let mut while_expr = None;
+        let mut index = 1usize;
+        while index < items.len() {
+            match items.get(index) {
+                Some(Value::Symbol(symbol)) if symbol == "for" => {
+                    let name = items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .as_symbol()?
+                        .to_string();
+                    match items.get(index + 2) {
+                        Some(Value::Symbol(kind)) if kind == "from" => {
+                            let start = self
+                                .eval(
+                                    items.get(index + 3).ok_or_else(|| {
+                                        LispError::Signal("Unsupported cl-loop syntax".into())
+                                    })?,
+                                    env,
+                                )?
+                                .as_integer()?;
+                            let bound_kind = items
+                                .get(index + 4)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?
+                                .as_symbol()?;
+                            let end = self
+                                .eval(
+                                    items.get(index + 5).ok_or_else(|| {
+                                        LispError::Signal("Unsupported cl-loop syntax".into())
+                                    })?,
+                                    env,
+                                )?
+                                .as_integer()?;
+                            let values = match bound_kind {
+                                "to" | "upto" if start <= end => {
+                                    (start..=end).map(Value::Integer).collect()
+                                }
+                                "below" if start < end => {
+                                    (start..end).map(Value::Integer).collect()
+                                }
+                                "to" | "upto" | "below" => Vec::new(),
+                                _ => {
+                                    return Err(LispError::Signal(
+                                        "Unsupported cl-loop syntax".into(),
+                                    ));
+                                }
+                            };
+                            specs.push(LoopSpec::Range { name, values });
+                            index += 6;
+                        }
+                        Some(Value::Symbol(kind))
+                            if matches!(kind.as_str(), "to" | "upto" | "below") =>
+                        {
+                            let end = self
+                                .eval(
+                                    items.get(index + 3).ok_or_else(|| {
+                                        LispError::Signal("Unsupported cl-loop syntax".into())
+                                    })?,
+                                    env,
+                                )?
+                                .as_integer()?;
+                            let values = match kind.as_str() {
+                                "to" | "upto" if end >= 0 => {
+                                    (0..=end).map(Value::Integer).collect()
+                                }
+                                "below" if end > 0 => (0..end).map(Value::Integer).collect(),
+                                "to" | "upto" | "below" => Vec::new(),
+                                _ => unreachable!(),
+                            };
+                            specs.push(LoopSpec::Range { name, values });
+                            index += 4;
+                        }
+                        Some(Value::Symbol(kind)) if kind == "in" => {
+                            let values = self
+                                .eval(
+                                    items.get(index + 3).ok_or_else(|| {
+                                        LispError::Signal("Unsupported cl-loop syntax".into())
+                                    })?,
+                                    env,
+                                )?
+                                .to_vec()?;
+                            specs.push(LoopSpec::List { name, values });
+                            index += 4;
+                        }
+                        Some(Value::Symbol(kind)) if kind == "=" => {
+                            let expr = items
+                                .get(index + 3)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?
+                                .clone();
+                            specs.push(LoopSpec::Assign { name, expr });
+                            index += 4;
+                        }
+                        _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
                     }
-                    let end = self
-                        .eval(
-                            items.get(index + 5).ok_or_else(|| {
-                                LispError::Signal("Unsupported cl-loop syntax".into())
-                            })?,
-                            env,
-                        )?
-                        .as_integer()?;
-                    let values = if start <= end {
-                        (start..=end).map(Value::Integer).collect()
-                    } else {
-                        Vec::new()
-                    };
-                    specs.push(LoopSpec::Range(var_name, values));
-                    index += 6;
                 }
-                Some(Value::Symbol(kind)) if kind == "in" => {
-                    let values = self
-                        .eval(
-                            items.get(index + 3).ok_or_else(|| {
-                                LispError::Signal("Unsupported cl-loop syntax".into())
-                            })?,
-                            env,
-                        )?
-                        .to_vec()?;
-                    specs.push(LoopSpec::List(var_name, values));
-                    index += 4;
+                Some(Value::Symbol(symbol)) if symbol == "while" => {
+                    while_expr = Some(
+                        items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    );
+                    index += 2;
                 }
-                _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+                _ => break,
             }
         }
 
@@ -4849,91 +5456,159 @@ impl Interpreter {
             return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
         }
 
-        let lengths: Vec<usize> = specs
+        let iterations = specs
             .iter()
-            .map(|spec| match spec {
-                LoopSpec::Range(_, values) | LoopSpec::List(_, values) => values.len(),
+            .filter_map(|spec| match spec {
+                LoopSpec::Range { values, .. } | LoopSpec::List { values, .. } => {
+                    Some(values.len())
+                }
+                LoopSpec::Assign { .. } => None,
             })
-            .collect();
-        let iterations = lengths.into_iter().min().unwrap_or(0);
+            .min()
+            .unwrap_or(1);
+
         let bindings = specs
             .iter()
             .map(|spec| match spec {
-                LoopSpec::Range(name, _) | LoopSpec::List(name, _) => (name.clone(), Value::Nil),
+                LoopSpec::Range { name, .. }
+                | LoopSpec::List { name, .. }
+                | LoopSpec::Assign { name, .. } => (name.clone(), Value::Nil),
             })
             .collect::<Vec<_>>();
         env.push(bindings);
 
-        let mut result = Value::Nil;
-        match items.get(index) {
-            Some(Value::Symbol(kind)) if kind == "do" => {
-                for iteration in 0..iterations {
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    for (slot, spec) in frame.iter_mut().zip(&specs) {
-                        *slot = match spec {
-                            LoopSpec::Range(name, values) | LoopSpec::List(name, values) => {
-                                (name.clone(), values[iteration].clone())
-                            }
-                        };
-                    }
-                    result = self.sf_progn(&items[index + 1..], env)?;
-                }
+        let action = match items.get(index) {
+            Some(Value::Symbol(symbol)) if symbol == "do" => {
+                LoopAction::Do(items[index + 1..].to_vec())
             }
-            Some(Value::Symbol(kind)) if kind == "collect" => {
-                let collect_expr = items
+            Some(Value::Symbol(symbol)) if symbol == "collect" => LoopAction::Collect(
+                items
                     .get(index + 1)
-                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?;
-                let mut collected = Vec::with_capacity(iterations);
-                for iteration in 0..iterations {
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    for (slot, spec) in frame.iter_mut().zip(&specs) {
-                        *slot = match spec {
-                            LoopSpec::Range(name, values) | LoopSpec::List(name, values) => {
-                                (name.clone(), values[iteration].clone())
-                            }
-                        };
-                    }
-                    collected.push(self.eval(collect_expr, env)?);
-                }
-                result = Value::list(collected);
-            }
-            Some(Value::Symbol(kind)) if kind == "thereis" => {
-                let thereis_expr = items
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
+            Some(Value::Symbol(symbol)) if symbol == "thereis" => LoopAction::Thereis {
+                expr: items
                     .get(index + 1)
-                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?;
-                let until_expr = if matches!(items.get(index + 2), Some(Value::Symbol(s)) if s == "until")
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+                until: if matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "until")
                 {
-                    items.get(index + 3)
+                    Some(
+                        items
+                            .get(index + 3)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    )
                 } else {
                     None
-                };
-                for iteration in 0..iterations {
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    for (slot, spec) in frame.iter_mut().zip(&specs) {
-                        *slot = match spec {
-                            LoopSpec::Range(name, values) | LoopSpec::List(name, values) => {
-                                (name.clone(), values[iteration].clone())
-                            }
-                        };
+                },
+            },
+            Some(Value::Symbol(symbol)) if symbol == "always" => LoopAction::Always(
+                items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
+            Some(Value::Symbol(symbol)) if symbol == "sum" => LoopAction::Sum(
+                items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
+            Some(Value::Symbol(symbol)) if symbol == "unless" => {
+                if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "do") {
+                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                }
+                LoopAction::UnlessDo {
+                    condition: items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                    body: items[index + 3..].to_vec(),
+                }
+            }
+            _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+        };
+
+        let mut result = Value::Nil;
+        let mut collected = Vec::new();
+        let mut sum = 0i64;
+        for iteration in 0..iterations {
+            let mut direct_updates = Vec::new();
+            for (slot, spec) in specs.iter().enumerate() {
+                match spec {
+                    LoopSpec::Range { name, values } | LoopSpec::List { name, values } => {
+                        direct_updates.push((slot, name.clone(), values[iteration].clone()));
                     }
-                    if let Some(until) = until_expr
-                        && self.eval(until, env)?.is_truthy()
+                    LoopSpec::Assign { .. } => {}
+                }
+            }
+            {
+                let frame = env.last_mut().expect("env frame just pushed");
+                for (slot, name, value) in direct_updates {
+                    frame[slot] = (name, Self::stored_value(value));
+                }
+            }
+
+            for (slot, spec) in specs.iter().enumerate() {
+                if let LoopSpec::Assign { name, expr } = spec {
+                    let value = Self::stored_value(self.eval(expr, env)?);
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    frame[slot] = (name.clone(), value);
+                }
+            }
+
+            if let Some(expr) = while_expr.as_ref()
+                && !self.eval(expr, env)?.is_truthy()
+            {
+                break;
+            }
+
+            match &action {
+                LoopAction::Do(body) => result = self.sf_progn(body, env)?,
+                LoopAction::Collect(expr) => collected.push(self.eval(expr, env)?),
+                LoopAction::Thereis { expr, until } => {
+                    if let Some(until_expr) = until
+                        && self.eval(until_expr, env)?.is_truthy()
                     {
                         result = Value::Nil;
                         break;
                     }
-                    let value = self.eval(thereis_expr, env)?;
+                    let value = self.eval(expr, env)?;
                     if value.is_truthy() {
                         result = value;
                         break;
                     }
                 }
+                LoopAction::Always(expr) => {
+                    if !self.eval(expr, env)?.is_truthy() {
+                        result = Value::Nil;
+                        env.pop();
+                        return Ok(result);
+                    }
+                    result = Value::T;
+                }
+                LoopAction::Sum(expr) => {
+                    sum += self.eval(expr, env)?.as_integer()?;
+                    result = Value::Integer(sum);
+                }
+                LoopAction::UnlessDo { condition, body } => {
+                    if !self.eval(condition, env)?.is_truthy() {
+                        result = self.sf_progn(body, env)?;
+                    }
+                }
             }
-            _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
         }
 
         env.pop();
-        Ok(result)
+        Ok(match action {
+            LoopAction::Collect(_) => Value::list(collected),
+            LoopAction::Always(_) if result.is_nil() => Value::Nil,
+            LoopAction::Always(_) => Value::T,
+            LoopAction::Sum(_) => Value::Integer(sum),
+            _ => result,
+        })
     }
 
     fn sf_unwind_protect(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -5643,7 +6318,15 @@ impl Interpreter {
             let current = self.lookup(name, env)?;
             let new_value = self.eval(&items[3], env)?;
             let index_value = self.eval(&items[2], env)?;
-            if matches!(current, Value::CharTable(_)) {
+            if matches!(current, Value::CharTable(_))
+                || matches!(
+                    &current,
+                    Value::Record(id)
+                        if self
+                            .find_record(*id)
+                            .is_some_and(|record| record.type_name == "bool-vector")
+                )
+            {
                 primitives::call(
                     self,
                     "aset",
@@ -5907,6 +6590,7 @@ impl Interpreter {
             .or_else(|| items[1].as_symbol().ok().map(str::to_string))
             .ok_or_else(|| LispError::TypeError("symbol".into(), items[1].type_name()))?;
         let function = self.eval(&items[2], env)?;
+        self.validate_function_binding(&name, &function)?;
         self.set_function_binding(&name, Some(function));
         Ok(Value::Symbol(name))
     }
@@ -6205,6 +6889,15 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
             Value::Symbol(name) => Ok(name),
             other => Err(LispError::TypeError("symbol".into(), other.type_name())),
         },
+    }
+}
+
+fn assignment_target_name(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::Symbol(name) => Ok(name.clone()),
+        Value::Nil => Ok("nil".into()),
+        Value::T => Ok("t".into()),
+        other => Err(LispError::TypeError("symbol".into(), other.type_name())),
     }
 }
 
@@ -7128,7 +7821,15 @@ fn feature_name(value: &Value) -> Option<String> {
 fn is_compat_preloaded_feature(feature: &str) -> bool {
     matches!(
         feature,
-        "cl-lib" | "cus-edit" | "cus-load" | "edmacro" | "ert-x" | "map" | "seq" | "subr-x"
+        "cl-extra"
+            | "cl-lib"
+            | "cus-edit"
+            | "cus-load"
+            | "edmacro"
+            | "ert-x"
+            | "map"
+            | "seq"
+            | "subr-x"
     )
 }
 
@@ -7537,8 +8238,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn eval_string_ops() {
+    fn run_large_stack_test(test_fn: fn()) {
+        thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(test_fn)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn assert_eval_string_ops() {
         assert_eq!(
             eval_str(r#"(concat "hello" " " "world")"#),
             Value::String("hello world".into())
@@ -7586,6 +8295,11 @@ mod tests {
             eval_str(r#"(equal (sort '(3 1 2) #'< :in-place t) '(1 2 3))"#),
             Value::T
         );
+    }
+
+    #[test]
+    fn eval_string_ops() {
+        run_large_stack_test(assert_eval_string_ops);
     }
 
     #[test]
@@ -7736,12 +8450,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn seq_some_returns_first_truthy_result() {
+    fn assert_seq_some_returns_first_truthy_result() {
         assert_eq!(
             eval_str(r#"(seq-some #'identity '(nil nil ok))"#),
             Value::Symbol("ok".into())
         );
+    }
+
+    #[test]
+    fn seq_some_returns_first_truthy_result() {
+        run_large_stack_test(assert_seq_some_returns_first_truthy_result);
     }
 
     #[test]
@@ -8281,8 +8999,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_buffers_keeps_file_visiting_internal_names_addressable() {
+    fn assert_list_buffers_keeps_file_visiting_internal_names_addressable() {
         let root = std::env::temp_dir().join(format!(
             "emaxx-buffer-menu-{}",
             std::time::SystemTime::now()
@@ -8308,6 +9025,11 @@ mod tests {
 
         std::fs::remove_file(&target).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn list_buffers_keeps_file_visiting_internal_names_addressable() {
+        run_large_stack_test(assert_list_buffers_keeps_file_visiting_internal_names_addressable);
     }
 
     #[test]
@@ -9652,8 +10374,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn minibuffer_completion_primitives_cover_batch_cases() {
+    fn assert_minibuffer_completion_primitives_cover_batch_cases() {
         assert_eq!(
             eval_str(r#"(try-completion "a" '("abc" "abba" "def"))"#),
             Value::String("ab".into())
@@ -9701,6 +10422,11 @@ mod tests {
         );
         assert_eq!(eval_str(r#"(active-minibuffer-window)"#), Value::Nil);
         assert_eq!(eval_str(r#"(windowp (minibuffer-window))"#), Value::T);
+    }
+
+    #[test]
+    fn minibuffer_completion_primitives_cover_batch_cases() {
+        run_large_stack_test(assert_minibuffer_completion_primitives_cover_batch_cases);
     }
 
     #[test]

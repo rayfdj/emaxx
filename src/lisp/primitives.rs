@@ -12,6 +12,7 @@ use num_bigint::{BigInt, Sign};
 use num_traits::{Signed, ToPrimitive, Zero};
 use regex::Regex;
 use roxmltree::{Document, Node, NodeType};
+use std::cmp::Ordering;
 use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
@@ -527,6 +528,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "mod"
             | "1+"
             | "1-"
+            | "logcount"
             | "max"
             | "min"
             | "abs"
@@ -556,10 +558,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "fround"
             | "ftruncate"
             | "ash"
+            | "lsh"
             | "logand"
             | "logior"
             | "logxor"
             | "lognot"
+            | "cl-signum"
             // Comparison
             | "="
             | "<"
@@ -583,19 +587,32 @@ pub fn is_builtin(name: &str) -> bool {
             | "null"
             | "not"
             | "integerp"
+            | "fixnump"
+            | "bignump"
             | "numberp"
+            | "number-or-marker-p"
             | "floatp"
+            | "char-or-string-p"
+            | "arrayp"
+            | "sequencep"
+            | "integer-or-marker-p"
             | "stringp"
             | "symbolp"
             | "keywordp"
             | "functionp"
             | "compiled-function-p"
             | "closurep"
+            | "interpreted-function-p"
+            | "subrp"
             | "commandp"
             | "boundp"
             | "fboundp"
             | "default-boundp"
             | "special-variable-p"
+            | "make-variable-buffer-local"
+            | "local-variable-p"
+            | "local-variable-if-set-p"
+            | "variable-binding-locus"
             | "featurep"
             | "consp"
             | "listp"
@@ -611,6 +628,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "markerp"
             | "recordp"
             | "charsetp"
+            | "bare-symbol-p"
+            | "symbol-with-pos-p"
+            | "vector-or-char-table-p"
+            | "bool-vector-p"
+            | "bool-vector-subsetp"
             // List operations
             | "cons"
             | "car"
@@ -633,6 +655,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "assoc"
             | "alist-get"
             | "cl-set-exclusive-or"
+            | "cl-remove-if-not"
             | "mapcar"
             | "cl-mapcar"
             | "cl-mapcan"
@@ -657,11 +680,16 @@ pub fn is_builtin(name: &str) -> bool {
             | "kbd"
             | "key-description"
             | "single-key-description"
+            | "position-symbol"
+            | "symbol-with-pos-pos"
+            | "remove-pos-from-symbol"
+            | "bare-symbol"
             | "ensure-list"
             | "seq-find"
             | "seq-contains-p"
             | "seq-take"
             | "seq-position"
+            | "cl-coerce"
             | "treesit-language-available-p"
             | "treesit--linecol-cache"
             | "treesit--linecol-cache-set"
@@ -669,6 +697,15 @@ pub fn is_builtin(name: &str) -> bool {
             // Allocation
             | "make-string"
             | "make-vector"
+            | "make-bool-vector"
+            | "bool-vector"
+            | "bool-vector-count-population"
+            | "bool-vector-count-consecutive"
+            | "bool-vector-intersection"
+            | "bool-vector-union"
+            | "bool-vector-exclusive-or"
+            | "bool-vector-set-difference"
+            | "bool-vector-not"
             | "make-keymap"
             | "make-sparse-keymap"
             | "make-mode-line-mouse-map"
@@ -809,6 +846,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "font-lock-prepend-text-property"
             | "font-lock--remove-face-from-text-property"
             | "put"
+            | "symbol-plist"
+            | "setplist"
             | "zlib-available-p"
             | "zlib-decompress-region"
             | "libxml-parse-xml-region"
@@ -830,11 +869,29 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-swap-text"
             | "buffer-local-value"
             | "buffer-local-variables"
+            | "buffer-local-toplevel-value"
             | "kill-local-variable"
+            | "make-local-variable"
+            | "default-toplevel-value"
+            | "set-default-toplevel-value"
+            | "set-buffer-local-toplevel-value"
             | "buffer-list"
             | "list-buffers"
             | "list-buffers-noselect"
             | "Buffer-menu-buffer"
+            | "add-variable-watcher"
+            | "remove-variable-watcher"
+            | "get-variable-watchers"
+            | "command-modes"
+            | "indirect-function"
+            | "byteorder"
+            | "subr-arity"
+            | "subr-name"
+            | "subr-native-lambda-list"
+            | "subr-native-comp-unit"
+            | "native-comp-unit-file"
+            | "native-comp-unit-set-file"
+            | "symbol-file"
             | "decode-char"
             | "char-charset"
             | "charset-id-internal"
@@ -1148,9 +1205,18 @@ pub fn is_builtin(name: &str) -> bool {
             | "char-from-name"
             | "always"
             | "evenp"
+            | "oddp"
             | "seq-subseq"
             | "text-quoting-style"
             | "type-of"
+            | "cl-type-of"
+            | "cl-find-class"
+            | "cl--class-allparents"
+            | "cl--class-children"
+            | "cl-typep"
+            | "built-in-class-p"
+            | "cl-functionp"
+            | "current-cpu-time"
             | "file-truename"
             | "save-buffer"
             | "unlock-buffer"
@@ -1433,11 +1499,12 @@ pub fn call(
             if has_float(args) {
                 let a = numeric_to_f64(interp, &args[0])?;
                 let b = numeric_to_f64(interp, &args[1])?;
-                if b == 0.0 {
-                    return Err(LispError::Signal("Division by zero".into()));
-                }
                 let mut remainder = a % b;
-                if remainder != 0.0 && (remainder.is_sign_negative() != b.is_sign_negative()) {
+                if name == "mod"
+                    && remainder != 0.0
+                    && !remainder.is_nan()
+                    && (remainder.is_sign_negative() != b.is_sign_negative())
+                {
                     remainder += b;
                 }
                 return Ok(Value::Float(remainder));
@@ -1448,7 +1515,10 @@ pub fn call(
                 if b.is_zero() {
                     return Err(LispError::Signal("Division by zero".into()));
                 }
-                let r = ((&a % &b) + &b) % &b;
+                let mut r = &a % &b;
+                if name == "mod" && !r.is_zero() && (r.sign() != b.sign()) {
+                    r += &b;
+                }
                 return Ok(normalize_bigint_value(r));
             }
             let a = integer_like_i64(interp, &args[0])?;
@@ -1456,7 +1526,15 @@ pub fn call(
             if b == 0 {
                 return Err(LispError::Signal("Division by zero".into()));
             }
-            Ok(Value::Integer(a.rem_euclid(b)))
+            Ok(Value::Integer(if name == "mod" {
+                let mut remainder = a % b;
+                if remainder != 0 && (remainder.is_negative() != b.is_negative()) {
+                    remainder += b;
+                }
+                remainder
+            } else {
+                a % b
+            }))
         }
         "1+" => {
             need_args(name, args, 1)?;
@@ -1482,49 +1560,13 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("max".into(), 0));
             }
-            if has_float(args) {
-                let mut result = numeric_to_f64(interp, &args[0])?;
-                for a in &args[1..] {
-                    result = result.max(numeric_to_f64(interp, a)?);
-                }
-                return Ok(Value::Float(result));
-            }
-            if has_big_integer(args) {
-                let mut result = integer_like_bigint(interp, &args[0])?;
-                for a in &args[1..] {
-                    result = result.max(integer_like_bigint(interp, a)?);
-                }
-                return Ok(normalize_bigint_value(result));
-            }
-            let mut result = integer_like_i64(interp, &args[0])?;
-            for a in &args[1..] {
-                result = result.max(integer_like_i64(interp, a)?);
-            }
-            Ok(Value::Integer(result))
+            extremum_numeric_value(interp, args, true)
         }
         "min" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("min".into(), 0));
             }
-            if has_float(args) {
-                let mut result = numeric_to_f64(interp, &args[0])?;
-                for a in &args[1..] {
-                    result = result.min(numeric_to_f64(interp, a)?);
-                }
-                return Ok(Value::Float(result));
-            }
-            if has_big_integer(args) {
-                let mut result = integer_like_bigint(interp, &args[0])?;
-                for a in &args[1..] {
-                    result = result.min(integer_like_bigint(interp, a)?);
-                }
-                return Ok(normalize_bigint_value(result));
-            }
-            let mut result = integer_like_i64(interp, &args[0])?;
-            for a in &args[1..] {
-                result = result.min(integer_like_i64(interp, a)?);
-            }
-            Ok(Value::Integer(result))
+            extremum_numeric_value(interp, args, false)
         }
         "abs" => {
             need_args(name, args, 1)?;
@@ -1699,6 +1741,44 @@ pub fn call(
             };
             Ok(normalize_bigint_value(shifted))
         }
+        "lsh" => {
+            need_args(name, args, 2)?;
+            let value = integer_like_bigint(interp, &args[0])?;
+            let shift = integer_like_i64(interp, &args[1])?;
+            if shift >= 0 {
+                return Ok(normalize_bigint_value(value << shift as usize));
+            }
+            if value.sign() != Sign::Minus {
+                return Ok(normalize_bigint_value(value >> (-shift) as usize));
+            }
+            let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
+            let min_fixnum = BigInt::from(min_fixnum);
+            let max_fixnum = BigInt::from(max_fixnum);
+            if value < min_fixnum || value > max_fixnum {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("args-out-of-range".into()),
+                    args[0].clone(),
+                    args[1].clone(),
+                ])));
+            }
+            let width = max_fixnum.bits() + 1;
+            let modulus = BigInt::from(1u8) << width;
+            let unsigned = modulus + value;
+            Ok(normalize_bigint_value(unsigned >> (-shift) as usize))
+        }
+        "logcount" => {
+            need_args(name, args, 1)?;
+            let mut value = integer_like_bigint(interp, &args[0])?;
+            if value.sign() == Sign::Minus {
+                value = !value;
+            }
+            let count = value
+                .to_str_radix(2)
+                .chars()
+                .filter(|bit| *bit == '1')
+                .count() as i64;
+            Ok(Value::Integer(count))
+        }
         "logand" => {
             let mut result = BigInt::from(-1);
             for arg in args {
@@ -1725,6 +1805,11 @@ pub fn call(
             Ok(normalize_bigint_value(!integer_like_bigint(
                 interp, &args[0],
             )?))
+        }
+        "cl-signum" => {
+            need_args(name, args, 1)?;
+            let value = args[0].as_float()?;
+            Ok(Value::Integer(value.signum() as i64))
         }
         "prefix-numeric-value" => {
             need_args(name, args, 1)?;
@@ -1827,11 +1912,15 @@ pub fn call(
         }
         "eql" => {
             need_args(name, args, 2)?;
-            Ok(if args[0] == args[1] {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if matches!((&args[0], &args[1]), (Value::Float(left), Value::Float(right)) if left.is_nan() && right.is_nan())
+                    || args[0] == args[1]
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "equal" => {
             need_args(name, args, 2)?;
@@ -1933,10 +2022,141 @@ pub fn call(
                 Value::Nil
             })
         }
+        "fixnump" => {
+            need_args(name, args, 1)?;
+            let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
+            Ok(
+                if integer_like_bigint(interp, &args[0])
+                    .ok()
+                    .is_some_and(|value| {
+                        value >= BigInt::from(min_fixnum) && value <= BigInt::from(max_fixnum)
+                    })
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "bignump" => {
+            need_args(name, args, 1)?;
+            let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
+            Ok(
+                if integer_like_bigint(interp, &args[0])
+                    .ok()
+                    .is_some_and(|value| {
+                        value < BigInt::from(min_fixnum) || value > BigInt::from(max_fixnum)
+                    })
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
         "numberp" => {
             need_args(name, args, 1)?;
             Ok(
                 if args[0].is_integer() || matches!(args[0], Value::Float(_)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "number-or-marker-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if args[0].is_integer() || matches!(args[0], Value::Float(_) | Value::Marker(_)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "char-or-string-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(args[0], Value::Integer(code) if (0..=0x10_FFFF).contains(&code))
+                    || string_like(&args[0]).is_some()
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "arrayp" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if string_like(&args[0]).is_some()
+                    || is_vector_value(&args[0])
+                    || is_bool_vector_value(interp, &args[0])
+                    || matches!(args[0], Value::CharTable(_))
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "sequencep" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(args[0], Value::Nil | Value::Cons(_, _))
+                    || string_like(&args[0]).is_some()
+                    || is_bool_vector_value(interp, &args[0])
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "integer-or-marker-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(
+                    args[0],
+                    Value::Integer(_) | Value::BigInteger(_) | Value::Marker(_)
+                ) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "vector-or-char-table-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if is_vector_value(&args[0]) || matches!(args[0], Value::CharTable(_)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "bool-vector-p" => {
+            need_args(name, args, 1)?;
+            Ok(if is_bool_vector_value(interp, &args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "bool-vector-subsetp" => {
+            need_args(name, args, 2)?;
+            let left = bool_vector_bits(interp, &args[0])?;
+            let right = bool_vector_bits(interp, &args[1])?;
+            if left.len() != right.len() {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            Ok(
+                if left
+                    .iter()
+                    .zip(&right)
+                    .all(|(left_bit, right_bit)| !*left_bit || *right_bit)
+                {
                     Value::T
                 } else {
                     Value::Nil
@@ -1981,7 +2201,9 @@ pub fn call(
             need_args(name, args, 1)?;
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
             Ok(
-                if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _))
+                    || record_type_name(interp, &value) == Some("byte-code-function")
+                {
                     Value::T
                 } else {
                     Value::Nil
@@ -1990,15 +2212,51 @@ pub fn call(
         }
         "compiled-function-p" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            Ok(
+                if record_type_name(interp, &args[0]) == Some("byte-code-function") {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "closurep" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(args[0], Value::Lambda(_, _, _))
+                    || record_type_name(interp, &args[0]) == Some("byte-code-function")
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "interpreted-function-p" => {
             need_args(name, args, 1)?;
             Ok(if matches!(args[0], Value::Lambda(_, _, _)) {
                 Value::T
             } else {
                 Value::Nil
             })
+        }
+        "subrp" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(args[0], Value::BuiltinFunc(_)) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "oddp" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if (&integer_like_bigint(interp, &args[0])? & BigInt::from(1u8)).is_zero() {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            )
         }
         "keymapp" => {
             need_args(name, args, 1)?;
@@ -2023,7 +2281,7 @@ pub fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(
-                if interp.lookup_var(symbol, env).is_some()
+                if interp.symbol_value_cell(symbol).is_ok()
                     || matches!(
                         symbol,
                         "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
@@ -2049,6 +2307,70 @@ pub fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(if interp.is_special_variable(symbol) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "make-variable-buffer-local" => {
+            need_args(name, args, 1)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            interp.mark_auto_buffer_local(&symbol);
+            Ok(Value::Symbol(symbol))
+        }
+        "local-variable-p" => {
+            need_arg_range(name, args, 1, 2)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let buffer_id = if let Some(buffer) = args.get(1) {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            Ok(if interp.buffer_local_value(buffer_id, &symbol).is_some() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "local-variable-if-set-p" => {
+            need_arg_range(name, args, 1, 2)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let buffer_id = if let Some(buffer) = args.get(1) {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            Ok(
+                if interp.buffer_local_value(buffer_id, &symbol).is_some()
+                    || interp.is_auto_buffer_local(&symbol)
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "variable-binding-locus" => {
+            need_args(name, args, 1)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            Ok(interp
+                .buffer_local_value(interp.current_buffer_id(), &symbol)
+                .and_then(|_| interp.buffer_identity_value(interp.current_buffer_id()))
+                .unwrap_or(Value::Nil))
+        }
+        "bare-symbol-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(args[0], Value::Symbol(_) | Value::Nil | Value::T) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "symbol-with-pos-p" => {
+            need_args(name, args, 1)?;
+            Ok(if symbol_with_pos_parts(interp, &args[0]).is_some() {
                 Value::T
             } else {
                 Value::Nil
@@ -2315,6 +2637,9 @@ pub fn call(
                 Value::Cons(_, _) if is_vector_value(&args[0]) => {
                     Ok(Value::Integer(vector_items(&args[0])?.len() as i64))
                 }
+                value if is_bool_vector_value(interp, value) => Ok(Value::Integer(
+                    bool_vector_values(interp, value)?.len() as i64,
+                )),
                 Value::Cons(_, _) => Ok(Value::Integer(args[0].to_vec()?.len() as i64)),
                 Value::Record(id) => {
                     let record = interp.find_record(*id).ok_or_else(|| {
@@ -2422,6 +2747,18 @@ pub fn call(
                 }
             }
             Ok(Value::list(result))
+        }
+        "cl-remove-if-not" => {
+            need_args(name, args, 2)?;
+            let mut kept = Vec::new();
+            for item in args[1].to_vec()? {
+                if call_function_value(interp, &args[0], std::slice::from_ref(&item), env)?
+                    .is_truthy()
+                {
+                    kept.push(item);
+                }
+            }
+            Ok(Value::list(kept))
         }
         "mapcar" => {
             need_args(name, args, 2)?;
@@ -2546,6 +2883,27 @@ pub fn call(
                 },
             )
         }
+        "position-symbol" => {
+            need_args(name, args, 2)?;
+            let position = args[1].as_integer()?;
+            Ok(interp.create_record(
+                "symbol-with-pos",
+                vec![args[0].clone(), Value::Integer(position)],
+            ))
+        }
+        "symbol-with-pos-pos" => {
+            need_args(name, args, 1)?;
+            let (_, position) = symbol_with_pos_parts(interp, &args[0]).ok_or_else(|| {
+                LispError::TypeError("symbol-with-pos".into(), args[0].type_name())
+            })?;
+            Ok(Value::Integer(position))
+        }
+        "remove-pos-from-symbol" | "bare-symbol" => {
+            need_args(name, args, 1)?;
+            Ok(symbol_with_pos_parts(interp, &args[0])
+                .map(|(symbol, _)| symbol)
+                .unwrap_or_else(|| args[0].clone()))
+        }
         "seq-find" => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -2669,6 +3027,36 @@ pub fn call(
                 Err(LispError::TypeError("sequence".into(), args[0].type_name()))
             }
         }
+        "cl-coerce" => {
+            need_args(name, args, 2)?;
+            let items = if is_bool_vector_value(interp, &args[0]) {
+                bool_vector_values(interp, &args[0])?
+            } else {
+                sequence_values(&args[0])?
+            };
+            match args[1].as_symbol()? {
+                "list" => Ok(Value::list(items)),
+                "vector" => {
+                    let mut vector = vec![Value::symbol("vector")];
+                    vector.extend(items);
+                    Ok(Value::list(vector))
+                }
+                "string" => {
+                    let mut text = String::new();
+                    for item in items {
+                        let code = item.as_integer()?;
+                        let ch = char::from_u32(code as u32).ok_or_else(|| {
+                            LispError::Signal(format!("Invalid character: {code}"))
+                        })?;
+                        text.push(ch);
+                    }
+                    Ok(Value::String(text))
+                }
+                kind => Err(LispError::Signal(format!(
+                    "cl-coerce unsupported type: {kind}"
+                ))),
+            }
+        }
         "treesit-language-available-p" => {
             need_args(name, args, 1)?;
             Ok(Value::Nil)
@@ -2750,6 +3138,7 @@ pub fn call(
                 interp.set_function_binding(symbol, None);
                 Ok(Value::Nil)
             } else {
+                interp.validate_function_binding(symbol, &args[1])?;
                 interp.set_function_binding(symbol, Some(args[1].clone()));
                 Ok(args[1].clone())
             }
@@ -2810,6 +3199,21 @@ pub fn call(
             result.extend(items);
             Ok(Value::list(result))
         }
+        "make-bool-vector" => {
+            need_args(name, args, 2)?;
+            let length = args[0].as_integer()?;
+            if length < 0 {
+                return Err(LispError::Signal("Wrong type argument: natnump".into()));
+            }
+            Ok(make_bool_vector_value(
+                interp,
+                std::iter::repeat_n(args[1].is_truthy(), length as usize),
+            ))
+        }
+        "bool-vector" => Ok(make_bool_vector_value(
+            interp,
+            args.iter().map(Value::is_truthy),
+        )),
         "make-keymap" | "make-sparse-keymap" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -5024,8 +5428,15 @@ pub fn call(
             let buffer_id = interp.resolve_buffer_id(&args[1])?;
             Ok(interp
                 .buffer_local_value(buffer_id, &symbol)
-                .or_else(|| interp.lookup_var(&symbol, env))
+                .or_else(|| interp.symbol_value_cell(&symbol).ok())
                 .unwrap_or(Value::Nil))
+        }
+        "buffer-local-toplevel-value" => {
+            need_args(name, args, 1)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            interp
+                .buffer_local_toplevel_value(interp.current_buffer_id(), &symbol)
+                .ok_or(LispError::Void(symbol))
         }
         "buffer-local-variables" => {
             let mut vars = interp
@@ -5042,8 +5453,40 @@ pub fn call(
         "kill-local-variable" => {
             need_args(name, args, 1)?;
             let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            interp.notify_variable_watchers(
+                &symbol,
+                Value::Nil,
+                "makunbound",
+                Some(interp.current_buffer_id()),
+                env,
+            )?;
             interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
             Ok(Value::Symbol(symbol))
+        }
+        "make-local-variable" => {
+            need_args(name, args, 1)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Nil);
+            interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, value);
+            Ok(Value::Symbol(symbol))
+        }
+        "set-buffer-local-toplevel-value" => {
+            need_args(name, args, 2)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
+            interp.notify_variable_watchers(
+                &symbol,
+                value.clone(),
+                "set",
+                Some(interp.current_buffer_id()),
+                env,
+            )?;
+            interp.set_buffer_local_toplevel_value(
+                interp.current_buffer_id(),
+                &symbol,
+                value.clone(),
+            );
+            Ok(value)
         }
         "buffer-list" => {
             let bufs: Vec<Value> = interp
@@ -5102,6 +5545,148 @@ pub fn call(
                 Value::Buffer(_, _) => Ok(Value::Nil),
                 other => Err(LispError::TypeError("buffer".into(), other.type_name())),
             }
+        }
+        "add-variable-watcher" => {
+            need_args(name, args, 2)?;
+            interp.add_variable_watcher(args[0].as_symbol()?, args[1].clone())?;
+            Ok(args[1].clone())
+        }
+        "remove-variable-watcher" => {
+            need_args(name, args, 2)?;
+            interp.remove_variable_watcher(args[0].as_symbol()?, &args[1])?;
+            Ok(args[1].clone())
+        }
+        "get-variable-watchers" => {
+            need_args(name, args, 1)?;
+            Ok(Value::list(interp.variable_watchers(args[0].as_symbol()?)))
+        }
+        "command-modes" => {
+            need_args(name, args, 1)?;
+            Ok(interp
+                .get_symbol_property(args[0].as_symbol()?, "command-modes")
+                .unwrap_or(Value::Nil))
+        }
+        "indirect-function" => {
+            need_arg_range(name, args, 1, 2)?;
+            let mut seen = Vec::new();
+            let mut current = args[0].clone();
+            loop {
+                match &current {
+                    Value::Symbol(symbol) => {
+                        if seen.iter().any(|existing| existing == symbol) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("cyclic-function-indirection".into()),
+                                Value::Symbol(symbol.clone()),
+                            ])));
+                        }
+                        seen.push(symbol.clone());
+                        let resolved = interp.lookup_function(symbol, env)?;
+                        if matches!(resolved, Value::Symbol(_)) {
+                            current = resolved;
+                        } else {
+                            return Ok(resolved);
+                        }
+                    }
+                    _ => return Ok(current),
+                }
+            }
+        }
+        "byteorder" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Integer(if cfg!(target_endian = "big") {
+                'B' as i64
+            } else {
+                'l' as i64
+            }))
+        }
+        "subr-arity" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::BuiltinFunc(symbol) if symbol == "car" => {
+                    Ok(Value::cons(Value::Integer(1), Value::Integer(1)))
+                }
+                Value::BuiltinFunc(symbol) if symbol == "cons" => {
+                    Ok(Value::cons(Value::Integer(2), Value::Integer(2)))
+                }
+                Value::BuiltinFunc(symbol) if symbol == "list" => {
+                    Ok(Value::cons(Value::Integer(0), Value::Symbol("many".into())))
+                }
+                Value::BuiltinFunc(symbol) if symbol == "if" => Ok(Value::cons(
+                    Value::Integer(2),
+                    Value::Symbol("unevalled".into()),
+                )),
+                other => Err(LispError::TypeError("subr".into(), other.type_name())),
+            }
+        }
+        "subr-name" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::BuiltinFunc(symbol) => Ok(Value::String(symbol.clone())),
+                other => Err(LispError::TypeError("subr".into(), other.type_name())),
+            }
+        }
+        "subr-native-lambda-list" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::BuiltinFunc(_) => Ok(Value::T),
+                other => Err(LispError::TypeError("subr".into(), other.type_name())),
+            }
+        }
+        "subr-native-comp-unit" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::BuiltinFunc(symbol) => Ok(interp.create_record(
+                    "native-comp-unit",
+                    vec![Value::String(format!("{symbol}.eln"))],
+                )),
+                other => Err(LispError::TypeError("subr".into(), other.type_name())),
+            }
+        }
+        "native-comp-unit-file" => {
+            need_args(name, args, 1)?;
+            let Value::Record(id) = &args[0] else {
+                return Err(LispError::TypeError(
+                    "native-comp-unit".into(),
+                    args[0].type_name(),
+                ));
+            };
+            let record = interp.find_record(*id).ok_or_else(|| {
+                LispError::TypeError("native-comp-unit".into(), args[0].type_name())
+            })?;
+            if record.type_name != "native-comp-unit" {
+                return Err(LispError::TypeError(
+                    "native-comp-unit".into(),
+                    args[0].type_name(),
+                ));
+            }
+            Ok(record.slots.first().cloned().unwrap_or(Value::Nil))
+        }
+        "native-comp-unit-set-file" => {
+            need_args(name, args, 2)?;
+            let Value::Record(id) = &args[0] else {
+                return Err(LispError::TypeError(
+                    "native-comp-unit".into(),
+                    args[0].type_name(),
+                ));
+            };
+            let Some(record) = interp.find_record_mut(*id) else {
+                return Err(LispError::TypeError(
+                    "native-comp-unit".into(),
+                    args[0].type_name(),
+                ));
+            };
+            if record.type_name != "native-comp-unit" {
+                return Err(LispError::TypeError(
+                    "native-comp-unit".into(),
+                    args[0].type_name(),
+                ));
+            }
+            if record.slots.is_empty() {
+                record.slots.push(args[1].clone());
+            } else {
+                record.slots[0] = args[1].clone();
+            }
+            Ok(args[1].clone())
         }
         "decode-char" => {
             need_args(name, args, 2)?;
@@ -6823,8 +7408,8 @@ pub fn call(
         // ── Reader ──
         "read" => {
             need_args(name, args, 1)?;
-            let s = args[0].as_string()?;
-            let mut reader = super::reader::Reader::new(s);
+            let s = string_text(&args[0])?;
+            let mut reader = super::reader::Reader::new(&s);
             match reader.read()? {
                 Some(val) => Ok(val),
                 None => Err(LispError::EndOfInput),
@@ -6950,17 +7535,19 @@ pub fn call(
         }
         "set" => {
             need_args(name, args, 2)?;
-            let symbol = args[0].as_symbol()?;
-            let value = args[1].clone();
-            interp.set_variable(symbol, value.clone(), env);
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
+            let buffer_id = interp.assignment_buffer_id(&symbol);
+            interp.notify_variable_watchers(&symbol, value.clone(), "set", buffer_id, env)?;
+            interp.set_symbol_value_cell(&symbol, value.clone());
             Ok(value)
         }
         "set-default" => {
             need_args(name, args, 2)?;
             let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-            let value = args[1].clone();
-            interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
-            interp.set_variable(&symbol, value.clone(), &mut Vec::new());
+            let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
+            interp.notify_variable_watchers(&symbol, value.clone(), "set", None, env)?;
+            interp.set_global_binding(&symbol, value.clone());
             Ok(value)
         }
         "customize-set-variable" => {
@@ -6970,7 +7557,7 @@ pub fn call(
         }
         "symbol-value" => {
             need_args(name, args, 1)?;
-            interp.lookup(args[0].as_symbol()?, env)
+            interp.symbol_value_cell(args[0].as_symbol()?)
         }
         "default-value" => {
             need_args(name, args, 1)?;
@@ -6978,6 +7565,29 @@ pub fn call(
             interp
                 .default_value(symbol)
                 .ok_or_else(|| LispError::Void(symbol.to_string()))
+        }
+        "default-toplevel-value" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            interp
+                .default_toplevel_value(symbol)
+                .ok_or_else(|| LispError::Void(symbol.to_string()))
+        }
+        "set-default-toplevel-value" => {
+            need_args(name, args, 2)?;
+            let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            let value = interp.prepare_variable_assignment(&symbol, args[1].clone())?;
+            interp.notify_variable_watchers(&symbol, value.clone(), "set", None, env)?;
+            interp.set_default_toplevel_value(&symbol, value.clone());
+            Ok(value)
+        }
+        "symbol-plist" => {
+            need_args(name, args, 1)?;
+            Ok(interp.symbol_plist(args[0].as_symbol()?))
+        }
+        "setplist" => {
+            need_args(name, args, 2)?;
+            interp.set_symbol_plist(args[0].as_symbol()?, args[1].clone())
         }
         "interactive-form" => {
             need_args(name, args, 1)?;
@@ -7044,12 +7654,36 @@ pub fn call(
         "makunbound" => {
             need_args(name, args, 1)?;
             let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
+            if symbol == "initial-window-system"
+                || matches!(
+                    symbol.as_str(),
+                    "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
+                )
+                || symbol.starts_with(':')
+            {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("setting-constant".into()),
+                    Value::Symbol(symbol),
+                ])));
+            }
             if interp
                 .buffer_local_value(interp.current_buffer_id(), &symbol)
                 .is_some()
             {
+                interp.notify_variable_watchers(
+                    &symbol,
+                    Value::Nil,
+                    "makunbound",
+                    if interp.is_auto_buffer_local(&symbol) {
+                        None
+                    } else {
+                        Some(interp.current_buffer_id())
+                    },
+                    env,
+                )?;
                 interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
             } else {
+                interp.notify_variable_watchers(&symbol, Value::Nil, "makunbound", None, env)?;
                 interp.remove_global_binding(&symbol);
             }
             Ok(Value::Symbol(symbol))
@@ -7062,6 +7696,16 @@ pub fn call(
             let target = args[1].as_symbol()?.to_string();
             let alias_value = interp.lookup_var(&alias, env);
             let target_value = interp.lookup_var(&target, env);
+            if !interp.variable_watchers(&alias).is_empty() {
+                interp.notify_variable_watchers(
+                    &alias,
+                    Value::Symbol(target.clone()),
+                    "defvaralias",
+                    None,
+                    env,
+                )?;
+                interp.clear_variable_watchers(&alias);
+            }
             interp.set_variable_alias(&alias, &target)?;
             interp.remove_global_binding(&alias);
             interp.remove_buffer_local_value(interp.current_buffer_id(), &alias);
@@ -7497,6 +8141,9 @@ pub fn call(
             let symbol = args[0].as_symbol()?;
             Ok(match interp.lookup_function(symbol, env) {
                 Ok(value) => value,
+                Err(_) if matches!(symbol, "if" | "progn") => {
+                    Value::BuiltinFunc(symbol.to_string())
+                }
                 Err(_) if symbol == "benchmark-run" => Value::list([
                     Value::Symbol("autoload".into()),
                     Value::String("benchmark.el".into()),
@@ -7513,6 +8160,10 @@ pub fn call(
                 ]),
                 Err(_) => Value::String(format!("#<function {}>", symbol)),
             })
+        }
+        "symbol-file" => {
+            need_arg_range(name, args, 1, 2)?;
+            Ok(Value::Nil)
         }
         "symbol-name" => {
             need_args(name, args, 1)?;
@@ -7906,6 +8557,10 @@ pub fn call(
             need_args(name, args, 1)?;
             if is_lambda_value(&args[0]) {
                 validate_lambda_form(&args[0])?;
+                return Ok(interp.create_record("byte-code-function", vec![args[0].clone()]));
+            }
+            if matches!(args[0], Value::Lambda(_, _, _)) {
+                return Ok(interp.create_record("byte-code-function", vec![args[0].clone()]));
             }
             Ok(args[0].clone())
         }
@@ -8127,6 +8782,15 @@ pub fn call(
         }
         "kill-all-local-variables" => {
             need_args(name, args, 0)?;
+            for (name, _) in interp.buffer_local_variables(interp.current_buffer_id()) {
+                interp.notify_variable_watchers(
+                    &name,
+                    Value::Nil,
+                    "makunbound",
+                    Some(interp.current_buffer_id()),
+                    env,
+                )?;
+            }
             interp.clear_buffer_local_state(interp.current_buffer_id());
             Ok(Value::Nil)
         }
@@ -8145,6 +8809,14 @@ pub fn call(
                 .map(|count| count.get() as i64)
                 .unwrap_or(1);
             Ok(Value::Integer(count.max(1)))
+        }
+        "current-cpu-time" => {
+            need_args(name, args, 0)?;
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            Ok(Value::list([normalize_bigint_value(BigInt::from(nanos))]))
         }
         "type-of" => {
             need_args(name, args, 1)?;
@@ -8174,6 +8846,74 @@ pub fn call(
                 Value::Finalizer(_) => "finalizer",
             };
             Ok(Value::Symbol(name.into()))
+        }
+        "cl-type-of" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Symbol(cl_type_name(interp, &args[0])?.into()))
+        }
+        "cl-find-class" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(if is_builtin_class_name(symbol) {
+                Value::Symbol(symbol.into())
+            } else {
+                Value::Nil
+            })
+        }
+        "cl--class-allparents" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(if symbol == "t" {
+                Value::list([Value::Symbol("t".into())])
+            } else {
+                Value::list([Value::Symbol(symbol.into()), Value::Symbol("t".into())])
+            })
+        }
+        "cl--class-children" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
+        }
+        "built-in-class-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if args[0].as_symbol().ok().is_some_and(is_builtin_class_name) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "cl-typep" => {
+            need_args(name, args, 2)?;
+            let target = args[1].as_symbol()?;
+            let actual = cl_type_name(interp, &args[0])?;
+            let matches = target == "t"
+                || target == actual
+                || (target == "function"
+                    && matches!(
+                        actual,
+                        "primitive-function"
+                            | "special-form"
+                            | "interpreted-function"
+                            | "byte-code-function"
+                    ));
+            Ok(if matches { Value::T } else { Value::Nil })
+        }
+        "cl-functionp" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(
+                    cl_type_name(interp, &args[0])?,
+                    "primitive-function"
+                        | "special-form"
+                        | "interpreted-function"
+                        | "byte-code-function"
+                ) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
 
         // ── Overlay operations ──
@@ -8751,6 +9491,76 @@ pub fn call(
             items.extend(args.iter().cloned());
             Ok(Value::list(items))
         }
+        "bool-vector-count-population" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(
+                bool_vector_bits(interp, &args[0])?
+                    .into_iter()
+                    .filter(|bit| *bit)
+                    .count() as i64,
+            ))
+        }
+        "bool-vector-count-consecutive" => {
+            need_args(name, args, 3)?;
+            let bits = bool_vector_bits(interp, &args[0])?;
+            let target = args[1].is_truthy();
+            let start = args[2].as_integer()?.max(0) as usize;
+            let mut count = 0usize;
+            for bit in bits.into_iter().skip(start) {
+                if bit != target {
+                    break;
+                }
+                count += 1;
+            }
+            Ok(Value::Integer(count as i64))
+        }
+        "bool-vector-intersection"
+        | "bool-vector-union"
+        | "bool-vector-exclusive-or"
+        | "bool-vector-set-difference" => {
+            need_arg_range(name, args, 2, 3)?;
+            let left = bool_vector_bits(interp, &args[0])?;
+            let right = bool_vector_bits(interp, &args[1])?;
+            if left.len() != right.len() {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            let result = left
+                .iter()
+                .zip(&right)
+                .map(|(left_bit, right_bit)| match name {
+                    "bool-vector-intersection" => *left_bit && *right_bit,
+                    "bool-vector-union" => *left_bit || *right_bit,
+                    "bool-vector-exclusive-or" => *left_bit ^ *right_bit,
+                    "bool-vector-set-difference" => *left_bit && !*right_bit,
+                    _ => false,
+                })
+                .collect::<Vec<_>>();
+            if let Some(target) = args.get(2).filter(|target| !target.is_nil()) {
+                let current = bool_vector_bits(interp, target)?;
+                if current.len() != result.len() {
+                    return Err(LispError::Signal("Args out of range".into()));
+                }
+                let mut changed = false;
+                for (index, bit) in result.into_iter().enumerate() {
+                    if current[index] != bit {
+                        changed = true;
+                    }
+                    set_bool_vector_bit(interp, target, index, bit)?;
+                }
+                Ok(if changed { target.clone() } else { Value::Nil })
+            } else {
+                Ok(make_bool_vector_value(interp, result))
+            }
+        }
+        "bool-vector-not" => {
+            need_args(name, args, 1)?;
+            Ok(make_bool_vector_value(
+                interp,
+                bool_vector_bits(interp, &args[0])?
+                    .into_iter()
+                    .map(|bit| !bit),
+            ))
+        }
 
         "aref" => {
             need_args(name, args, 2)?;
@@ -8773,6 +9583,13 @@ pub fn call(
                     let record = interp.find_record(*id).ok_or_else(|| {
                         LispError::TypeError("record".into(), format!("record<{id}>"))
                     })?;
+                    if record.type_name == "bool-vector" {
+                        return record
+                            .slots
+                            .get(idx)
+                            .cloned()
+                            .ok_or_else(|| LispError::Signal("Args out of range".into()));
+                    }
                     if idx == 0 {
                         Ok(Value::Symbol(record.type_name.clone()))
                     } else {
@@ -8799,6 +9616,15 @@ pub fn call(
                 Value::CharTable(id) => {
                     let key = args[1].as_integer()? as u32;
                     interp.char_table_set(*id, key, args[2].clone())?;
+                    Ok(args[2].clone())
+                }
+                value if is_bool_vector_value(interp, value) => {
+                    set_bool_vector_bit(
+                        interp,
+                        value,
+                        args[1].as_integer()? as usize,
+                        args[2].is_truthy(),
+                    )?;
                     Ok(args[2].clone())
                 }
                 _ => Ok(args[2].clone()),
@@ -9953,6 +10779,159 @@ pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     } else {
         Ok(items)
     }
+}
+
+fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Option<&'a str> {
+    let Value::Record(id) = value else {
+        return None;
+    };
+    interp
+        .find_record(*id)
+        .map(|record| record.type_name.as_str())
+}
+
+fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
+    record_type_name(interp, value) == Some("bool-vector")
+}
+
+fn bool_vector_values(interp: &Interpreter, value: &Value) -> Result<Vec<Value>, LispError> {
+    let Value::Record(id) = value else {
+        return Err(LispError::TypeError(
+            "bool-vector".into(),
+            value.type_name(),
+        ));
+    };
+    let record = interp
+        .find_record(*id)
+        .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
+    if record.type_name != "bool-vector" {
+        return Err(LispError::TypeError(
+            "bool-vector".into(),
+            value.type_name(),
+        ));
+    }
+    Ok(record.slots.clone())
+}
+
+fn bool_vector_bits(interp: &Interpreter, value: &Value) -> Result<Vec<bool>, LispError> {
+    Ok(bool_vector_values(interp, value)?
+        .into_iter()
+        .map(|slot| slot.is_truthy())
+        .collect())
+}
+
+fn make_bool_vector_value(interp: &mut Interpreter, bits: impl IntoIterator<Item = bool>) -> Value {
+    interp.create_record(
+        "bool-vector",
+        bits.into_iter()
+            .map(|bit| if bit { Value::T } else { Value::Nil })
+            .collect(),
+    )
+}
+
+fn set_bool_vector_bit(
+    interp: &mut Interpreter,
+    value: &Value,
+    index: usize,
+    bit: bool,
+) -> Result<(), LispError> {
+    let Value::Record(id) = value else {
+        return Err(LispError::TypeError(
+            "bool-vector".into(),
+            value.type_name(),
+        ));
+    };
+    let record = interp
+        .find_record_mut(*id)
+        .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
+    if record.type_name != "bool-vector" {
+        return Err(LispError::TypeError(
+            "bool-vector".into(),
+            value.type_name(),
+        ));
+    }
+    if index >= record.slots.len() {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    record.slots[index] = if bit { Value::T } else { Value::Nil };
+    Ok(())
+}
+
+fn is_builtin_class_name(name: &str) -> bool {
+    matches!(
+        name,
+        "t" | "null"
+            | "boolean"
+            | "symbol"
+            | "symbol-with-pos"
+            | "fixnum"
+            | "bignum"
+            | "integer"
+            | "float"
+            | "string"
+            | "vector"
+            | "bool-vector"
+            | "char-table"
+            | "cons"
+            | "buffer"
+            | "marker"
+            | "overlay"
+            | "finalizer"
+            | "record"
+            | "native-comp-unit"
+            | "primitive-function"
+            | "special-form"
+            | "interpreted-function"
+            | "byte-code-function"
+            | "subr"
+            | "function"
+    )
+}
+
+fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'static str, LispError> {
+    let (min_fixnum, max_fixnum) = fixnum_bounds(interp)?;
+    let name = match value {
+        Value::Nil => "null",
+        Value::T => "boolean",
+        Value::Integer(number) => {
+            if *number >= min_fixnum && *number <= max_fixnum {
+                "fixnum"
+            } else {
+                "bignum"
+            }
+        }
+        Value::BigInteger(number) => {
+            if number >= &BigInt::from(min_fixnum) && number <= &BigInt::from(max_fixnum) {
+                "fixnum"
+            } else {
+                "bignum"
+            }
+        }
+        Value::Float(_) => "float",
+        Value::String(_) | Value::StringObject(_) => "string",
+        Value::Symbol(_) => "symbol",
+        Value::Cons(_, _) if is_vector_value(value) => "vector",
+        Value::Cons(_, _) => "cons",
+        Value::BuiltinFunc(name) if matches!(name.as_str(), "if" | "progn") => "special-form",
+        Value::BuiltinFunc(_) => "primitive-function",
+        Value::Lambda(_, _, _) => "interpreted-function",
+        Value::Buffer(_, _) => "buffer",
+        Value::Marker(_) => "marker",
+        Value::Overlay(_) => "overlay",
+        Value::CharTable(_) => "char-table",
+        Value::Record(id) => match interp
+            .find_record(*id)
+            .map(|record| record.type_name.as_str())
+            .unwrap_or("record")
+        {
+            "bool-vector" => "bool-vector",
+            "native-comp-unit" => "native-comp-unit",
+            "byte-code-function" => "byte-code-function",
+            _ => "record",
+        },
+        Value::Finalizer(_) => "finalizer",
+    };
+    Ok(name)
 }
 
 fn buffer_position_to_byte(buffer: &crate::buffer::Buffer, pos: usize) -> Option<usize> {
@@ -12194,6 +13173,7 @@ fn encode_coding_value(
     let string = string_like(value)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
     let Some(coding) = coding else {
+        set_last_coding_system_used(interp, "no-conversion", env);
         return if nocopy {
             Ok(value.clone())
         } else {
@@ -12225,6 +13205,7 @@ fn decode_coding_text(
     let string = string_like(value)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
     let Some(coding) = coding else {
+        set_last_coding_system_used(interp, "no-conversion", env);
         return if nocopy {
             Ok(value.clone())
         } else {
@@ -14606,7 +15587,14 @@ pub(crate) fn aset_string_value(
     let mut string = string_like(target)
         .ok_or_else(|| LispError::TypeError("string".into(), target.type_name()))?;
     let code = new_value.as_integer()?;
-    let ch = if !string.multibyte && (0..=255).contains(&code) {
+    let mut chars: Vec<char> = string.text.chars().collect();
+    if index >= chars.len() {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    let ch = if !string.multibyte {
+        if !(0..=255).contains(&code) {
+            return Err(LispError::Signal("Invalid character".into()));
+        }
         let byte = code as u8;
         if byte <= 0x7F {
             byte as char
@@ -14614,12 +15602,12 @@ pub(crate) fn aset_string_value(
             raw_byte_regex_char(byte)
         }
     } else {
+        let current = chars[index] as u32;
+        if current > 0x7F || !(0..=0x7F).contains(&code) {
+            return Err(LispError::Signal("Invalid character".into()));
+        }
         char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))?
     };
-    let mut chars: Vec<char> = string.text.chars().collect();
-    if index >= chars.len() {
-        return Err(LispError::Signal("Args out of range".into()));
-    }
     chars[index] = ch;
     string.text = chars.into_iter().collect();
     Ok(make_shared_string_value_with_multibyte(
@@ -16867,53 +17855,126 @@ fn call_time_builtin(
 }
 
 fn numeric_lt(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
-    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
-        return Ok(numeric_to_f64(interp, left)? < numeric_to_f64(interp, right)?);
-    }
-    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
-        return Ok(integer_like_bigint(interp, left)? < integer_like_bigint(interp, right)?);
-    }
-    Ok(integer_like_i64(interp, left)? < integer_like_i64(interp, right)?)
+    Ok(matches!(
+        numeric_ordering(interp, left, right)?,
+        Some(Ordering::Less)
+    ))
 }
 
 fn numeric_eq(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
-    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
-        return Ok(numeric_to_f64(interp, left)? == numeric_to_f64(interp, right)?);
-    }
-    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
-        return Ok(integer_like_bigint(interp, left)? == integer_like_bigint(interp, right)?);
-    }
-    Ok(integer_like_i64(interp, left)? == integer_like_i64(interp, right)?)
+    Ok(matches!(
+        numeric_ordering(interp, left, right)?,
+        Some(Ordering::Equal)
+    ))
 }
 
 fn numeric_gt(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
-    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
-        return Ok(numeric_to_f64(interp, left)? > numeric_to_f64(interp, right)?);
-    }
-    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
-        return Ok(integer_like_bigint(interp, left)? > integer_like_bigint(interp, right)?);
-    }
-    Ok(integer_like_i64(interp, left)? > integer_like_i64(interp, right)?)
+    Ok(matches!(
+        numeric_ordering(interp, left, right)?,
+        Some(Ordering::Greater)
+    ))
 }
 
 fn numeric_lte(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
-    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
-        return Ok(numeric_to_f64(interp, left)? <= numeric_to_f64(interp, right)?);
-    }
-    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
-        return Ok(integer_like_bigint(interp, left)? <= integer_like_bigint(interp, right)?);
-    }
-    Ok(integer_like_i64(interp, left)? <= integer_like_i64(interp, right)?)
+    Ok(matches!(
+        numeric_ordering(interp, left, right)?,
+        Some(Ordering::Less | Ordering::Equal)
+    ))
 }
 
 fn numeric_gte(interp: &Interpreter, left: &Value, right: &Value) -> Result<bool, LispError> {
-    if matches!(left, Value::Float(_)) || matches!(right, Value::Float(_)) {
-        return Ok(numeric_to_f64(interp, left)? >= numeric_to_f64(interp, right)?);
+    Ok(matches!(
+        numeric_ordering(interp, left, right)?,
+        Some(Ordering::Greater | Ordering::Equal)
+    ))
+}
+
+fn numeric_ordering(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+) -> Result<Option<Ordering>, LispError> {
+    if matches!(left, Value::Float(value) if value.is_nan())
+        || matches!(right, Value::Float(value) if value.is_nan())
+    {
+        return Ok(None);
     }
-    if matches!(left, Value::BigInteger(_)) || matches!(right, Value::BigInteger(_)) {
-        return Ok(integer_like_bigint(interp, left)? >= integer_like_bigint(interp, right)?);
+
+    if let (Some(left_exact), Some(right_exact)) = (
+        exact_binary_rational(interp, left)?,
+        exact_binary_rational(interp, right)?,
+    ) {
+        return Ok(Some(compare_exact_binary_rationals(
+            left_exact,
+            right_exact,
+        )));
     }
-    Ok(integer_like_i64(interp, left)? >= integer_like_i64(interp, right)?)
+
+    match (left, right) {
+        (Value::Float(left), Value::Float(right)) => Ok(left.partial_cmp(right)),
+        (Value::Float(left), _) if left.is_infinite() => Ok(Some(if left.is_sign_positive() {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        })),
+        (_, Value::Float(right)) if right.is_infinite() => Ok(Some(if right.is_sign_positive() {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        })),
+        _ => Ok(numeric_to_f64(interp, left)?.partial_cmp(&numeric_to_f64(interp, right)?)),
+    }
+}
+
+fn compare_exact_binary_rationals(left: (BigInt, i32), right: (BigInt, i32)) -> Ordering {
+    let (left_sig, left_exp) = left;
+    let (right_sig, right_exp) = right;
+    let exponent_delta = left_exp - right_exp;
+    if exponent_delta >= 0 {
+        (left_sig << exponent_delta as usize).cmp(&right_sig)
+    } else {
+        left_sig.cmp(&(right_sig << (-exponent_delta) as usize))
+    }
+}
+
+fn extremum_numeric_value(
+    interp: &Interpreter,
+    args: &[Value],
+    choose_max: bool,
+) -> Result<Value, LispError> {
+    let mut best = numeric_result_value(interp, &args[0])?;
+    if matches!(best, Value::Float(value) if value.is_nan()) {
+        return Ok(best);
+    }
+
+    for arg in &args[1..] {
+        let candidate = numeric_result_value(interp, arg)?;
+        if matches!(candidate, Value::Float(value) if value.is_nan()) {
+            return Ok(candidate);
+        }
+        let ordering = numeric_ordering(interp, &best, &candidate)?;
+        if (choose_max && matches!(ordering, Some(Ordering::Less)))
+            || (!choose_max && matches!(ordering, Some(Ordering::Greater)))
+        {
+            best = candidate;
+        }
+    }
+
+    Ok(best)
+}
+
+fn numeric_result_value(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    match value {
+        Value::Integer(number) => Ok(Value::Integer(*number)),
+        Value::BigInteger(number) => Ok(normalize_bigint_value(number.clone())),
+        Value::Float(number) => Ok(Value::Float(*number)),
+        Value::Marker(id) => {
+            Ok(Value::Integer(interp.marker_position(*id).ok_or_else(|| {
+                LispError::TypeError("number-or-marker-p".into(), value.type_name())
+            })? as i64))
+        }
+        _ => Err(LispError::TypeError("number".into(), value.type_name())),
+    }
 }
 
 fn parse_string_to_number_value(text: &str, base: Option<i64>) -> Result<Value, LispError> {
@@ -18450,6 +19511,9 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         return left_string.text == right_string.text;
     }
+    if is_bool_vector_value(interp, left) && is_bool_vector_value(interp, right) {
+        return bool_vector_values(interp, left).ok() == bool_vector_values(interp, right).ok();
+    }
     if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
         && matches!(left, Value::Cons(_, _))
         && matches!(right, Value::Cons(_, _))
@@ -18467,7 +19531,7 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
             &BigInt::from(*a) == b
         }
-        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
@@ -18502,7 +19566,7 @@ fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
         (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
             &BigInt::from(*a) == b
         }
-        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
             values_equal_including_properties(a_car, b_car)
@@ -19518,6 +20582,29 @@ fn is_vector_value(value: &Value) -> bool {
             Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
         )
     })
+}
+
+fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
+    let max_fixnum = interp
+        .default_value("most-positive-fixnum")
+        .ok_or_else(|| LispError::Void("most-positive-fixnum".into()))?
+        .as_integer()?;
+    let min_fixnum = interp
+        .default_value("most-negative-fixnum")
+        .ok_or_else(|| LispError::Void("most-negative-fixnum".into()))?
+        .as_integer()?;
+    Ok((min_fixnum, max_fixnum))
+}
+
+fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
+    let Value::Record(id) = value else {
+        return None;
+    };
+    let record = interp.find_record(*id)?;
+    if record.type_name != "symbol-with-pos" || record.slots.len() < 2 {
+        return None;
+    }
+    Some((record.slots[0].clone(), record.slots[1].as_integer().ok()?))
 }
 
 fn is_lambda_value(value: &Value) -> bool {
