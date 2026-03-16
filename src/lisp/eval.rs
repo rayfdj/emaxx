@@ -673,7 +673,7 @@ impl Interpreter {
     pub fn new() -> Self {
         let main_thread_id = 1u64;
         let standard_syntax_table_id = 1u64;
-        Interpreter {
+        let mut interp = Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
@@ -802,7 +802,10 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             condition_case_depth: 0,
-        }
+        };
+        let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
+        interp.set_global_binding("global-map", global_map);
+        interp
     }
 
     pub fn set_load_path(&mut self, load_path: Vec<PathBuf>) {
@@ -10612,6 +10615,35 @@ mod tests {
                 Value::Symbol("bar".into()),
                 Value::Symbol("bar".into()),
                 Value::T,
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn global_map_supports_mouse_style_bindings() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (current-global-map))
+                      (event 'mouse-5))
+                  (global-set-key [mouse-5] 'mwheel-scroll)
+                  (global-set-key [(shift mouse-4)] 'mwheel-scroll)
+                  (list
+                   (lookup-key map `[,event])
+                   (lookup-key map [(shift mouse-4)])
+                   (progn
+                     (global-unset-key [mouse-5])
+                     (lookup-key map [mouse-5]))
+                   (progn
+                     (global-unset-key [(shift mouse-4)])
+                     (lookup-key map [(shift mouse-4)]))))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("mwheel-scroll".into()),
+                Value::Symbol("mwheel-scroll".into()),
+                Value::Nil,
                 Value::Nil,
             ])
         );
