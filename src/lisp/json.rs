@@ -1002,14 +1002,13 @@ fn serialize_object_entries(
 }
 
 fn is_alist_entry(value: &Value) -> bool {
-    matches!(value, Value::Cons(car, _) if matches!(car.as_ref(), Value::Symbol(_)))
+    matches!(value.cons_values(), Some((Value::Symbol(_), _)))
 }
 
 fn alist_entry_parts(entry: &Value) -> Result<(Value, Value), LispError> {
-    let Value::Cons(key, value) = entry else {
-        return Err(LispError::TypeError("cons".into(), entry.type_name()));
-    };
-    Ok((*key.clone(), *value.clone()))
+    entry
+        .cons_values()
+        .ok_or_else(|| LispError::TypeError("cons".into(), entry.type_name()))
 }
 
 fn object_key_string(value: &Value) -> Result<String, LispError> {
@@ -1066,9 +1065,10 @@ fn list_to_entries(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
     value
         .to_vec()?
         .into_iter()
-        .map(|entry| match entry {
-            Value::Cons(key, value) => Ok((*key, *value)),
-            other => Err(LispError::TypeError("cons".into(), other.type_name())),
+        .map(|entry| {
+            entry
+                .cons_values()
+                .ok_or_else(|| LispError::TypeError("cons".into(), entry.type_name()))
         })
         .collect()
 }
