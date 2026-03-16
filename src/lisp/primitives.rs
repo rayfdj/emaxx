@@ -24,6 +24,7 @@ use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use unicode_width::UnicodeWidthChar;
@@ -31,6 +32,7 @@ use unicode_width::UnicodeWidthChar;
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
+static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
@@ -770,6 +772,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-trim"
             | "string-clean-whitespace"
             | "url-hexify-string"
+            | "url-encode-url"
+            | "base64-decode-string"
             // Buffer operations
             | "insert"
             | "insert-and-inherit"
@@ -1055,6 +1059,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-free-disk-space"
             | "file-symlink-p"
             | "make-symbolic-link"
+            | "copy-file"
             | "delete-file"
             | "delete-file-internal"
             | "delete-directory"
@@ -1062,6 +1067,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-directory"
             | "mkdir"
             | "make-directory-internal"
+            | "make-temp-name"
             | "make-temp-file-internal"
             | "insert-directory"
             | "insert-file-contents"
@@ -1233,6 +1239,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "getenv"
             | "getenv-internal"
             | "user-login-name"
+            | "system-name"
             | "user-full-name"
             | "symbol-value"
             | "symbol-function"
@@ -3301,6 +3308,10 @@ pub fn call(
             let s: String = std::iter::repeat_n(c, length as usize).collect();
             Ok(Value::String(s))
         }
+        "make-temp-name" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(make_temp_name(&string_text(&args[0])?)))
+        }
         "make-vector" => {
             need_args(name, args, 2)?;
             let length = args[0].as_integer()?;
@@ -3852,8 +3863,7 @@ pub fn call(
             }
             let pattern = string_like(&args[0])
                 .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
-            let replacement = string_like(&args[1])
-                .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
+            let replacement = string_like(&args[1]);
             let source = string_like(&args[2])
                 .ok_or_else(|| LispError::TypeError("string".into(), args[2].type_name()))?;
             let literal = args.get(4).is_some_and(Value::is_truthy);
@@ -3896,12 +3906,20 @@ pub fn call(
                     .ok_or_else(|| LispError::Signal("No previous search".into()))?;
 
                 result.push_str(&slice_string_chars(&source.text, search_pos, replace_start));
-                result.push_str(&expand_replace_match_text(
-                    &replacement.text,
-                    &match_data,
-                    literal,
-                    &source.text,
-                )?);
+                if let Some(replacement) = &replacement {
+                    result.push_str(&expand_replace_match_text(
+                        &replacement.text,
+                        &match_data,
+                        literal,
+                        &source.text,
+                    )?);
+                } else {
+                    set_match_data(interp, search_pos, &tail, &captures);
+                    let matched_text = slice_string_chars(&source.text, replace_start, replace_end);
+                    let value =
+                        call_function_value(interp, &args[1], &[Value::String(matched_text)], env)?;
+                    result.push_str(&string_text(&value)?);
+                }
                 result.push_str(&slice_string_chars(&source.text, replace_end, full_end));
 
                 if full_start == full_end {
@@ -3962,6 +3980,16 @@ pub fn call(
                 }
             }
             Ok(Value::String(output))
+        }
+        "url-encode-url" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(url_encode_url(&string_text(&args[0])?)))
+        }
+        "base64-decode-string" => {
+            need_arg_range(name, args, 1, 3)?;
+            let base64url = args.get(1).is_some_and(Value::is_truthy);
+            let ignore_invalid = args.get(2).is_some_and(Value::is_truthy);
+            decode_base64_string_value(&args[0], base64url, ignore_invalid)
         }
         "byte-to-string" => {
             need_args(name, args, 1)?;
@@ -6798,6 +6826,21 @@ pub fn call(
             fs::remove_file(path).map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(Value::Nil)
         }
+        "copy-file" => {
+            need_arg_range(name, args, 2, 6)?;
+            let source = string_text(&args[0])?;
+            validate_file_name(&source)?;
+            let mut target = string_text(&args[1])?;
+            validate_file_name(&target)?;
+            if directory_name_p(&target) {
+                target = file_name_concat(&[target, file_name_nondirectory(&source)]);
+            }
+            if fs::metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
+                return Err(LispError::Signal(format!("File already exists: {target}")));
+            }
+            fs::copy(&source, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
         "delete-file-internal" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -8535,6 +8578,12 @@ pub fn call(
                 current_user_login_name().unwrap_or_else(|| "user".into()),
             ))
         }
+        "system-name" => {
+            if !args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(Value::String(system_name_value()))
+        }
         "user-full-name" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -10106,6 +10155,10 @@ pub fn call(
         "aset" => {
             need_args(name, args, 3)?;
             match &args[0] {
+                value if is_vector_value(value) => {
+                    aset_vector_value(value, args[1].as_integer()? as usize, args[2].clone())?;
+                    Ok(args[2].clone())
+                }
                 Value::CharTable(id) => {
                     let key = args[1].as_integer()? as u32;
                     interp.char_table_set(*id, key, args[2].clone())?;
@@ -10120,7 +10173,7 @@ pub fn call(
                     )?;
                     Ok(args[2].clone())
                 }
-                _ => Ok(args[2].clone()),
+                _ => Err(LispError::TypeError("array".into(), args[0].type_name())),
             }
         }
 
@@ -14252,6 +14305,168 @@ fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
     }
 }
 
+fn make_temp_name(prefix: &str) -> String {
+    let counter = TEMP_NAME_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let random = rand_simple().unsigned_abs();
+    format!("{prefix}{nanos:x}{counter:x}{random:x}")
+}
+
+fn aset_vector_value(target: &Value, index: usize, new_value: Value) -> Result<(), LispError> {
+    let slot = if is_vector_value(target) {
+        index + 1
+    } else {
+        index
+    };
+    let mut current = target.clone();
+    let mut offset = 0usize;
+    loop {
+        match current {
+            Value::Cons(car, cdr) => {
+                if offset == slot {
+                    *car.borrow_mut() = new_value;
+                    return Ok(());
+                }
+                offset += 1;
+                current = cdr.borrow().clone();
+            }
+            Value::Nil => return Err(LispError::Signal("Args out of range".into())),
+            _ => return Err(LispError::TypeError("array".into(), target.type_name())),
+        }
+    }
+}
+
+fn base64_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C)
+}
+
+fn url_encode_url(input: &str) -> String {
+    let mut output = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(ch) {
+            output.push(ch);
+        } else {
+            for byte in ch.to_string().bytes() {
+                output.push('%');
+                output.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    output
+}
+
+fn base64_char_value(byte: u8, base64url: bool) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' if !base64url => Some(62),
+        b'/' if !base64url => Some(63),
+        b'-' if base64url => Some(62),
+        b'_' if base64url => Some(63),
+        _ => None,
+    }
+}
+
+fn next_base64_byte(
+    bytes: &[u8],
+    cursor: &mut usize,
+    base64url: bool,
+    ignore_invalid: bool,
+) -> Result<Option<u8>, LispError> {
+    while let Some(&byte) = bytes.get(*cursor) {
+        *cursor += 1;
+        if base64_whitespace(byte) {
+            continue;
+        }
+        if let Some(value) = base64_char_value(byte, base64url) {
+            return Ok(Some(value));
+        }
+        if ignore_invalid {
+            continue;
+        }
+        return Err(LispError::Signal("Invalid base64 data".into()));
+    }
+    Ok(None)
+}
+
+fn next_base64_tail(
+    bytes: &[u8],
+    cursor: &mut usize,
+    base64url: bool,
+    ignore_invalid: bool,
+) -> Result<Option<Base64Tail>, LispError> {
+    while let Some(&byte) = bytes.get(*cursor) {
+        *cursor += 1;
+        if base64_whitespace(byte) {
+            continue;
+        }
+        if let Some(value) = base64_char_value(byte, base64url) {
+            return Ok(Some(Base64Tail::Value(value)));
+        }
+        if !ignore_invalid && byte == b'=' {
+            return Ok(Some(Base64Tail::Padding));
+        }
+        if ignore_invalid {
+            continue;
+        }
+        return Err(LispError::Signal("Invalid base64 data".into()));
+    }
+    Ok(None)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Base64Tail {
+    Value(u8),
+    Padding,
+}
+
+fn decode_base64_string_value(
+    value: &Value,
+    base64url: bool,
+    ignore_invalid: bool,
+) -> Result<Value, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    let bytes = encode_raw_text_bytes(&string.text)?;
+    let mut cursor = 0usize;
+    let mut decoded = Vec::with_capacity((bytes.len() / 4) * 3);
+
+    while let Some(first) = next_base64_byte(&bytes, &mut cursor, base64url, ignore_invalid)? {
+        let Some(second) = next_base64_byte(&bytes, &mut cursor, base64url, ignore_invalid)? else {
+            return Err(LispError::Signal("Invalid base64 data".into()));
+        };
+        decoded.push((first << 2) | (second >> 4));
+
+        match next_base64_tail(&bytes, &mut cursor, base64url, ignore_invalid)? {
+            Some(Base64Tail::Value(third)) => {
+                decoded.push(((second & 0x0F) << 4) | (third >> 2));
+                match next_base64_tail(&bytes, &mut cursor, base64url, ignore_invalid)? {
+                    Some(Base64Tail::Value(fourth)) => {
+                        decoded.push(((third & 0x03) << 6) | fourth);
+                    }
+                    Some(Base64Tail::Padding) => {}
+                    None if base64url || ignore_invalid => break,
+                    None => return Err(LispError::Signal("Invalid base64 data".into())),
+                }
+            }
+            Some(Base64Tail::Padding) => {
+                match next_base64_tail(&bytes, &mut cursor, base64url, ignore_invalid)? {
+                    Some(Base64Tail::Padding) => {}
+                    _ => return Err(LispError::Signal("Invalid base64 data".into())),
+                }
+            }
+            None if base64url || ignore_invalid => break,
+            None => return Err(LispError::Signal("Invalid base64 data".into())),
+        }
+    }
+
+    Ok(bytes_to_unibyte_value(&decoded))
+}
+
 fn ascii_only_text(text: &str) -> bool {
     text.chars()
         .all(|ch| raw_byte_from_regex_char(ch).unwrap_or_default() <= 0x7F && (ch as u32) <= 0x7F)
@@ -15191,6 +15406,18 @@ pub(crate) fn current_user_login_name() -> Option<String> {
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(|| std::env::var("USER").ok().filter(|value| !value.is_empty()))
+}
+
+pub(crate) fn system_name_value() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("COMPUTERNAME")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "localhost".into())
 }
 
 pub(crate) fn current_user_full_name() -> Option<String> {
@@ -20141,7 +20368,7 @@ fn write_region_value(
     validate_file_name(&path)?;
     let text = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
         interp.buffer.buffer_string()
-    } else if string_like(&args[0]).is_some() && args.get(1).is_none_or(Value::is_nil) {
+    } else if string_like(&args[0]).is_some() {
         string_text(&args[0])?
     } else {
         let start = position_from_value(interp, &args[0])?;
@@ -22918,6 +23145,12 @@ fn function_documentation(interp: &Interpreter, value: &Value, env: &Env) -> Opt
         Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
         _ => None,
     })
+}
+
+pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool {
+    is_vector_value(value)
+        || is_bool_vector_value(interp, value)
+        || matches!(value, Value::CharTable(_))
 }
 
 fn is_vector_value(value: &Value) -> bool {
