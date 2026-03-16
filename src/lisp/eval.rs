@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -704,6 +705,7 @@ impl Interpreter {
                 "line-spacing".into(),
                 "left-margin".into(),
                 "overwrite-mode".into(),
+                "process-environment".into(),
                 "scroll-up-aggressively".into(),
                 "standard-output".into(),
                 "vertical-scroll-bar".into(),
@@ -4003,6 +4005,7 @@ impl Interpreter {
             ),
             "buffer-display-table" => Some(Value::Nil),
             "last-coding-system-used" => Some(Value::Nil),
+            "locale-coding-system" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
@@ -7157,7 +7160,12 @@ impl Interpreter {
             ));
         }
         let bindings = items[1].to_vec()?;
-        let mut previous = Vec::new();
+        let mut updated_environment = primitives::process_environment_entries(
+            &self
+                .lookup_var("process-environment", env)
+                .unwrap_or(Value::Nil),
+        )?;
+        let mut os_restores: Vec<(String, Option<OsString>, Option<String>)> = Vec::new();
         for binding in bindings {
             let pair = binding.to_vec()?;
             if pair.len() != 2 {
@@ -7170,25 +7178,40 @@ impl Interpreter {
             } else {
                 Some(primitives::string_text(&value)?)
             };
-            previous.push((name.clone(), std::env::var_os(&name)));
+            primitives::setenv_in_environment_entries(
+                &mut updated_environment,
+                &name,
+                value.as_deref(),
+                true,
+            );
+            let previous = std::env::var_os(&name);
+            os_restores.push((name, previous, value));
+        }
+        let restore = self.bind_special_variable(
+            "process-environment",
+            primitives::process_environment_from_entries(&updated_environment),
+            env,
+        )?;
+        for (name, _, value) in &os_restores {
             unsafe {
                 if let Some(value) = value {
-                    std::env::set_var(&name, value);
+                    std::env::set_var(name, value);
                 } else {
-                    std::env::remove_var(&name);
+                    std::env::remove_var(name);
                 }
             }
         }
         let result = self.sf_progn(&items[2..], env);
-        for (name, value) in previous.into_iter().rev() {
+        for (name, previous, _) in os_restores.into_iter().rev() {
             unsafe {
-                if let Some(value) = value {
+                if let Some(value) = previous {
                     std::env::set_var(&name, value);
                 } else {
                     std::env::remove_var(&name);
                 }
             }
         }
+        let _ = self.restore_special_binding(restore, env);
         result
     }
 
@@ -11356,6 +11379,53 @@ mod tests {
                     mismatch))"#,
             ),
             Value::Nil
+        );
+    }
+
+    #[test]
+    fn string_match_supports_explicitly_numbered_groups() {
+        assert_string_value(
+            eval_str(
+                r#"
+                (progn
+                  (string-match
+                   "\\$\\(?:\\(?1:[[:alnum:]_]+\\)\\|{\\(?1:[^{}]+\\)}\\|\\$\\)"
+                   "${HOME}")
+                  (match-string 1 "${HOME}"))"#,
+            ),
+            "HOME",
+        );
+    }
+
+    #[test]
+    fn replace_match_returns_updated_string_for_string_targets() {
+        assert_string_value(
+            eval_str(
+                r#"
+                (let ((text "foo_${HOME}_bar"))
+                  (string-match
+                   "\\$\\(?:\\(?1:[[:alnum:]_]+\\)\\|{\\(?1:[^{}]+\\)}\\|\\$\\)"
+                   text)
+                  (replace-match "qux" t t text))"#,
+            ),
+            "foo_qux_bar",
+        );
+    }
+
+    #[test]
+    fn with_environment_variables_binds_process_environment_dynamically() {
+        assert_string_value(
+            eval_str(
+                r#"
+                (progn
+                  (defun emaxx-test-current-env (name)
+                    (getenv-internal name))
+                  (let ((name "EMAXX_DYNAMIC_ENV_TEST")
+                        (value "value"))
+                    (with-environment-variables ((name value))
+                      (emaxx-test-current-env name))))"#,
+            ),
+            "value",
         );
     }
 
