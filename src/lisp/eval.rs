@@ -4256,10 +4256,10 @@ impl Interpreter {
             if value.is_nil() {
                 self.undo_sequence = None;
                 self.buffer.clear_undo_history();
-            } else if let Value::Cons(head, tail) = &value
-                && **tail == crate::lisp::primitives::buffer_undo_list_value(&self.buffer)
+            } else if let Some((head, tail)) = value.cons_values()
+                && tail == crate::lisp::primitives::buffer_undo_list_value(&self.buffer)
             {
-                let entry = buffer_undo_head_to_entry(head);
+                let entry = buffer_undo_head_to_entry(&head);
                 self.buffer.push_undo_entry(entry);
             } else {
                 self.undo_sequence = None;
@@ -5269,14 +5269,16 @@ impl Interpreter {
         let alist = self.eval(&items[1], env)?;
         let mut frame = Vec::new();
         for entry in alist.to_vec().unwrap_or_default() {
-            let Value::Cons(car, cdr) = entry else {
+            let Some((car, cdr)) = entry.cons_values() else {
                 continue;
             };
             let Ok(symbol) = car.as_symbol() else {
                 continue;
             };
-            let value = match *cdr {
-                Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
+            let value = match cdr {
+                Value::Cons(value, tail) if matches!(*tail.borrow(), Value::Nil) => {
+                    value.borrow().clone()
+                }
                 other => other,
             };
             frame.push((format!(".{symbol}"), Self::stored_value(value)));
@@ -5443,14 +5445,8 @@ impl Interpreter {
 
         for entry in alist.to_vec()? {
             let matches = if !updated {
-                if let Value::Cons(car, _) = &entry {
-                    primitives::value_matches_with_test(
-                        self,
-                        &key,
-                        car.as_ref(),
-                        testfn.as_ref(),
-                        env,
-                    )?
+                if let Some((car, _)) = entry.cons_values() {
+                    primitives::value_matches_with_test(self, &key, &car, testfn.as_ref(), env)?
                 } else {
                     false
                 }
@@ -5948,12 +5944,12 @@ impl Interpreter {
         }
         let name = items[1].as_symbol()?.to_string();
         let current = self.lookup(&name, env)?;
-        let Value::Cons(_, cdr) = current else {
+        let Value::Cons(_, _) = &current else {
             return Err(LispError::TypeError("cons".into(), items[1].type_name()));
         };
         let updated_car = self.eval(&items[2], env)?;
-        let updated = Value::Cons(Box::new(updated_car.clone()), cdr);
-        self.set_variable(&name, updated, env);
+        current.set_car(updated_car.clone())?;
+        self.set_variable(&name, current, env);
         Ok(updated_car)
     }
 
@@ -7488,29 +7484,32 @@ impl Interpreter {
 
     fn eval_backquote(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
-            Value::Cons(car, cdr) => {
+            Value::Cons(_, _) => {
+                let (car, cdr) = expr.cons_values().expect("cons");
                 // Check for (comma expr) or (comma-at expr) at the top level
-                if let Value::Symbol(s) = car.as_ref()
+                if let Value::Symbol(s) = &car
                     && (s == "comma" || s == "comma-at")
-                    && let Value::Cons(val, rest) = cdr.as_ref()
-                    && matches!(rest.as_ref(), Value::Nil)
+                    && let Some((val, rest)) = cdr.cons_values()
+                    && matches!(rest, Value::Nil)
                 {
-                    return self.eval(val, env);
+                    return self.eval(&val, env);
                 }
                 // Walk the cons structure, handling splicing and dotted pairs
                 let mut result: Vec<Value> = Vec::new();
-                let mut current: &Value = expr;
+                let mut current = expr.clone();
                 loop {
                     match current {
                         Value::Cons(car, cdr) => {
+                            let car_value = car.borrow().clone();
+                            let cdr_value = cdr.borrow().clone();
                             // Is current itself a (comma x) or (comma-at x)?
-                            if let Value::Symbol(s) = car.as_ref()
+                            if let Value::Symbol(s) = &car_value
                                 && (s == "comma" || s == "comma-at")
-                                && let Value::Cons(val, rest) = cdr.as_ref()
-                                && matches!(rest.as_ref(), Value::Nil)
+                                && let Some((val, rest)) = cdr_value.cons_values()
+                                && matches!(rest, Value::Nil)
                             {
                                 // This is a comma form used as a dotted tail
-                                let tail = self.eval(val, env)?;
+                                let tail = self.eval(&val, env)?;
                                 let mut out = tail;
                                 for item in result.into_iter().rev() {
                                     out = Value::cons(item, out);
@@ -7518,32 +7517,32 @@ impl Interpreter {
                                 return Ok(out);
                             }
                             // Check if car is (comma x) or (comma-at x)
-                            if let Value::Cons(inner_car, inner_cdr) = car.as_ref()
-                                && let Value::Symbol(s) = inner_car.as_ref()
-                                && let Value::Cons(val, rest) = inner_cdr.as_ref()
-                                && matches!(rest.as_ref(), Value::Nil)
+                            if let Some((inner_car, inner_cdr)) = car_value.cons_values()
+                                && let Value::Symbol(s) = &inner_car
+                                && let Some((val, rest)) = inner_cdr.cons_values()
+                                && matches!(rest, Value::Nil)
                             {
                                 if s == "comma" {
-                                    result.push(self.eval(val, env)?);
-                                    current = cdr;
+                                    result.push(self.eval(&val, env)?);
+                                    current = cdr_value;
                                     continue;
                                 }
                                 if s == "comma-at" {
-                                    let evaled = self.eval(val, env)?;
+                                    let evaled = self.eval(&val, env)?;
                                     if let Ok(elems) = evaled.to_vec() {
                                         result.extend(elems);
                                     }
-                                    current = cdr;
+                                    current = cdr_value;
                                     continue;
                                 }
                             }
-                            result.push(self.eval_backquote(car, env)?);
-                            current = cdr;
+                            result.push(self.eval_backquote(&car_value, env)?);
+                            current = cdr_value;
                         }
                         Value::Nil => break,
                         other => {
                             // Dotted pair tail (non-cons) — evaluate and attach
-                            let tail = self.eval_backquote(other, env)?;
+                            let tail = self.eval_backquote(&other, env)?;
                             let mut out = tail;
                             for item in result.into_iter().rev() {
                                 out = Value::cons(item, out);
@@ -8220,17 +8219,17 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
 fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
     match value {
         Value::Nil => crate::buffer::UndoEntry::Boundary,
-        Value::Cons(car, cdr) => match (&**car, &**cdr) {
-            (Value::Integer(pos), Value::Integer(len)) if *pos >= 0 && *len >= 0 => {
+        Value::Cons(_, _) => match value.cons_values() {
+            Some((Value::Integer(pos), Value::Integer(len))) if pos >= 0 && len >= 0 => {
                 crate::buffer::UndoEntry::Insert {
-                    pos: *pos as usize,
-                    len: *len as usize,
+                    pos: pos as usize,
+                    len: len as usize,
                 }
             }
-            (Value::String(text), Value::Integer(pos)) if *pos >= 0 => {
+            Some((Value::String(text), Value::Integer(pos))) if pos >= 0 => {
                 crate::buffer::UndoEntry::Delete {
-                    pos: *pos as usize,
-                    text: text.clone(),
+                    pos: pos as usize,
+                    text,
                     props: Vec::new(),
                     markers: Vec::new(),
                 }
@@ -8296,7 +8295,7 @@ fn render_undo_value(value: &Value) -> String {
         Value::Symbol(s) => s.clone(),
         Value::Cons(_, _) => {
             let mut rendered = String::from("(");
-            let mut current = value;
+            let mut current = value.clone();
             let mut first = true;
             loop {
                 match current {
@@ -8304,14 +8303,14 @@ fn render_undo_value(value: &Value) -> String {
                         if !first {
                             rendered.push(' ');
                         }
-                        rendered.push_str(&render_undo_value(car));
+                        rendered.push_str(&render_undo_value(&car.borrow()));
                         first = false;
-                        current = cdr;
+                        current = cdr.borrow().clone();
                     }
                     Value::Nil => break,
                     other => {
                         rendered.push_str(" . ");
-                        rendered.push_str(&render_undo_value(other));
+                        rendered.push_str(&render_undo_value(&other));
                         break;
                     }
                 }
@@ -8826,7 +8825,7 @@ fn snapshot_tail_alias_values(
         .filter_map(|name| {
             interp
                 .lookup_var(name, env)
-                .map(|value| (name.clone(), value))
+                .map(|value| (name.clone(), deep_copy_value(&value)))
         })
         .collect()
 }
@@ -8834,6 +8833,16 @@ fn snapshot_tail_alias_values(
 fn restore_tail_alias_values(interp: &mut Interpreter, aliases: &[(String, Value)], env: &mut Env) {
     for (name, value) in aliases {
         interp.set_variable(name, value.clone(), env);
+    }
+}
+
+fn deep_copy_value(value: &Value) -> Value {
+    match value {
+        Value::Cons(car, cdr) => Value::cons(
+            deep_copy_value(&car.borrow()),
+            deep_copy_value(&cdr.borrow()),
+        ),
+        _ => value.clone(),
     }
 }
 
@@ -8870,11 +8879,15 @@ fn pcase_pattern_bindings(
     match (pattern, value) {
         (Value::Cons(pattern_car, pattern_cdr), Value::Cons(value_car, value_cdr)) => {
             let start = bindings.len();
-            if !pcase_pattern_bindings(pattern_car, value_car, bindings)? {
+            let pattern_car = pattern_car.borrow().clone();
+            let pattern_cdr = pattern_cdr.borrow().clone();
+            let value_car = value_car.borrow().clone();
+            let value_cdr = value_cdr.borrow().clone();
+            if !pcase_pattern_bindings(&pattern_car, &value_car, bindings)? {
                 bindings.truncate(start);
                 return Ok(false);
             }
-            if !pcase_pattern_bindings(pattern_cdr, value_cdr, bindings)? {
+            if !pcase_pattern_bindings(&pattern_cdr, &value_cdr, bindings)? {
                 bindings.truncate(start);
                 return Ok(false);
             }
@@ -11924,6 +11937,40 @@ mod tests {
                 Value::symbol("a"),
                 Value::cons(Value::symbol("b"), Value::symbol("tail"))
             )
+        );
+    }
+
+    #[test]
+    fn nconc_mutates_existing_aliases() {
+        assert_eq!(
+            eval_str("(let* ((x (list 'a 'b)) (y x)) (nconc x '(c)) y)"),
+            Value::list([Value::symbol("a"), Value::symbol("b"), Value::symbol("c")])
+        );
+    }
+
+    #[test]
+    fn nconc_replaces_dotted_tail_destructively() {
+        assert_eq!(
+            eval_str("(let* ((x '(a . b)) (y x)) (nconc x '(c)) y)"),
+            Value::list([Value::symbol("a"), Value::symbol("c")])
+        );
+    }
+
+    #[test]
+    fn nconc_rejects_non_lists_before_last_arg() {
+        assert_eq!(
+            eval_str("(condition-case err (nconc 'a '(c)) (wrong-type-argument (car err)))"),
+            Value::symbol("wrong-type-argument")
+        );
+    }
+
+    #[test]
+    fn nconc_rejects_circular_lists() {
+        assert_eq!(
+            eval_str(
+                "(let ((x (list 'a 'b))) (setcdr (cdr x) x) (condition-case err (nconc x 'tail) (circular-list (car err))))"
+            ),
+            Value::symbol("circular-list")
         );
     }
 

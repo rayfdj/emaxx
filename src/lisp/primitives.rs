@@ -13,6 +13,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use regex::Regex;
 use roxmltree::{Document, Node, NodeType};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
@@ -437,7 +438,7 @@ fn casify_buffer_region(
 }
 
 fn parse_region_bound(value: &Value) -> Result<(usize, usize), LispError> {
-    let Value::Cons(start, end) = value else {
+    let Some((start, end)) = value.cons_values() else {
         return Err(LispError::Signal("Invalid region bounds".into()));
     };
     let start = start
@@ -459,8 +460,8 @@ fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, LispError> 
         match cursor {
             Value::Nil => return Ok(bounds),
             Value::Cons(car, cdr) => {
-                bounds.push(parse_region_bound(&car)?);
-                cursor = *cdr;
+                bounds.push(parse_region_bound(&car.borrow())?);
+                cursor = cdr.borrow().clone();
             }
             _ => return Err(LispError::Signal("Invalid region bounds".into())),
         }
@@ -2630,14 +2631,14 @@ pub fn call(
         "car-safe" => {
             need_args(name, args, 1)?;
             Ok(match &args[0] {
-                Value::Cons(car, _) => *car.clone(),
+                Value::Cons(car, _) => car.borrow().clone(),
                 _ => Value::Nil,
             })
         }
         "cdr-safe" => {
             need_args(name, args, 1)?;
             Ok(match &args[0] {
-                Value::Cons(_, cdr) => *cdr.clone(),
+                Value::Cons(_, cdr) => cdr.borrow().clone(),
                 _ => Value::Nil,
             })
         }
@@ -2802,11 +2803,11 @@ pub fn call(
             let testfn = args.get(4);
             let items = args[1].to_vec()?;
             for item in items {
-                let Value::Cons(car, cdr) = item else {
+                let Some((car, cdr)) = item.cons_values() else {
                     continue;
                 };
-                if value_matches_with_test(interp, &args[0], car.as_ref(), testfn, env)? {
-                    return Ok(*cdr);
+                if value_matches_with_test(interp, &args[0], &car, testfn, env)? {
+                    return Ok(cdr);
                 }
             }
             Ok(default)
@@ -3791,7 +3792,9 @@ pub fn call(
                     let Value::Cons(key, value) = entry else {
                         return None;
                     };
-                    let key_char = match key.as_ref() {
+                    let key_value = key.borrow().clone();
+                    let value_value = value.borrow().clone();
+                    let key_char = match &key_value {
                         Value::Integer(code) => char::from_u32(*code as u32),
                         Value::String(text) => text.chars().next(),
                         Value::StringObject(state) => state.borrow().text.chars().next(),
@@ -3799,9 +3802,9 @@ pub fn call(
                     }?;
                     if key_char == specifier {
                         Some(
-                            string_like(value)
+                            string_like(&value_value)
                                 .map(|value| value.text)
-                                .unwrap_or_else(|| value.to_string()),
+                                .unwrap_or_else(|| value_value.to_string()),
                         )
                     } else {
                         None
@@ -9756,12 +9759,12 @@ pub fn call(
                 match current {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(car, cdr) => {
-                        if *car == *key {
+                        if car.borrow().eq(key) {
                             return Ok(Value::Cons(car, cdr));
                         }
                         // Skip the value
-                        match *cdr {
-                            Value::Cons(_, next_cdr) => current = *next_cdr,
+                        match cdr.borrow().clone() {
+                            Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
                             _ => return Ok(Value::Nil),
                         }
                     }
@@ -10351,16 +10354,8 @@ pub fn call(
 
         "setcdr" => {
             need_args(name, args, 2)?;
-            let updated = if args[0] == args[1] {
-                interp.create_record("circular-list", Vec::new())
-            } else {
-                let Value::Cons(car, _) = &args[0] else {
-                    return Err(LispError::TypeError("cons".into(), args[0].type_name()));
-                };
-                Value::Cons(car.clone(), Box::new(args[1].clone()))
-            };
-            replace_matching_bindings(env, &args[0], updated.clone());
-            Ok(updated)
+            args[0].set_cdr(args[1].clone())?;
+            Ok(args[0].clone())
         }
 
         "emaxx-default-region-extract-function" => {
@@ -11432,8 +11427,8 @@ fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>, LispError>
             Ok(Some((*codepoint as u32, *codepoint as u32)))
         }
         Value::Cons(car, cdr) => {
-            let start = car.as_integer()?;
-            let end = cdr.as_integer()?;
+            let start = car.borrow().as_integer()?;
+            let end = cdr.borrow().as_integer()?;
             if start < 0 || end < 0 {
                 return Err(LispError::Signal("Args out of range".into()));
             }
@@ -12990,10 +12985,10 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             let Value::Cons(open_pos, close_char) = entry else {
                 continue;
             };
-            let Ok(open_pos) = open_pos.as_integer() else {
+            let Ok(open_pos) = open_pos.borrow().as_integer() else {
                 continue;
             };
-            let Ok(close_char) = close_char.as_integer() else {
+            let Ok(close_char) = close_char.borrow().as_integer() else {
                 continue;
             };
             let Some(close_char) = char::from_u32(close_char as u32) else {
@@ -14551,7 +14546,7 @@ fn find_operation_coding_system_value(
         return Ok(Value::Nil);
     };
     for entry in alist.to_vec()? {
-        let Value::Cons(pattern, target) = entry else {
+        let Some((pattern, target)) = entry.cons_values() else {
             continue;
         };
         let pattern = string_text(&pattern)?;
@@ -14561,8 +14556,10 @@ fn find_operation_coding_system_value(
         if !regex.is_match(&file) {
             continue;
         }
-        let target = match *target {
-            Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
+        let target = match target {
+            Value::Cons(value, tail) if matches!(*tail.borrow(), Value::Nil) => {
+                value.borrow().clone()
+            }
             other => other,
         };
         let coding = match target {
@@ -15130,6 +15127,8 @@ fn find_file_name_handler(interp: &Interpreter, env: &Env, file: &str) -> Option
         let Value::Cons(pattern, handler) = entry else {
             continue;
         };
+        let pattern = pattern.borrow().clone();
+        let handler = handler.borrow().clone();
         let Ok(pattern) = string_text(&pattern) else {
             continue;
         };
@@ -15137,7 +15136,7 @@ fn find_file_name_handler(interp: &Interpreter, env: &Env, file: &str) -> Option
             continue;
         };
         if regex.is_match(file) {
-            return Some((*handler).clone());
+            return Some(handler);
         }
     }
     None
@@ -15599,13 +15598,13 @@ fn lcms_default_viewing_conditions(white_point: CIEXYZ) -> ViewingConditions {
 
 fn parse_lcms_numeric_prefix<const N: usize>(value: &Value) -> Option<[f64; N]> {
     let mut result = [0.0; N];
-    let mut current = value;
+    let mut current = value.clone();
     for item in &mut result {
         let Value::Cons(car, cdr) = current else {
             return None;
         };
-        *item = car.as_float().ok()?;
-        current = cdr;
+        *item = car.borrow().as_float().ok()?;
+        current = cdr.borrow().clone();
     }
     Some(result)
 }
@@ -18604,8 +18603,8 @@ fn exact_time_from_value(
                 return exact_time_from_old_style(interp, &items);
             }
             exact_time_value(
-                integer_like_bigint(interp, car)?,
-                integer_like_bigint(interp, cdr)?,
+                integer_like_bigint(interp, &car.borrow())?,
+                integer_like_bigint(interp, &cdr.borrow())?,
             )
         }
         _ => Err(LispError::TypeError("time-value".into(), value.type_name())),
@@ -19655,16 +19654,6 @@ fn file_locked_p(path: &str) -> Result<Value, LispError> {
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Value::Nil),
         Err(error) => Err(LispError::Signal(error.to_string())),
-    }
-}
-
-fn replace_matching_bindings(env: &mut Env, original: &Value, replacement: Value) {
-    for frame in env.iter_mut().rev() {
-        for (_, value) in frame.iter_mut().rev() {
-            if *value == *original {
-                *value = replacement.clone();
-            }
-        }
     }
 }
 
@@ -20963,8 +20952,14 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
         (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
         (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
-        (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
-            values_equal(interp, a_car, b_car) && values_equal(interp, a_cdr, b_cdr)
+        (Value::Cons(_, _), Value::Cons(_, _)) => {
+            let Some((a_car, a_cdr)) = left.cons_values() else {
+                return false;
+            };
+            let Some((b_car, b_cdr)) = right.cons_values() else {
+                return false;
+            };
+            values_equal(interp, &a_car, &b_car) && values_equal(interp, &a_cdr, &b_cdr)
         }
         _ => false,
     }
@@ -20993,9 +20988,15 @@ fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
         }
         (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
-            values_equal_including_properties(a_car, b_car)
-                && values_equal_including_properties(a_cdr, b_cdr)
+        (Value::Cons(_, _), Value::Cons(_, _)) => {
+            let Some((a_car, a_cdr)) = left.cons_values() else {
+                return false;
+            };
+            let Some((b_car, b_cdr)) = right.cons_values() else {
+                return false;
+            };
+            values_equal_including_properties(&a_car, &b_car)
+                && values_equal_including_properties(&a_cdr, &b_cdr)
         }
         _ => left == right,
     }
@@ -21014,19 +21015,54 @@ fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
         return Ok(Value::Nil);
     }
 
-    let mut prefix = Vec::new();
-    for value in &args[..args.len().saturating_sub(1)] {
+    let mut head: Option<Value> = None;
+    let mut tail: Option<Value> = None;
+
+    for (index, value) in args.iter().enumerate() {
+        let is_last = index + 1 == args.len();
+        if is_last {
+            if let Some(tail_cell) = tail {
+                tail_cell.set_cdr(value.clone())?;
+                return Ok(head.unwrap_or_else(|| value.clone()));
+            }
+            return Ok(value.clone());
+        }
+
         if value.is_nil() {
             continue;
         }
-        prefix.extend(value.to_vec()?);
+
+        let last_cell = last_nconc_cell(value)?;
+        if let Some(tail_cell) = &tail {
+            tail_cell.set_cdr(value.clone())?;
+        } else {
+            head = Some(value.clone());
+        }
+        tail = Some(last_cell);
     }
 
-    let mut result = args.last().cloned().unwrap_or(Value::Nil);
-    for item in prefix.into_iter().rev() {
-        result = Value::cons(item, result);
+    Ok(head.unwrap_or(Value::Nil))
+}
+
+fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
+    let mut current = value.clone();
+    let mut seen = HashSet::new();
+    loop {
+        let Value::Cons(car, cdr) = current.clone() else {
+            return Err(LispError::TypeError("consp".into(), current.type_name()));
+        };
+        let cell_id = Rc::as_ptr(&car) as usize;
+        if !seen.insert(cell_id) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("circular-list"),
+                Value::string("Circular list"),
+            ])));
+        }
+        match cdr.borrow().clone() {
+            Value::Cons(_, _) => current = cdr.borrow().clone(),
+            _ => return Ok(current),
+        }
     }
-    Ok(result)
 }
 
 fn sxhash_value(value: &Value, mode: HashMode) -> i64 {
@@ -21130,10 +21166,13 @@ fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 15);
             hash_mix(state, number.to_bits());
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return;
+            };
             hash_mix(state, 16);
-            hash_value_eq(state, car);
-            hash_value_eq(state, cdr);
+            hash_value_eq(state, &car);
+            hash_value_eq(state, &cdr);
         }
     }
 }
@@ -21184,10 +21223,13 @@ fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
             hash_mix(state, 37);
             hash_str(state, symbol);
         }
-        Value::Cons(car, cdr) => {
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return;
+            };
             hash_mix(state, 38);
-            hash_value_equal(state, car, include_properties);
-            hash_value_equal(state, cdr, include_properties);
+            hash_value_equal(state, &car, include_properties);
+            hash_value_equal(state, &cdr, include_properties);
         }
         Value::BuiltinFunc(name) => {
             hash_mix(state, 39);
@@ -21237,10 +21279,10 @@ fn custom_current_group_file(interp: &Interpreter) -> Option<String> {
 fn custom_group_assoc_cdr(list: &Value, key: &str) -> Option<Value> {
     let entries = list.to_vec().ok()?;
     for entry in entries {
-        if let Value::Cons(car, cdr) = entry
+        if let Some((car, cdr)) = entry.cons_values()
             && string_text(&car).ok().as_deref() == Some(key)
         {
-            return Some(*cdr);
+            return Some(cdr);
         }
     }
     None
@@ -21264,7 +21306,13 @@ pub(crate) fn custom_set_current_group(interp: &mut Interpreter, group: &str) {
         .unwrap_or(Value::Nil);
     let mut entries = existing.to_vec().unwrap_or_default();
     if let Some(index) = entries.iter().position(|value| match value {
-        Value::Cons(car, _) => string_text(car).ok().as_deref() == Some(file.as_str()),
+        Value::Cons(_, _) => {
+            value
+                .cons_values()
+                .and_then(|(car, _)| string_text(&car).ok())
+                .as_deref()
+                == Some(file.as_str())
+        }
         _ => false,
     }) {
         entries[index] = entry;
@@ -21531,15 +21579,17 @@ fn active_minor_mode_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>,
         let Value::Cons(mode, map) = entry else {
             continue;
         };
-        let Value::Symbol(mode_name) = *mode else {
+        let mode_value = mode.borrow().clone();
+        let map_value = map.borrow().clone();
+        let Value::Symbol(mode_name) = mode_value else {
             continue;
         };
         if interp
             .lookup_var(&mode_name, env)
             .is_some_and(|value| value.is_truthy())
-            && is_keymap_value(interp, &map)
+            && is_keymap_value(interp, &map_value)
         {
-            maps.push(*map);
+            maps.push(map_value);
         }
     }
     Ok(maps)
@@ -22422,9 +22472,12 @@ fn closure_env_from_alist(value: &Value) -> Result<Env, LispError> {
     for entry in entries {
         match entry {
             Value::Cons(car, cdr) => {
-                let name = car.as_symbol()?.to_string();
-                let value = match *cdr {
-                    Value::Cons(value, tail) if matches!(*tail, Value::Nil) => *value,
+                let name = car.borrow().as_symbol()?.to_string();
+                let cdr_value = cdr.borrow().clone();
+                let value = match cdr_value {
+                    Value::Cons(value, tail) if matches!(tail.borrow().clone(), Value::Nil) => {
+                        value.borrow().clone()
+                    }
                     other => other,
                 };
                 frame.push((name, value));
@@ -22500,14 +22553,17 @@ fn pop_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Result<c
     match event {
         Value::Integer(code) if code >= 0 => char::from_u32(code as u32)
             .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", code))),
-        Value::Cons(car, cdr) if matches!(*car, Value::T) => match *cdr {
-            Value::Integer(code) if code >= 0 => char::from_u32(code as u32)
-                .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", code))),
-            other => Err(LispError::Signal(format!(
-                "Invalid unread command event {}",
-                other
-            ))),
-        },
+        Value::Cons(car, cdr) if matches!(car.borrow().clone(), Value::T) => {
+            match cdr.borrow().clone() {
+                Value::Integer(code) if code >= 0 => char::from_u32(code as u32).ok_or_else(|| {
+                    LispError::Signal(format!("Invalid unread command event {}", code))
+                }),
+                other => Err(LispError::Signal(format!(
+                    "Invalid unread command event {}",
+                    other
+                ))),
+            }
+        }
         Value::String(text) => text
             .chars()
             .next()
