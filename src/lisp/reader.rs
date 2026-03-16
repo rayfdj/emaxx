@@ -958,7 +958,10 @@ mod tests {
         assert_eq!(read_one(r#""a\nb""#), Value::String("a\nb".into()));
         assert_eq!(read_one(r#""a\"b""#), Value::String("a\"b".into()));
         assert_eq!(read_one("\"a\\\nb\""), Value::String("ab".into()));
-        assert_eq!(read_one(r#""\^@\^H\^?""#), Value::String("\0\x08\x7f".into()));
+        assert_eq!(
+            read_one(r#""\^@\^H\^?""#),
+            Value::String("\0\x08\x7f".into())
+        );
     }
 
     #[test]

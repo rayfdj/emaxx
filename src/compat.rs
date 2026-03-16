@@ -1129,5 +1129,4 @@ mod tests {
         assert_eq!(envs.get("EMACSLOADPATH"), Some(&None));
         assert_eq!(envs.get("EMACS_TEST_VERBOSE"), Some(&Some("1".to_string())));
     }
-
 }

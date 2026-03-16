@@ -7,11 +7,7 @@ fn repo_root() -> &'static Path {
 
 #[test]
 fn repo_does_not_define_batch_report_delegation() {
-    let delegation_files = [
-        "src/compat.rs",
-        "src/batch.rs",
-        "src/bin/compat-harness.rs",
-    ];
+    let delegation_files = ["src/compat.rs", "src/batch.rs", "src/bin/compat-harness.rs"];
     let banned_tokens = [
         concat!("ORACLE_BATCH_", "REPORT_OVERRIDES"),
         concat!("should_delegate_", "batch_report("),
@@ -21,8 +17,8 @@ fn repo_does_not_define_batch_report_delegation() {
     ];
 
     for relative in delegation_files {
-        let text = fs::read_to_string(repo_root().join(relative))
-            .expect("read anti-cheat source file");
+        let text =
+            fs::read_to_string(repo_root().join(relative)).expect("read anti-cheat source file");
         for banned in banned_tokens {
             assert!(
                 !text.contains(banned),
@@ -52,8 +48,8 @@ fn runtime_code_does_not_shell_out_to_oracle_emacs() {
     ];
 
     for relative in runtime_files {
-        let text = fs::read_to_string(repo_root().join(relative))
-            .expect("read runtime anti-cheat file");
+        let text =
+            fs::read_to_string(repo_root().join(relative)).expect("read runtime anti-cheat file");
         for banned in banned_tokens {
             assert!(
                 !text.contains(banned),
