@@ -6565,7 +6565,12 @@ fn render_undo_value(value: &Value) -> String {
 
 fn function_executable_body(body: &[Value]) -> &[Value] {
     let mut start = 0usize;
-    if body.len() > 1 && matches!(body.first(), Some(Value::String(_) | Value::StringObject(_))) {
+    if body.len() > 1
+        && matches!(
+            body.first(),
+            Some(Value::String(_) | Value::StringObject(_))
+        )
+    {
         start = 1;
     }
     while start < body.len()
@@ -7839,7 +7844,10 @@ mod tests {
                 .expect("parse customize-set-variable form");
             assert_eq!(interp.eval(&forms[0], &mut env).unwrap(), Value::T);
             assert_eq!(interp.lookup("sample-option", &env).unwrap(), Value::T);
-            assert_eq!(interp.lookup("sample-setter-result", &env).unwrap(), Value::T);
+            assert_eq!(
+                interp.lookup("sample-setter-result", &env).unwrap(),
+                Value::T
+            );
         });
     }
 
@@ -8403,10 +8411,7 @@ mod tests {
                         (interactive-form #'sample-command)))
                 "#
             ),
-            Value::list([
-                Value::T,
-                Value::list([Value::Symbol("interactive".into())]),
-            ])
+            Value::list([Value::T, Value::list([Value::Symbol("interactive".into())]),])
         );
     }
 

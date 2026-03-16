@@ -5732,7 +5732,9 @@ pub fn call(
                         .rev()
                         .map(|name| expand_file_name(name, Some(&user_emacs_directory)))
                         .find(|path| Path::new(path).exists())
-                        .unwrap_or_else(|| expand_file_name(default_name, Some(&user_emacs_directory)))
+                        .unwrap_or_else(|| {
+                            expand_file_name(default_name, Some(&user_emacs_directory))
+                        })
                 }
                 _ => expand_file_name(&string_text(&args[0])?, Some(&user_emacs_directory)),
             };
@@ -6767,10 +6769,7 @@ pub fn call(
                     interp.buffer.name.clone(),
                 ))
             } else {
-                Err(LispError::TypeError(
-                    "window".into(),
-                    args[0].type_name(),
-                ))
+                Err(LispError::TypeError("window".into(), args[0].type_name()))
             }
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
@@ -19186,8 +19185,7 @@ fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
 }
 
 fn interactive_spec_form(func: &Value) -> Option<Value> {
-    interactive_form_items(func)
-        .map(|items| items.get(1).cloned().unwrap_or(Value::Nil))
+    interactive_form_items(func).map(|items| items.get(1).cloned().unwrap_or(Value::Nil))
 }
 
 fn interactive_list_form_items(form: &Value) -> Option<Vec<Value>> {
