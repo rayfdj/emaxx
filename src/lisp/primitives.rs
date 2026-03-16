@@ -1,4 +1,4 @@
-use super::eval::{Interpreter, error_condition_value};
+use super::eval::{BufferDisposition, Interpreter, error_condition_value};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
 use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value};
@@ -618,6 +618,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "listp"
             | "bufferp"
             | "buffer-live-p"
+            | "threadp"
+            | "mutexp"
+            | "condition-variable-p"
             | "minibufferp"
             | "keymapp"
             | "zerop"
@@ -730,6 +733,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "split-string"
             | "string-width"
             | "format"
+            | "format-message"
             | "format-spec"
             | "char-to-string"
             | "string-to-char"
@@ -863,6 +867,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-buffer-create"
             | "generate-new-buffer-name"
             | "make-indirect-buffer"
+            | "clone-indirect-buffer"
             | "rename-buffer"
             | "other-buffer"
             | "buffer-base-buffer"
@@ -1068,6 +1073,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "move-marker"
             // Output
             | "message"
+            | "sleep-for"
+            | "sit-for"
+            | "accept-process-output"
             | "substitute-command-keys"
             | "prin1-to-string"
             | "princ"
@@ -1343,6 +1351,24 @@ pub fn is_builtin(name: &str) -> bool {
             | "backtrace-eval"
             | "backtrace--locals"
             | "current-thread"
+            | "all-threads"
+            | "make-thread"
+            | "thread-live-p"
+            | "thread-join"
+            | "thread-name"
+            | "thread-signal"
+            | "thread-last-error"
+            | "thread-yield"
+            | "make-mutex"
+            | "mutex-lock"
+            | "mutex-unlock"
+            | "make-condition-variable"
+            | "condition-mutex"
+            | "condition-name"
+            | "condition-notify"
+            | "thread--blocker"
+            | "thread-buffer-disposition"
+            | "thread-set-buffer-disposition"
             | "backtrace--frames-from-thread"
             | "undo-boundary"
             | "undo"
@@ -2442,6 +2468,30 @@ pub fn call(
                 },
             )
         }
+        "threadp" => {
+            need_args(name, args, 1)?;
+            Ok(if interp.resolve_thread_id(&args[0]).is_ok() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "mutexp" => {
+            need_args(name, args, 1)?;
+            Ok(if interp.resolve_mutex_id(&args[0]).is_ok() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "condition-variable-p" => {
+            need_args(name, args, 1)?;
+            Ok(if interp.resolve_condition_variable_id(&args[0]).is_ok() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "minibufferp" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -3157,6 +3207,17 @@ pub fn call(
         ]))),
         "define-keymap" => Ok(keymap_placeholder(None)),
         "read-event" | "read-char" | "read-char-exclusive" => {
+            let timed_poll = args.len() >= 3 && args[2].is_truthy();
+            if timed_poll {
+                interp.drive_threads(env, true)?;
+                if !interaction_allowed(interp, env) {
+                    return Ok(Value::Nil);
+                }
+                return match pop_unread_command_event(interp, env) {
+                    Ok(event) => Ok(Value::Integer(event as i64)),
+                    Err(_) => Ok(Value::Nil),
+                };
+            }
             ensure_interaction_allowed(interp, env)?;
             let event = pop_unread_command_event(interp, env)?;
             Ok(Value::Integer(event as i64))
@@ -3443,9 +3504,9 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::String(number_to_string(&args[0])?))
         }
-        "format" => {
+        "format" | "format-message" => {
             if args.is_empty() {
-                return Err(LispError::WrongNumberOfArgs("format".into(), 0));
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
             }
             let fmt_value = &args[0];
             let fmt = string_text(fmt_value)?;
@@ -5350,6 +5411,25 @@ pub fn call(
             }
             Ok(Value::Buffer(new_id, new_name))
         }
+        "clone-indirect-buffer" => {
+            need_arg_range(name, args, 0, 2)?;
+            let base = Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone());
+            let name = args
+                .first()
+                .and_then(|value| string_like(value).map(|string| string.text))
+                .unwrap_or_else(|| format!("{}<clone>", interp.buffer.name));
+            let clone = args.get(1).is_some_and(|value| value.is_truthy());
+            call(
+                interp,
+                "make-indirect-buffer",
+                &[
+                    base,
+                    Value::String(name),
+                    if clone { Value::T } else { Value::Nil },
+                ],
+                env,
+            )
+        }
         "rename-buffer" => {
             need_args(name, args, 1)?;
             let new_name = args[0].as_string()?;
@@ -6922,6 +7002,9 @@ pub fn call(
                 }
                 run_named_hooks(interp, "kill-buffer-hook", env, Some(id))?;
             }
+            if !interp.allow_kill_buffer_for_threads(id) {
+                return Ok(Value::Nil);
+            }
             interp.kill_buffer_id(id);
             if !inhibit_hooks {
                 run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
@@ -7076,6 +7159,16 @@ pub fn call(
                 captured.push('\n');
             }
             Ok(Value::String(text))
+        }
+        "sleep-for" => {
+            need_arg_range(name, args, 1, 2)?;
+            interp.drive_threads(env, true)?;
+            Ok(Value::Nil)
+        }
+        "sit-for" | "accept-process-output" => {
+            need_arg_range(name, args, 0, 2)?;
+            interp.drive_threads(env, true)?;
+            Ok(Value::T)
         }
         "princ" | "print" => {
             if args.is_empty() {
@@ -8676,7 +8769,138 @@ pub fn call(
             }
             Ok(Value::list(locals))
         }
-        "current-thread" => Ok(Value::Symbol("main-thread".into())),
+        "current-thread" => Ok(interp.current_thread_value()),
+        "all-threads" => {
+            need_args(name, args, 0)?;
+            Ok(Value::list(interp.live_threads()))
+        }
+        "make-thread" => {
+            need_arg_range(name, args, 1, 3)?;
+            let thread_name = args.get(1).and_then(|value| {
+                if value.is_nil() {
+                    None
+                } else {
+                    string_like(value).map(|string| string.text)
+                }
+            });
+            let disposition = match args.get(2) {
+                None | Some(Value::Nil) => BufferDisposition::Default,
+                Some(Value::T) => BufferDisposition::Preserve,
+                Some(Value::Symbol(symbol)) if symbol == "silently" => BufferDisposition::Silently,
+                Some(other) => {
+                    return Err(LispError::TypeError(
+                        "thread-buffer-disposition".into(),
+                        other.type_name(),
+                    ));
+                }
+            };
+            interp.make_thread(args[0].clone(), thread_name, disposition)
+        }
+        "thread-live-p" => {
+            need_args(name, args, 1)?;
+            Ok(if interp.thread_live(interp.resolve_thread_id(&args[0])?) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "thread-join" => {
+            need_args(name, args, 1)?;
+            interp.thread_join(interp.resolve_thread_id(&args[0])?, env)
+        }
+        "thread-name" => {
+            need_args(name, args, 1)?;
+            Ok(interp
+                .thread_name(interp.resolve_thread_id(&args[0])?)
+                .map(Value::String)
+                .unwrap_or(Value::Nil))
+        }
+        "thread-signal" => {
+            need_args(name, args, 3)?;
+            interp.signal_thread(
+                interp.resolve_thread_id(&args[0])?,
+                args[1].clone(),
+                args[2].clone(),
+                env,
+            )
+        }
+        "thread-last-error" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(interp.thread_last_error(args.first().is_some_and(Value::is_truthy)))
+        }
+        "thread-yield" => {
+            need_args(name, args, 0)?;
+            interp.drive_threads(env, false)?;
+            Ok(Value::Nil)
+        }
+        "make-mutex" => {
+            need_arg_range(name, args, 0, 1)?;
+            let mutex_name = args.first().and_then(|value| {
+                if value.is_nil() {
+                    None
+                } else {
+                    string_like(value).map(|string| string.text)
+                }
+            });
+            Ok(interp.make_mutex(mutex_name))
+        }
+        "mutex-lock" => {
+            need_args(name, args, 1)?;
+            interp.lock_mutex_for_current_thread(interp.resolve_mutex_id(&args[0])?, env)
+        }
+        "mutex-unlock" => {
+            need_args(name, args, 1)?;
+            interp.unlock_mutex_for_current_thread(interp.resolve_mutex_id(&args[0])?)
+        }
+        "make-condition-variable" => {
+            need_arg_range(name, args, 1, 2)?;
+            let mutex_id = interp.resolve_mutex_id(&args[0])?;
+            let condvar_name = args.get(1).and_then(|value| {
+                if value.is_nil() {
+                    None
+                } else {
+                    string_like(value).map(|string| string.text)
+                }
+            });
+            Ok(interp.make_condition_variable(mutex_id, condvar_name))
+        }
+        "condition-mutex" => {
+            need_args(name, args, 1)?;
+            let condvar_id = interp.resolve_condition_variable_id(&args[0])?;
+            let mutex_id = interp
+                .condition_variable_mutex_id(condvar_id)
+                .ok_or_else(|| {
+                    LispError::TypeError("condition-variable-p".into(), args[0].type_name())
+                })?;
+            Ok(Value::Record(mutex_id))
+        }
+        "condition-name" => {
+            need_args(name, args, 1)?;
+            Ok(interp
+                .condition_variable_name(interp.resolve_condition_variable_id(&args[0])?)
+                .map(Value::String)
+                .unwrap_or(Value::Nil))
+        }
+        "condition-notify" => {
+            need_arg_range(name, args, 1, 2)?;
+            interp.notify_condition_variable(
+                interp.resolve_condition_variable_id(&args[0])?,
+                args.get(1).is_some_and(Value::is_truthy),
+            );
+            Ok(Value::Nil)
+        }
+        "thread--blocker" => {
+            need_args(name, args, 1)?;
+            Ok(interp.thread_blocker_value(interp.resolve_thread_id(&args[0])?))
+        }
+        "thread-buffer-disposition" => {
+            need_args(name, args, 1)?;
+            interp.thread_buffer_disposition(interp.resolve_thread_id(&args[0])?)
+        }
+        "thread-set-buffer-disposition" => {
+            need_args(name, args, 2)?;
+            interp.set_thread_buffer_disposition(interp.resolve_thread_id(&args[0])?, &args[1])
+        }
         "backtrace--frames-from-thread" => {
             need_args(name, args, 1)?;
             let frames = interp
@@ -19972,16 +20196,19 @@ struct CompletionCandidate {
 }
 
 fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
-    if interp
-        .lookup_var("inhibit-interaction", env)
-        .is_some_and(|value| value.is_truthy())
-    {
+    if !interaction_allowed(interp, env) {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("inhibited-interaction".into()),
             Value::String("Interaction inhibited".into()),
         ])));
     }
     Ok(())
+}
+
+fn interaction_allowed(interp: &Interpreter, env: &Env) -> bool {
+    !interp
+        .lookup_var("inhibit-interaction", env)
+        .is_some_and(|value| value.is_truthy())
 }
 
 fn refresh_buffer_menu(
