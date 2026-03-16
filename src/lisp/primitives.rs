@@ -1,10 +1,8 @@
 use super::eval::{Interpreter, error_condition_value};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
-use super::reader::Reader;
 use super::sqlite;
 use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value};
 use crate::buffer::TextPropertySpan;
-use crate::compat;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
 use fancy_regex::Regex as FancyRegex;
 use flate2::read::GzDecoder;
@@ -28,24 +26,10 @@ use unicode_width::UnicodeWidthChar;
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
-static LCMS_ORACLE: OnceLock<Option<compat::OracleLocalConfig>> = OnceLock::new();
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
-
-fn is_lcms_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "lcms-xyz->jch"
-            | "lcms-jch->xyz"
-            | "lcms-jch->jab"
-            | "lcms-jab->jch"
-            | "lcms-cam02-ucs"
-            | "lcms-temp->white-point"
-            | "lcms2-available-p"
-    )
-}
 
 fn is_sqlite_builtin(name: &str) -> bool {
     matches!(
@@ -114,49 +98,6 @@ fn treesit_linecol_at(interp: &Interpreter, pos: usize) -> Result<Value, LispErr
         }
     }
     Ok(Value::cons(Value::Integer(line), Value::Integer(col)))
-}
-
-fn lcms_oracle() -> Option<&'static compat::OracleLocalConfig> {
-    LCMS_ORACLE.get_or_init(init_lcms_oracle).as_ref()
-}
-
-fn init_lcms_oracle() -> Option<compat::OracleLocalConfig> {
-    let local = compat::load_oracle_local_config().ok()?;
-    if oracle_reports_lcms2(&local).ok()? {
-        Some(local)
-    } else {
-        None
-    }
-}
-
-fn oracle_reports_lcms2(local: &compat::OracleLocalConfig) -> Result<bool, String> {
-    let test_directory = local.emacs_repo.join("test");
-    let mut command = Command::new(&local.emacs_binary);
-    compat::configure_upstream_like_env(&mut command, &test_directory);
-    command
-        .arg("--no-init-file")
-        .arg("--no-site-file")
-        .arg("--no-site-lisp")
-        .arg("--batch")
-        .arg("--eval")
-        .arg(
-            "(princ (if (and (featurep 'lcms2) (or (not (fboundp 'lcms2-available-p)) (lcms2-available-p))) \"t\" \"nil\"))",
-        );
-    let output = command
-        .output()
-        .map_err(|err| format!("run {} --batch: {err}", local.emacs_binary.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{} --batch failed: {}",
-            local.emacs_binary.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim() == "t")
-}
-
-pub(crate) fn compat_lcms2_available() -> bool {
-    lcms_oracle().is_some()
 }
 
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
@@ -1326,7 +1267,6 @@ pub fn is_builtin(name: &str) -> bool {
             | "undo-more"
     ) || is_composed_accessor_name(name)
         || is_time_builtin(name)
-        || (compat_lcms2_available() && is_lcms_builtin(name))
         || is_sqlite_builtin(name)
 }
 
@@ -6818,13 +6758,6 @@ pub fn call(
                 })
                 .unwrap_or(Value::Nil))
         }
-        "lcms-xyz->jch"
-        | "lcms-jch->xyz"
-        | "lcms-jch->jab"
-        | "lcms-jab->jch"
-        | "lcms-cam02-ucs"
-        | "lcms-temp->white-point"
-        | "lcms2-available-p" => call_lcms_builtin(interp, name, args, env),
         "selected-window" => Ok(Value::Symbol("window".into())),
         "window-buffer" => {
             need_args(name, args, 1)?;
@@ -13370,6 +13303,7 @@ fn is_width_name(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lisp::reader::Reader;
 
     #[test]
     fn regex_resource_helper_patterns_compile() {
@@ -19558,125 +19492,6 @@ fn need_arg_range(name: &str, args: &[Value], min: usize, max: usize) -> Result<
     }
 }
 
-fn call_lcms_builtin(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &Env,
-) -> Result<Value, LispError> {
-    match name {
-        "lcms-xyz->jch" | "lcms-jch->xyz" | "lcms-jch->jab" | "lcms-jab->jch" => {
-            need_arg_range(name, args, 1, 3)?;
-        }
-        "lcms-cam02-ucs" => {
-            need_arg_range(name, args, 2, 4)?;
-        }
-        "lcms-temp->white-point" => {
-            need_arg_range(name, args, 1, 1)?;
-        }
-        "lcms2-available-p" => {
-            need_arg_range(name, args, 0, 0)?;
-            return Ok(if compat_lcms2_available() {
-                Value::T
-            } else {
-                Value::Nil
-            });
-        }
-        _ => return Err(LispError::Void(name.into())),
-    }
-
-    let local = lcms_oracle().ok_or_else(|| LispError::Void(name.into()))?;
-    let rendered_args = args
-        .iter()
-        .map(|arg| render_lisp_literal(interp, arg, env))
-        .collect::<Result<Vec<_>, _>>()?;
-    let call = if rendered_args.is_empty() {
-        format!("({name})")
-    } else {
-        format!("({name} {})", rendered_args.join(" "))
-    };
-    let eval = format!(
-        "(prin1 (condition-case err (list 'emaxx-lcms-ok {call}) (error (list 'emaxx-lcms-error (car err) (error-message-string err)))))"
-    );
-
-    let test_directory = local.emacs_repo.join("test");
-    let mut command = Command::new(&local.emacs_binary);
-    compat::configure_upstream_like_env(&mut command, &test_directory);
-    command
-        .arg("--no-init-file")
-        .arg("--no-site-file")
-        .arg("--no-site-lisp")
-        .arg("--batch")
-        .arg("--eval")
-        .arg(&eval);
-    let output = command.output().map_err(|err| {
-        LispError::Signal(format!(
-            "run {} --batch: {err}",
-            local.emacs_binary.display()
-        ))
-    })?;
-    if !output.status.success() {
-        let detail = if output.stderr.is_empty() {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        } else {
-            String::from_utf8_lossy(&output.stderr).trim().to_string()
-        };
-        return Err(LispError::Signal(format!(
-            "oracle lcms call `{name}` failed: {detail}"
-        )));
-    }
-    parse_oracle_lcms_response(&output.stdout)
-}
-
-fn parse_oracle_lcms_response(stdout: &[u8]) -> Result<Value, LispError> {
-    let text = String::from_utf8_lossy(stdout);
-    let forms = Reader::new(&text)
-        .read_all()
-        .map_err(|error| LispError::Signal(format!("parse oracle lcms response: {error}")))?;
-    let [form] = forms.as_slice() else {
-        return Err(LispError::Signal(format!(
-            "unexpected oracle lcms response: {}",
-            text.trim()
-        )));
-    };
-    let items = form.to_vec().map_err(|_| {
-        LispError::Signal(format!("unexpected oracle lcms response: {}", text.trim()))
-    })?;
-    match items.as_slice() {
-        [Value::Symbol(tag), value] if tag == "emaxx-lcms-ok" => Ok(value.clone()),
-        [
-            Value::Symbol(tag),
-            Value::Symbol(condition),
-            Value::String(message),
-        ] if tag == "emaxx-lcms-error" => Err(LispError::Signal(format!("{condition}: {message}"))),
-        [Value::Symbol(tag), condition, message] if tag == "emaxx-lcms-error" => {
-            Err(LispError::Signal(format!("{}: {}", condition, message)))
-        }
-        _ => Err(LispError::Signal(format!(
-            "unexpected oracle lcms response: {}",
-            text.trim()
-        ))),
-    }
-}
-
-fn render_lisp_literal(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &Env,
-) -> Result<String, LispError> {
-    let rendered = render_prin1(interp, value, env)?;
-    Ok(match value {
-        Value::Nil
-        | Value::T
-        | Value::Integer(_)
-        | Value::BigInteger(_)
-        | Value::Float(_)
-        | Value::String(_)
-        | Value::StringObject(_) => rendered,
-        _ => format!("(quote {rendered})"),
-    })
-}
-
 fn parse_edmacro_key_sequence(source: &str) -> Result<Value, LispError> {
     let mut parser = EdmacroKeyParser::new(source);
     let items = parser.parse()?;
@@ -19921,28 +19736,6 @@ fn rand_simple() -> i64 {
 #[cfg(test)]
 mod lcms_response_tests {
     use super::*;
-
-    #[test]
-    fn parse_oracle_lcms_ok_response_returns_value() {
-        let value = match parse_oracle_lcms_response(b"(emaxx-lcms-ok (1.0 2.0 3.0))") {
-            Ok(value) => value,
-            Err(error) => panic!("expected ok response, got {error}"),
-        };
-        assert_eq!(
-            value,
-            Value::list([Value::Float(1.0), Value::Float(2.0), Value::Float(3.0)])
-        );
-    }
-
-    #[test]
-    fn parse_oracle_lcms_error_response_returns_signal() {
-        let error = match parse_oracle_lcms_response(b"(emaxx-lcms-error error \"Invalid color\")")
-        {
-            Ok(value) => panic!("expected error response, got {value}"),
-            Err(error) => error,
-        };
-        assert_eq!(error.to_string(), "error: Invalid color");
-    }
 
     #[test]
     fn edmacro_parser_handles_comments_commands_and_repetition() {

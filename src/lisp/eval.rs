@@ -482,10 +482,6 @@ impl Default for Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        let mut provided_features = vec!["emaxx".into(), "ert".into()];
-        if primitives::compat_lcms2_available() {
-            provided_features.push("lcms2".into());
-        }
         Interpreter {
             globals: Vec::new(),
             variable_aliases: Vec::new(),
@@ -529,7 +525,7 @@ impl Interpreter {
             change_hooks_running: 0,
             macros: Vec::new(),
             functions: Vec::new(),
-            provided_features,
+            provided_features: vec!["emaxx".into(), "ert".into()],
             current_load_file: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
