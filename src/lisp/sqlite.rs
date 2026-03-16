@@ -1,6 +1,8 @@
+use std::ffi::CStr;
 use std::path::Path;
 
 use num_traits::ToPrimitive;
+use rusqlite::ffi;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, params_from_iter};
 
@@ -34,6 +36,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "sqlite-execute"
             | "sqlite-select"
             | "sqlite-execute-batch"
+            | "sqlite-transaction"
+            | "sqlite-commit"
+            | "sqlite-rollback"
             | "sqlite-load-extension"
             | "sqlite-next"
             | "sqlite-more-p"
@@ -56,6 +61,9 @@ pub fn call(
         "sqlite-execute" => sqlite_execute(interp, args),
         "sqlite-select" => sqlite_select(interp, args),
         "sqlite-execute-batch" => sqlite_execute_batch(interp, args),
+        "sqlite-transaction" => sqlite_transaction(interp, args),
+        "sqlite-commit" => sqlite_commit(interp, args),
+        "sqlite-rollback" => sqlite_rollback(interp, args),
         "sqlite-load-extension" => sqlite_load_extension(interp, args),
         "sqlite-next" => sqlite_next(interp, args),
         "sqlite-more-p" => sqlite_more_p(interp, args),
@@ -124,7 +132,7 @@ fn sqlite_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     let values = args.get(2).unwrap_or(&Value::Nil);
     let params = bind_parameters(values)?;
     let connection = database_connection(interp, id)?;
-    let mut stmt = connection.prepare(&query).map_err(sqlite_error)?;
+    let mut stmt = connection.prepare(&query).map_err(sqlite_prepare_error)?;
     if stmt.column_count() > 0 {
         Ok(Value::list(collect_rows(&mut stmt, &params)?))
     } else {
@@ -144,7 +152,7 @@ fn sqlite_select(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lisp
     let params = bind_parameters(values)?;
     let (columns, rows) = {
         let connection = database_connection(interp, id)?;
-        let mut stmt = connection.prepare(&query).map_err(sqlite_error)?;
+        let mut stmt = connection.prepare(&query).map_err(sqlite_prepare_error)?;
         let columns = stmt
             .column_names()
             .iter()
@@ -176,10 +184,25 @@ fn sqlite_execute_batch(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     need_args("sqlite-execute-batch", args, 2, 2)?;
     let id = sqlite_id(&args[0])?;
     let statements = string_text(&args[1])?;
-    database_connection(interp, id)?
-        .execute_batch(&statements)
-        .map_err(sqlite_error)?;
-    Ok(Value::T)
+    sqlite_exec(database_connection(interp, id)?, &statements)
+}
+
+fn sqlite_transaction(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    need_args("sqlite-transaction", args, 1, 1)?;
+    let id = sqlite_id(&args[0])?;
+    sqlite_exec(database_connection(interp, id)?, "begin")
+}
+
+fn sqlite_commit(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    need_args("sqlite-commit", args, 1, 1)?;
+    let id = sqlite_id(&args[0])?;
+    sqlite_exec(database_connection(interp, id)?, "commit")
+}
+
+fn sqlite_rollback(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    need_args("sqlite-rollback", args, 1, 1)?;
+    let id = sqlite_id(&args[0])?;
+    sqlite_exec(database_connection(interp, id)?, "rollback")
 }
 
 fn sqlite_load_extension(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
@@ -277,8 +300,57 @@ fn sqlite_available_p(args: &[Value]) -> Result<Value, LispError> {
     Ok(Value::T)
 }
 
+fn sqlite_exec(connection: &Connection, statement: &str) -> Result<Value, LispError> {
+    Ok(if connection.execute_batch(statement).is_ok() {
+        Value::T
+    } else {
+        Value::Nil
+    })
+}
+
+fn sqlite_prepare_error(error: rusqlite::Error) -> LispError {
+    match error {
+        rusqlite::Error::SqlInputError { error, msg, .. } => sqlite_failure_error(error, Some(msg)),
+        rusqlite::Error::SqliteFailure(error, message) => sqlite_failure_error(error, message),
+        other => sqlite_error(other),
+    }
+}
+
 fn sqlite_error(error: rusqlite::Error) -> LispError {
-    LispError::Signal(error.to_string())
+    match error {
+        rusqlite::Error::SqlInputError { error, msg, .. } => sqlite_failure_error(error, Some(msg)),
+        rusqlite::Error::SqliteFailure(error, message) => sqlite_failure_error(error, message),
+        other => LispError::Signal(other.to_string()),
+    }
+}
+
+fn sqlite_failure_error(error: ffi::Error, message: Option<String>) -> LispError {
+    let primary_code = error.extended_code & 0xff;
+    let errstr = sqlite_errstr(primary_code).unwrap_or_else(|| "sqlite error".into());
+    let message = message.unwrap_or_else(|| errstr.clone());
+    LispError::SignalValue(Value::list([
+        Value::Symbol(sqlite_error_symbol(&error).into()),
+        Value::list([
+            Value::String(errstr),
+            Value::String(message),
+            Value::Integer(primary_code as i64),
+            Value::Integer(error.extended_code as i64),
+        ]),
+    ]))
+}
+
+fn sqlite_error_symbol(error: &ffi::Error) -> &'static str {
+    match error.code {
+        ffi::ErrorCode::DatabaseBusy | ffi::ErrorCode::DatabaseLocked => "sqlite-locked-error",
+        _ => "sqlite-error",
+    }
+}
+
+fn sqlite_errstr(code: i32) -> Option<String> {
+    unsafe {
+        let ptr = ffi::sqlite3_errstr(code);
+        (!ptr.is_null()).then(|| CStr::from_ptr(ptr).to_string_lossy().into_owned())
+    }
 }
 
 fn sqlite_id(value: &Value) -> Result<u64, LispError> {

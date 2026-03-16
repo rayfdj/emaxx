@@ -611,6 +611,8 @@ pub struct Interpreter {
     next_record_id: u64,
     /// Next finalizer ID for identity tracking.
     next_finalizer_id: u64,
+    /// Next generated symbol ID used by built-in macro expansion helpers.
+    next_generated_symbol_id: u64,
     /// Buffer-local hook lists keyed by (buffer id, hook name).
     buffer_local_hooks: Vec<(u64, String, Vec<Value>)>,
     /// Buffer-local variable values keyed by (buffer id, variable name).
@@ -746,6 +748,7 @@ impl Interpreter {
             sqlite_handles: Vec::new(),
             next_record_id: 2,
             next_finalizer_id: 1,
+            next_generated_symbol_id: 1,
             buffer_local_hooks: Vec::new(),
             buffer_locals: Vec::new(),
             buffer_syntax_tables: Vec::new(),
@@ -870,6 +873,12 @@ impl Interpreter {
             }
             other => other,
         }
+    }
+
+    fn make_generated_symbol(&mut self, prefix: &str) -> Value {
+        let id = self.next_generated_symbol_id;
+        self.next_generated_symbol_id += 1;
+        Value::Symbol(format!("{prefix}--emaxx-gensym-{id}"))
     }
 
     pub(crate) fn resolve_load_target(&self, target: &str) -> Option<PathBuf> {
@@ -7790,6 +7799,10 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
+        if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
+            return Ok(Some(expanded));
+        }
+
         // Find the macro
         let macro_def = self.macros.iter().find(|(n, _, _)| n == name).cloned();
         let Some((_, params, body)) = macro_def else {
@@ -7833,6 +7846,45 @@ impl Interpreter {
         };
         env.pop();
         Ok(Some(expanded))
+    }
+
+    fn try_builtin_macroexpand(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
+        match name {
+            "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    fn expand_cl_with_gensyms(
+        &mut self,
+        args: &[Value],
+        _env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let names = args
+            .first()
+            .ok_or_else(|| LispError::WrongNumberOfArgs("cl-with-gensyms".into(), 0))?
+            .to_vec()?;
+        let mut bindings = Vec::with_capacity(names.len());
+        for name in names {
+            let name = name.as_symbol()?.to_string();
+            bindings.push(Value::list([
+                Value::Symbol(name.clone()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    self.make_generated_symbol(&name),
+                ]),
+            ]));
+        }
+        Ok(Value::list(
+            std::iter::once(Value::Symbol("let".into()))
+                .chain(std::iter::once(Value::list(bindings)))
+                .chain(args[1..].iter().cloned()),
+        ))
     }
 
     fn sf_skip_unless(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -12554,6 +12606,48 @@ mod tests {
                     Value::symbol("demo-option"),
                     Value::symbol("custom-variable"),
                 ])]),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_with_gensyms_produces_unique_bindings() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (defmacro sample-cl-with-gensyms (value)
+                    (cl-with-gensyms (tmp)
+                      `(let ((,tmp ,value))
+                         ,tmp)))
+                  (let ((tmp 99))
+                    (sample-cl-with-gensyms 42)))
+                "#
+            ),
+            Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn sqlite_execute_surfaces_sql_input_errors_as_sqlite_error() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((db (sqlite-open)))
+                  (sqlite-execute db "create table test (a)")
+                  (should-error
+                   (sqlite-execute db "insert into test values (fake(2))")
+                   :type 'sqlite-error))
+                "#
+            ),
+            Value::list([
+                Value::symbol("sqlite-error"),
+                Value::list([
+                    Value::String("SQL logic error".into()),
+                    Value::String("no such function: fake".into()),
+                    Value::Integer(1),
+                    Value::Integer(1),
+                ]),
             ])
         );
     }
