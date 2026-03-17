@@ -162,6 +162,79 @@ fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
         .count()
 }
 
+fn replace_buffer_contents(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    text: &str,
+) -> Result<(), LispError> {
+    let buffer = interp
+        .get_buffer_by_id_mut(buffer_id)
+        .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+    let end = buffer.point_max();
+    let _ = buffer.delete_region(1, end);
+    buffer.goto_char(1);
+    buffer.insert(text);
+    buffer.goto_char(1);
+    Ok(())
+}
+
+fn current_line_text(interp: &mut Interpreter) -> Result<String, LispError> {
+    let saved = interp.buffer.point();
+    let start = interp.buffer.beginning_of_line();
+    interp.buffer.goto_char(saved);
+    let end = interp.buffer.end_of_line();
+    interp.buffer.goto_char(saved);
+    interp
+        .buffer
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+fn thread_list_thread_at_point(interp: &mut Interpreter) -> Result<u64, LispError> {
+    let line = current_line_text(interp)?;
+    let Some(name) = line.split_whitespace().next() else {
+        return Err(LispError::Signal("No thread at point".into()));
+    };
+    for thread in interp.live_threads() {
+        let thread_id = interp.resolve_thread_id(&thread)?;
+        if interp.thread_name(thread_id).as_deref() == Some(name) {
+            return Ok(thread_id);
+        }
+    }
+    Err(LispError::Signal("No thread at point".into()))
+}
+
+fn thread_list_row(
+    interp: &mut Interpreter,
+    thread_id: u64,
+    env: &Env,
+) -> Result<String, LispError> {
+    let thread_value = Value::Record(thread_id);
+    let thread_name = interp.thread_name(thread_id).unwrap_or_else(|| {
+        if thread_value == interp.current_thread_value() {
+            "Main".into()
+        } else {
+            format!("#<thread id:{thread_id}>")
+        }
+    });
+    let (status, blocker) = if !interp.thread_live(thread_id) {
+        (String::from("Finished"), String::new())
+    } else if thread_value == interp.current_thread_value() {
+        (String::from("Running"), String::new())
+    } else {
+        let blocker = interp.thread_blocker_value(thread_id);
+        if blocker.is_truthy() {
+            (
+                String::from("Blocked"),
+                render_prin1(interp, &blocker, env)?,
+            )
+        } else {
+            (String::from("Yielded"), String::new())
+        }
+    };
+    Ok(format!("{thread_name}\t{status}\t{blocker}\n"))
+}
+
 fn current_window_start(interp: &Interpreter) -> usize {
     interp
         .buffer_local_value(interp.current_buffer_id(), SELECTED_WINDOW_START_VAR)
@@ -1638,6 +1711,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "thread-buffer-disposition"
             | "thread-set-buffer-disposition"
             | "backtrace--frames-from-thread"
+            | "list-threads"
+            | "thread-list-send-error-signal"
+            | "thread-list-pop-to-backtrace"
             | "undo-boundary"
             | "undo"
             | "undo-more"
@@ -10174,34 +10250,60 @@ pub fn call(
         "backtrace--frames-from-thread" => {
             need_args(name, args, 1)?;
             let frames = interp
-                .backtrace_frames_snapshot()
+                .thread_backtrace_frames_snapshot(interp.resolve_thread_id(&args[0])?)
                 .into_iter()
-                .map(|(function, frame_args, debug_on_exit)| {
-                    let flags = if debug_on_exit {
-                        Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
-                    } else {
-                        Value::Nil
-                    };
-                    Value::list([
-                        Value::T,
-                        function
-                            .map(Value::Symbol)
-                            .unwrap_or(Value::Symbol("identity".into())),
-                        Value::list(frame_args),
-                        flags,
-                    ])
+                .map(|(function, frame_args, _debug_on_exit)| {
+                    let mut items =
+                        vec![Value::T, function.map(Value::Symbol).unwrap_or(Value::Nil)];
+                    items.extend(frame_args);
+                    Value::list(items)
                 })
                 .collect::<Vec<_>>();
-            Ok(Value::list(if frames.is_empty() {
-                vec![Value::list([
-                    Value::T,
-                    Value::Symbol("identity".into()),
-                    Value::Nil,
-                    Value::Nil,
-                ])]
-            } else {
-                frames
-            }))
+            Ok(Value::list(frames))
+        }
+        "list-threads" => {
+            need_args(name, args, 0)?;
+            let buffer_id = interp
+                .find_buffer("*Threads*")
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer("*Threads*").0);
+            let mut text = String::from("Thread Name\tStatus\tBlocked On\n");
+            for thread in interp.live_threads() {
+                let thread_id = interp.resolve_thread_id(&thread)?;
+                text.push_str(&thread_list_row(interp, thread_id, env)?);
+            }
+            replace_buffer_contents(interp, buffer_id, &text)?;
+            interp.switch_to_buffer_id(buffer_id)?;
+            Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+        }
+        "thread-list-send-error-signal" => {
+            need_args(name, args, 0)?;
+            let thread_id = thread_list_thread_at_point(interp)?;
+            interp.signal_thread(thread_id, Value::Symbol("error".into()), Value::Nil, env)
+        }
+        "thread-list-pop-to-backtrace" => {
+            need_args(name, args, 0)?;
+            let thread_id = thread_list_thread_at_point(interp)?;
+            let thread_name = interp
+                .thread_name(thread_id)
+                .unwrap_or_else(|| format!("#<thread id:{thread_id}>"));
+            let buffer_id = interp
+                .find_buffer("*Thread Backtrace*")
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer("*Thread Backtrace*").0);
+            let mut text = format!("Backtrace for thread `{thread_name}':\n");
+            for (function, frame_args, _) in interp.thread_backtrace_frames_snapshot(thread_id) {
+                let function = function.unwrap_or_else(|| "nil".into());
+                text.push_str(&function);
+                for arg in frame_args {
+                    text.push(' ');
+                    text.push_str(&render_prin1(interp, &arg, env)?);
+                }
+                text.push('\n');
+            }
+            replace_buffer_contents(interp, buffer_id, &text)?;
+            interp.switch_to_buffer_id(buffer_id)?;
+            Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
         }
         "regexp-quote" => {
             need_args(name, args, 1)?;
@@ -23586,6 +23688,27 @@ fn render_prin1(
                 let mut call_env = env.clone();
                 let rendered = call_function_value(interp, &function, &[], &mut call_env)?;
                 return string_text(&rendered);
+            }
+            Ok(value.to_string())
+        }
+        Value::Record(id) => {
+            if let Some(record) = interp.find_record(*id) {
+                let rendered = match record.type_name.as_str() {
+                    "thread" => interp
+                        .thread_name(*id)
+                        .map(|name| format!("#<thread {name}>"))
+                        .unwrap_or_else(|| format!("#<thread id:{id}>")),
+                    "mutex" => interp
+                        .mutex_name(*id)
+                        .map(|name| format!("#<mutex {name}>"))
+                        .unwrap_or_else(|| "#<mutex>".into()),
+                    "condition-variable" => interp
+                        .condition_variable_name(*id)
+                        .map(|name| format!("#<condvar {name}>"))
+                        .unwrap_or_else(|| "#<condvar>".into()),
+                    _ => value.to_string(),
+                };
+                return Ok(rendered);
             }
             Ok(value.to_string())
         }
