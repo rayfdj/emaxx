@@ -11511,6 +11511,37 @@ mod tests {
     }
 
     #[test]
+    fn make_display_table_creates_a_display_char_table() {
+        assert_eq!(
+            eval_str(
+                "(let ((table (make-display-table))) \
+                   (list (char-table-p table) (char-table-subtype table)))"
+            ),
+            Value::list([Value::T, Value::Symbol("display-table".into())])
+        );
+    }
+
+    #[test]
+    fn translate_region_uses_char_tables() {
+        let value = eval_str(
+            r#"
+            (with-temp-buffer
+              (insert "Super-secret text")
+              (let ((table (make-char-table 'translation-table)))
+                (dotimes (i 26)
+                  (aset table (+ i ?a) (+ (% (+ i 13) 26) ?a))
+                  (aset table (+ i ?A) (+ (% (+ i 13) 26) ?A)))
+                (list
+                 (translate-region (point-min) (point-max) table)
+                 (buffer-string))))
+            "#,
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items[0], Value::Integer(15));
+        assert_string_value(items[1].clone(), "Fhcre-frperg grkg");
+    }
+
+    #[test]
     fn preloaded_point_to_register_stub_is_fboundp() {
         let mut interp = Interpreter::new();
         assert_eq!(

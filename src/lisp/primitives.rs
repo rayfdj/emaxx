@@ -1435,7 +1435,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "profiler-cpu-start"
             | "profiler-cpu-stop"
             | "profiler-cpu-log"
+            | "make-display-table"
             | "make-char-table"
+            | "translate-region"
             | "translate-region-internal"
             | "propertize"
             | "regexp-quote"
@@ -10655,6 +10657,11 @@ pub fn call(
             ))
         }
 
+        "make-display-table" => {
+            need_arg_range(name, args, 0, 0)?;
+            Ok(interp.make_char_table(Some("display-table".into()), Value::Nil))
+        }
+
         "make-char-table" => {
             need_args(name, args, 1)?;
             let subtype = match &args[0] {
@@ -11055,6 +11062,14 @@ pub fn call(
             interp.clone_char_table(id)
         }
 
+        "translate-region" => {
+            need_args(name, args, 3)?;
+            let from = position_from_value(interp, &args[0])?;
+            let to = position_from_value(interp, &args[1])?;
+            let table = translation_table_from_value(interp, &args[2])?;
+            translate_region_with_table(interp, from, to, &table)
+        }
+
         "translate-region-internal" => {
             need_args(name, args, 3)?;
             let from = position_from_value(interp, &args[0])?;
@@ -11071,34 +11086,8 @@ pub fn call(
             if interp.char_table_purpose(table_id) != Some("translation-table") {
                 return Err(LispError::Signal("Not a translation table".into()));
             }
-            let mut changed = 0i64;
-            let mut translated = String::new();
-            for pos in from..to {
-                let source_char = interp
-                    .buffer
-                    .text_property_at(pos, "emaxx-raw-char")
-                    .and_then(|value| value.as_integer().ok())
-                    .map(|value| value as u32)
-                    .or_else(|| interp.buffer.char_at(pos).map(|ch| ch as u32))
-                    .unwrap_or_default();
-                let mapped = interp
-                    .char_table_get(table_id, source_char)
-                    .and_then(|value| value.as_integer().ok())
-                    .map(|value| value as u32)
-                    .unwrap_or(source_char);
-                if mapped != source_char {
-                    changed += 1;
-                }
-                if let Some(mapped_char) = char::from_u32(mapped) {
-                    translated.push(mapped_char);
-                }
-            }
-            interp
-                .delete_region_current_buffer(from, to)
-                .map_err(|e| LispError::Signal(e.to_string()))?;
-            interp.buffer.goto_char(from);
-            interp.insert_current_buffer(&translated);
-            Ok(Value::Integer(changed))
+            let table = TranslationTable::CharTable(table_id);
+            translate_region_with_table(interp, from, to, &table)
         }
 
         "undo-boundary" => {
@@ -11741,6 +11730,72 @@ fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, Lis
             value.type_name(),
         )),
     }
+}
+
+enum TranslationTable {
+    CharTable(u64),
+    String(String),
+}
+
+fn translation_table_from_value(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<TranslationTable, LispError> {
+    match value {
+        Value::CharTable(id) => Ok(TranslationTable::CharTable(*id)),
+        Value::Symbol(symbol) => match interp.get_symbol_property(symbol, "translation-table") {
+            Some(Value::CharTable(id)) => Ok(TranslationTable::CharTable(id)),
+            _ => Err(LispError::Signal(format!(
+                "Invalid translation table name: {symbol}"
+            ))),
+        },
+        _ => string_like(value)
+            .map(|string| TranslationTable::String(string.text))
+            .ok_or_else(|| LispError::TypeError("string-or-char-table".into(), value.type_name())),
+    }
+}
+
+fn translate_region_with_table(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    table: &TranslationTable,
+) -> Result<Value, LispError> {
+    let mut changed = 0i64;
+    let mut translated = String::new();
+    for pos in from..to {
+        let source_char = interp
+            .buffer
+            .text_property_at(pos, "emaxx-raw-char")
+            .and_then(|value| value.as_integer().ok())
+            .map(|value| value as u32)
+            .or_else(|| interp.buffer.char_at(pos).map(|ch| ch as u32))
+            .unwrap_or_default();
+        let mapped = match table {
+            TranslationTable::CharTable(id) => interp
+                .char_table_get(*id, source_char)
+                .and_then(|value| value.as_integer().ok())
+                .map(|value| value as u32)
+                .unwrap_or(source_char),
+            TranslationTable::String(text) => text
+                .chars()
+                .nth(source_char as usize)
+                .map(|ch| ch as u32)
+                .unwrap_or(source_char),
+        };
+        if mapped != source_char {
+            changed += 1;
+        }
+        if let Some(mapped_char) = char::from_u32(mapped) {
+            translated.push(mapped_char);
+        }
+    }
+    interp
+        .delete_region_current_buffer(from, to)
+        .map_err(|e| LispError::Signal(e.to_string()))?;
+    interp.buffer.goto_char(from);
+    interp.insert_current_buffer(&translated);
+    Ok(Value::Integer(changed))
 }
 
 fn marker_id_from_value(value: &Value) -> Result<u64, LispError> {
