@@ -709,8 +709,10 @@ impl Interpreter {
                 "last-coding-system-used".into(),
                 "line-spacing".into(),
                 "left-margin".into(),
+                "last-command".into(),
                 "overwrite-mode".into(),
                 "process-environment".into(),
+                "scroll-preserve-screen-position".into(),
                 "scroll-up-aggressively".into(),
                 "standard-output".into(),
                 "vertical-scroll-bar".into(),
@@ -4121,7 +4123,9 @@ impl Interpreter {
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
+            "last-command" => Some(Value::Nil),
             "line-spacing" => Some(Value::Nil),
+            "scroll-preserve-screen-position" => Some(Value::Nil),
             "scroll-up-aggressively" => Some(Value::Nil),
             "vertical-scroll-bar" => Some(Value::Symbol("right".into())),
             "overwrite-mode" => Some(Value::Symbol("overwrite-mode-binary".into())),
@@ -10635,6 +10639,45 @@ mod tests {
                    (buffer-name (window-buffer (selected-window))))"
             ),
             Value::String("foo".into())
+        );
+    }
+
+    #[test]
+    fn scroll_up_moves_point_with_window_when_point_would_scroll_off_top() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(with-temp-buffer
+                   (insert \"\\n\\n\\n\")
+                   (goto-char (point-min))
+                   (switch-to-buffer (current-buffer))
+                   (scroll-up 1)
+                   (list (window-start)
+                         (save-excursion (move-to-window-line 0) (point))
+                         (point)))"
+            ),
+            Value::list([Value::Integer(2), Value::Integer(2), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn scroll_up_respects_scroll_preserve_screen_position() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(with-temp-buffer
+                   (insert \"\\n\\n\\n\")
+                   (goto-char (+ (point-min) 1))
+                   (switch-to-buffer (current-buffer))
+                   (let ((scroll-preserve-screen-position 'always))
+                     (scroll-up 1)
+                     (list (window-start)
+                           (save-excursion (move-to-window-line 1) (point))
+                           (point))))"
+            ),
+            Value::list([Value::Integer(2), Value::Integer(3), Value::Integer(3)])
         );
     }
 

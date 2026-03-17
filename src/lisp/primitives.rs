@@ -38,6 +38,8 @@ static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
+const SELECTED_WINDOW_START_VAR: &str = "emaxx--selected-window-start";
+const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
 
 fn is_sqlite_builtin(name: &str) -> bool {
     matches!(
@@ -123,6 +125,108 @@ fn treesit_linecol_at(interp: &Interpreter, pos: usize) -> Result<Value, LispErr
         }
     }
     Ok(Value::cons(Value::Integer(line), Value::Integer(col)))
+}
+
+fn signal_condition(condition: &str) -> LispError {
+    LispError::SignalValue(Value::list([Value::Symbol(condition.into()), Value::Nil]))
+}
+
+fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
+    let saved = interp.buffer.point();
+    interp.buffer.goto_char(pos);
+    let start = interp.buffer.beginning_of_line();
+    interp.buffer.goto_char(saved);
+    start
+}
+
+fn move_lines_from(interp: &mut Interpreter, start: usize, count: isize) -> (usize, isize) {
+    let saved = interp.buffer.point();
+    interp.buffer.goto_char(start);
+    interp.buffer.beginning_of_line();
+    let shortage = interp.buffer.forward_line(count);
+    let target = interp.buffer.point();
+    interp.buffer.goto_char(saved);
+    (target, shortage)
+}
+
+fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
+    if target <= start {
+        return 0;
+    }
+    interp
+        .buffer
+        .buffer_substring(start, target)
+        .unwrap_or_default()
+        .chars()
+        .filter(|ch| *ch == '\n')
+        .count()
+}
+
+fn current_window_start(interp: &Interpreter) -> usize {
+    interp
+        .buffer_local_value(interp.current_buffer_id(), SELECTED_WINDOW_START_VAR)
+        .and_then(|value| value.as_integer().ok())
+        .map(|value| value.max(interp.buffer.point_min() as i64) as usize)
+        .unwrap_or_else(|| interp.buffer.point_min())
+}
+
+fn set_current_window_start(interp: &mut Interpreter, start: usize) {
+    let start = start.clamp(interp.buffer.point_min(), interp.buffer.point_max());
+    let start = beginning_of_line_at(interp, start);
+    interp.set_buffer_local_value(
+        interp.current_buffer_id(),
+        SELECTED_WINDOW_START_VAR,
+        Value::Integer(start as i64),
+    );
+}
+
+fn scroll_preserve_screen_position(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var("scroll-preserve-screen-position", env)
+        .is_some_and(|value| !value.is_nil())
+}
+
+fn resolve_window_line(value: Option<&Value>, default_line: usize) -> Result<isize, LispError> {
+    let line = match value {
+        None | Some(Value::Nil) => default_line as i64,
+        Some(value) => prefix_numeric_value(value)?.as_integer()?,
+    };
+    Ok(if line >= 0 {
+        line as isize
+    } else {
+        (DEFAULT_SELECTED_WINDOW_HEIGHT as isize + line as isize).max(0)
+    })
+}
+
+fn scroll_selected_window(
+    interp: &mut Interpreter,
+    count: isize,
+    env: &Env,
+) -> Result<(), LispError> {
+    let window_start = current_window_start(interp);
+    let point_line = beginning_of_line_at(interp, interp.buffer.point());
+    let point_offset = line_distance(interp, window_start, point_line);
+    let (new_start, shortage) = move_lines_from(interp, window_start, count);
+    if shortage != 0 {
+        return Err(if count >= 0 {
+            signal_condition("end-of-buffer")
+        } else {
+            signal_condition("beginning-of-buffer")
+        });
+    }
+
+    set_current_window_start(interp, new_start);
+
+    if scroll_preserve_screen_position(interp, env) || point_line < new_start {
+        let (target, target_shortage) = move_lines_from(interp, new_start, point_offset as isize);
+        if target_shortage > 0 {
+            interp.buffer.goto_char(interp.buffer.point_max());
+        } else {
+            interp.buffer.goto_char(target);
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
@@ -1236,6 +1340,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "window-start"
             | "window-end"
             | "window-width"
+            | "move-to-window-line"
+            | "recenter"
+            | "scroll-up"
+            | "scroll-down"
             | "window-text-pixel-size"
             | "get-display-property"
             | "bidi-find-overridden-directionality"
@@ -7904,9 +8012,52 @@ pub fn call(
                 },
             )
         }
-        "window-start" => Ok(Value::Integer(interp.buffer.point_min() as i64)),
+        "window-start" => Ok(Value::Integer(current_window_start(interp) as i64)),
         "window-end" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
         "window-width" => Ok(Value::Integer(80)),
+        "move-to-window-line" => {
+            need_arg_range(name, args, 0, 1)?;
+            let line = resolve_window_line(args.first(), DEFAULT_SELECTED_WINDOW_HEIGHT / 2)?;
+            let window_start = current_window_start(interp);
+            let (target, shortage) = move_lines_from(interp, window_start, line);
+            interp.buffer.goto_char(target);
+            let actual = if shortage > 0 {
+                line - shortage
+            } else if shortage < 0 {
+                line + shortage.abs()
+            } else {
+                line
+            };
+            Ok(Value::Integer(actual as i64))
+        }
+        "recenter" => {
+            need_arg_range(name, args, 0, 2)?;
+            let line = resolve_window_line(args.first(), DEFAULT_SELECTED_WINDOW_HEIGHT / 2)?;
+            let point_line = beginning_of_line_at(interp, interp.buffer.point());
+            let (new_start, _) = move_lines_from(interp, point_line, -line);
+            set_current_window_start(interp, new_start);
+            Ok(Value::Nil)
+        }
+        "scroll-up" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = if let Some(value) = args.first() {
+                prefix_numeric_value(value)?.as_integer()?
+            } else {
+                1
+            };
+            scroll_selected_window(interp, count as isize, env)?;
+            Ok(Value::Nil)
+        }
+        "scroll-down" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = if let Some(value) = args.first() {
+                prefix_numeric_value(value)?.as_integer()?
+            } else {
+                1
+            };
+            scroll_selected_window(interp, -(count as isize), env)?;
+            Ok(Value::Nil)
+        }
         "window-text-pixel-size" => {
             let width = interp
                 .buffer
@@ -8067,7 +8218,16 @@ pub fn call(
         }
         "get-buffer-window" | "minibuffer-window" => Ok(Value::Symbol("window".into())),
         "active-minibuffer-window" => Ok(Value::Nil),
-        "set-window-start" | "set-window-point" => Ok(Value::T),
+        "set-window-start" => {
+            need_arg_range(name, args, 2, 4)?;
+            if !is_window_value(interp, &args[0]) {
+                return Err(LispError::TypeError("window".into(), args[0].type_name()));
+            }
+            let start = position_from_value(interp, &args[1])?;
+            set_current_window_start(interp, start);
+            Ok(Value::T)
+        }
+        "set-window-point" => Ok(Value::T),
         "facemenu-add-face" => {
             need_args(name, args, 3)?;
             let face = args[0].clone();
