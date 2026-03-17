@@ -4605,6 +4605,12 @@ impl Interpreter {
                 if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
                     return Ok(expr.clone());
                 }
+                if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if name == "bool-vector-literal"
+                ) {
+                    return Ok(self.create_record("bool-vector", items[1..].to_vec()));
+                }
 
                 // Check for special forms first
                 if let Value::Symbol(ref name) = items[0] {
@@ -6111,11 +6117,44 @@ impl Interpreter {
     }
 
     fn sf_defface(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        Ok(items
-            .get(1)
-            .and_then(|value| value.as_symbol().ok())
-            .map(Value::symbol)
-            .unwrap_or(Value::Nil))
+        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
+            return Ok(Value::Nil);
+        };
+        if let Some(spec) = items.get(2) {
+            self.record_defface_runtime_attributes(name, spec)?;
+        }
+        Ok(Value::Symbol(name.to_string()))
+    }
+
+    fn record_defface_runtime_attributes(
+        &mut self,
+        face: &str,
+        spec_form: &Value,
+    ) -> Result<(), LispError> {
+        let Some(spec) = defface_spec_literal(spec_form) else {
+            return Ok(());
+        };
+        let Some(attributes) = defface_runtime_attributes(&spec) else {
+            return Ok(());
+        };
+
+        for (attribute, value) in attributes {
+            if attribute == ":inherit" {
+                match &value {
+                    Value::Nil => self.set_face_inherit_target(face, None)?,
+                    Value::Symbol(symbol) => {
+                        self.set_face_inherit_target(face, Some(symbol.clone()))?
+                    }
+                    _ => {}
+                }
+            }
+            self.put_symbol_property(
+                face,
+                &crate::lisp::primitives::face_attribute_property_name(&attribute),
+                value,
+            );
+        }
+        Ok(())
     }
 
     fn sf_defvar_keymap(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -9530,6 +9569,64 @@ fn nested_backquote_body(value: &Value) -> Option<Value> {
     }
 }
 
+fn defface_spec_literal(spec_form: &Value) -> Option<Value> {
+    match spec_form {
+        Value::Cons(_, _) => {
+            let items = spec_form.to_vec().ok()?;
+            match items.as_slice() {
+                [Value::Symbol(symbol), value] if symbol == "quote" => Some(value.clone()),
+                _ => Some(spec_form.clone()),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn defface_runtime_attributes(spec: &Value) -> Option<Vec<(String, Value)>> {
+    let clauses = spec.to_vec().ok()?;
+    clauses
+        .iter()
+        .find_map(|clause| defface_clause_attributes(clause, true))
+        .or_else(|| {
+            clauses
+                .iter()
+                .find_map(|clause| defface_clause_attributes(clause, false))
+        })
+}
+
+fn defface_clause_attributes(
+    clause: &Value,
+    require_default_clause: bool,
+) -> Option<Vec<(String, Value)>> {
+    let parts = clause.to_vec().ok()?;
+    if parts.len() < 2 {
+        return None;
+    }
+    if require_default_clause && !defface_matches_default_display(&parts[0]) {
+        return None;
+    }
+
+    let mut attributes = Vec::new();
+    let mut index = 1;
+    while index + 1 < parts.len() {
+        let attribute = parts[index].as_symbol().ok()?;
+        if attribute.starts_with(':') {
+            attributes.push((attribute.to_string(), parts[index + 1].clone()));
+        }
+        index += 2;
+    }
+    if attributes.is_empty() {
+        None
+    } else {
+        Some(attributes)
+    }
+}
+
+fn defface_matches_default_display(display: &Value) -> bool {
+    matches!(display, Value::T)
+        || matches!(display, Value::Symbol(symbol) if symbol == "t" || symbol == "default")
+}
+
 fn cons_list_with_tail(items: Vec<Value>, tail: Value) -> Value {
     let mut out = tail;
     for item in items.into_iter().rev() {
@@ -9993,6 +10090,15 @@ fn pcase_pattern_bindings(
     value: &Value,
     bindings: &mut Vec<(String, Value)>,
 ) -> Result<bool, LispError> {
+    pcase_pattern_bindings_with_mode(pattern, value, bindings, false)
+}
+
+fn pcase_pattern_bindings_with_mode(
+    pattern: &Value,
+    value: &Value,
+    bindings: &mut Vec<(String, Value)>,
+    lenient_list_match: bool,
+) -> Result<bool, LispError> {
     if matches!(pattern, Value::Symbol(name) if name == "_") {
         return Ok(true);
     }
@@ -10005,7 +10111,29 @@ fn pcase_pattern_bindings(
     }
     if let Ok(parts) = pattern.to_vec() {
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
-            return pcase_pattern_bindings(parts.get(1).unwrap_or(&Value::Nil), value, bindings);
+            return pcase_pattern_bindings_with_mode(
+                parts.get(1).unwrap_or(&Value::Nil),
+                value,
+                bindings,
+                true,
+            );
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "or") {
+            let original = bindings.clone();
+            for candidate in &parts[1..] {
+                let mut trial = original.clone();
+                if pcase_pattern_bindings_with_mode(
+                    candidate,
+                    value,
+                    &mut trial,
+                    lenient_list_match,
+                )? {
+                    *bindings = trial;
+                    return Ok(true);
+                }
+            }
+            *bindings = original;
+            return Ok(false);
         }
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
             return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
@@ -10025,16 +10153,51 @@ fn pcase_pattern_bindings(
             let pattern_cdr = pattern_cdr.borrow().clone();
             let value_car = value_car.borrow().clone();
             let value_cdr = value_cdr.borrow().clone();
-            if !pcase_pattern_bindings(&pattern_car, &value_car, bindings)? {
+            if !pcase_pattern_bindings_with_mode(
+                &pattern_car,
+                &value_car,
+                bindings,
+                lenient_list_match,
+            )? {
                 bindings.truncate(start);
                 return Ok(false);
             }
-            if !pcase_pattern_bindings(&pattern_cdr, &value_cdr, bindings)? {
+            if !pcase_pattern_bindings_with_mode(
+                &pattern_cdr,
+                &value_cdr,
+                bindings,
+                lenient_list_match,
+            )? {
                 bindings.truncate(start);
                 return Ok(false);
             }
             Ok(true)
         }
+        (Value::Cons(pattern_car, pattern_cdr), Value::Nil) if lenient_list_match => {
+            let start = bindings.len();
+            let pattern_car = pattern_car.borrow().clone();
+            let pattern_cdr = pattern_cdr.borrow().clone();
+            if !pcase_pattern_bindings_with_mode(
+                &pattern_car,
+                &Value::Nil,
+                bindings,
+                lenient_list_match,
+            )? {
+                bindings.truncate(start);
+                return Ok(false);
+            }
+            if !pcase_pattern_bindings_with_mode(
+                &pattern_cdr,
+                &Value::Nil,
+                bindings,
+                lenient_list_match,
+            )? {
+                bindings.truncate(start);
+                return Ok(false);
+            }
+            Ok(true)
+        }
+        (Value::Nil, Value::Cons(_, _)) if lenient_list_match => Ok(true),
         (Value::Nil, Value::Nil) => Ok(true),
         _ => Ok(pattern == value),
     }
@@ -10828,6 +10991,42 @@ mod tests {
             primitives::string_text(&value).expect("match-string result"),
             "b"
         );
+    }
+
+    #[test]
+    fn re_search_failure_preserves_existing_match_data() {
+        let value = eval_str(
+            r#"
+            (with-temp-buffer
+              (insert "ab")
+              (goto-char (point-min))
+              (re-search-forward "a\\(b\\)")
+              (re-search-forward "z" nil t)
+              (match-string 1))
+            "#,
+        );
+        assert_eq!(
+            primitives::string_text(&value).expect("match-string result"),
+            "b"
+        );
+    }
+
+    #[test]
+    fn re_search_forward_respects_limit_argument() {
+        let value = eval_str(
+            r#"
+            (with-temp-buffer
+              (insert "ab ab")
+              (goto-char (point-min))
+              (re-search-forward "a\\(b\\)")
+              (goto-char (point-min))
+              (list (re-search-forward "a\\(b\\)" 2 t)
+                    (match-string 1)))
+            "#,
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items[0], Value::Nil);
+        assert_eq!(primitives::string_text(&items[1]).unwrap(), "b");
     }
 
     #[test]
@@ -12777,6 +12976,37 @@ mod tests {
     }
 
     #[test]
+    fn pcase_dolist_lenient_backquoted_lists_bind_missing_nil_and_ignore_extra() {
+        assert_eq!(
+            eval_str(
+                "(let (pairs) \
+                   (pcase-dolist (`(,left ,middle ,right) \
+                                  '((1 2) (3 4 5) (6 7 8 9))) \
+                     (push (list left middle right) pairs)) \
+                   (nreverse pairs))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2), Value::Nil]),
+                Value::list([Value::Integer(3), Value::Integer(4), Value::Integer(5)]),
+                Value::list([Value::Integer(6), Value::Integer(7), Value::Integer(8)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn bool_vector_literals_eval_to_runtime_values() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((vec #&8"\1"))
+                         (list (bool-vector-count-population vec)
+                               (aref vec 0)
+                               (aref vec 7)))"#
+            ),
+            Value::list([Value::Integer(1), Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
     fn pcase_matches_quoted_symbols_and_wildcards() {
         assert_eq!(
             eval_str(
@@ -12784,6 +13014,17 @@ mod tests {
                        (pcase 'other ('gnu/linux 1) (_ 2)))"
             ),
             Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn pcase_matches_or_patterns() {
+        assert_eq!(
+            eval_str(
+                "(list (pcase 3 ((or 1 3 5) 'odd) (_ 'other)) \
+                       (pcase 2 ((or 1 3 5) 'odd) (_ 'other)))"
+            ),
+            Value::list([Value::Symbol("odd".into()), Value::Symbol("other".into())])
         );
     }
 

@@ -8,6 +8,7 @@ const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
 const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
+const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
 
 fn encode_raw_byte(byte: u8) -> char {
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
@@ -209,6 +210,7 @@ impl<'a> Reader<'a> {
                         Some(b'n') => s.push('\n'),
                         Some(b't') => s.push('\t'),
                         Some(b'r') => s.push('\r'),
+                        Some(b'e') => s.push('\x1B'),
                         Some(b'\n') => {}
                         Some(b'\r') => {
                             if self.peek() == Some(b'\n') {
@@ -521,6 +523,7 @@ impl<'a> Reader<'a> {
             Some(b'n') => Ok('\n' as i64),
             Some(b't') => Ok('\t' as i64),
             Some(b'r') => Ok('\r' as i64),
+            Some(b'e') => Ok('\x1B' as i64),
             Some(b's') => Ok(' ' as i64),
             Some(b' ') => Ok(' ' as i64),
             Some(b'\\') => Ok('\\' as i64),
@@ -576,6 +579,51 @@ impl<'a> Reader<'a> {
                 self.advance();
                 let inner = self.read()?.ok_or(LispError::EndOfInput)?;
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
+            }
+            Some(b'&') => {
+                self.advance();
+                let len_start = self.pos;
+                let len = self.read_unsigned_decimal() as usize;
+                if self.pos == len_start {
+                    return Err(LispError::ReadError("missing bool vector length".into()));
+                }
+                let bytes = match self.read()?.ok_or(LispError::EndOfInput)? {
+                    Value::String(text) => text,
+                    Value::StringObject(state) => state.borrow().text.clone(),
+                    other => {
+                        return Err(LispError::ReadError(format!(
+                            "invalid bool vector literal bytes: expected string, got {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+
+                let mut bits = Vec::with_capacity(len);
+                for ch in bytes.chars() {
+                    let byte = u32::from(ch);
+                    if byte > 0xFF {
+                        return Err(LispError::ReadError(
+                            "bool vector literal byte was out of range".into(),
+                        ));
+                    }
+                    for bit in 0..8 {
+                        if bits.len() == len {
+                            break;
+                        }
+                        bits.push((byte & (1 << bit)) != 0);
+                    }
+                    if bits.len() == len {
+                        break;
+                    }
+                }
+                bits.resize(len, false);
+
+                Ok(Some(Value::list(
+                    std::iter::once(Value::symbol(BOOL_VECTOR_LITERAL_SYMBOL)).chain(
+                        bits.into_iter()
+                            .map(|bit| if bit { Value::T } else { Value::Nil }),
+                    ),
+                )))
             }
             Some(b'(') => {
                 // #(...) — either a self-evaluating vector literal or a
@@ -1135,6 +1183,11 @@ mod tests {
     }
 
     #[test]
+    fn reads_escape_character_string_literals() {
+        assert_eq!(read_one(r#""\e[33m""#), Value::String("\x1B[33m".into()));
+    }
+
+    #[test]
     fn form_feed_is_treated_as_whitespace() {
         let forms = Reader::new("foo\x0Cbar").read_all().unwrap();
         assert_eq!(
@@ -1189,6 +1242,24 @@ mod tests {
     #[test]
     fn reads_hash_radix_integers() {
         assert_eq!(read_one("#16r3FFFFF"), Value::Integer(0x3F_FFFF));
+    }
+
+    #[test]
+    fn reads_bool_vector_literals() {
+        assert_eq!(
+            read_one(r#"#&8"\1""#),
+            Value::list([
+                Value::Symbol(BOOL_VECTOR_LITERAL_SYMBOL.into()),
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ])
+        );
     }
 
     #[test]
