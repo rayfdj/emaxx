@@ -897,6 +897,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "/="
             | "version<="
             | "emacs-version"
+            | "emacs-pid"
             // Equality
             | "eq"
             | "eql"
@@ -1476,6 +1477,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "process-mark"
             | "process-status"
             | "process-live-p"
+            | "process-attributes"
             | "process-coding-system"
             | "set-process-coding-system"
             | "set-process-filter"
@@ -1681,6 +1683,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "customize-set-variable"
             | "documentation"
             | "documentation-property"
+            | "daemonp"
             | "setenv"
             | "getenv"
             | "getenv-internal"
@@ -8697,6 +8700,10 @@ pub fn call(
                 Value::Nil
             })
         }
+        "process-attributes" => {
+            need_args(name, args, 1)?;
+            Ok(process_attributes_value(args[0].as_integer()?))
+        }
         "process-coding-system" => {
             need_args(name, args, 1)?;
             let process_id = interp.resolve_process_id(&args[0])?;
@@ -10122,6 +10129,10 @@ pub fn call(
         "custom-current-group" => {
             need_args(name, args, 0)?;
             Ok(custom_current_group(interp).unwrap_or(Value::Nil))
+        }
+        "daemonp" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
         }
         "documentation" => {
             need_args(name, args, 1)?;
@@ -11725,6 +11736,10 @@ pub fn call(
                 .unwrap_or_default()
                 .as_nanos();
             Ok(Value::list([normalize_bigint_value(BigInt::from(nanos))]))
+        }
+        "emacs-pid" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Integer(emacs_pid_value()))
         }
         "type-of" => {
             need_args(name, args, 1)?;
@@ -18790,6 +18805,33 @@ fn current_invocation_path() -> PathBuf {
         return path;
     }
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("emaxx"))
+}
+
+pub(crate) fn command_line_args_value() -> Value {
+    let invocation = current_invocation_path().display().to_string();
+    let mut args = std::env::args_os()
+        .map(|value| Value::String(value.to_string_lossy().into_owned()))
+        .collect::<Vec<_>>();
+    if let Some(first) = args.first_mut() {
+        *first = Value::String(invocation);
+    } else {
+        args.push(Value::String(invocation));
+    }
+    Value::list(args)
+}
+
+pub(crate) fn emacs_pid_value() -> i64 {
+    i64::from(std::process::id())
+}
+
+fn process_attributes_value(pid: i64) -> Value {
+    if pid <= 0 || pid != emacs_pid_value() {
+        return Value::Nil;
+    }
+    Value::list([Value::cons(
+        Value::Symbol("comm".into()),
+        Value::String(current_invocation_name().unwrap_or_else(|| "emaxx".into())),
+    )])
 }
 
 fn expand_file_name(path: &str, base: Option<&str>) -> String {
