@@ -18,11 +18,13 @@ use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
 #[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -8235,7 +8237,12 @@ pub fn call(
         }
         "make-process" => {
             let (buffer_id, program, argv, filter, coding) = parse_make_process_args(interp, args)?;
-            let process = interp.create_process(buffer_id, program, argv)?;
+            let runtime = if let Some(command) = program.as_ref() {
+                Some(spawn_persistent_process(interp, command, &argv, env)?)
+            } else {
+                None
+            };
+            let process = interp.create_process(buffer_id, program, argv, runtime)?;
             let process_id = interp.resolve_process_id(&process)?;
             interp.set_process_filter(process_id, filter)?;
             if let Some((decoding, encoding)) = coding {
@@ -8251,7 +8258,8 @@ pub fn call(
                 .iter()
                 .map(string_text)
                 .collect::<Result<Vec<_>, _>>()?;
-            interp.create_process(buffer_id, Some(program), argv)
+            let runtime = spawn_persistent_process(interp, &program, &argv, env)?;
+            interp.create_process(buffer_id, Some(program), argv, Some(runtime))
         }
         "get-buffer-process" => {
             need_arg_range(name, args, 0, 1)?;
@@ -8333,19 +8341,10 @@ pub fn call(
         "process-send-string" => {
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;
-            if !interp.process_is_live(process_id) {
-                return Err(LispError::Signal("Process is not running".into()));
-            }
             let input = string_text(&args[1])?;
-            let output = if let Some((program, argv)) = interp.process_command(process_id) {
-                let process_output =
-                    run_external_process(interp, &program, &argv, Some(input.as_bytes()), env)?;
-                let mut rendered = String::from_utf8_lossy(&process_output.stdout).into_owned();
-                rendered.push_str(&String::from_utf8_lossy(&process_output.stderr));
-                rendered
-            } else {
-                input.clone()
-            };
+            let (stdout, stderr) = interp.process_send_string(process_id, input.as_bytes())?;
+            let mut output = String::from_utf8_lossy(&stdout).into_owned();
+            output.push_str(&String::from_utf8_lossy(&stderr));
             deliver_process_output(interp, process_id, &output, env)?;
             Ok(Value::Nil)
         }
@@ -9262,6 +9261,13 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let face = args[0].as_symbol()?.to_string();
+            if !face_exists(interp, &face) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("error".into()),
+                    Value::String("Invalid face".into()),
+                    Value::Symbol(face),
+                ])));
+            }
             let mut index = 2;
             while index + 1 < args.len() {
                 let attribute = args[index].as_symbol()?;
@@ -18679,13 +18685,7 @@ fn run_external_process(
 ) -> Result<std::process::Output, LispError> {
     let mut command = Command::new(program);
     command.args(argv);
-    if let Some(default_directory) = interp
-        .lookup_var("default-directory", env)
-        .and_then(|value| string_like(&value).map(|string| string.text))
-        .filter(|directory| !directory.is_empty())
-    {
-        command.current_dir(default_directory);
-    }
+    configure_external_command(interp, env, &mut command);
     command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -18707,6 +18707,64 @@ fn run_external_process(
     child
         .wait_with_output()
         .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+fn configure_external_command(interp: &Interpreter, env: &Env, command: &mut Command) {
+    if let Some(default_directory) = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .filter(|directory| !directory.is_empty())
+    {
+        command.current_dir(default_directory);
+    }
+    apply_process_environment(interp, env, command);
+}
+
+fn spawn_persistent_process(
+    interp: &Interpreter,
+    program: &str,
+    argv: &[String],
+    env: &Env,
+) -> Result<Child, LispError> {
+    let mut command = Command::new(program);
+    command.args(argv);
+    configure_external_command(interp, env, &mut command);
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        if let Some(stdout) = child.stdout.as_ref() {
+            set_nonblocking(stdout)?;
+        }
+        if let Some(stderr) = child.stderr.as_ref() {
+            set_nonblocking(stderr)?;
+        }
+    }
+    Ok(child)
+}
+
+#[cfg(unix)]
+fn set_nonblocking<T: AsRawFd>(stream: &T) -> Result<(), LispError> {
+    let fd = stream.as_raw_fd();
+    // SAFETY: `fd` is an open file descriptor we own for the lifetime of this call.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    // SAFETY: `fd` is still valid here, and we only add the O_NONBLOCK flag.
+    let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if result < 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn process_buffer_target(
@@ -20340,6 +20398,13 @@ mod tests {
             &mut env,
         )
         .expect("process-send-string should succeed");
+        call(
+            &mut interp,
+            "process-send-string",
+            &[process.clone(), Value::String("second\n".into())],
+            &mut env,
+        )
+        .expect("second process-send-string should succeed");
 
         let contents = interp
             .get_buffer_by_id(buffer_id)
@@ -20352,7 +20417,7 @@ mod tests {
                     .point_max(),
             )
             .expect("process output");
-        assert_eq!(contents, "secret\n");
+        assert_eq!(contents, "secret\nsecond\n");
         assert_eq!(
             call(
                 &mut interp,
@@ -20362,6 +20427,55 @@ mod tests {
             )
             .expect("process-status should succeed"),
             Value::Symbol("run".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleted_process_is_not_returned_for_buffer() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let (buffer_id, buffer_name) = interp.create_buffer("*deleted-process*");
+        let buffer = Value::Buffer(buffer_id, buffer_name);
+        let process = call(
+            &mut interp,
+            "start-process",
+            &[
+                Value::String("cat".into()),
+                buffer.clone(),
+                Value::String("/bin/cat".into()),
+            ],
+            &mut env,
+        )
+        .expect("start-process should succeed");
+
+        call(
+            &mut interp,
+            "delete-process",
+            std::slice::from_ref(&process),
+            &mut env,
+        )
+        .expect("delete-process should succeed");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-buffer-process",
+                std::slice::from_ref(&buffer),
+                &mut env,
+            )
+            .expect("get-buffer-process should succeed"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "process-buffer",
+                std::slice::from_ref(&process),
+                &mut env,
+            )
+            .expect("process-buffer should succeed"),
+            buffer
         );
     }
 
@@ -22461,45 +22575,30 @@ fn normalize_bigint_value(value: BigInt) -> Value {
 fn version_leq(left: &str, right: &str) -> Result<bool, LispError> {
     let left = parse_version_components(left)?;
     let right = parse_version_components(right)?;
-    let width = left.len().max(right.len());
-    for index in 0..width {
-        let a = *left.get(index).unwrap_or(&0);
-        let b = *right.get(index).unwrap_or(&0);
+    let mut index = 0;
+    while let (Some(a), Some(b)) = (left.get(index), right.get(index)) {
         if a < b {
             return Ok(true);
         }
         if a > b {
             return Ok(false);
         }
+        index += 1;
     }
-    Ok(true)
+    Ok(match (left.get(index), right.get(index)) {
+        (None, None) => true,
+        (Some(_), None) => version_list_not_zero(&left[index..]) <= 0,
+        (None, Some(_)) => 0 <= version_list_not_zero(&right[index..]),
+        (Some(_), Some(_)) => unreachable!("equal prefixes are consumed before this match"),
+    })
 }
 
 fn parse_version_components(version: &str) -> Result<Vec<i64>, LispError> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    for ch in version.chars() {
-        if matches!(ch, '.' | '_') {
-            segments.push(current);
-            current = String::new();
-        } else {
-            current.push(ch);
-        }
+    let mut normalized = version.to_string();
+    if normalized.starts_with('.') {
+        normalized.insert(0, '0');
     }
-    segments.push(current);
-
-    if segments.is_empty() {
-        unreachable!("split always yields at least one segment");
-    }
-    if segments[0].is_empty() {
-        segments[0].push('0');
-    }
-    if segments.iter().any(String::is_empty) {
-        return Err(LispError::Signal(format!(
-            "Invalid version syntax: `{version}'"
-        )));
-    }
-    if !segments[0]
+    if !normalized
         .chars()
         .next()
         .is_some_and(|ch| ch.is_ascii_digit())
@@ -22509,20 +22608,85 @@ fn parse_version_components(version: &str) -> Result<Vec<i64>, LispError> {
         )));
     }
 
-    Ok(segments
-        .into_iter()
-        .map(|segment| {
-            let digits = segment
-                .chars()
-                .take_while(|ch| ch.is_ascii_digit())
-                .collect::<String>();
-            if digits.is_empty() {
-                0
-            } else {
-                digits.parse::<i64>().unwrap_or(0)
-            }
-        })
-        .collect())
+    let bytes = normalized.as_bytes();
+    let mut components = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let number_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if number_start == index {
+            return Err(LispError::Signal(format!(
+                "Invalid version syntax: `{version}'"
+            )));
+        }
+        let component = normalized[number_start..index]
+            .parse::<i64>()
+            .map_err(|_| LispError::Signal(format!("Invalid version syntax: `{version}'")))?;
+        components.push(component);
+        if index == bytes.len() {
+            break;
+        }
+
+        let separator_start = index;
+        while index < bytes.len() && !bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        let separator = &normalized[separator_start..index];
+        if separator == "." {
+            continue;
+        }
+        if let Some(priority) = version_separator_priority(separator) {
+            components.push(priority);
+            continue;
+        }
+        if index == bytes.len()
+            && let Some(priority) = trailing_letter_priority(separator)
+        {
+            components.push(priority);
+            continue;
+        }
+        return Err(LispError::Signal(format!(
+            "Invalid version syntax: `{version}'"
+        )));
+    }
+
+    Ok(components)
+}
+
+fn version_separator_priority(separator: &str) -> Option<i64> {
+    let normalized = separator.to_ascii_lowercase();
+    if matches!(normalized.as_str(), "-" | "_" | "+") {
+        return Some(-4);
+    }
+    let trimmed = normalized.trim_start_matches(['-', '_', '+', '.', ' ']);
+    match trimmed {
+        "snapshot" | "cvs" | "git" | "bzr" | "svn" | "hg" | "darcs" | "unknown" => Some(-4),
+        "alpha" => Some(-3),
+        "beta" => Some(-2),
+        "pre" | "rc" => Some(-1),
+        _ => None,
+    }
+}
+
+fn trailing_letter_priority(separator: &str) -> Option<i64> {
+    let normalized = separator.to_ascii_lowercase();
+    let trimmed = normalized.trim_start_matches(['-', '_', '+', '.', ' ']);
+    let mut chars = trimmed.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() || !ch.is_ascii_lowercase() {
+        return None;
+    }
+    Some((ch as i64) - ('a' as i64) + 1)
+}
+
+fn version_list_not_zero(values: &[i64]) -> i64 {
+    values
+        .iter()
+        .copied()
+        .find(|value| *value != 0)
+        .unwrap_or(0)
 }
 
 fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {

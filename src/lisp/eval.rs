@@ -1,7 +1,9 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Child;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
 use super::sqlite::SqliteHandleState;
@@ -297,7 +299,16 @@ impl ProcessStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+struct RunningProcess {
+    child: Child,
+}
+
+impl std::fmt::Debug for RunningProcess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunningProcess").finish_non_exhaustive()
+    }
+}
+
 struct ProcessState {
     record_id: u64,
     buffer_id: Option<u64>,
@@ -309,6 +320,7 @@ struct ProcessState {
     encoding: Value,
     program: Option<String>,
     argv: Vec<String>,
+    runtime: Option<RunningProcess>,
 }
 
 #[derive(Clone, Debug)]
@@ -1651,6 +1663,7 @@ impl Interpreter {
         buffer_id: Option<u64>,
         program: Option<String>,
         argv: Vec<String>,
+        runtime: Option<Child>,
     ) -> Result<Value, LispError> {
         let process = self.create_record("process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
@@ -1674,15 +1687,43 @@ impl Interpreter {
             encoding: Value::Nil,
             program,
             argv,
+            runtime: runtime.map(|child| RunningProcess { child }),
         });
         Ok(process)
     }
 
-    pub fn process_value_for_buffer(&self, buffer_id: u64) -> Option<Value> {
-        self.process_states
-            .iter()
-            .rfind(|process| process.buffer_id == Some(buffer_id))
-            .map(|process| Value::Record(process.record_id))
+    fn refresh_process_state(process: &mut ProcessState) -> Result<(), LispError> {
+        if !process.status.is_live() {
+            return Ok(());
+        }
+        let Some(runtime) = process.runtime.as_mut() else {
+            return Ok(());
+        };
+        if runtime
+            .child
+            .try_wait()
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            .is_some()
+        {
+            process.status = ProcessStatus::Exit;
+            process.runtime = None;
+        }
+        Ok(())
+    }
+
+    pub fn process_value_for_buffer(&mut self, buffer_id: u64) -> Option<Value> {
+        self.process_states.iter_mut().rev().find_map(|process| {
+            let _ = Self::refresh_process_state(process);
+            (process.buffer_id == Some(buffer_id) && process.status.is_live())
+                .then_some(Value::Record(process.record_id))
+        })
+    }
+
+    fn refresh_process_id(&mut self, record_id: u64) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        Self::refresh_process_state(process)
     }
 
     pub fn process_buffer_id(&self, record_id: u64) -> Option<u64> {
@@ -1695,12 +1736,14 @@ impl Interpreter {
             .map(|process| process.mark_marker_id)
     }
 
-    pub fn process_status_value(&self, record_id: u64) -> Option<Value> {
+    pub fn process_status_value(&mut self, record_id: u64) -> Option<Value> {
+        let _ = self.refresh_process_id(record_id);
         self.find_process_state(record_id)
             .map(|process| Value::Symbol(process.status.symbol().into()))
     }
 
-    pub fn process_is_live(&self, record_id: u64) -> bool {
+    pub fn process_is_live(&mut self, record_id: u64) -> bool {
+        let _ = self.refresh_process_id(record_id);
         self.find_process_state(record_id)
             .is_some_and(|process| process.status.is_live())
     }
@@ -1768,8 +1811,66 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if let Some(runtime) = process.runtime.as_mut() {
+            let _ = runtime.child.kill();
+            let _ = runtime.child.wait();
+        }
         process.status = ProcessStatus::Exit;
+        process.runtime = None;
         Ok(())
+    }
+
+    pub fn process_send_string(
+        &mut self,
+        record_id: u64,
+        input: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), LispError> {
+        self.refresh_process_id(record_id)?;
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if !process.status.is_live() {
+            return Err(LispError::Signal("Process is not running".into()));
+        }
+        let Some(runtime) = process.runtime.as_mut() else {
+            return Ok((input.to_vec(), Vec::new()));
+        };
+        let Some(stdin) = runtime.child.stdin.as_mut() else {
+            return Err(LispError::Signal("Process stdin is closed".into()));
+        };
+        stdin
+            .write_all(input)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        stdin
+            .flush()
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_millis(100);
+        loop {
+            let mut made_progress = false;
+            if let Some(pipe) = runtime.child.stdout.as_mut() {
+                made_progress |= read_nonblocking_pipe(pipe, &mut stdout)?;
+            }
+            if let Some(pipe) = runtime.child.stderr.as_mut() {
+                made_progress |= read_nonblocking_pipe(pipe, &mut stderr)?;
+            }
+            if runtime
+                .child
+                .try_wait()
+                .map_err(|error| LispError::Signal(error.to_string()))?
+                .is_some()
+            {
+                process.status = ProcessStatus::Exit;
+                process.runtime = None;
+                break;
+            }
+            if made_progress || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok((stdout, stderr))
     }
 
     pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
@@ -9300,6 +9401,23 @@ impl Interpreter {
     }
 }
 
+fn read_nonblocking_pipe<T: Read>(pipe: &mut T, output: &mut Vec<u8>) -> Result<bool, LispError> {
+    let mut read_any = false;
+    let mut buffer = [0u8; 4096];
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                output.extend_from_slice(&buffer[..read]);
+                read_any = true;
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            Err(error) => return Err(LispError::Signal(error.to_string())),
+        }
+    }
+    Ok(read_any)
+}
+
 fn symbol_name(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(name) => Some(name.clone()),
@@ -12002,6 +12120,8 @@ mod tests {
     fn face_attribute_tracks_runtime_values_and_inheritance() {
         let value = eval_str(
             "(progn
+               (defface parent-face '((t (:foreground \"white\"))) \"doc\")
+               (defface child-face '((t (:inherit default))) \"doc\")
                (set-face-attribute 'parent-face nil :foreground \"blue\")
                (set-face-attribute 'child-face nil :inherit 'parent-face)
                (list
@@ -12018,25 +12138,40 @@ mod tests {
     }
 
     #[test]
-    fn facep_recognizes_runtime_faces() {
+    fn facep_recognizes_defined_faces() {
         assert_eq!(
             eval_str(
                 "(progn
                    (defface sample-face '((t (:foreground \"red\"))) \"doc\")
-                   (set-face-attribute 'runtime-face nil :foreground \"blue\")
                    (list
                     (facep 'sample-face)
                     (facep \"sample-face\")
-                    (facep 'runtime-face)
-                    (face-name 'runtime-face)
+                    (face-name 'sample-face)
                     (facep 'missing-face)))"
             ),
             Value::list([
                 Value::T,
                 Value::T,
-                Value::T,
-                Value::String("runtime-face".into()),
+                Value::String("sample-face".into()),
                 Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn set_face_attribute_rejects_unknown_faces() {
+        assert_eq!(
+            eval_str(
+                "(condition-case err
+                     (progn
+                       (set-face-attribute 'runtime-face nil :foreground \"blue\")
+                       'ok)
+                   (error err))"
+            ),
+            Value::list([
+                Value::Symbol("error".into()),
+                Value::String("Invalid face".into()),
+                Value::Symbol("runtime-face".into()),
             ])
         );
     }
@@ -13676,6 +13811,14 @@ mod tests {
             LispError::Signal(message)
                 if message == "Invalid version syntax: `foo' (must start with a number)"
         ));
+    }
+
+    #[test]
+    fn version_lte_honors_prerelease_qualifiers() {
+        assert_eq!(eval_str("(version<= \"1.0pre1\" \"1.0\")"), Value::T);
+        assert_eq!(eval_str("(version<= \"1.0\" \"1.0pre1\")"), Value::Nil);
+        assert_eq!(eval_str("(version<= \"1.0.1alpha\" \"1.0.1\")"), Value::T);
+        assert_eq!(eval_str("(version<= \"1.0\" \"1.0.0\")"), Value::T);
     }
 
     #[test]
