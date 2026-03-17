@@ -1075,6 +1075,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-suffix-p"
             | "string-limit"
             | "split-string"
+            | "string-split"
             | "string-width"
             | "format"
             | "format-message"
@@ -1101,6 +1102,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-char-code-property"
             | "char-code-property-description"
             | "char-resolve-modifiers"
+            | "string-trim-left"
+            | "string-trim-right"
             | "string-trim"
             | "string-clean-whitespace"
             | "url-hexify-string"
@@ -1664,6 +1667,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "customize-set-variable"
             | "documentation"
             | "documentation-property"
+            | "setenv"
             | "getenv"
             | "getenv-internal"
             | "user-login-name"
@@ -3277,7 +3281,10 @@ pub fn call(
             need_args(name, args, 1)?;
             let mut deduped = Vec::new();
             for item in args[0].to_vec()? {
-                if !deduped.iter().any(|existing| existing == &item) {
+                if !deduped
+                    .iter()
+                    .any(|existing| values_equal(interp, existing, &item))
+                {
                     deduped.push(item);
                 }
             }
@@ -3291,7 +3298,12 @@ pub fn call(
             need_args(name, args, 2)?;
             let items = args[1].to_vec()?;
             for (i, item) in items.iter().enumerate() {
-                if *item == args[0] {
+                let matches = if name == "member" {
+                    values_equal(interp, item, &args[0])
+                } else {
+                    *item == args[0]
+                };
+                if matches {
                     return Ok(Value::list(items[i..].iter().cloned()));
                 }
             }
@@ -4182,6 +4194,12 @@ pub fn call(
             }
             split_string_impl(interp, &args[0], args.get(1), args.get(2), env)
         }
+        "string-split" => {
+            if args.is_empty() || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            split_string_impl(interp, &args[0], args.get(1), args.get(2), env)
+        }
         "string-width" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(
@@ -4666,9 +4684,18 @@ pub fn call(
             need_arg_range(name, args, 1, 2)?;
             parse_edmacro_key_sequence(&string_text(&args[0])?)
         }
+        "string-trim-left" => {
+            need_arg_range(name, args, 1, 2)?;
+            string_trim_left_value(interp, &args[0], args.get(1), env)
+        }
+        "string-trim-right" => {
+            need_arg_range(name, args, 1, 2)?;
+            string_trim_right_value(interp, &args[0], args.get(1), env)
+        }
         "string-trim" => {
             need_arg_range(name, args, 1, 3)?;
-            Ok(Value::String(string_text(&args[0])?.trim().to_string()))
+            let trimmed = string_trim_left_value(interp, &args[0], args.get(1), env)?;
+            string_trim_right_value(interp, &trimmed, args.get(2), env)
         }
         "string-clean-whitespace" => {
             need_args(name, args, 1)?;
@@ -10022,6 +10049,60 @@ pub fn call(
                     .unwrap_or(Value::Nil),
             )
         }
+        "setenv" => {
+            need_arg_range(name, args, 1, 3)?;
+            let variable = string_text(&args[0])?;
+            if variable.contains('=') {
+                return Err(LispError::Signal(format!(
+                    "Environment variable name `{variable}` contains `='"
+                )));
+            }
+
+            let mut value = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .map(string_text)
+                .transpose()?;
+            if let Some(text) = value.as_mut()
+                && args.get(2).is_some_and(Value::is_truthy)
+            {
+                *text = substitute_in_file_name(text);
+            }
+
+            let mut process_environment = interp
+                .lookup_var("process-environment", env)
+                .unwrap_or(Value::Nil);
+            let wrapped_environment = matches!(
+                process_environment.cons_values(),
+                Some((Value::Symbol(ref symbol), _)) if symbol == "environment"
+            );
+            if wrapped_environment && let Some((_, environment)) = process_environment.cons_values()
+            {
+                process_environment = environment;
+            }
+
+            let mut entries = process_environment_entries(&process_environment)?;
+            setenv_in_environment_entries(&mut entries, &variable, value.as_deref(), true);
+            let updated = process_environment_from_entries(&entries);
+            interp.set_variable(
+                "process-environment",
+                if wrapped_environment {
+                    Value::cons(Value::Symbol("environment".into()), updated)
+                } else {
+                    updated
+                },
+                env,
+            );
+
+            unsafe {
+                if let Some(value) = value.as_deref() {
+                    std::env::set_var(&variable, value);
+                } else {
+                    std::env::remove_var(&variable);
+                }
+            }
+            Ok(value.map(Value::String).unwrap_or(Value::Nil))
+        }
         "ignore" => Ok(Value::Nil),
         "make-obsolete"
         | "make-obsolete-variable"
@@ -12732,7 +12813,16 @@ pub fn call(
             need_args(name, args, 2)?;
             let elt = &args[0];
             let items = args[1].to_vec()?;
-            let filtered: Vec<Value> = items.into_iter().filter(|x| x != elt).collect();
+            let filtered: Vec<Value> = items
+                .into_iter()
+                .filter(|item| {
+                    if name == "delete" {
+                        !values_equal(interp, item, elt)
+                    } else {
+                        item != elt
+                    }
+                })
+                .collect();
             Ok(Value::list(filtered))
         }
 
@@ -15466,6 +15556,76 @@ fn string_match_impl(
     } else {
         Ok(Value::Nil)
     }
+}
+
+fn trim_regexp_pattern(regexp: Option<&Value>, anchored_left: bool) -> Result<String, LispError> {
+    let default_pattern = "[ \t\n\r]+";
+    let pattern = regexp
+        .filter(|value| !value.is_nil())
+        .map(string_text)
+        .transpose()?
+        .unwrap_or_else(|| default_pattern.to_string());
+    Ok(if anchored_left {
+        format!(r"\`\(?:{pattern}\)")
+    } else {
+        format!(r"\(?:{pattern}\)\'")
+    })
+}
+
+fn string_trim_left_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    regexp: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let text = string_text(value)?;
+    let pattern = StringLike {
+        text: trim_regexp_pattern(regexp, true)?,
+        props: Vec::new(),
+        multibyte: false,
+    };
+    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+    let captures = regex
+        .captures(&text)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let Some(captures) = captures else {
+        return Ok(Value::String(text));
+    };
+    let Some(matched) = captures.get(0) else {
+        return Ok(Value::String(text));
+    };
+    let start = text[..matched.end()].chars().count();
+    Ok(Value::String(slice_string_chars(
+        &text,
+        start,
+        text.chars().count(),
+    )))
+}
+
+fn string_trim_right_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    regexp: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let text = string_text(value)?;
+    let pattern = StringLike {
+        text: trim_regexp_pattern(regexp, false)?,
+        props: Vec::new(),
+        multibyte: false,
+    };
+    let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+    let captures = regex
+        .captures(&text)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let Some(captures) = captures else {
+        return Ok(Value::String(text));
+    };
+    let Some(matched) = captures.get(0) else {
+        return Ok(Value::String(text));
+    };
+    let end = text[..matched.start()].chars().count();
+    Ok(Value::String(slice_string_chars(&text, 0, end)))
 }
 
 fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
