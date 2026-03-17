@@ -8936,9 +8936,24 @@ impl Interpreter {
     }
 
     fn sf_save_excursion(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        let saved_buffer_id = self.current_buffer_id();
         let saved_pt = self.buffer.point();
+        let saved_marker = self.make_marker();
+        let saved_marker_id = match saved_marker {
+            Value::Marker(id) => id,
+            _ => unreachable!("make_marker returns a marker"),
+        };
+        self.set_marker(saved_marker_id, Some(saved_pt), Some(saved_buffer_id))?;
         let result = self.sf_progn(&items[1..], env);
-        self.buffer.goto_char(saved_pt);
+        if self.has_buffer_id(saved_buffer_id) {
+            let _ = self.switch_to_buffer_id(saved_buffer_id);
+            let restore_pt = self
+                .marker_position(saved_marker_id)
+                .unwrap_or(saved_pt)
+                .clamp(self.buffer.point_min(), self.buffer.point_max());
+            self.buffer.goto_char(restore_pt);
+        }
+        let _ = self.set_marker(saved_marker_id, None, None);
         result
     }
 
@@ -9018,9 +9033,18 @@ impl Interpreter {
             Value::Integer(saved_zv as i64),
         ));
         let result = self.sf_progn(&items[1..], env);
+        let final_buffer_id = self.current_buffer_id();
         let restore_begv = self.marker_position(beg_id).unwrap_or(saved_begv);
         let restore_zv = self.marker_position(end_id).unwrap_or(saved_zv);
-        self.buffer.restore_restriction(restore_begv, restore_zv);
+        if self.has_buffer_id(saved_buffer_id) {
+            if final_buffer_id != saved_buffer_id {
+                let _ = self.switch_to_buffer_id(saved_buffer_id);
+            }
+            self.buffer.restore_restriction(restore_begv, restore_zv);
+            if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
+                let _ = self.switch_to_buffer_id(final_buffer_id);
+            }
+        }
         let _ = self.set_marker(beg_id, None, None);
         let _ = self.set_marker(end_id, None, None);
         result
@@ -9505,6 +9529,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
         match name {
+            "cl-case" => self.expand_cl_case(args, env).map(Some),
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
             "with-selected-frame" => {
                 if args.is_empty() {
@@ -9551,6 +9576,82 @@ impl Interpreter {
                 .chain(std::iter::once(Value::list(bindings)))
                 .chain(args[1..].iter().cloned()),
         ))
+    }
+
+    fn expand_cl_case(&mut self, args: &[Value], _env: &mut Env) -> Result<Value, LispError> {
+        let expr = args
+            .first()
+            .ok_or_else(|| LispError::WrongNumberOfArgs("cl-case".into(), 0))?;
+        let temp = self.make_generated_symbol("cl-case");
+        let mut clauses = Vec::with_capacity(args.len().saturating_sub(1));
+
+        for (index, clause) in args[1..].iter().enumerate() {
+            let clause_items = clause.to_vec()?;
+            let (keys, body) = match clause_items.split_first() {
+                Some((keys, body)) => (keys, body),
+                None => (&Value::Nil, &[][..]),
+            };
+            let test = self.expand_cl_case_clause_test(
+                &temp,
+                keys,
+                index + 1 == args.len().saturating_sub(1),
+            )?;
+            let body = if body.is_empty() {
+                vec![Value::Nil]
+            } else {
+                body.to_vec()
+            };
+            clauses.push(Value::list(std::iter::once(test).chain(body)));
+        }
+
+        Ok(Value::list([
+            Value::Symbol("let".into()),
+            Value::list([Value::list([temp.clone(), expr.clone()])]),
+            Value::list(std::iter::once(Value::Symbol("cond".into())).chain(clauses)),
+        ]))
+    }
+
+    fn expand_cl_case_clause_test(
+        &self,
+        temp: &Value,
+        keys: &Value,
+        final_clause: bool,
+    ) -> Result<Value, LispError> {
+        if matches!(keys, Value::Symbol(name) if name == "t" || name == "otherwise") {
+            if final_clause {
+                return Ok(Value::T);
+            }
+            return Err(LispError::Signal(
+                "Misplaced t or `otherwise' clause".into(),
+            ));
+        }
+
+        if keys.is_nil() {
+            return Ok(Value::Nil);
+        }
+
+        if let Value::Cons(_, _) = keys {
+            let keys = keys.to_vec()?;
+            let mut tests = Vec::with_capacity(keys.len());
+            for key in keys {
+                tests.push(Self::cl_case_key_test(temp, key));
+            }
+            return Ok(match tests.as_slice() {
+                [] => Value::Nil,
+                [single] => single.clone(),
+                _ => Value::list(std::iter::once(Value::Symbol("or".into())).chain(tests)),
+            });
+        }
+
+        Ok(Self::cl_case_key_test(temp, keys.clone()))
+    }
+
+    fn cl_case_key_test(temp: &Value, key: Value) -> Value {
+        Value::list([
+            Value::Symbol("eql".into()),
+            temp.clone(),
+            quoted_literal(&key),
+        ])
     }
 
     fn sf_skip_unless(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -14728,6 +14829,40 @@ mod tests {
     }
 
     #[test]
+    fn save_excursion_restores_current_buffer_after_switching() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((origin (current-buffer)))
+                  (save-excursion
+                    (switch-to-buffer " *save-excursion-other*"))
+                  (eq (current-buffer) origin))
+                "#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn save_restriction_restores_the_original_buffer_restriction() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "abcdef")
+                  (narrow-to-region 2 5)
+                  (let ((origin (current-buffer)))
+                    (save-restriction
+                      (switch-to-buffer " *save-restriction-other*"))
+                    (with-current-buffer origin
+                      (list (point-min) (point-max)))))
+                "#
+            ),
+            Value::list([Value::Integer(2), Value::Integer(5)])
+        );
+    }
+
+    #[test]
     fn string_match_supports_explicitly_numbered_groups() {
         assert_string_value(
             eval_str(
@@ -16540,6 +16675,61 @@ IHdvcmxkIQ==")))
             ),
             Value::Integer(42)
         );
+    }
+
+    #[test]
+    fn cl_case_matches_atoms_lists_and_fallbacks() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (list
+                 (cl-case 'zip
+                   ((tar ar) 'other)
+                   (zip 'zip))
+                 (cl-case 2
+                   ((1 3) 'miss)
+                   ((2 4) 'hit))
+                 (cl-case nil
+                   (nil 'impossible)
+                   (otherwise 'fallback)))
+                "#
+            ),
+            Value::list([
+                Value::symbol("zip"),
+                Value::symbol("hit"),
+                Value::symbol("fallback"),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_case_evaluates_expression_once() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((count 0))
+                  (list
+                   (cl-case (progn (setq count (+ count 1)) 'zip)
+                     (zip 'matched)
+                     (otherwise 'missed))
+                   count))
+                "#
+            ),
+            Value::list([Value::symbol("matched"), Value::Integer(1)])
+        );
+    }
+
+    #[test]
+    fn cl_case_rejects_misplaced_otherwise() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let form = Reader::new("(cl-case 'zip (otherwise 'fallback) (zip 'hit))")
+            .read()
+            .unwrap()
+            .unwrap();
+        let error = interp.eval(&form, &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "error");
+        assert_eq!(error.to_string(), "Misplaced t or `otherwise' clause");
     }
 
     #[test]
