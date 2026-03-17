@@ -979,6 +979,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "member-ignore-case"
             | "assq"
             | "assoc"
+            | "assoc-string"
             | "alist-get"
             | "cl-set-exclusive-or"
             | "cl-delete-if"
@@ -3233,6 +3234,34 @@ pub fn call(
                     continue;
                 };
                 if values_equal(interp, &item.car()?, &args[0]) {
+                    return Ok(item.clone());
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "assoc-string" => {
+            need_arg_range(name, args, 2, 3)?;
+            let key = assoc_string_text(&args[0])?;
+            let key = if args.get(2).is_some_and(|value| !value.is_nil()) {
+                key.to_uppercase()
+            } else {
+                key
+            };
+            let items = args[1].to_vec()?;
+            for item in &items {
+                let thiscar = match item {
+                    Value::Cons(_, _) => item.car()?,
+                    _ => item.clone(),
+                };
+                let Some(candidate) = assoc_string_candidate_text(&thiscar) else {
+                    continue;
+                };
+                let candidate = if args.get(2).is_some_and(|value| !value.is_nil()) {
+                    candidate.to_uppercase()
+                } else {
+                    candidate
+                };
+                if candidate == key {
                     return Ok(item.clone());
                 }
             }
@@ -20084,6 +20113,20 @@ fn string_comparison_text(value: &Value) -> Result<String, LispError> {
         Value::T => Ok("t".into()),
         Value::Symbol(name) => Ok(name.clone()),
         _ => string_text(value),
+    }
+}
+
+fn assoc_string_text(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::Symbol(name) => Ok(name.clone()),
+        _ => string_text(value),
+    }
+}
+
+fn assoc_string_candidate_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(name) => Some(name.clone()),
+        _ => string_like(value).map(|string| string.text),
     }
 }
 
