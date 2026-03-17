@@ -1194,6 +1194,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "capitalize-word"
             | "current-column"
             | "current-indentation"
+            | "indent-to"
             | "move-to-column"
             | "indent-rigidly"
             | "line-number-at-pos"
@@ -5713,6 +5714,48 @@ pub fn call(
             let indentation = column_at(interp, env, bol, pt) as i64;
             interp.buffer.goto_char(saved);
             Ok(Value::Integer(indentation))
+        }
+        "indent-to" => {
+            need_arg_range(name, args, 1, 2)?;
+            let target = args[0].as_integer()?;
+            let minimum = match args.get(1) {
+                Some(value) if !value.is_nil() => value.as_integer()?,
+                _ => 0,
+            };
+            let saved = interp.buffer.point();
+            interp.buffer.beginning_of_line();
+            let bol = interp.buffer.point();
+            interp.buffer.goto_char(saved);
+            let from_col = column_at(interp, env, bol, saved) as i64;
+            let min_col = (from_col + minimum).max(target).max(from_col);
+            if min_col == from_col {
+                return Ok(Value::Integer(min_col));
+            }
+
+            let tab_width = interp
+                .lookup_var("tab-width", env)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(8)
+                .max(1);
+            let use_tabs = interp
+                .lookup_var("indent-tabs-mode", env)
+                .is_some_and(|value| value.is_truthy());
+
+            let mut current_col = from_col;
+            let mut text = String::new();
+            if use_tabs {
+                let tab_count = min_col / tab_width - from_col / tab_width;
+                if tab_count > 0 {
+                    text.push_str(&"\t".repeat(tab_count as usize));
+                    current_col = (min_col / tab_width) * tab_width;
+                }
+            }
+            let space_count = (min_col - current_col).max(0) as usize;
+            if space_count > 0 {
+                text.push_str(&" ".repeat(space_count));
+            }
+            insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+            Ok(Value::Integer(min_col))
         }
         "move-to-column" => {
             need_args(name, args, 1)?;
