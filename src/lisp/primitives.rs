@@ -726,6 +726,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "elt"
             | "nthcdr"
             | "last"
+            | "butlast"
             | "length"
             | "reverse"
             | "copy-tree"
@@ -1198,6 +1199,7 @@ pub fn is_builtin(name: &str) -> bool {
             // Stubs for terminal/display
             | "display-graphic-p"
             | "display-images-p"
+            | "char-displayable-p"
             | "frame-parameter"
             | "frame-char-width"
             | "selected-window"
@@ -1222,6 +1224,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "redisplay"
             | "font-spec"
             | "font-get"
+            | "face-attribute"
             | "set-face-attribute"
             | "color-distance"
             | "color-values-from-color-spec"
@@ -1396,6 +1399,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-hash-table"
             | "gethash"
             | "puthash"
+            | "maphash"
+            | "remhash"
+            | "clrhash"
             | "hash-table-count"
             | "hash-table-keys"
             | "completion-table-case-fold"
@@ -2797,12 +2803,24 @@ pub fn call(
                 .transpose()?
                 .unwrap_or(1)
                 .max(0) as usize;
-            let items = args[0].to_vec()?;
+            let items = list_sequence_items(interp, &args[0])?;
             if items.is_empty() {
                 return Ok(Value::Nil);
             }
             let start = items.len().saturating_sub(n.max(1));
             Ok(Value::list(items[start..].iter().cloned()))
+        }
+        "butlast" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let n = args.get(1).map(Value::as_integer).transpose()?.unwrap_or(1);
+            if n <= 0 {
+                return Ok(args[0].clone());
+            }
+            let items = list_sequence_items(interp, &args[0])?;
+            let keep = items.len().saturating_sub(n as usize);
+            Ok(Value::list(items.into_iter().take(keep)))
         }
         "length" => {
             need_args(name, args, 1)?;
@@ -7613,6 +7631,19 @@ pub fn call(
 
         // ── Display stubs ──
         "display-graphic-p" | "display-images-p" | "frame-parameter" => Ok(Value::Nil),
+        "char-displayable-p" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Integer(codepoint) if char::from_u32(*codepoint as u32).is_some() => {
+                    Ok(Value::T)
+                }
+                Value::String(text) if text.chars().count() == 1 => Ok(Value::T),
+                Value::StringObject(state) if state.borrow().text.chars().count() == 1 => {
+                    Ok(Value::T)
+                }
+                _ => Ok(Value::Nil),
+            }
+        }
         "frame-char-width" => Ok(Value::Integer(1)),
         "transient-mark-mode" => {
             let enabled = args.first().is_some_and(Value::is_truthy);
@@ -7717,6 +7748,20 @@ pub fn call(
                 _ => Value::Nil,
             })
         }
+        "face-attribute" => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let face = args[0].as_symbol()?;
+            let attribute = args[1].as_symbol()?;
+            let follow_inherit = args.get(3).is_some_and(Value::is_truthy);
+            Ok(face_attribute_value(
+                interp,
+                face,
+                attribute,
+                follow_inherit,
+            ))
+        }
         "set-face-attribute" => {
             if args.len() < 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -7734,6 +7779,11 @@ pub fn call(
                     };
                     interp.set_face_inherit_target(&face, inherit)?;
                 }
+                interp.put_symbol_property(
+                    &face,
+                    &face_attribute_property_name(attribute),
+                    value.clone(),
+                );
                 index += 2;
             }
             Ok(Value::Nil)
@@ -8942,6 +8992,47 @@ pub fn call(
         "puthash" => {
             need_args(name, args, 3)?;
             json::hash_table_put(interp, &args[2], args[0].clone(), args[1].clone())
+        }
+        "maphash" => {
+            need_args(name, args, 2)?;
+            let Some((_, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[1].type_name(),
+                ));
+            };
+            for (key, value) in entries {
+                call_function_value(interp, &args[0], &[key, value], env)?;
+            }
+            Ok(Value::Nil)
+        }
+        "remhash" => {
+            need_args(name, args, 2)?;
+            let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[1].type_name(),
+                ));
+            };
+            let retained = entries
+                .into_iter()
+                .filter(|(existing_key, _)| {
+                    !hash_table_key_matches(interp, &test, existing_key, &args[0])
+                })
+                .collect();
+            set_hash_table_entries(interp, &args[1], retained)?;
+            Ok(Value::Nil)
+        }
+        "clrhash" => {
+            need_args(name, args, 1)?;
+            if json::hash_table_entries(interp, &args[0]).is_none() {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
+            }
+            set_hash_table_entries(interp, &args[0], Vec::new())?;
+            Ok(args[0].clone())
         }
         "completion-table-case-fold" => {
             if args.len() < 2 || args.len() > 3 {
@@ -17797,6 +17888,18 @@ mod tests {
         .expect("single-key-description should honor no-angles");
         assert_eq!(plain, Value::String("home".into()));
     }
+
+    #[test]
+    fn shell_quote_argument_matches_upstream_batch_cases() {
+        assert_eq!(shell_quote_argument("*.pl"), r"\*.pl");
+        assert_eq!(shell_quote_argument("nfs"), "nfs");
+        assert_eq!(
+            shell_quote_argument("/Users/alpha/CodexProjects/emaxx/"),
+            "/Users/alpha/CodexProjects/emaxx/"
+        );
+        assert_eq!(shell_quote_argument("foo bar"), r"foo\ bar");
+        assert_eq!(shell_quote_argument(""), "''");
+    }
 }
 
 fn replacement_content(interp: &Interpreter, source: &Value) -> Result<StringLike, LispError> {
@@ -18755,6 +18858,26 @@ fn remove_face_value(existing: Value, face: &Value) -> Value {
     }
 }
 
+fn face_attribute_property_name(attribute: &str) -> String {
+    format!("emaxx-face-attribute::{attribute}")
+}
+
+fn face_attribute_value(
+    interp: &Interpreter,
+    face: &str,
+    attribute: &str,
+    follow_inherit: bool,
+) -> Value {
+    if let Some(value) = interp.get_symbol_property(face, &face_attribute_property_name(attribute))
+    {
+        return value;
+    }
+    if follow_inherit && let Some(parent) = interp.face_inherit_target(face) {
+        return face_attribute_value(interp, &parent, attribute, true);
+    }
+    Value::Symbol("unspecified".into())
+}
+
 fn face_list_items(value: &Value) -> Result<Vec<Value>, LispError> {
     if plist_like_face(value) {
         Err(LispError::TypeError("face-list".into(), "plist".into()))
@@ -18773,6 +18896,63 @@ fn plist_like_face(value: &Value) -> bool {
             .iter()
             .step_by(2)
             .all(|item| matches!(item, Value::Symbol(symbol) if symbol.starts_with(':')))
+}
+
+fn hash_table_key_matches(interp: &Interpreter, test: &str, left: &Value, right: &Value) -> bool {
+    match test {
+        "equal" => values_equal(interp, left, right),
+        _ => left == right,
+    }
+}
+
+fn hash_table_entries_to_value(entries: Vec<(Value, Value)>) -> Value {
+    Value::list(
+        entries
+            .into_iter()
+            .map(|(key, value)| Value::cons(key, value)),
+    )
+}
+
+fn list_sequence_items(interp: &Interpreter, value: &Value) -> Result<Vec<Value>, LispError> {
+    if let Some(items) = keymap_list_items(interp, value)? {
+        Ok(items)
+    } else {
+        value.to_vec()
+    }
+}
+
+fn keymap_list_items(interp: &Interpreter, value: &Value) -> Result<Option<Vec<Value>>, LispError> {
+    let Some(id) = keymap_record_id(interp, value) else {
+        return Ok(None);
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Ok(None);
+    };
+    let mut items = vec![Value::Symbol("keymap".into())];
+    items.extend(
+        keymap_bindings(record)?
+            .into_iter()
+            .map(|(key, binding)| Value::cons(Value::String(key), binding)),
+    );
+    Ok(Some(items))
+}
+
+fn set_hash_table_entries(
+    interp: &mut Interpreter,
+    table: &Value,
+    entries: Vec<(Value, Value)>,
+) -> Result<(), LispError> {
+    let Value::Record(id) = table else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
+    let Some(record) = interp.find_record_mut(*id) else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
+    if record.slots.len() < 2 {
+        record.slots.resize(2, Value::Nil);
+    }
+    record.slots[1] = hash_table_entries_to_value(entries);
+    Ok(())
 }
 
 fn parse_xml_region(xml: &str) -> Result<Value, roxmltree::Error> {
@@ -21162,7 +21342,22 @@ fn revert_current_buffer(interp: &mut Interpreter) -> Result<(), LispError> {
 }
 
 fn shell_quote_argument(argument: &str) -> String {
-    format!("'{}'", argument.replace('\'', "'\"'\"'"))
+    if argument.is_empty() {
+        return "''".into();
+    }
+
+    let mut quoted = String::new();
+    for ch in argument.chars() {
+        match ch {
+            '\n' => quoted.push_str("'\n'"),
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '/' => quoted.push(ch),
+            _ => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+        }
+    }
+    quoted
 }
 
 fn first_choice_value(choices: &Value) -> Option<Value> {

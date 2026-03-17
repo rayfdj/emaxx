@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, stdout};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::thread;
 
 use clap::Parser;
 use crossterm::terminal;
@@ -48,7 +49,7 @@ fn main() -> ExitCode {
 fn try_main() -> Result<u8, String> {
     let cli = Cli::parse();
     if cli.batch {
-        let code = batch::run_batch(BatchRunOptions {
+        let code = run_batch_with_large_stack(BatchRunOptions {
             load_path: cli.load_path,
             load: cli.load,
             eval: cli.eval,
@@ -70,6 +71,15 @@ fn try_main() -> Result<u8, String> {
 
     run_interactive(cli.file).map_err(|error| error.to_string())?;
     Ok(0)
+}
+
+fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<i32, String> {
+    thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || batch::run_batch(options))
+        .map_err(|error| format!("start batch thread: {error}"))?
+        .join()
+        .map_err(|_| "batch thread panicked".to_string())?
 }
 
 fn run_interactive(file: Option<PathBuf>) -> io::Result<()> {

@@ -7,7 +7,7 @@ use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{Env, LispError, Value};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
-use regex::{Regex, escape as regex_escape};
+use regex::Regex;
 
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
@@ -688,6 +688,10 @@ impl Interpreter {
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
+                (
+                    "vc-directory-exclusion-list".into(),
+                    preloaded_vc_directory_exclusion_list(),
+                ),
             ],
             variable_aliases: Vec::new(),
             special_variables: vec![
@@ -709,6 +713,7 @@ impl Interpreter {
                 "scroll-up-aggressively".into(),
                 "standard-output".into(),
                 "vertical-scroll-bar".into(),
+                "vc-directory-exclusion-list".into(),
             ],
             symbol_properties: Vec::new(),
             variable_watchers: Vec::new(),
@@ -8285,6 +8290,17 @@ fn preloaded_command_line_1() -> Value {
     )
 }
 
+fn preloaded_vc_directory_exclusion_list() -> Value {
+    Value::list(
+        [
+            "SCCS", "RCS", "CVS", "MCVS", ".src", ".svn", ".git", ".hg", ".bzr", "_MTN", "_darcs",
+            "{arch}", ".repo", ".jj",
+        ]
+        .into_iter()
+        .map(Value::string),
+    )
+}
+
 fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
@@ -9211,6 +9227,20 @@ fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
     Ok(regex)
 }
 
+fn quote_rx_string_literal(text: &str) -> String {
+    let mut quoted = String::new();
+    for ch in text.chars() {
+        match ch {
+            '.' | '[' | '*' | '+' | '?' | '^' | '$' | '\\' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            _ => quoted.push(ch),
+        }
+    }
+    quoted
+}
+
 fn rx_char_class_name(symbol: &str) -> Option<&'static str> {
     match symbol {
         "digit" | "numeric" | "num" => Some("digit"),
@@ -9290,12 +9320,12 @@ fn compile_rx_char_class(items: &[Value], negated: bool) -> Result<String, LispE
 
 fn compile_rx_form(value: &Value) -> Result<String, LispError> {
     match value {
-        Value::String(text) => Ok(regex_escape(text)),
-        Value::StringObject(state) => Ok(regex_escape(&state.borrow().text)),
+        Value::String(text) => Ok(quote_rx_string_literal(text)),
+        Value::StringObject(state) => Ok(quote_rx_string_literal(&state.borrow().text)),
         Value::Integer(codepoint) => {
             let ch = char::from_u32(*codepoint as u32)
                 .ok_or_else(|| LispError::Signal(format!("Invalid rx character: {codepoint}")))?;
-            Ok(regex_escape(&ch.to_string()))
+            Ok(quote_rx_string_literal(&ch.to_string()))
         }
         Value::Symbol(symbol) => match symbol.as_str() {
             "bos" | "bol" => Ok("^".into()),
@@ -9326,6 +9356,24 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
             };
             match head {
                 "group" => Ok(format!("\\({}\\)", compile_rx_sequence(&items[1..])?)),
+                "group-n" | "submatch-n" => {
+                    if items.len() < 3 {
+                        return Err(LispError::Signal(
+                            "rx `group-n' needs a group number and a form".into(),
+                        ));
+                    }
+                    let number = items[1].as_integer()?;
+                    if number <= 0 {
+                        return Err(LispError::Signal(
+                            "rx `group-n' needs a positive group number".into(),
+                        ));
+                    }
+                    Ok(format!(
+                        "\\(?{}:{}\\)",
+                        number,
+                        compile_rx_sequence(&items[2..])?
+                    ))
+                }
                 "+" | "1+" => Ok(format!("\\(?:{}\\)+", compile_rx_sequence(&items[1..])?)),
                 "+?" => Ok(format!("\\(?:{}\\)+?", compile_rx_sequence(&items[1..])?)),
                 "*" => Ok(format!("\\(?:{}\\)*", compile_rx_sequence(&items[1..])?)),
@@ -10282,6 +10330,60 @@ mod tests {
     }
 
     #[test]
+    fn face_attribute_tracks_runtime_values_and_inheritance() {
+        let value = eval_str(
+            "(progn
+               (set-face-attribute 'parent-face nil :foreground \"blue\")
+               (set-face-attribute 'child-face nil :inherit 'parent-face)
+               (list
+                (face-attribute 'tool-bar :foreground)
+                (face-attribute 'parent-face :foreground)
+                (face-attribute 'child-face :foreground nil t)
+                (face-attribute 'child-face :inherit)))",
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items[0], Value::Symbol("unspecified".into()));
+        assert_eq!(primitives::string_text(&items[1]).unwrap(), "blue");
+        assert_eq!(primitives::string_text(&items[2]).unwrap(), "blue");
+        assert_eq!(items[3], Value::Symbol("parent-face".into()));
+    }
+
+    #[test]
+    fn hash_table_iteration_and_mutation_primitives_cover_ert_cases() {
+        run_large_stack_test(assert_hash_table_iteration_and_mutation_primitives_cover_ert_cases);
+    }
+
+    fn assert_hash_table_iteration_and_mutation_primitives_cover_ert_cases() {
+        assert_eq!(
+            eval_str(
+                "(let ((ht (make-hash-table :test #'equal))
+                       (seen nil))
+                   (puthash \"a\" 1 ht)
+                   (puthash \"b\" 2 ht)
+                   (list
+                    (maphash (lambda (key value)
+                               (push (cons key value) seen))
+                             ht)
+                    (progn
+                      (remhash \"a\" ht)
+                      (hash-table-count ht))
+                    (gethash \"a\" ht 'missing)
+                    (let ((cleared (clrhash ht)))
+                      (list (hash-table-p cleared)
+                            (hash-table-count ht)))
+                    (length seen)))"
+            ),
+            Value::list([
+                Value::Nil,
+                Value::Integer(1),
+                Value::Symbol("missing".into()),
+                Value::list([Value::T, Value::Integer(0)]),
+                Value::Integer(2),
+            ])
+        );
+    }
+
+    #[test]
     fn require_edmacro_supports_edmacro_parse_keys_cases() {
         std::thread::Builder::new()
             .stack_size(4 * 1024 * 1024)
@@ -11086,6 +11188,10 @@ mod tests {
             interp.lookup_var("inhibit-file-name-operation", &Vec::new()),
             Some(Value::Nil)
         );
+        assert_eq!(
+            interp.lookup_var("vc-directory-exclusion-list", &Vec::new()),
+            Some(preloaded_vc_directory_exclusion_list())
+        );
     }
 
     #[test]
@@ -11104,6 +11210,23 @@ mod tests {
                                                       :rtl "right-arrow"
                                                       :vert-only t)
                        map)))
+                "#,
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn keymap_list_helpers_cover_grep_tool_bar_setup() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap "demo")))
+                  (define-key map "a" 'ignore)
+                  (define-key map "b" 'self-insert-command)
+                  (list
+                   (keymapp (butlast map))
+                   (equal (car (car (last map))) "b")))
                 "#,
             ),
             Value::list([Value::T, Value::T])
@@ -12582,6 +12705,7 @@ IHdvcmxkIQ==")))
 
     #[test]
     fn rx_compiles_common_test_patterns() {
+        assert_eq!(eval_str(r#"(rx "\\(")"#), Value::String("\\\\(".into()));
         assert_eq!(
             eval_str(r#"(rx bos (group (+ digit)) (+ blank) "Hi" eol)"#),
             Value::String("^\\(\\(?:[0-9]\\)+\\)\\(?:[[:blank:]]\\)+Hi$".into())
@@ -12605,6 +12729,22 @@ IHdvcmxkIQ==")))
         assert_eq!(
             eval_str(r#"(rx (1+ (not (any "/|"))))"#),
             Value::String("\\(?:[^/|]\\)+".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (group-n 2 (group-n 1 (+ digit)) ":" (+ digit)))"#),
+            Value::String("\\(?2:\\(?1:\\(?:[0-9]\\)+\\):\\(?:[0-9]\\)+\\)".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"(string-match-p
+                    (rx "find " (+ nonl)
+                        " \\( \\( -name .svn -or -name .git -or -name .CVS \\)"
+                        " -prune -or -true \\)"
+                        " \\( \\( \\(" " -name \\*.pl -or -name \\*.pm -or -name \\*.t \\)"
+                        " -or -mtime \\+1 \\) -and \\( -fstype nfs -or -fstype ufs \\) \\) ")
+                    "find /tmp/ \\( \\( -name .svn -or -name .git -or -name .CVS \\) -prune -or -true \\) \\( \\( \\( -name \\*.pl -or -name \\*.pm -or -name \\*.t \\) -or -mtime \\+1 \\) -and \\( -fstype nfs -or -fstype ufs \\) \\) ")"#
+            ),
+            Value::Integer(0)
         );
     }
 
