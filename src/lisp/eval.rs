@@ -8518,6 +8518,68 @@ fn preloaded_command_line_1() -> Value {
     )
 }
 
+fn preloaded_sh_mode() -> Value {
+    Value::Lambda(
+        Vec::new(),
+        vec![
+            Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("major-mode".into()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("sh-mode".into()),
+                ]),
+            ]),
+            Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("mode-name".into()),
+                Value::String("Shell-script".into()),
+            ]),
+            Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("imenu-case-fold-search".into()),
+                Value::Nil,
+            ]),
+            Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("imenu-generic-skip-comments-and-strings".into()),
+                Value::Nil,
+            ]),
+            Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("imenu-create-index-function".into()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("imenu-default-create-index-function".into()),
+                ]),
+            ]),
+            Value::list([
+                Value::Symbol("setq-local".into()),
+                Value::Symbol("imenu-generic-expression".into()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::list([
+                        Value::list([
+                            Value::Nil,
+                            Value::String(
+                                "^[ \t]*function[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)".into(),
+                            ),
+                            Value::Integer(1),
+                        ]),
+                        Value::list([
+                            Value::Nil,
+                            Value::String("^[ \t]*\\([A-Za-z_][A-Za-z0-9_]*\\)[ \t]*()".into()),
+                            Value::Integer(1),
+                        ]),
+                    ]),
+                ]),
+            ]),
+            Value::Nil,
+        ],
+        Vec::new(),
+    )
+}
+
 fn preloaded_vc_directory_exclusion_list() -> Value {
     Value::list(
         [
@@ -8532,6 +8594,7 @@ fn preloaded_vc_directory_exclusion_list() -> Value {
 fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
+        "sh-mode" => Some(preloaded_sh_mode()),
         "point-to-register" => Some(Value::Lambda(
             vec!["register".into(), "&optional".into(), "arg".into()],
             vec![
@@ -10010,6 +10073,36 @@ mod tests {
     }
 
     #[test]
+    fn assoc_and_assq_ignore_non_cons_alist_entries() {
+        assert_eq!(
+            eval_str(
+                "(list (assoc 'target '(dummy (other . 1) (target . 2)))
+                       (assq 'target '(dummy (other . 1) (target . 2))))"
+            ),
+            Value::list([
+                Value::cons(Value::Symbol("target".into()), Value::Integer(2)),
+                Value::cons(Value::Symbol("target".into()), Value::Integer(2)),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_delete_if_filters_matching_items() {
+        run_large_stack_test(assert_cl_delete_if_filters_matching_items);
+    }
+
+    fn assert_cl_delete_if_filters_matching_items() {
+        assert_eq!(
+            eval_str("(cl-delete-if #'numberp '(a 1 b 2 c))"),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn unibyte_string_sequences_return_byte_values() {
         assert_eq!(
             eval_str("(let ((s (unibyte-string 225 16))) (aref s 0))"),
@@ -10153,6 +10246,21 @@ mod tests {
         );
         assert_eq!(
             primitives::string_text(&value).expect("match-string result"),
+            "b"
+        );
+    }
+
+    #[test]
+    fn match_string_no_properties_reads_existing_match_data() {
+        let value = eval_str(
+            r#"
+            (progn
+              (string-match "a\\(b\\)" "ab")
+              (match-string-no-properties 1 "ab"))
+            "#,
+        );
+        assert_eq!(
+            primitives::string_text(&value).expect("match-string-no-properties result"),
             "b"
         );
     }
@@ -10895,6 +11003,37 @@ mod tests {
                 "#
             ),
             Value::Symbol("byte-code-function".into())
+        );
+    }
+
+    #[test]
+    fn syntax_table_reports_the_current_buffer_table() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((table (make-syntax-table)))
+                    (set-syntax-table table)
+                    (eq (syntax-table) table)))
+                "#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn invisible_p_tracks_invisible_text_properties() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "ab")
+                  (put-text-property 1 2 'invisible t)
+                  (list (invisible-p 1)
+                        (invisible-p 2)))
+                "#
+            ),
+            Value::list([Value::T, Value::Nil])
         );
     }
 
@@ -12002,6 +12141,42 @@ mod tests {
                    (funcall (car before-change-functions)))"
             ),
             Value::Symbol("ok".into())
+        );
+    }
+
+    #[test]
+    fn preloaded_sh_mode_sets_imenu_configuration() {
+        let value = eval_str(
+            "(with-temp-buffer
+               (funcall #'sh-mode)
+               (list major-mode
+                     mode-name
+                     imenu-case-fold-search
+                     imenu-create-index-function
+                     imenu-generic-expression))",
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items[0], Value::Symbol("sh-mode".into()));
+        assert_string_value(items[1].clone(), "Shell-script");
+        assert_eq!(items[2], Value::Nil);
+        assert_eq!(
+            items[3],
+            Value::Symbol("imenu-default-create-index-function".into())
+        );
+        assert_eq!(
+            items[4],
+            Value::list([
+                Value::list([
+                    Value::Nil,
+                    Value::String("^[ \t]*function[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)".into()),
+                    Value::Integer(1),
+                ]),
+                Value::list([
+                    Value::Nil,
+                    Value::String("^[ \t]*\\([A-Za-z_][A-Za-z0-9_]*\\)[ \t]*()".into()),
+                    Value::Integer(1),
+                ]),
+            ])
         );
     }
 

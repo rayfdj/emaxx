@@ -737,6 +737,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "assoc"
             | "alist-get"
             | "cl-set-exclusive-or"
+            | "cl-delete-if"
             | "cl-remove-if-not"
             | "mapcar"
             | "cl-mapcar"
@@ -882,12 +883,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "scan-lists"
             | "parse-partial-sexp"
             | "match-string"
+            | "match-string-no-properties"
             | "match-beginning"
             | "match-end"
             | "buffer-string"
             | "buffer-substring"
             | "buffer-substring-no-properties"
             | "add-to-invisibility-spec"
+            | "invisible-p"
             | "buffer-size"
             | "buffer-name"
             | "set-buffer-multibyte"
@@ -1075,6 +1078,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-standard-case-table"
             | "make-syntax-table"
             | "copy-syntax-table"
+            | "syntax-table"
             | "standard-syntax-table"
             | "set-syntax-table"
             | "modify-syntax-entry"
@@ -2895,6 +2899,9 @@ pub fn call(
             need_args(name, args, 2)?;
             let items = args[1].to_vec()?;
             for item in &items {
+                let Value::Cons(_, _) = item else {
+                    continue;
+                };
                 if item.car()? == args[0] {
                     return Ok(item.clone());
                 }
@@ -2905,6 +2912,9 @@ pub fn call(
             need_args(name, args, 2)?;
             let items = args[1].to_vec()?;
             for item in &items {
+                let Value::Cons(_, _) = item else {
+                    continue;
+                };
                 if values_equal(interp, &item.car()?, &args[0]) {
                     return Ok(item.clone());
                 }
@@ -2960,6 +2970,18 @@ pub fn call(
             let mut kept = Vec::new();
             for item in args[1].to_vec()? {
                 if call_function_value(interp, &args[0], std::slice::from_ref(&item), env)?
+                    .is_truthy()
+                {
+                    kept.push(item);
+                }
+            }
+            Ok(Value::list(kept))
+        }
+        "cl-delete-if" => {
+            need_args(name, args, 2)?;
+            let mut kept = Vec::new();
+            for item in args[1].to_vec()? {
+                if !call_function_value(interp, &args[0], std::slice::from_ref(&item), env)?
                     .is_truthy()
                 {
                     kept.push(item);
@@ -4614,6 +4636,16 @@ pub fn call(
                 updated,
             );
             Ok(Value::Nil)
+        }
+        "invisible-p" => {
+            need_args(name, args, 1)?;
+            let invisible = match args[0] {
+                Value::Integer(position) if position >= 1 => {
+                    char_is_invisible(interp, position as usize)
+                }
+                _ => false,
+            };
+            Ok(if invisible { Value::T } else { Value::Nil })
         }
         "derived-mode-p" => {
             if args.is_empty() {
@@ -10743,6 +10775,11 @@ pub fn call(
             interp.clone_char_table(source)
         }
 
+        "syntax-table" => {
+            need_args(name, args, 0)?;
+            Ok(Value::CharTable(interp.current_syntax_table_id()))
+        }
+
         "standard-syntax-table" => Ok(Value::CharTable(interp.standard_syntax_table_id())),
 
         "set-syntax-table" => {
@@ -11061,7 +11098,7 @@ pub fn call(
                 .unwrap_or(Value::Nil);
             Ok(result)
         }
-        "match-string" => match_string_impl(interp, args),
+        "match-string" | "match-string-no-properties" => match_string_impl(interp, args),
 
         "looking-at" => {
             need_args(name, args, 1)?;
