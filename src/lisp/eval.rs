@@ -6949,7 +6949,7 @@ impl Interpreter {
 
         for item in list_items {
             let mut bindings = Vec::new();
-            if !pcase_pattern_bindings(pattern, &item, &mut bindings)? {
+            if !pcase_pattern_bindings_lenient_list(pattern, &item, &mut bindings)? {
                 return Err(LispError::Signal("pcase-dolist: no matching clause".into()));
             }
             env.push(bindings);
@@ -9575,7 +9575,13 @@ fn defface_spec_literal(spec_form: &Value) -> Option<Value> {
             let items = spec_form.to_vec().ok()?;
             match items.as_slice() {
                 [Value::Symbol(symbol), value] if symbol == "quote" => Some(value.clone()),
-                _ => Some(spec_form.clone()),
+                _ if items
+                    .iter()
+                    .all(|item| matches!(item, Value::Cons(_, _) | Value::Nil)) =>
+                {
+                    Some(spec_form.clone())
+                }
+                _ => None,
             }
         }
         _ => None,
@@ -9587,11 +9593,6 @@ fn defface_runtime_attributes(spec: &Value) -> Option<Vec<(String, Value)>> {
     clauses
         .iter()
         .find_map(|clause| defface_clause_attributes(clause, true))
-        .or_else(|| {
-            clauses
-                .iter()
-                .find_map(|clause| defface_clause_attributes(clause, false))
-        })
 }
 
 fn defface_clause_attributes(
@@ -10093,6 +10094,14 @@ fn pcase_pattern_bindings(
     pcase_pattern_bindings_with_mode(pattern, value, bindings, false)
 }
 
+fn pcase_pattern_bindings_lenient_list(
+    pattern: &Value,
+    value: &Value,
+    bindings: &mut Vec<(String, Value)>,
+) -> Result<bool, LispError> {
+    pcase_pattern_bindings_with_mode(pattern, value, bindings, true)
+}
+
 fn pcase_pattern_bindings_with_mode(
     pattern: &Value,
     value: &Value,
@@ -10115,7 +10124,7 @@ fn pcase_pattern_bindings_with_mode(
                 parts.get(1).unwrap_or(&Value::Nil),
                 value,
                 bindings,
-                true,
+                lenient_list_match,
             );
         }
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "or") {
@@ -10837,6 +10846,17 @@ mod tests {
     }
 
     #[test]
+    fn assoc_string_case_fold_avoids_multi_character_uppercase_matches() {
+        let value =
+            eval_str("(assoc-string \"ß\" '((\"ss\" . wrong) (\"ß\" . right) (\"ẞ\" . upper)) t)");
+        let Some((key, result)) = value.cons_values() else {
+            panic!("assoc-string should return an alist entry");
+        };
+        assert_string_value(key, "ß");
+        assert_eq!(result, Value::Symbol("right".into()));
+    }
+
+    #[test]
     fn cl_delete_if_filters_matching_items() {
         run_large_stack_test(assert_cl_delete_if_filters_matching_items);
     }
@@ -11516,6 +11536,18 @@ mod tests {
         assert_eq!(primitives::string_text(&items[1]).unwrap(), "blue");
         assert_eq!(primitives::string_text(&items[2]).unwrap(), "blue");
         assert_eq!(items[3], Value::Symbol("parent-face".into()));
+    }
+
+    #[test]
+    fn defface_only_records_default_display_clauses() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defface sample-nongraphic-face '((((type graphic)) :foreground \"red\")) \"doc\")
+                   (face-attribute 'sample-nongraphic-face :foreground))"
+            ),
+            Value::Symbol("unspecified".into())
+        );
     }
 
     #[test]
@@ -12633,6 +12665,20 @@ mod tests {
     }
 
     #[test]
+    fn window_width_tracks_runtime_frame_width() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (set-frame-width nil 120)
+                  (window-width))
+                "#,
+            ),
+            Value::Integer(120)
+        );
+    }
+
+    #[test]
     fn terminal_parameter_places_support_setf() {
         assert_eq!(
             eval_str(
@@ -12992,20 +13038,13 @@ mod tests {
     }
 
     #[test]
-    fn pcase_dolist_lenient_backquoted_lists_bind_missing_nil_and_ignore_extra() {
+    fn pcase_backquote_requires_exact_list_shape() {
         assert_eq!(
             eval_str(
-                "(let (pairs) \
-                   (pcase-dolist (`(,left ,middle ,right) \
-                                  '((1 2) (3 4 5) (6 7 8 9))) \
-                     (push (list left middle right) pairs)) \
-                   (nreverse pairs))"
+                "(list (pcase '(1 2) (`(,left ,middle ,right) 'match) (_ 'miss)) \
+                       (pcase '(3 4 5 6) (`(,left ,middle ,right) 'match) (_ 'miss)))"
             ),
-            Value::list([
-                Value::list([Value::Integer(1), Value::Integer(2), Value::Nil]),
-                Value::list([Value::Integer(3), Value::Integer(4), Value::Integer(5)]),
-                Value::list([Value::Integer(6), Value::Integer(7), Value::Integer(8)]),
-            ])
+            Value::list([Value::Symbol("miss".into()), Value::Symbol("miss".into()),])
         );
     }
 
@@ -13056,6 +13095,24 @@ mod tests {
             Value::list([
                 Value::Symbol("sample--pcase-macroexpander".into()),
                 Value::T
+            ])
+        );
+    }
+
+    #[test]
+    fn pcase_dolist_lenient_backquoted_lists_bind_missing_nil_and_ignore_extra() {
+        assert_eq!(
+            eval_str(
+                "(let (pairs) \
+                   (pcase-dolist (`(,left ,middle ,right) \
+                                  '((1 2) (3 4 5) (6 7 8 9))) \
+                     (push (list left middle right) pairs)) \
+                   (nreverse pairs))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2), Value::Nil]),
+                Value::list([Value::Integer(3), Value::Integer(4), Value::Integer(5)]),
+                Value::list([Value::Integer(6), Value::Integer(7), Value::Integer(8)]),
             ])
         );
     }
