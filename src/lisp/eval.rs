@@ -684,6 +684,7 @@ impl Interpreter {
         let mut interp = Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
+                ("abbrev-table-name-list".into(), Value::Nil),
                 ("cl--proclaims-deferred".into(), Value::Nil),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
@@ -4568,50 +4569,12 @@ impl Interpreter {
                                 ));
                             }
                             let val = self.eval(&items[1], env)?;
-                            match &items[2] {
-                                Value::Symbol(name) => {
-                                    let cur = self.lookup(name, env)?;
-                                    let new_val = Value::cons(val, cur);
-                                    self.set_variable(name, new_val.clone(), env);
-                                    return Ok(new_val);
-                                }
-                                Value::Cons(_, _) => {
-                                    let place_items = items[2].to_vec()?;
-                                    if place_items.len() == 3
-                                        && matches!(
-                                            &place_items[0],
-                                            Value::Symbol(symbol) if symbol == "overlay-get"
-                                        )
-                                    {
-                                        let overlay = self.eval(&place_items[1], env)?;
-                                        let prop = self.eval(&place_items[2], env)?;
-                                        let overlay_id = match overlay {
-                                            Value::Overlay(id) => id,
-                                            other => {
-                                                return Err(LispError::TypeError(
-                                                    "overlay".into(),
-                                                    other.type_name(),
-                                                ));
-                                            }
-                                        };
-                                        let prop_name = prop.as_symbol()?.to_string();
-                                        let cur = self
-                                            .find_overlay(overlay_id)
-                                            .and_then(|overlay| {
-                                                overlay.get_prop(&prop_name).cloned()
-                                            })
-                                            .unwrap_or(Value::Nil);
-                                        let new_val = Value::cons(val, cur);
-                                        if let Some(overlay) = self.find_overlay_mut(overlay_id) {
-                                            overlay.put_prop(&prop_name, new_val.clone());
-                                        }
-                                        return Ok(new_val);
-                                    }
-                                }
-                                _ => {}
-                            }
-                            return Err(LispError::Signal("Unsupported push place".into()));
+                            let cur = self.eval_setf_place_current_value(&items[2], env)?;
+                            let new_val = Value::cons(val, cur);
+                            self.set_setf_place_value(&items[2], new_val.clone(), env)?;
+                            return Ok(new_val);
                         }
+                        "cl-pushnew" => return self.sf_cl_pushnew(&items, env),
                         "pop" => {
                             // (pop PLACE)
                             if items.len() < 2 {
@@ -5676,6 +5639,55 @@ impl Interpreter {
                     let symbol = symbol.as_symbol()?.to_string();
                     self.set_symbol_value_cell(&symbol, value);
                     Ok(())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "car" || name == "cdr")
+                {
+                    let Some(target_expr) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let target = self.eval(target_expr, env)?;
+                    if matches!(items.first(), Some(Value::Symbol(name)) if name == "car") {
+                        target.set_car(value)?;
+                    } else {
+                        target.set_cdr(value)?;
+                    }
+                    Ok(())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "overlay-get")
+                {
+                    let Some(overlay_expr) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(prop_expr) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let overlay = self.eval(overlay_expr, env)?;
+                    let overlay_id = match overlay {
+                        Value::Overlay(id) => id,
+                        other => {
+                            return Err(LispError::TypeError("overlay".into(), other.type_name()));
+                        }
+                    };
+                    let prop = self.eval(prop_expr, env)?;
+                    let prop_name = prop.as_symbol()?.to_string();
+                    let Some(existing) = self.find_overlay_mut(overlay_id) else {
+                        return Err(LispError::TypeError(
+                            "overlay".into(),
+                            format!("overlay<{overlay_id}>"),
+                        ));
+                    };
+                    existing.put_prop(&prop_name, value);
+                    Ok(())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "alist-get")
+                {
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_alist_get(&items, &value_expr, env).map(|_| ())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "aref") {
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_aref(&items, &value_expr, env).map(|_| ())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "image-property")
+                {
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_image_property(&items, &value_expr, env)
+                        .map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "gethash") {
                     let Some(key_expr) = items.get(1) else {
                         return Err(LispError::Signal("Unsupported setf place".into()));
@@ -5986,6 +5998,15 @@ impl Interpreter {
                         .push((name.to_string(), Self::stored_value(Value::Nil)));
                 }
             }
+
+            if kind == "define-derived-mode" {
+                let parent = items.get(2).and_then(|value| match value {
+                    Value::Symbol(symbol) => Some(symbol.as_str()),
+                    Value::Nil => None,
+                    _ => None,
+                });
+                crate::lisp::primitives::derived_mode_set_parent(self, name, parent);
+            }
         }
         if self.lookup_function(name, &Vec::new()).is_err() {
             self.set_function_binding(name, Some(Value::BuiltinFunc("ignore".into())));
@@ -6092,6 +6113,68 @@ impl Interpreter {
         }
         let updated = Value::list(values);
         self.set_variable(&place, updated.clone(), env);
+        Ok(updated)
+    }
+
+    fn sf_cl_pushnew(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-pushnew".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        let new_value = self.eval(&items[1], env)?;
+        let mut testfn = None;
+        let mut test_not = None;
+        let mut keyfn = None;
+        let mut cursor = 3usize;
+        while cursor < items.len() {
+            let Some(keyword) = items[cursor].as_symbol().ok() else {
+                return Err(LispError::Signal("Unsupported cl-pushnew syntax".into()));
+            };
+            let Some(value_expr) = items.get(cursor + 1) else {
+                return Err(LispError::Signal("Unsupported cl-pushnew syntax".into()));
+            };
+            let value = self.eval(value_expr, env)?;
+            match keyword {
+                ":test" => testfn = Some(value),
+                ":test-not" => test_not = Some(value),
+                ":key" => keyfn = Some(value),
+                _ => return Err(LispError::Signal("Unsupported cl-pushnew syntax".into())),
+            }
+            cursor += 2;
+        }
+
+        let current = self.eval_setf_place_current_value(&items[2], env)?;
+        let values = current.to_vec()?;
+        let keyed_new = self.apply_cl_sequence_key(keyfn.as_ref(), &new_value, env)?;
+        let mut already_present = false;
+        for existing in &values {
+            let keyed_existing = self.apply_cl_sequence_key(keyfn.as_ref(), existing, env)?;
+            let matches = if let Some(predicate) = test_not.as_ref() {
+                !self.call_binary_predicate(predicate, &keyed_new, &keyed_existing, env)?
+            } else {
+                primitives::value_matches_with_test(
+                    self,
+                    &keyed_new,
+                    &keyed_existing,
+                    testfn.as_ref(),
+                    env,
+                )?
+            };
+            if matches {
+                already_present = true;
+                break;
+            }
+        }
+
+        if already_present {
+            return Ok(current);
+        }
+
+        let updated = Value::cons(new_value, current);
+        self.set_setf_place_value(&items[2], updated.clone(), env)?;
         Ok(updated)
     }
 
@@ -6430,6 +6513,7 @@ impl Interpreter {
             Thereis { expr: Value, until: Option<Value> },
             Always(Value),
             Sum(Value),
+            Return(Value),
             UnlessDo { condition: Value, body: Vec<Value> },
         }
 
@@ -6441,10 +6525,26 @@ impl Interpreter {
         }
 
         let mut specs = Vec::new();
+        let mut with_bindings = Vec::new();
         let mut while_expr = None;
         let mut index = 1usize;
         while index < items.len() {
             match items.get(index) {
+                Some(Value::Symbol(symbol)) if symbol == "with" => {
+                    let pattern = items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone();
+                    if !matches!(items.get(index + 2), Some(Value::Symbol(eq)) if eq == "=") {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                    let expr = items
+                        .get(index + 3)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone();
+                    with_bindings.push((pattern, expr));
+                    index += 4;
+                }
                 Some(Value::Symbol(symbol)) if symbol == "for" => {
                     let name = items
                         .get(index + 1)
@@ -6569,7 +6669,7 @@ impl Interpreter {
             }
         }
 
-        if specs.is_empty() || index >= items.len() {
+        if (specs.is_empty() && with_bindings.is_empty()) || index >= items.len() {
             return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
         }
 
@@ -6584,7 +6684,7 @@ impl Interpreter {
             .min()
             .unwrap_or(1);
 
-        let bindings = specs
+        let mut bindings = specs
             .iter()
             .map(|spec| match spec {
                 LoopSpec::Range { name, .. }
@@ -6593,7 +6693,15 @@ impl Interpreter {
                 | LoopSpec::Assign { name, .. } => (name.clone(), Value::Nil),
             })
             .collect::<Vec<_>>();
+        for (pattern, _) in &with_bindings {
+            self.collect_cl_pattern_names(pattern, &mut bindings)?;
+        }
         env.push(bindings);
+        for (pattern, expr) in &with_bindings {
+            let value = self.eval(expr, env)?;
+            let frame = env.last_mut().expect("env frame just pushed");
+            self.bind_cl_pattern(pattern, value, frame)?;
+        }
 
         let action = match items.get(index) {
             Some(Value::Symbol(symbol)) if symbol == "do" => {
@@ -6629,6 +6737,12 @@ impl Interpreter {
                     .clone(),
             ),
             Some(Value::Symbol(symbol)) if symbol == "sum" => LoopAction::Sum(
+                items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
+            Some(Value::Symbol(symbol)) if symbol == "return" => LoopAction::Return(
                 items
                     .get(index + 1)
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
@@ -6718,6 +6832,10 @@ impl Interpreter {
                     sum += self.eval(expr, env)?.as_integer()?;
                     result = Value::Integer(sum);
                 }
+                LoopAction::Return(expr) => {
+                    result = self.eval(expr, env)?;
+                    break;
+                }
                 LoopAction::UnlessDo { condition, body } => {
                     if !self.eval(condition, env)?.is_truthy() {
                         result = self.sf_progn(body, env)?;
@@ -6734,6 +6852,156 @@ impl Interpreter {
             LoopAction::Sum(_) => Value::Integer(sum),
             _ => result,
         })
+    }
+
+    fn eval_setf_place_current_value(
+        &mut self,
+        place: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match place {
+            Value::Symbol(name) => self.lookup(name, env),
+            _ => self.eval(place, env),
+        }
+    }
+
+    fn apply_cl_sequence_key(
+        &mut self,
+        keyfn: Option<&Value>,
+        value: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(keyfn) = keyfn.filter(|value| !value.is_nil()) else {
+            return Ok(value.clone());
+        };
+        let func = match keyfn {
+            Value::Symbol(name) => self.lookup_function(name, env)?,
+            other => other.clone(),
+        };
+        self.call_function_value(
+            func,
+            keyfn.as_symbol().ok(),
+            std::slice::from_ref(value),
+            env,
+        )
+    }
+
+    fn call_binary_predicate(
+        &mut self,
+        predicate: &Value,
+        left: &Value,
+        right: &Value,
+        env: &mut Env,
+    ) -> Result<bool, LispError> {
+        let func = match predicate {
+            Value::Symbol(name) => self.lookup_function(name, env)?,
+            other => other.clone(),
+        };
+        Ok(self
+            .call_function_value(
+                func,
+                predicate.as_symbol().ok(),
+                &[left.clone(), right.clone()],
+                env,
+            )?
+            .is_truthy())
+    }
+
+    fn bind_cl_pattern(
+        &mut self,
+        pattern: &Value,
+        value: Value,
+        frame: &mut Vec<(String, Value)>,
+    ) -> Result<(), LispError> {
+        match pattern {
+            Value::Symbol(name) if name == "nil" => Ok(()),
+            Value::Symbol(name) => {
+                Self::upsert_frame_binding(frame, name.clone(), Self::stored_value(value));
+                Ok(())
+            }
+            Value::Cons(_, _) => {
+                let pattern_items = pattern.to_vec()?;
+                let values = value.to_vec()?;
+                let mut pi = 0usize;
+                let mut vi = 0usize;
+                let mut optional = false;
+                while pi < pattern_items.len() {
+                    match &pattern_items[pi] {
+                        Value::Symbol(symbol) if symbol == "&optional" => {
+                            optional = true;
+                            pi += 1;
+                            continue;
+                        }
+                        Value::Symbol(symbol) if symbol == "&rest" => {
+                            pi += 1;
+                            if let Some(rest_pattern) = pattern_items.get(pi) {
+                                self.bind_cl_pattern(
+                                    rest_pattern,
+                                    Value::list(values[vi..].to_vec()),
+                                    frame,
+                                )?;
+                            }
+                            break;
+                        }
+                        subpattern => {
+                            let consumed = vi < values.len();
+                            let bound_value = if consumed {
+                                values[vi].clone()
+                            } else if optional {
+                                Value::Nil
+                            } else {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "cl-destructuring-bind".into(),
+                                    values.len(),
+                                ));
+                            };
+                            self.bind_cl_pattern(subpattern, bound_value, frame)?;
+                            if consumed {
+                                vi += 1;
+                            }
+                        }
+                    }
+                    pi += 1;
+                }
+                Ok(())
+            }
+            other => Err(LispError::TypeError("list".into(), other.type_name())),
+        }
+    }
+
+    fn collect_cl_pattern_names(
+        &self,
+        pattern: &Value,
+        bindings: &mut Vec<(String, Value)>,
+    ) -> Result<(), LispError> {
+        match pattern {
+            Value::Symbol(name) if name == "nil" => Ok(()),
+            Value::Symbol(name) => {
+                if !bindings.iter().any(|(existing, _)| existing == name) {
+                    bindings.push((name.clone(), Value::Nil));
+                }
+                Ok(())
+            }
+            Value::Cons(_, _) => {
+                for item in pattern.to_vec()? {
+                    if matches!(&item, Value::Symbol(symbol) if symbol == "&optional" || symbol == "&rest")
+                    {
+                        continue;
+                    }
+                    self.collect_cl_pattern_names(&item, bindings)?;
+                }
+                Ok(())
+            }
+            other => Err(LispError::TypeError("list".into(), other.type_name())),
+        }
+    }
+
+    fn upsert_frame_binding(frame: &mut Vec<(String, Value)>, name: String, value: Value) {
+        if let Some(index) = frame.iter().rposition(|(existing, _)| existing == &name) {
+            frame[index].1 = value;
+        } else {
+            frame.push((name, value));
+        }
     }
 
     fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -7434,55 +7702,9 @@ impl Interpreter {
                 items.len() - 1,
             ));
         }
-        let pattern = items[1].to_vec()?;
         let val = self.eval(&items[2], env)?;
-        let vals = val.to_vec()?;
-
         let mut frame = Vec::new();
-        let mut pi = 0; // pattern index
-        let mut vi = 0; // value index
-        let mut optional = false;
-
-        while pi < pattern.len() {
-            let p = &pattern[pi];
-            if let Value::Symbol(s) = p {
-                match s.as_str() {
-                    "&optional" => {
-                        optional = true;
-                        pi += 1;
-                        continue;
-                    }
-                    "&rest" => {
-                        pi += 1;
-                        if pi < pattern.len()
-                            && let Value::Symbol(rest_name) = &pattern[pi]
-                        {
-                            let rest_vals: Vec<Value> = vals[vi..].to_vec();
-                            frame.push((rest_name.clone(), Value::list(rest_vals)));
-                        }
-                        break;
-                    }
-                    name => {
-                        let consumed = vi < vals.len();
-                        let v = if consumed {
-                            vals[vi].clone()
-                        } else if optional {
-                            Value::Nil
-                        } else {
-                            return Err(LispError::WrongNumberOfArgs(
-                                "cl-destructuring-bind".into(),
-                                vals.len(),
-                            ));
-                        };
-                        frame.push((name.to_string(), v));
-                        if consumed {
-                            vi += 1;
-                        }
-                    }
-                }
-            }
-            pi += 1;
-        }
+        self.bind_cl_pattern(&items[1], val, &mut frame)?;
 
         env.push(frame);
         let result = self.sf_progn(&items[3..], env);
@@ -8233,6 +8455,10 @@ fn unquote(value: &Value) -> Value {
         }
         _ => value.clone(),
     }
+}
+
+fn quoted_literal(value: &Value) -> Value {
+    Value::list([Value::Symbol("quote".into()), value.clone()])
 }
 
 fn preloaded_command_line_1() -> Value {
@@ -10438,6 +10664,14 @@ mod tests {
     }
 
     #[test]
+    fn cl_loop_supports_destructuring_with_and_return() {
+        assert_eq!(
+            eval_str("(cl-loop with (a b c) = '(1 2 3) return (+ a b c))"),
+            Value::Integer(6)
+        );
+    }
+
+    #[test]
     fn add_to_list_updates_quoted_variable() {
         let mut interp = Interpreter::new();
         eval_str_with(&mut interp, "(setq sample-list '(b c))");
@@ -10464,6 +10698,100 @@ mod tests {
                 Value::Symbol("b".into()),
                 Value::Symbol("c".into()),
             ])
+        );
+    }
+
+    #[test]
+    fn cl_pushnew_supports_key_and_test_not() {
+        assert_eq!(
+            eval_str(
+                "(let ((list '((1 2) (3 4))))
+                   (cl-pushnew '(3 7) list :key #'cdr)
+                   list)"
+            ),
+            Value::list([
+                Value::list([Value::Integer(3), Value::Integer(7)]),
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::list([Value::Integer(3), Value::Integer(4)]),
+            ])
+        );
+        assert_eq!(
+            eval_str(
+                "(let ((list '((1 2) (3 4))))
+                   (cl-pushnew '(3 5) list :test-not #'equal)
+                   list)"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::list([Value::Integer(3), Value::Integer(4)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn push_uses_generalized_place_updates() {
+        assert_eq!(
+            eval_str(
+                "(let ((cell '(root tail)))
+                   (push 'middle (cdr cell))
+                   cell)"
+            ),
+            Value::list([
+                Value::Symbol("root".into()),
+                Value::Symbol("middle".into()),
+                Value::Symbol("tail".into()),
+            ])
+        );
+        assert_eq!(
+            eval_str(
+                "(let ((ht (make-hash-table :test #'eq)))
+                   (puthash 'item '(b) ht)
+                   (push 'a (gethash 'item ht))
+                   (gethash 'item ht))"
+            ),
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())])
+        );
+    }
+
+    #[test]
+    fn define_abbrev_table_creates_real_runtime_table() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar sample-abbrevs nil)
+                   (define-abbrev-table 'sample-abbrevs '((\"a\" \"alpha\" nil :case-fixed t)))
+                   (abbrev-table-put sample-abbrevs :marker 'ok)
+                   (list
+                    (abbrev-table-p sample-abbrevs)
+                    (abbrev-expansion \"a\" sample-abbrevs)
+                    (abbrev-table-get sample-abbrevs :marker)
+                    (abbrev-table-name sample-abbrevs)))"
+            ),
+            Value::list([
+                Value::T,
+                Value::String("alpha".into()),
+                Value::Symbol("ok".into()),
+                Value::Symbol("sample-abbrevs".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn derived_mode_add_parents_updates_runtime_mode_hierarchy() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-derived-mode sample-parent fundamental-mode \"Parent\")
+                   (define-derived-mode sample-child sample-parent \"Child\")
+                   (defalias 'sample-alias #'sample-child)
+                   (derived-mode-add-parents 'sample-parent '(sample-alias))
+                   (setq major-mode 'sample-child)
+                   (list
+                    (derived-mode-p 'sample-parent)
+                    (derived-mode-p 'sample-alias)
+                    (derived-mode-p 'fundamental-mode)))"
+            ),
+            Value::list([Value::T, Value::T, Value::T])
         );
     }
 
@@ -11357,20 +11685,18 @@ mod tests {
 
     #[test]
     fn cl_defun_supports_destructuring_arglists() {
-        assert_eq!(
-            eval_str(
-                "(progn
-                   (cl-defun file-notify-test ((desc actions file &optional extra))
-                     (list desc actions file extra))
-                   (file-notify-test '(1 (changed) \"/tmp/file\" 9)))"
-            ),
-            Value::list([
-                Value::Integer(1),
-                Value::list([Value::Symbol("changed".into())]),
-                Value::String("/tmp/file".into()),
-                Value::Integer(9),
-            ])
+        let value = eval_str(
+            "(progn
+               (cl-defun file-notify-test ((desc actions file &optional extra))
+                 (list desc actions file extra))
+               (file-notify-test '(1 (changed) \"/tmp/file\" 9)))",
         );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0], Value::Integer(1));
+        assert_eq!(items[1], Value::list([Value::Symbol("changed".into())]));
+        assert_string_value(items[2].clone(), "/tmp/file");
+        assert_eq!(items[3], Value::Integer(9));
     }
 
     #[test]
