@@ -6280,7 +6280,8 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        match place {
+        let place = self.resolve_setf_place(place, env)?;
+        match &place {
             Value::Symbol(name) => {
                 self.set_variable(name, value, env);
                 Ok(())
@@ -7785,9 +7786,51 @@ impl Interpreter {
         place: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        match place {
+        let place = self.resolve_setf_place(place, env)?;
+        match &place {
             Value::Symbol(name) => self.lookup(name, env),
-            _ => self.eval(place, env),
+            _ => self.eval(&place, env),
+        }
+    }
+
+    fn resolve_setf_place(&mut self, place: &Value, env: &mut Env) -> Result<Value, LispError> {
+        let Value::Cons(_, _) = place else {
+            return Ok(place.clone());
+        };
+        let items = place.to_vec()?;
+        match items.first() {
+            Some(Value::Symbol(name)) if name == "cond" => {
+                for clause in &items[1..] {
+                    let forms = clause.to_vec()?;
+                    if forms.is_empty() {
+                        continue;
+                    }
+                    if self.eval(&forms[0], env)?.is_truthy() {
+                        if forms.len() > 2 {
+                            self.sf_progn(&forms[1..forms.len() - 1], env)?;
+                        }
+                        return Ok(forms.last().cloned().unwrap_or(Value::Nil));
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            Some(Value::Symbol(name)) if name == "if" => {
+                let Some(condition) = items.get(1) else {
+                    return Ok(Value::Nil);
+                };
+                if self.eval(condition, env)?.is_truthy() {
+                    Ok(items.get(2).cloned().unwrap_or(Value::Nil))
+                } else {
+                    Ok(items.get(3).cloned().unwrap_or(Value::Nil))
+                }
+            }
+            Some(Value::Symbol(name)) if name == "progn" => {
+                if items.len() > 2 {
+                    self.sf_progn(&items[1..items.len() - 1], env)?;
+                }
+                Ok(items.last().cloned().unwrap_or(Value::Nil))
+            }
+            _ => Ok(place.clone()),
         }
     }
 
@@ -10880,56 +10923,222 @@ fn rx_char_class_name(symbol: &str) -> Option<&'static str> {
     }
 }
 
-fn append_rx_char_class_fragment(regex: &mut String, value: &Value) -> Result<(), LispError> {
-    match value {
-        Value::String(text) => {
-            for ch in text.chars() {
-                match ch {
-                    '\\' | ']' | '-' | '^' => {
-                        regex.push('\\');
-                        regex.push(ch);
-                    }
-                    _ => regex.push(ch),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RxCharInterval {
+    start: char,
+    end: char,
+}
+
+fn rx_codepoint_to_char(codepoint: i64) -> Result<char, LispError> {
+    char::from_u32(codepoint as u32)
+        .ok_or_else(|| LispError::Signal(format!("Invalid rx character: {codepoint}")))
+}
+
+fn rx_interval_string(text: &str, index: usize) -> String {
+    text.chars().skip(index).take(3).collect()
+}
+
+fn append_rx_string_intervals(
+    intervals: &mut Vec<RxCharInterval>,
+    text: &str,
+) -> Result<(), LispError> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0usize;
+    while index < chars.len() {
+        if index + 2 < chars.len() && chars[index + 1] == '-' {
+            let start = chars[index];
+            let end = chars[index + 2];
+            if start > end {
+                return Err(LispError::Signal(format!(
+                    "Invalid rx `any' range: {}",
+                    rx_interval_string(text, index)
+                )));
+            }
+            intervals.push(RxCharInterval { start, end });
+            index += 3;
+        } else {
+            let ch = chars[index];
+            intervals.push(RxCharInterval { start: ch, end: ch });
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn parse_rx_char_class_items(
+    items: &[Value],
+) -> Result<(Vec<RxCharInterval>, Vec<&'static str>), LispError> {
+    let mut intervals = Vec::new();
+    let mut classes = Vec::new();
+
+    for item in items {
+        match item {
+            Value::String(text) => append_rx_string_intervals(&mut intervals, text)?,
+            Value::StringObject(state) => {
+                append_rx_string_intervals(&mut intervals, &state.borrow().text)?
+            }
+            Value::Integer(codepoint) => {
+                let ch = rx_codepoint_to_char(*codepoint)?;
+                intervals.push(RxCharInterval { start: ch, end: ch });
+            }
+            Value::Symbol(symbol) => {
+                let Some(name) = rx_char_class_name(symbol) else {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported rx charset fragment: {}",
+                        item.type_name()
+                    )));
+                };
+                if !classes.contains(&name) {
+                    classes.push(name);
                 }
             }
-            Ok(())
-        }
-        Value::StringObject(state) => {
-            append_rx_char_class_fragment(regex, &Value::String(state.borrow().text.clone()))
-        }
-        Value::Integer(codepoint) => {
-            let ch = char::from_u32(*codepoint as u32)
-                .ok_or_else(|| LispError::Signal(format!("Invalid rx character: {codepoint}")))?;
-            append_rx_char_class_fragment(regex, &Value::String(ch.to_string()))
-        }
-        Value::Symbol(symbol) => rx_char_class_name(symbol)
-            .map(|name| {
-                regex.push_str("[:");
-                regex.push_str(name);
-                regex.push_str(":]");
-            })
-            .ok_or_else(|| {
-                LispError::Signal(format!(
+            Value::Cons(_, _) => {
+                let (start, end) = item.cons_values().ok_or_else(|| {
+                    LispError::Signal("Unsupported rx charset fragment: cons".into())
+                })?;
+                let start = rx_codepoint_to_char(start.as_integer()?)?;
+                let end = rx_codepoint_to_char(end.as_integer()?)?;
+                if start > end {
+                    return Err(LispError::Signal(format!(
+                        "Invalid rx `any' range: {}-{}",
+                        start, end
+                    )));
+                }
+                intervals.push(RxCharInterval { start, end });
+            }
+            other => {
+                return Err(LispError::Signal(format!(
                     "Unsupported rx charset fragment: {}",
-                    value.type_name()
-                ))
-            }),
-        other => Err(LispError::Signal(format!(
-            "Unsupported rx charset fragment: {}",
-            other.type_name()
-        ))),
+                    other.type_name()
+                )));
+            }
+        }
     }
+
+    intervals.sort_by_key(|interval| (u32::from(interval.start), u32::from(interval.end)));
+    let mut merged: Vec<RxCharInterval> = Vec::new();
+    for interval in intervals {
+        if let Some(last) = merged.last_mut() {
+            let interval_start = u32::from(interval.start);
+            let last_end = u32::from(last.end);
+            if interval_start <= last_end.saturating_add(1) {
+                if interval.end > last.end {
+                    last.end = interval.end;
+                }
+                continue;
+            }
+        }
+        merged.push(interval);
+    }
+
+    Ok((merged, classes))
+}
+
+fn rx_prev_char(ch: char) -> Option<char> {
+    char::from_u32(u32::from(ch).checked_sub(1)?)
+}
+
+fn rx_next_char(ch: char) -> Option<char> {
+    char::from_u32(u32::from(ch).checked_add(1)?)
+}
+
+fn append_rx_char_class_char(regex: &mut String, ch: char) {
+    if ch == ']' {
+        regex.push('\\');
+    }
+    regex.push(ch);
+}
+
+fn append_rx_char_class_boundary(regex: &mut String, ch: char) {
+    regex.push(ch);
 }
 
 fn compile_rx_char_class(items: &[Value], negated: bool) -> Result<String, LispError> {
+    let (mut intervals, classes) = parse_rx_char_class_items(items)?;
+    if intervals.is_empty() && classes.is_empty() {
+        return Err(LispError::Signal("rx character set cannot be empty".into()));
+    }
+    if !negated
+        && classes.is_empty()
+        && intervals.len() == 1
+        && intervals[0].start == intervals[0].end
+    {
+        return Ok(quote_rx_string_literal(&intervals[0].start.to_string()));
+    }
+
+    let mut prefix = String::new();
+    let mut suffix = String::new();
+    let mut emitted_prefix = false;
+
+    let mut index = 0usize;
+    while index < intervals.len() {
+        let interval = &mut intervals[index];
+        if interval.start == ']' {
+            prefix.push(']');
+            emitted_prefix = true;
+            if interval.end == ']' {
+                intervals.remove(index);
+                continue;
+            }
+            interval.start = rx_next_char(']').expect("']' has a successor");
+        }
+        if interval.end == ']' {
+            prefix.push(']');
+            emitted_prefix = true;
+            interval.end = rx_prev_char(']').expect("']' has a predecessor");
+        }
+        if interval.start == '-' {
+            suffix.push('-');
+            if interval.end == '-' {
+                intervals.remove(index);
+                continue;
+            }
+            interval.start = rx_next_char('-').expect("'-' has a successor");
+        }
+        if interval.end == '-' {
+            suffix.push('-');
+            interval.end = rx_prev_char('-').expect("'-' has a predecessor");
+        }
+        index += 1;
+    }
+
     let mut regex = String::new();
     regex.push('[');
     if negated {
         regex.push('^');
     }
-    for item in items {
-        append_rx_char_class_fragment(&mut regex, item)?;
+    regex.push_str(&prefix);
+    for name in &classes {
+        regex.push_str("[:");
+        regex.push_str(name);
+        regex.push_str(":]");
     }
+
+    let mut emitted_body = emitted_prefix || !classes.is_empty();
+    for interval in &intervals {
+        if interval.start == '^' && !negated && !emitted_body {
+            if interval.end == '^' {
+                suffix.push('^');
+                continue;
+            }
+            append_rx_char_class_boundary(
+                &mut regex,
+                rx_next_char('^').expect("'^' has a successor"),
+            );
+            regex.push('-');
+            append_rx_char_class_boundary(&mut regex, interval.end);
+            suffix.push('^');
+        } else if interval.start == interval.end {
+            append_rx_char_class_char(&mut regex, interval.start);
+        } else {
+            append_rx_char_class_boundary(&mut regex, interval.start);
+            regex.push('-');
+            append_rx_char_class_boundary(&mut regex, interval.end);
+        }
+        emitted_body = true;
+    }
+
+    regex.push_str(&suffix);
     regex.push(']');
     Ok(regex)
 }
@@ -11069,7 +11278,7 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
                         .collect::<Result<Vec<_>, _>>()?
                         .join("\\|")
                 )),
-                "any" => compile_rx_char_class(&items[1..], false),
+                "any" | "in" | "char" => compile_rx_char_class(&items[1..], false),
                 "not" => {
                     if items.len() != 2 {
                         return Err(LispError::Signal("rx `not' needs one argument".into()));
@@ -11080,7 +11289,7 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
                             let Some(Value::Symbol(kind)) = charset.first() else {
                                 return Err(LispError::Signal("Unsupported rx `not' form".into()));
                             };
-                            if kind != "any" {
+                            if !matches!(kind.as_str(), "any" | "in" | "char") {
                                 return Err(LispError::Signal("Unsupported rx `not' form".into()));
                             }
                             compile_rx_char_class(&charset[1..], true)
@@ -15660,6 +15869,14 @@ IHdvcmxkIQ==")))
             Value::String("[^/:|]".into())
         );
         assert_eq!(
+            eval_str(r#"(rx (in " -Z\\^-~"))"#),
+            Value::String("[ -Z\\^-~]".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (in alnum "-"))"#),
+            Value::String("[[:alnum:]-]".into())
+        );
+        assert_eq!(
             eval_str(r#"(rx (1+ (not (any "/|"))))"#),
             Value::String("\\(?:[^/|]\\)+".into())
         );
@@ -15677,6 +15894,10 @@ IHdvcmxkIQ==")))
                         " -or -mtime \\+1 \\) -and \\( -fstype nfs -or -fstype ufs \\) \\) ")
                     "find /tmp/ \\( \\( -name .svn -or -name .git -or -name .CVS \\) -prune -or -true \\) \\( \\( \\( -name \\*.pl -or -name \\*.pm -or -name \\*.t \\) -or -mtime \\+1 \\) -and \\( -fstype nfs -or -fstype ufs \\) \\) ")"#
             ),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            eval_str(r#"(string-match-p (rx (in " -Z\\^-~")) "^")"#),
             Value::Integer(0)
         );
     }
