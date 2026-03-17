@@ -4191,6 +4191,8 @@ impl Interpreter {
             )),
             "shell-command-switch" => Some(Value::String("-c".into())),
             "emacs-version" => Some(Value::String(primitives::emacs_version_value())),
+            "emacs-major-version" => Some(Value::Integer(primitives::emacs_major_version_value())),
+            "emacs-minor-version" => Some(Value::Integer(primitives::emacs_minor_version_value())),
             "etags-program-name" => Some(Value::String(
                 primitives::find_executable("etags").unwrap_or_else(|| "etags".into()),
             )),
@@ -10861,6 +10863,19 @@ mod tests {
                 assert!(description.contains(&configuration));
             }
             other => panic!("expected strings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emacs_major_and_minor_version_variables_default_to_integers() {
+        let major = eval_str("emacs-major-version");
+        let minor = eval_str("emacs-minor-version");
+        match (major, minor) {
+            (Value::Integer(major), Value::Integer(minor)) => {
+                assert!(major >= 0);
+                assert!(minor >= 0);
+            }
+            other => panic!("expected integers, got {other:?}"),
         }
     }
 
