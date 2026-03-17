@@ -4016,6 +4016,7 @@ impl Interpreter {
             "locale-coding-system" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
+            "set-auto-coding-function" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
             "file-name-coding-system" => Some(Value::Nil),
             "default-file-name-coding-system" => Some(Value::Nil),
@@ -4030,7 +4031,8 @@ impl Interpreter {
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
             }
-            "auto-mode-alist" => Some(Value::Nil),
+            "auto-mode-alist" => Some(builtin_auto_mode_alist()),
+            "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
             "completion-ignored-extensions" => Some(Value::Nil),
@@ -4056,6 +4058,7 @@ impl Interpreter {
             "find-file-visit-truename" => Some(Value::Nil),
             "insert-directory-wildcard-in-dir-p" => Some(Value::Nil),
             "insert-directory-program" => Some(Value::String("ls".into())),
+            "file-name-invalid-regexp" => Some(Value::String("\0".into())),
             "directory-listing-before-filename-regexp" => Some(Value::String(
                 concat!(
                     ".*[0-9][BkKMGTPEZYRQ]? ",
@@ -5431,6 +5434,13 @@ impl Interpreter {
                     Ok(value)
                 }
             }
+            Some(Value::Symbol(name))
+                if self
+                    .get_symbol_property(name, "emaxx-struct-slot")
+                    .is_some() =>
+            {
+                self.sf_setf_struct_accessor(name, &place, &items[2], env)
+            }
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
@@ -5448,6 +5458,49 @@ impl Interpreter {
                 items[1]
             ))),
         }
+    }
+
+    fn sf_setf_struct_accessor(
+        &mut self,
+        accessor: &str,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(target) = place.get(1) else {
+            return Err(LispError::Signal(format!(
+                "Unsupported setf place: {}",
+                Value::list(place.to_vec())
+            )));
+        };
+        let expected_type = self
+            .get_symbol_property(accessor, "emaxx-struct-type")
+            .and_then(|value| value.as_symbol().ok().map(str::to_string))
+            .ok_or_else(|| LispError::Signal(format!("Unknown struct accessor: {accessor}")))?;
+        let slot_index = self
+            .get_symbol_property(accessor, "emaxx-struct-slot")
+            .and_then(|value| value.as_integer().ok())
+            .map(|value| value.max(0) as usize)
+            .ok_or_else(|| LispError::Signal(format!("Unknown struct accessor: {accessor}")))?;
+        let object = self.eval(target, env)?;
+        let value = self.eval(value_expr, env)?;
+        let predicate = format!("{expected_type}-p");
+        let Value::Record(id) = object.clone() else {
+            return Err(wrong_type_argument(&predicate, object));
+        };
+        let record = self
+            .find_record_mut(id)
+            .ok_or_else(|| wrong_type_argument(&predicate, Value::Record(id)))?;
+        if record.type_name != expected_type {
+            return Err(wrong_type_argument(&predicate, Value::Record(id)));
+        }
+        if slot_index >= record.slots.len() {
+            return Err(LispError::Signal(format!(
+                "Struct slot out of range: {slot_index}"
+            )));
+        }
+        record.slots[slot_index] = value.clone();
+        Ok(value)
     }
 
     fn sf_setf_alist_get(
@@ -6011,7 +6064,40 @@ impl Interpreter {
                     Value::Nil => None,
                     _ => None,
                 });
+                let mut index = 4;
+                if matches!(
+                    items.get(index),
+                    Some(Value::String(_) | Value::StringObject(_))
+                ) {
+                    index += 1;
+                }
+                let mut body = Vec::new();
+                if let Some(parent) = parent {
+                    body.push(Value::list([Value::Symbol(parent.to_string())]));
+                }
+                body.push(Value::list([
+                    Value::Symbol("setq-local".into()),
+                    Value::Symbol("major-mode".into()),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(name.to_string()),
+                    ]),
+                ]));
+                if !matches!(items.get(3), None | Some(Value::Nil)) {
+                    body.push(Value::list([
+                        Value::Symbol("setq-local".into()),
+                        Value::Symbol("mode-name".into()),
+                        items[3].clone(),
+                    ]));
+                }
+                body.extend_from_slice(&items[index..]);
+                body.push(Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol(name.to_string()),
+                ]));
+                self.set_function_binding(name, Some(Value::Lambda(Vec::new(), body, Vec::new())));
                 crate::lisp::primitives::derived_mode_set_parent(self, name, parent);
+                return Ok(Value::Symbol(name.to_string()));
             }
         }
         if self.lookup_function(name, &Vec::new()).is_err() {
@@ -6024,17 +6110,141 @@ impl Interpreter {
         let Some(struct_spec) = items.get(1) else {
             return Ok(Value::Nil);
         };
-        let name = match struct_spec {
-            Value::Symbol(name) => Some(name.clone()),
-            Value::Cons(_, _) => struct_spec.to_vec().ok().and_then(|parts| {
-                parts
+        let (name, options) = match struct_spec {
+            Value::Symbol(name) => (name.clone(), Vec::new()),
+            Value::Cons(_, _) => {
+                let Some(parts) = struct_spec.to_vec().ok() else {
+                    return Ok(Value::Nil);
+                };
+                let Some(name) = parts
                     .first()
                     .and_then(|value| value.as_symbol().ok())
                     .map(str::to_string)
-            }),
-            _ => None,
+                else {
+                    return Ok(Value::Nil);
+                };
+                (name, parts[1..].to_vec())
+            }
+            _ => return Ok(Value::Nil),
         };
-        Ok(name.map(Value::Symbol).unwrap_or(Value::Nil))
+
+        let slot_names = items[2..]
+            .iter()
+            .filter_map(|slot| match slot {
+                Value::Symbol(name) => Some(name.clone()),
+                Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
+                    parts
+                        .first()
+                        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+                }),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut constructors = Vec::new();
+        let mut saw_constructor_option = false;
+        for option in options {
+            let Some(parts) = option.to_vec().ok() else {
+                continue;
+            };
+            if !matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == ":constructor") {
+                continue;
+            }
+            saw_constructor_option = true;
+            match parts.get(1) {
+                Some(Value::Nil) => {}
+                Some(Value::Symbol(constructor_name)) => {
+                    let params = parts
+                        .get(2)
+                        .and_then(|value| value.to_vec().ok())
+                        .map(|items| {
+                            items
+                                .into_iter()
+                                .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_else(|| slot_names.clone());
+                    constructors.push((constructor_name.clone(), params));
+                }
+                _ => {}
+            }
+        }
+        if !saw_constructor_option {
+            constructors.push((format!("make-{name}"), slot_names.clone()));
+        }
+
+        let struct_name = Value::list([Value::Symbol("quote".into()), Value::Symbol(name.clone())]);
+        let slot_names_list = Value::list(
+            slot_names
+                .iter()
+                .cloned()
+                .map(Value::Symbol)
+                .collect::<Vec<_>>(),
+        );
+        let slot_names_value = Value::list([Value::Symbol("quote".into()), slot_names_list]);
+
+        let predicate_name = format!("{name}-p");
+        self.set_function_binding(
+            &predicate_name,
+            Some(Value::Lambda(
+                vec!["object".into()],
+                vec![Value::list([
+                    Value::Symbol("emaxx-struct-p".into()),
+                    struct_name.clone(),
+                    Value::Symbol("object".into()),
+                ])],
+                Vec::new(),
+            )),
+        );
+
+        for (index, slot_name) in slot_names.iter().enumerate() {
+            let accessor_name = format!("{name}-{slot_name}");
+            self.put_symbol_property(
+                &accessor_name,
+                "emaxx-struct-type",
+                Value::Symbol(name.clone()),
+            );
+            self.put_symbol_property(
+                &accessor_name,
+                "emaxx-struct-slot",
+                Value::Integer(index as i64),
+            );
+            self.set_function_binding(
+                &accessor_name,
+                Some(Value::Lambda(
+                    vec!["object".into()],
+                    vec![Value::list([
+                        Value::Symbol("emaxx-struct-ref".into()),
+                        struct_name.clone(),
+                        Value::Integer(index as i64),
+                        Value::Symbol("object".into()),
+                    ])],
+                    Vec::new(),
+                )),
+            );
+        }
+
+        for (constructor_name, params) in constructors {
+            let params_list =
+                Value::list(params.into_iter().map(Value::Symbol).collect::<Vec<_>>());
+            let params_value = Value::list([Value::Symbol("quote".into()), params_list]);
+            self.set_function_binding(
+                &constructor_name,
+                Some(Value::Lambda(
+                    vec!["&rest".into(), "args".into()],
+                    vec![Value::list([
+                        Value::Symbol("emaxx-struct-make".into()),
+                        struct_name.clone(),
+                        slot_names_value.clone(),
+                        params_value,
+                        Value::Symbol("args".into()),
+                    ])],
+                    Vec::new(),
+                )),
+            );
+        }
+
+        Ok(Value::Symbol(name))
     }
 
     fn sf_incf(&mut self, items: &[Value], env: &mut Env, sign: i64) -> Result<Value, LispError> {
@@ -8645,6 +8855,19 @@ fn preloaded_sh_mode() -> Value {
     )
 }
 
+fn builtin_auto_mode_alist() -> Value {
+    Value::list([
+        Value::cons(
+            Value::String("\\.\\(?:tar\\(?:\\.gz\\)?\\|tgz\\)\\'".into()),
+            Value::Symbol("tar-mode".into()),
+        ),
+        Value::cons(
+            Value::String("\\.zip\\'".into()),
+            Value::Symbol("archive-mode".into()),
+        ),
+    ])
+}
+
 fn preloaded_vc_directory_exclusion_list() -> Value {
     Value::list(
         [
@@ -11004,6 +11227,45 @@ mod tests {
                     (derived-mode-p 'fundamental-mode)))"
             ),
             Value::list([Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn define_derived_mode_installs_callable_mode_body() {
+        let value = eval_str(
+            "(progn
+               (defun sample-parent-mode ()
+                 (setq-local parent-ran t))
+               (define-derived-mode sample-child-mode sample-parent-mode \"Child\"
+                 (setq-local child-ran t))
+               (with-temp-buffer
+                 (sample-child-mode)
+                 (list major-mode mode-name parent-ran child-ran)))",
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items[0], Value::Symbol("sample-child-mode".into()));
+        assert_string_value(items[1].clone(), "Child");
+        assert_eq!(items[2], Value::T);
+        assert_eq!(items[3], Value::T);
+    }
+
+    #[test]
+    fn cl_defstruct_generates_constructor_accessors_and_setf() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defstruct (sample-struct
+                                  (:constructor nil)
+                                  (:constructor make-sample-struct (alpha &key beta)))
+                     alpha beta)
+                   (let ((sample (make-sample-struct 1 :beta 2)))
+                     (setf (sample-struct-alpha sample) 3)
+                     (list
+                      (sample-struct-p sample)
+                      (sample-struct-alpha sample)
+                      (sample-struct-beta sample))))"
+            ),
+            Value::list([Value::T, Value::Integer(3), Value::Integer(2)])
         );
     }
 
