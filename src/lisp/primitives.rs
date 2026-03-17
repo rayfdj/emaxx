@@ -3243,7 +3243,7 @@ pub fn call(
             need_arg_range(name, args, 2, 3)?;
             let key = assoc_string_text(&args[0])?;
             let key = if args.get(2).is_some_and(|value| !value.is_nil()) {
-                key.to_uppercase()
+                assoc_string_folded_text(interp, &key)?
             } else {
                 key
             };
@@ -3257,7 +3257,7 @@ pub fn call(
                     continue;
                 };
                 let candidate = if args.get(2).is_some_and(|value| !value.is_nil()) {
-                    candidate.to_uppercase()
+                    assoc_string_folded_text(interp, &candidate)?
                 } else {
                     candidate
                 };
@@ -8683,7 +8683,7 @@ pub fn call(
             Ok(Value::Integer(window_start(interp, args.first())? as i64))
         }
         "window-end" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
-        "window-width" => Ok(Value::Integer(80)),
+        "window-width" => Ok(Value::Integer(interp.frame_width())),
         "move-to-window-line" => {
             need_arg_range(name, args, 0, 1)?;
             let line = resolve_window_line(args.first(), DEFAULT_SELECTED_WINDOW_HEIGHT / 2)?;
@@ -20128,6 +20128,25 @@ fn assoc_string_candidate_text(value: &Value) -> Option<String> {
         Value::Symbol(name) => Some(name.clone()),
         _ => string_like(value).map(|string| string.text),
     }
+}
+
+fn assoc_string_folded_text(interp: &mut Interpreter, text: &str) -> Result<String, LispError> {
+    let (down_table, _) = current_case_table_ids(interp)?;
+    let mut folded = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    for (index, ch) in chars.iter().copied().enumerate() {
+        let next_is_word = chars
+            .get(index + 1)
+            .copied()
+            .is_some_and(|next| interp.is_syntax_word_char(normalize_case_key(next as u32)));
+        folded.push_str(&full_downcase_string(
+            interp,
+            down_table,
+            ch,
+            interp.is_syntax_word_char(normalize_case_key(ch as u32)) && !next_is_word,
+        ));
+    }
+    Ok(folded)
 }
 
 pub(crate) fn aset_string_value(
