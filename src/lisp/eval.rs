@@ -567,6 +567,8 @@ pub struct Interpreter {
     pub buffer: crate::buffer::Buffer,
     /// The ID of the current buffer.
     current_buffer_id: u64,
+    /// The currently selected window record.
+    selected_window_id: u64,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
     /// Known buffers: (id, name) pairs.
@@ -725,6 +727,7 @@ impl Interpreter {
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,
+            selected_window_id: 0,
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
             buffer_list: vec![(0, "*test*".to_string()), (1, "*Messages*".to_string())],
             next_buffer_id: 2,
@@ -826,6 +829,17 @@ impl Interpreter {
         };
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let selected_window = interp.create_record(
+            "window",
+            vec![
+                Value::Integer(interp.current_buffer_id as i64),
+                Value::Integer(interp.buffer.point_min() as i64),
+            ],
+        );
+        let Value::Record(selected_window_id) = selected_window else {
+            unreachable!("window records use Value::Record");
+        };
+        interp.selected_window_id = selected_window_id;
         interp
     }
 
@@ -998,7 +1012,50 @@ impl Interpreter {
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
+        let point_min = self.buffer.point_min() as i64;
+        if let Some(window) = self.find_record_mut(self.selected_window_id) {
+            window.slots[0] = Value::Integer(id as i64);
+            if window.slots.len() < 2 {
+                window.slots.push(Value::Integer(point_min));
+            } else {
+                window.slots[1] = Value::Integer(point_min);
+            }
+        }
         Ok(())
+    }
+
+    pub fn selected_window_value(&self) -> Value {
+        Value::Record(self.selected_window_id)
+    }
+
+    pub fn selected_window_id(&self) -> u64 {
+        self.selected_window_id
+    }
+
+    pub fn selected_window_buffer_id(&self) -> u64 {
+        self.find_record(self.selected_window_id)
+            .and_then(|record| record.slots.first())
+            .and_then(|value| value.as_integer().ok())
+            .map(|value| value.max(0) as u64)
+            .unwrap_or(self.current_buffer_id)
+    }
+
+    pub fn selected_window_start(&self) -> usize {
+        self.find_record(self.selected_window_id)
+            .and_then(|record| record.slots.get(1))
+            .and_then(|value| value.as_integer().ok())
+            .map(|value| value.max(self.buffer.point_min() as i64) as usize)
+            .unwrap_or_else(|| self.buffer.point_min())
+    }
+
+    pub fn set_selected_window_start(&mut self, start: usize) {
+        let start = start.clamp(self.buffer.point_min(), self.buffer.point_max()) as i64;
+        if let Some(window) = self.find_record_mut(self.selected_window_id) {
+            if window.slots.len() < 2 {
+                window.slots.resize(2, Value::Nil);
+            }
+            window.slots[1] = Value::Integer(start);
+        }
     }
 
     /// Remove a non-current buffer from the live buffer list.
@@ -6200,17 +6257,27 @@ impl Interpreter {
             _ => return Ok(Value::Nil),
         };
 
-        let slot_names = items[2..]
+        let slot_specs = items[2..]
             .iter()
             .filter_map(|slot| match slot {
-                Value::Symbol(name) => Some(name.clone()),
+                Value::Symbol(name) => Some((name.clone(), Value::Nil)),
                 Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
-                    parts
+                    let name = parts
                         .first()
-                        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+                        .and_then(|value| value.as_symbol().ok().map(str::to_string))?;
+                    let default = parts.get(1).cloned().unwrap_or(Value::Nil);
+                    Some((name, default))
                 }),
                 _ => None,
             })
+            .collect::<Vec<_>>();
+        let slot_names = slot_specs
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        let slot_defaults = slot_specs
+            .iter()
+            .map(|(_, default)| default.clone())
             .collect::<Vec<_>>();
 
         let mut constructors = Vec::new();
@@ -6235,14 +6302,23 @@ impl Interpreter {
                                 .filter_map(|value| value.as_symbol().ok().map(str::to_string))
                                 .collect::<Vec<_>>()
                         })
-                        .unwrap_or_else(|| slot_names.clone());
+                        .unwrap_or_else(|| {
+                            std::iter::once("&key".to_string())
+                                .chain(slot_names.iter().cloned())
+                                .collect::<Vec<_>>()
+                        });
                     constructors.push((constructor_name.clone(), params));
                 }
                 _ => {}
             }
         }
         if !saw_constructor_option {
-            constructors.push((format!("make-{name}"), slot_names.clone()));
+            constructors.push((
+                format!("make-{name}"),
+                std::iter::once("&key".to_string())
+                    .chain(slot_names.iter().cloned())
+                    .collect::<Vec<_>>(),
+            ));
         }
 
         let struct_name = Value::list([Value::Symbol("quote".into()), Value::Symbol(name.clone())]);
@@ -6254,6 +6330,8 @@ impl Interpreter {
                 .collect::<Vec<_>>(),
         );
         let slot_names_value = Value::list([Value::Symbol("quote".into()), slot_names_list]);
+        let slot_defaults_value =
+            Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
 
         let predicate_name = format!("{name}-p");
         self.set_function_binding(
@@ -6308,6 +6386,7 @@ impl Interpreter {
                         Value::Symbol("emaxx-struct-make".into()),
                         struct_name.clone(),
                         slot_names_value.clone(),
+                        slot_defaults_value.clone(),
                         params_value,
                         Value::Symbol("args".into()),
                     ])],
@@ -11338,6 +11417,20 @@ mod tests {
                       (sample-struct-beta sample))))"
             ),
             Value::list([Value::T, Value::Integer(3), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn cl_defstruct_applies_slot_defaults_to_omitted_constructor_args() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defstruct defaulted-struct
+                     alpha
+                     (beta 7))
+                   (defaulted-struct-beta (make-defaulted-struct :alpha 1)))"
+            ),
+            Value::Integer(7)
         );
     }
 

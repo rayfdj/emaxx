@@ -38,8 +38,9 @@ static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
-const SELECTED_WINDOW_START_VAR: &str = "emaxx--selected-window-start";
 const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
+const WINDOW_BUFFER_SLOT: usize = 0;
+const WINDOW_START_SLOT: usize = 1;
 
 fn is_sqlite_builtin(name: &str) -> bool {
     matches!(
@@ -236,21 +237,83 @@ fn thread_list_row(
 }
 
 fn current_window_start(interp: &Interpreter) -> usize {
-    interp
-        .buffer_local_value(interp.current_buffer_id(), SELECTED_WINDOW_START_VAR)
-        .and_then(|value| value.as_integer().ok())
-        .map(|value| value.max(interp.buffer.point_min() as i64) as usize)
-        .unwrap_or_else(|| interp.buffer.point_min())
+    interp.selected_window_start()
 }
 
 fn set_current_window_start(interp: &mut Interpreter, start: usize) {
     let start = start.clamp(interp.buffer.point_min(), interp.buffer.point_max());
     let start = beginning_of_line_at(interp, start);
-    interp.set_buffer_local_value(
-        interp.current_buffer_id(),
-        SELECTED_WINDOW_START_VAR,
-        Value::Integer(start as i64),
-    );
+    interp.set_selected_window_start(start);
+}
+
+fn window_record_id_from_value(interp: &Interpreter, value: &Value) -> Option<u64> {
+    match value {
+        Value::Record(id)
+            if interp
+                .find_record(*id)
+                .is_some_and(|record| record.type_name == "window") =>
+        {
+            Some(*id)
+        }
+        Value::Symbol(symbol) if symbol == "window" => Some(interp.selected_window_id()),
+        _ => None,
+    }
+}
+
+fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
+    match window_record_id_from_value(interp, value) {
+        Some(id) if id == interp.selected_window_id() => Some(interp.selected_window_buffer_id()),
+        Some(id) => interp
+            .find_record(id)
+            .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
+            .and_then(|slot| slot.as_integer().ok())
+            .map(|buffer_id| buffer_id.max(0) as u64),
+        None => None,
+    }
+}
+
+fn window_start(interp: &Interpreter, value: Option<&Value>) -> Result<usize, LispError> {
+    match value {
+        None => Ok(current_window_start(interp)),
+        Some(value) => {
+            let Some(id) = window_record_id_from_value(interp, value) else {
+                return Err(LispError::TypeError("window".into(), value.type_name()));
+            };
+            if id == interp.selected_window_id() {
+                return Ok(current_window_start(interp));
+            }
+            Ok(interp
+                .find_record(id)
+                .and_then(|record| record.slots.get(WINDOW_START_SLOT))
+                .and_then(|slot| slot.as_integer().ok())
+                .map(|start| start.max(1) as usize)
+                .unwrap_or(1))
+        }
+    }
+}
+
+fn set_window_start_value(
+    interp: &mut Interpreter,
+    window: &Value,
+    start: usize,
+) -> Result<(), LispError> {
+    let Some(id) = window_record_id_from_value(interp, window) else {
+        return Err(LispError::TypeError("window".into(), window.type_name()));
+    };
+    let start = start.clamp(interp.buffer.point_min(), interp.buffer.point_max());
+    let start = beginning_of_line_at(interp, start);
+    if id == interp.selected_window_id() {
+        interp.set_selected_window_start(start);
+        return Ok(());
+    }
+    let Some(record) = interp.find_record_mut(id) else {
+        return Err(LispError::TypeError("window".into(), window.type_name()));
+    };
+    if record.slots.len() <= WINDOW_START_SLOT {
+        record.slots.resize(WINDOW_START_SLOT + 1, Value::Nil);
+    }
+    record.slots[WINDOW_START_SLOT] = Value::Integer(start as i64);
+    Ok(())
 }
 
 fn scroll_preserve_screen_position(interp: &Interpreter, env: &Env) -> bool {
@@ -4929,20 +4992,22 @@ pub fn call(
             Ok(args[0].clone())
         }
         "emaxx-struct-make" => {
-            need_args(name, args, 4)?;
+            need_args(name, args, 5)?;
             let struct_name = args[0].as_symbol()?.to_string();
             let slot_names = args[1]
                 .to_vec()?
                 .into_iter()
                 .map(|value| value.as_symbol().map(str::to_string))
                 .collect::<Result<Vec<_>, _>>()?;
-            let constructor_spec = args[2]
+            let slot_defaults = args[2].to_vec()?;
+            let constructor_spec = args[3]
                 .to_vec()?
                 .into_iter()
                 .map(|value| value.as_symbol().map(str::to_string))
                 .collect::<Result<Vec<_>, _>>()?;
-            let call_args = args[3].to_vec()?;
+            let call_args = args[4].to_vec()?;
             let mut slots = vec![Value::Nil; slot_names.len()];
+            let mut provided = vec![false; slot_names.len()];
             let mut arg_index = 0usize;
             let mut spec_index = 0usize;
             while spec_index < constructor_spec.len() && constructor_spec[spec_index] != "&key" {
@@ -4954,6 +5019,7 @@ pub fn call(
                     .position(|slot_name| slot_name == &constructor_spec[spec_index])
                 {
                     slots[slot_index] = call_args[arg_index].clone();
+                    provided[slot_index] = true;
                 }
                 spec_index += 1;
                 arg_index += 1;
@@ -4969,8 +5035,14 @@ pub fn call(
                         slot_names.iter().position(|slot_name| slot_name == keyword)
                     {
                         slots[slot_index] = call_args[arg_index + 1].clone();
+                        provided[slot_index] = true;
                     }
                     arg_index += 2;
+                }
+            }
+            for (index, default_form) in slot_defaults.into_iter().enumerate() {
+                if !provided.get(index).copied().unwrap_or(false) {
+                    slots[index] = interp.eval(&default_form, env)?;
                 }
             }
             Ok(interp.create_record(&struct_name, slots))
@@ -7187,9 +7259,9 @@ pub fn call(
         "normal-mode" => {
             need_arg_range(name, args, 0, 1)?;
             if let Some(path) = current_buffer_file(interp)
-                && let Some(mode) = mode_function_for_file_name(path)
+                && let Some(mode) = auto_mode_function_for_file_name(interp, env, path)?
             {
-                let _ = call_named_function(interp, mode, &[], env)?;
+                let _ = call_named_function(interp, &mode, &[], env)?;
             }
             Ok(Value::Nil)
         }
@@ -7203,9 +7275,12 @@ pub fn call(
             let saved_buffer_id = interp.current_buffer_id();
             interp.switch_to_buffer_id(id)?;
             let result: Result<(), LispError> = (|| {
-                let bytes =
-                    maybe_decompress_file_bytes(&path, read_insert_file_bytes(&path, None, None)?)?;
-                let raw_archive = mode_function_for_file_name(&path).is_some();
+                let mode = auto_mode_function_for_file_name(interp, env, &path)?;
+                let mut bytes = read_insert_file_bytes(&path, None, None)?;
+                if should_auto_decompress(interp, env, &path) {
+                    bytes = maybe_decompress_file_bytes(&path, bytes)?;
+                }
+                let raw_archive = matches!(mode.as_deref(), Some("tar-mode" | "archive-mode"));
                 let (contents, coding, multibyte) = if raw_archive {
                     (
                         decode_raw_text_bytes(&bytes),
@@ -8477,7 +8552,10 @@ pub fn call(
                 },
             )
         }
-        "window-start" => Ok(Value::Integer(current_window_start(interp) as i64)),
+        "window-start" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Integer(window_start(interp, args.first())? as i64))
+        }
         "window-end" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
         "window-width" => Ok(Value::Integer(80)),
         "move-to-window-line" => {
@@ -8654,14 +8732,22 @@ pub fn call(
                 })
                 .unwrap_or(Value::Nil))
         }
-        "selected-window" => Ok(Value::Symbol("window".into())),
+        "selected-window" => Ok(interp.selected_window_value()),
         "window-buffer" => {
             need_args(name, args, 1)?;
-            if is_window_value(interp, &args[0]) {
-                Ok(Value::Buffer(
-                    interp.current_buffer_id(),
-                    interp.buffer.name.clone(),
-                ))
+            if let Some(buffer_id) = window_buffer_id(interp, &args[0]) {
+                if buffer_id == interp.current_buffer_id() {
+                    Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
+                } else if let Some((_, name)) = interp
+                    .buffer_list
+                    .iter()
+                    .find(|(id, _)| *id == buffer_id)
+                    .cloned()
+                {
+                    Ok(Value::Buffer(buffer_id, name))
+                } else {
+                    Ok(Value::Nil)
+                }
             } else {
                 Err(LispError::TypeError("window".into(), args[0].type_name()))
             }
@@ -8681,15 +8767,12 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
-        "get-buffer-window" | "minibuffer-window" => Ok(Value::Symbol("window".into())),
+        "get-buffer-window" | "minibuffer-window" => Ok(interp.selected_window_value()),
         "active-minibuffer-window" => Ok(Value::Nil),
         "set-window-start" => {
             need_arg_range(name, args, 2, 4)?;
-            if !is_window_value(interp, &args[0]) {
-                return Err(LispError::TypeError("window".into(), args[0].type_name()));
-            }
             let start = position_from_value(interp, &args[1])?;
-            set_current_window_start(interp, start);
+            set_window_start_value(interp, &args[0], start)?;
             Ok(Value::T)
         }
         "set-window-point" => Ok(Value::T),
@@ -12513,6 +12596,7 @@ fn maybe_decompress_file_bytes(path: &str, bytes: Vec<u8>) -> Result<Vec<u8>, Li
     }
 }
 
+#[cfg(test)]
 fn mode_function_for_file_name(path: &str) -> Option<&'static str> {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".tgz") {
@@ -12528,6 +12612,86 @@ fn mode_function_for_file_name(path: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn compressed_payload_path(path: &str) -> Option<String> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".tgz") {
+        return Some(format!("{}.tar", &path[..path.len() - 4]));
+    }
+    if lower.ends_with(".gz") {
+        return Some(path[..path.len() - 3].to_string());
+    }
+    None
+}
+
+fn auto_compression_enabled(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var("auto-compression-mode", env)
+        .is_some_and(|value| value.is_truthy())
+}
+
+fn should_auto_decompress(interp: &Interpreter, env: &Env, path: &str) -> bool {
+    auto_compression_enabled(interp, env) && path_is_gzip_encoded(path)
+}
+
+fn auto_mode_candidates(interp: &Interpreter, env: &Env, path: &str) -> Vec<String> {
+    let mut candidates = vec![path.to_string()];
+    if should_auto_decompress(interp, env, path)
+        && let Some(payload) = compressed_payload_path(path)
+        && !candidates.iter().any(|candidate| candidate == &payload)
+    {
+        candidates.push(payload);
+    }
+    candidates
+}
+
+fn auto_mode_symbol_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Cons(_, _) => value.to_vec().ok().and_then(|parts| {
+            if parts.len() == 2
+                && matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == "quote")
+            {
+                parts[1].as_symbol().ok().map(str::to_string)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn auto_mode_function_for_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> Result<Option<String>, LispError> {
+    let Some(entries) = interp.lookup_var("auto-mode-alist", env) else {
+        return Ok(None);
+    };
+    for candidate in auto_mode_candidates(interp, env, path) {
+        for entry in entries.to_vec()? {
+            let Value::Cons(pattern, mode) = entry else {
+                continue;
+            };
+            let pattern = pattern.borrow().clone();
+            let mode = mode.borrow().clone();
+            let Some(pattern) = string_like(&pattern) else {
+                continue;
+            };
+            validate_elisp_regex(&pattern.text)?;
+            let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+            if regex
+                .is_match(&candidate)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+                && let Some(mode_symbol) = auto_mode_symbol_from_value(&mode)
+            {
+                return Ok(Some(mode_symbol));
+            }
+        }
+    }
+    Ok(None)
 }
 
 enum TranslationTable {
@@ -17689,7 +17853,15 @@ fn file_readable_p(path: &str) -> bool {
 }
 
 fn file_writable_p(path: &str) -> bool {
-    fs::OpenOptions::new().write(true).open(path).is_ok()
+    let candidate = Path::new(path);
+    if candidate.exists() {
+        return fs::OpenOptions::new().write(true).open(candidate).is_ok();
+    }
+    candidate
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .map(|metadata| metadata.is_dir() && !metadata.permissions().readonly())
+        .unwrap_or(false)
 }
 
 fn file_executable_p(path: &str) -> bool {
@@ -22897,7 +23069,7 @@ fn insert_file_contents(
         let _ = checked_coding_symbol(interp, &coding)?;
     }
     let mut bytes = read_insert_file_bytes(&path, start, end)?;
-    if !literal && start.is_none() && end.is_none() {
+    if !literal && start.is_none() && end.is_none() && should_auto_decompress(interp, env, &path) {
         bytes = maybe_decompress_file_bytes(&path, bytes)?;
     }
     let (text, detected) = decode_file_contents(interp, env, &bytes, literal)?;
@@ -26201,6 +26373,8 @@ mod lcms_response_tests {
 #[cfg(test)]
 mod compat_runtime_tests {
     use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     #[test]
     fn count_lines_matches_emacs_boundary_behavior() {
@@ -26333,6 +26507,52 @@ mod compat_runtime_tests {
     }
 
     #[test]
+    fn normal_mode_consults_auto_mode_alist_before_dispatching() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_function_binding(
+            "sample-custom-mode",
+            Some(Value::Lambda(
+                Vec::new(),
+                vec![
+                    Value::list([
+                        Value::Symbol("setq-local".into()),
+                        Value::Symbol("major-mode".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol("sample-custom-mode".into()),
+                        ]),
+                    ]),
+                    Value::Nil,
+                ],
+                Vec::new(),
+            )),
+        );
+        interp.set_variable(
+            "auto-mode-alist",
+            Value::list([Value::cons(
+                Value::String("\\.sample\\'".into()),
+                Value::Symbol("sample-custom-mode".into()),
+            )]),
+            &mut env,
+        );
+        interp.set_variable(
+            "buffer-file-name",
+            Value::String("/tmp/demo.sample".into()),
+            &mut env,
+        );
+
+        assert_eq!(
+            call(&mut interp, "normal-mode", &[], &mut env).expect("dispatch custom normal-mode"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.lookup_var("major-mode", &env),
+            Some(Value::Symbol("sample-custom-mode".into()))
+        );
+    }
+
+    #[test]
     fn special_mode_sets_major_mode_and_read_only() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -26376,6 +26596,54 @@ mod compat_runtime_tests {
     }
 
     #[test]
+    fn file_writable_p_is_true_for_creatable_missing_files() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let path = std::env::temp_dir()
+            .join(format!("emaxx-file-writable-{}", std::process::id()))
+            .join("missing.txt");
+        let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
+        std::fs::create_dir_all(path.parent().expect("temp dir")).expect("create temp dir");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-writable-p",
+                &[Value::String(path.display().to_string())],
+                &mut env,
+            )
+            .expect("file-writable-p for missing path"),
+            Value::T
+        );
+
+        std::fs::remove_dir_all(path.parent().expect("temp dir")).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn selected_window_is_a_record_and_tracks_window_start() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "\n\n\n");
+        let window = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
+        assert!(matches!(window, Value::Record(_)));
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "set-window-start",
+                &[window.clone(), Value::Integer(2)],
+                &mut env,
+            )
+            .expect("set-window-start"),
+            Value::T
+        );
+        assert_eq!(
+            call(&mut interp, "window-start", &[window], &mut env).expect("window-start"),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
     fn find_operation_coding_system_accepts_file_buffer_cons() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -26409,6 +26677,46 @@ mod compat_runtime_tests {
                 Value::Symbol("utf-8-unix".into()),
             )
         );
+    }
+
+    #[test]
+    fn insert_file_contents_respects_auto_compression_mode_toggle() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut encoder, b"hello\n").expect("write gzip payload");
+        let compressed = encoder.finish().expect("finish gzip payload");
+
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-auto-compression-{}.txt.gz",
+            std::process::id()
+        ));
+        std::fs::write(&path, compressed).expect("write gzip file");
+        let path_string = path.display().to_string();
+
+        let mut compressed_interp = Interpreter::new();
+        let mut compressed_env = Vec::new();
+        compressed_interp.set_variable("auto-compression-mode", Value::Nil, &mut compressed_env);
+        call(
+            &mut compressed_interp,
+            "insert-file-contents",
+            &[Value::String(path_string.clone())],
+            &mut compressed_env,
+        )
+        .expect("insert compressed contents literally when auto compression is disabled");
+        assert_ne!(compressed_interp.buffer.buffer_string(), "hello\n");
+
+        let mut decompressed_interp = Interpreter::new();
+        let mut decompressed_env = Vec::new();
+        decompressed_interp.set_variable("auto-compression-mode", Value::T, &mut decompressed_env);
+        call(
+            &mut decompressed_interp,
+            "insert-file-contents",
+            &[Value::String(path_string.clone())],
+            &mut decompressed_env,
+        )
+        .expect("insert decompressed contents when auto compression is enabled");
+        assert_eq!(decompressed_interp.buffer.buffer_string(), "hello\n");
+
+        std::fs::remove_file(path).expect("cleanup gzip file");
     }
 
     #[test]
