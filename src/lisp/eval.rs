@@ -758,6 +758,7 @@ pub struct Interpreter {
     undo_sequence: Option<UndoSequenceState>,
     load_path: Vec<PathBuf>,
     loading_features: Vec<String>,
+    lambda_capture_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
@@ -913,6 +914,7 @@ impl Interpreter {
             undo_sequence: None,
             load_path: Vec::new(),
             loading_features: Vec::new(),
+            lambda_capture_overrides: Vec::new(),
             thread_states: vec![ThreadState {
                 record_id: main_thread_id,
                 name: None,
@@ -974,6 +976,18 @@ impl Interpreter {
 
     pub fn set_load_path(&mut self, load_path: Vec<PathBuf>) {
         self.load_path = load_path;
+    }
+
+    pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
+        self.lambda_capture_overrides.push(capture);
+    }
+
+    pub(crate) fn pop_lambda_capture_override(&mut self) {
+        self.lambda_capture_overrides.pop();
+    }
+
+    pub(crate) fn lambda_capture_override(&self) -> Option<bool> {
+        self.lambda_capture_overrides.last().copied()
     }
 
     /// Allocate a new unique buffer ID.
@@ -5664,19 +5678,19 @@ impl Interpreter {
                     }
                 }
 
-                let mut captured_frames = 0;
-                for captured in closure_env.iter().rev() {
-                    env.insert(0, captured.clone());
-                    captured_frames += 1;
-                }
+                let shared_prefix = closure_env
+                    .iter()
+                    .zip(env.iter())
+                    .take_while(|(captured, current)| Self::same_frame_shape(captured, current))
+                    .count();
+                let original_env_len = env.len();
+                env.extend(closure_env[shared_prefix..].iter().cloned());
                 self.push_backtrace_frame(original_name.map(str::to_string), args.to_vec());
                 env.push(frame);
                 let result = self.sf_progn(function_executable_body(body), env);
                 env.pop();
                 self.pop_backtrace_frame();
-                for _ in 0..captured_frames {
-                    env.remove(0);
-                }
+                env.truncate(original_env_len);
                 result
             }
             other => Err(LispError::SignalValue(Value::list([
@@ -7569,7 +7583,12 @@ impl Interpreter {
         }
         let params = self.parse_params(&items[1])?;
         let body: Vec<Value> = items[2..].to_vec();
-        Ok(Value::Lambda(params, body, env.clone()))
+        let closure_env = if self.lambda_capture_override().unwrap_or(true) {
+            env.clone()
+        } else {
+            Vec::new()
+        };
+        Ok(Value::Lambda(params, body, closure_env))
     }
 
     fn sf_eval_function(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -8299,6 +8318,14 @@ impl Interpreter {
         } else {
             frame.push((name, value));
         }
+    }
+
+    fn same_frame_shape(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right.iter())
+                .all(|((left_name, _), (right_name, _))| left_name == right_name)
     }
 
     fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -14082,6 +14109,43 @@ mod tests {
         std::fs::remove_file(root.join("sample.el")).unwrap();
         std::fs::remove_dir(root.join("sample")).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn load_file_strict_sets_lexical_binding_from_file_cookie() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-lexical-binding-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            ";;; lexical-cookie -*- lexical-binding: t -*-\n(provide 'sample)\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            interp.lookup_var("lexical-binding", &Vec::new()),
+            Some(Value::T)
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn eval_second_argument_controls_lambda_capture() {
+        assert_eq!(
+            eval_str(
+                "(let ((x 1)
+                       (form '(funcall (let ((x 2)) (lambda () x)))))
+                   (list (eval form nil) (eval form t)))"
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
     }
 
     #[test]
