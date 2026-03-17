@@ -324,6 +324,34 @@ struct ProcessState {
 }
 
 #[derive(Clone, Debug)]
+struct WindowConfigurationSnapshot {
+    current_buffer_id: u64,
+    selected_window_id: u64,
+    selected_window_slots: Vec<Value>,
+    frame_width: i64,
+    frame_height: i64,
+}
+
+#[derive(Clone, Debug)]
+struct ClassState {
+    name: String,
+    record_id: u64,
+    parents: Vec<String>,
+    slot_specs: Vec<Value>,
+    options: Vec<Value>,
+    children: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct GenericGeneralizerState {
+    name: String,
+    record_id: u64,
+    priority: i64,
+    tagcode_function: Value,
+    specializers_function: Value,
+}
+
+#[derive(Clone, Debug)]
 struct ScheduledTimer {
     function: Value,
     original_name: Option<String>,
@@ -734,6 +762,8 @@ pub struct Interpreter {
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
     process_states: Vec<ProcessState>,
+    class_states: Vec<ClassState>,
+    generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
     main_thread_id: u64,
     active_thread_id: u64,
@@ -896,6 +926,8 @@ impl Interpreter {
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
             process_states: Vec::new(),
+            class_states: Vec::new(),
+            generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
             main_thread_id,
             active_thread_id: main_thread_id,
@@ -1169,6 +1201,248 @@ impl Interpreter {
 
     pub fn set_frame_height(&mut self, height: i64) {
         self.frame_height = height.max(1);
+    }
+
+    fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
+        WindowConfigurationSnapshot {
+            current_buffer_id: self.current_buffer_id(),
+            selected_window_id: self.selected_window_id,
+            selected_window_slots: self
+                .find_record(self.selected_window_id)
+                .map(|record| record.slots.clone())
+                .unwrap_or_default(),
+            frame_width: self.frame_width,
+            frame_height: self.frame_height,
+        }
+    }
+
+    fn restore_window_configuration(
+        &mut self,
+        snapshot: WindowConfigurationSnapshot,
+    ) -> Result<(), LispError> {
+        if self.has_buffer_id(snapshot.current_buffer_id) {
+            self.switch_to_buffer_id(snapshot.current_buffer_id)?;
+        }
+        self.selected_window_id = snapshot.selected_window_id;
+        self.frame_width = snapshot.frame_width.max(1);
+        self.frame_height = snapshot.frame_height.max(1);
+        if let Some(window) = self.find_record_mut(snapshot.selected_window_id) {
+            window.slots = snapshot.selected_window_slots;
+        }
+        Ok(())
+    }
+
+    fn find_class_state(&self, name: &str) -> Option<&ClassState> {
+        self.class_states.iter().find(|state| state.name == name)
+    }
+
+    fn find_class_state_mut(&mut self, name: &str) -> Option<&mut ClassState> {
+        self.class_states
+            .iter_mut()
+            .find(|state| state.name == name)
+    }
+
+    fn find_class_state_by_record_id(&self, record_id: u64) -> Option<&ClassState> {
+        self.class_states
+            .iter()
+            .find(|state| state.record_id == record_id)
+    }
+
+    pub(crate) fn class_name_from_value(&self, value: &Value) -> Option<String> {
+        match value {
+            Value::Symbol(symbol) => Some(symbol.clone()),
+            Value::Record(record_id) => self
+                .find_class_state_by_record_id(*record_id)
+                .map(|state| state.name.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn class_value(&self, name: &str) -> Option<Value> {
+        self.find_class_state(name)
+            .map(|state| Value::Record(state.record_id))
+    }
+
+    fn register_class(
+        &mut self,
+        name: &str,
+        parents: Vec<String>,
+        slot_specs: Vec<Value>,
+        options: Vec<Value>,
+    ) -> Value {
+        let record_value = if let Some(existing) = self.find_class_state(name) {
+            Value::Record(existing.record_id)
+        } else {
+            self.create_record(
+                "eieio--class",
+                vec![
+                    Value::Symbol(name.to_string()),
+                    Value::list(parents.iter().cloned().map(Value::Symbol)),
+                    Value::list(slot_specs.iter().cloned()),
+                    Value::list(options.iter().cloned()),
+                ],
+            )
+        };
+        let Value::Record(record_id) = record_value.clone() else {
+            unreachable!("class registration uses class records");
+        };
+
+        let old_parents = self
+            .find_class_state(name)
+            .map(|state| state.parents.clone())
+            .unwrap_or_default();
+        for parent in &old_parents {
+            if let Some(parent_state) = self.find_class_state_mut(parent) {
+                parent_state.children.retain(|child| child != name);
+            }
+        }
+
+        if let Some(record) = self.find_record_mut(record_id) {
+            record.slots = vec![
+                Value::Symbol(name.to_string()),
+                Value::list(parents.iter().cloned().map(Value::Symbol)),
+                Value::list(slot_specs.iter().cloned()),
+                Value::list(options.iter().cloned()),
+            ];
+        }
+
+        if let Some(existing) = self.find_class_state_mut(name) {
+            existing.parents = parents.clone();
+            existing.slot_specs = slot_specs.clone();
+            existing.options = options.clone();
+        } else {
+            self.class_states.push(ClassState {
+                name: name.to_string(),
+                record_id,
+                parents: parents.clone(),
+                slot_specs: slot_specs.clone(),
+                options: options.clone(),
+                children: Vec::new(),
+            });
+        }
+
+        for parent in &parents {
+            if let Some(parent_state) = self.find_class_state_mut(parent)
+                && !parent_state.children.iter().any(|child| child == name)
+            {
+                parent_state.children.push(name.to_string());
+            }
+        }
+
+        self.put_symbol_property(name, "cl--class", record_value.clone());
+        self.put_symbol_property(
+            name,
+            "emaxx-class-parents",
+            Value::list(parents.into_iter().map(Value::Symbol)),
+        );
+        self.put_symbol_property(name, "emaxx-class-slots", Value::list(slot_specs));
+        self.put_symbol_property(name, "emaxx-class-options", Value::list(options));
+        record_value
+    }
+
+    pub(crate) fn class_allparents(&self, name: &str) -> Vec<Value> {
+        fn visit(
+            interp: &Interpreter,
+            name: &str,
+            output: &mut Vec<Value>,
+            seen: &mut std::collections::HashSet<String>,
+        ) {
+            if !seen.insert(name.to_string()) {
+                return;
+            }
+            output.push(Value::Symbol(name.to_string()));
+            if let Some(state) = interp.find_class_state(name) {
+                if state.parents.is_empty() {
+                    if name != "t" {
+                        visit(interp, "t", output, seen);
+                    }
+                } else {
+                    for parent in &state.parents {
+                        visit(interp, parent, output, seen);
+                    }
+                }
+            } else if name != "t" {
+                visit(interp, "t", output, seen);
+            }
+        }
+
+        let mut output = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        visit(self, name, &mut output, &mut seen);
+        output
+    }
+
+    pub(crate) fn class_children(&self, name: &str) -> Vec<Value> {
+        self.find_class_state(name)
+            .map(|state| {
+                state
+                    .children
+                    .iter()
+                    .cloned()
+                    .map(Value::Symbol)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn register_generic_generalizer(
+        &mut self,
+        name: &str,
+        priority: i64,
+        tagcode_function: Value,
+        specializers_function: Value,
+    ) -> Value {
+        let record_value = if let Some(existing) = self
+            .generalizer_states
+            .iter()
+            .find(|state| state.name == name)
+        {
+            Value::Record(existing.record_id)
+        } else {
+            self.create_record(
+                "cl--generic-generalizer",
+                vec![
+                    Value::Symbol(name.to_string()),
+                    Value::Integer(priority),
+                    tagcode_function.clone(),
+                    specializers_function.clone(),
+                ],
+            )
+        };
+        let Value::Record(record_id) = record_value.clone() else {
+            unreachable!("generalizer registration uses generalizer records");
+        };
+
+        if let Some(record) = self.find_record_mut(record_id) {
+            record.slots = vec![
+                Value::Symbol(name.to_string()),
+                Value::Integer(priority),
+                tagcode_function.clone(),
+                specializers_function.clone(),
+            ];
+        }
+
+        if let Some(existing) = self
+            .generalizer_states
+            .iter_mut()
+            .find(|state| state.name == name)
+        {
+            existing.priority = priority;
+            existing.tagcode_function = tagcode_function.clone();
+            existing.specializers_function = specializers_function.clone();
+        } else {
+            self.generalizer_states.push(GenericGeneralizerState {
+                name: name.to_string(),
+                record_id,
+                priority,
+                tagcode_function: tagcode_function.clone(),
+                specializers_function: specializers_function.clone(),
+            });
+        }
+
+        self.set_global_binding(name, record_value.clone());
+        self.put_symbol_property(name, "emaxx-generic-generalizer", record_value.clone());
+        record_value
     }
 
     pub fn terminal_parameter(&self, name: &str) -> Option<Value> {
@@ -5134,7 +5408,7 @@ impl Interpreter {
                         "save-match-data" => return self.sf_save_match_data(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-window-excursion" => {
-                            return self.sf_save_current_buffer(&items, env);
+                            return self.sf_save_window_excursion(&items, env);
                         }
                         "save-current-buffer" => return self.sf_save_current_buffer(&items, env),
                         "save-restriction" => return self.sf_save_restriction(&items, env),
@@ -5167,9 +5441,10 @@ impl Interpreter {
                                 ));
                             }
                             let val = self.eval(&items[1], env)?;
-                            let cur = self.eval_setf_place_current_value(&items[2], env)?;
+                            let place = self.resolve_setf_place(&items[2], env)?;
+                            let cur = self.eval_resolved_setf_place_current_value(&place, env)?;
                             let new_val = Value::cons(val, cur);
-                            self.set_setf_place_value(&items[2], new_val.clone(), env)?;
+                            self.set_resolved_setf_place_value(&place, new_val.clone(), env)?;
                             return Ok(new_val);
                         }
                         "cl-pushnew" => return self.sf_cl_pushnew(&items, env),
@@ -5181,10 +5456,11 @@ impl Interpreter {
                                     items.len() - 1,
                                 ));
                             }
-                            let cur = self.eval_setf_place_current_value(&items[1], env)?;
+                            let place = self.resolve_setf_place(&items[1], env)?;
+                            let cur = self.eval_resolved_setf_place_current_value(&place, env)?;
                             let result = cur.car()?;
                             let rest = cur.cdr()?;
-                            self.set_setf_place_value(&items[1], rest, env)?;
+                            self.set_resolved_setf_place_value(&place, rest, env)?;
                             return Ok(result);
                         }
                         "catch" => return self.sf_catch(&items, env),
@@ -6281,6 +6557,15 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<(), LispError> {
         let place = self.resolve_setf_place(place, env)?;
+        self.set_resolved_setf_place_value(&place, value, env)
+    }
+
+    fn set_resolved_setf_place_value(
+        &mut self,
+        place: &Value,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
         match &place {
             Value::Symbol(name) => {
                 self.set_variable(name, value, env);
@@ -7050,7 +7335,8 @@ impl Interpreter {
             cursor += 2;
         }
 
-        let current = self.eval_setf_place_current_value(&items[2], env)?;
+        let place = self.resolve_setf_place(&items[2], env)?;
+        let current = self.eval_resolved_setf_place_current_value(&place, env)?;
         let values = current.to_vec()?;
         let keyed_new = self.apply_cl_sequence_key(keyfn.as_ref(), &new_value, env)?;
         let mut already_present = false;
@@ -7078,7 +7364,7 @@ impl Interpreter {
         }
 
         let updated = Value::cons(new_value, current);
-        self.set_setf_place_value(&items[2], updated.clone(), env)?;
+        self.set_resolved_setf_place_value(&place, updated.clone(), env)?;
         Ok(updated)
     }
 
@@ -7110,6 +7396,21 @@ impl Interpreter {
         let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
             return Ok(Value::Nil);
         };
+        let parents = items
+            .get(2)
+            .map(Value::to_vec)
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+            .collect::<Vec<_>>();
+        let slot_specs = items
+            .get(3)
+            .map(Value::to_vec)
+            .transpose()?
+            .unwrap_or_default();
+        let options = items.get(4..).unwrap_or(&[]).to_vec();
+        self.register_class(name, parents, slot_specs, options);
         Ok(Value::Symbol(name.to_string()))
     }
 
@@ -7212,11 +7513,18 @@ impl Interpreter {
     }
 
     fn sf_cl_generic_define_generalizer(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
-            return Ok(Value::Nil);
-        };
-        self.set_global_binding(name, Value::Nil);
-        Ok(Value::Symbol(name.to_string()))
+        if items.len() < 5 {
+            return Err(LispError::Signal(
+                "cl-generic-define-generalizer needs name, priority, tagcode, and specializers"
+                    .into(),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let priority = items[2].as_integer()?;
+        let tagcode_function = self.eval(&items[3], &mut Vec::new())?;
+        let specializers_function = self.eval(&items[4], &mut Vec::new())?;
+        self.register_generic_generalizer(&name, priority, tagcode_function, specializers_function);
+        Ok(Value::Symbol(name))
     }
 
     fn sf_cl_defmethod(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -7781,15 +8089,14 @@ impl Interpreter {
         })
     }
 
-    fn eval_setf_place_current_value(
+    fn eval_resolved_setf_place_current_value(
         &mut self,
         place: &Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let place = self.resolve_setf_place(place, env)?;
         match &place {
             Value::Symbol(name) => self.lookup(name, env),
-            _ => self.eval(&place, env),
+            _ => self.eval(place, env),
         }
     }
 
@@ -8655,6 +8962,17 @@ impl Interpreter {
         result
     }
 
+    fn sf_save_window_excursion(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let snapshot = self.snapshot_window_configuration();
+        let result = self.sf_progn(&items[1..], env);
+        let _ = self.restore_window_configuration(snapshot);
+        result
+    }
+
     fn sf_with_silent_modifications(
         &mut self,
         items: &[Value],
@@ -8806,10 +9124,12 @@ impl Interpreter {
                             self.functions.push((function_name.clone(), value));
                             rebound.push(function_name);
                         } else {
-                            let current = self.eval_setf_place_current_value(&parts[0], env)?;
+                            let place = self.resolve_setf_place(&parts[0], env)?;
+                            let current =
+                                self.eval_resolved_setf_place_current_value(&place, env)?;
                             let value = self.eval(&parts[1], env)?;
-                            self.set_setf_place_value(&parts[0], value, env)?;
-                            rebound_places.push((parts[0].clone(), current));
+                            self.set_resolved_setf_place_value(&place, value, env)?;
+                            rebound_places.push((place, current));
                         }
                     }
                     _ => return Err(LispError::Signal("Unsupported cl-letf place".into())),
@@ -9289,12 +9609,13 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let current = self.eval(&items[1], env)?;
+        let place = self.resolve_setf_place(&items[1], env)?;
+        let current = self.eval_resolved_setf_place_current_value(&place, env)?;
         if current.is_truthy() {
             return Ok(current);
         }
         let value = self.sf_progn(&items[2..], env)?;
-        self.set_setf_place_value(&items[1], value.clone(), env)?;
+        self.set_resolved_setf_place_value(&place, value.clone(), env)?;
         Ok(value)
     }
 
@@ -14107,6 +14428,46 @@ mod tests {
     }
 
     #[test]
+    fn defclass_registers_runtime_class_metadata() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-parent nil nil)
+                   (defclass sample-child (sample-parent)
+                     ((sample-slot :initform 7))
+                     :documentation \"Sample\")
+                   (list (type-of (cl-find-class 'sample-child))
+                         (cl--class-allparents (cl-find-class 'sample-child))
+                         (cl--class-children (cl-find-class 'sample-parent))))"
+            ),
+            Value::list([
+                Value::Symbol("eieio--class".into()),
+                Value::list([
+                    Value::Symbol("sample-child".into()),
+                    Value::Symbol("sample-parent".into()),
+                    Value::Symbol("t".into()),
+                ]),
+                Value::list([Value::Symbol("sample-child".into())]),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_generic_define_generalizer_registers_runtime_value() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-generic-define-generalizer sample-generalizer
+                     9
+                     (lambda (arg) arg)
+                     (lambda (_tag) nil))
+                   (type-of sample-generalizer))"
+            ),
+            Value::Symbol("cl--generic-generalizer".into())
+        );
+    }
+
+    #[test]
     fn cl_defmethod_accepts_extra_qualifiers_before_lambda_list() {
         assert_string_value(
             eval_str(
@@ -14395,6 +14756,38 @@ mod tests {
                 "#
             ),
             Value::T
+        );
+    }
+
+    #[test]
+    fn save_window_excursion_restores_window_start() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((window (selected-window))
+                      (original (current-buffer)))
+                  (insert "a\nb\nc\nd\n")
+                  (set-window-start window 3)
+                  (save-window-excursion
+                    (set-window-start window 5)
+                    (set-buffer (get-buffer-create "*save-window-excursion*")))
+                  (list (window-start window)
+                        (eq (current-buffer) original)))
+                "#
+            ),
+            Value::list([Value::Integer(3), Value::T])
+        );
+    }
+
+    #[test]
+    fn push_resolves_progn_place_once() {
+        assert_eq!(
+            eval_str(
+                "(let ((events nil) (cell '(1)))
+                   (push 0 (progn (push 'seen events) cell))
+                   events)"
+            ),
+            Value::list([Value::Symbol("seen".into())])
         );
     }
 
