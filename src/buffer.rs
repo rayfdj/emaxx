@@ -456,6 +456,43 @@ impl Buffer {
         self.text.slice(start..end).to_string()
     }
 
+    pub fn position_bytes(&self, pos: usize) -> Option<usize> {
+        let char_len = self.text.len_chars();
+        if pos == 0 || pos > char_len + 1 {
+            return None;
+        }
+        Some(
+            1 + self
+                .text
+                .slice(..(pos - 1))
+                .chars()
+                .map(char::len_utf8)
+                .sum::<usize>(),
+        )
+    }
+
+    pub fn byte_to_position(&self, byte: usize) -> Option<usize> {
+        if byte == 0 {
+            return None;
+        }
+        let total_bytes = self.text.len_bytes();
+        if byte > total_bytes + 1 {
+            return None;
+        }
+        if byte == total_bytes + 1 {
+            return Some(self.text.len_chars() + 1);
+        }
+        let mut current_byte = 1usize;
+        for (index, ch) in self.text.chars().enumerate() {
+            let next = current_byte + ch.len_utf8();
+            if byte == current_byte || byte < next {
+                return Some(index + 1);
+            }
+            current_byte = next;
+        }
+        Some(self.text.len_chars() + 1)
+    }
+
     /// Get a substring. Positions are 1-based, range is [from, to).
     pub fn buffer_substring(&self, from: usize, to: usize) -> Result<String, BufferError> {
         let from = from.max(self.begv);
@@ -1554,6 +1591,17 @@ mod tests {
         assert_eq!(buf.point_min(), 1);
         assert_eq!(buf.point_max(), 7);
         assert_eq!(buf.buffer_string(), "abcdef");
+    }
+
+    #[test]
+    fn byte_positions_use_absolute_buffer_positions_when_narrowed() {
+        let mut buf = Buffer::from_text("test", "abcdef");
+        buf.narrow_to_region(3, 6); // accessible: "cde"
+
+        assert_eq!(buf.position_bytes(3), Some(3));
+        assert_eq!(buf.position_bytes(6), Some(6));
+        assert_eq!(buf.byte_to_position(3), Some(3));
+        assert_eq!(buf.byte_to_position(6), Some(6));
     }
 
     #[test]
