@@ -278,6 +278,46 @@ struct ConditionVariableState {
     name: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProcessStatus {
+    Run,
+    Exit,
+}
+
+impl ProcessStatus {
+    fn symbol(&self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Exit => "exit",
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        matches!(self, Self::Run)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ProcessState {
+    record_id: u64,
+    buffer_id: Option<u64>,
+    mark_marker_id: u64,
+    status: ProcessStatus,
+    filter: Option<Value>,
+    _query_on_exit_flag: bool,
+    decoding: Value,
+    encoding: Value,
+    program: Option<String>,
+    argv: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ScheduledTimer {
+    function: Value,
+    original_name: Option<String>,
+    args: Vec<Value>,
+}
+
 fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)>) -> Value {
     let mut items = vec![
         Value::Symbol(":mnemonic".into()),
@@ -288,6 +328,15 @@ fn coding_plist(mnemonic: char, extras: impl IntoIterator<Item = (String, Value)
         items.push(value);
     }
     Value::list(items)
+}
+
+fn current_exec_path() -> Value {
+    match std::env::var_os("PATH") {
+        Some(path) => Value::list(
+            std::env::split_paths(&path).map(|entry| Value::String(entry.display().to_string())),
+        ),
+        None => Value::Nil,
+    }
 }
 
 fn builtin_coding_systems() -> Vec<CodingSystemState> {
@@ -672,6 +721,8 @@ pub struct Interpreter {
     thread_states: Vec<ThreadState>,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
+    process_states: Vec<ProcessState>,
+    pending_timers: Vec<ScheduledTimer>,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -697,9 +748,12 @@ impl Interpreter {
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("abbrev-table-name-list".into(), Value::Nil),
                 ("cl--proclaims-deferred".into(), Value::Nil),
+                ("exec-path".into(), current_exec_path()),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
+                ("process-connection-type".into(), Value::T),
+                ("system-uses-terminfo".into(), Value::T),
                 (
                     "vc-directory-exclusion-list".into(),
                     preloaded_vc_directory_exclusion_list(),
@@ -712,6 +766,7 @@ impl Interpreter {
                 "command-switch-alist".into(),
                 "cl--proclaims-deferred".into(),
                 "display-hourglass".into(),
+                "exec-path".into(),
                 "file-name-handler-alist".into(),
                 "gc-cons-threshold".into(),
                 "inhibit-file-name-handlers".into(),
@@ -722,6 +777,7 @@ impl Interpreter {
                 "left-margin".into(),
                 "last-command".into(),
                 "overwrite-mode".into(),
+                "process-connection-type".into(),
                 "process-environment".into(),
                 "scroll-preserve-screen-position".into(),
                 "scroll-up-aggressively".into(),
@@ -827,6 +883,8 @@ impl Interpreter {
             }],
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
+            process_states: Vec::new(),
+            pending_timers: Vec::new(),
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,
@@ -1510,6 +1568,18 @@ impl Interpreter {
             .find(|condvar| condvar.record_id == record_id)
     }
 
+    fn find_process_state(&self, record_id: u64) -> Option<&ProcessState> {
+        self.process_states
+            .iter()
+            .find(|process| process.record_id == record_id)
+    }
+
+    fn find_process_state_mut(&mut self, record_id: u64) -> Option<&mut ProcessState> {
+        self.process_states
+            .iter_mut()
+            .find(|process| process.record_id == record_id)
+    }
+
     pub fn resolve_thread_id(&self, value: &Value) -> Result<u64, LispError> {
         match value {
             Value::Record(id)
@@ -1547,6 +1617,167 @@ impl Interpreter {
             }
             other => Err(wrong_type_argument("condition-variable-p", other.clone())),
         }
+    }
+
+    pub fn resolve_process_id(&self, value: &Value) -> Result<u64, LispError> {
+        match value {
+            Value::Record(id)
+                if self
+                    .find_record(*id)
+                    .is_some_and(|record| record.type_name == "process") =>
+            {
+                Ok(*id)
+            }
+            other => Err(wrong_type_argument("processp", other.clone())),
+        }
+    }
+
+    pub fn create_process(
+        &mut self,
+        buffer_id: Option<u64>,
+        program: Option<String>,
+        argv: Vec<String>,
+    ) -> Result<Value, LispError> {
+        let process = self.create_record("process", Vec::new());
+        let Value::Record(record_id) = process.clone() else {
+            unreachable!("create_record returns a record")
+        };
+        let marker = self.make_marker();
+        let Value::Marker(mark_marker_id) = marker else {
+            unreachable!("make_marker returns a marker")
+        };
+        let initial_position =
+            buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
+        self.set_marker(mark_marker_id, initial_position, buffer_id)?;
+        self.process_states.push(ProcessState {
+            record_id,
+            buffer_id,
+            mark_marker_id,
+            status: ProcessStatus::Run,
+            filter: None,
+            _query_on_exit_flag: false,
+            decoding: Value::Nil,
+            encoding: Value::Nil,
+            program,
+            argv,
+        });
+        Ok(process)
+    }
+
+    pub fn process_value_for_buffer(&self, buffer_id: u64) -> Option<Value> {
+        self.process_states
+            .iter()
+            .rfind(|process| process.buffer_id == Some(buffer_id))
+            .map(|process| Value::Record(process.record_id))
+    }
+
+    pub fn process_buffer_id(&self, record_id: u64) -> Option<u64> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.buffer_id)
+    }
+
+    pub fn process_mark_id(&self, record_id: u64) -> Option<u64> {
+        self.find_process_state(record_id)
+            .map(|process| process.mark_marker_id)
+    }
+
+    pub fn process_status_value(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .map(|process| Value::Symbol(process.status.symbol().into()))
+    }
+
+    pub fn process_is_live(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.status.is_live())
+    }
+
+    pub fn process_filter(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.filter.clone())
+    }
+
+    pub fn set_process_filter(
+        &mut self,
+        record_id: u64,
+        filter: Option<Value>,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.filter = filter;
+        Ok(())
+    }
+
+    pub fn process_coding_system(&self, record_id: u64) -> Result<Value, LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        Ok(Value::cons(
+            process.decoding.clone(),
+            process.encoding.clone(),
+        ))
+    }
+
+    pub fn set_process_coding_system(
+        &mut self,
+        record_id: u64,
+        decoding: Value,
+        encoding: Value,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.decoding = decoding;
+        process.encoding = encoding;
+        Ok(())
+    }
+
+    pub fn set_process_query_on_exit_flag(
+        &mut self,
+        record_id: u64,
+        flag: bool,
+    ) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process._query_on_exit_flag = flag;
+        Ok(())
+    }
+
+    pub fn process_command(&self, record_id: u64) -> Option<(String, Vec<String>)> {
+        let process = self.find_process_state(record_id)?;
+        let program = process.program.clone()?;
+        Some((program, process.argv.clone()))
+    }
+
+    pub fn delete_process(&mut self, record_id: u64) -> Result<(), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        process.status = ProcessStatus::Exit;
+        Ok(())
+    }
+
+    pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
+        let original_name = function.as_symbol().ok().map(str::to_string);
+        self.pending_timers.push(ScheduledTimer {
+            function: Self::stored_value(function),
+            original_name,
+            args: args.into_iter().map(Self::stored_value).collect(),
+        });
+    }
+
+    pub fn run_pending_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let pending = std::mem::take(&mut self.pending_timers);
+        for timer in pending {
+            self.call_function_value(
+                timer.function,
+                timer.original_name.as_deref(),
+                &timer.args,
+                env,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn current_thread_value(&self) -> Value {
@@ -1807,6 +2038,9 @@ impl Interpreter {
                 }
                 _ => {}
             }
+        }
+        if wake_sleepers {
+            self.run_pending_timers(env)?;
         }
         Ok(())
     }
@@ -4271,6 +4505,48 @@ impl Interpreter {
                 Value::String("pin".into()),
                 Value::String("decryption key".into()),
                 Value::String("encryption key".into()),
+                Value::String("암호".into()),
+                Value::String("パスワード".into()),
+                Value::String("ପ୍ରବେଶ ସଙ୍କେତ".into()),
+                Value::String("ពាក្យសម្ងាត់".into()),
+                Value::String("adgangskode".into()),
+                Value::String("contraseña".into()),
+                Value::String("contrasenya".into()),
+                Value::String("geslo".into()),
+                Value::String("hasło".into()),
+                Value::String("heslo".into()),
+                Value::String("iphasiwedi".into()),
+                Value::String("jelszó".into()),
+                Value::String("lösenord".into()),
+                Value::String("lozinka".into()),
+                Value::String("mật khẩu".into()),
+                Value::String("mot de passe".into()),
+                Value::String("parola".into()),
+                Value::String("pasahitza".into()),
+                Value::String("passord".into()),
+                Value::String("passwort".into()),
+                Value::String("pasvorto".into()),
+                Value::String("salasana".into()),
+                Value::String("senha".into()),
+                Value::String("slaptažodis".into()),
+                Value::String("wachtwoord".into()),
+                Value::String("كلمة السر".into()),
+                Value::String("ססמה".into()),
+                Value::String("лозинка".into()),
+                Value::String("пароль".into()),
+                Value::String("गुप्तशब्द".into()),
+                Value::String("शब्दकूट".into()),
+                Value::String("પાસવર્ડ".into()),
+                Value::String("సంకేతపదము".into()),
+                Value::String("ਪਾਸਵਰਡ".into()),
+                Value::String("ಗುಪ್ತಪದ".into()),
+                Value::String("கடவுச்சொல்".into()),
+                Value::String("അടയാളവാക്ക്".into()),
+                Value::String("গুপ্তশব্দ".into()),
+                Value::String("পাসওয়ার্ড".into()),
+                Value::String("රහස්පදය".into()),
+                Value::String("密码".into()),
+                Value::String("密碼".into()),
             ])),
             "password-colon-equivalents" => Some(Value::list([
                 Value::Integer(':' as i64),
@@ -4306,6 +4582,7 @@ impl Interpreter {
             "left-margin" => Some(Value::Integer(0)),
             "last-command" => Some(Value::Nil),
             "line-spacing" => Some(Value::Nil),
+            "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "scroll-up-aggressively" => Some(Value::Nil),
             "vertical-scroll-bar" => Some(Value::Symbol("right".into())),
@@ -4720,6 +4997,9 @@ impl Interpreter {
                         "with-environment-variables" => {
                             return self.sf_with_environment_variables(&items, env);
                         }
+                        "with-connection-local-variables" => {
+                            return self.sf_progn(&items[1..], env);
+                        }
                         "with-output-to-string" => {
                             return self.sf_with_output_to_string(&items, env);
                         }
@@ -4966,7 +5246,8 @@ impl Interpreter {
                         frame.push((param.clone(), Self::stored_value(Value::list(rest_args))));
                         break;
                     }
-                    let val = if arg_idx < args.len() {
+                    let consumed_arg = arg_idx < args.len();
+                    let val = if consumed_arg {
                         args[arg_idx].clone()
                     } else if optional {
                         Value::Nil
@@ -4977,7 +5258,9 @@ impl Interpreter {
                         ));
                     };
                     frame.push((param.clone(), Self::stored_value(val)));
-                    arg_idx += 1;
+                    if consumed_arg {
+                        arg_idx += 1;
+                    }
                 }
 
                 let mut captured_frames = 0;
@@ -10683,6 +10966,24 @@ mod tests {
             .unwrap();
         let result = interp.eval(&form, &mut env).unwrap();
         assert_eq!(result, Value::String("foo".into()));
+    }
+
+    #[test]
+    fn lambda_rest_ignores_missing_optional_arguments() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str("(funcall (lambda (a &optional b c &rest rest) (list a b c rest)) 1)"),
+                Value::list([Value::Integer(1), Value::Nil, Value::Nil, Value::Nil,])
+            );
+        });
+    }
+
+    #[test]
+    fn with_connection_local_variables_evaluates_body() {
+        assert_eq!(
+            eval_str("(with-connection-local-variables 1 2 3)"),
+            Value::Integer(3)
+        );
     }
 
     #[test]

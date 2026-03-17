@@ -370,7 +370,11 @@ fn scroll_selected_window(
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
     matches!(
         name,
-        "user-error" | "byte-compile" | "byte-compile-check-lambda-list" | "read-key"
+        "user-error"
+            | "byte-compile"
+            | "byte-compile-check-lambda-list"
+            | "read-key"
+            | "regexp-opt"
     )
 }
 
@@ -937,6 +941,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "listp"
             | "bufferp"
             | "buffer-live-p"
+            | "processp"
             | "threadp"
             | "mutexp"
             | "condition-variable-p"
@@ -988,6 +993,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-mapcar"
             | "cl-mapcan"
             | "cl-some"
+            | "any"
             | "seq-some"
             | "mapc"
             | "cl-reduce"
@@ -1056,8 +1062,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "number-to-string"
             | "string-match"
             | "string-match-p"
+            | "string-empty-p"
             | "string-prefix-p"
             | "string-suffix-p"
+            | "string-limit"
             | "split-string"
             | "string-width"
             | "format"
@@ -1429,6 +1437,20 @@ pub fn is_builtin(name: &str) -> bool {
             | "write-file"
             | "file-modes-number-to-symbolic"
             | "set-file-modes"
+            | "make-process"
+            | "start-process"
+            | "start-file-process"
+            | "get-buffer-process"
+            | "process-buffer"
+            | "process-mark"
+            | "process-status"
+            | "process-live-p"
+            | "process-coding-system"
+            | "set-process-coding-system"
+            | "set-process-filter"
+            | "delete-process"
+            | "set-process-query-on-exit-flag"
+            | "process-send-string"
             | "call-process"
             | "call-process-region"
             | "process-lines"
@@ -1522,6 +1544,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "init-image-library"
             | "window-start"
             | "window-end"
+            | "window-point"
             | "window-width"
             | "move-to-window-line"
             | "recenter"
@@ -1541,6 +1564,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "color-values-from-color-spec"
             | "facemenu-add-face"
             | "get-buffer-window"
+            | "get-buffer-window-list"
             | "minibuffer-window"
             | "active-minibuffer-window"
             | "set-window-start"
@@ -1582,6 +1606,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "add-hook"
             | "remove-hook"
             | "run-hooks"
+            | "run-hook-with-args"
             | "run-mode-hooks"
             | "run-hook-wrapped"
             | "mapatoms"
@@ -1589,6 +1614,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "define-error"
             | "describe-function"
             | "executable-find"
+            | "run-at-time"
             | "run-with-timer"
             | "run-with-idle-timer"
             | "cancel-timer"
@@ -2872,6 +2898,19 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "any" => {
+            need_args(name, args, 2)?;
+            let predicate = args[0].clone();
+            let items = args[1].to_vec()?;
+            for (index, element) in items.iter().enumerate() {
+                let result =
+                    call_function_value(interp, &predicate, std::slice::from_ref(element), env)?;
+                if result.is_truthy() {
+                    return Ok(Value::list(items[index..].to_vec()));
+                }
+            }
+            Ok(Value::Nil)
+        }
         "featurep" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
@@ -2915,6 +2954,14 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "processp" => {
+            need_args(name, args, 1)?;
+            Ok(if interp.resolve_process_id(&args[0]).is_ok() {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "threadp" => {
             need_args(name, args, 1)?;
@@ -3957,6 +4004,14 @@ pub fn call(
         }
         "string-match" => string_match_impl(interp, args, env, true),
         "string-match-p" => string_match_impl(interp, args, env, false),
+        "string-empty-p" => {
+            need_args(name, args, 1)?;
+            Ok(if string_text(&args[0])?.is_empty() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "string-prefix-p" | "string-suffix-p" => {
             need_arg_range(name, args, 2, 3)?;
             let affix = string_text(&args[0])?;
@@ -3973,6 +4028,51 @@ pub fn call(
                 text.ends_with(&affix)
             };
             Ok(if matches { Value::T } else { Value::Nil })
+        }
+        "string-limit" => {
+            need_arg_range(name, args, 2, 4)?;
+            let text = string_text(&args[0])?;
+            let length = args[1].as_integer()?;
+            if length < 0 {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("natnump".into()),
+                    args[1].clone(),
+                ])));
+            }
+            let limit = length as usize;
+            let end = args.get(2).is_some_and(Value::is_truthy);
+            let coding_system = args.get(3).is_some_and(Value::is_truthy);
+            if coding_system {
+                let bytes = text.as_bytes();
+                if bytes.len() <= limit {
+                    return Ok(Value::String(text));
+                }
+                if end {
+                    let mut start = bytes.len().saturating_sub(limit);
+                    while start < bytes.len() && !text.is_char_boundary(start) {
+                        start += 1;
+                    }
+                    return Ok(Value::String(text[start..].to_string()));
+                }
+                let mut end_byte = limit.min(bytes.len());
+                while end_byte > 0 && !text.is_char_boundary(end_byte) {
+                    end_byte -= 1;
+                }
+                return Ok(Value::String(text[..end_byte].to_string()));
+            }
+            let char_len = text.chars().count();
+            if char_len <= limit {
+                return Ok(Value::String(text));
+            }
+            let limited = if end {
+                text.chars()
+                    .skip(char_len.saturating_sub(limit))
+                    .collect::<String>()
+            } else {
+                text.chars().take(limit).collect::<String>()
+            };
+            Ok(Value::String(limited))
         }
         "split-string" => {
             if args.is_empty() || args.len() > 4 {
@@ -4465,7 +4565,7 @@ pub fn call(
             parse_edmacro_key_sequence(&string_text(&args[0])?)
         }
         "string-trim" => {
-            need_args(name, args, 1)?;
+            need_arg_range(name, args, 1, 3)?;
             Ok(Value::String(string_text(&args[0])?.trim().to_string()))
         }
         "string-clean-whitespace" => {
@@ -8048,6 +8148,122 @@ pub fn call(
             )?;
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
+        "make-process" => {
+            let (buffer_id, program, argv, filter, coding) = parse_make_process_args(interp, args)?;
+            let process = interp.create_process(buffer_id, program, argv)?;
+            let process_id = interp.resolve_process_id(&process)?;
+            interp.set_process_filter(process_id, filter)?;
+            if let Some((decoding, encoding)) = coding {
+                interp.set_process_coding_system(process_id, decoding, encoding)?;
+            }
+            Ok(process)
+        }
+        "start-process" | "start-file-process" => {
+            need_arg_range(name, args, 3, usize::MAX)?;
+            let buffer_id = process_buffer_target(interp, &args[1])?;
+            let program = string_text(&args[2])?;
+            let argv = args[3..]
+                .iter()
+                .map(string_text)
+                .collect::<Result<Vec<_>, _>>()?;
+            interp.create_process(buffer_id, Some(program), argv)
+        }
+        "get-buffer-process" => {
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = if let Some(buffer) = args.first() {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            Ok(interp
+                .process_value_for_buffer(buffer_id)
+                .unwrap_or(Value::Nil))
+        }
+        "process-buffer" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp
+                .process_buffer_id(process_id)
+                .and_then(|buffer_id| interp.buffer_identity_value(buffer_id))
+                .unwrap_or(Value::Nil))
+        }
+        "process-mark" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let marker_id = interp
+                .process_mark_id(process_id)
+                .ok_or_else(|| LispError::Signal("Invalid process mark".into()))?;
+            Ok(Value::Marker(marker_id))
+        }
+        "process-status" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp
+                .process_status_value(process_id)
+                .ok_or_else(|| LispError::Signal("Invalid process state".into()))
+        }
+        "process-live-p" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(if interp.process_is_live(process_id) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "process-coding-system" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.process_coding_system(process_id)
+        }
+        "set-process-coding-system" => {
+            need_args(name, args, 3)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.set_process_coding_system(process_id, args[1].clone(), args[2].clone())?;
+            Ok(Value::T)
+        }
+        "set-process-filter" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let filter = if args[1].is_nil() {
+                None
+            } else {
+                Some(args[1].clone())
+            };
+            interp.set_process_filter(process_id, filter)?;
+            Ok(args[1].clone())
+        }
+        "delete-process" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.delete_process(process_id)?;
+            Ok(Value::Nil)
+        }
+        "set-process-query-on-exit-flag" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.set_process_query_on_exit_flag(process_id, args[1].is_truthy())?;
+            Ok(args[1].clone())
+        }
+        "process-send-string" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            if !interp.process_is_live(process_id) {
+                return Err(LispError::Signal("Process is not running".into()));
+            }
+            let input = string_text(&args[1])?;
+            let output = if let Some((program, argv)) = interp.process_command(process_id) {
+                let process_output =
+                    run_external_process(interp, &program, &argv, Some(input.as_bytes()), env)?;
+                let mut rendered = String::from_utf8_lossy(&process_output.stdout).into_owned();
+                rendered.push_str(&String::from_utf8_lossy(&process_output.stderr));
+                rendered
+            } else {
+                input.clone()
+            };
+            deliver_process_output(interp, process_id, &output, env)?;
+            Ok(Value::Nil)
+        }
         "process-lines" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -8683,6 +8899,24 @@ pub fn call(
             Ok(Value::Integer(window_start(interp, args.first())? as i64))
         }
         "window-end" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
+        "window-point" => {
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = if let Some(window) = args.first() {
+                window_buffer_id(interp, window)
+                    .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?
+            } else {
+                interp.selected_window_buffer_id()
+            };
+            let point = if buffer_id == interp.current_buffer_id() {
+                interp.buffer.point()
+            } else {
+                interp
+                    .get_buffer_by_id(buffer_id)
+                    .map(|buffer| buffer.point())
+                    .unwrap_or_else(|| interp.buffer.point())
+            };
+            Ok(Value::Integer(point as i64))
+        }
         "window-width" => Ok(Value::Integer(interp.frame_width())),
         "move-to-window-line" => {
             need_arg_range(name, args, 0, 1)?;
@@ -8871,8 +9105,12 @@ pub fn call(
         }
         "selected-window" => Ok(interp.selected_window_value()),
         "window-buffer" => {
-            need_args(name, args, 1)?;
-            if let Some(buffer_id) = window_buffer_id(interp, &args[0]) {
+            need_arg_range(name, args, 0, 1)?;
+            let window = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            if let Some(buffer_id) = window_buffer_id(interp, &window) {
                 if buffer_id == interp.current_buffer_id() {
                     Ok(Value::Buffer(buffer_id, interp.buffer.name.clone()))
                 } else if let Some((_, name)) = interp
@@ -8886,7 +9124,7 @@ pub fn call(
                     Ok(Value::Nil)
                 }
             } else {
-                Err(LispError::TypeError("window".into(), args[0].type_name()))
+                Err(LispError::TypeError("window".into(), window.type_name()))
             }
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
@@ -8974,6 +9212,23 @@ pub fn call(
             Ok(Value::Nil)
         }
         "get-buffer-window" | "minibuffer-window" => Ok(interp.selected_window_value()),
+        "get-buffer-window-list" => {
+            need_arg_range(name, args, 0, 4)?;
+            let buffer_id = if let Some(buffer) = args.first() {
+                if buffer.is_nil() {
+                    interp.current_buffer_id()
+                } else {
+                    interp.resolve_buffer_id(buffer)?
+                }
+            } else {
+                interp.current_buffer_id()
+            };
+            Ok(if buffer_id == interp.selected_window_buffer_id() {
+                Value::list([interp.selected_window_value()])
+            } else {
+                Value::Nil
+            })
+        }
         "active-minibuffer-window" => Ok(Value::Nil),
         "set-window-start" => {
             need_arg_range(name, args, 2, 4)?;
@@ -9490,6 +9745,13 @@ pub fn call(
             }
             Ok(args[0].clone())
         }
+        "run-at-time" => {
+            if args.len() < 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            interp.schedule_timer(args[2].clone(), args[3..].to_vec());
+            Ok(Value::String("#<timer>".into()))
+        }
         "run-with-timer" | "run-with-idle-timer" => {
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -9567,6 +9829,16 @@ pub fn call(
                 if let Ok(hook_name) = hook.as_symbol() {
                     run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
                 }
+            }
+            Ok(Value::Nil)
+        }
+        "run-hook-with-args" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let hook_name = args[0].as_symbol()?;
+            for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
+                call_function_value(interp, &hook, &args[1..], env)?;
             }
             Ok(Value::Nil)
         }
@@ -18154,6 +18426,155 @@ fn run_external_process(
         .map_err(|error| LispError::Signal(error.to_string()))
 }
 
+fn process_buffer_target(
+    interp: &mut Interpreter,
+    value: &Value,
+) -> Result<Option<u64>, LispError> {
+    if value.is_nil() {
+        return Ok(None);
+    }
+    if let Some(buffer) = string_like(value) {
+        return Ok(Some(
+            interp
+                .find_buffer(&buffer.text)
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer(&buffer.text).0),
+        ));
+    }
+    if matches!(value, Value::Buffer(_, _)) {
+        return Ok(Some(interp.resolve_buffer_id(value)?));
+    }
+    Err(LispError::TypeError(
+        "buffer-or-name".into(),
+        value.type_name(),
+    ))
+}
+
+fn process_command_parts(value: &Value) -> Result<(String, Vec<String>), LispError> {
+    let items = value.to_vec()?;
+    let Some((program, argv)) = items.split_first() else {
+        return Err(LispError::Signal(
+            "Process command must not be empty".into(),
+        ));
+    };
+    Ok((
+        string_text(program)?,
+        argv.iter()
+            .map(string_text)
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
+fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispError> {
+    if let Some((decoding, encoding)) = value.cons_values() {
+        return Ok((decoding, encoding));
+    }
+    let items = value.to_vec()?;
+    if items.len() == 2 {
+        return Ok((items[0].clone(), items[1].clone()));
+    }
+    Err(LispError::TypeError("cons".into(), value.type_name()))
+}
+
+type MakeProcessArgs = (
+    Option<u64>,
+    Option<String>,
+    Vec<String>,
+    Option<Value>,
+    Option<(Value, Value)>,
+);
+
+fn parse_make_process_args(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<MakeProcessArgs, LispError> {
+    if !args.len().is_multiple_of(2) {
+        return Err(LispError::WrongNumberOfArgs(
+            "make-process".into(),
+            args.len(),
+        ));
+    }
+    let mut buffer_id = None;
+    let mut program = None;
+    let mut argv = Vec::new();
+    let mut filter = None;
+    let mut coding = None;
+
+    for pair in args.chunks_exact(2) {
+        let key = pair[0].as_symbol()?;
+        let value = &pair[1];
+        match key {
+            ":buffer" => buffer_id = process_buffer_target(interp, value)?,
+            ":command" => {
+                let (parsed_program, parsed_argv) = process_command_parts(value)?;
+                program = Some(parsed_program);
+                argv = parsed_argv;
+            }
+            ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
+            ":coding" => coding = Some(process_coding_pair(value)?),
+            _ => {}
+        }
+    }
+
+    Ok((buffer_id, program, argv, filter, coding))
+}
+
+fn deliver_process_output(
+    interp: &mut Interpreter,
+    process_id: u64,
+    output: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if output.is_empty() {
+        return Ok(());
+    }
+
+    let target_buffer_id = interp.process_buffer_id(process_id);
+    if let Some(filter) = interp.process_filter(process_id) {
+        let saved_buffer_id = interp.current_buffer_id();
+        let switched = target_buffer_id.is_some_and(|buffer_id| buffer_id != saved_buffer_id);
+        if let Some(buffer_id) = target_buffer_id
+            && switched
+        {
+            interp.switch_to_buffer_id(buffer_id)?;
+        }
+        let result = call_function_value(
+            interp,
+            &filter,
+            &[Value::Record(process_id), Value::String(output.to_string())],
+            env,
+        );
+        if switched {
+            interp.switch_to_buffer_id(saved_buffer_id)?;
+        }
+        result?;
+        return Ok(());
+    }
+
+    let Some(buffer_id) = target_buffer_id else {
+        return Ok(());
+    };
+    let Some(mark_id) = interp.process_mark_id(process_id) else {
+        return Ok(());
+    };
+    let saved_buffer_id = interp.current_buffer_id();
+    let switched = buffer_id != saved_buffer_id;
+    if switched {
+        interp.switch_to_buffer_id(buffer_id)?;
+    }
+    let insert_at = interp
+        .marker_position(mark_id)
+        .unwrap_or_else(|| interp.current_buffer().point_max());
+    interp.buffer.goto_char(insert_at);
+    interp.insert_current_buffer(output);
+    let new_pos = interp.buffer.point();
+    let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
+    if switched {
+        interp.switch_to_buffer_id(saved_buffer_id)?;
+    }
+    result
+}
+
 fn apply_process_environment(interp: &Interpreter, env: &Env, command: &mut Command) {
     let Some(process_environment) = interp.lookup_var("process-environment", env) else {
         return;
@@ -19586,6 +20007,138 @@ mod tests {
         assert_eq!(result, Value::list([Value::String(expected)]));
 
         let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_process_routes_command_output_to_its_buffer() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let (buffer_id, buffer_name) = interp.create_buffer("*process-output*");
+        let buffer = Value::Buffer(buffer_id, buffer_name);
+
+        let process = call(
+            &mut interp,
+            "start-process",
+            &[
+                Value::String("cat".into()),
+                buffer.clone(),
+                Value::String("/bin/cat".into()),
+            ],
+            &mut env,
+        )
+        .expect("start-process should succeed");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "processp",
+                std::slice::from_ref(&process),
+                &mut env
+            )
+            .expect("processp should succeed"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-buffer-process",
+                std::slice::from_ref(&buffer),
+                &mut env,
+            )
+            .expect("get-buffer-process should succeed"),
+            process
+        );
+
+        call(
+            &mut interp,
+            "process-send-string",
+            &[process.clone(), Value::String("secret\n".into())],
+            &mut env,
+        )
+        .expect("process-send-string should succeed");
+
+        let contents = interp
+            .get_buffer_by_id(buffer_id)
+            .expect("process buffer")
+            .buffer_substring(
+                1,
+                interp
+                    .get_buffer_by_id(buffer_id)
+                    .expect("process buffer")
+                    .point_max(),
+            )
+            .expect("process output");
+        assert_eq!(contents, "secret\n");
+        assert_eq!(
+            call(
+                &mut interp,
+                "process-status",
+                std::slice::from_ref(&process),
+                &mut env,
+            )
+            .expect("process-status should succeed"),
+            Value::Symbol("run".into())
+        );
+    }
+
+    #[test]
+    fn string_limit_supports_end_flag() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-limit",
+                &[Value::String("foobar".into()), Value::Integer(3)],
+                &mut env,
+            )
+            .expect("string-limit should succeed"),
+            Value::String("foo".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-limit",
+                &[Value::String("foobar".into()), Value::Integer(3), Value::T,],
+                &mut env,
+            )
+            .expect("string-limit with end flag should succeed"),
+            Value::String("bar".into())
+        );
+    }
+
+    #[test]
+    fn run_at_time_callbacks_fire_on_accept_process_output() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let callback = Value::Lambda(
+            Vec::new(),
+            vec![
+                Value::list([
+                    Value::Symbol("setq".into()),
+                    Value::Symbol("timer-fired".into()),
+                    Value::T,
+                ]),
+                Value::T,
+            ],
+            Vec::new(),
+        );
+
+        call(
+            &mut interp,
+            "run-at-time",
+            &[Value::Integer(0), Value::Nil, callback],
+            &mut env,
+        )
+        .expect("run-at-time should succeed");
+        assert_eq!(interp.lookup_var("timer-fired", &env), None);
+
+        call(&mut interp, "accept-process-output", &[], &mut env)
+            .expect("accept-process-output should succeed");
+
+        assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
     }
 
     #[test]
