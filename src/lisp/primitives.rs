@@ -15803,6 +15803,20 @@ pub(crate) fn emacs_version_value() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
+pub(crate) fn emacs_major_version_value() -> i64 {
+    parse_version_components(&emacs_version_value())
+        .first()
+        .copied()
+        .unwrap_or(0)
+}
+
+pub(crate) fn emacs_minor_version_value() -> i64 {
+    parse_version_components(&emacs_version_value())
+        .get(1)
+        .copied()
+        .unwrap_or(0)
+}
+
 pub(crate) fn system_configuration() -> String {
     if let Ok(value) = std::env::var("EMAXX_SYSTEM_CONFIGURATION")
         && !value.is_empty()
