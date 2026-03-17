@@ -928,6 +928,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "interpreted-function-p"
             | "subrp"
             | "commandp"
+            | "facep"
             | "boundp"
             | "fboundp"
             | "default-boundp"
@@ -939,6 +940,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "featurep"
             | "consp"
             | "listp"
+            | "proper-list-p"
             | "bufferp"
             | "buffer-live-p"
             | "processp"
@@ -978,11 +980,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "reverse"
             | "copy-tree"
             | "delete-dups"
+            | "remove"
             | "memq"
             | "remq"
             | "member"
             | "member-ignore-case"
             | "assq"
+            | "rassq"
+            | "rassq-delete-all"
             | "assoc"
             | "assoc-string"
             | "alist-get"
@@ -1135,6 +1140,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "re-search-backward"
             | "search-forward-regexp"
             | "search-backward-regexp"
+            | "isearch-no-upper-case-p"
             | "forward-comment"
             | "scan-lists"
             | "parse-partial-sexp"
@@ -1157,6 +1163,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "char-before"
             | "get-byte"
             | "fundamental-mode"
+            | "emacs-lisp-mode"
             | "special-mode"
             | "derived-mode-p"
             | "derived-mode-add-parents"
@@ -1536,6 +1543,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "send-string-to-terminal"
             | "transient-mark-mode"
             | "font-lock-mode"
+            | "font-lock-specified-p"
+            | "font-lock-add-keywords"
+            | "font-lock-remove-keywords"
+            | "font-lock-flush"
+            | "font-lock-ensure"
             | "find-image"
             | "image-size"
             | "image-mask-p"
@@ -1554,8 +1566,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-display-property"
             | "bidi-find-overridden-directionality"
             | "redisplay"
+            | "display-popup-menus-p"
             | "font-spec"
             | "font-get"
+            | "face-name"
             | "face-attribute"
             | "face-foreground"
             | "face-background"
@@ -1570,6 +1584,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-window-start"
             | "set-window-point"
             | "read-string"
+            | "format-prompt"
             // Overlay operations
             | "make-overlay"
             | "overlayp"
@@ -2887,6 +2902,19 @@ pub fn call(
                 },
             )
         }
+        "facep" => {
+            need_args(name, args, 1)?;
+            let face = match &args[0] {
+                Value::Symbol(symbol) => symbol.clone(),
+                Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
+                _ => return Ok(Value::Nil),
+            };
+            Ok(if face_exists(interp, &face) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "seq-some" => {
             need_args(name, args, 2)?;
             let predicate = args[0].clone();
@@ -2935,6 +2963,13 @@ pub fn call(
                 Value::T
             } else {
                 Value::Nil
+            })
+        }
+        "proper-list-p" => {
+            need_args(name, args, 1)?;
+            Ok(match proper_list_length(&args[0]) {
+                Some(length) => Value::Integer(length as i64),
+                None => Value::Nil,
             })
         }
         "bufferp" => {
@@ -3237,6 +3272,10 @@ pub fn call(
             }
             Ok(Value::list(deduped))
         }
+        "remove" => {
+            need_args(name, args, 2)?;
+            remove_equal(interp, &args[0], &args[1])
+        }
         "memq" | "member" => {
             need_args(name, args, 2)?;
             let items = args[1].to_vec()?;
@@ -3272,6 +3311,23 @@ pub fn call(
                 }
             }
             Ok(Value::Nil)
+        }
+        "rassq" => {
+            need_args(name, args, 2)?;
+            let items = args[1].to_vec()?;
+            for item in &items {
+                let Value::Cons(_, _) = item else {
+                    continue;
+                };
+                if item.cdr()? == args[0] {
+                    return Ok(item.clone());
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "rassq-delete-all" => {
+            need_args(name, args, 2)?;
+            rassq_delete_all(&args[0], &args[1])
         }
         "assoc" => {
             need_args(name, args, 2)?;
@@ -3857,6 +3913,7 @@ pub fn call(
             ensure_interaction_allowed(interp, env)?;
             Ok(Value::String(String::new()))
         }
+        "format-prompt" => format_prompt(interp, args, env),
 
         // ── Allocation ──
         "make-abbrev-table" => {
@@ -4004,6 +4061,16 @@ pub fn call(
         }
         "string-match" => string_match_impl(interp, args, env, true),
         "string-match-p" => string_match_impl(interp, args, env, false),
+        "isearch-no-upper-case-p" => {
+            need_args(name, args, 2)?;
+            Ok(
+                if isearch_no_upper_case_p(&string_text(&args[0])?, args[1].is_truthy()) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
         "string-empty-p" => {
             need_args(name, args, 1)?;
             Ok(if string_text(&args[0])?.is_empty() {
@@ -7436,6 +7503,24 @@ pub fn call(
             );
             Ok(Value::Nil)
         }
+        "emacs-lisp-mode" => {
+            need_args(name, args, 0)?;
+            let buffer_id = interp.current_buffer_id();
+            interp.set_buffer_local_value(
+                buffer_id,
+                "major-mode",
+                Value::Symbol("emacs-lisp-mode".into()),
+            );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "mode-name",
+                Value::String("Emacs-Lisp".into()),
+            );
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String(";".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            interp.set_buffer_local_value(buffer_id, "font-lock-defaults", Value::T);
+            Ok(Value::Nil)
+        }
         "special-mode" => {
             need_args(name, args, 0)?;
             interp.set_buffer_local_value(
@@ -8829,6 +8914,7 @@ pub fn call(
             Ok(Value::Nil)
         }
         "frame-char-width" => Ok(Value::Integer(1)),
+        "display-popup-menus-p" => Ok(Value::Nil),
         "transient-mark-mode" => {
             let enabled = args.first().is_some_and(Value::is_truthy);
             interp.set_variable(
@@ -8866,6 +8952,120 @@ pub fn call(
                 interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
                 Ok(Value::Nil)
             }
+        }
+        "font-lock-specified-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let mode = args.first().is_some_and(Value::is_truthy);
+            let defaults = interp
+                .lookup_var("font-lock-defaults", env)
+                .unwrap_or(Value::Nil);
+            let keywords = interp
+                .lookup_var("font-lock-keywords", env)
+                .unwrap_or(Value::Nil);
+            let major_mode = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+            let font_lock_major_mode = interp
+                .lookup_var("font-lock-major-mode", env)
+                .unwrap_or(Value::Nil);
+            let set_defaults = interp
+                .lookup_var("font-lock-set-defaults", env)
+                .unwrap_or(Value::Nil);
+            Ok(
+                if defaults.is_truthy()
+                    || keywords.is_truthy()
+                    || (mode
+                        && set_defaults.is_truthy()
+                        && font_lock_major_mode.is_truthy()
+                        && font_lock_major_mode != major_mode)
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "font-lock-add-keywords" => {
+            need_arg_range(name, args, 2, 3)?;
+            let buffer_id = interp.current_buffer_id();
+            let mut current = interp
+                .buffer_local_value(buffer_id, "font-lock-keywords")
+                .unwrap_or(Value::Nil)
+                .to_vec()
+                .unwrap_or_default();
+            let additions = args[1].to_vec()?;
+            if args.get(2).is_some_and(|value| !value.is_nil()) {
+                current.extend(additions);
+            } else {
+                let mut updated = additions;
+                updated.extend(current);
+                current = updated;
+            }
+            interp.set_buffer_local_value(buffer_id, "font-lock-keywords", Value::list(current));
+            Ok(Value::Nil)
+        }
+        "font-lock-remove-keywords" => {
+            need_args(name, args, 2)?;
+            let buffer_id = interp.current_buffer_id();
+            let mut current = interp
+                .buffer_local_value(buffer_id, "font-lock-keywords")
+                .unwrap_or(Value::Nil)
+                .to_vec()
+                .unwrap_or_default();
+            let removals = args[1].to_vec()?;
+            current.retain(|existing| {
+                !removals
+                    .iter()
+                    .any(|keyword| values_equal(interp, existing, keyword))
+            });
+            interp.set_buffer_local_value(buffer_id, "font-lock-keywords", Value::list(current));
+            Ok(Value::Nil)
+        }
+        "font-lock-flush" => {
+            need_arg_range(name, args, 0, 2)?;
+            if !interp
+                .lookup_var("font-lock-mode", env)
+                .unwrap_or(Value::Nil)
+                .is_truthy()
+                || !interp
+                    .lookup_var("font-lock-fontified", env)
+                    .unwrap_or(Value::Nil)
+                    .is_truthy()
+            {
+                return Ok(Value::Nil);
+            }
+            let start = args
+                .first()
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| interp.buffer.point_min());
+            let end = args
+                .get(1)
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| interp.buffer.point_max());
+            font_lock_ensure_region(interp, start, end, env)?;
+            Ok(Value::Nil)
+        }
+        "font-lock-ensure" => {
+            need_arg_range(name, args, 0, 2)?;
+            if !interp
+                .lookup_var("font-lock-mode", env)
+                .unwrap_or(Value::Nil)
+                .is_truthy()
+            {
+                return Ok(Value::Nil);
+            }
+            let start = args
+                .first()
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| interp.buffer.point_min());
+            let end = args
+                .get(1)
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| interp.buffer.point_max());
+            font_lock_ensure_region(interp, start, end, env)?;
+            Ok(Value::Nil)
         }
         "find-image" => {
             need_args(name, args, 1)?;
@@ -9031,6 +9231,14 @@ pub fn call(
             let face = args[0].as_symbol()?;
             let attribute = args[1].as_symbol()?;
             Ok(face_attribute_value(interp, face, attribute, args.get(3)))
+        }
+        "face-name" => {
+            need_args(name, args, 1)?;
+            let face = args[0].as_symbol()?;
+            if !face_exists(interp, face) {
+                return Err(LispError::Signal(format!("Not a face: {face}")));
+            }
+            Ok(Value::String(face.to_string()))
         }
         "face-foreground" | "face-background" => {
             if args.is_empty() || args.len() > 3 {
@@ -11453,7 +11661,7 @@ pub fn call(
                     if let Some(ref fname) = filter_name {
                         let val = ov.get_prop(fname).cloned().unwrap_or(Value::Nil);
                         if let Some(ref fval) = filter_val
-                            && val != *fval
+                            && !values_equal(interp, &val, fval)
                         {
                             return false;
                         }
@@ -14996,6 +15204,62 @@ fn compile_elisp_regex(
     })
 }
 
+fn regex_pattern_with_search_spaces(
+    interp: &Interpreter,
+    pattern: &StringLike,
+    env: &Env,
+) -> StringLike {
+    let Some(search_spaces_regexp) = interp
+        .lookup_var("search-spaces-regexp", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .filter(|text| !text.is_empty())
+    else {
+        return pattern.clone();
+    };
+
+    StringLike {
+        text: expand_search_spaces_regexp(&pattern.text, &search_spaces_regexp),
+        props: pattern.props.clone(),
+        multibyte: pattern.multibyte,
+    }
+}
+
+fn expand_search_spaces_regexp(pattern: &str, replacement: &str) -> String {
+    let mut expanded = String::new();
+    let mut chars = pattern.chars().peekable();
+    let mut in_bracket = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                expanded.push('\\');
+                if let Some(next) = chars.next() {
+                    expanded.push(next);
+                }
+            }
+            '[' if !in_bracket => {
+                in_bracket = true;
+                expanded.push('[');
+            }
+            ']' if in_bracket => {
+                in_bracket = false;
+                expanded.push(']');
+            }
+            ' ' if !in_bracket => {
+                expanded.push_str(r"\(?:");
+                expanded.push_str(replacement);
+                expanded.push_str(r"\)");
+                while chars.peek() == Some(&' ') {
+                    chars.next();
+                }
+            }
+            _ => expanded.push(ch),
+        }
+    }
+
+    expanded
+}
+
 fn match_data_from_captures(
     start_pos: usize,
     haystack: &str,
@@ -15078,6 +15342,21 @@ fn string_match_impl(
     } else {
         Ok(Value::Nil)
     }
+}
+
+fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
+    let mut quote_flag = false;
+    for ch in text.chars() {
+        if regexp_flag && ch == '\\' {
+            quote_flag = !quote_flag;
+            continue;
+        }
+        if !quote_flag && ch.is_uppercase() {
+            return false;
+        }
+        quote_flag = false;
+    }
+    !(regexp_flag && (text.contains("[:upper:]") || text.contains("[:lower:]")))
 }
 
 fn split_string_impl(
@@ -16461,6 +16740,7 @@ fn looking_at_impl(
 ) -> Result<Value, LispError> {
     let pattern = string_like(pattern_value)
         .ok_or_else(|| LispError::TypeError("string".into(), pattern_value.type_name()))?;
+    let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let pos = interp.buffer.point();
     let regex = compile_elisp_regex(
         interp,
@@ -16505,6 +16785,7 @@ fn buffer_regex_search(
     }
     let pattern = string_like(&args[0])
         .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+    let pattern = regex_pattern_with_search_spaces(interp, &pattern, env);
     let regex = compile_elisp_regex(
         interp,
         &pattern,
@@ -21419,6 +21700,133 @@ fn font_lock_add_text_property(
     Ok(Value::Nil)
 }
 
+fn clear_font_lock_faces_in_current_buffer(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+) -> Result<(), LispError> {
+    let start = start.max(interp.buffer.point_min());
+    let end = end.min(interp.buffer.point_max());
+    if start >= end {
+        return Ok(());
+    }
+    interp.buffer.remove_list_of_text_properties(
+        start,
+        end,
+        &["face".to_string(), "font-lock-face".to_string()],
+    );
+    font_lock_push_buffer_undo_entry(interp, interp.current_buffer_id())?;
+    Ok(())
+}
+
+fn font_lock_ensure_region(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let start = start.max(interp.buffer.point_min());
+    let end = end.min(interp.buffer.point_max());
+    if start >= end {
+        interp.set_buffer_local_value(interp.current_buffer_id(), "font-lock-fontified", Value::T);
+        return Ok(());
+    }
+
+    clear_font_lock_faces_in_current_buffer(interp, start, end)?;
+    let keywords = interp
+        .lookup_var("hi-lock-interactive-patterns", env)
+        .unwrap_or(Value::Nil)
+        .to_vec()
+        .unwrap_or_default();
+    for keyword in keywords {
+        font_lock_apply_hi_lock_keyword(interp, &keyword, start, end, env)?;
+    }
+    interp.set_buffer_local_value(interp.current_buffer_id(), "font-lock-fontified", Value::T);
+    font_lock_push_buffer_undo_entry(interp, interp.current_buffer_id())?;
+    Ok(())
+}
+
+fn font_lock_apply_hi_lock_keyword(
+    interp: &mut Interpreter,
+    keyword: &Value,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let items = keyword.to_vec()?;
+    if items.len() < 2 {
+        return Ok(());
+    }
+
+    let matcher = items[0].clone();
+    let action = items[1].to_vec()?;
+    if action.len() < 2 {
+        return Ok(());
+    }
+
+    let subexp = action[0].as_integer()?.max(0) as usize;
+    let face = interp.eval(&action[1], env)?;
+    let append = !matches!(action.get(2), Some(Value::Symbol(mode)) if mode == "prepend");
+    let saved_point = interp.buffer.point();
+    interp.buffer.goto_char(start);
+    let mut matcher_env = Vec::new();
+
+    while interp.buffer.point() <= end {
+        let result = call_function_value(
+            interp,
+            &matcher,
+            &[Value::Integer(end as i64)],
+            &mut matcher_env,
+        )?;
+        if result.is_nil() {
+            break;
+        }
+
+        let Some((match_start, match_end)) = interp
+            .last_match_data
+            .as_ref()
+            .and_then(|data| data.get(subexp))
+            .and_then(|entry| *entry)
+        else {
+            break;
+        };
+
+        if match_start >= match_end {
+            let next = (interp.buffer.point().saturating_add(1)).min(end);
+            if next <= interp.buffer.point() {
+                break;
+            }
+            interp.buffer.goto_char(next);
+            continue;
+        }
+
+        let previous = interp
+            .buffer
+            .text_property_at(match_start, "face")
+            .unwrap_or(Value::Nil);
+        let updated = combine_font_lock_property_value("face", previous, &face, append);
+        font_lock_put_buffer_property(
+            interp,
+            interp.current_buffer_id(),
+            match_start,
+            match_end,
+            "face",
+            updated,
+        )?;
+
+        if interp.buffer.point() <= match_start {
+            let next = (match_start.saturating_add(1)).min(end);
+            if next <= interp.buffer.point() {
+                break;
+            }
+            interp.buffer.goto_char(next);
+        }
+    }
+
+    interp.buffer.goto_char(saved_point);
+    Ok(())
+}
+
 fn font_lock_target_buffer_id(
     interp: &Interpreter,
     object: Option<&Value>,
@@ -21675,6 +22083,34 @@ fn resolve_face_attribute_inherit(
 
 fn is_unspecified_face_attribute(value: &Value) -> bool {
     matches!(value, Value::Symbol(symbol) if symbol == "unspecified")
+}
+
+fn face_exists(interp: &Interpreter, face: &str) -> bool {
+    if face == "default" {
+        return true;
+    }
+    if interp
+        .get_symbol_property(face, "face-defface-spec")
+        .is_some()
+    {
+        return true;
+    }
+    if interp.face_inherit_target(face).is_some() {
+        return true;
+    }
+    interp
+        .symbol_plist(face)
+        .to_vec()
+        .ok()
+        .into_iter()
+        .flatten()
+        .step_by(2)
+        .any(|property| {
+            property
+                .as_symbol()
+                .ok()
+                .is_some_and(|name| name.starts_with("emaxx-face-attribute::"))
+        })
 }
 
 fn face_list_items(value: &Value) -> Result<Vec<Value>, LispError> {
@@ -25172,7 +25608,7 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
             };
             values_equal(interp, &a_car, &b_car) && values_equal(interp, &a_cdr, &b_cdr)
         }
-        _ => false,
+        _ => left == right,
     }
 }
 
@@ -25211,6 +25647,135 @@ fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
         }
         _ => left == right,
     }
+}
+
+fn proper_list_length(value: &Value) -> Option<usize> {
+    if matches!(value, Value::Nil) {
+        return Some(0);
+    }
+    if !matches!(value, Value::Cons(_, _)) || is_vector_value(value) {
+        return None;
+    }
+    match value.to_vec() {
+        Ok(items) => Some(items.len()),
+        Err(LispError::TypeError(expected, _)) if expected == "list" => None,
+        Err(LispError::SignalValue(signal)) if circular_list_signal_p(&signal) => None,
+        Err(_) => None,
+    }
+}
+
+fn circular_list_signal_p(value: &Value) -> bool {
+    value
+        .to_vec()
+        .ok()
+        .and_then(|items| items.first().cloned())
+        .and_then(|head| head.as_symbol().ok().map(str::to_string))
+        .is_some_and(|symbol| symbol == "circular-list")
+}
+
+fn remove_equal(interp: &Interpreter, elt: &Value, sequence: &Value) -> Result<Value, LispError> {
+    if let Some(string) = sequence_string_like(sequence) {
+        let filtered = string
+            .text
+            .chars()
+            .filter(|ch| !values_equal(interp, &string_sequence_value(&string, *ch), elt))
+            .collect::<String>();
+        return Ok(make_shared_string_value_with_multibyte(
+            filtered,
+            Vec::new(),
+            string.multibyte,
+        ));
+    }
+
+    if is_vector_value(sequence) {
+        let filtered = vector_items(sequence)?
+            .into_iter()
+            .filter(|item| !values_equal(interp, item, elt))
+            .collect::<Vec<_>>();
+        let mut result = vec![Value::symbol("vector")];
+        result.extend(filtered);
+        return Ok(Value::list(result));
+    }
+
+    match sequence {
+        Value::Nil | Value::Cons(_, _) => Ok(Value::list(
+            sequence
+                .to_vec()?
+                .into_iter()
+                .filter(|item| !values_equal(interp, item, elt))
+                .collect::<Vec<_>>(),
+        )),
+        _ => Err(LispError::TypeError(
+            "sequence".into(),
+            sequence.type_name(),
+        )),
+    }
+}
+
+fn rassq_delete_all(key: &Value, alist: &Value) -> Result<Value, LispError> {
+    let filtered = alist
+        .to_vec()?
+        .into_iter()
+        .filter(|entry| match entry {
+            Value::Cons(_, _) => entry.cdr().is_ok_and(|value| value != *key),
+            _ => true,
+        })
+        .collect::<Vec<_>>();
+    Ok(Value::list(filtered))
+}
+
+fn format_prompt(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 {
+        return Err(LispError::WrongNumberOfArgs(
+            "format-prompt".into(),
+            args.len(),
+        ));
+    }
+
+    let prompt = if args.len() == 2 {
+        call(interp, "substitute-command-keys", &[args[0].clone()], env)?
+    } else {
+        let mut format_args = Vec::with_capacity(args.len() - 1);
+        format_args.push(call(
+            interp,
+            "substitute-command-keys",
+            &[args[0].clone()],
+            env,
+        )?);
+        format_args.extend_from_slice(&args[2..]);
+        call(interp, "format", &format_args, env)?
+    };
+
+    let default = match &args[1] {
+        Value::Nil => None,
+        Value::Cons(_, _) => args[1].car().ok(),
+        other => Some(other.clone()),
+    }
+    .filter(|value| {
+        string_like(value)
+            .map(|string| !string.text.is_empty())
+            .unwrap_or(true)
+    });
+
+    let mut result = string_text(&prompt)?.to_string();
+    if let Some(default) = default {
+        let default_format = interp
+            .lookup_var("minibuffer-default-prompt-format", env)
+            .and_then(|value| string_like(&value).map(|string| string.text))
+            .unwrap_or_else(|| " (default %s)".into());
+        let default_string = match string_like(&default) {
+            Some(string) => string.text,
+            None => default.to_string(),
+        };
+        let format_args = [Value::String(default_format), Value::String(default_string)];
+        result.push_str(&string_text(&call(interp, "format", &format_args, env)?)?);
+    }
+    result.push_str(": ");
+    Ok(Value::String(result))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -26051,12 +26616,32 @@ fn autoload_command_p(value: &Value) -> bool {
     })
 }
 
+fn resolve_callable_aliases(
+    interp: &Interpreter,
+    func: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let mut current = func.clone();
+    let mut seen = HashSet::new();
+    while let Value::Symbol(name) = current.clone() {
+        if !seen.insert(name.clone()) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("cyclic-function-indirection".into()),
+                Value::Symbol(name),
+            ])));
+        }
+        current = interp.lookup_function(&name, env)?;
+    }
+    Ok(current)
+}
+
 fn collect_interactive_args(
     interp: &mut Interpreter,
     func: &Value,
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
-    let Some(spec) = interactive_spec_form(func) else {
+    let func = resolve_callable_aliases(interp, func, env)?;
+    let Some(spec) = interactive_spec_form(&func) else {
         return Ok(Vec::new());
     };
     match spec {
@@ -26066,11 +26651,11 @@ fn collect_interactive_args(
             if let Some(items) = interactive_list_form_items(&spec) {
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
-                    values.push(eval_callable_metadata_form(interp, func, &item, env)?);
+                    values.push(eval_callable_metadata_form(interp, &func, &item, env)?);
                 }
                 Ok(values)
             } else {
-                eval_callable_metadata_form(interp, func, &spec, env)?.to_vec()
+                eval_callable_metadata_form(interp, &func, &spec, env)?.to_vec()
             }
         }
     }

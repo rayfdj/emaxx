@@ -896,10 +896,24 @@ impl Interpreter {
         };
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
+        interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
         let input_decode_map =
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
+        interp.set_global_binding("font-lock-mode", Value::Nil);
+        interp.mark_auto_buffer_local("font-lock-mode");
+        interp.set_global_binding("font-lock-fontified", Value::Nil);
+        interp.mark_auto_buffer_local("font-lock-fontified");
+        interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
+        interp.mark_auto_buffer_local("major-mode");
+        interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
+        interp.mark_auto_buffer_local("mode-name");
+        interp.set_global_binding("current-prefix-arg", Value::Nil);
+        interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
+        interp.set_global_binding("search-spaces-regexp", Value::Nil);
+        interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
         let selected_window = interp.create_record(
             "window",
             vec![
@@ -6404,6 +6418,13 @@ impl Interpreter {
             return Ok(Value::Nil);
         };
         if let Some(spec) = items.get(2) {
+            self.put_symbol_property(name, "face-defface-spec", spec.clone());
+            self.put_symbol_property(name, "face-modified", Value::Nil);
+            if let Some(doc) = items.get(3)
+                && matches!(doc, Value::String(_) | Value::StringObject(_))
+            {
+                self.put_symbol_property(name, "face-documentation", doc.clone());
+            }
             self.record_defface_runtime_attributes(name, spec)?;
         }
         Ok(Value::Symbol(name.to_string()))
@@ -6870,7 +6891,10 @@ impl Interpreter {
 
         let current = self.lookup_var(&place, env).unwrap_or(Value::Nil);
         let mut values = current.to_vec()?;
-        if values.iter().any(|existing| existing == &value) {
+        if values
+            .iter()
+            .any(|existing| crate::lisp::primitives::values_equal(self, existing, &value))
+        {
             return Ok(current);
         }
 
@@ -11186,6 +11210,45 @@ mod tests {
     }
 
     #[test]
+    fn proper_list_p_returns_length_for_proper_lists_only() {
+        assert_eq!(
+            eval_str(
+                "(list
+                   (proper-list-p nil)
+                   (proper-list-p '(a b))
+                   (proper-list-p '(a . b))
+                   (let ((x (list 'a)))
+                     (setcdr x x)
+                     (proper-list-p x)))"
+            ),
+            Value::list([Value::Integer(0), Value::Integer(2), Value::Nil, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn rassq_delete_all_filters_matching_alist_values() {
+        assert_eq!(
+            eval_str("(rassq-delete-all 'drop '(noise (a . drop) (b . keep) (c . drop)))"),
+            Value::list([
+                Value::Symbol("noise".into()),
+                Value::cons(Value::Symbol("b".into()), Value::Symbol("keep".into())),
+            ])
+        );
+    }
+
+    #[test]
+    fn format_prompt_uses_first_default_choice() {
+        run_large_stack_test(assert_format_prompt_uses_first_default_choice);
+    }
+
+    fn assert_format_prompt_uses_first_default_choice() {
+        assert_eq!(
+            eval_str(r#"(format-prompt "Regexp to unhighlight" '("a" "b"))"#),
+            Value::String("Regexp to unhighlight (default a): ".into())
+        );
+    }
+
+    #[test]
     fn assoc_string_matches_symbols_single_strings_and_case_fold() {
         assert_eq!(
             eval_str(
@@ -11226,6 +11289,30 @@ mod tests {
                 Value::Symbol("c".into()),
             ])
         );
+    }
+
+    #[test]
+    fn remove_filters_lists_vectors_and_strings() {
+        let value = eval_str(
+            "(list
+               (remove 'a '(a b a c))
+               (remove 2 [1 2 3 2])
+               (remove ?a \"aba\"))",
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(
+            items[0],
+            Value::list([Value::Symbol("b".into()), Value::Symbol("c".into()),])
+        );
+        assert_eq!(
+            items[1],
+            Value::list([
+                Value::Symbol("vector".into()),
+                Value::Integer(1),
+                Value::Integer(3),
+            ])
+        );
+        assert_eq!(primitives::string_text(&items[2]).unwrap(), "b");
     }
 
     #[test]
@@ -11362,6 +11449,26 @@ mod tests {
             eval_str(r#"(equal (sort '(3 1 2) #'< :in-place t) '(1 2 3))"#),
             Value::T
         );
+        assert_eq!(
+            eval_str(
+                r#"(list (isearch-no-upper-case-p "abc" t)
+                         (isearch-no-upper-case-p "Abc" t)
+                         (isearch-no-upper-case-p "A\\b" t)
+                         (isearch-no-upper-case-p "[:upper:]" t)
+                         (with-temp-buffer
+                           (insert "a A")
+                           (goto-char (point-min))
+                           (let ((search-spaces-regexp search-whitespace-regexp))
+                             (re-search-forward "a   a" nil t))))"#
+            ),
+            Value::list([
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(4),
+            ])
+        );
     }
 
     #[test]
@@ -11491,6 +11598,22 @@ mod tests {
                      "\\(?://+\\|/\\*+\\)\\s *"
                      "[ \t]*\\*+/"
                      nil indent t)))
+                "#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn emacs_lisp_mode_sets_minimal_font_lock_defaults() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (emacs-lisp-mode)
+                  (equal
+                   (list major-mode mode-name comment-start comment-end font-lock-defaults)
+                   '(emacs-lisp-mode "Emacs-Lisp" ";" "" t)))
                 "#
             ),
             Value::T
@@ -11895,6 +12018,30 @@ mod tests {
     }
 
     #[test]
+    fn facep_recognizes_runtime_faces() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defface sample-face '((t (:foreground \"red\"))) \"doc\")
+                   (set-face-attribute 'runtime-face nil :foreground \"blue\")
+                   (list
+                    (facep 'sample-face)
+                    (facep \"sample-face\")
+                    (facep 'runtime-face)
+                    (face-name 'runtime-face)
+                    (facep 'missing-face)))"
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::String("runtime-face".into()),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
     fn defface_only_records_default_display_clauses() {
         assert_eq!(
             eval_str(
@@ -12028,6 +12175,16 @@ mod tests {
                 Value::Symbol("b".into()),
                 Value::Symbol("c".into()),
             ])
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (setq sample-strings '(\"a\"))
+                   (add-to-list 'sample-strings (symbol-name 'a) t)
+                   sample-strings)"
+            ),
+            Value::list([Value::String("a".into())])
         );
     }
 
@@ -14115,6 +14272,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn call_interactively_follows_symbol_aliases_for_interactive_specs() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            "(defun sample-callint-target (arg)
+               (interactive (list 7))
+               arg)",
+        );
+        eval_str_with(
+            &mut interp,
+            "(defalias 'sample-callint-alias 'sample-callint-target)",
+        );
+        assert_eq!(
+            eval_str_with(&mut interp, "(call-interactively 'sample-callint-alias)"),
+            Value::Integer(7)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn call_process_region_can_delete_entire_buffer() {
@@ -14786,6 +14962,79 @@ IHdvcmxkIQ==")))
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn remove_overlays_matches_string_properties_by_equal() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer
+                   (insert \"abc\")
+                   (let ((ov-a (make-overlay 1 2))
+                         (ov-b (make-overlay 2 3)))
+                     (overlay-put ov-a 'tag (copy-sequence \"a\"))
+                     (overlay-put ov-b 'tag \"b\")
+                     (remove-overlays nil nil 'tag \"a\")
+                     (length (overlays-in (point-min) (point-max)))))"
+            ),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn font_lock_ensure_and_flush_track_hi_lock_faces() {
+        run_large_stack_test(assert_font_lock_ensure_and_flush_track_hi_lock_faces);
+    }
+
+    fn assert_font_lock_ensure_and_flush_track_hi_lock_faces() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer
+                   (insert \"a A\")
+                   (setq font-lock-mode t)
+                   (setq hi-lock-interactive-patterns
+                         (list
+                          (list
+                           (lambda (limit)
+                             (let ((case-fold-search nil))
+                               (re-search-forward \"a\" limit t)))
+                           '(0 'hi-yellow prepend))))
+                   (font-lock-ensure)
+                   (let ((had-face (and (memq 'hi-yellow (get-text-property 1 'face)) t)))
+                     (font-lock-flush)
+                     (list had-face (get-text-property 1 'face))))"
+            ),
+            Value::list([Value::T, Value::list([Value::Symbol("hi-yellow".into())])])
+        );
+    }
+
+    #[test]
+    fn font_lock_flush_reapplies_remaining_hi_lock_faces() {
+        run_large_stack_test(assert_font_lock_flush_reapplies_remaining_hi_lock_faces);
+    }
+
+    fn assert_font_lock_flush_reapplies_remaining_hi_lock_faces() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer
+                   (insert \"ab\")
+                   (setq font-lock-mode t
+                         font-lock-fontified t)
+                   (let* ((match-a
+                           (list (lambda (limit) (re-search-forward \"a\" limit t))
+                                 '(0 'hi-yellow prepend)))
+                          (match-b
+                           (list (lambda (limit) (re-search-forward \"b\" limit t))
+                                 '(0 'hi-yellow prepend))))
+                     (setq hi-lock-interactive-patterns (list match-b match-a))
+                     (font-lock-ensure)
+                     (setq hi-lock-interactive-patterns (list match-b))
+                     (font-lock-flush)
+                     (list (get-text-property 1 'face)
+                           (and (memq 'hi-yellow (get-text-property 2 'face)) t))))"
+            ),
+            Value::list([Value::Nil, Value::T])
+        );
     }
 
     #[test]
