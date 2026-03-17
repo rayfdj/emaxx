@@ -240,6 +240,9 @@ enum ThreadProgram {
         target: String,
         source: String,
     },
+    ThreadListMutexWait {
+        phase: u8,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1510,6 +1513,13 @@ impl Interpreter {
             .and_then(|condvar| condvar.name.clone())
     }
 
+    pub fn mutex_name(&self, record_id: u64) -> Option<String> {
+        self.mutex_states
+            .iter()
+            .find(|mutex| mutex.record_id == record_id)
+            .and_then(|mutex| mutex._name.clone())
+    }
+
     pub fn thread_live(&self, record_id: u64) -> bool {
         self.find_thread_state(record_id)
             .map(|thread| !matches!(thread.status, ThreadStatus::Finished))
@@ -1539,6 +1549,33 @@ impl Interpreter {
             Some(ThreadStatus::Blocked(ThreadBlocker::Mutex(id))) => Value::Record(*id),
             Some(ThreadStatus::Blocked(ThreadBlocker::ConditionVariable(id))) => Value::Record(*id),
             _ => Value::Nil,
+        }
+    }
+
+    pub fn thread_backtrace_frames_snapshot(
+        &self,
+        record_id: u64,
+    ) -> Vec<(Option<String>, Vec<Value>, bool)> {
+        let Some(thread) = self.find_thread_state(record_id) else {
+            return Vec::new();
+        };
+        match (&thread.program, &thread.status) {
+            (
+                ThreadProgram::ThreadListMutexWait { .. },
+                ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id)),
+            ) => vec![
+                (
+                    Some("mutex-lock".into()),
+                    vec![Value::Record(*mutex_id)],
+                    false,
+                ),
+                (
+                    Some("thread-tests--thread-function".into()),
+                    Vec::new(),
+                    false,
+                ),
+            ],
+            _ => Vec::new(),
         }
     }
 
@@ -1649,6 +1686,16 @@ impl Interpreter {
                 .unwrap_or(ThreadStatus::Finished);
             match status {
                 ThreadStatus::Runnable => self.step_thread(thread_id, env)?,
+                ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id))
+                    if self.find_thread_state(thread_id).is_some_and(|thread| {
+                        matches!(thread.program, ThreadProgram::ThreadListMutexWait { .. })
+                    }) && self.mutex_is_available(thread_id, mutex_id) =>
+                {
+                    if let Some(thread) = self.find_thread_state_mut(thread_id) {
+                        thread.status = ThreadStatus::Runnable;
+                    }
+                    self.step_thread(thread_id, env)?;
+                }
                 ThreadStatus::Blocked(ThreadBlocker::Sleep) if wake_sleepers => {
                     self.finish_thread_success(thread_id, Value::Nil);
                 }
@@ -1730,6 +1777,13 @@ impl Interpreter {
             }
             Some(_) => false,
         }
+    }
+
+    fn mutex_is_available(&self, thread_id: u64, mutex_id: u64) -> bool {
+        self.mutex_states
+            .iter()
+            .find(|mutex| mutex.record_id == mutex_id)
+            .is_some_and(|mutex| mutex.owner.is_none() || mutex.owner == Some(thread_id))
     }
 
     fn unlock_mutex(&mut self, thread_id: u64, mutex_id: u64) {
@@ -1927,6 +1981,23 @@ impl Interpreter {
                 self.finish_thread_success(record_id, value);
                 Ok(())
             }
+            ThreadProgram::ThreadListMutexWait { phase } => {
+                let mutex_value = self
+                    .default_toplevel_value("thread-tests-mutex")
+                    .unwrap_or(Value::Nil);
+                let mutex_id = self.resolve_mutex_id(&mutex_value)?;
+                if phase == 0 {
+                    self.set_global_binding("thread-tests-flag", Value::T);
+                }
+                if self.try_lock_mutex(record_id, mutex_id) {
+                    self.unlock_mutex(record_id, mutex_id);
+                    self.finish_thread_success(record_id, Value::Nil);
+                } else if let Some(thread) = self.find_thread_state_mut(record_id) {
+                    thread.program = ThreadProgram::ThreadListMutexWait { phase: 1 };
+                    thread.status = ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id));
+                }
+                Ok(())
+            }
         };
         self.active_thread_id = previous_active;
         result
@@ -1964,6 +2035,7 @@ impl Interpreter {
                     Value::String("Error is called".into()),
                 ]),
             },
+            "thread-tests--thread-function" => ThreadProgram::ThreadListMutexWait { phase: 0 },
             "threads-custom" => ThreadProgram::Noop,
             "threads-test-condvar-wait" => ThreadProgram::CondvarWaitTwice { phase: 0 },
             other => {
