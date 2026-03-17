@@ -139,7 +139,17 @@ fn initialize_batch_interpreter(options: &BatchRunOptions) -> Interpreter {
     interpreter.set_load_path(options.load_path.clone());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     interpreter.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+    preload_batch_compat_libraries(&mut interpreter);
     interpreter
+}
+
+fn preload_batch_compat_libraries(interpreter: &mut Interpreter) {
+    for feature in ["button"] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
+            continue;
+        }
+        let _ = interpreter.load_target(feature);
+    }
 }
 
 fn parse_selector_requests(expressions: &[String]) -> Result<(Value, bool), String> {
@@ -424,6 +434,8 @@ fn xml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn extracts_perf_request_from_eval_form() {
@@ -455,5 +467,37 @@ mod tests {
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
         );
+    }
+
+    #[test]
+    fn batch_runtime_preloads_button_when_available_on_load_path() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("emaxx-batch-button-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&root).expect("create temp root");
+        let button = root.join("button.el");
+        fs::write(
+            &button,
+            "(defun insert-text-button (&rest _args) 'loaded)\n(provide 'button)\n",
+        )
+        .expect("write button preload");
+
+        let options = BatchRunOptions {
+            load_path: vec![root.clone()],
+            ..Default::default()
+        };
+        let interpreter = initialize_batch_interpreter(&options);
+
+        assert!(interpreter.has_feature("button"));
+        assert!(
+            interpreter
+                .lookup_function("insert-text-button", &Vec::new())
+                .is_ok()
+        );
+
+        fs::remove_dir_all(root).expect("remove temp root");
     }
 }

@@ -40,6 +40,7 @@ type FileChangeCache = HashMap<String, FileChangeFingerprint>;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
@@ -1229,11 +1230,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "text-property-any"
             | "text-property-not-all"
             | "next-single-property-change"
+            | "previous-single-property-change"
             | "text-properties-at"
             | "put-text-property"
             | "add-text-properties"
             | "set-text-properties"
             | "remove-list-of-text-properties"
+            | "remove-text-properties"
+            | "add-face-text-property"
             | "font-lock-append-text-property"
             | "font-lock-prepend-text-property"
             | "font-lock--remove-face-from-text-property"
@@ -1741,6 +1745,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
             | "define-widget"
+            | "widget-create"
             | "define-button-type"
             | "make-button"
             | "button-at"
@@ -1916,6 +1921,8 @@ pub fn call(
             | "add-text-properties"
             | "set-text-properties"
             | "remove-list-of-text-properties"
+            | "remove-text-properties"
+            | "add-face-text-property"
             | "font-lock-append-text-property"
             | "font-lock-prepend-text-property"
             | "font-lock--remove-face-from-text-property"
@@ -6036,16 +6043,17 @@ pub fn call(
         }
         "get-pos-property" | "get-char-property" => {
             need_args(name, args, 2)?;
-            let pos = args[0].as_integer()? as usize;
             let prop = args[1].as_symbol()?.to_string();
-            let buffer_id = if let Some(object) = args.get(2) {
-                if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                }
-            } else {
-                interp.current_buffer_id()
+            if let Some(object) = args.get(2)
+                && string_like(object).is_some()
+            {
+                let pos = args[0].as_integer()?.max(0) as usize;
+                return Ok(string_property_at(object, pos, &prop).unwrap_or(Value::Nil));
+            }
+            let pos = position_from_value(interp, &args[0])?;
+            let buffer_id = match args.get(2) {
+                Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
+                _ => interp.current_buffer_id(),
             };
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
@@ -6060,12 +6068,13 @@ pub fn call(
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let pos = args[0].as_integer()? as usize;
             let prop = args[1].as_symbol()?.to_string();
             if let Some(object) = args.get(2) {
                 if string_like(object).is_some() {
+                    let pos = args[0].as_integer()?.max(0) as usize;
                     Ok(string_property_at(object, pos, &prop).unwrap_or(Value::Nil))
                 } else {
+                    let pos = position_from_value(interp, &args[0])?;
                     let buffer_id = if object.is_nil() {
                         interp.current_buffer_id()
                     } else {
@@ -6077,6 +6086,7 @@ pub fn call(
                     Ok(buffer.text_property_at(pos, &prop).unwrap_or(Value::Nil))
                 }
             } else {
+                let pos = position_from_value(interp, &args[0])?;
                 Ok(interp
                     .buffer
                     .text_property_at(pos, &prop)
@@ -6158,7 +6168,7 @@ pub fn call(
                     .unwrap_or(Value::Nil));
             }
 
-            let pos = args[0].as_integer()?.max(1) as usize;
+            let pos = position_from_value(interp, &args[0])?.max(1);
             let (initial, max_pos) = {
                 let buffer_id = if object.is_nil() {
                     interp.current_buffer_id()
@@ -6194,15 +6204,82 @@ pub fn call(
                 .map(|value| Value::Integer(value as i64))
                 .unwrap_or(Value::Nil))
         }
+        "previous-single-property-change" => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let prop = args[1].as_symbol()?.to_string();
+            let object = args.get(2).unwrap_or(&Value::Nil);
+            let limit = args
+                .get(3)
+                .filter(|value| !value.is_nil())
+                .map(|value| value.as_integer().map(|value| value.max(0) as usize))
+                .transpose()?;
+            if string_like(object).is_some() {
+                let pos = args[0].as_integer()?.max(0) as usize;
+                let min_pos = limit.unwrap_or(0);
+                if pos <= min_pos {
+                    return Ok(limit
+                        .map(|value| Value::Integer(value as i64))
+                        .unwrap_or(Value::Nil));
+                }
+                let initial =
+                    string_property_at(object, pos.saturating_sub(1), &prop).unwrap_or(Value::Nil);
+                for cursor in (min_pos..pos).rev() {
+                    let previous = cursor
+                        .checked_sub(1)
+                        .and_then(|index| string_property_at(object, index, &prop))
+                        .unwrap_or(Value::Nil);
+                    if previous != initial {
+                        return Ok(Value::Integer(cursor as i64));
+                    }
+                }
+                return Ok(limit
+                    .map(|value| Value::Integer(value as i64))
+                    .unwrap_or(Value::Nil));
+            }
+
+            let pos = position_from_value(interp, &args[0])?.max(1);
+            let buffer_id = if object.is_nil() {
+                interp.current_buffer_id()
+            } else {
+                interp.resolve_buffer_id(object)?
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+            let min_pos = limit.unwrap_or(buffer.point_min());
+            if pos <= min_pos {
+                return Ok(limit
+                    .map(|value| Value::Integer(value as i64))
+                    .unwrap_or(Value::Nil));
+            }
+            let initial = buffer
+                .text_property_at(pos.saturating_sub(1), &prop)
+                .unwrap_or(Value::Nil);
+            for cursor in (min_pos..pos).rev() {
+                let previous = cursor
+                    .checked_sub(1)
+                    .and_then(|index| buffer.text_property_at(index, &prop))
+                    .unwrap_or(Value::Nil);
+                if previous != initial {
+                    return Ok(Value::Integer(cursor as i64));
+                }
+            }
+            Ok(limit
+                .map(|value| Value::Integer(value as i64))
+                .unwrap_or(Value::Nil))
+        }
         "text-properties-at" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let pos = args[0].as_integer()? as usize;
             let props = if let Some(object) = args.get(1) {
                 if string_like(object).is_some() {
+                    let pos = args[0].as_integer()?.max(0) as usize;
                     string_properties_at(object, pos)
                 } else {
+                    let pos = position_from_value(interp, &args[0])?;
                     let buffer_id = if object.is_nil() {
                         interp.current_buffer_id()
                     } else {
@@ -6216,6 +6293,7 @@ pub fn call(
                         .text_properties_at(pos)
                 }
             } else {
+                let pos = position_from_value(interp, &args[0])?;
                 interp.buffer.text_properties_at(pos)
             };
             Ok(plist_value(&props))
@@ -6397,6 +6475,53 @@ pub fn call(
             }
             Ok(Value::T)
         }
+        "remove-text-properties" => {
+            if args.len() < 3 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let names = plist_pairs(&args[2])?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            if let Some(object) = args.get(3) {
+                if string_like(object).is_some() {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    modify_shared_string_properties(object, start, end, |current| {
+                        current
+                            .into_iter()
+                            .filter(|(key, _)| !names.iter().any(|name| name == key))
+                            .collect()
+                    })?;
+                } else {
+                    let start = position_from_value(interp, &args[0])?;
+                    let end = position_from_value(interp, &args[1])?;
+                    interp
+                        .buffer
+                        .remove_list_of_text_properties(start, end, &names);
+                    interp
+                        .buffer
+                        .push_undo_entry(crate::buffer::UndoEntry::Combined {
+                            display: Value::Nil,
+                            entries: Vec::new(),
+                        });
+                }
+            } else {
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                interp
+                    .buffer
+                    .remove_list_of_text_properties(start, end, &names);
+                interp
+                    .buffer
+                    .push_undo_entry(crate::buffer::UndoEntry::Combined {
+                        display: Value::Nil,
+                        entries: Vec::new(),
+                    });
+            }
+            Ok(Value::T)
+        }
+        "add-face-text-property" => add_face_text_property(interp, name, args),
         "font-lock-append-text-property" => font_lock_add_text_property(interp, name, args, true),
         "font-lock-prepend-text-property" => font_lock_add_text_property(interp, name, args, false),
         "font-lock--remove-face-from-text-property" => {
@@ -8934,7 +9059,11 @@ pub fn call(
         // ── Output ──
         "substitute-command-keys" => {
             need_arg_range(name, args, 1, 3)?;
-            Ok(args[0].clone())
+            Ok(Value::String(substitute_command_keys(
+                interp,
+                &string_text(&args[0])?,
+                env,
+            )))
         }
         "message" => {
             let text = if args.is_empty() {
@@ -9850,7 +9979,11 @@ pub fn call(
         }
         "make-symbol" => {
             need_args(name, args, 1)?;
-            Ok(Value::Symbol(string_text(&args[0])?))
+            let base = string_text(&args[0])?;
+            let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(Value::Symbol(
+                crate::lisp::types::make_uninterned_symbol_name(&base, id),
+            ))
         }
         "gensym" => {
             need_arg_range(name, args, 0, 1)?;
@@ -10605,6 +10738,16 @@ pub fn call(
             interp.put_symbol_property(name, "widget-documentation", doc);
             Ok(Value::Symbol(name.to_string()))
         }
+        "widget-create" => {
+            need_args(name, args, 1)?;
+            if let Some(label) = args.iter().skip(1).find_map(string_like) {
+                interp.buffer.insert(&label.text);
+            }
+            Ok(Value::cons(
+                args[0].clone(),
+                Value::list(args[1..].to_vec()),
+            ))
+        }
         "define-button-type" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
@@ -10711,7 +10854,9 @@ pub fn call(
         "symbol-name" => {
             need_args(name, args, 1)?;
             let s = args[0].as_symbol()?;
-            Ok(Value::String(s.to_string()))
+            Ok(Value::String(
+                crate::lisp::types::visible_symbol_name(s).to_string(),
+            ))
         }
         "user-login-name" => {
             if args.len() > 1 {
@@ -12492,20 +12637,29 @@ pub fn call(
             if args.is_empty() || args.len().is_multiple_of(2) {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let text = string_text(&args[0])?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
             let props = args[1..]
                 .chunks(2)
                 .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1].clone())))
                 .collect::<Result<Vec<_>, LispError>>()?;
-            let len = text.chars().count();
-            Ok(string_like_value(
-                text,
-                vec![TextPropertySpan {
-                    start: 0,
-                    end: len,
-                    props,
-                }],
-            ))
+            let len = string.text.chars().count();
+            let value = make_shared_string_value_with_multibyte(
+                string.text,
+                string.props,
+                string.multibyte,
+            );
+            modify_shared_string_properties(&value, 0, len, |mut current| {
+                for (name, value) in &props {
+                    if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
+                        *existing = value.clone();
+                    } else {
+                        current.push((name.clone(), value.clone()));
+                    }
+                }
+                current
+            })?;
+            Ok(value)
         }
 
         "make-display-table" => {
@@ -21312,6 +21466,188 @@ mod tests {
     }
 
     #[test]
+    fn property_change_helpers_accept_markers() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+        let mut env = Vec::new();
+
+        call(
+            &mut interp,
+            "put-text-property",
+            &[
+                Value::Integer(1),
+                Value::Integer(3),
+                Value::Symbol("button".into()),
+                Value::T,
+            ],
+            &mut env,
+        )
+        .expect("put-text-property should set button text properties");
+
+        let marker = interp.make_marker();
+        let Value::Marker(marker_id) = marker else {
+            unreachable!("make_marker returns a marker");
+        };
+        interp
+            .set_marker(marker_id, Some(2), Some(interp.current_buffer_id()))
+            .expect("set-marker should accept a live buffer");
+
+        let previous = call(
+            &mut interp,
+            "previous-single-property-change",
+            &[Value::Marker(marker_id), Value::Symbol("button".into())],
+            &mut env,
+        )
+        .expect("previous-single-property-change should accept markers");
+        let next = call(
+            &mut interp,
+            "next-single-property-change",
+            &[Value::Marker(marker_id), Value::Symbol("button".into())],
+            &mut env,
+        )
+        .expect("next-single-property-change should accept markers");
+
+        assert_eq!(previous, Value::Integer(1));
+        assert_eq!(next, Value::Integer(3));
+    }
+
+    #[test]
+    fn substitute_command_keys_uses_explicit_keymaps() {
+        let mut interp = Interpreter::new();
+        let keymap = make_runtime_keymap(&mut interp, Some("button-tests--map"));
+        interp.set_global_binding("button-tests--map", keymap.clone());
+        keymap_define_binding(&mut interp, &keymap, "x", Value::Symbol("ignore".into()))
+            .expect("keymap bindings should accept runtime keymaps");
+
+        let mut env = Vec::new();
+        let substituted = call(
+            &mut interp,
+            "substitute-command-keys",
+            &[Value::String(
+                "text: \\<button-tests--map>\\[ignore]".into(),
+            )],
+            &mut env,
+        )
+        .expect("substitute-command-keys should expand explicit keymaps");
+
+        assert_eq!(substituted, Value::String("text: x".into()));
+    }
+
+    #[test]
+    fn add_face_text_property_preserves_other_string_properties() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let string = call(
+            &mut interp,
+            "propertize",
+            &[
+                Value::String("button text".into()),
+                Value::Symbol("help-echo".into()),
+                Value::String("help text".into()),
+            ],
+            &mut env,
+        )
+        .expect("propertize should create a mutable string");
+        call(
+            &mut interp,
+            "add-face-text-property",
+            &[
+                Value::Integer(0),
+                Value::Integer(11),
+                Value::Symbol("button".into()),
+                Value::T,
+                string.clone(),
+            ],
+            &mut env,
+        )
+        .expect("add-face-text-property should preserve unrelated props");
+
+        assert_eq!(
+            string_property_at(&string, 0, "help-echo"),
+            Some(Value::String("help text".into()))
+        );
+        assert_eq!(
+            string_property_at(&string, 0, "face"),
+            Some(Value::Symbol("button".into()))
+        );
+    }
+
+    #[test]
+    fn propertize_preserves_existing_string_properties() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let seed = call(
+            &mut interp,
+            "propertize",
+            &[
+                Value::String("button text".into()),
+                Value::Symbol("help-echo".into()),
+                Value::String("help text".into()),
+            ],
+            &mut env,
+        )
+        .expect("propertize should seed a string property");
+        let updated = call(
+            &mut interp,
+            "propertize",
+            &[seed, Value::Symbol("button".into()), Value::T],
+            &mut env,
+        )
+        .expect("propertize should preserve existing properties");
+
+        assert_eq!(
+            string_property_at(&updated, 0, "help-echo"),
+            Some(Value::String("help text".into()))
+        );
+        assert_eq!(string_property_at(&updated, 0, "button"), Some(Value::T));
+    }
+
+    #[test]
+    fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let left = call(
+            &mut interp,
+            "make-symbol",
+            &[Value::String("help".into())],
+            &mut env,
+        )
+        .expect("make-symbol should return a symbol");
+        let right = call(
+            &mut interp,
+            "make-symbol",
+            &[Value::String("help".into())],
+            &mut env,
+        )
+        .expect("make-symbol should return a distinct symbol");
+
+        assert_ne!(left, right);
+        assert_eq!(
+            call(
+                &mut interp,
+                "symbol-name",
+                std::slice::from_ref(&left),
+                &mut env
+            )
+            .expect("symbol-name should preserve the visible name"),
+            Value::String("help".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "symbol-name",
+                std::slice::from_ref(&right),
+                &mut env
+            )
+            .expect("symbol-name should preserve the visible name"),
+            Value::String("help".into())
+        );
+    }
+
+    #[test]
     fn text_property_search_helpers_find_matches_and_gaps() {
         let mut interp = Interpreter::new();
         interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcd");
@@ -22466,6 +22802,56 @@ fn font_lock_add_text_property(
         let (previous, next) = font_lock_buffer_segment(interp, buffer_id, cursor, end, &prop)?;
         let updated = combine_font_lock_property_value(&prop, previous, &value, append);
         font_lock_put_buffer_property(interp, buffer_id, cursor, next, &prop, updated)?;
+        cursor = next;
+    }
+    font_lock_push_buffer_undo_entry(interp, buffer_id)?;
+    Ok(Value::Nil)
+}
+
+fn add_face_text_property(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    need_arg_range(name, args, 3, 5)?;
+    let face = args[2].clone();
+    let append = args.get(3).is_some_and(|value| value.is_truthy());
+    if let Some(object) = args.get(4)
+        && string_like(object).is_some()
+    {
+        let start = args[0].as_integer()?.max(0) as usize;
+        let end = args[1].as_integer()?.max(0) as usize;
+        let mut cursor = start;
+        while cursor < end {
+            let previous = string_property_at(object, cursor, "face").unwrap_or(Value::Nil);
+            let next = font_lock_next_string_property_change(object, cursor, end, "face");
+            let updated = if previous.is_nil() {
+                face.clone()
+            } else {
+                combine_font_lock_property_value("face", previous, &face, append)
+            };
+            modify_shared_string_properties(object, cursor, next, |mut current| {
+                current.retain(|(key, _)| key != "face");
+                current.push(("face".into(), updated.clone()));
+                current
+            })?;
+            cursor = next;
+        }
+        return Ok(Value::Nil);
+    }
+
+    let start = position_from_value(interp, &args[0])?;
+    let end = position_from_value(interp, &args[1])?;
+    let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
+    let mut cursor = start;
+    while cursor < end {
+        let (previous, next) = font_lock_buffer_segment(interp, buffer_id, cursor, end, "face")?;
+        let updated = if previous.is_nil() {
+            face.clone()
+        } else {
+            combine_font_lock_property_value("face", previous, &face, append)
+        };
+        font_lock_put_buffer_property(interp, buffer_id, cursor, next, "face", updated)?;
         cursor = next;
     }
     font_lock_push_buffer_undo_entry(interp, buffer_id)?;
@@ -27473,6 +27859,94 @@ fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<Value, Lisp
     Ok(Value::Symbol(command.into()))
 }
 
+fn keymap_binding_matches_command(binding: &Value, command: &str) -> bool {
+    match binding {
+        Value::Symbol(name) | Value::BuiltinFunc(name) => name == command,
+        Value::Cons(_, _) => binding
+            .to_vec()
+            .ok()
+            .is_some_and(|items| match items.as_slice() {
+                [Value::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
+                    keymap_binding_matches_command(inner, command)
+                }
+                [Value::Symbol(symbol), _, inner, ..] if symbol == "menu-item" => {
+                    keymap_binding_matches_command(inner, command)
+                }
+                _ => false,
+            }),
+        _ => false,
+    }
+}
+
+fn keymap_binding_text_for_command(
+    interp: &Interpreter,
+    keymap: &Value,
+    command: &str,
+) -> Option<String> {
+    let id = keymap_record_id(interp, keymap)?;
+    let record = interp.find_record(id)?;
+    for (key, binding) in keymap_bindings(record).ok()?.into_iter().rev() {
+        if keymap_binding_matches_command(&binding, command) {
+            return Some(key);
+        }
+    }
+    match record.slots.get(KEYMAP_PARENT_SLOT) {
+        Some(Value::Nil) | None => None,
+        Some(parent) => keymap_binding_text_for_command(interp, parent, command),
+    }
+}
+
+fn substitute_command_keys(interp: &Interpreter, text: &str, env: &Env) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut output = String::new();
+    let mut current_map = interp.lookup_var("global-map", env);
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] == '\\' && index + 1 < chars.len() {
+            match chars[index + 1] {
+                '<' => {
+                    if let Some(end) = chars[index + 2..]
+                        .iter()
+                        .position(|ch| *ch == '>')
+                        .map(|offset| index + 2 + offset)
+                    {
+                        let map_name: String = chars[index + 2..end].iter().collect();
+                        current_map = interp.lookup_var(&map_name, env);
+                        index = end + 1;
+                        continue;
+                    }
+                }
+                '[' => {
+                    if let Some(end) = chars[index + 2..]
+                        .iter()
+                        .position(|ch| *ch == ']')
+                        .map(|offset| index + 2 + offset)
+                    {
+                        let command: String = chars[index + 2..end].iter().collect();
+                        let command = command.trim();
+                        let replacement = current_map
+                            .as_ref()
+                            .and_then(|keymap| {
+                                keymap_binding_text_for_command(interp, keymap, command)
+                            })
+                            .unwrap_or_else(|| format!("M-x {command}"));
+                        output.push_str(&replacement);
+                        index = end + 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        output.push(chars[index]);
+        index += 1;
+    }
+
+    output
+}
+
 pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let items = value.to_vec().ok()?;
     if !matches!(items.first(), Some(Value::Symbol(name)) if name == "autoload") {
@@ -27569,7 +28043,14 @@ pub(crate) fn eval_impl(
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
-    interp.eval(&args[0], env)
+    if let Some(lexical) = args.get(1) {
+        interp.push_lambda_capture_override(lexical.is_truthy());
+        let result = interp.eval(&args[0], env);
+        interp.pop_lambda_capture_override();
+        result
+    } else {
+        interp.eval(&args[0], env)
+    }
 }
 
 fn history_args_for_call(

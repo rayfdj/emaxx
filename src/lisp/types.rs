@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use std::fmt;
 use std::{cell::RefCell, rc::Rc};
 
+const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
+
 pub type ConsSlot = Rc<RefCell<Value>>;
 pub type ConsCells = (ConsSlot, ConsSlot);
 
@@ -56,6 +58,17 @@ pub enum Value {
 /// An environment frame: a list of (name, value) bindings.
 /// We use a simple vector of frames for lexical scoping.
 pub type Env = Vec<Vec<(String, Value)>>;
+
+pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
+    format!("{base}{UNINTERNED_SYMBOL_MARKER}{id}")
+}
+
+pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
+    symbol
+        .split_once(UNINTERNED_SYMBOL_MARKER)
+        .map(|(visible, _)| visible)
+        .unwrap_or(symbol)
+}
 
 impl Value {
     // Constructors
@@ -318,7 +331,7 @@ fn format_value(
         Value::Float(v) => write!(f, "{}", v),
         Value::String(s) => write!(f, "\"{}\"", s),
         Value::StringObject(state) => write!(f, "\"{}\"", state.borrow().text),
-        Value::Symbol(s) => write!(f, "{}", s),
+        Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
         Value::Cons(_, _) => {
             write!(f, "(")?;
             let mut current = value.clone();
