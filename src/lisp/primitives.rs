@@ -943,6 +943,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-pos-property"
             | "get-char-property"
             | "get-text-property"
+            | "text-property-any"
+            | "text-property-not-all"
             | "next-single-property-change"
             | "text-properties-at"
             | "put-text-property"
@@ -5221,6 +5223,54 @@ pub fn call(
                     .unwrap_or(Value::Nil))
             }
         }
+        "text-property-any" | "text-property-not-all" => {
+            if args.len() < 4 || args.len() > 5 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let prop = args[2].as_symbol()?.to_string();
+            let want_match = name == "text-property-any";
+            if let Some(object) = args.get(4) {
+                if string_like(object).is_some() {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    return Ok(text_property_search_string(
+                        interp, object, start, end, &prop, &args[3], want_match,
+                    )
+                    .map(|pos| Value::Integer(pos as i64))
+                    .unwrap_or(Value::Nil));
+                }
+
+                let buffer_id = if object.is_nil() {
+                    interp.current_buffer_id()
+                } else {
+                    interp.resolve_buffer_id(object)?
+                };
+                let buffer = interp
+                    .get_buffer_by_id(buffer_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                return Ok(text_property_search_buffer(
+                    interp, buffer, start, end, &prop, &args[3], want_match,
+                )
+                .map(|pos| Value::Integer(pos as i64))
+                .unwrap_or(Value::Nil));
+            }
+
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            Ok(text_property_search_buffer(
+                interp,
+                &interp.buffer,
+                start,
+                end,
+                &prop,
+                &args[3],
+                want_match,
+            )
+            .map(|pos| Value::Integer(pos as i64))
+            .unwrap_or(Value::Nil))
+        }
         "next-single-property-change" => {
             if args.len() < 2 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -7772,7 +7822,35 @@ pub fn call(
             );
             Ok(if enabled { Value::T } else { Value::Nil })
         }
-        "font-lock-mode" => Ok(Value::Nil),
+        "font-lock-mode" => {
+            let enabled = args
+                .first()
+                .map(|arg| !arg.is_nil() && !matches!(arg, Value::Integer(number) if *number <= 0))
+                .unwrap_or(true);
+            let buffer_id = interp.current_buffer_id();
+            if enabled {
+                interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::T);
+                interp.set_buffer_local_value(buffer_id, "jit-lock-mode", Value::T);
+                if interp
+                    .buffer_local_value(buffer_id, "jit-lock-functions")
+                    .is_none()
+                {
+                    interp.set_buffer_local_value(
+                        buffer_id,
+                        "jit-lock-functions",
+                        Value::list([Value::Symbol("ignore".into())]),
+                    );
+                }
+                interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::T);
+                Ok(Value::T)
+            } else {
+                interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::Nil);
+                interp.set_buffer_local_value(buffer_id, "jit-lock-mode", Value::Nil);
+                interp.set_buffer_local_value(buffer_id, "jit-lock-functions", Value::Nil);
+                interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
+                Ok(Value::Nil)
+            }
+        }
         "find-image" => {
             need_args(name, args, 1)?;
             let specs = args[0].to_vec()?;
@@ -18199,6 +18277,82 @@ mod tests {
     }
 
     #[test]
+    fn text_property_search_helpers_find_matches_and_gaps() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcd");
+        let mut env = Vec::new();
+
+        call(
+            &mut interp,
+            "put-text-property",
+            &[
+                Value::Integer(1),
+                Value::Integer(3),
+                Value::Symbol("fontified".into()),
+                Value::T,
+            ],
+            &mut env,
+        )
+        .expect("put-text-property should set buffer props");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "text-property-any",
+                &[
+                    Value::Integer(1),
+                    Value::Integer(5),
+                    Value::Symbol("fontified".into()),
+                    Value::T,
+                ],
+                &mut env,
+            )
+            .expect("text-property-any should find the first matching position"),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "text-property-not-all",
+                &[
+                    Value::Integer(1),
+                    Value::Integer(5),
+                    Value::Symbol("fontified".into()),
+                    Value::T,
+                ],
+                &mut env,
+            )
+            .expect("text-property-not-all should find the first gap"),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn font_lock_mode_enables_minimal_jit_lock_state() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(&mut interp, "font-lock-mode", &[], &mut env)
+                .expect("font-lock-mode should enable font-lock"),
+            Value::T
+        );
+        let buffer_id = interp.current_buffer_id();
+        assert_eq!(
+            interp.buffer_local_value(buffer_id, "font-lock-mode"),
+            Some(Value::T)
+        );
+        assert_eq!(
+            interp.buffer_local_value(buffer_id, "jit-lock-mode"),
+            Some(Value::T)
+        );
+        assert_eq!(
+            interp.buffer_local_value(buffer_id, "jit-lock-functions"),
+            Some(Value::list([Value::Symbol("ignore".into())]))
+        );
+    }
+
+    #[test]
     fn font_lock_text_property_helpers_keep_anonymous_faces_atomic() {
         let mut interp = Interpreter::new();
         interp.buffer = crate::buffer::Buffer::from_text("*test*", "foo");
@@ -18665,6 +18819,61 @@ fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {
                 .find(|(name, _)| name == prop)
                 .map(|(_, value)| value.clone())
         })
+}
+
+fn text_property_search_buffer(
+    interp: &Interpreter,
+    buffer: &crate::buffer::Buffer,
+    start: usize,
+    end: usize,
+    prop: &str,
+    wanted: &Value,
+    want_match: bool,
+) -> Option<usize> {
+    let start = start.max(buffer.point_min());
+    let end = end.min(buffer.point_max());
+    if start >= end {
+        return None;
+    }
+    for pos in start..end {
+        let matches = values_equal(
+            interp,
+            &buffer.text_property_at(pos, prop).unwrap_or(Value::Nil),
+            wanted,
+        );
+        if matches == want_match {
+            return Some(pos);
+        }
+    }
+    None
+}
+
+fn text_property_search_string(
+    interp: &Interpreter,
+    value: &Value,
+    start: usize,
+    end: usize,
+    prop: &str,
+    wanted: &Value,
+    want_match: bool,
+) -> Option<usize> {
+    let len = string_text(value).ok()?.chars().count();
+    let start = start.min(len);
+    let end = end.min(len);
+    if start >= end {
+        return None;
+    }
+    for pos in start..end {
+        let matches = values_equal(
+            interp,
+            &string_property_at(value, pos, prop).unwrap_or(Value::Nil),
+            wanted,
+        );
+        if matches == want_match {
+            return Some(pos);
+        }
+    }
+    None
 }
 
 fn string_properties_at(value: &Value, pos: usize) -> Vec<(String, Value)> {

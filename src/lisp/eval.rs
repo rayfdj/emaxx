@@ -4517,6 +4517,9 @@ impl Interpreter {
                         "handler-bind" => return self.sf_handler_bind(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
+                        "ert-with-test-buffer" => {
+                            return self.sf_ert_with_test_buffer(&items, env);
+                        }
                         "ert-with-temp-directory" => {
                             return self.sf_ert_with_temp_directory(&items, env);
                         }
@@ -7177,6 +7180,65 @@ impl Interpreter {
         let result = self.sf_progn(&items[1..], env);
         let _ = self.switch_to_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
+        result
+    }
+
+    fn sf_ert_with_test_buffer(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "ert-with-test-buffer".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+
+        let spec = items[1].to_vec().unwrap_or_default();
+        let mut name_form = None;
+        let mut selected_form = None;
+        let mut index = 0usize;
+        while index + 1 < spec.len() {
+            let key = spec[index].as_symbol()?;
+            match key {
+                ":name" => name_form = Some(spec[index + 1].clone()),
+                ":selected" => selected_form = Some(spec[index + 1].clone()),
+                _ => {}
+            }
+            index += 2;
+        }
+
+        let buffer_name = if let Some(form) = name_form {
+            let value = self.eval(&form, env)?;
+            if value.is_nil() {
+                " *ert test*".to_string()
+            } else {
+                primitives::string_text(&value)?
+            }
+        } else {
+            " *ert test*".to_string()
+        };
+        if let Some(form) = selected_form {
+            let _ = self.eval(&form, env)?;
+        }
+
+        let buffer = crate::lisp::primitives::call(
+            self,
+            "generate-new-buffer",
+            &[Value::String(buffer_name)],
+            env,
+        )?;
+        let temp_id = self.resolve_buffer_id(&buffer)?;
+        let saved_buffer_id = self.current_buffer_id();
+        self.switch_to_buffer_id(temp_id)?;
+        let result = self.sf_progn(&items[2..], env);
+        if self.has_buffer_id(saved_buffer_id) {
+            let _ = self.switch_to_buffer_id(saved_buffer_id);
+        }
+        if result.is_ok() && self.has_buffer_id(temp_id) {
+            self.kill_buffer_id(temp_id);
+        }
         result
     }
 
@@ -12332,6 +12394,38 @@ mod tests {
         assert_eq!(
             interp.test_results[0].condition_type.as_deref(),
             Some("ert-test-skipped")
+        );
+    }
+
+    #[test]
+    fn ert_with_test_buffer_kills_buffer_after_success() {
+        assert_eq!(
+            eval_str(
+                r#"(let (buf)
+                     (list
+                      (ert-with-test-buffer (:name "jit-lock-test")
+                        (setq buf (current-buffer))
+                        (buffer-name))
+                      (buffer-live-p buf)))"#
+            ),
+            Value::list([Value::String("jit-lock-test".into()), Value::Nil])
+        );
+    }
+
+    #[test]
+    fn ert_with_test_buffer_keeps_buffer_after_error() {
+        assert_eq!(
+            eval_str(
+                r#"(let (buf)
+                     (condition-case nil
+                         (ert-with-test-buffer (:name "jit-lock-test")
+                           (setq buf (current-buffer))
+                           (error "boom"))
+                       (error
+                        (list (buffer-live-p buf)
+                              (buffer-name buf)))))"#
+            ),
+            Value::list([Value::T, Value::String("jit-lock-test".into())])
         );
     }
 
