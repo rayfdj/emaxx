@@ -10821,6 +10821,22 @@ mod tests {
     }
 
     #[test]
+    fn assoc_string_matches_symbols_single_strings_and_case_fold() {
+        assert_eq!(
+            eval_str(
+                "(list (assoc-string 'foo '((bar . 1) (foo . 2)))
+                       (assoc-string \"foo\" '(dummy \"foo\"))
+                       (assoc-string \"FOO\" '((\"foo\" . 3)) t))"
+            ),
+            Value::list([
+                Value::cons(Value::Symbol("foo".into()), Value::Integer(2)),
+                Value::String("foo".into()),
+                Value::cons(Value::String("foo".into()), Value::Integer(3)),
+            ])
+        );
+    }
+
+    #[test]
     fn cl_delete_if_filters_matching_items() {
         run_large_stack_test(assert_cl_delete_if_filters_matching_items);
     }
