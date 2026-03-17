@@ -13,7 +13,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use regex::Regex;
 use roxmltree::{Document, Node, NodeType};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
@@ -25,8 +25,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, rc::Rc};
 use unicode_general_category::get_general_category;
@@ -35,8 +35,12 @@ use unicode_width::UnicodeWidthChar;
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
+type FileChangeFingerprint = Option<(u64, u128)>;
+type FileChangeCache = HashMap<String, FileChangeFingerprint>;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
@@ -979,6 +983,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "last"
             | "butlast"
             | "length"
+            | "length="
             | "reverse"
             | "copy-tree"
             | "delete-dups"
@@ -1366,6 +1371,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "modify-syntax-entry"
             | "setcdr"
             | "emaxx-default-region-extract-function"
+            | "emaxx-default-revert-buffer-function"
             | "emaxx-struct-make"
             | "emaxx-struct-p"
             | "emaxx-struct-ref"
@@ -1378,13 +1384,17 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-file-name"
             | "visited-file-modtime"
             | "set-visited-file-modtime"
+            | "rename-visited-file"
             | "set-buffer-file-coding-system"
             | "after-insert-file-set-coding"
             | "local"
             | "add-function"
             | "find-file"
             | "find-file-noselect"
+            | "find-file-literally"
+            | "find-buffer-visiting"
             | "get-file-buffer"
+            | "file-has-changed-p"
             | "jka-compr-get-compression-info"
             | "file-locked-p"
             | "expand-file-name"
@@ -1760,6 +1770,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "defconst-1"
             | "internal-make-var-non-special"
             | "make-symbol"
+            | "gensym"
             | "make-interpreted-closure"
             | "obarray-make"
             | "make-hash-table"
@@ -3261,6 +3272,32 @@ pub fn call(
                 }
                 _ => Err(LispError::TypeError("sequence".into(), args[0].type_name())),
             }
+        }
+        "length=" => {
+            need_args(name, args, 2)?;
+            let length = match &args[0] {
+                value if string_like(value).is_some() => string_text(value)?.chars().count() as i64,
+                Value::Nil => 0,
+                Value::Cons(_, _) if is_vector_value(&args[0]) => {
+                    vector_items(&args[0])?.len() as i64
+                }
+                value if is_bool_vector_value(interp, value) => {
+                    bool_vector_values(interp, value)?.len() as i64
+                }
+                Value::Cons(_, _) => args[0].to_vec()?.len() as i64,
+                Value::Record(id) => {
+                    let record = interp.find_record(*id).ok_or_else(|| {
+                        LispError::TypeError("record".into(), format!("record<{id}>"))
+                    })?;
+                    (record.slots.len() + 1) as i64
+                }
+                _ => return Err(LispError::TypeError("sequence".into(), args[0].type_name())),
+            };
+            Ok(if length == args[1].as_integer()? {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "reverse" => {
             need_args(name, args, 1)?;
@@ -5029,7 +5066,7 @@ pub fn call(
             Ok(Value::Integer(interp.buffer.point() as i64))
         }
         "forward-char" => {
-            let n = if args.is_empty() {
+            let n = if args.is_empty() || args[0].is_nil() {
                 1
             } else {
                 args[0].as_integer()?
@@ -5113,7 +5150,7 @@ pub fn call(
             skip_syntax_impl(interp, &args[0], args.get(1), false)
         }
         "backward-char" => {
-            let n = if args.is_empty() {
+            let n = if args.is_empty() || args[0].is_nil() {
                 1
             } else {
                 args[0].as_integer()?
@@ -5144,7 +5181,7 @@ pub fn call(
             Ok(Value::Nil)
         }
         "forward-line" => {
-            let n = if args.is_empty() {
+            let n = if args.is_empty() || args[0].is_nil() {
                 BigInt::from(1u8)
             } else {
                 integer_like_bigint(interp, &args[0])?
@@ -5973,6 +6010,9 @@ pub fn call(
             need_args(name, args, 1)?;
             if args[0].is_nil() {
                 interp.buffer.set_unmodified();
+                if let Some(path) = current_buffer_file(interp).map(str::to_string) {
+                    interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+                }
             } else {
                 interp.buffer.set_modified();
                 let _ = maybe_lock_current_buffer(interp, env);
@@ -5983,6 +6023,9 @@ pub fn call(
             need_args(name, args, 1)?;
             if args[0].is_nil() {
                 interp.buffer.set_unmodified();
+                if let Some(path) = current_buffer_file(interp).map(str::to_string) {
+                    interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+                }
             } else if matches!(&args[0], Value::Symbol(symbol) if symbol == "autosaved") {
                 interp.buffer.set_modified();
                 interp.buffer.set_autosaved();
@@ -7558,6 +7601,39 @@ pub fn call(
             interp.buffer.set_visited_file_modtime(modtime);
             Ok(Value::T)
         }
+        "rename-visited-file" => {
+            need_args(name, args, 1)?;
+            let mut new_location = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            if Path::new(&new_location).is_dir() {
+                let Some(old_location) = interp.buffer.file.clone() else {
+                    return Err(LispError::Signal(
+                        "Can't rename buffer to a directory file name".into(),
+                    ));
+                };
+                let basename = Path::new(&old_location)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| LispError::Signal("Empty file name".into()))?;
+                new_location = Path::new(&new_location)
+                    .join(basename)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+
+            if let Some(old_location) = interp.buffer.file.clone()
+                && Path::new(&old_location).exists()
+            {
+                fs::rename(&old_location, &new_location)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+
+            interp.buffer.file = Some(new_location.clone());
+            interp.buffer.file_truename = Some(new_location.clone());
+            interp
+                .buffer
+                .set_visited_file_modtime(file_modtime(&new_location)?);
+            Ok(Value::Nil)
+        }
         "set-buffer-file-coding-system" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -7677,8 +7753,9 @@ pub fn call(
             Ok(Value::Nil)
         }
         "find-file-noselect" => {
-            need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            need_arg_range(name, args, 1, 4)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let literal = args.get(2).is_some_and(Value::is_truthy);
             if let Some((id, name)) = interp.find_buffer(&path) {
                 return Ok(Value::Buffer(id, name));
             }
@@ -7686,13 +7763,17 @@ pub fn call(
             let saved_buffer_id = interp.current_buffer_id();
             interp.switch_to_buffer_id(id)?;
             let result: Result<(), LispError> = (|| {
-                let mode = auto_mode_function_for_file_name(interp, env, &path)?;
+                let mut mode = auto_mode_function_for_file_name(interp, env, &path)?;
                 let mut bytes = read_insert_file_bytes(&path, None, None)?;
-                if should_auto_decompress(interp, env, &path) {
+                if !literal && should_auto_decompress(interp, env, &path) {
                     bytes = maybe_decompress_file_bytes(&path, bytes)?;
                 }
-                let raw_archive = matches!(mode.as_deref(), Some("tar-mode" | "archive-mode"));
-                let (contents, coding, multibyte) = if raw_archive {
+                if !literal && mode.is_none() {
+                    mode = auto_mode_function_for_contents(&bytes).map(str::to_string);
+                }
+                let raw_archive =
+                    !literal && matches!(mode.as_deref(), Some("tar-mode" | "archive-mode"));
+                let (contents, coding, multibyte) = if literal || raw_archive {
                     (
                         decode_raw_text_bytes(&bytes),
                         "no-conversion".to_string(),
@@ -7714,12 +7795,40 @@ pub fn call(
                     Value::Symbol(coding.clone()),
                 );
                 set_last_coding_system_used(interp, &coding, env);
-                let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
+                if literal {
+                    let _ = call_named_function(interp, "fundamental-mode", &[], env)?;
+                    interp.set_buffer_local_value(
+                        interp.current_buffer_id(),
+                        "find-file-literally",
+                        Value::T,
+                    );
+                } else if let Some(mode) = mode.as_deref() {
+                    let _ = call_named_function(interp, mode, &[], env)?;
+                } else {
+                    let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
+                }
                 Ok(())
             })();
             let _ = interp.switch_to_buffer_id(saved_buffer_id);
             result?;
             Ok(Value::Buffer(id, path))
+        }
+        "find-file-literally" => {
+            need_args(name, args, 1)?;
+            call(
+                interp,
+                "find-file-noselect",
+                &[args[0].clone(), Value::Nil, Value::T],
+                env,
+            )
+        }
+        "find-buffer-visiting" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            Ok(interp
+                .find_buffer(&path)
+                .map(|(id, name)| Value::Buffer(id, name))
+                .unwrap_or(Value::Nil))
         }
         "find-file" => {
             need_args(name, args, 1)?;
@@ -7730,11 +7839,32 @@ pub fn call(
         }
         "get-file-buffer" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             Ok(interp
                 .find_buffer(&path)
                 .map(|(id, name)| Value::Buffer(id, name))
                 .unwrap_or(Value::Nil))
+        }
+        "file-has-changed-p" => {
+            need_arg_range(name, args, 1, 2)?;
+            let path = directory_file_name(&resolve_file_name_in_env(
+                interp,
+                env,
+                &string_text(&args[0])?,
+            ));
+            let key = file_change_cache_key(&path, args.get(1))?;
+            let current = file_change_cache_value(&path)?;
+            let cache = FILE_CHANGE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut cache = cache
+                .lock()
+                .map_err(|_| LispError::Signal("file change cache poisoned".into()))?;
+            let cached = cache.get(&key).cloned().flatten();
+            if current != cached {
+                cache.insert(key, current);
+                Ok(Value::T)
+            } else {
+                Ok(Value::Nil)
+            }
         }
         "expand-file-name" => {
             if args.is_empty() || args.len() > 2 {
@@ -7945,7 +8075,7 @@ pub fn call(
         }
         "file-directory-p" | "file-accessible-directory-p" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             Ok(
                 if fs::metadata(&path)
@@ -7961,7 +8091,7 @@ pub fn call(
         }
         "file-readable-p" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             Ok(if file_readable_p(&path) {
                 Value::T
             } else {
@@ -7970,7 +8100,7 @@ pub fn call(
         }
         "file-writable-p" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             Ok(if file_writable_p(&path) {
                 Value::T
             } else {
@@ -7979,7 +8109,7 @@ pub fn call(
         }
         "file-exists-p" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             Ok(if fs::metadata(path).is_ok() {
                 Value::T
@@ -7989,7 +8119,7 @@ pub fn call(
         }
         "file-executable-p" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             Ok(if file_executable_p(&path) {
                 Value::T
             } else {
@@ -7998,7 +8128,7 @@ pub fn call(
         }
         "file-attributes" => {
             need_arg_range(name, args, 1, 3)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
@@ -8106,16 +8236,20 @@ pub fn call(
         }
         "delete-file" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
-            fs::remove_file(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(LispError::Signal(error.to_string())),
+            }
             Ok(Value::Nil)
         }
         "copy-file" => {
             need_arg_range(name, args, 2, 6)?;
-            let source = string_text(&args[0])?;
+            let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&source)?;
-            let mut target = string_text(&args[1])?;
+            let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
             validate_file_name(&target)?;
             if directory_name_p(&target) {
                 target = file_name_concat(&[target, file_name_nondirectory(&source)]);
@@ -8128,16 +8262,20 @@ pub fn call(
         }
         "delete-file-internal" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
-            fs::remove_file(path).map_err(|error| LispError::Signal(error.to_string()))?;
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(LispError::Signal(error.to_string())),
+            }
             Ok(Value::Nil)
         }
         "delete-directory" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             if args.get(1).is_some_and(Value::is_truthy) {
                 fs::remove_dir_all(path).map_err(|error| LispError::Signal(error.to_string()))?;
@@ -8148,7 +8286,7 @@ pub fn call(
         }
         "delete-directory-internal" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             fs::remove_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(Value::Nil)
@@ -8157,7 +8295,7 @@ pub fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             if args.get(1).is_some_and(Value::is_truthy) {
                 fs::create_dir_all(path).map_err(|error| LispError::Signal(error.to_string()))?;
@@ -8169,7 +8307,7 @@ pub fn call(
         "mkdir" => call(interp, "make-directory", args, env),
         "make-directory-internal" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(Value::Nil)
@@ -8212,7 +8350,8 @@ pub fn call(
         }
         "file-locked-p" => {
             need_args(name, args, 1)?;
-            file_locked_p(&string_text(&args[0])?)
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            file_locked_p(&path)
         }
         "write-region" => {
             if args.len() < 3 {
@@ -8247,7 +8386,7 @@ pub fn call(
         }
         "set-file-modes" => {
             need_args(name, args, 2)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             let mode = args[1].as_integer()?;
             #[cfg(unix)]
@@ -8301,7 +8440,7 @@ pub fn call(
         }
         "file-symlink-p" => {
             need_args(name, args, 1)?;
-            let path = string_text(&args[0])?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             let target = fs::symlink_metadata(&path)
                 .ok()
@@ -9711,8 +9850,13 @@ pub fn call(
         }
         "make-symbol" => {
             need_args(name, args, 1)?;
-            let s = args[0].as_string()?;
-            Ok(Value::Symbol(s.to_string()))
+            Ok(Value::Symbol(string_text(&args[0])?))
+        }
+        "gensym" => {
+            need_arg_range(name, args, 0, 1)?;
+            let prefix = gensym_prefix(args.first())?;
+            let id = GENSYM_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(Value::Symbol(format!("{prefix}{id}")))
         }
         "autoload" => {
             if args.len() < 2 || args.len() > 5 {
@@ -10184,8 +10328,8 @@ pub fn call(
         }
         "executable-find" => {
             need_args(name, args, 1)?;
-            let executable = args[0].as_string()?;
-            Ok(find_executable(executable)
+            let executable = string_text(&args[0])?;
+            Ok(find_executable(&executable)
                 .map(Value::String)
                 .unwrap_or(Value::Nil))
         }
@@ -10606,8 +10750,8 @@ pub fn call(
         }
         "char-from-name" => {
             need_args(name, args, 1)?;
-            let name = args[0].as_string()?;
-            let ch = match name {
+            let name = string_text(&args[0])?;
+            let ch = match name.as_str() {
                 "SMILE" => 0x263A,
                 _ => return Ok(Value::Nil),
             };
@@ -10637,7 +10781,7 @@ pub fn call(
         "text-quoting-style" => Ok(Value::Symbol("grave".into())),
         "file-truename" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(args[0].as_string()?.to_string()))
+            Ok(Value::String(string_text(&args[0])?))
         }
         "group-gid" => Ok(Value::Integer(current_group_id()? as i64)),
         "group-name" => {
@@ -10656,6 +10800,9 @@ pub fn call(
                 return Ok(Value::Nil);
             };
             ensure_no_supersession_threat(interp, env)?;
+            if run_write_buffer_hooks_until_success(interp, env)? {
+                return Ok(Value::Nil);
+            }
             std::fs::write(&path, interp.buffer.buffer_string())
                 .map_err(|e| LispError::Signal(e.to_string()))?;
             interp.buffer.set_unmodified();
@@ -10663,8 +10810,21 @@ pub fn call(
             unlock_current_buffer(interp, env)?;
             Ok(Value::Nil)
         }
+        "emaxx-default-revert-buffer-function" => {
+            revert_current_buffer(interp, env)?;
+            Ok(Value::Nil)
+        }
         "revert-buffer" => {
-            revert_current_buffer(interp)?;
+            if let Some(revert_function) =
+                interp.buffer_local_value(interp.current_buffer_id(), "revert-buffer-function")
+                && revert_function.is_truthy()
+            {
+                let mut revert_args = Vec::with_capacity(args.len() + 1);
+                revert_args.push(Value::Symbol("emaxx-default-revert-buffer-function".into()));
+                revert_args.extend(args.iter().cloned());
+                return interp.call_function_value(revert_function, None, &revert_args, env);
+            }
+            revert_current_buffer(interp, env)?;
             Ok(Value::Nil)
         }
         "lock-buffer" => {
@@ -13634,6 +13794,21 @@ fn auto_mode_function_for_file_name(
         }
     }
     Ok(None)
+}
+
+fn auto_mode_function_for_contents(bytes: &[u8]) -> Option<&'static str> {
+    let zip_split =
+        bytes.starts_with(b"PK\x07\x08PK\x03\x04") || bytes.starts_with(b"PK00PK\x03\x04");
+    if bytes.starts_with(b"PK\x03\x04") || zip_split {
+        return Some("archive-mode");
+    }
+    if bytes.starts_with(b"!<arch>\n")
+        || bytes.starts_with(b"Rar!")
+        || bytes.starts_with(b"7z\xbc\xaf\x27\x1c")
+    {
+        return Some("archive-mode");
+    }
+    None
 }
 
 enum TranslationTable {
@@ -18521,6 +18696,16 @@ fn expand_file_name_runtime(
     Ok(expand_file_name(path, base))
 }
 
+fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &str) -> String {
+    if Path::new(path).is_absolute() {
+        return path.to_string();
+    }
+    let base = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text));
+    expand_file_name(path, base.as_deref())
+}
+
 fn substitute_in_file_name(path: &str) -> String {
     let mut result = String::new();
     let chars: Vec<char> = path.chars().collect();
@@ -21956,6 +22141,25 @@ fn run_named_hooks(
     Ok(())
 }
 
+fn run_write_buffer_hooks_until_success(
+    interp: &mut Interpreter,
+    env: &mut super::types::Env,
+) -> Result<bool, LispError> {
+    let buffer_id = Some(interp.current_buffer_id());
+    for hook_name in [
+        "write-contents-functions",
+        "local-write-file-hooks",
+        "write-file-functions",
+    ] {
+        for hook in hook_values(interp, hook_name, env, buffer_id) {
+            if call_function_value(interp, &hook, &[], env)?.is_truthy() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 fn call_named_function(
     interp: &mut Interpreter,
     name: &str,
@@ -24664,6 +24868,36 @@ fn file_locked_p(path: &str) -> Result<Value, LispError> {
     }
 }
 
+fn gensym_prefix(value: Option<&Value>) -> Result<String, LispError> {
+    match value {
+        None | Some(Value::Nil) => Ok("g".into()),
+        Some(value) => string_text(value),
+    }
+}
+
+fn file_change_cache_key(path: &str, tag: Option<&Value>) -> Result<String, LispError> {
+    let tag_name = match tag {
+        None | Some(Value::Nil) => "nil".into(),
+        Some(value) => value.as_symbol()?.to_string(),
+    };
+    Ok(format!("{tag_name}@{path}"))
+}
+
+fn file_change_cache_value(path: &str) -> Result<Option<(u64, u128)>, LispError> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(LispError::Signal(error.to_string())),
+    };
+    let modified = metadata
+        .modified()
+        .map_err(|error| LispError::Signal(error.to_string()))?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| LispError::Signal(error.to_string()))?
+        .as_nanos();
+    Ok(Some((metadata.len(), modified)))
+}
+
 fn is_circular_list_value(interp: &Interpreter, value: &Value) -> bool {
     match value {
         Value::Record(id) => interp
@@ -24826,7 +25060,7 @@ fn write_region_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let path = string_text(&args[2])?;
+    let path = resolve_file_name_in_env(interp, env, &string_text(&args[2])?);
     validate_file_name(&path)?;
     let text = if args[0].is_nil() && args.get(1).is_none_or(Value::is_nil) {
         interp.buffer.buffer_string()
@@ -24862,7 +25096,7 @@ fn write_file_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut path = string_text(&args[0])?;
+    let mut path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
     if directory_name_p(&path) {
         let base = interp
             .buffer
@@ -25047,7 +25281,7 @@ fn insert_file_contents(
             args.len(),
         ));
     }
-    let path = string_text(&args[0])?;
+    let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
     let start = args
         .get(2)
         .filter(|value| !value.is_nil())
@@ -25159,6 +25393,25 @@ fn unlock_current_buffer(interp: &mut Interpreter, env: &mut Env) -> Result<Valu
     }
 }
 
+fn current_buffer_file_text(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> Result<(String, String, bool), LispError> {
+    let literal = interp
+        .buffer_local_value(interp.current_buffer_id(), "find-file-literally")
+        .is_some_and(|value| value.is_truthy());
+    let mut bytes = read_insert_file_bytes(path, None, None)?;
+    if !literal && should_auto_decompress(interp, env, path) {
+        bytes = maybe_decompress_file_bytes(path, bytes)?;
+    }
+    if literal || !interp.buffer.is_multibyte() {
+        return Ok((decode_raw_text_bytes(&bytes), "no-conversion".into(), false));
+    }
+    let (text, coding) = decode_file_contents(interp, env, &bytes, false)?;
+    Ok((text, coding, true))
+}
+
 fn ensure_no_supersession_threat(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let Some(path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(());
@@ -25169,8 +25422,7 @@ fn ensure_no_supersession_threat(interp: &mut Interpreter, env: &mut Env) -> Res
     if interp.buffer.visited_file_modtime() == Some(current_modtime) {
         return Ok(());
     }
-    let disk_text =
-        fs::read_to_string(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+    let (disk_text, _, _) = current_buffer_file_text(interp, env, &path)?;
     if disk_text == interp.buffer.saved_text() {
         interp
             .buffer
@@ -25218,7 +25470,7 @@ fn ensure_no_supersession_threat(interp: &mut Interpreter, env: &mut Env) -> Res
             Ok(())
         }
         'r' => {
-            revert_current_buffer(interp)?;
+            revert_current_buffer(interp, env)?;
             Err(LispError::SignalValue(Value::list([
                 Value::Symbol("file-supersession".into()),
                 Value::String("File reverted".into()),
@@ -25233,21 +25485,27 @@ fn ensure_no_supersession_threat(interp: &mut Interpreter, env: &mut Env) -> Res
     }
 }
 
-fn revert_current_buffer(interp: &mut Interpreter) -> Result<(), LispError> {
+fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Result<(), LispError> {
     let Some(path) = interp.buffer.file.clone() else {
         return Ok(());
     };
-    let text = fs::read_to_string(&path).map_err(|error| LispError::Signal(error.to_string()))?;
+    let (text, coding, multibyte) = current_buffer_file_text(interp, env, &path)?;
     let name = interp.buffer.name.clone();
     let file = interp.buffer.file.clone();
     let file_truename = interp.buffer.file_truename.clone();
     let inhibit_hooks = interp.buffer.inhibit_hooks;
     interp.buffer = crate::buffer::Buffer::from_text(&name, &text);
+    interp.buffer.set_multibyte(multibyte);
     interp.buffer.file = file;
     interp.buffer.file_truename = file_truename;
     interp.buffer.inhibit_hooks = inhibit_hooks;
     interp.buffer.set_unmodified();
     interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+    interp.set_buffer_local_value(
+        interp.current_buffer_id(),
+        "buffer-file-coding-system",
+        Value::Symbol(coding),
+    );
     Ok(())
 }
 
@@ -28648,8 +28906,18 @@ mod lcms_response_tests {
 #[cfg(test)]
 mod compat_runtime_tests {
     use super::*;
+    use crate::lisp::reader::Reader;
     use flate2::Compression;
     use flate2::write::GzEncoder;
+
+    fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(test)
+            .expect("spawn large-stack test thread")
+            .join()
+            .expect("join large-stack test thread");
+    }
 
     #[test]
     fn count_lines_matches_emacs_boundary_behavior() {
@@ -28723,6 +28991,64 @@ mod compat_runtime_tests {
             )
             .expect("format setuid mode"),
             Value::String("---S------".into())
+        );
+    }
+
+    #[test]
+    fn forward_line_treats_nil_as_default_step() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*lines*", "a\nb");
+
+        assert_eq!(
+            call(&mut interp, "forward-line", &[Value::Nil], &mut env)
+                .expect("forward-line with nil"),
+            Value::Integer(0)
+        );
+        assert_eq!(interp.buffer.point(), 3);
+    }
+
+    #[test]
+    fn forward_char_treats_nil_as_default_step() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*chars*", "ab");
+
+        assert_eq!(
+            call(&mut interp, "forward-char", &[Value::Nil], &mut env)
+                .expect("forward-char with nil"),
+            Value::Nil
+        );
+        assert_eq!(interp.buffer.point(), 2);
+    }
+
+    #[test]
+    fn length_equals_matches_sequence_lengths() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "length=",
+                &[
+                    Value::list([Value::Integer(1), Value::Integer(2)]),
+                    Value::Integer(2)
+                ],
+                &mut env,
+            )
+            .expect("length= on list"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "length=",
+                &[Value::String("zip".into()), Value::Integer(2)],
+                &mut env,
+            )
+            .expect("length= on string"),
+            Value::Nil
         );
     }
 
@@ -29124,6 +29450,128 @@ mod compat_runtime_tests {
             .expect("extension with period"),
             Value::String(".gz".into())
         );
+    }
+
+    #[test]
+    fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let old_path = call(
+            &mut interp,
+            "make-temp-file",
+            &[Value::String("emaxx-rename-visited-file-".into())],
+            &mut env,
+        )
+        .expect("create source file")
+        .as_string()
+        .expect("temp file path")
+        .to_string();
+        let new_path = format!("{old_path}.zip");
+
+        interp.buffer.file = Some(old_path.clone());
+        interp.buffer.file_truename = Some(old_path.clone());
+        interp
+            .buffer
+            .set_visited_file_modtime(file_modtime(&old_path).expect("source modtime"));
+
+        call(
+            &mut interp,
+            "rename-visited-file",
+            &[Value::String(new_path.clone())],
+            &mut env,
+        )
+        .expect("rename visited file");
+
+        assert!(!Path::new(&old_path).exists());
+        assert!(Path::new(&new_path).exists());
+        assert_eq!(interp.buffer.file.as_deref(), Some(new_path.as_str()));
+        assert_eq!(
+            interp.buffer.file_truename.as_deref(),
+            Some(new_path.as_str())
+        );
+        assert!(interp.buffer.visited_file_modtime().is_some());
+
+        std::fs::remove_file(new_path).expect("cleanup renamed file");
+    }
+
+    #[test]
+    fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let path = call(
+            &mut interp,
+            "make-temp-file",
+            &[Value::String("emaxx-revert-raw-buffer-".into())],
+            &mut env,
+        )
+        .expect("create source file")
+        .as_string()
+        .expect("temp file path")
+        .to_string();
+        let bytes = [0xFF, b'a'];
+        std::fs::write(&path, bytes).expect("write raw bytes");
+
+        interp.buffer = crate::buffer::Buffer::from_text("*raw*", "");
+        interp.buffer.file = Some(path.clone());
+        interp.buffer.file_truename = Some(path.clone());
+        interp.buffer.set_multibyte(false);
+        interp
+            .buffer
+            .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
+
+        call(&mut interp, "revert-buffer", &[], &mut env).expect("revert raw buffer");
+
+        assert_eq!(interp.buffer.buffer_string(), decode_raw_text_bytes(&bytes));
+        assert!(!interp.buffer.is_multibyte());
+
+        std::fs::remove_file(path).expect("cleanup raw file");
+    }
+
+    #[test]
+    fn revert_buffer_honors_buffer_local_revert_function() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            let mut env = Vec::new();
+            let path = call(
+                &mut interp,
+                "make-temp-file",
+                &[Value::String("emaxx-revert-buffer-function-".into())],
+                &mut env,
+            )
+            .expect("create source file")
+            .as_string()
+            .expect("temp file path")
+            .to_string();
+            std::fs::write(&path, "fresh").expect("write file contents");
+
+            interp.buffer = crate::buffer::Buffer::from_text("*revert*", "stale");
+            interp.buffer.file = Some(path.clone());
+            interp.buffer.file_truename = Some(path.clone());
+
+            let forms = Reader::new(
+                r#"
+                (progn
+                  (defun sample-revert-wrapper (orig-fun &rest _args)
+                    (setq sample-revert-called t)
+                    (funcall orig-fun))
+                  (setq-local sample-revert-called nil)
+                  (setq-local revert-buffer-function 'sample-revert-wrapper)
+                  (revert-buffer)
+                  sample-revert-called)
+                "#,
+            )
+            .read_all()
+            .expect("parse wrapper forms");
+            let mut result = Value::Nil;
+            for form in forms {
+                result = interp.eval(&form, &mut env).expect("evaluate wrapper form");
+            }
+
+            assert_eq!(result, Value::T);
+            assert_eq!(interp.buffer.buffer_string(), "fresh");
+
+            std::fs::remove_file(path).expect("cleanup wrapper file");
+        });
     }
 
     #[test]
