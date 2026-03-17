@@ -11457,7 +11457,9 @@ pub fn call(
         "cl-find-class" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            Ok(if is_builtin_class_name(symbol) {
+            Ok(if let Some(class_value) = interp.class_value(symbol) {
+                class_value
+            } else if is_builtin_class_name(symbol) {
                 Value::Symbol(symbol.into())
             } else {
                 Value::Nil
@@ -11465,16 +11467,23 @@ pub fn call(
         }
         "cl--class-allparents" => {
             need_args(name, args, 1)?;
-            let symbol = args[0].as_symbol()?;
-            Ok(if symbol == "t" {
+            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            Ok(if interp.class_value(&symbol).is_some() {
+                Value::list(interp.class_allparents(&symbol))
+            } else if symbol == "t" {
                 Value::list([Value::Symbol("t".into())])
             } else {
-                Value::list([Value::Symbol(symbol.into()), Value::Symbol("t".into())])
+                Value::list([Value::Symbol(symbol), Value::Symbol("t".into())])
             })
         }
         "cl--class-children" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            Ok(Value::list(interp.class_children(&symbol)))
         }
         "built-in-class-p" => {
             need_args(name, args, 1)?;
