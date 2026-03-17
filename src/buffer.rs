@@ -812,6 +812,12 @@ impl Buffer {
         self.undo_disabled = false;
     }
 
+    pub fn disable_undo(&mut self) {
+        self.undo_disabled = true;
+        self.undo_list.clear();
+        self.undo_meta.clear();
+    }
+
     pub fn undo_entries(&self) -> &[UndoEntry] {
         &self.undo_list
     }
@@ -876,15 +882,16 @@ impl Buffer {
         std::mem::swap(&mut self.modiff, &mut other.modiff);
         std::mem::swap(&mut self.save_modiff, &mut other.save_modiff);
         std::mem::swap(&mut self.saved_text, &mut other.saved_text);
+        std::mem::swap(&mut self.forced_modified, &mut other.forced_modified);
         std::mem::swap(&mut self.autosaved, &mut other.autosaved);
         std::mem::swap(&mut self.begv, &mut other.begv);
         std::mem::swap(&mut self.zv, &mut other.zv);
-        std::mem::swap(&mut self.file, &mut other.file);
         std::mem::swap(&mut self.undo_list, &mut other.undo_list);
         std::mem::swap(&mut self.undo_meta, &mut other.undo_meta);
         std::mem::swap(&mut self.undo_disabled, &mut other.undo_disabled);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
         std::mem::swap(&mut self.text_properties, &mut other.text_properties);
+        std::mem::swap(&mut self.multibyte, &mut other.multibyte);
     }
 
     // ── Line/column helpers ──

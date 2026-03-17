@@ -837,6 +837,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "delete-dups"
             | "memq"
             | "member"
+            | "member-ignore-case"
             | "assq"
             | "assoc"
             | "alist-get"
@@ -978,11 +979,13 @@ pub fn is_builtin(name: &str) -> bool {
             | "beginning-of-line"
             | "end-of-line"
             | "forward-line"
+            | "count-lines"
             | "search-forward"
             | "search-backward"
             | "re-search-forward"
             | "re-search-backward"
             | "search-forward-regexp"
+            | "search-backward-regexp"
             | "forward-comment"
             | "scan-lists"
             | "parse-partial-sexp"
@@ -1000,10 +1003,15 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-buffer-multibyte"
             | "toggle-enable-multibyte-characters"
             | "buffer-enable-undo"
+            | "buffer-disable-undo"
             | "char-after"
             | "char-before"
+            | "get-byte"
+            | "fundamental-mode"
+            | "special-mode"
             | "derived-mode-p"
             | "derived-mode-add-parents"
+            | "normal-mode"
             | "bobp"
             | "eobp"
             | "bolp"
@@ -1137,6 +1145,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "sort-coding-systems"
             | "coding-system-aliases"
             | "coding-system-plist"
+            | "coding-system-get"
             | "coding-system-put"
             | "coding-system-eol-type"
             | "coding-system-base"
@@ -1190,6 +1199,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "modify-syntax-entry"
             | "setcdr"
             | "emaxx-default-region-extract-function"
+            | "emaxx-struct-make"
+            | "emaxx-struct-p"
+            | "emaxx-struct-ref"
             | "connection-local-value"
             | "propertized-buffer-identification"
             | "set-buffer"
@@ -1200,8 +1212,13 @@ pub fn is_builtin(name: &str) -> bool {
             | "visited-file-modtime"
             | "set-visited-file-modtime"
             | "set-buffer-file-coding-system"
+            | "after-insert-file-set-coding"
+            | "local"
+            | "add-function"
             | "find-file"
             | "find-file-noselect"
+            | "get-file-buffer"
+            | "jka-compr-get-compression-info"
             | "file-locked-p"
             | "expand-file-name"
             | "abbreviate-file-name"
@@ -1210,6 +1227,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "files--use-insert-directory-program-p"
             | "file-name-directory"
             | "file-name-nondirectory"
+            | "file-name-sans-extension"
+            | "file-name-extension"
             | "file-name-as-directory"
             | "directory-file-name"
             | "directory-name-p"
@@ -1230,6 +1249,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-directory-p"
             | "file-accessible-directory-p"
             | "file-readable-p"
+            | "file-writable-p"
             | "file-exists-p"
             | "file-executable-p"
             | "file-attributes"
@@ -1257,6 +1277,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "mkdir"
             | "make-directory-internal"
             | "make-temp-name"
+            | "make-temp-file"
             | "make-temp-file-internal"
             | "insert-directory"
             | "insert-file-contents"
@@ -1264,6 +1285,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-binary-mode"
             | "write-region"
             | "write-file"
+            | "file-modes-number-to-symbolic"
             | "set-file-modes"
             | "call-process"
             | "call-process-region"
@@ -1294,6 +1316,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "move-marker"
             // Output
             | "message"
+            | "error-message-string"
+            | "ding"
+            | "make-progress-reporter"
+            | "progress-reporter-update"
+            | "progress-reporter-done"
             | "sleep-for"
             | "sit-for"
             | "accept-process-output"
@@ -3008,6 +3035,19 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "member-ignore-case" => {
+            need_args(name, args, 2)?;
+            let needle = string_text(&args[0])?.to_ascii_lowercase();
+            let items = args[1].to_vec()?;
+            for (index, item) in items.iter().enumerate() {
+                if string_like(item)
+                    .is_some_and(|candidate| candidate.text.to_ascii_lowercase() == needle)
+                {
+                    return Ok(Value::list(items[index..].iter().cloned()));
+                }
+            }
+            Ok(Value::Nil)
+        }
         "assq" => {
             need_args(name, args, 2)?;
             let items = args[1].to_vec()?;
@@ -4705,7 +4745,9 @@ pub fn call(
         "re-search-forward" | "search-forward-regexp" => {
             buffer_regex_search(interp, args, env, true)
         }
-        "re-search-backward" => buffer_regex_search(interp, args, env, false),
+        "re-search-backward" | "search-backward-regexp" => {
+            buffer_regex_search(interp, args, env, false)
+        }
         "forward-comment" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -4810,9 +4852,97 @@ pub fn call(
             derived_mode_add_parents(interp, mode, &args[1])?;
             Ok(args[0].clone())
         }
+        "emaxx-struct-make" => {
+            need_args(name, args, 4)?;
+            let struct_name = args[0].as_symbol()?.to_string();
+            let slot_names = args[1]
+                .to_vec()?
+                .into_iter()
+                .map(|value| value.as_symbol().map(str::to_string))
+                .collect::<Result<Vec<_>, _>>()?;
+            let constructor_spec = args[2]
+                .to_vec()?
+                .into_iter()
+                .map(|value| value.as_symbol().map(str::to_string))
+                .collect::<Result<Vec<_>, _>>()?;
+            let call_args = args[3].to_vec()?;
+            let mut slots = vec![Value::Nil; slot_names.len()];
+            let mut arg_index = 0usize;
+            let mut spec_index = 0usize;
+            while spec_index < constructor_spec.len() && constructor_spec[spec_index] != "&key" {
+                if arg_index >= call_args.len() {
+                    break;
+                }
+                if let Some(slot_index) = slot_names
+                    .iter()
+                    .position(|slot_name| slot_name == &constructor_spec[spec_index])
+                {
+                    slots[slot_index] = call_args[arg_index].clone();
+                }
+                spec_index += 1;
+                arg_index += 1;
+            }
+            if constructor_spec
+                .get(spec_index)
+                .is_some_and(|keyword| keyword == "&key")
+            {
+                while arg_index + 1 < call_args.len() {
+                    let keyword = call_args[arg_index].as_symbol()?;
+                    let keyword = keyword.strip_prefix(':').unwrap_or(keyword);
+                    if let Some(slot_index) =
+                        slot_names.iter().position(|slot_name| slot_name == keyword)
+                    {
+                        slots[slot_index] = call_args[arg_index + 1].clone();
+                    }
+                    arg_index += 2;
+                }
+            }
+            Ok(interp.create_record(&struct_name, slots))
+        }
+        "emaxx-struct-p" => {
+            need_args(name, args, 2)?;
+            let struct_name = args[0].as_symbol()?;
+            Ok(match &args[1] {
+                Value::Record(id)
+                    if interp
+                        .find_record(*id)
+                        .is_some_and(|record| record.type_name == struct_name) =>
+                {
+                    Value::T
+                }
+                _ => Value::Nil,
+            })
+        }
+        "emaxx-struct-ref" => {
+            need_args(name, args, 3)?;
+            let struct_name = args[0].as_symbol()?;
+            let slot_index = args[1].as_integer()?.max(0) as usize;
+            match &args[2] {
+                Value::Record(id) => {
+                    let record = interp.find_record(*id).ok_or_else(|| {
+                        LispError::TypeError("record".into(), format!("record<{id}>"))
+                    })?;
+                    if record.type_name != struct_name {
+                        return Err(LispError::TypeError(
+                            format!("{struct_name}-p"),
+                            args[2].type_name(),
+                        ));
+                    }
+                    Ok(record.slots.get(slot_index).cloned().unwrap_or(Value::Nil))
+                }
+                other => Err(LispError::TypeError(
+                    format!("{struct_name}-p"),
+                    other.type_name(),
+                )),
+            }
+        }
         "buffer-size" => Ok(Value::Integer(interp.buffer.buffer_size() as i64)),
         "buffer-enable-undo" => {
             interp.buffer.enable_undo();
+            Ok(Value::Nil)
+        }
+        "buffer-disable-undo" => {
+            interp.buffer.disable_undo();
             Ok(Value::Nil)
         }
         "gap-position" => Ok(Value::Integer(interp.buffer.point() as i64)),
@@ -4896,7 +5026,7 @@ pub fn call(
             let pos = if args.is_empty() {
                 interp.buffer.point()
             } else {
-                args[0].as_integer()? as usize
+                position_from_value(interp, &args[0])?
             };
             match interp.buffer.char_at(pos) {
                 Some(c) => Ok(Value::Integer(c as i64)),
@@ -4907,7 +5037,7 @@ pub fn call(
             let pos = if args.is_empty() {
                 interp.buffer.point()
             } else {
-                args[0].as_integer()? as usize
+                position_from_value(interp, &args[0])?
             };
             if pos <= interp.buffer.point_min() {
                 Ok(Value::Nil)
@@ -4917,6 +5047,15 @@ pub fn call(
                     None => Ok(Value::Nil),
                 }
             }
+        }
+        "get-byte" => {
+            need_args(name, args, 1)?;
+            let pos = position_from_value(interp, &args[0])?;
+            Ok(interp
+                .buffer
+                .char_at(pos)
+                .map(|ch| Value::Integer((ch as u32 & 0xFF) as i64))
+                .unwrap_or(Value::Nil))
         }
         "bobp" => Ok(if interp.buffer.bobp() {
             Value::T
@@ -5222,6 +5361,16 @@ pub fn call(
             interp.buffer.goto_char(saved);
             Ok(Value::Integer(result as i64))
         }
+        "count-lines" => {
+            need_args(name, args, 2)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            Ok(Value::Integer(count_lines_in_buffer(
+                &interp.buffer,
+                start,
+                end,
+            )?))
+        }
         "line-end-position" | "pos-eol" => {
             let n = if args.is_empty() {
                 1
@@ -5240,8 +5389,8 @@ pub fn call(
         }
         "narrow-to-region" => {
             need_args(name, args, 2)?;
-            let mut start = args[0].as_integer()? as usize;
-            let mut end = args[1].as_integer()? as usize;
+            let mut start = position_from_value(interp, &args[0])?;
+            let mut end = position_from_value(interp, &args[1])?;
             if let Some((clamp_start, clamp_end)) =
                 interp.effective_labeled_restriction(interp.current_buffer_id(), None)
             {
@@ -5835,9 +5984,9 @@ pub fn call(
         )),
         "generate-new-buffer" => {
             need_args(name, args, 1)?;
-            let base = args[0].as_string()?;
+            let base = string_text(&args[0])?;
             let inhibit_hooks = args.get(1).is_some_and(|value| value.is_truthy());
-            let buf_name = if interp.has_buffer(base) {
+            let buf_name = if interp.has_buffer(&base) {
                 let mut n = 2;
                 loop {
                     let candidate = format!("{}<{}>", base, n);
@@ -5847,7 +5996,7 @@ pub fn call(
                     n += 1;
                 }
             } else {
-                base.to_string()
+                base
             };
             let (id, _) = interp.create_buffer(&buf_name);
             interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
@@ -5895,14 +6044,14 @@ pub fn call(
         }
         "generate-new-buffer-name" => {
             need_args(name, args, 1)?;
-            let base = args[0].as_string()?;
+            let base = string_text(&args[0])?;
             let ignore = if args.len() > 1 {
-                args[1].as_string().ok().map(|s| s.to_string())
+                string_like(&args[1]).map(|string| string.text)
             } else {
                 None
             };
-            if !interp.has_buffer(base) || ignore.as_deref() == Some(base) {
-                Ok(Value::String(base.to_string()))
+            if !interp.has_buffer(&base) || ignore.as_deref() == Some(base.as_str()) {
+                Ok(Value::String(base))
             } else {
                 let mut n = 2;
                 loop {
@@ -5988,13 +6137,13 @@ pub fn call(
         }
         "rename-buffer" => {
             need_args(name, args, 1)?;
-            let new_name = args[0].as_string()?;
+            let new_name = string_text(&args[0])?;
             if new_name.is_empty() {
                 return Err(LispError::Signal("Empty string for buffer name".into()));
             }
             let old_name = interp.buffer.name.clone();
             let unique = args.len() > 1 && args[1].is_truthy();
-            let final_name = if interp.has_buffer(new_name) && new_name != old_name {
+            let final_name = if interp.has_buffer(&new_name) && new_name != old_name {
                 if unique {
                     let mut n = 2;
                     loop {
@@ -6011,7 +6160,7 @@ pub fn call(
                     )));
                 }
             } else {
-                new_name.to_string()
+                new_name
             };
             if let Some(pos) = interp.buffer_list.iter().position(|(_, n)| *n == old_name) {
                 interp.buffer_list[pos].1 = final_name.clone();
@@ -6593,6 +6742,35 @@ pub fn call(
                 .coding_system_plist_value(&coding)
                 .unwrap_or(Value::Nil))
         }
+        "coding-system-get" => {
+            need_args(name, args, 2)?;
+            let coding = checked_coding_symbol(interp, &args[0])?;
+            let property = args[1].as_symbol()?;
+            if property == ":for-unibyte" {
+                return Ok(
+                    if interp
+                        .coding_system_kind_name(&coding)
+                        .is_some_and(|kind| kind == "raw-text")
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                );
+            }
+            let plist = interp
+                .coding_system_plist_value(&coding)
+                .unwrap_or(Value::Nil)
+                .to_vec()?;
+            let mut index = 0usize;
+            while index + 1 < plist.len() {
+                if plist[index] == args[1] {
+                    return Ok(plist[index + 1].clone());
+                }
+                index += 2;
+            }
+            Ok(Value::Nil)
+        }
         "coding-system-put" => {
             need_args(name, args, 3)?;
             let coding = checked_coding_symbol(interp, &args[0])?;
@@ -6858,6 +7036,87 @@ pub fn call(
             }
             Ok(coding.map(Value::Symbol).unwrap_or(Value::Nil))
         }
+        "after-insert-file-set-coding" => {
+            need_arg_range(name, args, 1, 1)?;
+            let coding = interp
+                .lookup_var("last-coding-system-used", env)
+                .filter(|value| !value.is_nil())
+                .and_then(|value| checked_coding_name(interp, &value).ok().flatten())
+                .unwrap_or_else(|| {
+                    detect_coding_names_for_text(interp, &interp.buffer.buffer_string(), env)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| "undecided".into())
+                });
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "buffer-file-coding-system",
+                Value::Symbol(coding.clone()),
+            );
+            set_last_coding_system_used(interp, &coding, env);
+            Ok(Value::Symbol(coding))
+        }
+        "local" => {
+            need_args(name, args, 1)?;
+            Ok(Value::list([
+                Value::Symbol("emaxx-local-function-place".into()),
+                args[0].clone(),
+            ]))
+        }
+        "add-function" => {
+            need_arg_range(name, args, 3, 4)?;
+            let place = args[1].to_vec()?;
+            if place.len() == 2
+                && place[0] == Value::Symbol("emaxx-local-function-place".into())
+                && let Value::Symbol(variable) = &place[1]
+            {
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    variable,
+                    args[2].clone(),
+                );
+                return Ok(Value::Nil);
+            }
+            Err(LispError::Signal("Unsupported add-function place".into()))
+        }
+        "fundamental-mode" => {
+            need_args(name, args, 0)?;
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "major-mode",
+                Value::Symbol("fundamental-mode".into()),
+            );
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "mode-name",
+                Value::String("Fundamental".into()),
+            );
+            Ok(Value::Nil)
+        }
+        "special-mode" => {
+            need_args(name, args, 0)?;
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "major-mode",
+                Value::Symbol("special-mode".into()),
+            );
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "mode-name",
+                Value::String("Special".into()),
+            );
+            interp.set_variable("buffer-read-only", Value::T, env);
+            Ok(Value::Nil)
+        }
+        "normal-mode" => {
+            need_arg_range(name, args, 0, 1)?;
+            if let Some(path) = current_buffer_file(interp)
+                && let Some(mode) = mode_function_for_file_name(path)
+            {
+                let _ = call_named_function(interp, mode, &[], env)?;
+            }
+            Ok(Value::Nil)
+        }
         "find-file-noselect" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -6865,14 +7124,39 @@ pub fn call(
                 return Ok(Value::Buffer(id, name));
             }
             let (id, _) = interp.create_buffer(&path);
-            let contents = std::fs::read_to_string(&path).unwrap_or_default();
-            if let Some(buffer) = interp.get_buffer_by_id_mut(id) {
-                *buffer = crate::buffer::Buffer::from_text(&path, &contents);
-                buffer.file = Some(path.clone());
-                buffer.file_truename = Some(path.clone());
-                buffer.set_unmodified();
-                buffer.set_visited_file_modtime(file_modtime(&path)?);
-            }
+            let saved_buffer_id = interp.current_buffer_id();
+            interp.switch_to_buffer_id(id)?;
+            let result: Result<(), LispError> = (|| {
+                let bytes =
+                    maybe_decompress_file_bytes(&path, read_insert_file_bytes(&path, None, None)?)?;
+                let raw_archive = mode_function_for_file_name(&path).is_some();
+                let (contents, coding, multibyte) = if raw_archive {
+                    (
+                        decode_raw_text_bytes(&bytes),
+                        "no-conversion".to_string(),
+                        false,
+                    )
+                } else {
+                    let (text, coding) = decode_file_contents(interp, env, &bytes, false)?;
+                    (text, coding, true)
+                };
+                interp.buffer = crate::buffer::Buffer::from_text(&path, &contents);
+                interp.buffer.set_multibyte(multibyte);
+                interp.buffer.file = Some(path.clone());
+                interp.buffer.file_truename = Some(path.clone());
+                interp.buffer.set_unmodified();
+                interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "buffer-file-coding-system",
+                    Value::Symbol(coding.clone()),
+                );
+                set_last_coding_system_used(interp, &coding, env);
+                let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
+                Ok(())
+            })();
+            let _ = interp.switch_to_buffer_id(saved_buffer_id);
+            result?;
             Ok(Value::Buffer(id, path))
         }
         "find-file" => {
@@ -6881,6 +7165,14 @@ pub fn call(
             let id = interp.resolve_buffer_id(&buffer)?;
             interp.switch_to_buffer_id(id)?;
             Ok(buffer)
+        }
+        "get-file-buffer" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            Ok(interp
+                .find_buffer(&path)
+                .map(|(id, name)| Value::Buffer(id, name))
+                .unwrap_or(Value::Nil))
         }
         "expand-file-name" => {
             if args.is_empty() || args.len() > 2 {
@@ -6900,6 +7192,15 @@ pub fn call(
                 base.as_deref(),
             )?))
         }
+        "jka-compr-get-compression-info" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            Ok(if path_is_gzip_encoded(&path) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "substitute-in-file-name" => {
             need_args(name, args, 1)?;
             Ok(Value::String(substitute_in_file_name(&string_text(
@@ -6917,6 +7218,20 @@ pub fn call(
             Ok(Value::String(file_name_nondirectory(&string_text(
                 &args[0],
             )?)))
+        }
+        "file-name-sans-extension" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(file_name_sans_extension(&string_text(
+                &args[0],
+            )?)))
+        }
+        "file-name-extension" => {
+            need_arg_range(name, args, 1, 2)?;
+            let extension = file_name_extension(
+                &string_text(&args[0])?,
+                args.get(1).is_some_and(Value::is_truthy),
+            );
+            Ok(extension.map(Value::String).unwrap_or(Value::Nil))
         }
         "file-name-as-directory" => {
             need_args(name, args, 1)?;
@@ -7086,6 +7401,15 @@ pub fn call(
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
             Ok(if file_readable_p(&path) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "file-writable-p" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            Ok(if file_writable_p(&path) {
                 Value::T
             } else {
                 Value::Nil
@@ -7288,6 +7612,29 @@ pub fn call(
             fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
             Ok(Value::Nil)
         }
+        "make-temp-file" => {
+            need_arg_range(name, args, 1, 4)?;
+            let prefix = string_text(&args[0])?;
+            let dir_flag = args.get(1).cloned().unwrap_or(Value::Nil);
+            let suffix = args.get(2).cloned().unwrap_or(Value::String(String::new()));
+            let suffix = if suffix.is_nil() {
+                Value::String(String::new())
+            } else {
+                suffix
+            };
+            let suffix_text = string_text(&suffix)?;
+            let prefix_path = if std::path::Path::new(&prefix).is_absolute() {
+                prefix
+            } else {
+                std::env::temp_dir().join(prefix).display().to_string()
+            };
+            Ok(Value::String(make_temp_file_internal(
+                &prefix_path,
+                &dir_flag,
+                &suffix_text,
+                args.get(3),
+            )?))
+        }
         "make-temp-file-internal" => {
             need_args(name, args, 4)?;
             let prefix = string_text(&args[0])?;
@@ -7316,6 +7663,25 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             write_file_value(interp, args, env)
+        }
+        "file-modes-number-to-symbolic" => {
+            need_arg_range(name, args, 1, 2)?;
+            let mode = args[0].as_integer()?;
+            let filetype = match args.get(1) {
+                None | Some(Value::Nil) => None,
+                Some(value) => {
+                    let code = value.as_integer()?;
+                    Some(
+                        u32::try_from(code)
+                            .ok()
+                            .and_then(char::from_u32)
+                            .ok_or_else(|| {
+                                LispError::Signal(format!("Invalid character: {code}"))
+                            })?,
+                    )
+                }
+            };
+            Ok(Value::String(file_modes_number_to_symbolic(mode, filetype)))
         }
         "set-file-modes" => {
             need_args(name, args, 2)?;
@@ -7780,6 +8146,29 @@ pub fn call(
                 captured.push('\n');
             }
             Ok(Value::String(text))
+        }
+        "error-message-string" => {
+            need_args(name, args, 1)?;
+            let items = args[0].to_vec().ok();
+            if let Some(items) = items
+                && let Some(message) = items.get(1).and_then(string_like)
+            {
+                Ok(Value::String(message.text))
+            } else {
+                Ok(Value::String(args[0].to_string()))
+            }
+        }
+        "ding" => Ok(Value::Nil),
+        "make-progress-reporter" => {
+            need_arg_range(name, args, 1, 4)?;
+            Ok(Value::list([
+                Value::Symbol("progress-reporter".into()),
+                args[0].clone(),
+            ]))
+        }
+        "progress-reporter-update" | "progress-reporter-done" => {
+            need_arg_range(name, args, 1, 3)?;
+            Ok(Value::Nil)
         }
         "sleep-for" => {
             need_arg_range(name, args, 1, 2)?;
@@ -11739,12 +12128,25 @@ pub fn call(
                 Vec::new(),
                 interp.buffer.is_multibyte(),
             );
+            let destination_buffer = args
+                .get(3)
+                .filter(|value| !value.is_nil())
+                .and_then(|value| interp.resolve_buffer_id(value).ok());
             let destination = args.get(3).is_some_and(Value::is_truthy);
             let transformed = if name == "encode-coding-region" {
                 encode_coding_value(interp, &region, coding.as_deref(), destination, env)?
             } else {
                 decode_coding_text(interp, &region, coding.as_deref(), destination, env)?
             };
+            if let Some(buffer_id) = destination_buffer {
+                let saved_buffer_id = interp.current_buffer_id();
+                interp.switch_to_buffer_id(buffer_id)?;
+                let insert_at = interp.buffer.point();
+                let transformed_text = string_text(&transformed)?;
+                insert_text_with_hooks(interp, &transformed_text, &[], false, false, env)?;
+                interp.buffer.goto_char(insert_at);
+                let _ = interp.switch_to_buffer_id(saved_buffer_id);
+            }
             if destination {
                 Ok(transformed)
             } else {
@@ -11913,6 +12315,116 @@ fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, Lis
             "integer-or-marker-p".into(),
             value.type_name(),
         )),
+    }
+}
+
+fn count_lines_in_buffer(
+    buffer: &crate::buffer::Buffer,
+    start: usize,
+    end: usize,
+) -> Result<i64, LispError> {
+    let (from, to) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    if from == to {
+        return Ok(0);
+    }
+
+    let text = buffer
+        .buffer_substring(from, to)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let mut lines = text.chars().filter(|ch| *ch == '\n').count() as i64;
+    if to > buffer.point_min() && buffer.char_at(to - 1) != Some('\n') {
+        lines += 1;
+    }
+    Ok(lines)
+}
+
+fn file_modes_number_to_symbolic(mode: i64, filetype: Option<char>) -> String {
+    fn mode_bit(mode: i64, bit: i64) -> bool {
+        mode & bit != 0
+    }
+
+    let leading = filetype.unwrap_or(match (mode >> 12) & 0o17 {
+        0o14 => 's',
+        0o12 => 'l',
+        0o06 => 'b',
+        0o04 => 'd',
+        0o02 => 'c',
+        0o01 => 'p',
+        _ => '-',
+    });
+
+    let mut result = String::with_capacity(10);
+    result.push(leading);
+    result.push(if mode_bit(mode, 0o400) { 'r' } else { '-' });
+    result.push(if mode_bit(mode, 0o200) { 'w' } else { '-' });
+    result.push(if mode_bit(mode, 0o100) {
+        if mode_bit(mode, 0o4000) { 's' } else { 'x' }
+    } else if mode_bit(mode, 0o4000) {
+        'S'
+    } else {
+        '-'
+    });
+    result.push(if mode_bit(mode, 0o040) { 'r' } else { '-' });
+    result.push(if mode_bit(mode, 0o020) { 'w' } else { '-' });
+    result.push(if mode_bit(mode, 0o010) {
+        if mode_bit(mode, 0o2000) { 's' } else { 'x' }
+    } else if mode_bit(mode, 0o2000) {
+        'S'
+    } else {
+        '-'
+    });
+    result.push(if mode_bit(mode, 0o004) { 'r' } else { '-' });
+    result.push(if mode_bit(mode, 0o002) { 'w' } else { '-' });
+    result.push(if mode_bit(mode, 0o1000) {
+        if mode_bit(mode, 0o001) { 't' } else { 'T' }
+    } else if mode_bit(mode, 0o001) {
+        'x'
+    } else {
+        '-'
+    });
+    result
+}
+
+fn path_is_gzip_encoded(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".gz") || lower.ends_with(".tgz")
+}
+
+fn decompress_gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>, LispError> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut output = Vec::new();
+    decoder
+        .read_to_end(&mut output)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    Ok(output)
+}
+
+fn maybe_decompress_file_bytes(path: &str, bytes: Vec<u8>) -> Result<Vec<u8>, LispError> {
+    if path_is_gzip_encoded(path) {
+        decompress_gzip_bytes(&bytes)
+    } else {
+        Ok(bytes)
+    }
+}
+
+fn mode_function_for_file_name(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".tgz") {
+        return Some("tar-mode");
+    }
+    if lower.ends_with(".gz") {
+        return mode_function_for_file_name(&path[..path.len() - 3]);
+    }
+    if lower.ends_with(".tar") {
+        Some("tar-mode")
+    } else if lower.ends_with(".zip") {
+        Some("archive-mode")
+    } else {
+        None
     }
 }
 
@@ -16226,7 +16738,10 @@ fn find_operation_coding_system_value(
     let Some(file) = args.get(1) else {
         return Ok(Value::Nil);
     };
-    let file = string_text(file)?;
+    let file = match file {
+        Value::Cons(car, _) => string_text(&car.borrow())?,
+        _ => string_text(file)?,
+    };
     let Some(alist) = interp.lookup_var("file-coding-system-alist", env) else {
         return Ok(Value::Nil);
     };
@@ -16773,6 +17288,30 @@ fn file_name_nondirectory(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
+fn file_name_sans_extension(path: &str) -> String {
+    let directory = file_name_directory(path).unwrap_or_default();
+    let name = file_name_nondirectory(path);
+    if let Some(index) = name.rfind('.')
+        && index > 0
+    {
+        return format!("{directory}{}", &name[..index]);
+    }
+    path.to_string()
+}
+
+fn file_name_extension(path: &str, with_period: bool) -> Option<String> {
+    let name = file_name_nondirectory(path);
+    let index = name.rfind('.')?;
+    if index == 0 {
+        return None;
+    }
+    Some(if with_period {
+        name[index..].to_string()
+    } else {
+        name[index + 1..].to_string()
+    })
+}
+
 fn file_name_as_directory(path: &str) -> String {
     if path.is_empty() {
         "./".into()
@@ -17047,6 +17586,10 @@ fn file_readable_p(path: &str) -> bool {
     fs::File::open(path).is_ok()
 }
 
+fn file_writable_p(path: &str) -> bool {
+    fs::OpenOptions::new().write(true).open(path).is_ok()
+}
+
 fn file_executable_p(path: &str) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
@@ -17179,6 +17722,54 @@ fn getenv_in_environment(
     Ok(None)
 }
 
+fn append_process_bytes_to_buffer(
+    interp: &mut Interpreter,
+    destination: &Value,
+    bytes: &[u8],
+) -> Result<(), LispError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let target_id = match destination {
+        Value::T => interp.current_buffer_id(),
+        Value::Buffer(_, _) => interp.resolve_buffer_id(destination)?,
+        Value::String(name) => interp
+            .find_buffer(name)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| interp.create_buffer(name).0),
+        _ => {
+            return Err(LispError::TypeError(
+                "buffer-or-name".into(),
+                destination.type_name(),
+            ));
+        }
+    };
+    let original_id = interp.current_buffer_id();
+    if target_id != original_id {
+        interp.switch_to_buffer_id(target_id)?;
+    }
+    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+    if target_id != original_id {
+        interp.switch_to_buffer_id(original_id)?;
+    }
+    Ok(())
+}
+
+fn write_process_bytes_to_file(path: &str, bytes: &[u8], append: bool) -> Result<(), LispError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.truncate(true);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    file.write_all(bytes)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
 fn write_process_output(
     interp: &mut Interpreter,
     destination: &Value,
@@ -17188,41 +17779,25 @@ fn write_process_output(
     if destination.is_nil() {
         return Ok(());
     }
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(stdout),
-        String::from_utf8_lossy(stderr)
-    );
-    if output.is_empty() {
-        return Ok(());
-    }
-    let target_id = match destination {
-        Value::T => Some(interp.current_buffer_id()),
-        Value::Buffer(_, _) => Some(interp.resolve_buffer_id(destination)?),
-        Value::String(name) => Some(
-            interp
-                .find_buffer(name)
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer(name).0),
-        ),
-        _ => {
-            return Err(LispError::TypeError(
-                "buffer-or-name".into(),
-                destination.type_name(),
-            ));
+    if let Ok(items) = destination.to_vec()
+        && items.len() == 2
+    {
+        if items[0] == Value::Symbol(":file".into()) {
+            let path = string_text(&items[1])?;
+            if !stdout.is_empty() {
+                write_process_bytes_to_file(&path, stdout, false)?;
+            }
+            return Ok(());
         }
-    };
-    let Some(target_id) = target_id else {
+        append_process_bytes_to_buffer(interp, &items[0], stdout)?;
+        if !stderr.is_empty() && !items[1].is_nil() {
+            let path = string_text(&items[1])?;
+            write_process_bytes_to_file(&path, stderr, false)?;
+        }
         return Ok(());
-    };
-    let original_id = interp.current_buffer_id();
-    if target_id != original_id {
-        interp.switch_to_buffer_id(target_id)?;
     }
-    interp.insert_current_buffer(&output);
-    if target_id != original_id {
-        interp.switch_to_buffer_id(original_id)?;
-    }
+    append_process_bytes_to_buffer(interp, destination, stdout)?;
+    append_process_bytes_to_buffer(interp, destination, stderr)?;
     Ok(())
 }
 
@@ -22219,7 +22794,10 @@ fn insert_file_contents(
     {
         let _ = checked_coding_symbol(interp, &coding)?;
     }
-    let bytes = read_insert_file_bytes(&path, start, end)?;
+    let mut bytes = read_insert_file_bytes(&path, start, end)?;
+    if !literal && start.is_none() && end.is_none() {
+        bytes = maybe_decompress_file_bytes(&path, bytes)?;
+    }
     let (text, detected) = decode_file_contents(interp, env, &bytes, literal)?;
     if replace {
         maybe_prompt_supersession_threat(interp, env)?;
@@ -25493,6 +26071,408 @@ mod lcms_response_tests {
                 Value::Integer('\r' as i64),
                 Value::Integer('\r' as i64),
             ])
+        );
+    }
+}
+
+#[cfg(test)]
+mod compat_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn count_lines_matches_emacs_boundary_behavior() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\nc");
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "count-lines",
+                &[Value::Integer(1), Value::Integer(1)],
+                &mut env
+            )
+            .expect("count-lines at same position"),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "count-lines",
+                &[Value::Integer(1), Value::Integer(3)],
+                &mut env
+            )
+            .expect("count-lines to line start"),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "count-lines",
+                &[Value::Integer(1), Value::Integer(4)],
+                &mut env
+            )
+            .expect("count-lines through mid-line"),
+            Value::Integer(2)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "count-lines",
+                &[Value::Integer(4), Value::Integer(1)],
+                &mut env
+            )
+            .expect("count-lines is symmetric"),
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn file_modes_number_to_symbolic_formats_tar_modes() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-modes-number-to-symbolic",
+                &[Value::Integer(0o700)],
+                &mut env
+            )
+            .expect("format regular mode"),
+            Value::String("-rwx------".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-modes-number-to-symbolic",
+                &[Value::Integer(0o4000)],
+                &mut env
+            )
+            .expect("format setuid mode"),
+            Value::String("---S------".into())
+        );
+    }
+
+    #[test]
+    fn mode_function_for_file_name_handles_compressed_archives() {
+        assert_eq!(
+            mode_function_for_file_name("/tmp/archive.tar.gz"),
+            Some("tar-mode")
+        );
+        assert_eq!(
+            mode_function_for_file_name("/tmp/archive.tgz"),
+            Some("tar-mode")
+        );
+        assert_eq!(
+            mode_function_for_file_name("/tmp/archive.zip.gz"),
+            Some("archive-mode")
+        );
+        assert_eq!(mode_function_for_file_name("/tmp/plain.txt.gz"), None);
+    }
+
+    #[test]
+    fn normal_mode_selects_archive_mode_for_zip_buffers() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_function_binding(
+            "archive-mode",
+            Some(Value::Lambda(
+                Vec::new(),
+                vec![
+                    Value::list([
+                        Value::Symbol("setq-local".into()),
+                        Value::Symbol("major-mode".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol("archive-mode".into()),
+                        ]),
+                    ]),
+                    Value::Nil,
+                ],
+                Vec::new(),
+            )),
+        );
+        interp.set_variable(
+            "buffer-file-name",
+            Value::String("/tmp/demo.zip".into()),
+            &mut env,
+        );
+
+        assert_eq!(
+            call(&mut interp, "normal-mode", &[], &mut env).expect("dispatch normal-mode"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.lookup_var("major-mode", &env),
+            Some(Value::Symbol("archive-mode".into()))
+        );
+    }
+
+    #[test]
+    fn special_mode_sets_major_mode_and_read_only() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(&mut interp, "special-mode", &[], &mut env).expect("run special-mode"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.lookup_var("major-mode", &env),
+            Some(Value::Symbol("special-mode".into()))
+        );
+        assert_eq!(interp.lookup_var("buffer-read-only", &env), Some(Value::T));
+    }
+
+    #[test]
+    fn jka_compr_get_compression_info_recognizes_gzip_suffixes() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "jka-compr-get-compression-info",
+                &[Value::String("/tmp/demo.gz".into())],
+                &mut env
+            )
+            .expect("gzip suffix is recognized"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "jka-compr-get-compression-info",
+                &[Value::String("/tmp/demo.zip".into())],
+                &mut env
+            )
+            .expect("plain zip is not compression info"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn find_operation_coding_system_accepts_file_buffer_cons() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_variable(
+            "file-coding-system-alist",
+            Value::list([Value::cons(
+                Value::String("\\.txt\\'".into()),
+                Value::Symbol("utf-8-unix".into()),
+            )]),
+            &mut env,
+        );
+
+        let file_arg = Value::cons(
+            Value::String("/tmp/demo.txt".into()),
+            Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "find-operation-coding-system",
+                &[
+                    Value::Symbol("insert-file-contents".into()),
+                    file_arg,
+                    Value::T,
+                ],
+                &mut env,
+            )
+            .expect("cons file argument is accepted"),
+            Value::cons(
+                Value::Symbol("utf-8-unix".into()),
+                Value::Symbol("utf-8-unix".into()),
+            )
+        );
+    }
+
+    #[test]
+    fn coding_system_get_reports_for_unibyte_for_raw_text() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "coding-system-get",
+                &[
+                    Value::Symbol("raw-text".into()),
+                    Value::Symbol(":for-unibyte".into()),
+                ],
+                &mut env,
+            )
+            .expect("raw-text :for-unibyte"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "coding-system-get",
+                &[
+                    Value::Symbol("utf-8".into()),
+                    Value::Symbol(":for-unibyte".into()),
+                ],
+                &mut env,
+            )
+            .expect("utf-8 is multibyte"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn decode_coding_region_inserts_into_destination_buffer() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*source*", "abc");
+        let (buffer_id, buffer_name) = interp.create_buffer("*dest*");
+
+        assert!(
+            call(
+                &mut interp,
+                "decode-coding-region",
+                &[
+                    Value::Integer(1),
+                    Value::Integer(4),
+                    Value::Symbol("utf-8".into()),
+                    Value::Buffer(buffer_id, buffer_name),
+                ],
+                &mut env,
+            )
+            .is_ok()
+        );
+        let dest = interp.get_buffer_by_id(buffer_id).expect("dest buffer");
+        assert_eq!(dest.buffer_string(), "abc");
+    }
+
+    #[test]
+    fn add_function_supports_local_place_spec() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "add-function",
+                &[
+                    Value::Symbol(":around".into()),
+                    Value::list([
+                        Value::Symbol("emaxx-local-function-place".into()),
+                        Value::Symbol("revert-buffer-function".into()),
+                    ]),
+                    Value::Symbol("archive--mode-revert".into()),
+                ],
+                &mut env,
+            )
+            .expect("install local function"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.buffer_local_value(interp.current_buffer_id(), "revert-buffer-function"),
+            Some(Value::Symbol("archive--mode-revert".into()))
+        );
+    }
+
+    #[test]
+    fn make_temp_file_creates_a_file_for_relative_prefix() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let path = call(
+            &mut interp,
+            "make-temp-file",
+            &[Value::String("emaxx-compat-".into())],
+            &mut env,
+        )
+        .expect("create temp file")
+        .as_string()
+        .expect("path string")
+        .to_string();
+        assert!(std::path::Path::new(&path).exists());
+        std::fs::remove_file(path).expect("cleanup temp file");
+    }
+
+    #[test]
+    fn file_name_extension_helpers_match_archive_usage() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-name-sans-extension",
+                &[Value::String("demo.tar.gz".into())],
+                &mut env,
+            )
+            .expect("strip suffix"),
+            Value::String("demo.tar".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-name-extension",
+                &[Value::String("demo.tar.gz".into()), Value::T],
+                &mut env,
+            )
+            .expect("extension with period"),
+            Value::String(".gz".into())
+        );
+    }
+
+    #[test]
+    fn get_byte_reads_unibyte_buffer_positions() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*bytes*", "\u{00ff}");
+        interp.buffer.set_multibyte(false);
+
+        assert_eq!(
+            call(&mut interp, "get-byte", &[Value::Integer(1)], &mut env).expect("read first byte"),
+            Value::Integer(0xFF)
+        );
+    }
+
+    #[test]
+    fn write_process_output_supports_stdout_buffer_and_stderr_file() {
+        let mut interp = Interpreter::new();
+        let stderr_path = std::env::temp_dir()
+            .join("emaxx-process-stderr-test")
+            .display()
+            .to_string();
+        let destination = Value::list([Value::T, Value::String(stderr_path.clone())]);
+
+        write_process_output(&mut interp, &destination, &[0xFF], b"warn\n")
+            .expect("write process output");
+        assert_eq!(
+            interp.buffer.buffer_string(),
+            decode_raw_text_bytes(&[0xFF])
+        );
+        assert_eq!(std::fs::read(&stderr_path).expect("stderr file"), b"warn\n");
+        std::fs::remove_file(stderr_path).expect("cleanup stderr file");
+    }
+
+    #[test]
+    fn member_ignore_case_matches_strings_case_insensitively() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "member-ignore-case",
+                &[
+                    Value::String("UNZIP".into()),
+                    Value::list([
+                        Value::String("zip".into()),
+                        Value::String("unzip".into()),
+                        Value::String("7z".into()),
+                    ]),
+                ],
+                &mut env,
+            )
+            .expect("find case-insensitive member"),
+            Value::list([Value::String("unzip".into()), Value::String("7z".into())])
         );
     }
 }

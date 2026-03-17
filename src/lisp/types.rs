@@ -105,7 +105,7 @@ impl Value {
     }
 
     pub fn is_symbol(&self) -> bool {
-        matches!(self, Value::Symbol(_))
+        matches!(self, Value::Nil | Value::T | Value::Symbol(_))
     }
 
     pub fn is_cons(&self) -> bool {
@@ -148,6 +148,8 @@ impl Value {
 
     pub fn as_symbol(&self) -> Result<&str, LispError> {
         match self {
+            Value::Nil => Ok("nil"),
+            Value::T => Ok("t"),
             Value::Symbol(s) => Ok(s),
             _ => Err(LispError::TypeError("symbol".into(), self.type_name())),
         }
@@ -456,5 +458,18 @@ impl std::error::Error for LispError {}
 impl From<crate::buffer::BufferError> for LispError {
     fn from(e: crate::buffer::BufferError) -> Self {
         LispError::Signal(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+
+    #[test]
+    fn nil_and_t_count_as_symbols() {
+        assert!(Value::Nil.is_symbol());
+        assert!(Value::T.is_symbol());
+        assert_eq!(Value::Nil.as_symbol().expect("nil is a symbol"), "nil");
+        assert_eq!(Value::T.as_symbol().expect("t is a symbol"), "t");
     }
 }

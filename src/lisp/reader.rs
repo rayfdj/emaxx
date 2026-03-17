@@ -2,6 +2,7 @@ use super::types::{LispError, SharedStringState, StringPropertySpan, Value};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::{cell::RefCell, rc::Rc};
+use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
@@ -280,6 +281,23 @@ impl<'a> Reader<'a> {
                                 s.push(INVALID_UNICODE_SENTINEL);
                             }
                         }
+                        Some(b'N') => {
+                            if self.peek() == Some(b'{') {
+                                let code = self.read_named_character_code()?;
+                                if valid_unicode_scalar(code) {
+                                    let c = char::from_u32(code).expect("validated scalar");
+                                    if code > 0x7F {
+                                        has_explicit_multibyte = true;
+                                    }
+                                    s.push(c);
+                                } else {
+                                    has_invalid_unicode = true;
+                                    s.push(INVALID_UNICODE_SENTINEL);
+                                }
+                            } else {
+                                s.push('N');
+                            }
+                        }
                         Some(ch) if ch.is_ascii_digit() => {
                             // Octal escape
                             let mut val = (ch - b'0') as u32;
@@ -510,27 +528,7 @@ impl<'a> Reader<'a> {
                 if self.peek() != Some(b'{') {
                     return Ok('N' as i64);
                 }
-                self.advance(); // consume '{'
-                let start = self.pos;
-                while let Some(ch) = self.peek() {
-                    if ch == b'}' {
-                        let name = std::str::from_utf8(&self.input[start..self.pos])
-                            .map_err(|e| LispError::ReadError(e.to_string()))?;
-                        self.advance(); // consume '}'
-                        let ch = match name {
-                            "LATIN SMALL LETTER E WITH ACUTE" => '\u{00E9}',
-                            "GREEK SMALL LETTER LAMDA" => '\u{03BB}',
-                            _ => {
-                                return Err(LispError::ReadError(format!(
-                                    "unknown character name {{{name}}}"
-                                )));
-                            }
-                        };
-                        return Ok(ch as i64);
-                    }
-                    self.advance();
-                }
-                Err(LispError::EndOfInput)
+                Ok(self.read_named_character_code()? as i64)
             }
             Some(b'x') => Ok(self.read_hex_digits(6) as i64),
             Some(b'u') => Ok(self.read_hex_digits(4) as i64),
@@ -550,6 +548,24 @@ impl<'a> Reader<'a> {
             }
             Some(ch) => Ok(ch as i64),
         }
+    }
+
+    fn read_named_character_code(&mut self) -> Result<u32, LispError> {
+        debug_assert_eq!(self.peek(), Some(b'{'));
+        self.advance(); // consume '{'
+        let start = self.pos;
+        while let Some(ch) = self.peek() {
+            if ch == b'}' {
+                let name = std::str::from_utf8(&self.input[start..self.pos])
+                    .map_err(|error| LispError::ReadError(error.to_string()))?;
+                self.advance(); // consume '}'
+                return resolve_named_character_code(name).ok_or_else(|| {
+                    LispError::ReadError(format!("unknown character name {{{name}}}"))
+                });
+            }
+            self.advance();
+        }
+        Err(LispError::EndOfInput)
     }
 
     fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
@@ -962,6 +978,22 @@ fn valid_unicode_scalar(value: u32) -> bool {
     value <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&value)
 }
 
+fn resolve_named_character_code(name: &str) -> Option<u32> {
+    let trimmed = name.trim_matches(|ch: char| ch.is_ascii_whitespace());
+    if let Some(hex) = trimmed
+        .strip_prefix("U+")
+        .or_else(|| trimmed.strip_prefix("u+"))
+    {
+        if hex.is_empty() || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return None;
+        }
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        return valid_unicode_scalar(value).then_some(value);
+    }
+
+    unicode_character(trimmed).map(|ch| ch as u32)
+}
+
 fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
     if !(2..=36).contains(&base) {
         return Err(LispError::ReadError(format!("invalid radix {}", base)));
@@ -1078,6 +1110,22 @@ mod tests {
         assert_eq!(read_one("?\\s-c"), Value::Integer((1 << 23) | ('c' as i64)));
         assert_eq!(read_one("?\\S-c"), Value::Integer((1 << 25) | ('c' as i64)));
         assert_eq!(read_one("?\\M-\\C-x"), Value::Integer((1 << 27) | 24));
+    }
+
+    #[test]
+    fn reads_named_unicode_character_escapes() {
+        assert_eq!(read_one("?\\N{SNOWFLAKE}"), Value::Integer('❄' as i64));
+        assert_eq!(read_one("?\\N{U+A817}"), Value::Integer(0xA817));
+    }
+
+    #[test]
+    fn reads_named_unicode_string_escapes() {
+        let Value::StringObject(state) = read_one(r#""\N{SNOWFLAKE}""#) else {
+            panic!("expected a string object");
+        };
+        let state = state.borrow();
+        assert_eq!(state.text, "❄");
+        assert!(state.multibyte);
     }
 
     #[test]
