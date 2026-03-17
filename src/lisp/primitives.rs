@@ -754,6 +754,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "fset"
             | "eval"
             | "define-keymap"
+            | "define-abbrev-table"
             | "read-event"
             | "read-char"
             | "read-char-exclusive"
@@ -791,6 +792,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-keymap"
             | "make-sparse-keymap"
             | "make-mode-line-mouse-map"
+            | "make-abbrev-table"
             | "vconcat"
             | "record"
             | "make-record"
@@ -841,6 +843,15 @@ pub fn is_builtin(name: &str) -> bool {
             | "url-hexify-string"
             | "url-encode-url"
             | "base64-decode-string"
+            | "abbrev-table-p"
+            | "abbrev-table-empty-p"
+            | "abbrev-table-put"
+            | "abbrev-table-get"
+            | "define-abbrev"
+            | "abbrev-expansion"
+            | "clear-abbrev-table"
+            | "copy-abbrev-table"
+            | "abbrev-table-name"
             // Buffer operations
             | "insert"
             | "insert-and-inherit"
@@ -885,6 +896,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "char-after"
             | "char-before"
             | "derived-mode-p"
+            | "derived-mode-add-parents"
             | "bobp"
             | "eobp"
             | "bolp"
@@ -3351,6 +3363,21 @@ pub fn call(
             Value::Nil,
         ]))),
         "define-keymap" => Ok(keymap_placeholder(None)),
+        "define-abbrev-table" => {
+            need_arg_range(name, args, 2, 3)?;
+            let symbol = args[0].as_symbol()?.to_string();
+            let table = match interp.lookup_var(&symbol, &Vec::new()) {
+                Some(existing) if is_abbrev_table_value(interp, &existing) => existing,
+                _ => {
+                    let created = make_runtime_abbrev_table(interp, Some(&symbol), Value::Nil);
+                    interp.set_global_binding(&symbol, created.clone());
+                    register_abbrev_table_symbol(interp, &symbol);
+                    created
+                }
+            };
+            set_abbrev_table_entries_from_definitions(interp, &table, &args[1])?;
+            Ok(table)
+        }
         "read-event" | "read-char" | "read-char-exclusive" => {
             let timed_poll = args.len() >= 3 && args[2].is_truthy();
             if timed_poll {
@@ -3376,6 +3403,11 @@ pub fn call(
         }
 
         // ── Allocation ──
+        "make-abbrev-table" => {
+            need_arg_range(name, args, 0, 1)?;
+            let props = args.first().cloned().unwrap_or(Value::Nil);
+            Ok(make_runtime_abbrev_table(interp, None, props))
+        }
         "make-string" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(
@@ -4073,6 +4105,53 @@ pub fn call(
             let ignore_invalid = args.get(2).is_some_and(Value::is_truthy);
             decode_base64_string_value(&args[0], base64url, ignore_invalid)
         }
+        "abbrev-table-p" => {
+            need_args(name, args, 1)?;
+            Ok(if is_abbrev_table_value(interp, &args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "abbrev-table-empty-p" => {
+            need_args(name, args, 1)?;
+            Ok(if abbrev_table_entries(interp, &args[0])?.is_empty() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "abbrev-table-get" => {
+            need_args(name, args, 2)?;
+            Ok(abbrev_table_property(interp, &args[0], &args[1]).unwrap_or(Value::Nil))
+        }
+        "abbrev-table-put" => {
+            need_args(name, args, 3)?;
+            set_abbrev_table_property(interp, &args[0], &args[1], args[2].clone())?;
+            Ok(args[2].clone())
+        }
+        "define-abbrev" => {
+            need_arg_range(name, args, 3, 6)?;
+            define_abbrev_entry(interp, &args[0], &string_text(&args[1])?, args[2].clone())?;
+            Ok(args[2].clone())
+        }
+        "abbrev-expansion" => {
+            need_args(name, args, 2)?;
+            Ok(abbrev_expansion(interp, &args[1], &string_text(&args[0])?)?.unwrap_or(Value::Nil))
+        }
+        "clear-abbrev-table" => {
+            need_args(name, args, 1)?;
+            set_abbrev_table_entries(interp, &args[0], Vec::new())?;
+            Ok(Value::Nil)
+        }
+        "copy-abbrev-table" => {
+            need_args(name, args, 1)?;
+            copy_abbrev_table(interp, &args[0])
+        }
+        "abbrev-table-name" => {
+            need_args(name, args, 1)?;
+            Ok(abbrev_table_name_value(interp, &args[0]).unwrap_or(Value::Nil))
+        }
         "byte-to-string" => {
             need_args(name, args, 1)?;
             let n = args[0].as_integer()?;
@@ -4544,18 +4623,25 @@ pub fn call(
                 .lookup_var("major-mode", env)
                 .and_then(|value| value.as_symbol().ok().map(str::to_string));
             Ok(
-                if args.iter().any(|value| {
-                    value
-                        .as_symbol()
-                        .ok()
-                        .zip(current_mode.as_deref())
-                        .is_some_and(|(candidate, current)| candidate == current)
+                if current_mode.is_some_and(|current| {
+                    let parents = derived_mode_parent_chain(interp, &current);
+                    args.iter().any(|value| {
+                        value.as_symbol().ok().is_some_and(|candidate| {
+                            parents.iter().any(|parent| parent == candidate)
+                        })
+                    })
                 }) {
                     Value::T
                 } else {
                     Value::Nil
                 },
             )
+        }
+        "derived-mode-add-parents" => {
+            need_args(name, args, 2)?;
+            let mode = args[0].as_symbol()?;
+            derived_mode_add_parents(interp, mode, &args[1])?;
+            Ok(args[0].clone())
         }
         "buffer-size" => Ok(Value::Integer(interp.buffer.buffer_size() as i64)),
         "buffer-enable-undo" => {
@@ -11634,6 +11720,11 @@ fn make_bool_vector_value(interp: &mut Interpreter, bits: impl IntoIterator<Item
     )
 }
 
+const ABBREV_TABLE_RECORD_TYPE: &str = "abbrev-table";
+const ABBREV_TABLE_NAME_SLOT: usize = 0;
+const ABBREV_TABLE_PROPS_SLOT: usize = 1;
+const ABBREV_TABLE_ENTRIES_SLOT: usize = 2;
+
 fn set_bool_vector_bit(
     interp: &mut Interpreter,
     value: &Value,
@@ -11660,6 +11751,337 @@ fn set_bool_vector_bit(
     }
     record.slots[index] = if bit { Value::T } else { Value::Nil };
     Ok(())
+}
+
+fn abbrev_table_record_id(interp: &Interpreter, value: &Value) -> Option<u64> {
+    let Value::Record(id) = value else {
+        return None;
+    };
+    interp
+        .find_record(*id)
+        .filter(|record| record.type_name == ABBREV_TABLE_RECORD_TYPE)
+        .map(|_| *id)
+}
+
+fn is_abbrev_table_value(interp: &Interpreter, value: &Value) -> bool {
+    abbrev_table_record_id(interp, value).is_some()
+}
+
+fn make_runtime_abbrev_table(interp: &mut Interpreter, name: Option<&str>, props: Value) -> Value {
+    interp.create_record(
+        ABBREV_TABLE_RECORD_TYPE,
+        vec![
+            name.map(Value::symbol).unwrap_or(Value::Nil),
+            props,
+            Value::Nil,
+        ],
+    )
+}
+
+fn abbrev_table_name_value(interp: &Interpreter, table: &Value) -> Option<Value> {
+    let id = abbrev_table_record_id(interp, table)?;
+    let record = interp.find_record(id)?;
+    match record.slots.get(ABBREV_TABLE_NAME_SLOT) {
+        Some(Value::Nil) | None => None,
+        Some(value) => Some(value.clone()),
+    }
+}
+
+fn abbrev_table_props_value(interp: &Interpreter, table: &Value) -> Result<Value, LispError> {
+    let Some(id) = abbrev_table_record_id(interp, table) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    Ok(record
+        .slots
+        .get(ABBREV_TABLE_PROPS_SLOT)
+        .cloned()
+        .unwrap_or(Value::Nil))
+}
+
+fn set_abbrev_table_props_value(
+    interp: &mut Interpreter,
+    table: &Value,
+    props: Value,
+) -> Result<(), LispError> {
+    let Some(id) = abbrev_table_record_id(interp, table) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    let Some(record) = interp.find_record_mut(id) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    if record.slots.len() <= ABBREV_TABLE_PROPS_SLOT {
+        record.slots.resize(ABBREV_TABLE_PROPS_SLOT + 1, Value::Nil);
+    }
+    record.slots[ABBREV_TABLE_PROPS_SLOT] = props;
+    Ok(())
+}
+
+fn abbrev_table_property(interp: &Interpreter, table: &Value, property: &Value) -> Option<Value> {
+    let key = property.as_symbol().ok()?;
+    let items = abbrev_table_props_value(interp, table)
+        .ok()?
+        .to_vec()
+        .ok()?;
+    let mut index = 0usize;
+    while index + 1 < items.len() {
+        if items[index].as_symbol().ok() == Some(key) {
+            return Some(items[index + 1].clone());
+        }
+        index += 2;
+    }
+    None
+}
+
+fn set_abbrev_table_property(
+    interp: &mut Interpreter,
+    table: &Value,
+    property: &Value,
+    value: Value,
+) -> Result<(), LispError> {
+    let key = property.as_symbol()?.to_string();
+    let mut items = abbrev_table_props_value(interp, table)?
+        .to_vec()
+        .unwrap_or_default();
+    let mut index = 0usize;
+    let mut updated = false;
+    while index + 1 < items.len() {
+        if items[index].as_symbol().ok() == Some(key.as_str()) {
+            items[index + 1] = value.clone();
+            updated = true;
+            break;
+        }
+        index += 2;
+    }
+    if !updated {
+        items.push(Value::Symbol(key));
+        items.push(value);
+    }
+    set_abbrev_table_props_value(interp, table, Value::list(items))
+}
+
+fn abbrev_table_entries(
+    interp: &Interpreter,
+    table: &Value,
+) -> Result<Vec<(String, Value, Value)>, LispError> {
+    let Some(id) = abbrev_table_record_id(interp, table) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    let entries = record
+        .slots
+        .get(ABBREV_TABLE_ENTRIES_SLOT)
+        .cloned()
+        .unwrap_or(Value::Nil);
+    let mut result = Vec::new();
+    for entry in entries.to_vec()? {
+        let parts = entry.to_vec()?;
+        if parts.len() < 2 {
+            continue;
+        }
+        let name = string_text(&parts[0])?;
+        let expansion = parts[1].clone();
+        let props = parts.get(2).cloned().unwrap_or(Value::Nil);
+        result.push((name, expansion, props));
+    }
+    Ok(result)
+}
+
+fn set_abbrev_table_entries(
+    interp: &mut Interpreter,
+    table: &Value,
+    entries: Vec<(String, Value, Value)>,
+) -> Result<(), LispError> {
+    let Some(id) = abbrev_table_record_id(interp, table) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    let Some(record) = interp.find_record_mut(id) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    if record.slots.len() <= ABBREV_TABLE_ENTRIES_SLOT {
+        record
+            .slots
+            .resize(ABBREV_TABLE_ENTRIES_SLOT + 1, Value::Nil);
+    }
+    record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::list(
+        entries
+            .into_iter()
+            .map(|(name, expansion, props)| Value::list([Value::String(name), expansion, props])),
+    );
+    Ok(())
+}
+
+fn define_abbrev_entry(
+    interp: &mut Interpreter,
+    table: &Value,
+    name: &str,
+    expansion: Value,
+) -> Result<(), LispError> {
+    let mut entries = abbrev_table_entries(interp, table)?;
+    entries.retain(|(existing, _, _)| existing != name);
+    entries.insert(0, (name.to_string(), expansion, Value::Nil));
+    set_abbrev_table_entries(interp, table, entries)
+}
+
+fn abbrev_expansion(
+    interp: &Interpreter,
+    table: &Value,
+    name: &str,
+) -> Result<Option<Value>, LispError> {
+    Ok(abbrev_table_entries(interp, table)?
+        .into_iter()
+        .find_map(|(existing, expansion, _)| (existing == name).then_some(expansion)))
+}
+
+fn copy_abbrev_table(interp: &mut Interpreter, table: &Value) -> Result<Value, LispError> {
+    let Some(id) = abbrev_table_record_id(interp, table) else {
+        return Err(LispError::TypeError(
+            "abbrev-table".into(),
+            table.type_name(),
+        ));
+    };
+    interp.copy_record(id)
+}
+
+fn parse_abbrev_definition(entry: &Value) -> Result<(String, Value, Value), LispError> {
+    let parts = entry.to_vec()?;
+    if parts.len() < 2 {
+        return Err(LispError::Signal("Invalid abbrev definition".into()));
+    }
+    let name = string_text(&parts[0])?;
+    let expansion = parts[1].clone();
+    let props = if parts.len() > 3 {
+        Value::list(parts[3..].to_vec())
+    } else {
+        Value::Nil
+    };
+    Ok((name, expansion, props))
+}
+
+fn set_abbrev_table_entries_from_definitions(
+    interp: &mut Interpreter,
+    table: &Value,
+    definitions: &Value,
+) -> Result<(), LispError> {
+    let mut entries = Vec::new();
+    for entry in definitions.to_vec()? {
+        entries.push(parse_abbrev_definition(&entry)?);
+    }
+    set_abbrev_table_entries(interp, table, entries)
+}
+
+fn register_abbrev_table_symbol(interp: &mut Interpreter, symbol: &str) {
+    let existing = interp
+        .lookup_var("abbrev-table-name-list", &Vec::new())
+        .unwrap_or(Value::Nil);
+    let mut items = existing.to_vec().unwrap_or_default();
+    if !items
+        .iter()
+        .any(|value| value.as_symbol().ok() == Some(symbol))
+    {
+        items.insert(0, Value::Symbol(symbol.to_string()));
+        interp.set_global_binding("abbrev-table-name-list", Value::list(items));
+    }
+}
+
+pub(crate) fn derived_mode_set_parent(interp: &mut Interpreter, mode: &str, parent: Option<&str>) {
+    match parent {
+        Some(parent) => {
+            interp.put_symbol_property(mode, "derived-mode-parent", Value::Symbol(parent.into()))
+        }
+        None => interp.remove_symbol_property(mode, "derived-mode-parent"),
+    }
+    derived_mode_flush(interp, mode);
+}
+
+fn derived_mode_add_parents(
+    interp: &mut Interpreter,
+    mode: &str,
+    extra_parents: &Value,
+) -> Result<(), LispError> {
+    let extras = extra_parents.to_vec()?;
+    interp.put_symbol_property(mode, "derived-mode-extra-parents", Value::list(extras));
+    derived_mode_flush(interp, mode);
+    Ok(())
+}
+
+fn derived_mode_flush(interp: &mut Interpreter, mode: &str) {
+    interp.remove_symbol_property(mode, "derived-mode--all-parents");
+    let followers = interp
+        .get_symbol_property(mode, "derived-mode--followers")
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    interp.remove_symbol_property(mode, "derived-mode--followers");
+    for follower in followers {
+        if let Ok(symbol) = follower.as_symbol() {
+            derived_mode_flush(interp, symbol);
+        }
+    }
+}
+
+fn derived_mode_parent_chain(interp: &Interpreter, mode: &str) -> Vec<String> {
+    fn visit(
+        interp: &Interpreter,
+        mode: &str,
+        seen: &mut std::collections::HashSet<String>,
+        out: &mut Vec<String>,
+    ) {
+        if !seen.insert(mode.to_string()) {
+            return;
+        }
+        out.push(mode.to_string());
+        if let Some(Value::Symbol(parent)) = interp.get_symbol_property(mode, "derived-mode-parent")
+        {
+            visit(interp, &parent, seen, out);
+        }
+        if let Some(extra) = interp.get_symbol_property(mode, "derived-mode-extra-parents")
+            && let Ok(items) = extra.to_vec()
+        {
+            for parent in items {
+                if let Ok(parent) = parent.as_symbol() {
+                    visit(interp, parent, seen, out);
+                }
+            }
+        }
+        if let Ok(alias) = interp.lookup_function(mode, &Vec::new())
+            && let Value::Symbol(alias_name) = alias
+        {
+            visit(interp, &alias_name, seen, out);
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    visit(interp, mode, &mut seen, &mut result);
+    result
 }
 
 fn is_builtin_class_name(name: &str) -> bool {
