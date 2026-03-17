@@ -1002,6 +1002,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-some"
             | "any"
             | "seq-some"
+            | "seq-mapcat"
             | "mapc"
             | "cl-reduce"
             | "apply"
@@ -1132,6 +1133,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "skip-chars-backward"
             | "skip-syntax-forward"
             | "skip-syntax-backward"
+            | "back-to-indentation"
             | "beginning-of-line"
             | "end-of-line"
             | "forward-line"
@@ -1168,6 +1170,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "emacs-lisp-mode"
             | "special-mode"
             | "derived-mode-p"
+            | "display-mouse-p"
             | "derived-mode-add-parents"
             | "normal-mode"
             | "bobp"
@@ -1176,6 +1179,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "eolp"
             | "delete-region"
             | "delete-and-extract-region"
+            | "delete-line"
             | "delete-char"
             | "delete-forward-char"
             | "kill-word"
@@ -1723,6 +1727,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "tool-bar-local-item-from-menu"
             | "define-widget"
             | "define-button-type"
+            | "make-button"
+            | "button-at"
+            | "button-type"
             | "defined-colors"
             | "color-defined-p"
             | "next-read-file-uses-dialog-p"
@@ -1884,6 +1891,7 @@ pub fn call(
             | "delete-region"
             | "delete-and-extract-region"
             | "kill-region"
+            | "delete-line"
             | "delete-char"
             | "delete-forward-char"
             | "kill-word"
@@ -3483,6 +3491,30 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "seq-mapcat" => {
+            need_arg_range(name, args, 2, 3)?;
+            let sequence = sequence_values(&args[1])?;
+            let mut flattened = Vec::new();
+            for item in sequence {
+                let mapped = call_function_value(interp, &args[0], &[item], env)?;
+                flattened.extend(sequence_values(&mapped)?);
+            }
+
+            match args
+                .get(2)
+                .and_then(|value| value.as_symbol().ok())
+                .unwrap_or("list")
+            {
+                "list" => Ok(Value::list(flattened)),
+                "vector" => Ok(Value::list(
+                    std::iter::once(Value::Symbol("vector".into())).chain(flattened),
+                )),
+                "string" => call(interp, "concat", &flattened, env),
+                other => Err(LispError::Signal(format!(
+                    "Unsupported seq-mapcat result type: {other}"
+                ))),
+            }
+        }
         "mapc" => {
             need_args(name, args, 2)?;
             let list = sequence_values(&args[1])?;
@@ -4147,7 +4179,7 @@ pub fn call(
             if args.is_empty() || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            split_string_impl(&args[0], args.get(1), args.get(2))
+            split_string_impl(interp, &args[0], args.get(1), args.get(2), env)
         }
         "string-width" => {
             if args.is_empty() || args.len() > 3 {
@@ -5067,6 +5099,18 @@ pub fn call(
             interp.buffer.beginning_of_line();
             Ok(Value::Nil)
         }
+        "back-to-indentation" => {
+            interp.buffer.beginning_of_line();
+            let limit = interp.buffer.end_of_line();
+            interp.buffer.beginning_of_line();
+            let _ = skip_syntax_impl(
+                interp,
+                &Value::String(" ".into()),
+                Some(&Value::Integer(limit as i64)),
+                true,
+            )?;
+            Ok(Value::Nil)
+        }
         "end-of-line" => {
             interp.buffer.end_of_line();
             Ok(Value::Nil)
@@ -5508,6 +5552,14 @@ pub fn call(
             ))
         }
         "kill-region" => call(interp, "delete-region", args, env),
+        "delete-line" => {
+            need_arg_range(name, args, 0, 0)?;
+            let start = interp.buffer.beginning_of_line();
+            let end = move_lines_from(interp, start, 1).0;
+            ensure_region_modifiable(interp, start, end, env)?;
+            delete_region_with_hooks(interp, start, end, env)?;
+            Ok(Value::Nil)
+        }
         "delete-char" => {
             let n = if args.is_empty() {
                 1
@@ -5970,22 +6022,31 @@ pub fn call(
             if args.len() < 2 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let pos = args[0].as_integer()?.max(1) as usize;
             let prop = args[1].as_symbol()?.to_string();
             let object = args.get(2).unwrap_or(&Value::Nil);
             let limit = args
                 .get(3)
                 .filter(|value| !value.is_nil())
-                .map(|value| value.as_integer().map(|value| value.max(1) as usize))
+                .map(|value| value.as_integer().map(|value| value.max(0) as usize))
                 .transpose()?;
-            let (initial, max_pos) = if string_like(object).is_some() {
+            if string_like(object).is_some() {
+                let pos = args[0].as_integer()?.max(0) as usize;
                 let text = string_text(object)?;
-                let text_len = text.chars().count() + 1;
-                (
-                    string_property_at(object, pos, &prop).unwrap_or(Value::Nil),
-                    limit.unwrap_or(text_len),
-                )
-            } else {
+                let max_pos = limit.unwrap_or(text.chars().count());
+                let initial = string_property_at(object, pos, &prop).unwrap_or(Value::Nil);
+                for cursor in pos.saturating_add(1)..max_pos {
+                    let current = string_property_at(object, cursor, &prop).unwrap_or(Value::Nil);
+                    if current != initial {
+                        return Ok(Value::Integer(cursor as i64));
+                    }
+                }
+                return Ok(limit
+                    .map(|value| Value::Integer(value as i64))
+                    .unwrap_or(Value::Nil));
+            }
+
+            let pos = args[0].as_integer()?.max(1) as usize;
+            let (initial, max_pos) = {
                 let buffer_id = if object.is_nil() {
                     interp.current_buffer_id()
                 } else {
@@ -6000,9 +6061,7 @@ pub fn call(
                 )
             };
             for cursor in pos.saturating_add(1)..max_pos {
-                let current = if string_like(object).is_some() {
-                    string_property_at(object, cursor, &prop).unwrap_or(Value::Nil)
-                } else if object.is_nil() {
+                let current = if object.is_nil() {
                     interp
                         .buffer
                         .text_property_at(cursor, &prop)
@@ -9500,9 +9559,12 @@ pub fn call(
         "error" => {
             let msg = if args.is_empty() {
                 "error".to_string()
-            } else if let Ok(fmt) = args[0].as_string() {
-                // Simple format
-                fmt.to_string()
+            } else if matches!(args[0], Value::String(_) | Value::StringObject(_)) {
+                if args.len() > 1 {
+                    string_text(&call(interp, "format", args, env)?)?
+                } else {
+                    string_text(&args[0])?
+                }
             } else {
                 args[0].to_string()
             };
@@ -10278,6 +10340,52 @@ pub fn call(
         "define-button-type" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
+        }
+        "display-mouse-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Nil)
+        }
+        "make-button" => {
+            if args.len() < 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            if args[0].is_nil() || args[1].is_nil() {
+                return Ok(Value::Nil);
+            }
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let mut cursor = 2usize;
+            while cursor + 1 < args.len() {
+                if let Ok(property) = args[cursor].as_symbol() {
+                    let property = if property == "type" {
+                        "button-type"
+                    } else {
+                        property
+                    };
+                    interp
+                        .buffer
+                        .put_text_property(start, end, property, args[cursor + 1].clone());
+                }
+                cursor += 2;
+            }
+            Ok(Value::Integer(start as i64))
+        }
+        "button-at" => {
+            need_args(name, args, 1)?;
+            let pos = position_from_value(interp, &args[0])?;
+            Ok(interp
+                .buffer
+                .text_property_at(pos, "button-type")
+                .map(|_| Value::Integer(pos as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "button-type" => {
+            need_args(name, args, 1)?;
+            let pos = position_from_value(interp, &args[0])?;
+            Ok(interp
+                .buffer
+                .text_property_at(pos, "button-type")
+                .unwrap_or(Value::Nil))
         }
         "defined-colors" => {
             need_args(name, args, 0)?;
@@ -14083,44 +14191,11 @@ fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'static str, Lis
 }
 
 fn buffer_position_to_byte(buffer: &crate::buffer::Buffer, pos: usize) -> Option<usize> {
-    let text = buffer.buffer_string();
-    let char_len = text.chars().count();
-    if pos == 0 || pos > char_len + 1 {
-        return None;
-    }
-    Some(
-        1 + text
-            .chars()
-            .take(pos - 1)
-            .map(char::len_utf8)
-            .sum::<usize>(),
-    )
+    buffer.position_bytes(pos)
 }
 
 fn buffer_byte_to_position(buffer: &crate::buffer::Buffer, byte: usize) -> Option<usize> {
-    if byte == 0 {
-        return None;
-    }
-    let text = buffer.buffer_string();
-    let total_bytes = text.len();
-    if byte > total_bytes + 1 {
-        return None;
-    }
-    if byte == total_bytes + 1 {
-        return Some(text.chars().count() + 1);
-    }
-    let mut current_byte = 1usize;
-    for (index, ch) in text.chars().enumerate() {
-        let next = current_byte + ch.len_utf8();
-        if byte == current_byte {
-            return Some(index + 1);
-        }
-        if byte < next {
-            return Some(index + 1);
-        }
-        current_byte = next;
-    }
-    Some(text.chars().count() + 1)
+    buffer.byte_to_position(byte)
 }
 
 fn buffer_byte_to_position_boundary(buffer: &crate::buffer::Buffer, byte: usize) -> Option<usize> {
@@ -15366,9 +15441,11 @@ fn isearch_no_upper_case_p(text: &str, regexp_flag: bool) -> bool {
 }
 
 fn split_string_impl(
+    interp: &Interpreter,
     string: &Value,
     separator: Option<&Value>,
     omit_nulls: Option<&Value>,
+    env: &Env,
 ) -> Result<Value, LispError> {
     let text = string_text(string)?;
     let separator = separator
@@ -15384,10 +15461,49 @@ fn split_string_impl(
                 .map(Value::String)
                 .collect::<Vec<_>>()
         } else {
-            text.split(&separator)
-                .filter(|part| !(omit_nulls && part.is_empty()))
-                .map(|part| Value::String(part.to_string()))
-                .collect::<Vec<_>>()
+            let pattern = StringLike {
+                text: separator,
+                props: Vec::new(),
+                multibyte: false,
+            };
+            validate_elisp_regex(&pattern.text)?;
+            let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+            let mut parts = Vec::new();
+            let mut last_end = 0usize;
+            let mut search_start = 0usize;
+
+            while search_start <= text.len() {
+                let captures = regex
+                    .captures_from_pos(&text, search_start)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let Some(captures) = captures else {
+                    break;
+                };
+                let Some(matched) = captures.get(0) else {
+                    break;
+                };
+
+                let part = &text[last_end..matched.start()];
+                if !(omit_nulls && part.is_empty()) {
+                    parts.push(Value::String(part.to_string()));
+                }
+                last_end = matched.end();
+
+                if matched.start() == matched.end() {
+                    let Some(ch) = text[matched.end()..].chars().next() else {
+                        break;
+                    };
+                    search_start = matched.end() + ch.len_utf8();
+                } else {
+                    search_start = matched.end();
+                }
+            }
+
+            let tail = &text[last_end..];
+            if !(omit_nulls && tail.is_empty()) {
+                parts.push(Value::String(tail.to_string()));
+            }
+            parts
         }
     } else {
         text.split_whitespace()
@@ -20583,6 +20699,47 @@ mod tests {
     }
 
     #[test]
+    fn delete_line_removes_the_current_line() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");
+        let mut env = Vec::new();
+        interp.buffer.goto_char(6);
+
+        call(&mut interp, "delete-line", &[], &mut env).expect("delete-line should succeed");
+
+        assert_eq!(
+            interp
+                .buffer
+                .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+                .expect("buffer contents"),
+            "one\nthree\n"
+        );
+    }
+
+    #[test]
+    fn make_button_ignores_incomplete_ranges() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "button");
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "make-button",
+                &[
+                    Value::Nil,
+                    Value::Integer(3),
+                    Value::Symbol("type".into()),
+                    Value::Symbol("sample".into()),
+                ],
+                &mut env,
+            )
+            .expect("make-button should ignore nil positions"),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn looking_at_p_preserves_existing_match_data() {
         let mut interp = Interpreter::new();
         interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
@@ -20687,6 +20844,74 @@ mod tests {
                 Value::Symbol("underline".into()),
             ])
         );
+    }
+
+    #[test]
+    fn next_single_property_change_uses_string_positions() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let string = call(
+            &mut interp,
+            "propertize",
+            &[
+                Value::String("ab".into()),
+                Value::Symbol("seed".into()),
+                Value::T,
+            ],
+            &mut env,
+        )
+        .expect("propertize should create a mutable string object");
+        call(
+            &mut interp,
+            "set-text-properties",
+            &[
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::list([Value::Symbol("help-echo".into()), Value::T]),
+                string.clone(),
+            ],
+            &mut env,
+        )
+        .expect("set-text-properties should add a string property at position zero");
+
+        let change = call(
+            &mut interp,
+            "next-single-property-change",
+            &[Value::Integer(0), Value::Symbol("help-echo".into()), string],
+            &mut env,
+        )
+        .expect("next-single-property-change should scan strings from position zero");
+
+        assert_eq!(change, Value::Integer(1));
+    }
+
+    #[test]
+    fn next_single_property_change_returns_nil_for_uniform_string_property() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let string = call(
+            &mut interp,
+            "propertize",
+            &[
+                Value::String("abc".into()),
+                Value::Symbol("help-echo".into()),
+                Value::T,
+            ],
+            &mut env,
+        )
+        .expect("propertize should return a propertized string");
+
+        let change = call(
+            &mut interp,
+            "next-single-property-change",
+            &[Value::Integer(0), Value::Symbol("help-echo".into()), string],
+            &mut env,
+        )
+        .expect("next-single-property-change should return nil when a string property is uniform");
+
+        assert_eq!(change, Value::Nil);
     }
 
     #[test]
@@ -20939,6 +21164,23 @@ mod tests {
         );
         assert_eq!(shell_quote_argument("foo bar"), r"foo\ bar");
         assert_eq!(shell_quote_argument(""), "''");
+    }
+
+    #[test]
+    fn split_string_supports_regexp_separators() {
+        let interp = Interpreter::new();
+        let env = Vec::new();
+        assert_eq!(
+            split_string_impl(
+                &interp,
+                &Value::String("-k basename".into()),
+                Some(&Value::String("\\s-+".into())),
+                None,
+                &env,
+            )
+            .expect("split-string should accept regexp separators"),
+            Value::list([Value::String("-k".into()), Value::String("basename".into()),])
+        );
     }
 }
 

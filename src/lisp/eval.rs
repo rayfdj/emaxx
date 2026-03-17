@@ -4692,6 +4692,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "user".into()),
             )),
             "default-directory" => Some(Value::String(primitives::default_directory())),
+            "current-language-environment" => Some(Value::String("English".into())),
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
@@ -5062,8 +5063,12 @@ impl Interpreter {
                         | "define-derived-mode" => {
                             return self.sf_define_mode(&items);
                         }
+                        "defclass" => return self.sf_defclass(&items),
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
                         "cl-defun" => return self.sf_cl_defun(&items, env),
+                        "cl-generic-define-generalizer" => {
+                            return self.sf_cl_generic_define_generalizer(&items);
+                        }
                         "cl-defgeneric" => return self.sf_cl_defgeneric(&items, env),
                         "cl-defmethod" => return self.sf_cl_defmethod(&items, env),
                         "cl-generic-define-context-rewriter" => return Ok(Value::Nil),
@@ -5127,6 +5132,9 @@ impl Interpreter {
                         "with-selected-window" => return self.sf_progn(&items[2..], env),
                         "save-match-data" => return self.sf_save_match_data(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
+                        "save-window-excursion" => {
+                            return self.sf_save_current_buffer(&items, env);
+                        }
                         "save-current-buffer" => return self.sf_save_current_buffer(&items, env),
                         "save-restriction" => return self.sf_save_restriction(&items, env),
                         "with-suppressed-warnings" => {
@@ -5189,6 +5197,7 @@ impl Interpreter {
                         }
                         "skip-when" | "ert--skip-when" => return self.sf_skip_when(&items, env),
                         "rx" => return self.sf_rx(&items),
+                        "rx-define" => return self.sf_rx_define(&items),
                         "require" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
                                 let target = match items.get(2) {
@@ -7095,6 +7104,13 @@ impl Interpreter {
         Ok(Value::Symbol(name))
     }
 
+    fn sf_defclass(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
+            return Ok(Value::Nil);
+        };
+        Ok(Value::Symbol(name.to_string()))
+    }
+
     fn sf_cl_defun(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 4 {
             return Err(LispError::Signal(
@@ -7193,17 +7209,33 @@ impl Interpreter {
         Ok(Value::Symbol(name.to_string()))
     }
 
+    fn sf_cl_generic_define_generalizer(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
+            return Ok(Value::Nil);
+        };
+        self.set_global_binding(name, Value::Nil);
+        Ok(Value::Symbol(name.to_string()))
+    }
+
     fn sf_cl_defmethod(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 4 {
             return Err(LispError::Signal(
                 "cl-defmethod needs name, params, body".into(),
             ));
         }
+        let lambda_list_index = items
+            .iter()
+            .enumerate()
+            .skip(2)
+            .find_map(|(index, value)| {
+                matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
+            })
+            .ok_or_else(|| LispError::Signal("cl-defmethod needs a lambda list".into()))?;
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
         lowered.push(items[1].clone());
-        lowered.push(lower_cl_defmethod_lambda_list(&items[2])?);
-        lowered.extend(items[3..].iter().cloned());
+        lowered.push(lower_cl_defmethod_lambda_list(&items[lambda_list_index])?);
+        lowered.extend(items[lambda_list_index + 1..].iter().cloned());
         self.sf_cl_defun(&lowered, env)
     }
 
@@ -9182,7 +9214,28 @@ impl Interpreter {
     }
 
     fn sf_rx(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        Ok(Value::String(compile_rx_sequence(&items[1..])?))
+        Ok(Value::String(compile_rx_sequence(self, &items[1..])?))
+    }
+
+    fn sf_rx_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::Signal(
+                "rx-define needs name and definition".into(),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let binding = match &items[2..] {
+            [definition] => Value::list([definition.clone()]),
+            [params, definition] => Value::list([params.clone(), definition.clone()]),
+            _ => {
+                return Err(LispError::Signal(format!(
+                    "Bad `rx' definition of {name}: {}",
+                    Value::list(items[2..].iter().cloned())
+                )));
+            }
+        };
+        self.put_symbol_property(&name, "rx-definition", binding);
+        Ok(Value::Symbol(name))
     }
 
     fn sf_with_memoization(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -10325,6 +10378,13 @@ fn normalize_cl_defun_keyword(name: &str) -> String {
     }
 }
 
+fn is_lambda_list_keyword(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "&optional" | "&rest" | "&body" | "&key" | "&allow-other-keys" | "&aux"
+    )
+}
+
 fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
     let items = spec.to_vec()?;
     let mut lowered = Vec::with_capacity(items.len());
@@ -10337,7 +10397,11 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
             }
             Value::Symbol(symbol) => {
                 if skipping_context {
-                    continue;
+                    if is_lambda_list_keyword(&symbol) {
+                        skipping_context = false;
+                    } else {
+                        continue;
+                    }
                 }
                 lowered.push(Value::Symbol(symbol));
             }
@@ -10616,6 +10680,29 @@ fn pcase_pattern_bindings_with_mode(
             env.pop();
             return Ok(guard?.is_truthy());
         }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "pred") && parts.len() >= 2
+        {
+            let (negated, predicate_form) = if let Ok(predicate_parts) = parts[1].to_vec() {
+                if matches!(predicate_parts.first(), Some(Value::Symbol(name)) if name == "not")
+                    && predicate_parts.len() >= 2
+                {
+                    (true, predicate_parts[1].clone())
+                } else {
+                    (false, parts[1].clone())
+                }
+            } else {
+                (false, parts[1].clone())
+            };
+            let predicate = pcase_predicate_function(interp, env, &predicate_form)?;
+            let matches = crate::lisp::primitives::call_function_value(
+                interp,
+                &predicate,
+                std::slice::from_ref(value),
+                env,
+            )?
+            .is_truthy();
+            return Ok(if negated { !matches } else { matches });
+        }
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
             return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
         }
@@ -10692,6 +10779,20 @@ fn pcase_pattern_bindings_with_mode(
     }
 }
 
+fn pcase_predicate_function(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    predicate_form: &Value,
+) -> Result<Value, LispError> {
+    match interp.eval(predicate_form, env) {
+        Ok(value) => Ok(value),
+        Err(LispError::Void(_)) if matches!(predicate_form, Value::Symbol(_)) => {
+            Ok(predicate_form.clone())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn feature_name(value: &Value) -> Option<String> {
     match value {
         Value::Symbol(symbol) => Some(symbol.clone()),
@@ -10733,10 +10834,10 @@ fn build_signal_value(condition: Value, data: Value) -> Value {
     }
 }
 
-fn compile_rx_sequence(items: &[Value]) -> Result<String, LispError> {
+fn compile_rx_sequence(interp: &Interpreter, items: &[Value]) -> Result<String, LispError> {
     let mut regex = String::new();
     for item in items {
-        regex.push_str(&compile_rx_form(item)?);
+        regex.push_str(&compile_rx_form(interp, item)?);
     }
     Ok(regex)
 }
@@ -10832,7 +10933,7 @@ fn compile_rx_char_class(items: &[Value], negated: bool) -> Result<String, LispE
     Ok(regex)
 }
 
-fn compile_rx_form(value: &Value) -> Result<String, LispError> {
+fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
     match value {
         Value::String(text) => Ok(quote_rx_string_literal(text)),
         Value::StringObject(state) => Ok(quote_rx_string_literal(&state.borrow().text)),
@@ -10856,7 +10957,13 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
                 "[[:{}:]]",
                 rx_char_class_name(other).unwrap_or_default()
             )),
-            other => Err(LispError::Signal(format!("Unsupported rx atom: {other}"))),
+            other => {
+                if let Some(expanded) = expand_rx_definition(interp, other, &[])? {
+                    compile_rx_form(interp, &expanded)
+                } else {
+                    Err(LispError::Signal(format!("Unsupported rx atom: {other}")))
+                }
+            }
         },
         Value::Cons(_, _) => {
             let items = value.to_vec()?;
@@ -10866,10 +10973,13 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
                 _ => None,
             };
             let Some(head) = head else {
-                return compile_rx_sequence(&items);
+                return compile_rx_sequence(interp, &items);
             };
             match head {
-                "group" => Ok(format!("\\({}\\)", compile_rx_sequence(&items[1..])?)),
+                "group" => Ok(format!(
+                    "\\({}\\)",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
                 "group-n" | "submatch-n" => {
                     if items.len() < 3 {
                         return Err(LispError::Signal(
@@ -10885,21 +10995,76 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
                     Ok(format!(
                         "\\(?{}:{}\\)",
                         number,
-                        compile_rx_sequence(&items[2..])?
+                        compile_rx_sequence(interp, &items[2..])?
                     ))
                 }
-                "+" | "1+" => Ok(format!("\\(?:{}\\)+", compile_rx_sequence(&items[1..])?)),
-                "+?" => Ok(format!("\\(?:{}\\)+?", compile_rx_sequence(&items[1..])?)),
-                "*" => Ok(format!("\\(?:{}\\)*", compile_rx_sequence(&items[1..])?)),
-                "*?" => Ok(format!("\\(?:{}\\)*?", compile_rx_sequence(&items[1..])?)),
-                "?" => Ok(format!("\\(?:{}\\)?", compile_rx_sequence(&items[1..])?)),
-                "??" => Ok(format!("\\(?:{}\\)??", compile_rx_sequence(&items[1..])?)),
-                "seq" | ":" => compile_rx_sequence(&items[1..]),
+                "+" | "1+" => Ok(format!(
+                    "\\(?:{}\\)+",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
+                "+?" => Ok(format!(
+                    "\\(?:{}\\)+?",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
+                "*" => Ok(format!(
+                    "\\(?:{}\\)*",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
+                "*?" => Ok(format!(
+                    "\\(?:{}\\)*?",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
+                "?" => Ok(format!(
+                    "\\(?:{}\\)?",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
+                "??" => Ok(format!(
+                    "\\(?:{}\\)??",
+                    compile_rx_sequence(interp, &items[1..])?
+                )),
+                "seq" | ":" => compile_rx_sequence(interp, &items[1..]),
+                "repeat" => {
+                    if items.len() < 3 {
+                        return Err(LispError::Signal(
+                            "rx `repeat' needs a count and a form".into(),
+                        ));
+                    }
+                    let min = items[1].as_integer()?;
+                    if min < 0 {
+                        return Err(LispError::Signal("rx repetition count must be >= 0".into()));
+                    }
+
+                    let (max, body_start) = match items.get(2) {
+                        Some(Value::Integer(max)) => {
+                            if *max < min {
+                                return Err(LispError::Signal(
+                                    "rx repetition max must be >= min".into(),
+                                ));
+                            }
+                            (Some(*max), 3usize)
+                        }
+                        Some(Value::Nil) => (None, 3usize),
+                        _ => (Some(min), 2usize),
+                    };
+                    if body_start >= items.len() {
+                        return Err(LispError::Signal(
+                            "rx `repeat' needs a repeated form".into(),
+                        ));
+                    }
+
+                    let body = compile_rx_sequence(interp, &items[body_start..])?;
+                    let quantifier = match max {
+                        Some(max) if max == min => format!("\\{{{min}\\}}"),
+                        Some(max) => format!("\\{{{min},{max}\\}}"),
+                        None => format!("\\{{{min},\\}}"),
+                    };
+                    Ok(format!("\\(?:{body}\\){quantifier}"))
+                }
                 "or" | "|" => Ok(format!(
                     "\\(?:{}\\)",
                     items[1..]
                         .iter()
-                        .map(compile_rx_form)
+                        .map(|item| compile_rx_form(interp, item))
                         .collect::<Result<Vec<_>, _>>()?
                         .join("\\|")
                 )),
@@ -10932,17 +11097,112 @@ fn compile_rx_form(value: &Value) -> Result<String, LispError> {
                     }
                     Ok(format!(
                         "\\(?:{}\\)\\{{{},\\}}",
-                        compile_rx_sequence(&items[2..])?,
+                        compile_rx_sequence(interp, &items[2..])?,
                         count
                     ))
                 }
-                _ => compile_rx_sequence(&items),
+                _ => {
+                    if let Some(expanded) = expand_rx_definition(interp, head, &items[1..])? {
+                        compile_rx_form(interp, &expanded)
+                    } else {
+                        compile_rx_sequence(interp, &items)
+                    }
+                }
             }
         }
         other => Err(LispError::Signal(format!(
             "Unsupported rx form: {}",
             other.type_name()
         ))),
+    }
+}
+
+fn expand_rx_definition(
+    interp: &Interpreter,
+    name: &str,
+    args: &[Value],
+) -> Result<Option<Value>, LispError> {
+    let Some(binding) = interp.get_symbol_property(name, "rx-definition") else {
+        return Ok(None);
+    };
+    let items = binding.to_vec()?;
+    match items.as_slice() {
+        [definition] if args.is_empty() => Ok(Some(definition.clone())),
+        [params, definition] => {
+            let params = params.to_vec()?;
+            Ok(Some(expand_rx_template(definition, &params, args)?))
+        }
+        _ => Err(LispError::Signal(format!(
+            "Bad `rx' definition of {name}: {binding}"
+        ))),
+    }
+}
+
+fn expand_rx_template(form: &Value, params: &[Value], args: &[Value]) -> Result<Value, LispError> {
+    let mut bindings = Vec::new();
+    let mut arg_index = 0usize;
+    let mut rest = false;
+
+    for param in params {
+        let name = param.as_symbol()?.to_string();
+        if name == "&rest" {
+            rest = true;
+            continue;
+        }
+        let values = if rest {
+            args[arg_index..].to_vec()
+        } else {
+            let value = args.get(arg_index).cloned().unwrap_or(Value::Nil);
+            arg_index += 1;
+            vec![value]
+        };
+        bindings.push((name, values, rest));
+        if rest {
+            break;
+        }
+    }
+
+    expand_rx_template_value(form, &bindings)
+}
+
+fn expand_rx_template_value(
+    form: &Value,
+    bindings: &[(String, Vec<Value>, bool)],
+) -> Result<Value, LispError> {
+    match form {
+        Value::Symbol(name) => {
+            if let Some((_, values, is_rest)) =
+                bindings.iter().find(|(binding, _, _)| binding == name)
+            {
+                if *is_rest {
+                    Ok(if values.len() == 1 {
+                        values[0].clone()
+                    } else {
+                        Value::list(values.clone())
+                    })
+                } else {
+                    Ok(values.first().cloned().unwrap_or(Value::Nil))
+                }
+            } else {
+                Ok(form.clone())
+            }
+        }
+        Value::Cons(_, _) => {
+            let items = form.to_vec()?;
+            let mut expanded = Vec::new();
+            for item in items {
+                if let Value::Symbol(name) = &item
+                    && let Some((_, values, true)) =
+                        bindings.iter().find(|(binding, _, _)| binding == name)
+                {
+                    expanded.extend(values.clone());
+                    continue;
+                }
+                expanded.push(expand_rx_template_value(&item, bindings)?);
+            }
+            Ok(Value::list(expanded))
+        }
+        _ => Ok(form.clone()),
     }
 }
 
@@ -13629,6 +13889,28 @@ mod tests {
     }
 
     #[test]
+    fn defclass_returns_the_class_name() {
+        assert_eq!(
+            eval_str("(defclass sample-class nil nil)"),
+            Value::Symbol("sample-class".into())
+        );
+    }
+
+    #[test]
+    fn cl_defmethod_accepts_extra_qualifiers_before_lambda_list() {
+        assert_string_value(
+            eval_str(
+                "(progn
+                   (cl-defgeneric qualified-method (value))
+                   (cl-defmethod qualified-method :extra \"tag\" ((value string))
+                     value)
+                   (qualified-method \"ok\"))",
+            ),
+            "ok",
+        );
+    }
+
+    #[test]
     fn cl_letf_supports_symbol_places() {
         assert_eq!(
             eval_str(
@@ -13728,6 +14010,23 @@ mod tests {
                        (pcase 2 ((or 1 3 5) 'odd) (_ 'other)))"
             ),
             Value::list([Value::Symbol("odd".into()), Value::Symbol("other".into())])
+        );
+    }
+
+    #[test]
+    fn pcase_matches_predicate_patterns() {
+        assert_eq!(
+            eval_str(
+                "(list
+                   (pcase 'list ((pred symbolp) 'symbol) (_ 'other))
+                   (pcase '(1 2) ((pred listp) 'list) (_ 'other))
+                   (pcase 3 ((pred (not symbolp)) 'number) (_ 'other)))"
+            ),
+            Value::list([
+                Value::Symbol("symbol".into()),
+                Value::Symbol("list".into()),
+                Value::Symbol("number".into()),
+            ])
         );
     }
 
@@ -13869,6 +14168,51 @@ mod tests {
                   (match-string 1 "${HOME}"))"#,
             ),
             "HOME",
+        );
+    }
+
+    #[test]
+    fn save_window_excursion_restores_current_buffer() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((original (current-buffer))
+                      (other (get-buffer-create "*save-window-excursion*")))
+                  (save-window-excursion
+                    (set-buffer other)
+                    (current-buffer))
+                  (eq (current-buffer) original))
+                "#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn seq_mapcat_flattens_sequence_results() {
+        run_large_stack_test(assert_seq_mapcat_flattens_sequence_results);
+    }
+
+    fn assert_seq_mapcat_flattens_sequence_results() {
+        assert_eq!(
+            eval_str("(seq-mapcat 'list '(1 2 3))"),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),])
+        );
+    }
+
+    #[test]
+    fn rx_define_registers_custom_atoms_for_rx() {
+        assert_eq!(
+            eval_str("(progn (rx-define sample-rx \"ab\") (rx sample-rx))"),
+            Value::String("ab".into())
+        );
+    }
+
+    #[test]
+    fn rx_repeat_supports_exact_repetition() {
+        assert_eq!(
+            eval_str("(rx (repeat 3 \"ab\"))"),
+            Value::String("\\(?:ab\\)\\{3\\}".into())
         );
     }
 
