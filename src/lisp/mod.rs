@@ -30,8 +30,8 @@ pub fn load_file_strict(
             return Err(error);
         }
     };
-    let mut env = types::Env::new();
     for form in &forms {
+        let mut env = types::Env::new();
         if let Err(error) = interp.eval(form, &mut env) {
             interp.set_current_load_file(previous);
             return Err(error);
@@ -57,8 +57,8 @@ pub fn run_ert_file(
     };
 
     // Evaluate all top-level forms (this collects ert-deftest definitions)
-    let mut env = types::Env::new();
     for form in &forms {
+        let mut env = types::Env::new();
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);
     }
