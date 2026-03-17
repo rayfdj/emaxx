@@ -4725,6 +4725,7 @@ impl Interpreter {
             ])),
             "installation-directory" => Some(Value::Nil),
             "tab-width" => Some(Value::Integer(8)),
+            "indent-tabs-mode" => Some(Value::T),
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
             "read-file-name-completion-ignore-case" => Some(Value::Nil),
@@ -15592,6 +15593,46 @@ IHdvcmxkIQ==")))
                 "#
             ),
             Value::Integer(4)
+        );
+    }
+
+    #[test]
+    fn indent_to_uses_tabs_when_indent_tabs_mode_is_non_nil() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((tab-width 4)
+                        (indent-tabs-mode t))
+                    (insert "a")
+                    (list (indent-to 6) (buffer-string) (current-column))))
+                "#
+            ),
+            Value::list([
+                Value::Integer(6),
+                Value::String("a\t  ".into()),
+                Value::Integer(6),
+            ])
+        );
+    }
+
+    #[test]
+    fn indent_to_honors_minimum_with_spaces_only() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((tab-width 4)
+                        (indent-tabs-mode nil))
+                    (insert "abcd")
+                    (list (indent-to 2 3) (buffer-string) (current-column))))
+                "#
+            ),
+            Value::list([
+                Value::Integer(7),
+                Value::String("abcd   ".into()),
+                Value::Integer(7),
+            ])
         );
     }
 
