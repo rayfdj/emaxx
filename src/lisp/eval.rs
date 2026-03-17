@@ -791,6 +791,10 @@ impl Interpreter {
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("abbrev-table-name-list".into(), Value::Nil),
                 ("cl--proclaims-deferred".into(), Value::Nil),
+                (
+                    "command-line-args".into(),
+                    primitives::command_line_args_value(),
+                ),
                 ("exec-path".into(), current_exec_path()),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
@@ -805,6 +809,7 @@ impl Interpreter {
             variable_aliases: Vec::new(),
             special_variables: vec![
                 "case-fold-search".into(),
+                "command-line-args".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
                 "cl--proclaims-deferred".into(),
@@ -13857,6 +13862,40 @@ mod tests {
             }
             other => panic!("expected strings, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn process_identity_supports_desktop_lock_checks() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(
+            &mut interp,
+            r#"
+            (let* ((pid (emacs-pid))
+                   (attr (process-attributes pid))
+                   (proc-cmd (alist-get 'comm attr))
+                   (my-cmd (file-name-nondirectory (car command-line-args)))
+                   (case-fold-search t))
+              (list (integerp pid)
+                    (stringp proc-cmd)
+                    my-cmd
+                    (daemonp)
+                    (or (equal proc-cmd my-cmd)
+                        (and (string-match-p "emacs" proc-cmd)
+                             (string-match-p "emacs" my-cmd)))))
+            "#,
+        );
+        let items = value
+            .to_vec()
+            .unwrap_or_else(|error| panic!("expected proper list, got {error:?}"));
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0], Value::T);
+        assert_eq!(items[1], Value::T);
+        assert!(
+            matches!(&items[2], Value::String(name) if !name.is_empty())
+                || matches!(&items[2], Value::StringObject(state) if !state.borrow().text.is_empty())
+        );
+        assert_eq!(items[3], Value::Nil);
+        assert!(items[4].is_truthy());
     }
 
     #[test]
