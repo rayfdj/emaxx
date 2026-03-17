@@ -1533,6 +1533,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "font-spec"
             | "font-get"
             | "face-attribute"
+            | "face-foreground"
+            | "face-background"
             | "set-face-attribute"
             | "color-distance"
             | "color-values-from-color-spec"
@@ -4887,29 +4889,45 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let needle = string_text(&args[0])?;
-            let haystack = interp.buffer.buffer_string();
             let point = interp.buffer.point();
             let noerror = args.get(2).is_some_and(Value::is_truthy);
+            let limit = match args.get(1) {
+                Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+                _ if name == "search-forward" => interp.buffer.point_max(),
+                _ => interp.buffer.point_min(),
+            };
             let result = if name == "search-forward" {
-                let offset = haystack
-                    .chars()
-                    .take(point.saturating_sub(1))
-                    .map(|ch| ch.len_utf8())
-                    .sum::<usize>();
-                haystack[offset..].find(&needle).map(|found| {
-                    let match_start_chars = haystack[offset..offset + found].chars().count();
-                    let match_end_chars = haystack[offset..offset + found + needle.len()]
-                        .chars()
-                        .count();
-                    (point + match_start_chars, point + match_end_chars)
-                })
+                let limit = limit.min(interp.buffer.point_max());
+                if limit < point {
+                    None
+                } else {
+                    let haystack = interp
+                        .buffer
+                        .buffer_substring(point, limit)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    haystack.find(&needle).map(|found| {
+                        let match_start_chars = haystack[..found].chars().count();
+                        (
+                            point + match_start_chars,
+                            point + match_start_chars + needle.chars().count(),
+                        )
+                    })
+                }
             } else {
-                let prefix: String = haystack.chars().take(point.saturating_sub(1)).collect();
-                prefix.rfind(&needle).map(|found| {
-                    let start = prefix[..found].chars().count() + 1;
-                    let end = start + needle.chars().count();
-                    (start, end)
-                })
+                let limit = limit.max(interp.buffer.point_min());
+                if limit > point {
+                    None
+                } else {
+                    let haystack = interp
+                        .buffer
+                        .buffer_substring(limit, point)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    haystack.rfind(&needle).map(|found| {
+                        let start = limit + haystack[..found].chars().count();
+                        let end = start + needle.chars().count();
+                        (start, end)
+                    })
+                }
             };
             match result {
                 Some((start, end)) => {
@@ -8749,13 +8767,24 @@ pub fn call(
             }
             let face = args[0].as_symbol()?;
             let attribute = args[1].as_symbol()?;
-            let follow_inherit = args.get(3).is_some_and(Value::is_truthy);
-            Ok(face_attribute_value(
-                interp,
-                face,
-                attribute,
-                follow_inherit,
-            ))
+            Ok(face_attribute_value(interp, face, attribute, args.get(3)))
+        }
+        "face-foreground" | "face-background" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let face = args[0].as_symbol()?;
+            let attribute = if name == "face-foreground" {
+                ":foreground"
+            } else {
+                ":background"
+            };
+            let value = face_attribute_value(interp, face, attribute, args.get(2));
+            Ok(if is_unspecified_face_attribute(&value) {
+                Value::Nil
+            } else {
+                value
+            })
         }
         "set-face-attribute" => {
             if args.len() < 4 {
@@ -16187,12 +16216,28 @@ fn buffer_regex_search(
         },
     )?;
     let noerror = args.get(2).is_some_and(Value::is_truthy);
+    let limit = match args.get(1) {
+        Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+        _ if forward => interp.buffer.point_max(),
+        _ => interp.buffer.point_min(),
+    };
 
     if forward {
         let start = interp.buffer.point();
+        let limit = limit.min(interp.buffer.point_max());
+        if limit < start {
+            return if noerror {
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("search-failed".into()),
+                    Value::String(pattern.text),
+                ])))
+            };
+        }
         let tail = interp
             .buffer
-            .buffer_substring(start, interp.buffer.point_max())
+            .buffer_substring(start, limit)
             .map_err(|error| LispError::Signal(error.to_string()))?;
         if let Some(captures) = regex
             .captures(&tail)
@@ -16205,9 +16250,20 @@ fn buffer_regex_search(
             return Ok(Value::Integer(pos as i64));
         }
     } else {
+        let limit = limit.max(interp.buffer.point_min());
+        if limit > interp.buffer.point() {
+            return if noerror {
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("search-failed".into()),
+                    Value::String(pattern.text),
+                ])))
+            };
+        }
         let prefix = interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+            .buffer_substring(limit, interp.buffer.point())
             .map_err(|error| LispError::Signal(error.to_string()))?;
         let mut best_match: Option<(usize, usize, usize)> = None;
         for start_byte in prefix
@@ -16227,8 +16283,8 @@ fn buffer_regex_search(
             if matched.start() != start_byte {
                 continue;
             }
-            let match_start = 1 + prefix[..matched.start()].chars().count();
-            let match_end = 1 + prefix[..matched.end()].chars().count();
+            let match_start = limit + prefix[..matched.start()].chars().count();
+            let match_end = limit + prefix[..matched.end()].chars().count();
             if best_match.is_none_or(|(best_start, best_end, _)| {
                 match_start > best_start || (match_start == best_start && match_end > best_end)
             }) {
@@ -16243,19 +16299,12 @@ fn buffer_regex_search(
                 .get(0)
                 .is_some_and(|matched| matched.start() == start_byte)
         {
-            set_match_data(
-                interp,
-                interp.buffer.point_min(),
-                &prefix,
-                &captures,
-                regex.capture_mapping(),
-            );
+            set_match_data(interp, limit, &prefix, &captures, regex.capture_mapping());
             interp.buffer.goto_char(match_start);
             return Ok(Value::Integer(match_start as i64));
         }
     }
 
-    interp.last_match_data = None;
     if noerror {
         Ok(Value::Nil)
     } else {
@@ -20925,7 +20974,7 @@ fn remove_face_value(existing: Value, face: &Value) -> Value {
     }
 }
 
-fn face_attribute_property_name(attribute: &str) -> String {
+pub(crate) fn face_attribute_property_name(attribute: &str) -> String {
     format!("emaxx-face-attribute::{attribute}")
 }
 
@@ -20933,16 +20982,82 @@ fn face_attribute_value(
     interp: &Interpreter,
     face: &str,
     attribute: &str,
-    follow_inherit: bool,
+    inherit: Option<&Value>,
 ) -> Value {
+    let mut visited = HashSet::new();
+    face_attribute_value_inner(interp, face, attribute, inherit, &mut visited)
+}
+
+fn face_attribute_value_inner(
+    interp: &Interpreter,
+    face: &str,
+    attribute: &str,
+    inherit: Option<&Value>,
+    visited: &mut HashSet<String>,
+) -> Value {
+    if !visited.insert(face.to_string()) {
+        return Value::Symbol("unspecified".into());
+    }
     if let Some(value) = interp.get_symbol_property(face, &face_attribute_property_name(attribute))
     {
+        visited.remove(face);
         return value;
     }
-    if follow_inherit && let Some(parent) = interp.face_inherit_target(face) {
-        return face_attribute_value(interp, &parent, attribute, true);
+    if inherit.is_some_and(Value::is_truthy) {
+        if let Some(parent) = face_inherit_spec(interp, face) {
+            let inherited = resolve_face_attribute_inherit(interp, &parent, attribute, visited);
+            if !is_unspecified_face_attribute(&inherited) {
+                visited.remove(face);
+                return inherited;
+            }
+        }
+        if let Some(extra) = inherit.filter(|value| !matches!(value, Value::T)) {
+            let inherited = resolve_face_attribute_inherit(interp, extra, attribute, visited);
+            if !is_unspecified_face_attribute(&inherited) {
+                visited.remove(face);
+                return inherited;
+            }
+        }
     }
+    visited.remove(face);
     Value::Symbol("unspecified".into())
+}
+
+fn face_inherit_spec(interp: &Interpreter, face: &str) -> Option<Value> {
+    interp
+        .get_symbol_property(face, &face_attribute_property_name(":inherit"))
+        .filter(|value| !value.is_nil())
+        .or_else(|| interp.face_inherit_target(face).map(Value::Symbol))
+}
+
+fn resolve_face_attribute_inherit(
+    interp: &Interpreter,
+    inherit: &Value,
+    attribute: &str,
+    visited: &mut HashSet<String>,
+) -> Value {
+    match inherit {
+        Value::Nil => Value::Symbol("unspecified".into()),
+        Value::Symbol(symbol) => {
+            face_attribute_value_inner(interp, symbol, attribute, Some(&Value::T), visited)
+        }
+        other => {
+            let Ok(items) = other.to_vec() else {
+                return Value::Symbol("unspecified".into());
+            };
+            for item in items {
+                let value = resolve_face_attribute_inherit(interp, &item, attribute, visited);
+                if !is_unspecified_face_attribute(&value) {
+                    return value;
+                }
+            }
+            Value::Symbol("unspecified".into())
+        }
+    }
+}
+
+fn is_unspecified_face_attribute(value: &Value) -> bool {
+    matches!(value, Value::Symbol(symbol) if symbol == "unspecified")
 }
 
 fn face_list_items(value: &Value) -> Result<Vec<Value>, LispError> {
