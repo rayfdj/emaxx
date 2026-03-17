@@ -2876,8 +2876,9 @@ pub fn call(
             }
         }
         "copy-tree" => {
-            need_args(name, args, 1)?;
-            Ok(args[0].clone())
+            need_arg_range(name, args, 1, 2)?;
+            let vectors_and_records = args.get(1).is_some_and(Value::is_truthy);
+            copy_tree_value(interp, &args[0], vectors_and_records)
         }
         "delete-dups" => {
             need_args(name, args, 1)?;
@@ -2981,18 +2982,7 @@ pub fn call(
             }
             Ok(Value::list(kept))
         }
-        "cl-delete-if" => {
-            need_args(name, args, 2)?;
-            let mut kept = Vec::new();
-            for item in args[1].to_vec()? {
-                if !call_function_value(interp, &args[0], std::slice::from_ref(&item), env)?
-                    .is_truthy()
-                {
-                    kept.push(item);
-                }
-            }
-            Ok(Value::list(kept))
-        }
+        "cl-delete-if" => cl_delete_if_values(interp, args, env),
         "mapcar" => {
             need_args(name, args, 2)?;
             let list = sequence_values(&args[1])?;
@@ -3390,7 +3380,9 @@ pub fn call(
         ]))),
         "define-keymap" => Ok(keymap_placeholder(None)),
         "define-abbrev-table" => {
-            need_arg_range(name, args, 2, 3)?;
+            if args.len() < 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
             let symbol = args[0].as_symbol()?.to_string();
             let table = match interp.lookup_var(&symbol, &Vec::new()) {
                 Some(existing) if is_abbrev_table_value(interp, &existing) => existing,
@@ -3401,6 +3393,29 @@ pub fn call(
                     created
                 }
             };
+            if let Some(docstring) = args.get(2)
+                && matches!(docstring, Value::String(_) | Value::StringObject(_))
+            {
+                interp.put_symbol_property(&symbol, "variable-documentation", docstring.clone());
+            }
+            let mut prop_index = 2usize;
+            if matches!(args.get(2), Some(Value::String(_) | Value::StringObject(_))) {
+                prop_index = 3;
+            }
+            if !(args.len() - prop_index).is_multiple_of(2) {
+                return Err(LispError::Signal(
+                    "Invalid abbrev table property list".into(),
+                ));
+            }
+            while prop_index + 1 < args.len() {
+                set_abbrev_table_property(
+                    interp,
+                    &table,
+                    &args[prop_index],
+                    args[prop_index + 1].clone(),
+                )?;
+                prop_index += 2;
+            }
             set_abbrev_table_entries_from_definitions(interp, &table, &args[1])?;
             Ok(table)
         }
@@ -4157,8 +4172,18 @@ pub fn call(
             Ok(args[2].clone())
         }
         "define-abbrev" => {
-            need_arg_range(name, args, 3, 6)?;
-            define_abbrev_entry(interp, &args[0], &string_text(&args[1])?, args[2].clone())?;
+            if args.len() < 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let hook = args.get(3).cloned().unwrap_or(Value::Nil);
+            let props = abbrev_props_from_parts(Some(hook), &args[4..])?;
+            define_abbrev_entry(
+                interp,
+                &args[0],
+                &string_text(&args[1])?,
+                args[2].clone(),
+                props,
+            )?;
             Ok(args[2].clone())
         }
         "abbrev-expansion" => {
@@ -4643,11 +4668,9 @@ pub fn call(
         }
         "invisible-p" => {
             need_args(name, args, 1)?;
-            let invisible = match args[0] {
-                Value::Integer(position) if position >= 1 => {
-                    char_is_invisible(interp, position as usize)
-                }
-                _ => false,
+            let invisible = match position_from_value(interp, &args[0]) {
+                Ok(position) if position >= 1 => char_is_invisible(interp, position, env),
+                _ => invisibility_value_is_hidden(interp, &args[0], env),
             };
             Ok(if invisible { Value::T } else { Value::Nil })
         }
@@ -5001,7 +5024,8 @@ pub fn call(
                     break;
                 }
                 let next_col = column_after(interp, env, current_col, pos, ch);
-                if next_col > target && force && ch == '\t' && !char_is_invisible(interp, pos) {
+                if next_col > target && force && ch == '\t' && !char_is_invisible(interp, pos, env)
+                {
                     interp.buffer.goto_char(pos);
                     interp.insert_current_buffer(&" ".repeat(target - current_col));
                     pos = interp.buffer.point();
@@ -12109,15 +12133,85 @@ fn set_abbrev_table_entries(
     Ok(())
 }
 
+fn abbrev_props_from_parts(hook: Option<Value>, props: &[Value]) -> Result<Value, LispError> {
+    let mut prop_items = props.to_vec();
+    if !prop_items.is_empty()
+        && !matches!(prop_items.first(), Some(Value::Symbol(symbol)) if symbol.starts_with(':'))
+    {
+        let count = prop_items.first().cloned().unwrap_or(Value::Nil);
+        let system = prop_items.get(1).cloned().unwrap_or(Value::Nil);
+        prop_items = vec![Value::symbol(":count"), count];
+        if !system.is_nil() {
+            prop_items.push(Value::symbol(":system"));
+            prop_items.push(system);
+        }
+    }
+    if !prop_items.len().is_multiple_of(2) {
+        return Err(LispError::Signal("Invalid abbrev property list".into()));
+    }
+    let mut props = plist_pairs(&Value::list(prop_items))?;
+    if let Some(hook) = hook.filter(|value| !value.is_nil()) {
+        if let Some((_, existing)) = props.iter_mut().find(|(key, _)| key == ":hook") {
+            *existing = hook;
+        } else {
+            props.push((":hook".into(), hook));
+        }
+    }
+    if !props.iter().any(|(key, _)| key == ":count") {
+        props.push((":count".into(), Value::Integer(0)));
+    }
+    Ok(plist_value(&props))
+}
+
+fn abbrev_prop(props: &Value, key: &str) -> Option<Value> {
+    plist_pairs(props)
+        .ok()?
+        .into_iter()
+        .find_map(|(existing, value)| (existing == key).then_some(value))
+}
+
+fn abbrev_matches_name(
+    interp: &Interpreter,
+    table: &Value,
+    existing: &str,
+    props: &Value,
+    name: &str,
+) -> bool {
+    if existing == name {
+        return true;
+    }
+    let table_case_fixed = abbrev_table_property(interp, table, &Value::symbol(":case-fixed"))
+        .is_some_and(|value| value.is_truthy());
+    if table_case_fixed || abbrev_prop(props, ":case-fixed").is_some_and(|value| value.is_truthy())
+    {
+        return false;
+    }
+    existing == name.to_lowercase()
+}
+
+fn abbrev_parent_tables(interp: &Interpreter, table: &Value) -> Result<Vec<Value>, LispError> {
+    let Some(value) = abbrev_table_property(interp, table, &Value::symbol(":parents")) else {
+        return Ok(Vec::new());
+    };
+    if value.is_nil() {
+        return Ok(Vec::new());
+    }
+    if is_abbrev_table_value(interp, &value) {
+        return Ok(vec![value]);
+    }
+    value.to_vec()
+}
+
 fn define_abbrev_entry(
     interp: &mut Interpreter,
     table: &Value,
     name: &str,
     expansion: Value,
+    props: Value,
 ) -> Result<(), LispError> {
     let mut entries = abbrev_table_entries(interp, table)?;
     entries.retain(|(existing, _, _)| existing != name);
-    entries.insert(0, (name.to_string(), expansion, Value::Nil));
+    entries.insert(0, (name.to_string(), expansion, props));
     set_abbrev_table_entries(interp, table, entries)
 }
 
@@ -12126,9 +12220,35 @@ fn abbrev_expansion(
     table: &Value,
     name: &str,
 ) -> Result<Option<Value>, LispError> {
-    Ok(abbrev_table_entries(interp, table)?
-        .into_iter()
-        .find_map(|(existing, expansion, _)| (existing == name).then_some(expansion)))
+    fn lookup(
+        interp: &Interpreter,
+        table: &Value,
+        name: &str,
+        seen: &mut HashSet<u64>,
+    ) -> Result<Option<Value>, LispError> {
+        let Some(id) = abbrev_table_record_id(interp, table) else {
+            return Err(LispError::TypeError(
+                "abbrev-table".into(),
+                table.type_name(),
+            ));
+        };
+        if !seen.insert(id) {
+            return Ok(None);
+        }
+        for (existing, expansion, props) in abbrev_table_entries(interp, table)? {
+            if abbrev_matches_name(interp, table, &existing, &props, name) {
+                return Ok(Some(expansion));
+            }
+        }
+        for parent in abbrev_parent_tables(interp, table)? {
+            if let Some(expansion) = lookup(interp, &parent, name, seen)? {
+                return Ok(Some(expansion));
+            }
+        }
+        Ok(None)
+    }
+
+    lookup(interp, table, name, &mut HashSet::new())
 }
 
 fn copy_abbrev_table(interp: &mut Interpreter, table: &Value) -> Result<Value, LispError> {
@@ -12148,10 +12268,11 @@ fn parse_abbrev_definition(entry: &Value) -> Result<(String, Value, Value), Lisp
     }
     let name = string_text(&parts[0])?;
     let expansion = parts[1].clone();
+    let hook = parts.get(2).cloned().unwrap_or(Value::Nil);
     let props = if parts.len() > 3 {
-        Value::list(parts[3..].to_vec())
+        abbrev_props_from_parts(Some(hook), &parts[3..])?
     } else {
-        Value::Nil
+        abbrev_props_from_parts(Some(hook), &[])?
     };
     Ok((name, expansion, props))
 }
@@ -12497,7 +12618,7 @@ fn column_after(
     pos: usize,
     ch: char,
 ) -> usize {
-    if char_is_invisible(interp, pos) {
+    if char_is_invisible(interp, pos, env) {
         current_col
     } else if ch == '\t' {
         let tab_width = interp
@@ -12511,11 +12632,55 @@ fn column_after(
     }
 }
 
-fn char_is_invisible(interp: &Interpreter, pos: usize) -> bool {
+fn char_is_invisible(interp: &Interpreter, pos: usize, env: &Env) -> bool {
     interp
         .buffer
         .text_property_at(pos, "invisible")
-        .is_some_and(|value| value.is_truthy())
+        .is_some_and(|value| invisibility_value_is_hidden(interp, &value, env))
+}
+
+fn invisibility_value_is_hidden(interp: &Interpreter, value: &Value, env: &Env) -> bool {
+    let spec = interp
+        .lookup_var("buffer-invisibility-spec", env)
+        .unwrap_or(Value::T);
+    invisibility_spec_matches(&spec, value)
+}
+
+fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
+    if value.is_nil() {
+        return false;
+    }
+    match spec {
+        Value::Nil => false,
+        Value::T => value.is_truthy(),
+        _ => {
+            if spec == value {
+                return true;
+            }
+            if let Some((car, _)) = spec.cons_values()
+                && car == *value
+            {
+                return true;
+            }
+            if let Ok(items) = spec.to_vec() {
+                if items.iter().any(|entry| entry == value) {
+                    return true;
+                }
+                if items
+                    .iter()
+                    .any(|entry| entry.cons_values().is_some_and(|(car, _)| car == *value))
+                {
+                    return true;
+                }
+            }
+            if let Ok(items) = value.to_vec() {
+                return items
+                    .into_iter()
+                    .any(|item| invisibility_spec_matches(spec, &item));
+            }
+            false
+        }
+    }
 }
 
 fn compare_buffer_substrings(left: &str, right: &str) -> i64 {
@@ -23113,6 +23278,165 @@ fn nconc_values(args: &[Value]) -> Result<Value, LispError> {
     }
 
     Ok(head.unwrap_or(Value::Nil))
+}
+
+fn copy_tree_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    vectors_and_records: bool,
+) -> Result<Value, LispError> {
+    if is_vector_value(value) {
+        if !vectors_and_records {
+            return Ok(value.clone());
+        }
+        let items = value.to_vec()?;
+        let mut copied = Vec::with_capacity(items.len());
+        if let Some(tag) = items.first() {
+            copied.push(tag.clone());
+        }
+        for item in items.into_iter().skip(1) {
+            copied.push(copy_tree_value(interp, &item, true)?);
+        }
+        return Ok(Value::list(copied));
+    }
+
+    match value {
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return Ok(value.clone());
+            };
+            Ok(Value::cons(
+                copy_tree_value(interp, &car, vectors_and_records)?,
+                copy_tree_value(interp, &cdr, vectors_and_records)?,
+            ))
+        }
+        Value::Record(id) if vectors_and_records => {
+            let record = interp
+                .find_record(*id)
+                .cloned()
+                .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
+            let mut slots = Vec::with_capacity(record.slots.len());
+            for slot in &record.slots {
+                slots.push(copy_tree_value(interp, slot, true)?);
+            }
+            Ok(interp.create_record(&record.type_name, slots))
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
+#[derive(Default)]
+struct ClDeleteIfOptions {
+    start: usize,
+    end: Option<usize>,
+    from_end: bool,
+}
+
+fn collect_list_cells(value: &Value) -> Result<(Vec<Value>, Value), LispError> {
+    let mut cells = Vec::new();
+    let mut current = value.clone();
+    let mut seen = HashSet::new();
+    loop {
+        match current.clone() {
+            Value::Nil => return Ok((cells, Value::Nil)),
+            Value::Cons(car, cdr) => {
+                let cell_id = Rc::as_ptr(&car) as usize;
+                if !seen.insert(cell_id) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("circular-list"),
+                        Value::string("Circular list"),
+                    ])));
+                }
+                cells.push(current.clone());
+                current = cdr.borrow().clone();
+            }
+            other => {
+                return Err(LispError::TypeError("list".into(), other.type_name()));
+            }
+        }
+    }
+}
+
+fn parse_cl_delete_if_options(args: &[Value]) -> Result<ClDeleteIfOptions, LispError> {
+    let mut options = ClDeleteIfOptions::default();
+    let mut index = 2usize;
+    while index < args.len() {
+        let Some(keyword) = args[index].as_symbol().ok() else {
+            return Err(LispError::Signal("Unsupported cl-delete-if syntax".into()));
+        };
+        let Some(value) = args.get(index + 1) else {
+            return Err(LispError::Signal("Unsupported cl-delete-if syntax".into()));
+        };
+        match keyword {
+            ":start" => {
+                options.start = value.as_integer()?.max(0) as usize;
+            }
+            ":end" => {
+                options.end = Some(value.as_integer()?.max(0) as usize);
+            }
+            ":from-end" => {
+                options.from_end = value.is_truthy();
+            }
+            _ => return Err(LispError::Signal("Unsupported cl-delete-if syntax".into())),
+        }
+        index += 2;
+    }
+    Ok(options)
+}
+
+fn cl_delete_if_values(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() < 2 {
+        return Err(LispError::WrongNumberOfArgs(
+            "cl-delete-if".into(),
+            args.len(),
+        ));
+    }
+
+    let options = parse_cl_delete_if_options(args)?;
+    let _ = options.from_end;
+    let (cells, tail) = collect_list_cells(&args[1])?;
+    let len = cells.len();
+    let start = options.start.min(len);
+    let end = options.end.unwrap_or(len).min(len);
+    let mut keep = vec![true; len];
+    let predicate = resolve_callable(interp, &args[0], env)?;
+    let predicate_name = args[0].as_symbol().ok();
+
+    for index in start..end {
+        let item = cells[index].car()?;
+        if interp
+            .call_function_value(
+                predicate.clone(),
+                predicate_name,
+                std::slice::from_ref(&item),
+                env,
+            )?
+            .is_truthy()
+        {
+            keep[index] = false;
+        }
+    }
+    let kept_cells = cells
+        .iter()
+        .zip(keep.iter())
+        .filter_map(|(cell, keep_cell)| keep_cell.then_some(cell.clone()))
+        .collect::<Vec<_>>();
+
+    if kept_cells.is_empty() {
+        return Ok(tail);
+    }
+
+    for window in kept_cells.windows(2) {
+        window[0].set_cdr(window[1].clone())?;
+    }
+    if let Some(last) = kept_cells.last() {
+        last.set_cdr(tail)?;
+    }
+    Ok(kept_cells[0].clone())
 }
 
 fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {

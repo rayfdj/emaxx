@@ -4586,11 +4586,10 @@ impl Interpreter {
                                     items.len() - 1,
                                 ));
                             }
-                            let name = items[1].as_symbol()?.to_string();
-                            let cur = self.lookup(&name, env)?;
+                            let cur = self.eval_setf_place_current_value(&items[1], env)?;
                             let result = cur.car()?;
                             let rest = cur.cdr()?;
-                            self.set_variable(&name, rest, env);
+                            self.set_setf_place_value(&items[1], rest, env)?;
                             return Ok(result);
                         }
                         "catch" => return self.sf_catch(&items, env),
@@ -10966,6 +10965,31 @@ mod tests {
     }
 
     #[test]
+    fn abbrev_expansion_respects_table_props_and_parent_tables() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar parent-abbrev-table nil)
+                   (defvar child-abbrev-table nil)
+                   (define-abbrev-table 'parent-abbrev-table '((\"foo\" \"parent\")))
+                   (define-abbrev-table 'child-abbrev-table
+                     '((\"fb\" \"FooBar\" nil :case-fixed t))
+                     \"Child table\"
+                     :parents (list parent-abbrev-table))
+                   (list
+                    (abbrev-expansion \"foo\" child-abbrev-table)
+                    (abbrev-expansion \"fb\" child-abbrev-table)
+                    (abbrev-expansion \"FB\" child-abbrev-table)))"
+            ),
+            Value::list([
+                Value::String("parent".into()),
+                Value::String("FooBar".into()),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
     fn eval_and_compile_runs_its_body_when_loading_helpers() {
         let mut interp = Interpreter::new();
         eval_str_with(
@@ -11096,6 +11120,21 @@ mod tests {
                 "#
             ),
             Value::list([Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn invisible_p_accepts_raw_invisibility_property_values() {
+        assert_eq!(
+            eval_str(
+                "(let ((buffer-invisibility-spec '(outline (secret . t) t)))
+                   (list
+                    (invisible-p 'outline)
+                    (invisible-p '(secret extra))
+                    (invisible-p t)
+                    (invisible-p 'visible)))"
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::Nil])
         );
     }
 
@@ -12311,6 +12350,42 @@ mod tests {
             Value::list([
                 Value::cons(Value::Symbol("a".into()), Value::Symbol("b".into())),
                 Value::list([Value::Symbol("c".into()), Value::Symbol("d".into())]),
+            ])
+        );
+    }
+
+    #[test]
+    fn copy_tree_does_not_alias_mutable_cons_cells() {
+        assert_eq!(
+            eval_str(
+                "(let* ((orig '((a . b) (c d)))
+                        (copy (copy-tree orig)))
+                   (setcdr (car copy) 'z)
+                   (list orig copy))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::cons(Value::Symbol("a".into()), Value::Symbol("b".into())),
+                    Value::list([Value::Symbol("c".into()), Value::Symbol("d".into())]),
+                ]),
+                Value::list([
+                    Value::cons(Value::Symbol("a".into()), Value::Symbol("z".into())),
+                    Value::list([Value::Symbol("c".into()), Value::Symbol("d".into())]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn pop_supports_generalized_places() {
+        assert_eq!(
+            eval_str(
+                "(let ((xs (list 1 2 3)))
+                   (list (pop (cdr xs)) xs))"
+            ),
+            Value::list([
+                Value::Integer(2),
+                Value::list([Value::Integer(1), Value::Integer(3)]),
             ])
         );
     }
