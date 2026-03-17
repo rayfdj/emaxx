@@ -2312,7 +2312,7 @@ pub fn call(
         "version<=" => {
             need_args(name, args, 2)?;
             Ok(
-                if version_leq(&string_text(&args[0])?, &string_text(&args[1])?) {
+                if version_leq(&string_text(&args[0])?, &string_text(&args[1])?)? {
                     Value::T
                 } else {
                     Value::Nil
@@ -18009,6 +18009,7 @@ pub(crate) fn emacs_version_value() -> String {
 
 pub(crate) fn emacs_major_version_value() -> i64 {
     parse_version_components(&emacs_version_value())
+        .unwrap_or_default()
         .first()
         .copied()
         .unwrap_or(0)
@@ -18016,6 +18017,7 @@ pub(crate) fn emacs_major_version_value() -> i64 {
 
 pub(crate) fn emacs_minor_version_value() -> i64 {
     parse_version_components(&emacs_version_value())
+        .unwrap_or_default()
         .get(1)
         .copied()
         .unwrap_or(0)
@@ -22020,26 +22022,59 @@ fn normalize_bigint_value(value: BigInt) -> Value {
         .unwrap_or(Value::BigInteger(value))
 }
 
-fn version_leq(left: &str, right: &str) -> bool {
-    let left = parse_version_components(left);
-    let right = parse_version_components(right);
+fn version_leq(left: &str, right: &str) -> Result<bool, LispError> {
+    let left = parse_version_components(left)?;
+    let right = parse_version_components(right)?;
     let width = left.len().max(right.len());
     for index in 0..width {
         let a = *left.get(index).unwrap_or(&0);
         let b = *right.get(index).unwrap_or(&0);
         if a < b {
-            return true;
+            return Ok(true);
         }
         if a > b {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
-fn parse_version_components(version: &str) -> Vec<i64> {
-    version
-        .split('.')
+fn parse_version_components(version: &str) -> Result<Vec<i64>, LispError> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    for ch in version.chars() {
+        if matches!(ch, '.' | '_') {
+            segments.push(current);
+            current = String::new();
+        } else {
+            current.push(ch);
+        }
+    }
+    segments.push(current);
+
+    if segments.is_empty() {
+        unreachable!("split always yields at least one segment");
+    }
+    if segments[0].is_empty() {
+        segments[0].push('0');
+    }
+    if segments.iter().any(String::is_empty) {
+        return Err(LispError::Signal(format!(
+            "Invalid version syntax: `{version}'"
+        )));
+    }
+    if !segments[0]
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        return Err(LispError::Signal(format!(
+            "Invalid version syntax: `{version}' (must start with a number)"
+        )));
+    }
+
+    Ok(segments
+        .into_iter()
         .map(|segment| {
             let digits = segment
                 .chars()
@@ -22051,7 +22086,7 @@ fn parse_version_components(version: &str) -> Vec<i64> {
                 digits.parse::<i64>().unwrap_or(0)
             }
         })
-        .collect()
+        .collect())
 }
 
 fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
