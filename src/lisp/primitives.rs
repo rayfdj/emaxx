@@ -67,6 +67,7 @@ fn is_time_builtin(name: &str) -> bool {
     matches!(
         name,
         "current-time-zone"
+            | "current-time"
             | "decode-time"
             | "encode-time"
             | "float-time"
@@ -75,6 +76,7 @@ fn is_time_builtin(name: &str) -> bool {
             | "time-convert"
             | "time-equal-p"
             | "time-less-p"
+            | "time-since"
             | "time-subtract"
     )
 }
@@ -368,7 +370,7 @@ fn scroll_selected_window(
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
     matches!(
         name,
-        "user-error" | "byte-compile" | "byte-compile-check-lambda-list"
+        "user-error" | "byte-compile" | "byte-compile-check-lambda-list" | "read-key"
     )
 }
 
@@ -972,6 +974,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "copy-tree"
             | "delete-dups"
             | "memq"
+            | "remq"
             | "member"
             | "member-ignore-case"
             | "assq"
@@ -1000,6 +1003,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "read-event"
             | "read-char"
             | "read-char-exclusive"
+            | "read-key"
             | "identity"
             | "mapconcat"
             | "kbd"
@@ -1298,6 +1302,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-terminal-coding-system-internal"
             | "set-safe-terminal-coding-system-internal"
             | "keyboard-coding-system"
+            | "set-keyboard-coding-system"
             | "set-keyboard-coding-system-internal"
             | "find-operation-coding-system"
             | "set-coding-system-priority"
@@ -1486,12 +1491,26 @@ pub fn is_builtin(name: &str) -> bool {
             | "display-images-p"
             | "char-displayable-p"
             | "frame-parameter"
+            | "frame-width"
+            | "frame-height"
+            | "set-frame-width"
+            | "set-frame-height"
             | "frame-char-width"
             | "selected-window"
             | "window-buffer"
             | "selected-frame"
+            | "frame-list"
             | "windowp"
+            | "window-at"
+            | "window-edges"
+            | "posn-at-x-y"
             | "window-display-table"
+            | "terminal-live-p"
+            | "terminal-list"
+            | "terminal-name"
+            | "terminal-parameter"
+            | "set-terminal-parameter"
+            | "send-string-to-terminal"
             | "transient-mark-mode"
             | "font-lock-mode"
             | "find-image"
@@ -3037,6 +3056,10 @@ pub fn call(
         "append" => {
             let mut items: Vec<Value> = Vec::new();
             for (i, a) in args.iter().enumerate() {
+                if let Some(string) = sequence_string_like(a) {
+                    items.extend(string_sequence_values(&string));
+                    continue;
+                }
                 if i == args.len() - 1 {
                     // Last arg can be a non-list (dotted)
                     if a.is_list() {
@@ -3706,21 +3729,48 @@ pub fn call(
             set_abbrev_table_entries_from_definitions(interp, &table, &args[1])?;
             Ok(table)
         }
+        "read-key" => {
+            need_arg_range(name, args, 0, 2)?;
+            ensure_interaction_allowed(interp, env)?;
+            let disable_fallbacks = args.get(1).is_some_and(Value::is_truthy);
+            loop {
+                let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
+                    decoded
+                } else {
+                    normalize_input_event_value(pop_unread_command_event_value(interp, env)?)?
+                };
+                if !disable_fallbacks && is_mouse_down_event(&event) {
+                    continue;
+                }
+                return Ok(event);
+            }
+        }
         "read-event" | "read-char" | "read-char-exclusive" => {
+            let read_event = name == "read-event";
             let timed_poll = args.len() >= 3 && args[2].is_truthy();
             if timed_poll {
                 interp.drive_threads(env, true)?;
                 if !interaction_allowed(interp, env) {
                     return Ok(Value::Nil);
                 }
-                return match pop_unread_command_event(interp, env) {
-                    Ok(event) => Ok(Value::Integer(event as i64)),
+                return match pop_unread_command_event_value(interp, env) {
+                    Ok(event) => {
+                        if read_event {
+                            normalize_input_event_value(event)
+                        } else {
+                            Ok(Value::Integer(unread_command_event_char(&event)? as i64))
+                        }
+                    }
                     Err(_) => Ok(Value::Nil),
                 };
             }
             ensure_interaction_allowed(interp, env)?;
-            let event = pop_unread_command_event(interp, env)?;
-            Ok(Value::Integer(event as i64))
+            let event = pop_unread_command_event_value(interp, env)?;
+            if read_event {
+                normalize_input_event_value(event)
+            } else {
+                Ok(Value::Integer(unread_command_event_char(&event)? as i64))
+            }
         }
         "read-string" | "read-from-minibuffer" | "read-no-blanks-input" => {
             if args.is_empty() {
@@ -4322,19 +4372,19 @@ pub fn call(
             let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
             let mut result = source.text.chars().take(start).collect::<String>();
             let mut search_pos = start;
-            let mut tail = source.text.chars().skip(start).collect::<String>();
+            let mut search_byte = byte_index_for_char(&source.text, start);
 
             while let Some(captures) = regex
-                .captures(&tail)
+                .captures_from_pos(&source.text, search_byte)
                 .map_err(|error| LispError::Signal(error.to_string()))?
             {
                 let Some(full_match) = captures.get(0) else {
                     break;
                 };
-                let full_start = search_pos + tail[..full_match.start()].chars().count();
-                let full_end = search_pos + tail[..full_match.end()].chars().count();
+                let full_start = source.text[..full_match.start()].chars().count();
+                let full_end = source.text[..full_match.end()].chars().count();
                 let match_data =
-                    match_data_from_captures(search_pos, &tail, &captures, regex.capture_mapping());
+                    match_data_from_captures(0, &source.text, &captures, regex.capture_mapping());
                 let (replace_start, replace_end) = match_data
                     .get(subexp)
                     .and_then(|entry| *entry)
@@ -4350,13 +4400,7 @@ pub fn call(
                         &source.text,
                     )?);
                 } else {
-                    set_match_data(
-                        interp,
-                        search_pos,
-                        &tail,
-                        &captures,
-                        regex.capture_mapping(),
-                    );
+                    set_match_data(interp, 0, &source.text, &captures, regex.capture_mapping());
                     let matched_text = slice_string_chars(&source.text, replace_start, replace_end);
                     let value =
                         call_function_value(interp, &args[1], &[Value::String(matched_text)], env)?;
@@ -4365,20 +4409,24 @@ pub fn call(
                 result.push_str(&slice_string_chars(&source.text, replace_end, full_end));
 
                 if full_start == full_end {
-                    if let Some(ch) = tail.chars().next() {
+                    if let Some(ch) = source.text.chars().nth(search_pos) {
                         result.push(ch);
                         search_pos += 1;
-                        tail = tail.chars().skip(1).collect();
+                        search_byte = byte_index_for_char(&source.text, search_pos);
                         continue;
                     }
                     break;
                 }
 
                 search_pos = full_end;
-                tail = source.text.chars().skip(search_pos).collect();
+                search_byte = byte_index_for_char(&source.text, search_pos);
             }
 
-            result.push_str(&tail);
+            result.push_str(&slice_string_chars(
+                &source.text,
+                search_pos,
+                source.text.chars().count(),
+            ));
             Ok(Value::String(result))
         }
         "edmacro-parse-keys" => {
@@ -7034,7 +7082,7 @@ pub fn call(
             .keyboard_coding_system()
             .map(Value::Symbol)
             .unwrap_or(Value::Nil)),
-        "set-keyboard-coding-system-internal" => {
+        "set-keyboard-coding-system" | "set-keyboard-coding-system-internal" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
@@ -8472,7 +8520,20 @@ pub fn call(
         )),
 
         // ── Display stubs ──
-        "display-graphic-p" | "display-images-p" | "frame-parameter" => Ok(Value::Nil),
+        "display-graphic-p" | "display-images-p" => Ok(Value::Nil),
+        "frame-parameter" => {
+            need_arg_range(name, args, 1, 2)?;
+            let parameter = args
+                .get(1)
+                .ok_or_else(|| LispError::WrongNumberOfArgs(name.into(), args.len()))?
+                .as_symbol()?;
+            Ok(match parameter {
+                "width" => Value::Integer(interp.frame_width()),
+                "height" => Value::Integer(interp.frame_height()),
+                "menu-bar-lines" | "tab-bar-lines" => Value::Integer(0),
+                _ => Value::Nil,
+            })
+        }
         "char-displayable-p" => {
             need_args(name, args, 1)?;
             match &args[0] {
@@ -8485,6 +8546,24 @@ pub fn call(
                 }
                 _ => Ok(Value::Nil),
             }
+        }
+        "frame-width" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Integer(interp.frame_width()))
+        }
+        "frame-height" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Integer(interp.frame_height()))
+        }
+        "set-frame-width" => {
+            need_arg_range(name, args, 2, 4)?;
+            interp.set_frame_width(args[1].as_integer()?);
+            Ok(Value::Nil)
+        }
+        "set-frame-height" => {
+            need_arg_range(name, args, 2, 4)?;
+            interp.set_frame_height(args[1].as_integer()?);
+            Ok(Value::Nil)
         }
         "frame-char-width" => Ok(Value::Integer(1)),
         "transient-mark-mode" => {
@@ -8753,6 +8832,7 @@ pub fn call(
             }
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
+        "frame-list" => Ok(Value::list([Value::Symbol("frame".into())])),
         "windowp" => {
             need_args(name, args, 1)?;
             Ok(if is_window_value(interp, &args[0]) {
@@ -8761,10 +8841,78 @@ pub fn call(
                 Value::Nil
             })
         }
+        "window-at" => {
+            need_arg_range(name, args, 2, 3)?;
+            Ok(interp.selected_window_value())
+        }
+        "window-edges" => {
+            need_arg_range(name, args, 1, 2)?;
+            Ok(Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(interp.frame_width()),
+                Value::Integer(interp.frame_height()),
+            ]))
+        }
+        "posn-at-x-y" => {
+            need_arg_range(name, args, 2, 4)?;
+            let x = args[0].as_integer()?;
+            let y = args[1].as_integer()?;
+            let pos_y = if y > 0 { y - 1 } else { y };
+            let window = args
+                .get(2)
+                .filter(|value| is_window_value(interp, value))
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            Ok(Value::list([
+                window,
+                Value::Nil,
+                Value::cons(Value::Integer(x), Value::Integer(pos_y)),
+                Value::Integer(0),
+            ]))
+        }
         "window-display-table" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            Ok(Value::Nil)
+        }
+        "terminal-live-p" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(&args[0], Value::Nil) {
+                Value::T
+            } else if let Value::Symbol(symbol) = &args[0] {
+                if symbol == "terminal" || symbol == "frame" {
+                    Value::T
+                } else {
+                    Value::Nil
+                }
+            } else {
+                Value::Nil
+            })
+        }
+        "terminal-list" => {
+            need_arg_range(name, args, 0, 0)?;
+            Ok(Value::list([Value::Symbol("terminal".into())]))
+        }
+        "terminal-name" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::String("initial_terminal".into()))
+        }
+        "terminal-parameter" => {
+            need_args(name, args, 2)?;
+            let parameter = args[1].as_symbol()?;
+            Ok(interp.terminal_parameter(parameter).unwrap_or(Value::Nil))
+        }
+        "set-terminal-parameter" => {
+            need_args(name, args, 3)?;
+            let parameter = args[1].as_symbol()?;
+            interp.set_terminal_parameter(parameter, args[2].clone());
+            Ok(args[2].clone())
+        }
+        "send-string-to-terminal" => {
+            need_arg_range(name, args, 1, 2)?;
+            let _ = string_text(&args[0])?;
             Ok(Value::Nil)
         }
         "get-buffer-window" | "minibuffer-window" => Ok(interp.selected_window_value()),
@@ -11885,7 +12033,7 @@ pub fn call(
             Ok(Value::list(items.into_iter().take(n)))
         }
 
-        "delete" | "delq" => {
+        "delete" | "delq" | "remq" => {
             need_args(name, args, 2)?;
             let elt = &args[0];
             let items = args[1].to_vec()?;
@@ -16217,6 +16365,14 @@ fn slice_string_chars(source: &str, start: usize, end: usize) -> String {
         .skip(start)
         .take(end.saturating_sub(start))
         .collect()
+}
+
+fn byte_index_for_char(source: &str, char_index: usize) -> usize {
+    source
+        .char_indices()
+        .nth(char_index)
+        .map(|(byte_index, _)| byte_index)
+        .unwrap_or(source.len())
 }
 
 fn update_match_data_after_replace(
@@ -22168,6 +22324,27 @@ fn call_time_builtin(
 ) -> Result<Value, LispError> {
     let now = current_time_value()?;
     match name {
+        "current-time" => {
+            need_arg_range(name, args, 0, 0)?;
+            Ok(exact_time_to_value(&now))
+        }
+        "time-since" => {
+            need_args(name, args, 1)?;
+            if matches!(args[0], Value::Float(_)) {
+                let elapsed_ms = ((exact_time_to_f64(&now) - numeric_to_f64(interp, &args[0])?)
+                    .max(0.0)
+                    * 1000.0)
+                    .floor() as i64;
+                return Ok(Value::cons(
+                    Value::Integer(elapsed_ms),
+                    Value::Integer(1000),
+                ));
+            }
+            let then = exact_time_from_value(interp, &args[0], &now)?;
+            let ticks = now.ticks.clone() * &then.hz - then.ticks.clone() * &now.hz;
+            let hz = now.hz.clone() * then.hz.clone();
+            Ok(exact_time_to_value(&exact_time_value(ticks, hz)?))
+        }
         "time-add" | "time-subtract" => {
             need_args(name, args, 2)?;
             let left = exact_time_from_value(interp, &args[0], &now)?;
@@ -25994,7 +26171,7 @@ fn parse_interactive_string(
         };
         match code {
             'k' => {
-                let ch = pop_unread_command_event(interp, env)?;
+                let ch = unread_command_event_char(&pop_unread_command_event_value(interp, env)?)?;
                 values.push(Value::String(ch.to_string()));
             }
             _ => return Err(invalid_interactive_control_letter(code)),
@@ -26003,7 +26180,10 @@ fn parse_interactive_string(
     Ok(values)
 }
 
-fn pop_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Result<char, LispError> {
+fn pop_unread_command_event_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let unread = interp
         .lookup_var("unread-command-events", env)
         .unwrap_or(Value::Nil);
@@ -26015,29 +26195,156 @@ fn pop_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Result<c
     }
     let event = events.remove(0);
     interp.set_variable("unread-command-events", Value::list(events), env);
-    match event {
-        Value::Integer(code) if code >= 0 => char::from_u32(code as u32)
-            .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", code))),
+    Ok(event)
+}
+
+fn unread_command_event_char(event: &Value) -> Result<char, LispError> {
+    unread_event_char(event)
+        .ok_or_else(|| LispError::Signal(format!("Invalid unread command event {}", event)))
+}
+
+fn normalize_input_event_value(event: Value) -> Result<Value, LispError> {
+    if let Some(ch) = unread_event_char(&event) {
+        Ok(Value::Integer(ch as i64))
+    } else {
+        Ok(event)
+    }
+}
+
+fn unread_command_events(interp: &Interpreter, env: &Env) -> Result<Vec<Value>, LispError> {
+    interp
+        .lookup_var("unread-command-events", env)
+        .unwrap_or(Value::Nil)
+        .to_vec()
+}
+
+fn unread_event_char(value: &Value) -> Option<char> {
+    match value {
+        Value::Integer(code) if *code >= 0 => char::from_u32(*code as u32),
         Value::Cons(car, cdr) if matches!(car.borrow().clone(), Value::T) => {
             match cdr.borrow().clone() {
-                Value::Integer(code) if code >= 0 => char::from_u32(code as u32).ok_or_else(|| {
-                    LispError::Signal(format!("Invalid unread command event {}", code))
-                }),
-                other => Err(LispError::Signal(format!(
-                    "Invalid unread command event {}",
-                    other
-                ))),
+                Value::Integer(code) if code >= 0 => char::from_u32(code as u32),
+                _ => None,
             }
         }
-        Value::String(text) => text
-            .chars()
-            .next()
-            .ok_or_else(|| LispError::Signal("Invalid unread command event".into())),
-        _ => Err(LispError::Signal(format!(
-            "Invalid unread command event {}",
-            event
-        ))),
+        Value::String(text) => text.chars().next(),
+        Value::StringObject(state) => state.borrow().text.chars().next(),
+        _ => None,
     }
+}
+
+fn unread_prefix_matches(events: &[Value], prefix: &str) -> Option<usize> {
+    let chars: Vec<char> = prefix.chars().collect();
+    if events.len() < chars.len() {
+        return None;
+    }
+    for (index, expected) in chars.iter().enumerate() {
+        if unread_event_char(&events[index]) != Some(*expected) {
+            return None;
+        }
+    }
+    Some(chars.len())
+}
+
+fn prepend_unread_command_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    mut prefix: Vec<Value>,
+) -> Result<(), LispError> {
+    let unread = unread_command_events(interp, env)?;
+    prefix.extend(unread);
+    interp.set_variable("unread-command-events", Value::list(prefix), env);
+    Ok(())
+}
+
+fn translated_input_events(value: &Value) -> Result<Vec<Value>, LispError> {
+    if matches!(value, Value::Nil) {
+        return Ok(Vec::new());
+    }
+    if let Ok(items) = vector_items(value) {
+        return Ok(items);
+    }
+    Ok(vec![value.clone()])
+}
+
+fn is_mouse_down_event(value: &Value) -> bool {
+    value
+        .to_vec()
+        .ok()
+        .and_then(|items| items.first().cloned())
+        .and_then(|item| item.as_symbol().ok().map(str::to_string))
+        .is_some_and(|name| name.contains("down-mouse"))
+}
+
+fn read_decoded_input_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let unread = unread_command_events(interp, env)?;
+    for (prefix, function_name) in [
+        ("\u{1b}[<", "xterm-mouse-translate-extended"),
+        ("\u{1b}[M", "xterm-mouse-translate"),
+    ] {
+        let Some(prefix_len) = unread_prefix_matches(&unread, prefix) else {
+            continue;
+        };
+        let Ok(function) = interp.lookup_function(function_name, env) else {
+            continue;
+        };
+
+        let mut remaining = unread.clone();
+        remaining.drain(0..prefix_len);
+        interp.set_variable("unread-command-events", Value::list(remaining), env);
+
+        let translated =
+            interp.call_function_value(function, Some(function_name), &[Value::Nil], env)?;
+        let events = translated_input_events(&translated)?;
+        if events.is_empty() {
+            return Ok(None);
+        }
+        if events.len() > 1 {
+            prepend_unread_command_events(interp, env, events[1..].to_vec())?;
+        }
+        return Ok(events.into_iter().next());
+    }
+
+    let Some(input_decode_map) = interp.lookup_var("input-decode-map", env) else {
+        return Ok(None);
+    };
+    let mut best_match: Option<(usize, Value)> = None;
+    let mut prefix = String::new();
+    for event in unread.iter().take(8) {
+        let Some(ch) = unread_event_char(event) else {
+            break;
+        };
+        prefix.push(ch);
+        let binding = keymap_lookup_binding(interp, &input_decode_map, &prefix)?;
+        if !binding.is_nil()
+            && best_match
+                .as_ref()
+                .is_none_or(|(best_len, _)| prefix.chars().count() > *best_len)
+        {
+            best_match = Some((prefix.chars().count(), binding));
+        }
+    }
+    let Some((prefix_len, binding)) = best_match else {
+        return Ok(None);
+    };
+
+    let mut remaining = unread;
+    remaining.drain(0..prefix_len);
+    interp.set_variable("unread-command-events", Value::list(remaining), env);
+
+    let function = resolve_callable(interp, &binding, env)?;
+    let translated = invoke_function_value(interp, &function, &[Value::Nil], env)?;
+    let events = translated_input_events(&translated)?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    if events.len() > 1 {
+        prepend_unread_command_events(interp, env, events[1..].to_vec())?;
+    }
+    Ok(events.into_iter().next())
 }
 
 fn record_command_history(

@@ -569,6 +569,12 @@ pub struct Interpreter {
     current_buffer_id: u64,
     /// The currently selected window record.
     selected_window_id: u64,
+    /// The selected frame width in character columns.
+    frame_width: i64,
+    /// The selected frame height in character rows.
+    frame_height: i64,
+    /// Terminal-local parameters for the single runtime terminal.
+    terminal_parameters: Vec<(String, Value)>,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
     /// Known buffers: (id, name) pairs.
@@ -728,6 +734,9 @@ impl Interpreter {
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,
             selected_window_id: 0,
+            frame_width: 80,
+            frame_height: 24,
+            terminal_parameters: Vec::new(),
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
             buffer_list: vec![(0, "*test*".to_string()), (1, "*Messages*".to_string())],
             next_buffer_id: 2,
@@ -829,6 +838,10 @@ impl Interpreter {
         };
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let input_decode_map =
+            primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
+        interp.set_global_binding("input-decode-map", input_decode_map);
+        interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         let selected_window = interp.create_record(
             "window",
             vec![
@@ -1055,6 +1068,42 @@ impl Interpreter {
                 window.slots.resize(2, Value::Nil);
             }
             window.slots[1] = Value::Integer(start);
+        }
+    }
+
+    pub fn frame_width(&self) -> i64 {
+        self.frame_width.max(1)
+    }
+
+    pub fn set_frame_width(&mut self, width: i64) {
+        self.frame_width = width.max(1);
+    }
+
+    pub fn frame_height(&self) -> i64 {
+        self.frame_height.max(1)
+    }
+
+    pub fn set_frame_height(&mut self, height: i64) {
+        self.frame_height = height.max(1);
+    }
+
+    pub fn terminal_parameter(&self, name: &str) -> Option<Value> {
+        self.terminal_parameters
+            .iter()
+            .rfind(|(parameter, _)| parameter == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub fn set_terminal_parameter(&mut self, name: &str, value: Value) {
+        let value = Self::stored_value(value);
+        if let Some(index) = self
+            .terminal_parameters
+            .iter()
+            .rposition(|(parameter, _)| parameter == name)
+        {
+            self.terminal_parameters[index].1 = value;
+        } else {
+            self.terminal_parameters.push((name.to_string(), value));
         }
     }
 
@@ -5582,6 +5631,11 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "image-property" => {
                 self.sf_setf_image_property(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "terminal-parameter" => {
+                let value = self.eval(&items[2], env)?;
+                self.set_setf_place_value(&items[1], value.clone(), env)?;
+                Ok(value)
+            }
             _ => Err(LispError::Signal(format!(
                 "Unsupported setf place: {}",
                 items[1]
@@ -5863,6 +5917,25 @@ impl Interpreter {
                         ));
                     };
                     existing.put_prop(&prop_name, value);
+                    Ok(())
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if name == "terminal-parameter"
+                ) {
+                    let Some(terminal_expr) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(parameter_expr) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let terminal = self.eval(terminal_expr, env)?;
+                    let parameter = self.eval(parameter_expr, env)?;
+                    primitives::call(
+                        self,
+                        "set-terminal-parameter",
+                        &[terminal, parameter, value],
+                        env,
+                    )?;
                     Ok(())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "alist-get")
                 {
@@ -6433,14 +6506,20 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let name = items[1].as_symbol()?.to_string();
-        let current = self.lookup(&name, env)?;
-        let Value::Cons(_, _) = &current else {
+        let target = if let Ok(name) = items[1].as_symbol() {
+            self.lookup(name, env)?
+        } else {
+            self.eval(&items[1], env)?
+        };
+        let target_name = items[1].as_symbol().ok().map(str::to_string);
+        let Value::Cons(_, _) = &target else {
             return Err(LispError::TypeError("cons".into(), items[1].type_name()));
         };
         let updated_car = self.eval(&items[2], env)?;
-        current.set_car(updated_car.clone())?;
-        self.set_variable(&name, current, env);
+        target.set_car(updated_car.clone())?;
+        if let Some(name) = target_name {
+            self.set_variable(&name, target, env);
+        }
         Ok(updated_car)
     }
 
@@ -7287,50 +7366,71 @@ impl Interpreter {
                 Ok(())
             }
             Value::Cons(_, _) => {
-                let pattern_items = pattern.to_vec()?;
-                let values = value.to_vec()?;
-                let mut pi = 0usize;
-                let mut vi = 0usize;
-                let mut optional = false;
-                while pi < pattern_items.len() {
-                    match &pattern_items[pi] {
-                        Value::Symbol(symbol) if symbol == "&optional" => {
-                            optional = true;
-                            pi += 1;
-                            continue;
-                        }
-                        Value::Symbol(symbol) if symbol == "&rest" => {
-                            pi += 1;
-                            if let Some(rest_pattern) = pattern_items.get(pi) {
-                                self.bind_cl_pattern(
-                                    rest_pattern,
-                                    Value::list(values[vi..].to_vec()),
-                                    frame,
-                                )?;
+                if let Ok(pattern_items) = pattern.to_vec() {
+                    let values = value.to_vec()?;
+                    let mut pi = 0usize;
+                    let mut vi = 0usize;
+                    let mut optional = false;
+                    while pi < pattern_items.len() {
+                        match &pattern_items[pi] {
+                            Value::Symbol(symbol) if symbol == "&optional" => {
+                                optional = true;
+                                pi += 1;
+                                continue;
                             }
-                            break;
-                        }
-                        subpattern => {
-                            let consumed = vi < values.len();
-                            let bound_value = if consumed {
-                                values[vi].clone()
-                            } else if optional {
-                                Value::Nil
-                            } else {
-                                return Err(LispError::WrongNumberOfArgs(
-                                    "cl-destructuring-bind".into(),
-                                    values.len(),
-                                ));
-                            };
-                            self.bind_cl_pattern(subpattern, bound_value, frame)?;
-                            if consumed {
-                                vi += 1;
+                            Value::Symbol(symbol) if symbol == "&rest" => {
+                                pi += 1;
+                                if let Some(rest_pattern) = pattern_items.get(pi) {
+                                    self.bind_cl_pattern(
+                                        rest_pattern,
+                                        Value::list(values[vi..].to_vec()),
+                                        frame,
+                                    )?;
+                                }
+                                break;
                             }
+                            subpattern => {
+                                let consumed = vi < values.len();
+                                let bound_value = if consumed {
+                                    values[vi].clone()
+                                } else if optional {
+                                    Value::Nil
+                                } else {
+                                    return Err(LispError::WrongNumberOfArgs(
+                                        "cl-destructuring-bind".into(),
+                                        values.len(),
+                                    ));
+                                };
+                                self.bind_cl_pattern(subpattern, bound_value, frame)?;
+                                if consumed {
+                                    vi += 1;
+                                }
+                            }
+                        }
+                        pi += 1;
+                    }
+                    Ok(())
+                } else {
+                    let mut current_pattern = pattern.clone();
+                    let mut current_value = value;
+                    loop {
+                        match current_pattern {
+                            Value::Cons(car, cdr) => {
+                                let Some((head, tail)) = current_value.cons_values() else {
+                                    return Err(LispError::WrongNumberOfArgs(
+                                        "cl-destructuring-bind".into(),
+                                        0,
+                                    ));
+                                };
+                                self.bind_cl_pattern(&car.borrow().clone(), head, frame)?;
+                                current_pattern = cdr.borrow().clone();
+                                current_value = tail;
+                            }
+                            Value::Nil => return Ok(()),
+                            other => return self.bind_cl_pattern(&other, current_value, frame),
                         }
                     }
-                    pi += 1;
                 }
-                Ok(())
             }
             other => Err(LispError::TypeError("list".into(), other.type_name())),
         }
@@ -8148,6 +8248,7 @@ impl Interpreter {
         let bindings = items[1].to_vec()?;
         env.push(Vec::new());
         let mut rebound = Vec::new();
+        let mut rebound_places = Vec::new();
         let setup = (|| -> Result<(), LispError> {
             for binding in &bindings {
                 let parts = binding.to_vec()?;
@@ -8170,19 +8271,23 @@ impl Interpreter {
                     }
                     Value::Cons(_, _) => {
                         let place = parts[0].to_vec()?;
-                        if !matches!(
+                        if matches!(
                             place.first(),
                             Some(Value::Symbol(name)) if name == "symbol-function"
                         ) {
-                            return Err(LispError::Signal("Unsupported cl-letf place".into()));
+                            let Some(target) = place.get(1) else {
+                                return Err(LispError::Signal("Unsupported cl-letf place".into()));
+                            };
+                            let function_name = function_name_from_binding_form(target)?;
+                            let value = self.eval(&parts[1], env)?;
+                            self.functions.push((function_name.clone(), value));
+                            rebound.push(function_name);
+                        } else {
+                            let current = self.eval_setf_place_current_value(&parts[0], env)?;
+                            let value = self.eval(&parts[1], env)?;
+                            self.set_setf_place_value(&parts[0], value, env)?;
+                            rebound_places.push((parts[0].clone(), current));
                         }
-                        let Some(target) = place.get(1) else {
-                            return Err(LispError::Signal("Unsupported cl-letf place".into()));
-                        };
-                        let function_name = function_name_from_binding_form(target)?;
-                        let value = self.eval(&parts[1], env)?;
-                        self.functions.push((function_name.clone(), value));
-                        rebound.push(function_name);
                     }
                     _ => return Err(LispError::Signal("Unsupported cl-letf place".into())),
                 }
@@ -8194,12 +8299,23 @@ impl Interpreter {
             Err(error) => Err(error),
         };
         env.pop();
+        let mut restore_error = None;
+        for (place, value) in rebound_places.into_iter().rev() {
+            if let Err(error) = self.set_setf_place_value(&place, value, env)
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
+            }
+        }
         for name in rebound.into_iter().rev() {
             if let Some(index) = self.functions.iter().rposition(|(fname, _)| *fname == name) {
                 self.functions.remove(index);
             }
         }
-        result
+        match result {
+            Ok(value) => restore_error.map_or(Ok(value), Err),
+            Err(error) => Err(error),
+        }
     }
 
     fn sf_aset(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -8547,6 +8663,22 @@ impl Interpreter {
     ) -> Result<Option<Value>, LispError> {
         match name {
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+            "with-selected-frame" => {
+                if args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(
+                        "with-selected-frame".into(),
+                        0,
+                    ));
+                }
+                let body = &args[1..];
+                Ok(Some(match body {
+                    [] => Value::Nil,
+                    [single] => single.clone(),
+                    _ => Value::list(
+                        std::iter::once(Value::Symbol("progn".into())).chain(body.iter().cloned()),
+                    ),
+                }))
+            }
             _ => Ok(None),
         }
     }
@@ -10654,6 +10786,15 @@ mod tests {
             ),
             "file:///tmp/a/b",
         );
+        assert_string_value(
+            eval_str(
+                r#"(replace-regexp-in-string "\\`\\([ACMHSs]-\\)*"
+                                              "\\&down-"
+                                              "S-mouse-2"
+                                              t)"#,
+            ),
+            "S-down-mouse-2",
+        );
         assert_eq!(
             eval_str(r#"(equal (mapcar #'reverse '("abc" "abd")) '("cba" "dba"))"#),
             Value::T
@@ -12256,6 +12397,104 @@ mod tests {
     }
 
     #[test]
+    fn frame_dimension_primitives_round_trip() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((width (frame-width))
+                      (height (frame-height)))
+                  (set-frame-width nil 120)
+                  (set-frame-height nil 40)
+                  (list width height (frame-width) (frame-height)))
+                "#,
+            ),
+            Value::list([
+                Value::Integer(80),
+                Value::Integer(24),
+                Value::Integer(120),
+                Value::Integer(40),
+            ])
+        );
+    }
+
+    #[test]
+    fn terminal_parameter_places_support_setf() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setf (terminal-parameter nil 'sample-terminal-param) 7)
+                  (terminal-parameter nil 'sample-terminal-param))
+                "#,
+            ),
+            Value::Integer(7)
+        );
+    }
+
+    #[test]
+    fn append_treats_strings_as_sequences() {
+        assert_eq!(
+            eval_str(r#"(append "ab" '(99))"#),
+            Value::list([
+                Value::Integer('a' as i64),
+                Value::Integer('b' as i64),
+                Value::Integer(99),
+            ])
+        );
+    }
+
+    #[test]
+    fn setcar_supports_expression_targets() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((posn '(a b c d)))
+                  (setcar (nthcdr 3 posn) 0)
+                  posn)
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+                Value::Integer(0),
+            ])
+        );
+    }
+
+    #[test]
+    fn read_key_decodes_xt_mouse_translators() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setq xterm-mouse-mode t)
+                  (defalias 'xterm-mouse-translate (lambda (_event) [decoded]))
+                  (let ((unread-command-events '(27 91 77 116 97 105 108)))
+                    (list (read-key) (length unread-command-events))))
+                "#,
+            ),
+            Value::list([Value::Symbol("decoded".into()), Value::Integer(4)])
+        );
+    }
+
+    #[test]
+    fn read_key_returns_unread_event_objects() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((unread-command-events '((sample-event payload))))
+                  (read-key))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("sample-event".into()),
+                Value::Symbol("payload".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn cl_lib_compat_preload_seeds_proclaim_state() {
         let interp = Interpreter::new();
         assert!(is_compat_preloaded_feature("cl-lib"));
@@ -12420,6 +12659,19 @@ mod tests {
                 Value::Nil,
                 Value::Nil,
                 Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_destructuring_bind_supports_dotted_tail_patterns() {
+        assert_eq!(
+            eval_str(
+                "(cl-destructuring-bind (_ _ xy . rest) '(a b (184 . 95) tail) (list xy rest))"
+            ),
+            Value::list([
+                Value::cons(Value::Integer(184), Value::Integer(95)),
+                Value::list([Value::Symbol("tail".into())]),
             ])
         );
     }
