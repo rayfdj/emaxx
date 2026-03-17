@@ -5505,7 +5505,7 @@ impl Interpreter {
                 continue;
             }
             let mut bindings = Vec::new();
-            if pcase_pattern_bindings(&clause_items[0], &value, &mut bindings)? {
+            if pcase_pattern_bindings(self, env, &clause_items[0], &value, &mut bindings)? {
                 env.push(bindings);
                 let result = self.sf_progn(&clause_items[1..], env);
                 env.pop();
@@ -5729,7 +5729,7 @@ impl Interpreter {
                 }
                 let value = self.eval(&parts[1], env)?;
                 let mut frame_bindings = Vec::new();
-                if !pcase_pattern_bindings(&parts[0], &value, &mut frame_bindings)? {
+                if !pcase_pattern_bindings(self, env, &parts[0], &value, &mut frame_bindings)? {
                     env.pop();
                     return Err(LispError::Signal("pcase-let*: no matching clause".into()));
                 }
@@ -5752,7 +5752,7 @@ impl Interpreter {
                 return Err(LispError::ReadError("bad pcase-let binding".into()));
             }
             let value = self.eval(&parts[1], env)?;
-            if !pcase_pattern_bindings(&parts[0], &value, &mut frame)? {
+            if !pcase_pattern_bindings(self, env, &parts[0], &value, &mut frame)? {
                 return Err(LispError::Signal("pcase-let: no matching clause".into()));
             }
         }
@@ -7232,7 +7232,7 @@ impl Interpreter {
 
         for item in list_items {
             let mut bindings = Vec::new();
-            if !pcase_pattern_bindings_lenient_list(pattern, &item, &mut bindings)? {
+            if !pcase_pattern_bindings_lenient_list(self, env, pattern, &item, &mut bindings)? {
                 return Err(LispError::Signal("pcase-dolist: no matching clause".into()));
             }
             env.push(bindings);
@@ -10370,22 +10370,28 @@ fn deep_copy_value(value: &Value) -> Value {
 }
 
 fn pcase_pattern_bindings(
+    interp: &mut Interpreter,
+    env: &mut Env,
     pattern: &Value,
     value: &Value,
     bindings: &mut Vec<(String, Value)>,
 ) -> Result<bool, LispError> {
-    pcase_pattern_bindings_with_mode(pattern, value, bindings, false)
+    pcase_pattern_bindings_with_mode(interp, env, pattern, value, bindings, false)
 }
 
 fn pcase_pattern_bindings_lenient_list(
+    interp: &mut Interpreter,
+    env: &mut Env,
     pattern: &Value,
     value: &Value,
     bindings: &mut Vec<(String, Value)>,
 ) -> Result<bool, LispError> {
-    pcase_pattern_bindings_with_mode(pattern, value, bindings, true)
+    pcase_pattern_bindings_with_mode(interp, env, pattern, value, bindings, true)
 }
 
 fn pcase_pattern_bindings_with_mode(
+    interp: &mut Interpreter,
+    env: &mut Env,
     pattern: &Value,
     value: &Value,
     bindings: &mut Vec<(String, Value)>,
@@ -10404,6 +10410,8 @@ fn pcase_pattern_bindings_with_mode(
     if let Ok(parts) = pattern.to_vec() {
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
             return pcase_pattern_bindings_with_mode(
+                interp,
+                env,
                 parts.get(1).unwrap_or(&Value::Nil),
                 value,
                 bindings,
@@ -10415,6 +10423,8 @@ fn pcase_pattern_bindings_with_mode(
             for candidate in &parts[1..] {
                 let mut trial = original.clone();
                 if pcase_pattern_bindings_with_mode(
+                    interp,
+                    env,
                     candidate,
                     value,
                     &mut trial,
@@ -10426,6 +10436,43 @@ fn pcase_pattern_bindings_with_mode(
             }
             *bindings = original;
             return Ok(false);
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "and") {
+            let start = bindings.len();
+            for candidate in &parts[1..] {
+                if !pcase_pattern_bindings_with_mode(
+                    interp,
+                    env,
+                    candidate,
+                    value,
+                    bindings,
+                    lenient_list_match,
+                )? {
+                    bindings.truncate(start);
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "let") && parts.len() >= 3 {
+            env.push(bindings.clone());
+            let evaluated = interp.eval(&parts[2], env);
+            env.pop();
+            return pcase_pattern_bindings_with_mode(
+                interp,
+                env,
+                &parts[1],
+                &evaluated?,
+                bindings,
+                lenient_list_match,
+            );
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "guard") && parts.len() >= 2
+        {
+            env.push(bindings.clone());
+            let guard = interp.eval(&parts[1], env);
+            env.pop();
+            return Ok(guard?.is_truthy());
         }
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
             return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
@@ -10446,6 +10493,8 @@ fn pcase_pattern_bindings_with_mode(
             let value_car = value_car.borrow().clone();
             let value_cdr = value_cdr.borrow().clone();
             if !pcase_pattern_bindings_with_mode(
+                interp,
+                env,
                 &pattern_car,
                 &value_car,
                 bindings,
@@ -10455,6 +10504,8 @@ fn pcase_pattern_bindings_with_mode(
                 return Ok(false);
             }
             if !pcase_pattern_bindings_with_mode(
+                interp,
+                env,
                 &pattern_cdr,
                 &value_cdr,
                 bindings,
@@ -10470,6 +10521,8 @@ fn pcase_pattern_bindings_with_mode(
             let pattern_car = pattern_car.borrow().clone();
             let pattern_cdr = pattern_cdr.borrow().clone();
             if !pcase_pattern_bindings_with_mode(
+                interp,
+                env,
                 &pattern_car,
                 &Value::Nil,
                 bindings,
@@ -10479,6 +10532,8 @@ fn pcase_pattern_bindings_with_mode(
                 return Ok(false);
             }
             if !pcase_pattern_bindings_with_mode(
+                interp,
+                env,
                 &pattern_cdr,
                 &Value::Nil,
                 bindings,
@@ -13416,6 +13471,54 @@ mod tests {
                 Value::list([Value::Integer(6), Value::Integer(7), Value::Integer(8)]),
             ])
         );
+    }
+
+    #[test]
+    fn pcase_and_let_patterns_evaluate_expressions_with_bindings() {
+        assert_eq!(
+            eval_str(
+                "(let ((f (lambda (x) \
+                            (pcase 'dummy \
+                              ((and (let var x) (guard var)) 'left) \
+                              ((and (let var (not x)) (guard var)) 'right))))) \
+                   (list (funcall f t) (funcall f nil)))"
+            ),
+            Value::list([Value::Symbol("left".into()), Value::Symbol("right".into())])
+        );
+    }
+
+    #[test]
+    fn pcase_dolist_matches_or_and_let_nil_patterns() {
+        assert_eq!(
+            eval_str(
+                "(let (pairs) \
+                   (pcase-dolist ((or `(,min . ,max) (and min (let max nil))) \
+                                  '(\"0.9\" (\"1.0\" . \"2.0\"))) \
+                     (push (list min max) pairs)) \
+                   (nreverse pairs))"
+            ),
+            Value::list([
+                Value::list([Value::String("0.9".into()), Value::Nil]),
+                Value::list([Value::String("1.0".into()), Value::String("2.0".into()),]),
+            ])
+        );
+    }
+
+    #[test]
+    fn version_lte_rejects_invalid_version_strings() {
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+        let forms = Reader::new("(version<= \"foo\" \"1.0\")")
+            .read_all()
+            .expect("read version comparison form");
+        let error = interp
+            .eval(&forms[0], &mut env)
+            .expect_err("invalid version syntax should signal");
+        assert!(matches!(
+            error,
+            LispError::Signal(message)
+                if message == "Invalid version syntax: `foo' (must start with a number)"
+        ));
     }
 
     #[test]
