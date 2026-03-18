@@ -10717,12 +10717,25 @@ fn defface_clause_attributes(
         return None;
     }
 
+    let attribute_source = if parts.len() == 2
+        && matches!(&parts[1], Value::Cons(_, _))
+        && parts[1].to_vec().ok().is_some_and(|items| {
+            items
+                .first()
+                .and_then(|item| item.as_symbol().ok())
+                .is_some_and(|symbol| symbol.starts_with(':'))
+        }) {
+        parts[1].to_vec().ok()?
+    } else {
+        parts[1..].to_vec()
+    };
+
     let mut attributes = Vec::new();
-    let mut index = 1;
-    while index + 1 < parts.len() {
-        let attribute = parts[index].as_symbol().ok()?;
+    let mut index = 0;
+    while index + 1 < attribute_source.len() {
+        let attribute = attribute_source[index].as_symbol().ok()?;
         if attribute.starts_with(':') {
-            attributes.push((attribute.to_string(), parts[index + 1].clone()));
+            attributes.push((attribute.to_string(), attribute_source[index + 1].clone()));
         }
         index += 2;
     }
@@ -12010,6 +12023,7 @@ mod tests {
     use super::*;
     use crate::lisp::reader::Reader;
     use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn eval_str(src: &str) -> Value {
         let mut interp = Interpreter::new();
@@ -12030,6 +12044,11 @@ mod tests {
             result = interp.eval(form, &mut env).unwrap();
         }
         result
+    }
+
+    fn load_faces_compat(interp: &mut Interpreter) {
+        let path = crate::compat::project_root().join("src/lisp/faces_compat.el");
+        crate::lisp::load_file_strict(interp, &path).unwrap();
     }
 
     fn assert_string_value(value: Value, expected: &str) {
@@ -13243,6 +13262,96 @@ mod tests {
                    (face-attribute 'sample-nongraphic-face :foreground))"
             ),
             Value::Symbol("unspecified".into())
+        );
+    }
+
+    #[test]
+    fn defface_records_nested_default_plists() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defface sample-nested-face '((t (:weight bold :extend t))) \"doc\")
+                   (list
+                    (face-attribute 'sample-nested-face :weight)
+                    (face-attribute 'sample-nested-face :extend)))"
+            ),
+            Value::list([Value::Symbol("bold".into()), Value::T])
+        );
+    }
+
+    #[test]
+    fn faces_compat_provides_face_ids_and_colors_at_point() {
+        let mut interp = Interpreter::new();
+        load_faces_compat(&mut interp);
+
+        let value = eval_str_with(
+            &mut interp,
+            "(progn
+               (defface sample-face '((t :foreground \"red\" :background \"blue\")) \"doc\")
+               (with-temp-buffer
+                 (insert (propertize \"x\" 'face '(sample-face)))
+                 (goto-char 1)
+                 (list
+                  (face-id 'sample-face)
+                  (face-id 'tooltip)
+                  (foreground-color-at-point)
+                  (background-color-at-point))))",
+        );
+        let items = value.to_vec().unwrap();
+        assert_eq!(items[0], Value::Integer(2));
+        assert_eq!(items[1], Value::Integer(1));
+        assert_string_value(items[2].clone(), "red");
+        assert_string_value(items[3].clone(), "blue");
+    }
+
+    #[test]
+    fn faces_compat_load_theme_recomputes_theme_faces() {
+        run_large_stack_test(assert_faces_compat_load_theme_recomputes_theme_faces);
+    }
+
+    fn assert_faces_compat_load_theme_recomputes_theme_faces() {
+        let mut interp = Interpreter::new();
+        load_faces_compat(&mut interp);
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let theme_dir = std::env::temp_dir().join(format!("emaxx-theme-{unique}"));
+        std::fs::create_dir_all(&theme_dir).unwrap();
+        let theme_file = theme_dir.join("sample-theme-theme.el");
+        std::fs::write(
+            &theme_file,
+            "(deftheme sample-theme \"doc\")\n\
+             (custom-theme-set-faces 'sample-theme '(sample-base ((t (:extend t)))))\n\
+             (provide-theme 'sample-theme)\n",
+        )
+        .unwrap();
+
+        let theme_dir_literal = serde_json::to_string(&theme_dir.display().to_string()).unwrap();
+        let program = format!(
+            "(progn
+               (defface sample-base '((t :background \"grey\")) \"doc\")
+               (defface sample-child '((t :inherit sample-base)) \"doc\")
+               (setq custom-theme-load-path (list {theme_dir_literal}))
+               (load-theme 'sample-theme t t)
+               (list
+                (face-attribute 'sample-child :extend nil t)
+                (progn
+                  (enable-theme 'sample-theme)
+                  (face-attribute 'sample-child :extend nil t))
+                (progn
+                  (disable-theme 'sample-theme)
+                  (face-attribute 'sample-child :extend nil t))))"
+        );
+
+        assert_eq!(
+            eval_str_with(&mut interp, &program),
+            Value::list([
+                Value::Symbol("unspecified".into()),
+                Value::T,
+                Value::Symbol("unspecified".into()),
+            ])
         );
     }
 

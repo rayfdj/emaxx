@@ -25,7 +25,7 @@ struct PerfRequest {
 }
 
 pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
-    let mut interpreter = initialize_batch_interpreter(&options);
+    let mut interpreter = initialize_batch_interpreter(&options)?;
     let mut loaded_test_file: Option<PathBuf> = None;
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
     let perf_request = parse_perf_request(&options.eval)?;
@@ -134,22 +134,28 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     }
 }
 
-fn initialize_batch_interpreter(options: &BatchRunOptions) -> Interpreter {
+fn initialize_batch_interpreter(options: &BatchRunOptions) -> Result<Interpreter, String> {
     let mut interpreter = Interpreter::new();
     interpreter.set_load_path(options.load_path.clone());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     interpreter.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
-    preload_batch_compat_libraries(&mut interpreter);
-    interpreter
+    preload_batch_compat_libraries(&mut interpreter)?;
+    Ok(interpreter)
 }
 
-fn preload_batch_compat_libraries(interpreter: &mut Interpreter) {
+fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
     for feature in ["button"] {
         if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
             continue;
         }
         let _ = interpreter.load_target(feature);
     }
+
+    let faces_compat = compat::project_root().join("src/lisp/faces_compat.el");
+    lisp::load_file_strict(interpreter, &faces_compat)
+        .map_err(|error| format!("load {}: {error}", faces_compat.display()))?;
+
+    Ok(())
 }
 
 fn parse_selector_requests(expressions: &[String]) -> Result<(Value, bool), String> {
@@ -462,7 +468,7 @@ mod tests {
     #[test]
     fn batch_runtime_binds_command_line_args_left_to_nil() {
         let options = BatchRunOptions::default();
-        let interpreter = initialize_batch_interpreter(&options);
+        let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
         assert_eq!(
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
@@ -489,7 +495,7 @@ mod tests {
             load_path: vec![root.clone()],
             ..Default::default()
         };
-        let interpreter = initialize_batch_interpreter(&options);
+        let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
 
         assert!(interpreter.has_feature("button"));
         assert!(
