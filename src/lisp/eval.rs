@@ -6600,6 +6600,15 @@ impl Interpreter {
                     let symbol = symbol.as_symbol()?.to_string();
                     self.set_symbol_value_cell(&symbol, value);
                     Ok(())
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name))
+                        if self.get_symbol_property(name, "emaxx-struct-slot").is_some()
+                ) {
+                    let accessor = items[0].as_symbol().expect("checked symbol").to_string();
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_struct_accessor(&accessor, &items, &value_expr, env)
+                        .map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "car" || name == "cdr")
                 {
                     let Some(target_expr) = items.get(1) else {
@@ -8140,7 +8149,7 @@ impl Interpreter {
                         if forms.len() > 2 {
                             self.sf_progn(&forms[1..forms.len() - 1], env)?;
                         }
-                        return Ok(forms.last().cloned().unwrap_or(Value::Nil));
+                        return self.resolve_setf_place(forms.last().unwrap_or(&Value::Nil), env);
                     }
                 }
                 Ok(Value::Nil)
@@ -8150,16 +8159,141 @@ impl Interpreter {
                     return Ok(Value::Nil);
                 };
                 if self.eval(condition, env)?.is_truthy() {
-                    Ok(items.get(2).cloned().unwrap_or(Value::Nil))
+                    self.resolve_setf_place(items.get(2).unwrap_or(&Value::Nil), env)
                 } else {
-                    Ok(items.get(3).cloned().unwrap_or(Value::Nil))
+                    self.resolve_setf_place(items.get(3).unwrap_or(&Value::Nil), env)
                 }
             }
             Some(Value::Symbol(name)) if name == "progn" => {
                 if items.len() > 2 {
                     self.sf_progn(&items[1..items.len() - 1], env)?;
                 }
-                Ok(items.last().cloned().unwrap_or(Value::Nil))
+                self.resolve_setf_place(items.last().unwrap_or(&Value::Nil), env)
+            }
+            Some(Value::Symbol(name)) if name == "symbol-value" => {
+                let Some(symbol_form) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let symbol = self.eval(symbol_form, env)?;
+                Ok(Value::list([
+                    Value::Symbol("symbol-value".into()),
+                    quoted_literal(&symbol),
+                ]))
+            }
+            Some(Value::Symbol(name))
+                if matches!(name.as_str(), "car" | "cdr")
+                    || self
+                        .get_symbol_property(name, "emaxx-struct-slot")
+                        .is_some() =>
+            {
+                let Some(target_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let target = self.eval(target_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol(name.clone()),
+                    quoted_literal(&target),
+                ]))
+            }
+            Some(Value::Symbol(name)) if name == "overlay-get" => {
+                let Some(overlay_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(prop_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let overlay = self.eval(overlay_expr, env)?;
+                let property = self.eval(prop_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("overlay-get".into()),
+                    quoted_literal(&overlay),
+                    quoted_literal(&property),
+                ]))
+            }
+            Some(Value::Symbol(name)) if name == "terminal-parameter" => {
+                let Some(terminal_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(parameter_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let terminal = self.eval(terminal_expr, env)?;
+                let parameter = self.eval(parameter_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("terminal-parameter".into()),
+                    quoted_literal(&terminal),
+                    quoted_literal(&parameter),
+                ]))
+            }
+            Some(Value::Symbol(name)) if name == "alist-get" => {
+                let Some(key_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(alist_place) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let key = self.eval(key_expr, env)?;
+                let mut resolved = vec![
+                    Value::Symbol("alist-get".into()),
+                    quoted_literal(&key),
+                    self.resolve_setf_place(alist_place, env)?,
+                ];
+                if let Some(default_expr) = items.get(3) {
+                    let default = self.eval(default_expr, env)?;
+                    resolved.push(quoted_literal(&default));
+                }
+                if let Some(remove_expr) = items.get(4) {
+                    let remove = self.eval(remove_expr, env)?;
+                    resolved.push(quoted_literal(&remove));
+                }
+                if let Some(testfn_expr) = items.get(5) {
+                    let testfn = self.eval(testfn_expr, env)?;
+                    resolved.push(quoted_literal(&testfn));
+                }
+                Ok(Value::list(resolved))
+            }
+            Some(Value::Symbol(name)) if name == "aref" => {
+                let Some(sequence_place) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(index_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let index = self.eval(index_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("aref".into()),
+                    self.resolve_setf_place(sequence_place, env)?,
+                    quoted_literal(&index),
+                ]))
+            }
+            Some(Value::Symbol(name)) if name == "image-property" => {
+                let Some(image_place) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(property_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let property = self.eval(property_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("image-property".into()),
+                    self.resolve_setf_place(image_place, env)?,
+                    quoted_literal(&property),
+                ]))
+            }
+            Some(Value::Symbol(name)) if name == "gethash" => {
+                let Some(key_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(table_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let key = self.eval(key_expr, env)?;
+                let table = self.eval(table_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("gethash".into()),
+                    quoted_literal(&key),
+                    quoted_literal(&table),
+                ]))
             }
             _ => Ok(place.clone()),
         }
@@ -13300,6 +13434,22 @@ mod tests {
     }
 
     #[test]
+    fn generalized_place_subforms_are_evaluated_once_for_push() {
+        assert_eq!(
+            eval_str(
+                "(let ((n 0)
+                       (cell (list nil)))
+                   (push 'x (car (progn (setq n (1+ n)) cell)))
+                   (list n cell))"
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::list([Value::list([Value::Symbol("x".into())])]),
+            ])
+        );
+    }
+
+    #[test]
     fn define_abbrev_table_creates_real_runtime_table() {
         assert_eq!(
             eval_str(
@@ -16636,6 +16786,21 @@ IHdvcmxkIQ==")))
                 Value::Integer(1),
                 Value::Symbol("cached".into()),
             ])
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((place-calls 0)
+                      (cache (make-hash-table :test #'equal)))
+                  (with-memoization (gethash "k" (progn
+                                                  (setq place-calls (+ place-calls 1))
+                                                  cache))
+                    'cached)
+                  (list place-calls
+                        (gethash "k" cache)))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Symbol("cached".into())])
         );
         assert_eq!(eval_str(r#"(active-minibuffer-window)"#), Value::Nil);
         assert_eq!(eval_str(r#"(windowp (minibuffer-window))"#), Value::T);
