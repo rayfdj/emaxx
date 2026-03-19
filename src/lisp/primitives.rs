@@ -249,9 +249,28 @@ fn current_window_start(interp: &Interpreter) -> usize {
     interp.selected_window_start()
 }
 
+fn buffer_point_bounds(interp: &Interpreter, buffer_id: u64) -> (usize, usize) {
+    interp
+        .buffer_bounds_by_id(buffer_id)
+        .unwrap_or((interp.buffer.point_min(), interp.buffer.point_max()))
+}
+
+fn buffer_line_start_at(interp: &Interpreter, buffer_id: u64, pos: usize) -> usize {
+    if buffer_id == interp.current_buffer_id() {
+        interp.buffer.line_start_at(pos)
+    } else {
+        interp
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.line_start_at(pos))
+            .unwrap_or_else(|| interp.buffer.line_start_at(pos))
+    }
+}
+
 fn set_current_window_start(interp: &mut Interpreter, start: usize) {
-    let start = start.clamp(interp.buffer.point_min(), interp.buffer.point_max());
-    let start = beginning_of_line_at(interp, start);
+    let buffer_id = interp.selected_window_buffer_id();
+    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+    let start = start.clamp(point_min, point_max);
+    let start = buffer_line_start_at(interp, buffer_id, start);
     interp.set_selected_window_start(start);
 }
 
@@ -291,12 +310,14 @@ fn window_start(interp: &Interpreter, value: Option<&Value>) -> Result<usize, Li
             if id == interp.selected_window_id() {
                 return Ok(current_window_start(interp));
             }
+            let buffer_id = window_buffer_id(interp, value).unwrap_or(interp.current_buffer_id());
+            let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
             Ok(interp
                 .find_record(id)
                 .and_then(|record| record.slots.get(WINDOW_START_SLOT))
                 .and_then(|slot| slot.as_integer().ok())
-                .map(|start| start.max(1) as usize)
-                .unwrap_or(1))
+                .map(|start| start.clamp(point_min as i64, point_max as i64) as usize)
+                .unwrap_or(point_min))
         }
     }
 }
@@ -309,8 +330,10 @@ fn set_window_start_value(
     let Some(id) = window_record_id_from_value(interp, window) else {
         return Err(LispError::TypeError("window".into(), window.type_name()));
     };
-    let start = start.clamp(interp.buffer.point_min(), interp.buffer.point_max());
-    let start = beginning_of_line_at(interp, start);
+    let buffer_id = window_buffer_id(interp, window).unwrap_or(interp.current_buffer_id());
+    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+    let start = start.clamp(point_min, point_max);
+    let start = buffer_line_start_at(interp, buffer_id, start);
     if id == interp.selected_window_id() {
         interp.set_selected_window_start(start);
         return Ok(());
@@ -1588,6 +1611,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "recenter"
             | "scroll-up"
             | "scroll-down"
+            | "display-buffer"
             | "window-text-pixel-size"
             | "get-display-property"
             | "bidi-find-overridden-directionality"
@@ -9501,7 +9525,17 @@ pub fn call(
             need_arg_range(name, args, 0, 1)?;
             Ok(Value::Integer(window_start(interp, args.first())? as i64))
         }
-        "window-end" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
+        "window-end" => {
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = if let Some(window) = args.first() {
+                window_buffer_id(interp, window)
+                    .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?
+            } else {
+                interp.selected_window_buffer_id()
+            };
+            let (_, point_max) = buffer_point_bounds(interp, buffer_id);
+            Ok(Value::Integer(point_max as i64))
+        }
         "window-point" => {
             need_arg_range(name, args, 0, 1)?;
             let buffer_id = if let Some(window) = args.first() {
@@ -9846,6 +9880,46 @@ pub fn call(
             } else {
                 Value::Nil
             })
+        }
+        "display-buffer" => {
+            need_arg_range(name, args, 1, 2)?;
+            let buffer_id = if let Some(name) = string_like(&args[0]).map(|string| string.text) {
+                interp
+                    .find_buffer(&name)
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| interp.create_buffer(&name).0)
+            } else {
+                interp.resolve_buffer_id(&args[0])?
+            };
+            let buffer_name = if buffer_id == interp.current_buffer_id() {
+                interp.buffer.name.clone()
+            } else {
+                interp
+                    .buffer_list
+                    .iter()
+                    .find(|(id, _)| *id == buffer_id)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| interp.buffer.name.clone())
+            };
+            let buffer = Value::Buffer(buffer_id, buffer_name);
+            let (action_function, action_alist) =
+                split_display_buffer_action(interp, args.get(1), env);
+            if let Some(function) = action_function {
+                let result = interp.call_function_value(
+                    function.clone(),
+                    function.as_symbol().ok(),
+                    &[buffer.clone(), action_alist.clone()],
+                    env,
+                )?;
+                if is_window_value(interp, &result) {
+                    return Ok(result);
+                }
+            }
+            if display_action_inhibits_same_window(&action_alist) {
+                return Ok(Value::Nil);
+            }
+            interp.set_selected_window_buffer_id(buffer_id);
+            Ok(interp.selected_window_value())
         }
         "active-minibuffer-window" => Ok(Value::Nil),
         "set-window-start" => {
@@ -22550,6 +22624,52 @@ fn call_named_function(
     }
 }
 
+fn callable_display_action_function(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Option<Value> {
+    match value {
+        Value::BuiltinFunc(_) | Value::Lambda(..) => Some(value.clone()),
+        Value::Symbol(name) if interp.lookup_function(name, env).is_ok() => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn split_display_buffer_action(
+    interp: &Interpreter,
+    action: Option<&Value>,
+    env: &Env,
+) -> (Option<Value>, Value) {
+    let Some(action) = action.filter(|value| !value.is_nil()) else {
+        return (None, Value::Nil);
+    };
+    if let Some(function) = callable_display_action_function(interp, action, env) {
+        return (Some(function), Value::Nil);
+    }
+    if let Some((car, cdr)) = action.cons_values()
+        && let Some(function) = callable_display_action_function(interp, &car, env)
+    {
+        return (Some(function), cdr);
+    }
+    (None, action.clone())
+}
+
+fn display_action_inhibits_same_window(action_alist: &Value) -> bool {
+    let Ok(entries) = action_alist.to_vec() else {
+        return false;
+    };
+    entries.into_iter().any(|entry| {
+        let Ok(key) = entry
+            .car()
+            .and_then(|value| value.as_symbol().map(|symbol| symbol.to_string()))
+        else {
+            return false;
+        };
+        key == "inhibit-same-window" && entry.cdr().map(|value| value.is_truthy()).unwrap_or(false)
+    })
+}
+
 #[derive(Clone)]
 struct OverlayHookCall {
     overlay_id: u64,
@@ -29764,6 +29884,115 @@ mod compat_runtime_tests {
         assert_eq!(
             call(&mut interp, "window-start", &[window], &mut env).expect("window-start"),
             Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn display_buffer_honors_inhibit_same_window() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-inhibit*");
+        let buffer = Value::Buffer(buffer_id, buffer_name);
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "display-buffer",
+                &[
+                    buffer,
+                    Value::list([Value::cons(
+                        Value::Symbol("inhibit-same-window".into()),
+                        Value::T,
+                    )]),
+                ],
+                &mut env,
+            )
+            .expect("display-buffer with inhibit-same-window"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.selected_window_buffer_id(),
+            interp.current_buffer_id()
+        );
+    }
+
+    #[test]
+    fn display_buffer_calls_action_function_via_primitive_entrypoint() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_variable("display-buffer-action-called", Value::Nil, &mut env);
+        interp.set_function_binding(
+            "demo-display",
+            Some(Value::Lambda(
+                vec!["buffer".into(), "alist".into()],
+                vec![
+                    Value::list([
+                        Value::Symbol("setq".into()),
+                        Value::Symbol("display-buffer-action-called".into()),
+                        Value::T,
+                    ]),
+                    Value::list([Value::Symbol("selected-window".into())]),
+                ],
+                Vec::new(),
+            )),
+        );
+        let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-action*");
+        let buffer = Value::Buffer(buffer_id, buffer_name);
+        assert!(matches!(
+            call(
+                &mut interp,
+                "display-buffer",
+                &[buffer, Value::Symbol("demo-display".into())],
+                &mut env,
+            )
+            .expect("display-buffer action function"),
+            Value::Record(_)
+        ));
+        assert_eq!(
+            interp
+                .lookup_var("display-buffer-action-called", &env)
+                .expect("display-buffer-action-called"),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn display_buffer_action_function_can_return_nil() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_variable("display-buffer-action-called", Value::Nil, &mut env);
+        interp.set_function_binding(
+            "demo-display",
+            Some(Value::Lambda(
+                vec!["buffer".into(), "alist".into()],
+                vec![
+                    Value::list([
+                        Value::Symbol("setq".into()),
+                        Value::Symbol("display-buffer-action-called".into()),
+                        Value::T,
+                    ]),
+                    Value::list([Value::Symbol("quote".into()), Value::Nil]),
+                ],
+                Vec::new(),
+            )),
+        );
+        let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-action-nil*");
+        let buffer = Value::Buffer(buffer_id, buffer_name);
+        assert!(matches!(
+            call(
+                &mut interp,
+                "display-buffer",
+                &[buffer, Value::Symbol("demo-display".into())],
+                &mut env,
+            )
+            .expect("display-buffer action function returning nil"),
+            Value::Record(_)
+        ));
+        assert_eq!(
+            interp
+                .lookup_var("display-buffer-action-called", &env)
+                .expect("display-buffer-action-called"),
+            Value::T
         );
     }
 
