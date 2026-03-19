@@ -345,6 +345,27 @@ impl Buffer {
         self.pt
     }
 
+    /// Return the beginning of the line containing POS without moving point.
+    pub fn line_start_at(&self, pos: usize) -> usize {
+        let pt = pos.clamp(self.begv, self.zv);
+        if pt == self.begv {
+            return pt;
+        }
+        let idx0 = pt - 1;
+        if idx0 == 0 {
+            return self.begv;
+        }
+        let slice = self.text.slice(..idx0);
+        let mut index = idx0;
+        for ch in slice.chars_at(idx0).reversed() {
+            index -= 1;
+            if ch == '\n' {
+                return (index + 1) + 1;
+            }
+        }
+        self.begv
+    }
+
     /// Move to the end of the current line. Returns new point.
     pub fn end_of_line(&mut self) -> usize {
         if self.pt == self.zv {

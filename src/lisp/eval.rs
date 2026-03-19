@@ -1188,21 +1188,45 @@ impl Interpreter {
             .unwrap_or(self.current_buffer_id)
     }
 
+    pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
+        self.get_buffer_by_id(id)
+            .map(|buffer| (buffer.point_min(), buffer.point_max()))
+    }
+
     pub fn selected_window_start(&self) -> usize {
+        let (point_min, point_max) = self
+            .buffer_bounds_by_id(self.selected_window_buffer_id())
+            .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.get(1))
             .and_then(|value| value.as_integer().ok())
-            .map(|value| value.max(self.buffer.point_min() as i64) as usize)
-            .unwrap_or_else(|| self.buffer.point_min())
+            .map(|value| value.clamp(point_min as i64, point_max as i64) as usize)
+            .unwrap_or(point_min)
     }
 
     pub fn set_selected_window_start(&mut self, start: usize) {
-        let start = start.clamp(self.buffer.point_min(), self.buffer.point_max()) as i64;
+        let (point_min, point_max) = self
+            .buffer_bounds_by_id(self.selected_window_buffer_id())
+            .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
+        let start = start.clamp(point_min, point_max) as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             if window.slots.len() < 2 {
                 window.slots.resize(2, Value::Nil);
             }
             window.slots[1] = Value::Integer(start);
+        }
+    }
+
+    pub fn set_selected_window_buffer_id(&mut self, buffer_id: u64) {
+        let (point_min, _) = self
+            .buffer_bounds_by_id(buffer_id)
+            .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
+        if let Some(window) = self.find_record_mut(self.selected_window_id) {
+            if window.slots.len() < 2 {
+                window.slots.resize(2, Value::Nil);
+            }
+            window.slots[0] = Value::Integer(buffer_id as i64);
+            window.slots[1] = Value::Integer(point_min as i64);
         }
     }
 
@@ -5613,6 +5637,12 @@ impl Interpreter {
         };
 
         match func {
+            Value::BuiltinFunc(ref name) if name == "selected-window" => {
+                if !args.is_empty() {
+                    return Err(LispError::WrongNumberOfArgs(name.clone(), args.len()));
+                }
+                Ok(self.selected_window_value())
+            }
             Value::BuiltinFunc(ref name) => match primitives::call(self, name, args, env) {
                 Ok(value) => Ok(value),
                 Err(error) => self.dispatch_handler_bindings(error, env),
@@ -15273,6 +15303,46 @@ mod tests {
                 "#
             ),
             Value::list([Value::Integer(3), Value::T])
+        );
+    }
+
+    #[test]
+    fn display_buffer_preserves_current_buffer_and_updates_window_buffer() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (let ((original (current-buffer))
+                      (other (get-buffer-create "*display-buffer-target*")))
+                  (with-current-buffer other
+                    (erase-buffer)
+                    (insert "a\nb\nc\n"))
+                  (display-buffer other)
+                  (set-window-start (selected-window) 3)
+                  (list (eq (current-buffer) original)
+                        (eq (window-buffer (selected-window)) other)
+                        (= (window-start (selected-window)) 3)
+                        (= (window-end (selected-window))
+                           (with-current-buffer other (point-max)))))"#
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn display_buffer_respects_inhibit_same_window_action() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (let ((original (current-buffer))
+                      (other (get-buffer-create "*display-buffer-no-same-window*")))
+                  (list (display-buffer other '((inhibit-same-window . t)))
+                        (eq (window-buffer (selected-window)) original)))"#
+            ),
+            Value::list([Value::Nil, Value::T])
         );
     }
 
