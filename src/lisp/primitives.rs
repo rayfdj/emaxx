@@ -949,6 +949,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "char-or-string-p"
             | "arrayp"
             | "sequencep"
+            | "vectorp"
             | "integer-or-marker-p"
             | "stringp"
             | "symbolp"
@@ -2680,6 +2681,7 @@ pub fn call(
             Ok(
                 if matches!(args[0], Value::Nil | Value::Cons(_, _))
                     || string_like(&args[0]).is_some()
+                    || is_vector_value(&args[0])
                     || is_bool_vector_value(interp, &args[0])
                 {
                     Value::T
@@ -2687,6 +2689,14 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "vectorp" => {
+            need_args(name, args, 1)?;
+            Ok(if is_vector_value(&args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "integer-or-marker-p" => {
             need_args(name, args, 1)?;
@@ -10304,6 +10314,49 @@ pub fn call(
             }
             Ok(Value::Symbol(alias))
         }
+        "define-obsolete-variable-alias" => {
+            if args.len() < 3 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let alias = args[0].as_symbol()?.to_string();
+            let target = args[1].as_symbol()?.to_string();
+            let alias_value = interp.lookup_var(&alias, env);
+            let target_value = interp.lookup_var(&target, env);
+            if !interp.variable_watchers(&alias).is_empty() {
+                interp.notify_variable_watchers(
+                    &alias,
+                    Value::Symbol(target.clone()),
+                    "defvaralias",
+                    None,
+                    env,
+                )?;
+                interp.clear_variable_watchers(&alias);
+            }
+            interp.set_variable_alias(&alias, &target)?;
+            interp.remove_global_binding(&alias);
+            interp.remove_buffer_local_value(interp.current_buffer_id(), &alias);
+            if let Some(doc) = args.get(3).filter(|value| !value.is_nil()) {
+                interp.put_symbol_property(&alias, "variable-documentation", doc.clone());
+            }
+            interp.put_symbol_property(
+                &alias,
+                "byte-obsolete-variable",
+                Value::list([Value::Symbol(target.clone()), Value::Nil, args[2].clone()]),
+            );
+            if alias_value
+                .as_ref()
+                .zip(target_value.as_ref())
+                .is_some_and(|(left, right)| left != right)
+            {
+                let warning = Value::list([
+                    Value::Symbol("defvaralias".into()),
+                    Value::Symbol("losing-value".into()),
+                    Value::Symbol(alias.clone()),
+                ]);
+                call_named_function(interp, "display-warning", &[warning], env)?;
+            }
+            Ok(Value::Symbol(alias))
+        }
         "indirect-variable" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
@@ -10466,10 +10519,9 @@ pub fn call(
             Ok(value.map(Value::String).unwrap_or(Value::Nil))
         }
         "ignore" => Ok(Value::Nil),
-        "make-obsolete"
-        | "make-obsolete-variable"
-        | "define-obsolete-function-alias"
-        | "define-obsolete-variable-alias" => Ok(Value::Nil),
+        "make-obsolete" | "make-obsolete-variable" | "define-obsolete-function-alias" => {
+            Ok(Value::Nil)
+        }
         "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
         "describe-function" => {
             let _ = get_or_create_buffer(interp, "*Help*");
