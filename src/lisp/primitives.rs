@@ -1050,6 +1050,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "read-char"
             | "read-char-exclusive"
             | "read-key"
+            | "read-key-sequence"
+            | "mouse-double-click-time"
+            | "context-menu-map"
             | "identity"
             | "mapconcat"
             | "kbd"
@@ -4007,6 +4010,14 @@ pub fn call(
                 return Ok(event);
             }
         }
+        "read-key-sequence" => {
+            need_arg_range(name, args, 0, 4)?;
+            ensure_interaction_allowed(interp, env)?;
+            Ok(Value::list([
+                Value::Symbol("vector".into()),
+                read_key_sequence_event(interp, env)?,
+            ]))
+        }
         "read-event" | "read-char" | "read-char-exclusive" => {
             let read_event = name == "read-event";
             let timed_poll = args.len() >= 3 && args[2].is_truthy();
@@ -4033,6 +4044,51 @@ pub fn call(
             } else {
                 Ok(Value::Integer(unread_command_event_char(&event)? as i64))
             }
+        }
+        "mouse-double-click-time" => {
+            need_arg_range(name, args, 0, 0)?;
+            let value = interp
+                .lookup_var("double-click-time", env)
+                .unwrap_or(Value::Nil);
+            match value {
+                Value::T => Ok(Value::Integer(10_000)),
+                Value::Integer(value) if value > 0 => Ok(Value::Integer(value)),
+                Value::Float(value) if value > 0.0 => Ok(Value::Float(value)),
+                _ => Ok(Value::Integer(0)),
+            }
+        }
+        "context-menu-map" => {
+            need_arg_range(name, args, 0, 1)?;
+            let click = args
+                .first()
+                .cloned()
+                .or_else(|| interp.lookup_var("last-input-event", env))
+                .unwrap_or(Value::Nil);
+            let mut menu = make_runtime_keymap(interp, Some("Context Menu"));
+
+            for function in interp
+                .lookup_var("context-menu-functions", env)
+                .unwrap_or(Value::Nil)
+                .to_vec()?
+            {
+                let result =
+                    call_function_value(interp, &function, &[menu.clone(), click.clone()], env)?;
+                if is_keymap_value(interp, &result) {
+                    menu = result;
+                }
+            }
+
+            if let Some(filter) = interp.lookup_var("context-menu-filter-function", env)
+                && !filter.is_nil()
+            {
+                let result =
+                    call_function_value(interp, &filter, &[menu.clone(), click.clone()], env)?;
+                if is_keymap_value(interp, &result) {
+                    menu = result;
+                }
+            }
+
+            context_menu_keymap_items(interp, &menu)
         }
         "read-string" | "read-from-minibuffer" | "read-no-blanks-input" => {
             if args.is_empty() {
@@ -10713,7 +10769,14 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let key = key_sequence_binding_text(&args[1])?;
-            keymap_define_binding(interp, &args[0], &key, args[2].clone())?;
+            let after_prompt = !matches!(name, "define-key");
+            keymap_define_binding_with_placement(
+                interp,
+                &args[0],
+                &key,
+                args[2].clone(),
+                after_prompt,
+            )?;
             Ok(args[2].clone())
         }
         "keymap-unset" => {
@@ -23536,12 +23599,119 @@ fn keymap_list_items(interp: &Interpreter, value: &Value) -> Result<Option<Vec<V
         return Ok(None);
     };
     let mut items = vec![Value::Symbol("keymap".into())];
+    let bindings = keymap_bindings(record)?;
+    if let Some(name) = record.slots.first()
+        && !name.is_nil()
+    {
+        items.push(name.clone());
+    }
     items.extend(
-        keymap_bindings(record)?
-            .into_iter()
-            .map(|(key, binding)| Value::cons(Value::String(key), binding)),
+        bindings
+            .iter()
+            .filter(|binding| !binding.after_prompt)
+            .rev()
+            .map(keymap_binding_entry),
+    );
+    items.extend(
+        bindings
+            .iter()
+            .filter(|binding| binding.after_prompt)
+            .map(keymap_binding_entry),
     );
     Ok(Some(items))
+}
+
+fn context_menu_keymap_items(interp: &Interpreter, keymap: &Value) -> Result<Value, LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(keymap.clone());
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Ok(keymap.clone());
+    };
+    let bindings = keymap_bindings(record)?;
+    let mut items = vec![Value::Symbol("keymap".into())];
+    items.extend(
+        bindings
+            .iter()
+            .filter(|binding| !binding.after_prompt)
+            .map(keymap_binding_entry),
+    );
+    if let Some(name) = record.slots.first()
+        && !name.is_nil()
+    {
+        items.push(name.clone());
+    }
+    items.extend(
+        bindings
+            .iter()
+            .filter(|binding| binding.after_prompt)
+            .map(keymap_binding_entry),
+    );
+    Ok(Value::list(trim_redundant_separator_items(interp, items)))
+}
+
+fn trim_redundant_separator_items(interp: &Interpreter, items: Vec<Value>) -> Vec<Value> {
+    if !matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "keymap") {
+        return items;
+    }
+
+    let mut cleaned = Vec::with_capacity(items.len());
+    cleaned.push(Value::Symbol("keymap".into()));
+
+    let mut pending_separator_index = Some(0usize);
+    for item in items.into_iter().skip(1) {
+        if is_separator_keymap_entry(interp, &item) {
+            if pending_separator_index.is_some() {
+                continue;
+            }
+            pending_separator_index = Some(cleaned.len());
+            cleaned.push(item);
+            continue;
+        }
+
+        if matches!(item, Value::Cons(_, _)) {
+            pending_separator_index = None;
+        }
+        cleaned.push(item);
+    }
+
+    if let Some(index) = pending_separator_index
+        && index > 0
+        && index < cleaned.len()
+    {
+        cleaned.remove(index);
+    }
+
+    cleaned
+}
+
+fn is_separator_keymap_entry(interp: &Interpreter, entry: &Value) -> bool {
+    let Some((_, binding)) = entry.cons_values() else {
+        return false;
+    };
+    matches!(binding, Value::Symbol(ref symbol) if symbol == "menu-bar-separator")
+        || interp
+            .lookup_var("menu-bar-separator", &Vec::new())
+            .is_some_and(|separator| values_equal(interp, &binding, &separator))
+}
+
+#[derive(Clone)]
+struct RuntimeKeymapBinding {
+    key: String,
+    value: Value,
+    after_prompt: bool,
+}
+
+fn keymap_binding_entry(binding: &RuntimeKeymapBinding) -> Value {
+    Value::cons(keymap_entry_key_value(&binding.key), binding.value.clone())
+}
+
+fn keymap_entry_key_value(key: &str) -> Value {
+    if key.len() > 1 && !key.chars().any(char::is_whitespace) && !key.contains('<') {
+        Value::Symbol(key.into())
+    } else {
+        Value::String(key.into())
+    }
 }
 
 fn set_hash_table_entries(
@@ -26262,6 +26432,11 @@ fn key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
     if string_like(value).is_some() {
         return string_text(value);
     }
+    if let Ok(events) = vector_items(value)
+        && let [Value::Symbol(symbol)] = events.as_slice()
+    {
+        return Ok(symbol.clone());
+    }
     let mut parts = Vec::new();
     append_key_description_parts(value, &mut parts)?;
     Ok(parts.join(" "))
@@ -27917,7 +28092,9 @@ pub(crate) fn is_keymap_value(interp: &Interpreter, value: &Value) -> bool {
     is_keymap_placeholder(value) || keymap_record_id(interp, value).is_some()
 }
 
-fn keymap_bindings(record: &super::eval::RecordState) -> Result<Vec<(String, Value)>, LispError> {
+fn keymap_bindings(
+    record: &super::eval::RecordState,
+) -> Result<Vec<RuntimeKeymapBinding>, LispError> {
     let bindings = record
         .slots
         .get(KEYMAP_BINDINGS_SLOT)
@@ -27925,18 +28102,40 @@ fn keymap_bindings(record: &super::eval::RecordState) -> Result<Vec<(String, Val
         .unwrap_or(Value::Nil);
     let mut result = Vec::new();
     for entry in bindings.to_vec()? {
+        if let Ok(items) = entry.to_vec()
+            && items.len() >= 2
+            && let Ok(key) = string_text(&items[0])
+        {
+            result.push(RuntimeKeymapBinding {
+                key,
+                value: items[1].clone(),
+                after_prompt: items.get(2).is_some_and(Value::is_truthy),
+            });
+            continue;
+        }
+
         let key = string_text(&entry.car()?)?;
-        result.push((key, entry.cdr()?));
+        result.push(RuntimeKeymapBinding {
+            key,
+            value: entry.cdr()?,
+            after_prompt: false,
+        });
     }
     Ok(result)
 }
 
-fn keymap_bindings_value(bindings: Vec<(String, Value)>) -> Value {
-    Value::list(
-        bindings
-            .into_iter()
-            .map(|(key, value)| Value::cons(Value::String(key), value)),
-    )
+fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Value {
+    Value::list(bindings.into_iter().map(|binding| {
+        Value::list([
+            Value::String(binding.key),
+            binding.value,
+            if binding.after_prompt {
+                Value::T
+            } else {
+                Value::Nil
+            },
+        ])
+    }))
 }
 
 pub(crate) fn keymap_define_binding(
@@ -27945,6 +28144,16 @@ pub(crate) fn keymap_define_binding(
     key: &str,
     binding: Value,
 ) -> Result<(), LispError> {
+    keymap_define_binding_with_placement(interp, keymap, key, binding, true)
+}
+
+pub(crate) fn keymap_define_binding_with_placement(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    key: &str,
+    binding: Value,
+    after_prompt: bool,
+) -> Result<(), LispError> {
     let Some(id) = keymap_record_id(interp, keymap) else {
         return Ok(());
     };
@@ -27952,8 +28161,17 @@ pub(crate) fn keymap_define_binding(
         return Ok(());
     };
     let mut bindings = keymap_bindings(record)?;
-    bindings.retain(|(existing, _)| existing != key);
-    bindings.push((key.to_string(), binding));
+    bindings.retain(|existing| existing.key != key);
+    let binding = RuntimeKeymapBinding {
+        key: key.to_string(),
+        value: binding,
+        after_prompt,
+    };
+    if after_prompt {
+        bindings.push(binding);
+    } else {
+        bindings.insert(0, binding);
+    }
     if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
@@ -27973,7 +28191,7 @@ pub(crate) fn keymap_remove_binding(
         return Ok(());
     };
     let mut bindings = keymap_bindings(record)?;
-    bindings.retain(|(existing, _)| existing != key);
+    bindings.retain(|existing| existing.key != key);
     if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
@@ -27992,9 +28210,9 @@ pub(crate) fn keymap_lookup_binding(
     let Some(record) = interp.find_record(id) else {
         return Ok(Value::Nil);
     };
-    for (existing, binding) in keymap_bindings(record)?.into_iter().rev() {
-        if existing == key {
-            return Ok(binding);
+    for binding in keymap_bindings(record)?.into_iter().rev() {
+        if binding.key == key {
+            return Ok(binding.value);
         }
     }
     match record.slots.get(KEYMAP_PARENT_SLOT) {
@@ -28099,9 +28317,9 @@ fn keymap_binding_text_for_command(
 ) -> Option<String> {
     let id = keymap_record_id(interp, keymap)?;
     let record = interp.find_record(id)?;
-    for (key, binding) in keymap_bindings(record).ok()?.into_iter().rev() {
-        if keymap_binding_matches_command(&binding, command) {
-            return Some(key);
+    for binding in keymap_bindings(record).ok()?.into_iter().rev() {
+        if keymap_binding_matches_command(&binding.value, command) {
+            return Some(binding.key);
         }
     }
     match record.slots.get(KEYMAP_PARENT_SLOT) {
@@ -29266,6 +29484,90 @@ fn read_decoded_input_event(
         prepend_unread_command_events(interp, env, events[1..].to_vec())?;
     }
     Ok(events.into_iter().next())
+}
+
+fn input_event_symbol(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(symbol) => Some(symbol.clone()),
+        Value::Cons(_, _) => value
+            .to_vec()
+            .ok()
+            .and_then(|items| items.first().cloned())
+            .and_then(|item| item.as_symbol().ok().map(str::to_string)),
+        _ => None,
+    }
+}
+
+fn update_input_event_symbol(value: &Value, symbol: &str) -> Value {
+    match value {
+        Value::Symbol(_) => Value::Symbol(symbol.into()),
+        Value::Cons(_, _) => {
+            let mut items = value.to_vec().unwrap_or_default();
+            if let Some(first) = items.first_mut() {
+                *first = Value::Symbol(symbol.into());
+            }
+            Value::list(items)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn first_input_from_link_action(value: &Value) -> Option<Value> {
+    if let Some(string) = string_like(value) {
+        return string
+            .text
+            .chars()
+            .next()
+            .map(|ch| Value::Integer(ch as i64));
+    }
+
+    vector_items(value).ok()?.into_iter().next()
+}
+
+fn translate_mouse_read_key_sequence_event(
+    interp: &mut Interpreter,
+    event: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    interp.set_variable("last-input-event", event.clone(), env);
+
+    if input_event_symbol(&event).as_deref() != Some("mouse-1") {
+        return Ok(event);
+    }
+    if !interp
+        .lookup_var("mouse-1-click-follows-link", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(event);
+    }
+
+    let action = match interp.lookup_function("mouse-on-link-p", env) {
+        Ok(function) => {
+            interp.call_function_value(function, Some("mouse-on-link-p"), &[Value::Nil], env)?
+        }
+        Err(_) => Value::Nil,
+    };
+
+    if let Some(first) = first_input_from_link_action(&action) {
+        interp.set_variable("last-input-event", first.clone(), env);
+        return Ok(first);
+    }
+    if action.is_truthy() {
+        let translated = update_input_event_symbol(&event, "mouse-2");
+        interp.set_variable("last-input-event", translated.clone(), env);
+        return Ok(translated);
+    }
+
+    Ok(event)
+}
+
+fn read_key_sequence_event(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
+        decoded
+    } else {
+        normalize_input_event_value(pop_unread_command_event_value(interp, env)?)?
+    };
+    translate_mouse_read_key_sequence_event(interp, event, env)
 }
 
 fn record_command_history(
