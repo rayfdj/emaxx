@@ -1053,6 +1053,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "read-key-sequence"
             | "mouse-double-click-time"
             | "context-menu-map"
+            | "hash-table-contains-p"
+            | "copy-hash-table"
+            | "clear-string"
             | "identity"
             | "mapconcat"
             | "kbd"
@@ -11324,6 +11327,34 @@ pub fn call(
                 Value::Nil
             })
         }
+        "hash-table-contains-p" => {
+            need_args(name, args, 2)?;
+            let Some((test, entries)) = json::hash_table_entries(interp, &args[1]) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[1].type_name(),
+                ));
+            };
+            Ok(
+                if entries.iter().any(|(existing_key, _)| {
+                    hash_table_key_matches(interp, &test, existing_key, &args[0])
+                }) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "copy-hash-table" => {
+            need_args(name, args, 1)?;
+            let Some((test, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            Ok(json::make_hash_table(interp, &test, entries))
+        }
         "gethash" => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -12834,6 +12865,21 @@ pub fn call(
                     Value::Record(id) => interp.copy_record(*id),
                     _ => Ok(args[0].clone()),
                 }
+            }
+        }
+        "clear-string" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::StringObject(state) => {
+                    let mut state = state.borrow_mut();
+                    let len = state.text.chars().count();
+                    state.text = "\0".repeat(len);
+                    state.props.clear();
+                    state.multibyte = false;
+                    Ok(Value::Nil)
+                }
+                Value::String(_) => Ok(Value::Nil),
+                other => Err(LispError::TypeError("string".into(), other.type_name())),
             }
         }
 

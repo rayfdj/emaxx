@@ -13525,6 +13525,36 @@ mod tests {
     }
 
     #[test]
+    fn hash_table_copy_and_clear_string_cover_password_cache_cases() {
+        let result = eval_str(
+            "(let ((original (make-hash-table :test #'equal)))
+               (puthash \"foo\" 1 original)
+               (let ((copy (copy-hash-table original))
+                     (secret (copy-sequence \"bar\")))
+                 (puthash \"bar\" 2 copy)
+                 (clear-string secret)
+                 (list
+                  (hash-table-contains-p \"foo\" copy)
+                  (hash-table-contains-p \"bar\" original)
+                  (hash-table-count copy)
+                  (hash-table-count original)
+                  secret)))",
+        );
+        let items = result.to_vec().unwrap();
+        assert_eq!(
+            items,
+            vec![
+                Value::T,
+                Value::Nil,
+                Value::Integer(2),
+                Value::Integer(1),
+                items[4].clone(),
+            ]
+        );
+        assert_string_value(items[4].clone(), "\0\0\0");
+    }
+
+    #[test]
     fn require_edmacro_supports_edmacro_parse_keys_cases() {
         std::thread::Builder::new()
             .stack_size(4 * 1024 * 1024)
