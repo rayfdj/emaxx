@@ -7000,6 +7000,18 @@ impl Interpreter {
                         .push((name.to_string(), Self::stored_value(init_value)));
                 }
 
+                let setter_symbol = if global { "setq-default" } else { "setq" };
+                let current_mode_form = if global {
+                    Value::list([
+                        Value::Symbol("default-value".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(name.to_string()),
+                        ]),
+                    ])
+                } else {
+                    Value::Symbol(name.to_string())
+                };
                 let toggle_form = Value::list([
                     Value::Symbol("if".into()),
                     Value::list([
@@ -7010,11 +7022,11 @@ impl Interpreter {
                             Value::Symbol("toggle".into()),
                         ]),
                     ]),
-                    Value::list([Value::Symbol("not".into()), Value::Symbol(name.to_string())]),
+                    Value::list([Value::Symbol("not".into()), current_mode_form.clone()]),
                     Value::list([
                         Value::Symbol("if".into()),
                         Value::list([Value::Symbol("not".into()), Value::Symbol("arg".into())]),
-                        Value::list([Value::Symbol("not".into()), Value::Symbol(name.to_string())]),
+                        Value::T,
                         Value::list([
                             Value::Symbol("if".into()),
                             Value::list([
@@ -7032,7 +7044,7 @@ impl Interpreter {
                 ]);
 
                 let mut body = vec![Value::list([
-                    Value::Symbol("setq".into()),
+                    Value::Symbol(setter_symbol.into()),
                     Value::Symbol(name.to_string()),
                     toggle_form,
                 ])];
@@ -7800,7 +7812,7 @@ impl Interpreter {
     fn sf_cl_loop(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         enum LoopSpec {
             Range { name: String, values: Vec<Value> },
-            List { name: String, values: Vec<Value> },
+            List { pattern: Value, values: Vec<Value> },
             From { name: String, start: i64 },
             Assign { name: String, expr: Value },
         }
@@ -7844,13 +7856,13 @@ impl Interpreter {
                     index += 4;
                 }
                 Some(Value::Symbol(symbol)) if symbol == "for" => {
-                    let name = items
+                    let pattern = items
                         .get(index + 1)
                         .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                        .as_symbol()?
-                        .to_string();
+                        .clone();
                     match items.get(index + 2) {
                         Some(Value::Symbol(kind)) if kind == "from" => {
+                            let name = pattern.as_symbol()?.to_string();
                             let start = self
                                 .eval(
                                     items.get(index + 3).ok_or_else(|| {
@@ -7898,6 +7910,7 @@ impl Interpreter {
                         Some(Value::Symbol(kind))
                             if matches!(kind.as_str(), "to" | "upto" | "below") =>
                         {
+                            let name = pattern.as_symbol()?.to_string();
                             let end = self
                                 .eval(
                                     items.get(index + 3).ok_or_else(|| {
@@ -7926,10 +7939,11 @@ impl Interpreter {
                                     env,
                                 )?
                                 .to_vec()?;
-                            specs.push(LoopSpec::List { name, values });
+                            specs.push(LoopSpec::List { pattern, values });
                             index += 4;
                         }
                         Some(Value::Symbol(kind)) if kind == "across" => {
+                            let name = pattern.as_symbol()?.to_string();
                             let string = crate::lisp::primitives::string_text(&self.eval(
                                 items.get(index + 3).ok_or_else(|| {
                                     LispError::Signal("Unsupported cl-loop syntax".into())
@@ -7938,10 +7952,14 @@ impl Interpreter {
                             )?)?;
                             let values =
                                 string.chars().map(|ch| Value::Integer(ch as i64)).collect();
-                            specs.push(LoopSpec::List { name, values });
+                            specs.push(LoopSpec::List {
+                                pattern: Value::Symbol(name),
+                                values,
+                            });
                             index += 4;
                         }
                         Some(Value::Symbol(kind)) if kind == "=" => {
+                            let name = pattern.as_symbol()?.to_string();
                             let expr = items
                                 .get(index + 3)
                                 .ok_or_else(|| {
@@ -7984,13 +8002,18 @@ impl Interpreter {
 
         let mut bindings = specs
             .iter()
-            .map(|spec| match spec {
+            .filter_map(|spec| match spec {
                 LoopSpec::Range { name, .. }
-                | LoopSpec::List { name, .. }
                 | LoopSpec::From { name, .. }
-                | LoopSpec::Assign { name, .. } => (name.clone(), Value::Nil),
+                | LoopSpec::Assign { name, .. } => Some((name.clone(), Value::Nil)),
+                LoopSpec::List { .. } => None,
             })
             .collect::<Vec<_>>();
+        for spec in &specs {
+            if let LoopSpec::List { pattern, .. } = spec {
+                self.collect_cl_pattern_names(pattern, &mut bindings)?;
+            }
+        }
         for (pattern, _) in &with_bindings {
             self.collect_cl_pattern_names(pattern, &mut bindings)?;
         }
@@ -8065,34 +8088,37 @@ impl Interpreter {
         let mut collected = Vec::new();
         let mut sum = 0i64;
         for iteration in 0..iterations {
-            let mut direct_updates = Vec::new();
-            for (slot, spec) in specs.iter().enumerate() {
-                match spec {
-                    LoopSpec::Range { name, values } | LoopSpec::List { name, values } => {
-                        direct_updates.push((slot, name.clone(), values[iteration].clone()));
-                    }
-                    LoopSpec::From { name, start } => {
-                        direct_updates.push((
-                            slot,
-                            name.clone(),
-                            Value::Integer(*start + iteration as i64),
-                        ));
-                    }
-                    LoopSpec::Assign { .. } => {}
-                }
-            }
             {
                 let frame = env.last_mut().expect("env frame just pushed");
-                for (slot, name, value) in direct_updates {
-                    frame[slot] = (name, Self::stored_value(value));
+                for spec in &specs {
+                    match spec {
+                        LoopSpec::Range { name, values } => {
+                            Self::upsert_frame_binding(
+                                frame,
+                                name.clone(),
+                                Self::stored_value(values[iteration].clone()),
+                            );
+                        }
+                        LoopSpec::List { pattern, values } => {
+                            self.bind_cl_pattern(pattern, values[iteration].clone(), frame)?;
+                        }
+                        LoopSpec::From { name, start } => {
+                            Self::upsert_frame_binding(
+                                frame,
+                                name.clone(),
+                                Self::stored_value(Value::Integer(*start + iteration as i64)),
+                            );
+                        }
+                        LoopSpec::Assign { .. } => {}
+                    }
                 }
             }
 
-            for (slot, spec) in specs.iter().enumerate() {
+            for spec in &specs {
                 if let LoopSpec::Assign { name, expr } = spec {
                     let value = Self::stored_value(self.eval(expr, env)?);
                     let frame = env.last_mut().expect("env frame just pushed");
-                    frame[slot] = (name.clone(), value);
+                    Self::upsert_frame_binding(frame, name.clone(), value);
                 }
             }
 
@@ -8468,14 +8494,28 @@ impl Interpreter {
                 Ok(())
             }
             Value::Cons(_, _) => {
-                for item in pattern.to_vec()? {
-                    if matches!(&item, Value::Symbol(symbol) if symbol == "&optional" || symbol == "&rest")
-                    {
-                        continue;
+                if let Ok(items) = pattern.to_vec() {
+                    for item in items {
+                        if matches!(&item, Value::Symbol(symbol) if symbol == "&optional" || symbol == "&rest")
+                        {
+                            continue;
+                        }
+                        self.collect_cl_pattern_names(&item, bindings)?;
                     }
-                    self.collect_cl_pattern_names(&item, bindings)?;
+                    Ok(())
+                } else {
+                    let mut current = pattern.clone();
+                    loop {
+                        match current {
+                            Value::Cons(car, cdr) => {
+                                self.collect_cl_pattern_names(&car.borrow().clone(), bindings)?;
+                                current = cdr.borrow().clone();
+                            }
+                            Value::Nil => return Ok(()),
+                            other => return self.collect_cl_pattern_names(&other, bindings),
+                        }
+                    }
                 }
-                Ok(())
             }
             other => Err(LispError::TypeError("list".into(), other.type_name())),
         }
@@ -10341,9 +10381,21 @@ fn preloaded_vc_directory_exclusion_list() -> Value {
     )
 }
 
+fn builtin_file_autoload(file: &str, interactive: Value) -> Value {
+    Value::list([
+        Value::Symbol("autoload".into()),
+        Value::String(file.into()),
+        Value::Nil,
+        interactive,
+        Value::Nil,
+    ])
+}
+
 fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
+        "cl-delete-duplicates" => Some(builtin_file_autoload("cl-seq", Value::Nil)),
+        "dired" => Some(builtin_file_autoload("dired", Value::T)),
         "sh-mode" => Some(preloaded_sh_mode()),
         "point-to-register" => Some(Value::Lambda(
             vec!["register".into(), "&optional".into(), "arg".into()],
@@ -13155,6 +13207,58 @@ mod tests {
     }
 
     #[test]
+    fn define_global_minor_mode_uses_default_value_even_if_variable_becomes_buffer_local() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (define-minor-mode sample-global-mode \"doc\" :global t)
+                   (make-variable-buffer-local 'sample-global-mode)
+                   (sample-global-mode 1)
+                   (switch-to-buffer \"other\")
+                   (list sample-global-mode
+                         (default-value 'sample-global-mode)
+                         (local-variable-p 'sample-global-mode)))"
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn define_minor_mode_call_without_arg_enables_instead_of_toggling() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-minor-mode sample-mode \"doc\")
+                   (sample-mode)
+                   (sample-mode)
+                   sample-mode)"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn define_global_minor_mode_call_without_arg_enables_instead_of_toggling() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (define-minor-mode sample-global-mode \"doc\" :global t)
+                   (make-variable-buffer-local 'sample-global-mode)
+                   (sample-global-mode)
+                   (switch-to-buffer \"other\")
+                   (sample-global-mode)
+                   (list sample-global-mode
+                         (default-value 'sample-global-mode)))"
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
     fn defvar_keymap_supports_custom_setters_toggling_bindings() {
         assert_eq!(
             eval_str(
@@ -13477,6 +13581,17 @@ mod tests {
         assert_eq!(
             eval_str("(cl-loop with (a b c) = '(1 2 3) return (+ a b c))"),
             Value::Integer(6)
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_dotted_pair_destructuring_for_in() {
+        assert_eq!(
+            eval_str("(cl-loop for (k . v) in '((a . 1) (b . 2)) collect (list k v))"),
+            Value::list([
+                Value::list([Value::Symbol("a".into()), Value::Integer(1)]),
+                Value::list([Value::Symbol("b".into()), Value::Integer(2)]),
+            ])
         );
     }
 
@@ -14275,6 +14390,22 @@ mod tests {
     }
 
     #[test]
+    fn builtin_autoloads_cover_saveplace_dependencies() {
+        let interp = Interpreter::new();
+        let env = Vec::new();
+        assert_eq!(
+            interp
+                .lookup_function("cl-delete-duplicates", &env)
+                .unwrap(),
+            builtin_file_autoload("cl-seq", Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_function("dired", &env).unwrap(),
+            builtin_file_autoload("dired", Value::T)
+        );
+    }
+
+    #[test]
     fn autoloaded_functions_load_on_funcall() {
         let root = std::env::temp_dir().join(format!(
             "emaxx-autoload-{}",
@@ -14300,6 +14431,27 @@ mod tests {
 
         std::fs::remove_file(&target).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn define_obsolete_variable_alias_sets_up_the_alias() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-obsolete-variable-alias 'old-name 'new-name \"31.1\")
+                   (setq new-name 42)
+                   old-name)"
+            ),
+            Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn vectorp_recognizes_vector_literals() {
+        assert_eq!(
+            eval_str(r#"(list (vectorp [1 2]) (vectorp '(1 2)) (vectorp "ab"))"#),
+            Value::list([Value::T, Value::Nil, Value::Nil])
+        );
     }
 
     #[test]
