@@ -200,6 +200,15 @@ fn current_line_text(interp: &mut Interpreter) -> Result<String, LispError> {
         .map_err(|error| LispError::Signal(error.to_string()))
 }
 
+fn advertised_function_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
+    interp.function_binding_name(value).ok_or_else(|| {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-function".into()),
+            value.clone(),
+        ]))
+    })
+}
+
 fn thread_list_thread_at_point(interp: &mut Interpreter) -> Result<u64, LispError> {
     let line = current_line_text(interp)?;
     let Some(name) = line.split_whitespace().next() else {
@@ -405,6 +414,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "byte-compile-check-lambda-list"
             | "read-key"
             | "regexp-opt"
+            | "rx-to-string"
     )
 }
 
@@ -1012,6 +1022,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "length="
             | "reverse"
             | "copy-tree"
+            | "copy-alist"
             | "delete-dups"
             | "remove"
             | "memq"
@@ -1028,6 +1039,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-delete-if"
             | "cl-remove-if-not"
             | "mapcar"
+            | "mapcan"
             | "cl-mapcar"
             | "cl-mapcan"
             | "cl-some"
@@ -1126,6 +1138,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-replace"
             | "string-equal-ignore-case"
             | "replace-regexp-in-string"
+            | "rx-to-string"
             | "edmacro-parse-keys"
             | "string-bytes"
             | "byte-to-string"
@@ -1143,6 +1156,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-trim-right"
             | "string-trim"
             | "string-clean-whitespace"
+            | "string-join"
             | "url-hexify-string"
             | "url-encode-url"
             | "base64-decode-string"
@@ -1276,6 +1290,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "define-symbol-prop"
             | "function-put"
             | "function-get"
+            | "set-advertised-calling-convention"
+            | "get-advertised-calling-convention"
             | "symbol-plist"
             | "setplist"
             | "zlib-available-p"
@@ -1704,6 +1720,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "macroexp--dynamic-variable-p"
             | "macroexpand-1"
             | "macroexpand-all"
+            | "macrop"
+            | "apropos-internal"
             | "intern"
             | "intern-soft"
             | "autoload"
@@ -1711,6 +1729,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "custom-autoload"
             | "custom-add-to-group"
             | "custom-current-group"
+            | "custom-set-variables"
             | "customize-set-variable"
             | "documentation"
             | "documentation-property"
@@ -1792,6 +1811,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "unix-sync"
             | "called-interactively-p"
             | "kill-all-local-variables"
+            | "hack-local-variables-filter"
+            | "hack-local-variables-apply"
             | "hack-dir-local-variables-non-file-buffer"
             | "force-mode-line-update"
             | "group-gid"
@@ -3364,6 +3385,10 @@ pub fn call(
             let vectors_and_records = args.get(1).is_some_and(Value::is_truthy);
             copy_tree_value(interp, &args[0], vectors_and_records)
         }
+        "copy-alist" => {
+            need_args(name, args, 1)?;
+            copy_alist_value(&args[0])
+        }
         "delete-dups" => {
             need_args(name, args, 1)?;
             let mut deduped = Vec::new();
@@ -3546,6 +3571,15 @@ pub fn call(
             }
             Ok(Value::list(results))
         }
+        "mapcan" => {
+            need_args(name, args, 2)?;
+            let list = sequence_values(&args[1])?;
+            let mut mapped = Vec::with_capacity(list.len());
+            for item in list {
+                mapped.push(call_function_value(interp, &args[0], &[item], env)?);
+            }
+            nconc_values(&mapped)
+        }
         "cl-mapcar" => {
             need_args(name, args, 2)?;
             let lists = args[1..]
@@ -3673,6 +3707,23 @@ pub fn call(
                 }
             }
             Ok(string_like_value(result, merge_string_props(props)))
+        }
+        "string-join" => {
+            need_arg_range(name, args, 1, 2)?;
+            let separator = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            call(
+                interp,
+                "mapconcat",
+                &[
+                    Value::BuiltinFunc("identity".into()),
+                    args[0].clone(),
+                    separator,
+                ],
+                env,
+            )
         }
         "ensure-list" => {
             need_args(name, args, 1)?;
@@ -6664,6 +6715,19 @@ pub fn call(
             interp.put_symbol_property(symbol, property, args[2].clone());
             Ok(args[2].clone())
         }
+        "set-advertised-calling-convention" => {
+            need_args(name, args, 3)?;
+            let function = advertised_function_name(interp, &args[0])?;
+            interp.put_symbol_property(&function, "advertised-calling-convention", args[1].clone());
+            Ok(args[0].clone())
+        }
+        "get-advertised-calling-convention" => {
+            need_args(name, args, 1)?;
+            let function = advertised_function_name(interp, &args[0])?;
+            Ok(interp
+                .get_symbol_property(&function, "advertised-calling-convention")
+                .unwrap_or(Value::T))
+        }
         "compare-buffer-substrings" => {
             need_args(name, args, 6)?;
             let left_id = interp.resolve_buffer_id(&args[0])?;
@@ -8188,10 +8252,23 @@ pub fn call(
             Ok(Value::String(string_text(&args[0])?))
         }
         "file-remote-p" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(Value::Nil)
+            let file = string_text(&args[0])?;
+            let Some(remote) = parse_remote_file_name(&file) else {
+                return Ok(Value::Nil);
+            };
+            let identification = args.get(1).cloned().unwrap_or(Value::Nil);
+            let result = match identification.as_symbol().ok() {
+                None | Some("nil") | Some("t") => Value::String(remote.prefix),
+                Some("method") => Value::String(remote.method),
+                Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
+                Some("host") => Value::String(remote.host),
+                Some("localname") => Value::String(remote.localname),
+                _ => Value::String(remote.prefix),
+            };
+            Ok(result)
         }
         "shell-quote-argument" => {
             need_args(name, args, 1)?;
@@ -10236,6 +10313,60 @@ pub fn call(
             let autoload = autoload_parts(&args[0]).is_some();
             Ok(if autoload { Value::T } else { Value::Nil })
         }
+        "macrop" => {
+            need_args(name, args, 1)?;
+            if let Ok(symbol) = args[0].as_symbol()
+                && interp.has_macro_binding(symbol)
+            {
+                return Ok(Value::T);
+            }
+            let definition = call(interp, "indirect-function", &[args[0].clone()], env)?;
+            let is_macro = if let Ok(items) = definition.to_vec() {
+                matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "macro")
+                    || autoload_parts(&definition).is_some_and(|(_, _, kind)| {
+                        matches!(kind, Value::Symbol(symbol) if symbol == "macro" || symbol == "t")
+                    })
+            } else {
+                false
+            };
+            Ok(if is_macro { Value::T } else { Value::Nil })
+        }
+        "apropos-internal" => {
+            need_arg_range(name, args, 1, 2)?;
+            let pattern = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            validate_elisp_regex(&pattern.text)?;
+            let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+            let predicate = args.get(1).cloned().filter(|value| !value.is_nil());
+            let mut found = Vec::new();
+            for symbol_name in interp.known_symbol_names() {
+                if !regex
+                    .is_match(&symbol_name)
+                    .map_err(|error| LispError::Signal(error.to_string()))?
+                {
+                    continue;
+                }
+                let symbol = Value::Symbol(symbol_name);
+                if let Some(predicate) = &predicate {
+                    let keep = interp.call_function_value(
+                        predicate.clone(),
+                        None,
+                        std::slice::from_ref(&symbol),
+                        env,
+                    )?;
+                    if !keep.is_truthy() {
+                        continue;
+                    }
+                }
+                found.push(symbol);
+            }
+            found.sort_by(|left, right| {
+                left.as_symbol()
+                    .unwrap_or("")
+                    .cmp(right.as_symbol().unwrap_or(""))
+            });
+            Ok(Value::list(found))
+        }
         "custom-autoload" => {
             need_arg_range(name, args, 2, 3)?;
             let symbol = args[0].as_symbol()?;
@@ -10258,6 +10389,22 @@ pub fn call(
                 interp.put_symbol_property(symbol, "custom-loads", Value::cons(load, existing));
             }
             Ok(Value::Nil)
+        }
+        "custom-set-variables" => {
+            let mut result = Value::Nil;
+            for entry in args {
+                let items = entry.to_vec()?;
+                if items.len() < 2 {
+                    return Err(LispError::Signal("Incompatible Custom theme spec".into()));
+                }
+                let symbol = items[0].as_symbol()?.to_string();
+                interp.put_symbol_property(&symbol, "saved-value", Value::list([items[1].clone()]));
+                if items.get(2).is_some_and(Value::is_truthy) {
+                    let value = interp.eval(&items[1], env)?;
+                    result = interp.set_custom_option(&symbol, value, env)?;
+                }
+            }
+            Ok(result)
         }
         "custom-add-to-group" => {
             need_args(name, args, 3)?;
@@ -11870,6 +12017,13 @@ pub fn call(
                 format!("\\(?:{}\\)", patterns.join("\\|"))
             }))
         }
+        "rx-to-string" => {
+            need_arg_range(name, args, 1, 2)?;
+            let no_group = args.get(1).is_some_and(Value::is_truthy);
+            Ok(Value::String(crate::lisp::eval::compile_rx_to_string(
+                interp, &args[0], env, no_group,
+            )?))
+        }
         "convert-standard-filename" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
@@ -11931,6 +12085,31 @@ pub fn call(
                 )?;
             }
             interp.clear_buffer_local_state(interp.current_buffer_id());
+            Ok(Value::Nil)
+        }
+        "hack-local-variables-filter" => {
+            need_args(name, args, 2)?;
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "file-local-variables-alist",
+                args[0].clone(),
+            );
+            Ok(args[0].clone())
+        }
+        "hack-local-variables-apply" => {
+            need_args(name, args, 0)?;
+            let pending = interp
+                .buffer_local_value(interp.current_buffer_id(), "file-local-variables-alist")
+                .or_else(|| interp.lookup_var("file-local-variables-alist", env))
+                .unwrap_or(Value::Nil);
+            for entry in pending.to_vec()? {
+                let Some((variable, value)) = entry.cons_values() else {
+                    continue;
+                };
+                let symbol = variable.as_symbol()?.to_string();
+                let prepared = interp.prepare_variable_assignment(&symbol, value)?;
+                interp.set_buffer_local_value(interp.current_buffer_id(), &symbol, prepared);
+            }
             Ok(Value::Nil)
         }
         "hack-dir-local-variables-non-file-buffer" => {
@@ -27560,6 +27739,57 @@ fn copy_tree_value(
         }
         _ => Ok(value.clone()),
     }
+}
+
+fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
+    let items = value.to_vec()?;
+    let mut copied = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some((car, cdr)) = item.cons_values() {
+            copied.push(Value::cons(car, cdr));
+        } else {
+            copied.push(item);
+        }
+    }
+    Ok(Value::list(copied))
+}
+
+struct RemoteFileNameParts {
+    prefix: String,
+    method: String,
+    user: Option<String>,
+    host: String,
+    localname: String,
+}
+
+fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    let rest = &path[1..];
+    let method_end = rest.find(':')?;
+    if method_end == 0 {
+        return None;
+    }
+    let method = rest[..method_end].to_string();
+    let after_method = &rest[method_end + 1..];
+    let host_end = after_method.find(':')?;
+    let authority = &after_method[..host_end];
+    if authority.is_empty() {
+        return None;
+    }
+    let localname = after_method[host_end + 1..].to_string();
+    let (user, host) = match authority.rsplit_once('@') {
+        Some((user, host)) if !host.is_empty() => (Some(user.to_string()), host.to_string()),
+        _ => (None, authority.to_string()),
+    };
+    Some(RemoteFileNameParts {
+        prefix: path[..1 + method_end + 1 + host_end + 1].to_string(),
+        method,
+        user,
+        host,
+        localname,
+    })
 }
 
 #[derive(Default)]

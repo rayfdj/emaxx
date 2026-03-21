@@ -965,6 +965,13 @@ impl Interpreter {
         interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
         interp.set_global_binding("search-spaces-regexp", Value::Nil);
         interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
+        if let Some(temp_dir) = interp.lookup_var("temporary-file-directory", &Vec::new()) {
+            interp.put_symbol_property(
+                "temporary-file-directory",
+                "standard-value",
+                Value::list([quoted_literal(&temp_dir)]),
+            );
+        }
         let selected_window = interp.create_record(
             "window",
             vec![
@@ -4879,7 +4886,21 @@ impl Interpreter {
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
+            "early-init-file" => Some(Value::Nil),
+            "init-file-user" => Some(Value::Nil),
+            "site-run-file" => Some(Value::Nil),
+            "user-init-file" => Some(Value::Nil),
             "completion-ignored-extensions" => Some(Value::Nil),
+            "regexp-unmatchable" => Some(Value::String("\\`a\\`".into())),
+            "ignored-local-variables" => Some(Value::list([
+                Value::Symbol("ignored-local-variables".into()),
+                Value::Symbol("safe-local-variable-values".into()),
+                Value::Symbol("file-local-variables-alist".into()),
+                Value::Symbol("dir-local-variables-alist".into()),
+            ])),
+            "ignored-local-variable-values" => Some(Value::Nil),
+            "safe-local-variable-values" => Some(Value::Nil),
+            "hack-local-variables-hook" => Some(Value::Nil),
             "custom-current-group-alist" => Some(Value::Nil),
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
@@ -5166,6 +5187,64 @@ impl Interpreter {
         }
     }
 
+    pub fn has_macro_binding(&self, name: &str) -> bool {
+        self.resolve_macro_binding(name).is_some()
+    }
+
+    pub fn known_symbol_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut push_name = |name: &str| {
+            if !names.iter().any(|existing| existing == name) {
+                names.push(name.to_string());
+            }
+        };
+        push_name("nil");
+        push_name("t");
+        for (name, _) in &self.globals {
+            push_name(name);
+        }
+        for (name, _) in &self.variable_aliases {
+            push_name(name);
+        }
+        for (name, _) in &self.functions {
+            push_name(name);
+        }
+        for (name, _, _) in &self.macros {
+            push_name(name);
+        }
+        for (name, _) in &self.symbol_properties {
+            push_name(name);
+        }
+        names
+    }
+
+    fn resolve_macro_binding(&self, name: &str) -> Option<(Vec<String>, Vec<Value>)> {
+        let mut current = name.to_string();
+        let mut seen = Vec::new();
+        loop {
+            if seen.iter().any(|existing| existing == &current) {
+                return None;
+            }
+            seen.push(current.clone());
+            if let Some((_, params, body)) = self
+                .macros
+                .iter()
+                .find(|(macro_name, _, _)| macro_name == &current)
+            {
+                return Some((params.clone(), body.clone()));
+            }
+            let (_, value) = self
+                .functions
+                .iter()
+                .rev()
+                .find(|(function_name, _)| function_name == &current)?;
+            let Value::Symbol(next) = value else {
+                return None;
+            };
+            current = next.clone();
+        }
+    }
+
     /// Set a variable in the innermost local frame, or in globals.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
         for frame in env.iter_mut().rev() {
@@ -5239,6 +5318,18 @@ impl Interpreter {
 
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
         self.functions.push((name.to_string(), function));
+    }
+
+    pub fn function_binding_name(&self, function: &Value) -> Option<String> {
+        match function {
+            Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
+            other => self
+                .functions
+                .iter()
+                .rev()
+                .find(|(_, value)| value == other)
+                .map(|(name, _)| name.clone()),
+        }
     }
 
     pub fn pop_function_binding(&mut self, name: &str) {
@@ -5435,9 +5526,6 @@ impl Interpreter {
                         "with-environment-variables" => {
                             return self.sf_with_environment_variables(&items, env);
                         }
-                        "with-connection-local-variables" => {
-                            return self.sf_progn(&items[1..], env);
-                        }
                         "with-output-to-string" => {
                             return self.sf_with_output_to_string(&items, env);
                         }
@@ -5516,7 +5604,7 @@ impl Interpreter {
                             return self.sf_skip_unless(&items, env);
                         }
                         "skip-when" | "ert--skip-when" => return self.sf_skip_when(&items, env),
-                        "rx" => return self.sf_rx(&items),
+                        "rx" => return self.sf_rx(&items, env),
                         "rx-define" => return self.sf_rx_define(&items),
                         "require" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
@@ -6769,14 +6857,21 @@ impl Interpreter {
             self.record_defcustom_properties(&resolved, items, env)?;
         }
         self.mark_special_variable(&resolved);
-        // Only set if not already defined
-        if self.default_toplevel_value(&resolved).is_none() {
-            let val = if items.len() > 2 {
-                self.eval(&items[2], env)?
-            } else {
-                Value::Nil
-            };
+        // Bare `defvar` declarations mark a variable special without binding it.
+        if self.default_toplevel_value(&resolved).is_none() && items.len() > 2 {
+            let val = self.eval(&items[2], env)?;
             self.set_default_toplevel_value(&resolved, val);
+            if self
+                .get_symbol_property(&resolved, "standard-value")
+                .is_none()
+            {
+                let stored = self.lookup_var(&resolved, env).unwrap_or(Value::Nil);
+                self.put_symbol_property(
+                    &resolved,
+                    "standard-value",
+                    Value::list([quoted_literal(&stored)]),
+                );
+            }
         }
         Ok(Value::Nil)
     }
@@ -9713,9 +9808,7 @@ impl Interpreter {
             return Ok(Some(expanded));
         }
 
-        // Find the macro
-        let macro_def = self.macros.iter().find(|(n, _, _)| n == name).cloned();
-        let Some((_, params, body)) = macro_def else {
+        let Some((params, body)) = self.resolve_macro_binding(name) else {
             return Ok(None);
         };
 
@@ -9914,8 +10007,8 @@ impl Interpreter {
         }
     }
 
-    fn sf_rx(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        Ok(Value::String(compile_rx_sequence(self, &items[1..])?))
+    fn sf_rx(&mut self, items: &[Value], env: &Env) -> Result<Value, LispError> {
+        Ok(Value::String(compile_rx_sequence(self, env, &items[1..])?))
     }
 
     fn sf_rx_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -11561,12 +11654,59 @@ fn build_signal_value(condition: Value, data: Value) -> Value {
     }
 }
 
-fn compile_rx_sequence(interp: &Interpreter, items: &[Value]) -> Result<String, LispError> {
+fn compile_rx_sequence(
+    interp: &Interpreter,
+    env: &Env,
+    items: &[Value],
+) -> Result<String, LispError> {
     let mut regex = String::new();
     for item in items {
-        regex.push_str(&compile_rx_form(interp, item)?);
+        regex.push_str(&compile_rx_form(interp, env, item)?);
     }
     Ok(regex)
+}
+
+pub(crate) fn compile_rx_to_string(
+    interp: &Interpreter,
+    form: &Value,
+    env: &Env,
+    _no_group: bool,
+) -> Result<String, LispError> {
+    compile_rx_form(interp, env, form)
+}
+
+fn expand_rx_splice_markers(
+    interp: &Interpreter,
+    env: &Env,
+    items: &[Value],
+) -> Result<Vec<Value>, LispError> {
+    let mut expanded = Vec::new();
+    let mut index = 0usize;
+    while index < items.len() {
+        if matches!(&items[index], Value::Symbol(symbol) if symbol == ",") {
+            let Some(source) = items.get(index + 1) else {
+                return Err(LispError::Signal(
+                    "rx splice marker needs a following value".into(),
+                ));
+            };
+            let value = match source {
+                Value::Symbol(name) => interp
+                    .lookup_var(name, env)
+                    .ok_or_else(|| LispError::Void(name.clone()))?,
+                other => other.clone(),
+            };
+            if let Ok(values) = value.to_vec() {
+                expanded.extend(values);
+            } else {
+                expanded.push(value);
+            }
+            index += 2;
+            continue;
+        }
+        expanded.push(items[index].clone());
+        index += 1;
+    }
+    Ok(expanded)
 }
 
 fn quote_rx_string_literal(text: &str) -> String {
@@ -11826,7 +11966,7 @@ fn compile_rx_char_class(items: &[Value], negated: bool) -> Result<String, LispE
     Ok(regex)
 }
 
-fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
+fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<String, LispError> {
     match value {
         Value::String(text) => Ok(quote_rx_string_literal(text)),
         Value::StringObject(state) => Ok(quote_rx_string_literal(&state.borrow().text)),
@@ -11852,26 +11992,26 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
             )),
             other => {
                 if let Some(expanded) = expand_rx_definition(interp, other, &[])? {
-                    compile_rx_form(interp, &expanded)
+                    compile_rx_form(interp, env, &expanded)
                 } else {
                     Err(LispError::Signal(format!("Unsupported rx atom: {other}")))
                 }
             }
         },
         Value::Cons(_, _) => {
-            let items = value.to_vec()?;
+            let items = expand_rx_splice_markers(interp, env, &value.to_vec()?)?;
             let head = match items.first() {
                 Some(Value::Symbol(head)) => Some(head.as_str()),
                 Some(Value::Integer(codepoint)) if *codepoint == ' ' as i64 => Some("?"),
                 _ => None,
             };
             let Some(head) = head else {
-                return compile_rx_sequence(interp, &items);
+                return compile_rx_sequence(interp, env, &items);
             };
             match head {
                 "group" => Ok(format!(
                     "\\({}\\)",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "group-n" | "submatch-n" => {
                     if items.len() < 3 {
@@ -11888,34 +12028,34 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
                     Ok(format!(
                         "\\(?{}:{}\\)",
                         number,
-                        compile_rx_sequence(interp, &items[2..])?
+                        compile_rx_sequence(interp, env, &items[2..])?
                     ))
                 }
                 "+" | "1+" => Ok(format!(
                     "\\(?:{}\\)+",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "+?" => Ok(format!(
                     "\\(?:{}\\)+?",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "*" => Ok(format!(
                     "\\(?:{}\\)*",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "*?" => Ok(format!(
                     "\\(?:{}\\)*?",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "?" => Ok(format!(
                     "\\(?:{}\\)?",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "??" => Ok(format!(
                     "\\(?:{}\\)??",
-                    compile_rx_sequence(interp, &items[1..])?
+                    compile_rx_sequence(interp, env, &items[1..])?
                 )),
-                "seq" | ":" => compile_rx_sequence(interp, &items[1..]),
+                "seq" | ":" => compile_rx_sequence(interp, env, &items[1..]),
                 "repeat" => {
                     if items.len() < 3 {
                         return Err(LispError::Signal(
@@ -11945,7 +12085,7 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
                         ));
                     }
 
-                    let body = compile_rx_sequence(interp, &items[body_start..])?;
+                    let body = compile_rx_sequence(interp, env, &items[body_start..])?;
                     let quantifier = match max {
                         Some(max) if max == min => format!("\\{{{min}\\}}"),
                         Some(max) => format!("\\{{{min},{max}\\}}"),
@@ -11957,7 +12097,7 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
                     "\\(?:{}\\)",
                     items[1..]
                         .iter()
-                        .map(|item| compile_rx_form(interp, item))
+                        .map(|item| compile_rx_form(interp, env, item))
                         .collect::<Result<Vec<_>, _>>()?
                         .join("\\|")
                 )),
@@ -11990,15 +12130,15 @@ fn compile_rx_form(interp: &Interpreter, value: &Value) -> Result<String, LispEr
                     }
                     Ok(format!(
                         "\\(?:{}\\)\\{{{},\\}}",
-                        compile_rx_sequence(interp, &items[2..])?,
+                        compile_rx_sequence(interp, env, &items[2..])?,
                         count
                     ))
                 }
                 _ => {
                     if let Some(expanded) = expand_rx_definition(interp, head, &items[1..])? {
-                        compile_rx_form(interp, &expanded)
+                        compile_rx_form(interp, env, &expanded)
                     } else {
-                        compile_rx_sequence(interp, &items)
+                        compile_rx_sequence(interp, env, &items)
                     }
                 }
             }
@@ -12335,9 +12475,16 @@ mod tests {
     }
 
     #[test]
-    fn with_connection_local_variables_evaluates_body() {
+    fn with_connection_local_variables_uses_lisp_macro_definition() {
+        let mut interp = Interpreter::new();
         assert_eq!(
-            eval_str("(with-connection-local-variables 1 2 3)"),
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (defmacro with-connection-local-variables (&rest body)
+                     `(progn ,@body))
+                   (with-connection-local-variables 1 2 3))",
+            ),
             Value::Integer(3)
         );
     }
@@ -12715,6 +12862,10 @@ mod tests {
             "S-down-mouse-2",
         );
         assert_eq!(
+            eval_str(r#"(string-join '("foo" "bar" "zot") " ")"#),
+            Value::String("foo bar zot".into())
+        );
+        assert_eq!(
             eval_str(r#"(equal (mapcar #'reverse '("abc" "abd")) '("cba" "dba"))"#),
             Value::T
         );
@@ -12957,13 +13108,60 @@ mod tests {
     }
 
     #[test]
-    fn defvar_without_initializer_defaults_to_nil() {
+    fn defvar_without_initializer_keeps_variable_void() {
         let mut interp = Interpreter::new();
         assert_eq!(
             eval_str_with(&mut interp, "(defvar sample-unbound)"),
             Value::Nil
         );
-        assert_eq!(eval_str_with(&mut interp, "sample-unbound"), Value::Nil);
+        assert_eq!(
+            eval_str_with(&mut interp, "(boundp 'sample-unbound)"),
+            Value::Nil
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(condition-case err sample-unbound (void-variable (car err)))",
+            ),
+            Value::symbol("void-variable")
+        );
+    }
+
+    #[test]
+    fn file_remote_p_parses_tramp_style_names() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                     (file-remote-p "/ssh:user@host:/tmp/x")
+                     (file-remote-p "/ssh:user@host:/tmp/x" 'method)
+                     (file-remote-p "/ssh:user@host:/tmp/x" 'user)
+                     (file-remote-p "/ssh:user@host:/tmp/x" 'host)
+                     (file-remote-p "/ssh:user@host:/tmp/x" 'localname))"#,
+            ),
+            Value::list([
+                Value::String("/ssh:user@host:".into()),
+                Value::String("ssh".into()),
+                Value::String("user".into()),
+                Value::String("host".into()),
+                Value::String("/tmp/x".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn copy_alist_copies_entry_cells() {
+        assert_eq!(
+            eval_str(
+                "(let* ((orig (list (cons 'a 1)))
+                        (copy (copy-alist orig)))
+                   (setcdr (car copy) 2)
+                   (list orig copy))"
+            ),
+            Value::list([
+                Value::list([Value::cons(Value::symbol("a"), Value::int(1))]),
+                Value::list([Value::cons(Value::symbol("a"), Value::int(2))]),
+            ])
+        );
     }
 
     #[test]
@@ -14417,6 +14615,104 @@ mod tests {
                 Value::list([Value::String("ps-print".into())]),
             ])
         );
+    }
+
+    #[test]
+    fn temporary_file_directory_exposes_standard_value() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(equal (eval (car (get 'temporary-file-directory 'standard-value)) t)
+                            temporary-file-directory)"
+                ),
+                Value::T
+            );
+        });
+    }
+
+    #[test]
+    fn macrop_recognizes_defined_and_autoloaded_macros() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (defmacro sample-live-macro () nil)
+                       (defalias 'sample-alias-macro 'sample-live-macro)
+                       (list
+                        (macrop 'sample-live-macro)
+                        (macrop 'sample-alias-macro)
+                        (progn
+                          (autoload 'sample-auto-macro \"sample-auto\" nil nil 'macro)
+                          (macrop 'sample-auto-macro))
+                        (sample-alias-macro)
+                        (macrop 'car)))"
+                ),
+                Value::list([Value::T, Value::T, Value::T, Value::Nil, Value::Nil])
+            );
+        });
+    }
+
+    #[test]
+    fn apropos_internal_filters_symbols_by_regexp_and_predicate() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (defun tramp-compat-sample-fn () t)
+                       (defvar tramp-compat-sample-var t)
+                       (let ((result (apropos-internal (rx bos \"tramp-compat-\") #'functionp)))
+                         (list (length result) (car result) (cdr result))))"
+                ),
+                Value::list([
+                    Value::Integer(1),
+                    Value::Symbol("tramp-compat-sample-fn".into()),
+                    Value::Nil,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn custom_set_variables_applies_now_specs() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (defcustom sample-custom-var nil \"doc\")
+                       (custom-set-variables '(sample-custom-var 'set-v now))
+                       (list sample-custom-var (car (get 'sample-custom-var 'saved-value))))"
+                ),
+                Value::list([
+                    Value::Symbol("set-v".into()),
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol("set-v".into())]),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn advertised_calling_convention_round_trips_for_symbol_function() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (defun sample-adv-cc (arg) arg)
+                       (set-advertised-calling-convention 'sample-adv-cc '(value) \"31.1\")
+                       (get-advertised-calling-convention (symbol-function 'sample-adv-cc)))"
+                ),
+                Value::list([Value::Symbol("value".into())])
+            );
+        });
     }
 
     #[test]
@@ -16989,6 +17285,24 @@ IHdvcmxkIQ==")))
 
     #[test]
     fn rx_compiles_common_test_patterns() {
+        assert_eq!(
+            eval_str(r#"(rx-to-string '(seq "ab" eos) t)"#),
+            Value::String("ab$".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"(let ((tramp-local-host-names '("foo" "bar")))
+                     (rx-to-string `(: bos (| . ,tramp-local-host-names) eos)))"#
+            ),
+            Value::String("^\\(?:foo\\|bar\\)$".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"(let ((tramp-local-host-names '("foo" "bar")))
+                     (rx-to-string `(: bos (| \, tramp-local-host-names) eos)))"#
+            ),
+            Value::String("^\\(?:foo\\|bar\\)$".into())
+        );
         assert_eq!(eval_str(r#"(rx "\\(")"#), Value::String("\\\\(".into()));
         assert_eq!(
             eval_str(r#"(rx bos (group (+ digit)) (+ blank) "Hi" eol)"#),
@@ -17237,6 +17551,31 @@ IHdvcmxkIQ==")))
             ),
             Value::symbol("circular-list")
         );
+    }
+
+    #[test]
+    fn mapcan_concatenates_results() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str("(equal (mapcan #'list (list 1 2 3)) '(1 2 3))"),
+                Value::T
+            );
+        });
+    }
+
+    #[test]
+    fn mapcan_mutates_mapped_lists_destructively() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let ((data (list (list 'foo) (list 'bar))))
+                       (and
+                        (equal (mapcan #'identity data) '(foo bar))
+                        (equal data '((foo bar) (bar)))))"
+                ),
+                Value::T
+            );
+        });
     }
 
     #[test]
