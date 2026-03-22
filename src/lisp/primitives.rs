@@ -1,7 +1,7 @@
 use super::eval::{BufferDisposition, Interpreter, error_condition_value};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
-use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value};
+use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value, shared_env};
 use crate::buffer::TextPropertySpan;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
 use fancy_regex::Regex as FancyRegex;
@@ -1041,6 +1041,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "condition-variable-p"
             | "minibufferp"
             | "keymapp"
+            | "current-active-maps"
             | "zerop"
             | "natnump"
             | "atom"
@@ -1808,6 +1809,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "symbol-value"
             | "symbol-function"
             | "symbol-name"
+            | "where-is-internal"
             | "default-value"
             | "interactive-form"
             | "macroexp-file-name"
@@ -2944,6 +2946,10 @@ pub fn call(
                 Value::Nil
             })
         }
+        "current-active-maps" => {
+            need_arg_range(name, args, 0, 2)?;
+            Ok(Value::list(current_active_maps(interp, env)?))
+        }
         "commandp" => {
             need_args(name, args, 1)?;
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
@@ -2971,6 +2977,22 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "where-is-internal" => {
+            need_arg_range(name, args, 1, 4)?;
+            let command = args[0].as_symbol()?;
+            let first_only = args.get(2).is_some_and(Value::is_truthy);
+            let keymaps = where_is_internal_maps(interp, args.get(1), env)?;
+            let matches = where_is_internal(interp, command, &keymaps);
+            if first_only {
+                Ok(matches
+                    .into_iter()
+                    .next()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil))
+            } else {
+                Ok(Value::list(matches.into_iter().map(Value::String)))
+            }
         }
         "default-boundp" => {
             need_args(name, args, 1)?;
@@ -4074,7 +4096,7 @@ pub fn call(
             Ok(Value::Lambda(
                 vec!["&rest".into(), rest_name],
                 vec![Value::list(body)],
-                env.clone(),
+                shared_env(env.clone()),
             ))
         }
         "funcall" => {
@@ -10956,7 +10978,7 @@ pub fn call(
                 }
             }
             lambda_body.extend(body);
-            Ok(Value::Lambda(params, lambda_body, captured_env))
+            Ok(Value::Lambda(params, lambda_body, shared_env(captured_env)))
         }
         "getenv" | "getenv-internal" => {
             need_args(name, args, 1)?;
@@ -22005,7 +22027,7 @@ mod tests {
                 ]),
                 Value::T,
             ],
-            Vec::new(),
+            shared_env(Vec::new()),
         );
 
         call(
@@ -22703,6 +22725,24 @@ mod tests {
         )
         .expect("single-key-description should honor no-angles");
         assert_eq!(plain, Value::String("home".into()));
+    }
+
+    #[test]
+    fn keymap_bindings_accept_t_vector_events() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            "(let ((map (make-sparse-keymap \"demo\")))
+               (define-key map [t] 'fallback-command)
+               (eq (lookup-key map [t]) 'fallback-command))",
+        )
+        .read_all()
+        .expect("keymap test form should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("[t] key events should be accepted in keymaps");
+        assert_eq!(result, Value::T);
     }
 
     #[test]
@@ -27020,9 +27060,13 @@ fn key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
         return string_text(value);
     }
     if let Ok(events) = vector_items(value)
-        && let [Value::Symbol(symbol)] = events.as_slice()
+        && let [event] = events.as_slice()
     {
-        return Ok(symbol.clone());
+        match event {
+            Value::Symbol(symbol) => return Ok(symbol.clone()),
+            Value::T => return Ok("t".into()),
+            _ => {}
+        }
     }
     let mut parts = Vec::new();
     append_key_description_parts(value, &mut parts)?;
@@ -27158,6 +27202,7 @@ fn single_key_description_text(key: &Value, no_angles: bool) -> Result<String, L
     match key {
         Value::Integer(code) => Ok(describe_key_code(*code)),
         Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
+        Value::T => Ok(describe_symbolic_key("t", no_angles)),
         Value::String(text) => Ok(text.clone()),
         Value::StringObject(state) => Ok(state.borrow().text.clone()),
         Value::Cons(_, _) => list_event_key_description_text(key, no_angles),
@@ -28356,7 +28401,7 @@ fn hash_value_eq(state: &mut u64, value: &Value) {
         }
         Value::Lambda(_, _, env) => {
             hash_mix(state, 7);
-            hash_mix(state, env.as_ptr() as usize as u64);
+            hash_mix(state, Rc::as_ptr(env) as usize as u64);
         }
         Value::Buffer(id, _) => {
             hash_mix(state, 8);
@@ -28882,6 +28927,68 @@ fn active_minor_mode_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>,
         }
     }
     Ok(maps)
+}
+
+fn current_active_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>, LispError> {
+    let mut maps = Vec::new();
+    if let Some(map) = interp.lookup_var("overriding-terminal-local-map", env)
+        && is_keymap_value(interp, &map)
+    {
+        maps.push(map);
+    }
+    if let Some(map) = interp.lookup_var("overriding-local-map", env)
+        && is_keymap_value(interp, &map)
+    {
+        maps.push(map);
+    }
+    maps.extend(active_minor_mode_maps(interp, env)?);
+    if let Some(map) = interp.lookup_var("current-local-map", env)
+        && is_keymap_value(interp, &map)
+    {
+        maps.push(map);
+    }
+    if let Some(map) = interp.lookup_var("global-map", env)
+        && is_keymap_value(interp, &map)
+    {
+        maps.push(map);
+    }
+    Ok(maps)
+}
+
+fn where_is_internal_maps(
+    interp: &Interpreter,
+    arg: Option<&Value>,
+    env: &Env,
+) -> Result<Vec<Value>, LispError> {
+    let Some(arg) = arg else {
+        return current_active_maps(interp, env);
+    };
+    if arg.is_nil() {
+        return current_active_maps(interp, env);
+    }
+    if is_keymap_value(interp, arg) {
+        return Ok(vec![arg.clone()]);
+    }
+    let mut maps = Vec::new();
+    for item in arg.to_vec()? {
+        if is_keymap_value(interp, &item) {
+            maps.push(item);
+        }
+    }
+    Ok(maps)
+}
+
+fn where_is_internal(interp: &Interpreter, command: &str, keymaps: &[Value]) -> Vec<String> {
+    let mut matches = Vec::new();
+    let mut seen = HashSet::new();
+    for keymap in keymaps {
+        if let Some(binding) = keymap_binding_text_for_command(interp, keymap, command)
+            && seen.insert(binding.clone())
+        {
+            matches.push(binding);
+        }
+    }
+    matches
 }
 
 fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
@@ -29930,7 +30037,7 @@ fn eval_callable_metadata_form(
 ) -> Result<Value, LispError> {
     if let Value::Lambda(_, _, closure_env) = func {
         let mut captured_frames = 0;
-        for captured in closure_env.iter().rev() {
+        for captured in closure_env.borrow().iter().rev() {
             env.insert(0, captured.clone());
             captured_frames += 1;
         }
@@ -30734,7 +30841,7 @@ mod compat_runtime_tests {
                     ]),
                     Value::Nil,
                 ],
-                Vec::new(),
+                shared_env(Vec::new()),
             )),
         );
         interp.set_variable(
@@ -30772,7 +30879,7 @@ mod compat_runtime_tests {
                     ]),
                     Value::Nil,
                 ],
-                Vec::new(),
+                shared_env(Vec::new()),
             )),
         );
         interp.set_variable(
@@ -30936,7 +31043,7 @@ mod compat_runtime_tests {
                     ]),
                     Value::list([Value::Symbol("selected-window".into())]),
                 ],
-                Vec::new(),
+                shared_env(Vec::new()),
             )),
         );
         let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-action*");
@@ -30976,7 +31083,7 @@ mod compat_runtime_tests {
                     ]),
                     Value::list([Value::Symbol("quote".into()), Value::Nil]),
                 ],
-                Vec::new(),
+                shared_env(Vec::new()),
             )),
         );
         let (buffer_id, buffer_name) = interp.create_buffer("*display-buffer-action-nil*");

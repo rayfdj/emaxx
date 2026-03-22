@@ -1,0 +1,305 @@
+{
+  "format_version": 1,
+  "files": [
+    {
+      "path": "test/lib-src/emacsclient-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/align-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/allout-widgets-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/ansi-color-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/ansi-osc-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/arc-mode-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/buff-menu-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/button-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/calculator-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/comint-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/descr-text-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/desktop-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/dired-x-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/edmacro-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/env-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/epg-config-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/faces-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/files-x-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/find-cmd-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/follow-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/font-lock-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/hfy-cmap-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/hi-lock-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/hl-line-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/htmlfontify-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/ido-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/image-file-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/imenu-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/info-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/jit-lock-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/kmacro-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/lpr-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/man-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/md4-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/mouse-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/mwheel-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/newcomment-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/password-cache-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/pcmpl-linux-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/pcomplete-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/ps-print-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/register-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/rot13-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/savehist-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/saveplace-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/scroll-lock-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/soundex-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/startup-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/tabify-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/tar-mode-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/version-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/winner-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/x-dnd-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/xdg-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/xt-mouse-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/lisp/yank-media-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/misc/test-custom-deps.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/misc/test-custom-libs.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/misc/test-custom-noloads.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/casefiddle-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/coding-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/data-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/emacs-module-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/eval-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/fileio-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/filelock-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/fns-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/keymap-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/lcms-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/lread-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/minibuf-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/print-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/regex-emacs-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/timefns-tests.el",
+      "selector": "t"
+    },
+    {
+      "path": "test/src/treesit-tests.el",
+      "selector": "t"
+    }
+  ]
+}

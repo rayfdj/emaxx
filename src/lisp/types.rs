@@ -10,6 +10,7 @@ const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
 
 pub type ConsSlot = Rc<RefCell<Value>>;
 pub type ConsCells = (ConsSlot, ConsSlot);
+pub type SharedEnv = Rc<RefCell<Env>>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StringPropertySpan {
@@ -40,7 +41,7 @@ pub enum Value {
     /// Built-in function: name, arity (min, max), function pointer handled in eval
     BuiltinFunc(String),
     /// A lambda or closure: params, body, captured env
-    Lambda(Vec<String>, Vec<Value>, Env),
+    Lambda(Vec<String>, Vec<Value>, SharedEnv),
     /// A buffer object: (id, name). The id is used for `eq` identity.
     Buffer(u64, String),
     /// A marker object, identified by unique id.
@@ -58,6 +59,10 @@ pub enum Value {
 /// An environment frame: a list of (name, value) bindings.
 /// We use a simple vector of frames for lexical scoping.
 pub type Env = Vec<Vec<(String, Value)>>;
+
+pub fn shared_env(env: Env) -> SharedEnv {
+    Rc::new(RefCell::new(env))
+}
 
 pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
     format!("{base}{UNINTERNED_SYMBOL_MARKER}{id}")
@@ -306,7 +311,7 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
         }
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Lambda(a_params, a_body, a_env), Value::Lambda(b_params, b_body, b_env)) => {
-            a_params == b_params && a_body == b_body && a_env == b_env
+            a_params == b_params && a_body == b_body && *a_env.borrow() == *b_env.borrow()
         }
         (Value::Buffer(id_a, _), Value::Buffer(id_b, _)) => id_a == id_b,
         (Value::Marker(a), Value::Marker(b)) => a == b,
