@@ -417,7 +417,9 @@ impl<'a> Reader<'a> {
         match self.peek() {
             None => Err(LispError::EndOfInput),
             Some(b'\\') => {
+                const ALT_BIT: i64 = 1 << 22;
                 const SUPER_BIT: i64 = 1 << 23;
+                const HYPER_BIT: i64 = 1 << 24;
                 const SHIFT_BIT: i64 = 1 << 25;
                 const CTRL_BIT: i64 = 1 << 26;
                 const META_BIT: i64 = 1 << 27;
@@ -428,12 +430,17 @@ impl<'a> Reader<'a> {
                     if self.peek() == Some(b'\\')
                         && matches!(
                             self.input.get(self.pos + 1).copied(),
-                            Some(b'S' | b'C' | b'M' | b's' | b'^')
+                            Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's' | b'^')
                         )
                     {
                         self.advance();
                     }
                     match (self.peek(), self.input.get(self.pos + 1).copied()) {
+                        (Some(b'A'), Some(b'-')) => {
+                            saw_modifier = true;
+                            modifiers |= ALT_BIT;
+                            self.pos += 2;
+                        }
                         (Some(b'S'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= SHIFT_BIT;
@@ -442,6 +449,11 @@ impl<'a> Reader<'a> {
                         (Some(b'C'), Some(b'-')) => {
                             saw_modifier = true;
                             modifiers |= CTRL_BIT;
+                            self.pos += 2;
+                        }
+                        (Some(b'H'), Some(b'-')) => {
+                            saw_modifier = true;
+                            modifiers |= HYPER_BIT;
                             self.pos += 2;
                         }
                         (Some(b'M'), Some(b'-')) => {
@@ -1151,7 +1163,9 @@ mod tests {
 
     #[test]
     fn characters_with_modifiers() {
+        assert_eq!(read_one("?\\A-x"), Value::Integer((1 << 22) | ('x' as i64)));
         assert_eq!(read_one("?\\C-x"), Value::Integer(24));
+        assert_eq!(read_one("?\\H-x"), Value::Integer((1 << 24) | ('x' as i64)));
         assert_eq!(read_one("?\\M-c"), Value::Integer((1 << 27) | ('c' as i64)));
         assert_eq!(read_one("?\\^C"), Value::Integer(3));
         assert_eq!(read_one("?\\^?"), Value::Integer(127));
@@ -1201,6 +1215,17 @@ mod tests {
         let val = read_one("(a . b)");
         assert_eq!(val.car().unwrap(), Value::Symbol("a".into()));
         assert_eq!(val.cdr().unwrap(), Value::Symbol("b".into()));
+    }
+
+    #[test]
+    fn dotted_pair_with_modified_character_literal_cdr() {
+        let val = read_one("((?A . ?\\A-\\0) (?H . ?\\H-\\0))");
+        let items = val.to_vec().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].car().unwrap(), Value::Integer('A' as i64));
+        assert_eq!(items[0].cdr().unwrap(), Value::Integer((1 << 22) | 0));
+        assert_eq!(items[1].car().unwrap(), Value::Integer('H' as i64));
+        assert_eq!(items[1].cdr().unwrap(), Value::Integer((1 << 24) | 0));
     }
 
     #[test]

@@ -10852,6 +10852,18 @@ fn builtin_autoload_function(name: &str) -> Option<Value> {
         "hack-connection-local-variables-apply" => {
             Some(builtin_file_autoload("files-x", Value::Nil))
         }
+        "key-valid-p" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "keymap-global-set" => Some(builtin_file_autoload("keymap", Value::T)),
+        "keymap-global-unset" => Some(builtin_file_autoload("keymap", Value::T)),
+        "keymap-local-set" => Some(builtin_file_autoload("keymap", Value::T)),
+        "keymap-local-unset" => Some(builtin_file_autoload("keymap", Value::T)),
+        "keymap-lookup" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "keymap-lookup-keymap" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "keymap-set" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "keymap-set-after" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "keymap-substitute" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "keymap-unset" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "define-keymap" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),
         "with-connection-local-application-variables" => Some(builtin_macro_autoload("files-x")),
@@ -15191,6 +15203,14 @@ mod tests {
                 .lookup_function("connection-local-value", &env)
                 .unwrap(),
             builtin_macro_autoload("files-x")
+        );
+        assert_eq!(
+            interp.lookup_function("key-valid-p", &env).unwrap(),
+            builtin_file_autoload("keymap", Value::Nil)
+        );
+        assert_eq!(
+            interp.lookup_function("keymap-set", &env).unwrap(),
+            builtin_file_autoload("keymap", Value::Nil)
         );
     }
 
