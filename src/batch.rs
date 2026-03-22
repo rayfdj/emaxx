@@ -32,11 +32,8 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     let selector_string = selector.to_string();
 
     for target in &options.load {
-        if target == "ert" {
-            continue;
-        }
         let resolved = resolve_load_target(target, &options.load_path)?;
-        if loaded_test_file.is_none() {
+        if target != "ert" && loaded_test_file.is_none() {
             loaded_test_file = Some(resolved.clone());
         }
         if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
@@ -144,7 +141,7 @@ fn initialize_batch_interpreter(options: &BatchRunOptions) -> Result<Interpreter
 }
 
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
-    for feature in ["button"] {
+    for feature in ["button", "backquote", "seq"] {
         if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
             continue;
         }
@@ -505,5 +502,42 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove temp root");
+    }
+
+    #[test]
+    fn batch_runtime_can_load_ert_helpers() {
+        let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+        let options = BatchRunOptions {
+            load_path: compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            initialize_batch_interpreter(&options).expect("init batch interpreter");
+        let ert = resolve_load_target("ert", &options.load_path).expect("resolve ert");
+        lisp::load_file_strict(&mut interpreter, &ert).expect("load ert");
+
+        assert!(
+            interpreter
+                .lookup_function("ert-test-erts-file", &Vec::new())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn batch_runtime_can_load_align_stack() {
+        let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+        let options = BatchRunOptions {
+            load_path: compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter =
+            initialize_batch_interpreter(&options).expect("init batch interpreter");
+
+        for target in ["ert", "ert-x", "align", "test/lisp/align-tests.el"] {
+            let resolved = resolve_load_target(target, &options.load_path)
+                .unwrap_or_else(|error| panic!("resolve {target}: {error}"));
+            lisp::load_file_strict(&mut interpreter, &resolved)
+                .unwrap_or_else(|error| panic!("load {target} ({}): {error}", resolved.display()));
+        }
     }
 }
