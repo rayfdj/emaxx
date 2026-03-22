@@ -10834,12 +10834,29 @@ fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
         "cl-delete-duplicates" => Some(builtin_file_autoload("cl-seq", Value::Nil)),
+        "connection-local-p" => Some(builtin_macro_autoload("files-x")),
+        "connection-local-set-profile-variables" => {
+            Some(builtin_file_autoload("files-x", Value::Nil))
+        }
+        "connection-local-set-profiles" => Some(builtin_file_autoload("files-x", Value::Nil)),
+        "connection-local-update-profile-variables" => {
+            Some(builtin_file_autoload("files-x", Value::Nil))
+        }
+        "connection-local-value" => Some(builtin_macro_autoload("files-x")),
         "dired" => Some(builtin_file_autoload("dired", Value::T)),
         "gv-define-expander" => Some(builtin_macro_autoload("gv")),
         "gv-define-setter" => Some(builtin_macro_autoload("gv")),
         "gv-define-simple-setter" => Some(builtin_macro_autoload("gv")),
         "gv-letplace" => Some(builtin_macro_autoload("gv")),
+        "hack-connection-local-variables" => Some(builtin_file_autoload("files-x", Value::Nil)),
+        "hack-connection-local-variables-apply" => {
+            Some(builtin_file_autoload("files-x", Value::Nil))
+        }
+        "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),
+        "with-connection-local-application-variables" => Some(builtin_macro_autoload("files-x")),
+        "with-connection-local-variables" => Some(builtin_macro_autoload("files-x")),
+        "with-connection-local-variables-1" => Some(builtin_file_autoload("files-x", Value::Nil)),
         "point-to-register" => Some(Value::Lambda(
             vec!["register".into(), "&optional".into(), "arg".into()],
             vec![
@@ -15162,6 +15179,18 @@ mod tests {
         assert_eq!(
             interp.lookup_function("dired", &env).unwrap(),
             builtin_file_autoload("dired", Value::T)
+        );
+        assert_eq!(
+            interp
+                .lookup_function("with-connection-local-variables", &env)
+                .unwrap(),
+            builtin_macro_autoload("files-x")
+        );
+        assert_eq!(
+            interp
+                .lookup_function("connection-local-value", &env)
+                .unwrap(),
+            builtin_macro_autoload("files-x")
         );
     }
 
