@@ -5842,12 +5842,10 @@ impl Interpreter {
                 for (captured_index, current_index) in frame_mapping.iter().enumerate() {
                     if let (Some(current_index), Some(position)) =
                         (current_index, captured_positions[captured_index])
+                        && let Some(updated) = call_env.get(position)
+                        && *current_index < env.len()
                     {
-                        if let Some(updated) = call_env.get(position)
-                            && *current_index < env.len()
-                        {
-                            env[*current_index] = updated.clone();
-                        }
+                        env[*current_index] = updated.clone();
                     }
                 }
                 self.pop_backtrace_frame();
