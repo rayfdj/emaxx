@@ -4904,6 +4904,7 @@ impl Interpreter {
             "custom-current-group-alist" => Some(Value::Nil),
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
+            "macroexp--dynvars" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
             "image-types" => Some(Value::list([
                 Value::Symbol("pbm".into()),
@@ -5066,6 +5067,13 @@ impl Interpreter {
             "indent-tabs-mode" => Some(Value::T),
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
+            "help-char" => Some(Value::Integer(8)),
+            "help-event-list" => Some(Value::Nil),
+            "help-form" => Some(Value::Nil),
+            "prefix-help-command" => Some(Value::Nil),
+            "command-error-function" => {
+                Some(Value::Symbol("command-error-default-function".into()))
+            }
             "read-file-name-completion-ignore-case" => Some(Value::Nil),
             "mounted-file-systems" => Some(Value::String(String::new())),
             "system-type" => Some(Value::Symbol(
@@ -5475,12 +5483,15 @@ impl Interpreter {
                         "defclass" => return self.sf_defclass(&items),
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
                         "cl-defun" => return self.sf_cl_defun(&items, env),
+                        "cl-defmacro" => return self.sf_cl_defmacro(&items, env),
                         "cl-generic-define-generalizer" => {
                             return self.sf_cl_generic_define_generalizer(&items);
                         }
                         "cl-defgeneric" => return self.sf_cl_defgeneric(&items, env),
                         "cl-defmethod" => return self.sf_cl_defmethod(&items, env),
                         "cl-generic-define-context-rewriter" => return Ok(Value::Nil),
+                        "oclosure-define" => return self.sf_oclosure_define(&items),
+                        "oclosure-lambda" => return self.sf_oclosure_lambda(&items, env),
                         "define-inline" => return self.sf_define_inline(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
                         "with-memoization" => return self.sf_with_memoization(&items, env),
@@ -5497,6 +5508,9 @@ impl Interpreter {
                             if items.len() >= 2 {
                                 if let Value::Symbol(name) = &items[1] {
                                     return Ok(Value::Symbol(name.clone()));
+                                }
+                                if let Ok(name) = function_name_from_binding_form(&items[1]) {
+                                    return Ok(Value::Symbol(name));
                                 }
                                 return self.eval(&items[1], env);
                             }
@@ -7171,6 +7185,15 @@ impl Interpreter {
                     Value::Nil => None,
                     _ => None,
                 });
+                let map_name = format!("{name}-map");
+                if self.lookup_var(&map_name, &Vec::new()).is_none() {
+                    self.globals.push((
+                        map_name.clone(),
+                        Self::stored_value(crate::lisp::primitives::keymap_placeholder(Some(
+                            &map_name,
+                        ))),
+                    ));
+                }
                 let mut index = 4;
                 if matches!(
                     items.get(index),
@@ -7667,14 +7690,91 @@ impl Interpreter {
         self.sf_defun(&lowered, env)
     }
 
-    fn sf_cl_defgeneric(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
-            return Ok(Value::Nil);
-        };
-        if self.lookup_function(name, env).is_err() {
-            self.set_function_binding(name, Some(Value::BuiltinFunc("ignore".into())));
+    fn sf_cl_defmacro(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::Signal(
+                "cl-defmacro needs name, params, body".into(),
+            ));
         }
-        Ok(Value::Symbol(name.to_string()))
+
+        let name = items[1].as_symbol()?.to_string();
+        if self.lookup_function("cl-copy-list", env).is_err() {
+            self.load_target("cl-lib")?;
+        }
+        if self.lookup_function("cl--transform-lambda", env).is_err() {
+            self.load_target("cl-macs")?;
+        }
+        let transformer = self.lookup_function("cl--transform-lambda", env)?;
+        let lambda_form = Value::cons(items[2].clone(), Value::list(items[3..].to_vec()));
+        let transformed = self.call_function_value(
+            transformer,
+            Some("cl--transform-lambda"),
+            &[lambda_form, Value::Symbol(name.clone())],
+            env,
+        )?;
+        let mut lowered = Vec::with_capacity(2);
+        lowered.push(Value::Symbol("defmacro".into()));
+        lowered.push(Value::Symbol(name));
+        lowered.extend(transformed.to_vec()?);
+        self.sf_defmacro(&lowered)
+    }
+
+    fn sf_cl_defgeneric(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::Signal(
+                "cl-defgeneric needs name and params".into(),
+            ));
+        }
+        let name = function_name_from_binding_form(&items[1])?;
+        let mut body_start = 3;
+        if matches!(
+            items.get(3),
+            Some(Value::String(_) | Value::StringObject(_))
+        ) {
+            body_start = 4;
+        }
+        while let Some(form) = items.get(body_start) {
+            let Ok(parts) = form.to_vec() else {
+                break;
+            };
+            let Some(Value::Symbol(head)) = parts.first() else {
+                break;
+            };
+            match head.as_str() {
+                "declare" => {
+                    body_start += 1;
+                }
+                ":documentation" | ":argument-precedence-order" => {
+                    body_start += 1;
+                }
+                ":method" => {
+                    let mut lowered_method = Vec::with_capacity(parts.len() + 1);
+                    lowered_method.push(Value::Symbol("cl-defmethod".into()));
+                    lowered_method.push(Value::Symbol(name.clone()));
+                    lowered_method.extend(parts[1..].iter().cloned());
+                    self.sf_cl_defmethod(&lowered_method, env)?;
+                    body_start += 1;
+                }
+                _ => break,
+            }
+        }
+        if body_start < items.len() {
+            let mut lowered = Vec::with_capacity(items.len() - body_start + 4);
+            lowered.push(Value::Symbol("cl-defun".into()));
+            lowered.push(Value::Symbol(name.clone()));
+            lowered.push(items[2].clone());
+            if matches!(
+                items.get(3),
+                Some(Value::String(_) | Value::StringObject(_))
+            ) {
+                lowered.push(items[3].clone());
+            }
+            lowered.extend(items[body_start..].iter().cloned());
+            self.sf_cl_defun(&lowered, env)?;
+        } else if self.lookup_function(&name, env).is_err() {
+            self.set_function_binding(&name, Some(Value::BuiltinFunc("ignore".into())));
+        }
+        Ok(Value::Symbol(name))
     }
 
     fn sf_cl_generic_define_generalizer(&mut self, items: &[Value]) -> Result<Value, LispError> {
@@ -7698,6 +7798,7 @@ impl Interpreter {
                 "cl-defmethod needs name, params, body".into(),
             ));
         }
+        let name = function_name_from_binding_form(&items[1])?;
         let lambda_list_index = items
             .iter()
             .enumerate()
@@ -7708,10 +7809,30 @@ impl Interpreter {
             .ok_or_else(|| LispError::Signal("cl-defmethod needs a lambda list".into()))?;
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
-        lowered.push(items[1].clone());
+        lowered.push(Value::Symbol(name));
         lowered.push(lower_cl_defmethod_lambda_list(&items[lambda_list_index])?);
         lowered.extend(items[lambda_list_index + 1..].iter().cloned());
         self.sf_cl_defun(&lowered, env)
+    }
+
+    fn sf_oclosure_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
+        let Some(name_form) = items.get(1) else {
+            return Err(LispError::Signal("oclosure-define needs a name".into()));
+        };
+        Ok(Value::Symbol(function_name_from_binding_form(name_form)?))
+    }
+
+    fn sf_oclosure_lambda(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::Signal(
+                "oclosure-lambda needs slots, args, and body".into(),
+            ));
+        }
+        let mut lowered = Vec::with_capacity(items.len());
+        lowered.push(Value::Symbol("lambda".into()));
+        lowered.push(items[2].clone());
+        lowered.extend(items[3..].iter().cloned());
+        self.sf_lambda(&lowered, env)
     }
 
     fn sf_define_inline(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -9804,12 +9925,32 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
-        if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
-            return Ok(Some(expanded));
-        }
+        let mut attempted_autoload = false;
+        let (params, body) = loop {
+            if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
+                return Ok(Some(expanded));
+            }
 
-        let Some((params, body)) = self.resolve_macro_binding(name) else {
-            return Ok(None);
+            if let Some(binding) = self.resolve_macro_binding(name) {
+                break binding;
+            }
+
+            if attempted_autoload {
+                return Ok(None);
+            }
+            let Ok(function) = self.lookup_function(name, env) else {
+                return Ok(None);
+            };
+            let Some((file, _, _kind)) = crate::lisp::primitives::autoload_parts(&function) else {
+                return Ok(None);
+            };
+            let loads_macro =
+                crate::lisp::primitives::autoload_is_macro(self, Some(name), &function);
+            if !loads_macro {
+                return Ok(None);
+            }
+            self.load_target(&file)?;
+            attempted_autoload = true;
         };
 
         // Bind params to unevaluated args
@@ -9851,6 +9992,83 @@ impl Interpreter {
         Ok(Some(expanded))
     }
 
+    pub(crate) fn macroexpand_1_form(
+        &mut self,
+        form: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Ok(items) = form.to_vec() else {
+            return Ok(form.clone());
+        };
+        let Some(Value::Symbol(name)) = items.first() else {
+            return Ok(form.clone());
+        };
+        Ok(self
+            .try_macroexpand(name, &items[1..], env)?
+            .unwrap_or_else(|| form.clone()))
+    }
+
+    pub(crate) fn macroexpand_all_form(
+        &mut self,
+        form: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Ok(items) = form.to_vec() else {
+            return Ok(form.clone());
+        };
+        let Some(head) = items.first() else {
+            return Ok(Value::Nil);
+        };
+        if let Value::Symbol(name) = head {
+            match name.as_str() {
+                "quote" | "function" => return Ok(form.clone()),
+                "eval-when-compile" => {
+                    let value = if items.len() <= 1 {
+                        Value::Nil
+                    } else if items.len() == 2 {
+                        self.eval(&items[1], env)?
+                    } else {
+                        let progn = Value::list(
+                            std::iter::once(Value::Symbol("progn".into()))
+                                .chain(items[1..].iter().cloned()),
+                        );
+                        self.eval(&progn, env)?
+                    };
+                    return Ok(quoted_literal(&value));
+                }
+                _ => {}
+            }
+            if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
+                return self.macroexpand_all_form(&expanded, env);
+            }
+        }
+
+        if matches!(head, Value::Symbol(name) if name == "lambda") {
+            let mut expanded = Vec::with_capacity(items.len());
+            expanded.push(items[0].clone());
+            if let Some(params) = items.get(1) {
+                expanded.push(params.clone());
+            }
+            for item in &items[2..] {
+                expanded.push(self.macroexpand_all_form(item, env)?);
+            }
+            return Ok(Value::list(expanded));
+        }
+
+        let mut expanded = Vec::with_capacity(items.len());
+        if matches!(head, Value::Symbol(_)) {
+            expanded.push(items[0].clone());
+            for item in &items[1..] {
+                expanded.push(self.macroexpand_all_form(item, env)?);
+            }
+        } else {
+            for item in &items {
+                expanded.push(self.macroexpand_all_form(item, env)?);
+            }
+        }
+        Ok(Value::list(expanded))
+    }
+
     fn try_builtin_macroexpand(
         &mut self,
         name: &str,
@@ -9860,6 +10078,7 @@ impl Interpreter {
         match name {
             "cl-case" => self.expand_cl_case(args, env).map(Some),
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+            "letrec" => self.expand_letrec(args).map(Some),
             "with-selected-frame" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(
@@ -9903,6 +10122,44 @@ impl Interpreter {
         Ok(Value::list(
             std::iter::once(Value::Symbol("let".into()))
                 .chain(std::iter::once(Value::list(bindings)))
+                .chain(args[1..].iter().cloned()),
+        ))
+    }
+
+    fn expand_letrec(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        let bindings = args
+            .first()
+            .ok_or_else(|| LispError::WrongNumberOfArgs("letrec".into(), 0))?
+            .to_vec()?;
+        let mut lowered_bindings = Vec::with_capacity(bindings.len());
+        let mut initializers = Vec::new();
+
+        for binding in bindings {
+            match binding {
+                Value::Symbol(name) => lowered_bindings.push(Value::Symbol(name)),
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    let Some(name_value) = parts.first() else {
+                        return Err(LispError::ReadError("bad letrec binding".into()));
+                    };
+                    let name = name_value.as_symbol()?.to_string();
+                    lowered_bindings.push(Value::Symbol(name.clone()));
+                    if parts.len() > 1 {
+                        initializers.push(Value::list([
+                            Value::Symbol("setq".into()),
+                            Value::Symbol(name),
+                            parts[1].clone(),
+                        ]));
+                    }
+                }
+                other => return Err(wrong_type_argument("listp", other)),
+            }
+        }
+
+        Ok(Value::list(
+            std::iter::once(Value::Symbol("let".into()))
+                .chain(std::iter::once(Value::list(lowered_bindings)))
+                .chain(initializers)
                 .chain(args[1..].iter().cloned()),
         ))
     }
@@ -10289,6 +10546,12 @@ fn function_name_from_binding_form(value: &Value) -> Result<String, LispError> {
         Value::Cons(_, _) => {
             let items = value.to_vec()?;
             if items.len() == 2
+                && matches!(items.first(), Some(Value::Symbol(name)) if name == "setf")
+            {
+                let target = function_name_from_binding_form(&items[1])?;
+                return Ok(format!("(setf {target})"));
+            }
+            if items.len() == 2
                 && matches!(items.first(), Some(Value::Symbol(name)) if name == "function" || name == "function-quote" || name == "quote")
             {
                 return function_name_from_binding_form(&items[1]);
@@ -10484,11 +10747,25 @@ fn builtin_file_autoload(file: &str, interactive: Value) -> Value {
     ])
 }
 
+fn builtin_macro_autoload(file: &str) -> Value {
+    Value::list([
+        Value::Symbol("autoload".into()),
+        Value::String(file.into()),
+        Value::Nil,
+        Value::Nil,
+        Value::Symbol("macro".into()),
+    ])
+}
+
 fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
         "cl-delete-duplicates" => Some(builtin_file_autoload("cl-seq", Value::Nil)),
         "dired" => Some(builtin_file_autoload("dired", Value::T)),
+        "gv-define-expander" => Some(builtin_macro_autoload("gv")),
+        "gv-define-setter" => Some(builtin_macro_autoload("gv")),
+        "gv-define-simple-setter" => Some(builtin_macro_autoload("gv")),
+        "gv-letplace" => Some(builtin_macro_autoload("gv")),
         "sh-mode" => Some(preloaded_sh_mode()),
         "point-to-register" => Some(Value::Lambda(
             vec!["register".into(), "&optional".into(), "arg".into()],
@@ -12031,7 +12308,7 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
                         compile_rx_sequence(interp, env, &items[2..])?
                     ))
                 }
-                "+" | "1+" => Ok(format!(
+                "+" | "1+" | "one-or-more" => Ok(format!(
                     "\\(?:{}\\)+",
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
@@ -12039,7 +12316,7 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
                     "\\(?:{}\\)+?",
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
-                "*" => Ok(format!(
+                "*" | "0+" | "zero-or-more" => Ok(format!(
                     "\\(?:{}\\)*",
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
@@ -12047,7 +12324,7 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
                     "\\(?:{}\\)*?",
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
-                "?" => Ok(format!(
+                "?" | "zero-or-one" | "opt" | "optional" => Ok(format!(
                     "\\(?:{}\\)?",
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
@@ -12102,6 +12379,8 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
                         .join("\\|")
                 )),
                 "any" | "in" | "char" => compile_rx_char_class(&items[1..], false),
+                "syntax" => compile_rx_syntax_form(&items, false),
+                "not-syntax" => compile_rx_syntax_form(&items, true),
                 "not" => {
                     if items.len() != 2 {
                         return Err(LispError::Signal("rx `not' needs one argument".into()));
@@ -12147,6 +12426,67 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
             "Unsupported rx form: {}",
             other.type_name()
         ))),
+    }
+}
+
+fn rx_syntax_code_from_name(name: &str) -> Option<char> {
+    match name {
+        "whitespace" | "space" | "white" => Some('-'),
+        "punctuation" => Some('.'),
+        "word" | "wordchar" => Some('w'),
+        "symbol" => Some('_'),
+        "open-parenthesis" => Some('('),
+        "close-parenthesis" => Some(')'),
+        "expression-prefix" => Some('\''),
+        "string-quote" => Some('"'),
+        "paired-delimiter" => Some('$'),
+        "escape" => Some('\\'),
+        "character-quote" => Some('/'),
+        "comment-start" => Some('<'),
+        "comment-end" => Some('>'),
+        "string-delimiter" => Some('|'),
+        "comment-delimiter" => Some('!'),
+        _ if name.len() == 1 => {
+            let ch = name.chars().next()?;
+            match ch {
+                '-' | '.' | 'w' | '_' | '(' | ')' | '\'' | '"' | '$' | '\\' | '/' | '<' | '>'
+                | '|' | '!' => Some(ch),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn rx_syntax_code_from_value(value: &Value) -> Result<char, LispError> {
+    match value {
+        Value::Symbol(symbol) => rx_syntax_code_from_name(symbol)
+            .ok_or_else(|| LispError::Signal(format!("Unknown rx syntax name `{symbol}`"))),
+        Value::Integer(codepoint) => {
+            let ch = char::from_u32(*codepoint as u32).ok_or_else(|| {
+                LispError::Signal(format!("Invalid rx syntax character: {codepoint}"))
+            })?;
+            rx_syntax_code_from_name(&ch.to_string())
+                .ok_or_else(|| LispError::Signal(format!("Unknown rx syntax name `{ch}`")))
+        }
+        _ => Err(LispError::Signal(
+            "rx `syntax' form takes a syntax name or syntax character".into(),
+        )),
+    }
+}
+
+fn compile_rx_syntax_form(items: &[Value], negated: bool) -> Result<String, LispError> {
+    if items.len() != 2 {
+        let form = if negated { "not-syntax" } else { "syntax" };
+        return Err(LispError::Signal(format!(
+            "rx `{form}` form takes exactly one argument"
+        )));
+    }
+    let syntax = rx_syntax_code_from_value(&items[1])?;
+    if syntax == 'w' {
+        Ok(format!(r"\{}", if negated { 'W' } else { 'w' }))
+    } else {
+        Ok(format!(r"\{}{}", if negated { 'S' } else { 's' }, syntax))
     }
 }
 
@@ -12244,6 +12584,7 @@ fn expand_rx_template_value(
 mod tests {
     use super::*;
     use crate::lisp::reader::Reader;
+    use std::path::PathBuf;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13993,6 +14334,18 @@ mod tests {
     }
 
     #[test]
+    fn define_derived_mode_creates_mode_map_variable() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-derived-mode sample-derived-mode fundamental-mode \"Sample\")
+                   (keymapp sample-derived-mode-map))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
     fn cl_defstruct_generates_constructor_accessors_and_setf() {
         assert_eq!(
             eval_str(
@@ -14482,6 +14835,14 @@ mod tests {
     }
 
     #[test]
+    fn symbol_value_respects_dynamic_bindings() {
+        assert_eq!(
+            eval_str("(let ((indent-tabs-mode nil)) (symbol-value 'indent-tabs-mode))"),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn emacs_version_function_mentions_version_and_system_configuration() {
         let mut interp = Interpreter::new();
         let version = eval_str_with(&mut interp, "emacs-version");
@@ -14757,6 +15118,233 @@ mod tests {
 
         std::fs::remove_file(&target).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn autoload_do_load_loads_function_stubs() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-autoload-do-load-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample-autoload-do-load.el");
+        std::fs::write(&target, "(defun sample-autoload-do-load () 42)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (autoload 'sample-autoload-do-load \"sample-autoload-do-load\")
+                   (autoload-do-load
+                     (symbol-function 'sample-autoload-do-load)
+                     'sample-autoload-do-load)
+                   (list
+                     (autoloadp (symbol-function 'sample-autoload-do-load))
+                     (sample-autoload-do-load)))"
+            ),
+            Value::list([Value::Nil, Value::Integer(42)])
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn autoload_do_load_respects_macro_only_for_non_macros() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-autoload-macro-only-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample-autoload-macro-only.el");
+        std::fs::write(&target, "(defun sample-autoload-macro-only () 42)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (autoload 'sample-autoload-macro-only \"sample-autoload-macro-only\")
+                   (let ((f (symbol-function 'sample-autoload-macro-only)))
+                     (list
+                       (autoloadp f)
+                       (equal f
+                              (autoload-do-load
+                                f
+                                'sample-autoload-macro-only
+                                'macro))
+                       (autoloadp (symbol-function 'sample-autoload-macro-only)))))"
+            ),
+            Value::list([Value::T, Value::T, Value::T])
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn autoload_do_load_loads_macros_in_macro_mode() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-autoload-macro-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample-auto-macro.el");
+        std::fs::write(&target, "(defmacro sample-auto-macro () 42)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (autoload 'sample-auto-macro \"sample-auto-macro\" nil nil 'macro)
+                   (autoload-do-load
+                     (symbol-function 'sample-auto-macro)
+                     'sample-auto-macro
+                     'macro)
+                   (list
+                     (autoloadp (symbol-function 'sample-auto-macro))
+                     (macrop 'sample-auto-macro)
+                     (macroexpand '(sample-auto-macro))))"
+            ),
+            Value::list([Value::Nil, Value::T, Value::Integer(42)])
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn autoloaded_macros_expand_when_called() {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-autoload-macroexpand-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample-auto-expand.el");
+        std::fs::write(&target, "(defmacro sample-auto-expand () 42)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![root.clone()]);
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (autoload 'sample-auto-expand \"sample-auto-expand\" nil nil 'macro)
+                   (sample-auto-expand))"
+            ),
+            Value::Integer(42)
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn memq_returns_the_original_tail_cell() {
+        assert_eq!(
+            eval_str(
+                "(let ((xs '(a b c)))
+                   (let ((tail (memq 'b xs)))
+                     (setcar tail 'x)
+                     xs))"
+            ),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("x".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn last_returns_the_original_tail_cell() {
+        assert_eq!(
+            eval_str(
+                "(let ((xs '(a b c)))
+                   (let ((tail (last xs)))
+                     (setcdr tail '(d))
+                     xs))"
+            ),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+                Value::Symbol("d".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_defmacro_autoloads_and_expands_in_batch_runtime() {
+        run_with_large_stack(|| {
+            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            load_faces_compat(&mut interp);
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (require 'cl-lib)
+                       (cl-defmacro sample-cl-macro () 42)
+                       (sample-cl-macro))"
+                ),
+                Value::Integer(42)
+            );
+        });
+    }
+
+    #[test]
+    fn macroexpand_all_expands_let_when_compile_constants() {
+        assert_string_list(
+            eval_str(
+                r#"
+                (progn
+                  (defmacro let-when-compile (bindings &rest body)
+                    (declare (indent 1) (debug let))
+                    (letrec ((loop
+                              (lambda (bindings)
+                                (if (null bindings)
+                                    (macroexpand-all (macroexp-progn body)
+                                                     macroexpand-all-environment)
+                                  (let ((binding (pop bindings)))
+                                    (cl-progv (list (car binding))
+                                        (list (eval (nth 1 binding) t))
+                                      (funcall loop bindings)))))))
+                      (funcall loop bindings)))
+                  (eval
+                   (macroexpand-all
+                    '(let-when-compile
+                       ((lisp-vdefs '("defvar"))
+                        (el-vdefs '("defconst")))
+                       (let ((vdefs (eval-when-compile
+                                      (append lisp-vdefs el-vdefs))))
+                         vdefs)))))
+                "#,
+            ),
+            &["defvar", "defconst"],
+        );
     }
 
     #[test]
@@ -15453,6 +16041,138 @@ mod tests {
     }
 
     #[test]
+    fn cl_defmethod_supports_setf_function_names() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defmethod (setf sample-slot) (store object)
+                     store)
+                   (funcall #'(setf sample-slot) 42 nil))"
+            ),
+            Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn cl_defgeneric_keeps_its_default_body() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defgeneric sample-generic (xs)
+                     (length xs))
+                   (sample-generic '(a b c)))"
+            ),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn oclosure_lambda_lowers_to_plain_lambda() {
+        assert_eq!(
+            eval_str("(funcall (oclosure-lambda (sample-type) (x) x) 7)"),
+            Value::Integer(7)
+        );
+    }
+
+    #[test]
+    fn align_c_variable_declaration_regex_matches_resource_lines() {
+        let result = eval_str(
+            r#"(list
+                 (progn
+                   (string-match
+                    "[*&0-9A-Za-z_]>?[][&*]*\\(\\s-+[*&]*\\)[A-Za-z_][][0-9A-Za-z:_]*\\s-*\\(\\()\\|=[^=\n].*\\|(.*)\\|\\(\\[.*\\]\\)*\\)\\s-*[;,]\\|)\\s-*$\\)"
+                    "main (int argc,")
+                   (list (match-beginning 0) (match-beginning 1) (match-end 1)))
+                 (progn
+                   (string-match
+                    "[*&0-9A-Za-z_]>?[][&*]*\\(\\s-+[*&]*\\)[A-Za-z_][][0-9A-Za-z:_]*\\s-*\\(\\()\\|=[^=\n].*\\|(.*)\\|\\(\\[.*\\]\\)*\\)\\s-*[;,]\\|)\\s-*$\\)"
+                    "char *argv[]);")
+                   (list (match-beginning 0) (match-beginning 1) (match-end 1))))"#,
+        );
+        assert_eq!(
+            result,
+            Value::list([
+                Value::list([Value::Integer(8), Value::Integer(9), Value::Integer(10)]),
+                Value::list([Value::Integer(3), Value::Integer(4), Value::Integer(6)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn align_c_function_declaration_matches_resource_output() {
+        run_with_large_stack(|| {
+            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'ert)
+                         (require 'ert-x)
+                         (require 'align)
+                         (with-temp-buffer
+                           (c-mode)
+                           (insert "int\nmain (int argc,\n      char *argv[]);\n")
+                           (align (point-min) (point-max))
+                           (buffer-string)))"#
+                ),
+                Value::String("int\nmain (int\t argc,\n      char\t*argv[]);\n".into())
+            );
+        });
+    }
+
+    #[test]
+    fn align_c_variable_declaration_rule_is_runnable_and_valid() {
+        run_with_large_stack(|| {
+            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'align)
+                         (let ((rule (assq 'c-variable-declaration align-rules-list)))
+                           (with-temp-buffer
+                             (c-mode)
+                             (insert "main (int argc,\n      char *argv[]);\n")
+                             (goto-char (point-min))
+                             (re-search-forward (cdr (assq 'regexp rule)))
+                             (list major-mode
+                                   font-lock-mode
+                                   indent-tabs-mode
+                                   align-to-tab-stop
+                                   (align--rule-should-run rule)
+                                   (funcall (cdr (assq 'valid rule)))))))"#
+                ),
+                Value::list([
+                    Value::Symbol("c-mode".into()),
+                    Value::T,
+                    Value::T,
+                    Value::Symbol("indent-tabs-mode".into()),
+                    Value::T,
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn cl_letf_supports_symbol_places() {
         assert_eq!(
             eval_str(
@@ -16119,6 +16839,20 @@ mod tests {
                 Value::Integer(2),
                 Value::list([Value::Integer(1), Value::Integer(3)]),
             ])
+        );
+    }
+
+    #[test]
+    fn letrec_binds_names_before_initializer_evaluation() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (letrec ((x 1)
+                         (y x))
+                  y)
+                "#
+            ),
+            Value::Integer(1)
         );
     }
 
@@ -17337,6 +18071,26 @@ IHdvcmxkIQ==")))
             Value::String("\\(?:[^/|]\\)+".into())
         );
         assert_eq!(
+            eval_str(r#"(rx (zero-or-more ?a))"#),
+            Value::String("\\(?:a\\)*".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (one-or-more ?a))"#),
+            Value::String("\\(?:a\\)+".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (zero-or-one ?a))"#),
+            Value::String("\\(?:a\\)?".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (syntax whitespace))"#),
+            Value::String("\\s-".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx (not-syntax whitespace))"#),
+            Value::String("\\S-".into())
+        );
+        assert_eq!(
             eval_str(r#"(rx (group-n 2 (group-n 1 (+ digit)) ":" (+ digit)))"#),
             Value::String("\\(?2:\\(?1:\\(?:[0-9]\\)+\\):\\(?:[0-9]\\)+\\)".into())
         );
@@ -17354,6 +18108,12 @@ IHdvcmxkIQ==")))
         );
         assert_eq!(
             eval_str(r#"(string-match-p (rx (in " -Z\\^-~")) "^")"#),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            eval_str(
+                r#"(string-match-p (rx (group (zero-or-more (syntax whitespace))) "=") "  =")"#
+            ),
             Value::Integer(0)
         );
     }

@@ -412,10 +412,60 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
         "user-error"
             | "byte-compile"
             | "byte-compile-check-lambda-list"
+            | "macroexpand-1"
+            | "macroexpand-all"
             | "read-key"
             | "regexp-opt"
             | "rx-to-string"
     )
+}
+
+fn activate_major_mode(interp: &mut Interpreter, mode: &str, mode_name: &str) {
+    let buffer_id = interp.current_buffer_id();
+    interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol(mode.into()));
+    interp.set_buffer_local_value(buffer_id, "mode-name", Value::String(mode_name.into()));
+}
+
+fn activate_c_family_mode(
+    interp: &mut Interpreter,
+    mode: &str,
+    mode_name: &str,
+) -> Result<Value, LispError> {
+    if !interp.has_feature("newcomment") && interp.resolve_load_target("newcomment").is_some() {
+        interp.load_target("newcomment")?;
+    }
+    let buffer_id = interp.current_buffer_id();
+    activate_major_mode(interp, mode, mode_name);
+    interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::T);
+    interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("/* ".into()));
+    interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(" */".into()));
+    interp.set_buffer_local_value(
+        buffer_id,
+        "comment-start-skip",
+        Value::String("\\(?://+\\|/\\*+\\)\\s *".into()),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "comment-end-skip",
+        Value::String("[ \t]*\\*+/".into()),
+    );
+    interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::Nil);
+    interp.set_buffer_local_value(buffer_id, "comment-style", Value::Symbol("indent".into()));
+    interp.set_buffer_local_value(buffer_id, "comment-multi-line", Value::T);
+    interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::T);
+    interp.set_buffer_local_value(buffer_id, "jit-lock-mode", Value::T);
+    if interp
+        .buffer_local_value(buffer_id, "jit-lock-functions")
+        .is_none()
+    {
+        interp.set_buffer_local_value(
+            buffer_id,
+            "jit-lock-functions",
+            Value::list([Value::Symbol("ignore".into())]),
+        );
+    }
+    interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::T);
+    Ok(Value::Nil)
 }
 
 const RAW_BYTE8_BASE: u32 = 0x3FFF00;
@@ -1182,7 +1232,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "goto-char"
             | "forward-char"
             | "backward-char"
+            | "conf-toml-mode"
+            | "css-base-mode"
+            | "css-mode"
             | "forward-word"
+            | "backward-word"
+            | "indent-next-tab-stop"
+            | "java-mode"
+            | "latex-mode"
             | "skip-chars-forward"
             | "skip-chars-backward"
             | "skip-syntax-forward"
@@ -1206,6 +1263,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "match-string-no-properties"
             | "match-beginning"
             | "match-end"
+            | "match-data"
+            | "python-base-mode"
+            | "python-mode"
+            | "set-match-data"
             | "buffer-string"
             | "buffer-substring"
             | "buffer-substring-no-properties"
@@ -1223,6 +1284,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "fundamental-mode"
             | "emacs-lisp-mode"
             | "special-mode"
+            | "treesit-available-p"
+            | "treesit-ready-p"
             | "derived-mode-p"
             | "display-mouse-p"
             | "derived-mode-add-parents"
@@ -1234,6 +1297,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "delete-region"
             | "delete-and-extract-region"
             | "delete-line"
+            | "delete-horizontal-space"
             | "delete-char"
             | "delete-forward-char"
             | "kill-word"
@@ -1725,6 +1789,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "intern"
             | "intern-soft"
             | "autoload"
+            | "autoload-do-load"
             | "autoloadp"
             | "custom-autoload"
             | "custom-add-to-group"
@@ -1968,6 +2033,7 @@ pub fn call(
             | "delete-and-extract-region"
             | "kill-region"
             | "delete-line"
+            | "delete-horizontal-space"
             | "delete-char"
             | "delete-forward-char"
             | "kill-word"
@@ -3302,12 +3368,34 @@ pub fn call(
                 .transpose()?
                 .unwrap_or(1)
                 .max(0) as usize;
-            let items = list_sequence_items(interp, &args[0])?;
-            if items.is_empty() {
-                return Ok(Value::Nil);
+            let mut tails = Vec::new();
+            let mut current = args[0].clone();
+            loop {
+                match current.clone() {
+                    Value::Cons(_, cdr) => {
+                        tails.push(current.clone());
+                        current = cdr.borrow().clone();
+                    }
+                    Value::Nil => {
+                        return if n == 0 {
+                            Ok(Value::Nil)
+                        } else if let Some(index) = tails.len().checked_sub(n.max(1)) {
+                            Ok(tails[index].clone())
+                        } else {
+                            Ok(args[0].clone())
+                        };
+                    }
+                    other => {
+                        return if n == 0 {
+                            Ok(other)
+                        } else if let Some(index) = tails.len().checked_sub(n.max(1)) {
+                            Ok(tails[index].clone())
+                        } else {
+                            Ok(args[0].clone())
+                        };
+                    }
+                }
             }
-            let start = items.len().saturating_sub(n.max(1));
-            Ok(Value::list(items[start..].iter().cloned()))
         }
         "butlast" => {
             if args.is_empty() || args.len() > 2 {
@@ -3408,18 +3496,32 @@ pub fn call(
         }
         "memq" | "member" => {
             need_args(name, args, 2)?;
-            let items = args[1].to_vec()?;
-            for (i, item) in items.iter().enumerate() {
-                let matches = if name == "member" {
-                    values_equal(interp, item, &args[0])
-                } else {
-                    *item == args[0]
-                };
-                if matches {
-                    return Ok(Value::list(items[i..].iter().cloned()));
+            let mut current = args[1].clone();
+            loop {
+                match current.clone() {
+                    Value::Cons(car, cdr) => {
+                        let item = car.borrow().clone();
+                        let matches = if name == "member" {
+                            values_equal(interp, &item, &args[0])
+                        } else {
+                            item == args[0]
+                        };
+                        if matches {
+                            return Ok(current);
+                        }
+                        current = cdr.borrow().clone();
+                    }
+                    Value::Nil => return Ok(Value::Nil),
+                    other => {
+                        let matches = if name == "member" {
+                            values_equal(interp, &other, &args[0])
+                        } else {
+                            other == args[0]
+                        };
+                        return Ok(if matches { other } else { Value::Nil });
+                    }
                 }
             }
-            Ok(Value::Nil)
         }
         "member-ignore-case" => {
             need_args(name, args, 2)?;
@@ -5279,6 +5381,69 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "backward-word" => {
+            let n = if args.is_empty() {
+                1
+            } else {
+                args[0].as_integer()?
+            };
+            call(interp, "forward-word", &[Value::Integer(-n)], env)
+        }
+        "indent-next-tab-stop" => {
+            need_arg_range(name, args, 1, 2)?;
+            let column = args[0].as_integer()?.max(0);
+            let prev = args.get(1).is_some_and(Value::is_truthy);
+            let tab_width = interp
+                .lookup_var("tab-width", env)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(8)
+                .max(1);
+            let tabs = interp
+                .lookup_var("tab-stop-list", env)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| value.as_integer().ok())
+                .collect::<Vec<_>>();
+            let next = if let Some(first_after) = tabs.iter().copied().find(|tab| column < *tab) {
+                if prev {
+                    let previous = tabs
+                        .iter()
+                        .copied()
+                        .take_while(|tab| *tab < first_after)
+                        .last()
+                        .unwrap_or(0);
+                    if column == previous {
+                        tabs.iter()
+                            .copied()
+                            .take_while(|tab| *tab < previous)
+                            .last()
+                            .unwrap_or(0)
+                    } else {
+                        previous
+                    }
+                } else {
+                    first_after
+                }
+            } else {
+                let last = tabs.last().copied().unwrap_or(0);
+                let step = if tabs.len() >= 2 {
+                    (tabs[tabs.len() - 1] - tabs[tabs.len() - 2]).max(1)
+                } else {
+                    tab_width
+                };
+                if prev {
+                    if column <= last {
+                        last - step
+                    } else {
+                        last + step * (((column - last - 1) / step) - 1).max(0)
+                    }
+                } else {
+                    last + step * (((column - last) / step) + 1)
+                }
+            };
+            Ok(Value::Integer(next.max(0)))
+        }
         "skip-chars-forward" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -5497,14 +5662,26 @@ pub fn call(
             let current_mode = interp
                 .lookup_var("major-mode", env)
                 .and_then(|value| value.as_symbol().ok().map(str::to_string));
+            let mut candidates = Vec::new();
+            for value in args {
+                if let Ok(symbol) = value.as_symbol() {
+                    candidates.push(symbol.to_string());
+                    continue;
+                }
+                if let Ok(items) = value.to_vec() {
+                    for item in items {
+                        if let Ok(symbol) = item.as_symbol() {
+                            candidates.push(symbol.to_string());
+                        }
+                    }
+                }
+            }
             Ok(
                 if current_mode.is_some_and(|current| {
                     let parents = derived_mode_parent_chain(interp, &current);
-                    args.iter().any(|value| {
-                        value.as_symbol().ok().is_some_and(|candidate| {
-                            parents.iter().any(|parent| parent == candidate)
-                        })
-                    })
+                    candidates
+                        .iter()
+                        .any(|candidate| parents.iter().any(|parent| parent == candidate))
                 }) {
                     Value::T
                 } else {
@@ -5644,35 +5821,97 @@ pub fn call(
                 .unwrap_or(Value::Nil))
         }
         "c-mode" => {
-            if !interp.has_feature("newcomment")
-                && interp.resolve_load_target("newcomment").is_some()
-            {
-                interp.load_target("newcomment")?;
-            }
+            derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
+            activate_c_family_mode(interp, "c-mode", "C")
+        }
+        "java-mode" => {
+            derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
+            activate_c_family_mode(interp, "java-mode", "Java")
+        }
+        "css-base-mode" => {
+            derived_mode_set_parent(interp, "css-base-mode", Some("prog-mode"));
             let buffer_id = interp.current_buffer_id();
-            interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol("c-mode".into()));
-            interp.set_buffer_local_value(buffer_id, "mode-name", Value::String("C".into()));
-            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("/* ".into()));
-            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(" */".into()));
+            activate_major_mode(interp, "css-base-mode", "CSS");
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("/*".into()));
             interp.set_buffer_local_value(
                 buffer_id,
                 "comment-start-skip",
-                Value::String("\\(?://+\\|/\\*+\\)\\s *".into()),
+                Value::String("/\\*+[ \t]*".into()),
             );
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String("*/".into()));
             interp.set_buffer_local_value(
                 buffer_id,
                 "comment-end-skip",
                 Value::String("[ \t]*\\*+/".into()),
             );
-            interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::Nil);
-            interp.set_buffer_local_value(
-                buffer_id,
-                "comment-style",
-                Value::Symbol("indent".into()),
-            );
-            interp.set_buffer_local_value(buffer_id, "comment-multi-line", Value::T);
             Ok(Value::Nil)
         }
+        "css-mode" => {
+            derived_mode_set_parent(interp, "css-mode", Some("css-base-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "css-mode", "CSS");
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("/*".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String("/\\*+[ \t]*".into()),
+            );
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String("*/".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-end-skip",
+                Value::String("[ \t]*\\*+/".into()),
+            );
+            Ok(Value::Nil)
+        }
+        "latex-mode" => {
+            derived_mode_set_parent(interp, "latex-mode", Some("tex-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "latex-mode", "LaTeX");
+            interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("%".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            Ok(Value::Nil)
+        }
+        "python-base-mode" => {
+            derived_mode_set_parent(interp, "python-base-mode", Some("prog-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "python-base-mode", "Python");
+            interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("# ".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String("#+\\s-*".into()),
+            );
+            Ok(Value::Nil)
+        }
+        "python-mode" => {
+            derived_mode_set_parent(interp, "python-mode", Some("python-base-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "python-mode", "Python");
+            interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("# ".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String("#+\\s-*".into()),
+            );
+            Ok(Value::Nil)
+        }
+        "conf-toml-mode" => {
+            derived_mode_set_parent(interp, "conf-toml-mode", Some("conf-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "conf-toml-mode", "Conf[TOML]");
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("#".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String("#+\\s-*".into()),
+            );
+            Ok(Value::Nil)
+        }
+        "treesit-available-p" | "treesit-ready-p" => Ok(Value::Nil),
         "buffer-name" => {
             if !args.is_empty()
                 && let Value::Buffer(_, name) = &args[0]
@@ -5777,6 +6016,38 @@ pub fn call(
             let end = move_lines_from(interp, start, 1).0;
             ensure_region_modifiable(interp, start, end, env)?;
             delete_region_with_hooks(interp, start, end, env)?;
+            Ok(Value::Nil)
+        }
+        "delete-horizontal-space" => {
+            need_arg_range(name, args, 0, 1)?;
+            let backward_only = args.first().is_some_and(Value::is_truthy);
+            let origin = interp.buffer.point();
+            let start = {
+                let _ = call(
+                    interp,
+                    "skip-chars-backward",
+                    &[Value::String(" \t".into())],
+                    env,
+                )?;
+                interp.buffer.point()
+            };
+            interp.buffer.goto_char(origin);
+            let end = if backward_only {
+                origin
+            } else {
+                let _ = call(
+                    interp,
+                    "skip-chars-forward",
+                    &[Value::String(" \t".into())],
+                    env,
+                )?;
+                interp.buffer.point()
+            };
+            interp.buffer.goto_char(origin);
+            if start != end {
+                ensure_region_modifiable(interp, start, end, env)?;
+                delete_region_with_hooks(interp, start, end, env)?;
+            }
             Ok(Value::Nil)
         }
         "delete-char" => {
@@ -10239,6 +10510,42 @@ pub fn call(
             );
             Ok(Value::Symbol(function))
         }
+        "autoload-do-load" => {
+            need_arg_range(name, args, 1, 3)?;
+            let fundef = args[0].clone();
+            let Some((file, _, kind)) = autoload_parts(&fundef) else {
+                return Ok(fundef);
+            };
+            let funname = args.get(1).cloned().unwrap_or(Value::Nil);
+            let macro_only = args.get(2).cloned().unwrap_or(Value::Nil);
+            let loads_macro = matches!(kind, Value::T)
+                || matches!(&kind, Value::Symbol(symbol) if symbol == "t" || symbol == "macro");
+            if matches!(&macro_only, Value::Symbol(symbol) if symbol == "macro") && !loads_macro {
+                return Ok(fundef);
+            }
+            let ignore_errors = !loads_macro && macro_only.is_truthy();
+            match interp.load_target(&file) {
+                Ok(_) => {}
+                Err(_) if ignore_errors => return Ok(Value::Nil),
+                Err(error) => return Err(error),
+            }
+            if funname.is_nil() || ignore_errors {
+                return Ok(Value::Nil);
+            }
+            let function = call(
+                interp,
+                "indirect-function",
+                std::slice::from_ref(&funname),
+                env,
+            )?;
+            if values_equal(interp, &function, &fundef) {
+                let symbol = funname.as_symbol()?;
+                return Err(LispError::Signal(format!(
+                    "Autoloading file {file} failed to define function {symbol}"
+                )));
+            }
+            Ok(function)
+        }
         "set" => {
             need_args(name, args, 2)?;
             let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
@@ -10263,7 +10570,13 @@ pub fn call(
         }
         "symbol-value" => {
             need_args(name, args, 1)?;
-            interp.symbol_value_cell(args[0].as_symbol()?)
+            let symbol = args[0].as_symbol()?;
+            if let Some(value) = interp.lookup_var(symbol, env) {
+                Ok(value)
+            } else {
+                let resolved = interp.resolve_variable_name(symbol)?;
+                Err(LispError::Void(resolved))
+            }
         }
         "default-value" => {
             need_args(name, args, 1)?;
@@ -10323,9 +10636,7 @@ pub fn call(
             let definition = call(interp, "indirect-function", &[args[0].clone()], env)?;
             let is_macro = if let Ok(items) = definition.to_vec() {
                 matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "macro")
-                    || autoload_parts(&definition).is_some_and(|(_, _, kind)| {
-                        matches!(kind, Value::Symbol(symbol) if symbol == "macro" || symbol == "t")
-                    })
+                    || autoload_is_macro(interp, args[0].as_symbol().ok(), &definition)
             } else {
                 false
             };
@@ -10763,7 +11074,11 @@ pub fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            Ok(args[0].clone())
+            if name == "macroexpand-1" {
+                interp.macroexpand_1_form(&args[0], env)
+            } else {
+                interp.macroexpand_all_form(&args[0], env)
+            }
         }
         "run-at-time" => {
             if args.len() < 3 {
@@ -13607,6 +13922,53 @@ pub fn call(
                 })
                 .unwrap_or(Value::Nil);
             Ok(result)
+        }
+        "match-data" => {
+            if args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let items = interp
+                .last_match_data
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|entry| match entry {
+                    Some((start, end)) => {
+                        vec![Value::Integer(start as i64), Value::Integer(end as i64)]
+                    }
+                    None => vec![Value::Nil, Value::Nil],
+                })
+                .collect::<Vec<_>>();
+            Ok(Value::list(items))
+        }
+        "set-match-data" => {
+            need_arg_range(name, args, 1, 2)?;
+            if args[0].is_nil() {
+                interp.last_match_data = None;
+                return Ok(Value::Nil);
+            }
+            let items = args[0].to_vec()?;
+            let mut restored = Vec::new();
+            let mut index = 0usize;
+            while index + 1 < items.len() {
+                let start = if items[index].is_nil() {
+                    None
+                } else {
+                    Some(position_from_value(interp, &items[index])?)
+                };
+                let end = if items[index + 1].is_nil() {
+                    None
+                } else {
+                    Some(position_from_value(interp, &items[index + 1])?)
+                };
+                restored.push(match (start, end) {
+                    (Some(start), Some(end)) => Some((start, end)),
+                    _ => None,
+                });
+                index += 2;
+            }
+            interp.last_match_data = Some(restored);
+            Ok(args[0].clone())
         }
         "match-string" | "match-string-no-properties" => match_string_impl(interp, args),
 
@@ -28666,6 +29028,17 @@ pub(crate) fn autoload_parts(value: &Value) -> Option<(String, Value, Value)> {
     let interactive = items.get(3).cloned().unwrap_or(Value::Nil);
     let kind = items.get(4).cloned().unwrap_or(Value::Nil);
     Some((file, interactive, kind))
+}
+
+pub(crate) fn autoload_is_macro(interp: &Interpreter, symbol: Option<&str>, value: &Value) -> bool {
+    autoload_parts(value).is_some_and(|(_, _, kind)| {
+        matches!(kind, Value::T)
+            || matches!(&kind, Value::Symbol(name) if name == "t" || name == "macro")
+    }) || symbol.is_some_and(|name| {
+        interp
+            .get_symbol_property(name, "autoload-macro")
+            .is_some_and(|value| !value.is_nil())
+    })
 }
 
 fn autoload_command_p(value: &Value) -> bool {
