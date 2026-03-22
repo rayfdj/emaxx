@@ -1223,9 +1223,9 @@ mod tests {
         let items = val.to_vec().unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].car().unwrap(), Value::Integer('A' as i64));
-        assert_eq!(items[0].cdr().unwrap(), Value::Integer((1 << 22) | 0));
+        assert_eq!(items[0].cdr().unwrap(), Value::Integer(1 << 22));
         assert_eq!(items[1].car().unwrap(), Value::Integer('H' as i64));
-        assert_eq!(items[1].cdr().unwrap(), Value::Integer((1 << 24) | 0));
+        assert_eq!(items[1].cdr().unwrap(), Value::Integer(1 << 24));
     }
 
     #[test]
