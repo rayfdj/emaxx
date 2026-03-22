@@ -16,6 +16,17 @@ use emaxx::compat::{self, BatchReport, FileStatus, OracleLocalConfig, OracleLock
 const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
 
+struct CompatRunPlan<'a> {
+    mode: &'a str,
+    scope: String,
+    selector: &'a str,
+    files: Vec<PathBuf>,
+    name_filter: Option<&'a Regex>,
+    artifact_root: &'a Path,
+    timeout: Option<Duration>,
+    emaxx_binary: &'a Path,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "compat-harness", disable_help_subcommand = true)]
 struct Cli {
@@ -397,14 +408,16 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
 
     run_compat_files(
         &context,
-        "run",
-        format!("{:?}", args.scope),
-        &selector,
-        files,
-        name_filter.as_ref(),
-        &artifact_root,
-        timeout,
-        &emaxx_binary,
+        CompatRunPlan {
+            mode: "run",
+            scope: format!("{:?}", args.scope),
+            selector: &selector,
+            files,
+            name_filter: name_filter.as_ref(),
+            artifact_root: &artifact_root,
+            timeout,
+            emaxx_binary: &emaxx_binary,
+        },
     )
 }
 
@@ -431,14 +444,16 @@ fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
 
     run_compat_files(
         &context,
-        "landed",
-        format!("{:?}", args.scope),
-        &selector,
-        files,
-        name_filter.as_ref(),
-        &artifact_root,
-        timeout,
-        &emaxx_binary,
+        CompatRunPlan {
+            mode: "landed",
+            scope: format!("{:?}", args.scope),
+            selector: &selector,
+            files,
+            name_filter: name_filter.as_ref(),
+            artifact_root: &artifact_root,
+            timeout,
+            emaxx_binary: &emaxx_binary,
+        },
     )
 }
 
@@ -487,14 +502,16 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
     for (selector, files) in grouped {
         let run_status = run_compat_files(
             &context,
-            "regressions",
-            "TrackedRegressions".into(),
-            &selector,
-            files,
-            name_filter.as_ref(),
-            &artifact_root,
-            timeout,
-            &emaxx_binary,
+            CompatRunPlan {
+                mode: "regressions",
+                scope: "TrackedRegressions".into(),
+                selector: &selector,
+                files,
+                name_filter: name_filter.as_ref(),
+                artifact_root: &artifact_root,
+                timeout,
+                emaxx_binary: &emaxx_binary,
+            },
         )?;
         if run_status != 0 {
             status = run_status;
@@ -513,14 +530,16 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
 
     let status = run_compat_files(
         &context,
-        "regression-add",
-        "TrackedRegressions".into(),
-        &selector,
-        vec![file.clone()],
-        None,
-        &artifact_root,
-        timeout,
-        &emaxx_binary,
+        CompatRunPlan {
+            mode: "regression-add",
+            scope: "TrackedRegressions".into(),
+            selector: &selector,
+            files: vec![file.clone()],
+            name_filter: None,
+            artifact_root: &artifact_root,
+            timeout,
+            emaxx_binary: &emaxx_binary,
+        },
     )?;
     if status != 0 {
         return Err(format!(
@@ -586,17 +605,17 @@ fn import_landed_regressions(args: RegressionImportLandedArgs) -> Result<u8, Str
     Ok(0)
 }
 
-fn run_compat_files(
-    context: &Context,
-    mode: &str,
-    scope: String,
-    selector: &str,
-    files: Vec<PathBuf>,
-    name_filter: Option<&Regex>,
-    artifact_root: &Path,
-    timeout: Option<Duration>,
-    emaxx_binary: &Path,
-) -> Result<u8, String> {
+fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, String> {
+    let CompatRunPlan {
+        mode,
+        scope,
+        selector,
+        files,
+        name_filter,
+        artifact_root,
+        timeout,
+        emaxx_binary,
+    } = plan;
     let mut matching_files = 0usize;
     let mut mismatches = Vec::new();
     let mut relative_files = Vec::new();
@@ -604,7 +623,7 @@ fn run_compat_files(
     for file in files {
         let relative = compat::relative_test_path(&context.local.emacs_repo, &file)?;
         relative_files.push(relative.clone());
-        let per_file_dir = per_file_artifact_dir(&artifact_root, &relative);
+        let per_file_dir = per_file_artifact_dir(artifact_root, &relative);
         fs::create_dir_all(&per_file_dir)
             .map_err(|error| format!("create {}: {error}", per_file_dir.display()))?;
 
@@ -612,16 +631,16 @@ fn run_compat_files(
             &context.local,
             &relative,
             &file,
-            &selector,
+            selector,
             &per_file_dir,
             timeout,
         )?;
         let emaxx = run_emaxx(
-            &emaxx_binary,
+            emaxx_binary,
             &context.local.emacs_repo,
             &relative,
             &file,
-            &selector,
+            selector,
             &per_file_dir,
             timeout,
         )?;
