@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
 use super::sqlite::SqliteHandleState;
-use super::types::{Env, LispError, Value};
+use super::types::{Env, LispError, Value, shared_env};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use regex::Regex;
 
@@ -4938,6 +4938,8 @@ impl Interpreter {
                 .into(),
             )),
             "minor-mode-alist" => Some(Value::Nil),
+            "overriding-local-map" => Some(Value::Nil),
+            "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
             "menu-bar-separator" => Some(Value::Symbol("menu-bar-separator".into())),
             "mode-line-modes" => Some(Value::Nil),
@@ -5815,19 +5817,40 @@ impl Interpreter {
                     }
                 }
 
-                let shared_prefix = closure_env
-                    .iter()
-                    .zip(env.iter())
-                    .take_while(|(captured, current)| Self::same_frame_shape(captured, current))
-                    .count();
-                let original_env_len = env.len();
-                env.extend(closure_env[shared_prefix..].iter().cloned());
+                let captured_snapshot = closure_env.borrow().clone();
+                let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
+                let (mut call_env, captured_positions) =
+                    Self::merge_lambda_env(env, &captured_snapshot, &frame_mapping);
                 self.push_backtrace_frame(original_name.map(str::to_string), args.to_vec());
-                env.push(frame);
-                let result = self.sf_progn(function_executable_body(body), env);
-                env.pop();
+                call_env.push(frame);
+                let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                call_env.pop();
+                {
+                    let mut stored_env = closure_env.borrow_mut();
+                    if stored_env.len() != captured_snapshot.len() {
+                        stored_env.clear();
+                        stored_env.extend(captured_snapshot.clone());
+                    }
+                    for (captured_index, position) in captured_positions.iter().enumerate() {
+                        if let Some(position) = position
+                            && let Some(updated) = call_env.get(*position)
+                        {
+                            stored_env[captured_index] = updated.clone();
+                        }
+                    }
+                }
+                for (captured_index, current_index) in frame_mapping.iter().enumerate() {
+                    if let (Some(current_index), Some(position)) =
+                        (current_index, captured_positions[captured_index])
+                    {
+                        if let Some(updated) = call_env.get(position)
+                            && *current_index < env.len()
+                        {
+                            env[*current_index] = updated.clone();
+                        }
+                    }
+                }
                 self.pop_backtrace_frame();
-                env.truncate(original_env_len);
                 result
             }
             other => Err(LispError::SignalValue(Value::list([
@@ -6030,7 +6053,7 @@ impl Interpreter {
         };
         let body = items[body_start..].to_vec();
         let expander_name = format!("{name}--pcase-macroexpander");
-        let expander = Value::Lambda(params, body, env.clone());
+        let expander = Value::Lambda(params, body, shared_env(env.clone()));
         self.validate_function_binding(&expander_name, &expander)?;
         self.set_function_binding(&expander_name, Some(expander));
         self.put_symbol_property(&name, "pcase-macroexpander", Value::Symbol(expander_name));
@@ -7165,7 +7188,7 @@ impl Interpreter {
                     Some(Value::Lambda(
                         vec!["&optional".into(), "arg".into()],
                         body,
-                        Vec::new(),
+                        shared_env(Vec::new()),
                     )),
                 );
                 return Ok(Value::Symbol(name.to_string()));
@@ -7225,7 +7248,10 @@ impl Interpreter {
                     Value::Symbol("quote".into()),
                     Value::Symbol(name.to_string()),
                 ]));
-                self.set_function_binding(name, Some(Value::Lambda(Vec::new(), body, Vec::new())));
+                self.set_function_binding(
+                    name,
+                    Some(Value::Lambda(Vec::new(), body, shared_env(Vec::new()))),
+                );
                 crate::lisp::primitives::derived_mode_set_parent(self, name, parent);
                 return Ok(Value::Symbol(name.to_string()));
             }
@@ -7344,7 +7370,7 @@ impl Interpreter {
                     struct_name.clone(),
                     Value::Symbol("object".into()),
                 ])],
-                Vec::new(),
+                shared_env(Vec::new()),
             )),
         );
 
@@ -7370,7 +7396,7 @@ impl Interpreter {
                         Value::Integer(index as i64),
                         Value::Symbol("object".into()),
                     ])],
-                    Vec::new(),
+                    shared_env(Vec::new()),
                 )),
             );
         }
@@ -7391,7 +7417,7 @@ impl Interpreter {
                         params_value,
                         Value::Symbol("args".into()),
                     ])],
-                    Vec::new(),
+                    shared_env(Vec::new()),
                 )),
             );
         }
@@ -7575,7 +7601,7 @@ impl Interpreter {
         };
 
         let body: Vec<Value> = items[body_start..].to_vec();
-        let lambda = Value::Lambda(params, body, env.clone());
+        let lambda = Value::Lambda(params, body, shared_env(env.clone()));
         self.functions.push((name.clone(), lambda));
         Ok(Value::Symbol(name))
     }
@@ -7856,9 +7882,9 @@ impl Interpreter {
         let params = self.parse_params(&items[1])?;
         let body: Vec<Value> = items[2..].to_vec();
         let closure_env = if self.lambda_capture_override().unwrap_or(true) {
-            env.clone()
+            shared_env(env.clone())
         } else {
-            Vec::new()
+            shared_env(Vec::new())
         };
         Ok(Value::Lambda(params, body, closure_env))
     }
@@ -8746,11 +8772,60 @@ impl Interpreter {
     }
 
     fn same_frame_shape(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
-        left.len() == right.len()
+        left.len() <= right.len()
             && left
                 .iter()
                 .zip(right.iter())
                 .all(|((left_name, _), (right_name, _))| left_name == right_name)
+    }
+
+    fn align_captured_frames(captured: &Env, current: &Env) -> Vec<Option<usize>> {
+        let mut mapping = vec![None; captured.len()];
+        let mut search_end = current.len();
+        for captured_index in (0..captured.len()).rev() {
+            let mut found = None;
+            while search_end > 0 {
+                let current_index = search_end - 1;
+                if Self::same_frame_shape(&captured[captured_index], &current[current_index]) {
+                    found = Some(current_index);
+                    search_end = current_index;
+                    break;
+                }
+                search_end -= 1;
+            }
+            mapping[captured_index] = found;
+        }
+        mapping
+    }
+
+    fn merge_lambda_env(
+        current: &Env,
+        captured: &Env,
+        mapping: &[Option<usize>],
+    ) -> (Env, Vec<Option<usize>>) {
+        let mut merged = Vec::new();
+        let mut positions = vec![None; captured.len()];
+        let mut current_cursor = 0usize;
+
+        for (captured_index, current_index) in mapping.iter().enumerate() {
+            if let Some(current_index) = current_index {
+                while current_cursor <= *current_index {
+                    merged.push(current[current_cursor].clone());
+                    current_cursor += 1;
+                }
+                positions[captured_index] = merged.len().checked_sub(1);
+            } else {
+                merged.push(captured[captured_index].clone());
+                positions[captured_index] = merged.len().checked_sub(1);
+            }
+        }
+
+        while current_cursor < current.len() {
+            merged.push(current[current_cursor].clone());
+            current_cursor += 1;
+        }
+
+        (merged, positions)
     }
 
     fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -9712,7 +9787,7 @@ impl Interpreter {
                 params.push(p.as_symbol()?.to_string());
             }
             let body: Vec<Value> = parts[2..].to_vec();
-            let lambda = Value::Lambda(params, body, env.clone());
+            let lambda = Value::Lambda(params, body, shared_env(env.clone()));
             frame.push((fname, lambda));
         }
         env.push(frame);
@@ -10647,7 +10722,7 @@ fn preloaded_command_line_1() -> Value {
             ]),
             Value::Nil,
         ])],
-        Vec::new(),
+        shared_env(Vec::new()),
     )
 }
 
@@ -10709,7 +10784,7 @@ fn preloaded_sh_mode() -> Value {
             ]),
             Value::Nil,
         ],
-        Vec::new(),
+        shared_env(Vec::new()),
     )
 }
 
@@ -10804,7 +10879,7 @@ fn builtin_autoload_function(name: &str) -> Option<Value> {
                 ]),
                 Value::Nil,
             ],
-            Vec::new(),
+            shared_env(Vec::new()),
         )),
         _ => None,
     }
@@ -15543,6 +15618,38 @@ mod tests {
     }
 
     #[test]
+    fn lexical_closures_preserve_mutated_bindings_across_funcalls() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"
+                    (let* (ranges
+                           got
+                           (try (lambda (from to)
+                                  (setq got (list from to ranges))
+                                  (setq ranges (list from to))
+                                  got)))
+                      (list (funcall try 3 5)
+                            (funcall try 10 12)
+                            (progn
+                              (setq ranges nil)
+                              (funcall try 20 25))))
+                    "#
+                ),
+                Value::list([
+                    Value::list([Value::Integer(3), Value::Integer(5), Value::Nil]),
+                    Value::list([
+                        Value::Integer(10),
+                        Value::Integer(12),
+                        Value::list([Value::Integer(3), Value::Integer(5)]),
+                    ]),
+                    Value::list([Value::Integer(20), Value::Integer(25), Value::Nil]),
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn insert_file_contents_leaves_point_at_insert_start() {
         let path = std::env::temp_dir().join(format!(
             "emaxx-insert-file-contents-{}.txt",
@@ -16167,6 +16274,39 @@ mod tests {
                     Value::Symbol("indent-tabs-mode".into()),
                     Value::T,
                     Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn allout_range_overlaps_keeps_prior_ranges_when_appending() {
+        run_with_large_stack(|| {
+            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"
+                    (progn
+                      (require 'allout-widgets)
+                      (allout-range-overlaps 10 12 '((3 5))))
+                    "#
+                ),
+                Value::list([
+                    Value::Nil,
+                    Value::list([
+                        Value::list([Value::Integer(3), Value::Integer(5)]),
+                        Value::list([Value::Integer(10), Value::Integer(12)]),
+                    ]),
                 ])
             );
         });
