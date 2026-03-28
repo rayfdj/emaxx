@@ -37,12 +37,18 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
             loaded_test_file = Some(resolved.clone());
         }
         if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
+            let mut error_text = error.to_string();
+            let backtrace = format_backtrace_summary(&interpreter);
+            if !backtrace.is_empty() {
+                error_text.push_str(" | backtrace: ");
+                error_text.push_str(&backtrace);
+            }
             let report = BatchReport {
                 runner: "emaxx".into(),
                 file: report_file_name(&resolved),
                 selector: selector_string.clone(),
                 file_status: FileStatus::LoadError,
-                file_error: Some(error.to_string()),
+                file_error: Some(error_text),
                 discovered_tests: interpreter.discovered_tests(),
                 selected_tests: Vec::new(),
                 results: Vec::new(),
@@ -170,6 +176,29 @@ fn parse_selector_requests(expressions: &[String]) -> Result<(Value, bool), Stri
         }
     }
     Ok((selector, saw_ert_runner))
+}
+
+fn format_backtrace_summary(interpreter: &Interpreter) -> String {
+    interpreter
+        .backtrace_frames_snapshot()
+        .into_iter()
+        .take(8)
+        .map(|(function, args, _)| {
+            let name = function.unwrap_or_else(|| "<anonymous>".into());
+            if args.is_empty() {
+                name
+            } else {
+                let rendered = args
+                    .into_iter()
+                    .take(2)
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{name}({rendered})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" <- ")
 }
 
 fn parse_perf_request(expressions: &[String]) -> Result<Option<PerfRequest>, String> {
