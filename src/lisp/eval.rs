@@ -15138,6 +15138,36 @@ mod tests {
     }
 
     #[test]
+    fn format_time_string_accepts_let_bound_string_zone() {
+        run_with_large_stack(|| {
+            assert_string_value(
+                eval_str(
+                    "(let ((look '(1202 22527 999999 999999))
+                           (fmt \"%Y-%m-%d %H:%M:%S.%3N %z (%Z)\")
+                           (zone \"UTC0\"))
+                       (format-time-string fmt look zone))",
+                ),
+                "1972-06-30 23:59:59.999 +0000 (UTC)",
+            );
+        });
+    }
+
+    #[test]
+    fn decode_time_accepts_let_bound_string_zone() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let ((look '(1202 22527 999999 999999))
+                           (zone \"UTC0\"))
+                       (equal (decode-time look zone t)
+                              (decode-time look \"UTC0\" t)))"
+                ),
+                Value::T
+            );
+        });
+    }
+
+    #[test]
     fn macrop_recognizes_defined_and_autoloaded_macros() {
         run_with_large_stack(|| {
             let mut interp = Interpreter::new();

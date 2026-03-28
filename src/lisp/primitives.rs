@@ -25727,10 +25727,12 @@ fn zone_spec_from_value(
                 abbreviation: format_numeric_zone_name(offset),
             })
         }
-        Value::String(value) => Ok(parse_posix_zone_string(value).unwrap_or(ZoneSpec {
-            offset_seconds: 0,
-            abbreviation: "UTC".into(),
-        })),
+        _ if zone.is_string() => Ok(parse_posix_zone_string(&string_text(zone)?).unwrap_or(
+            ZoneSpec {
+                offset_seconds: 0,
+                abbreviation: "UTC".into(),
+            },
+        )),
         Value::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(time)),
         Value::Cons(_, _) => {
             let items = zone.to_vec()?;
