@@ -1880,6 +1880,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "keymap-unset"
             | "lookup-key"
             | "key-binding"
+            | "command-remapping"
             | "keymap-lookup"
             | "keymap-read-only-bind"
             | "keymap--read-only-filter"
@@ -11343,6 +11344,10 @@ pub fn call(
             need_arg_range(name, args, 1, 3)?;
             let key = key_sequence_binding_text(&args[0])?;
             key_binding(interp, &key, env)
+        }
+        "command-remapping" => {
+            need_arg_range(name, args, 1, 3)?;
+            command_remapping(interp, &args[0], args.get(2), env)
         }
         "keymap-parent" => {
             need_args(name, args, 1)?;
@@ -29059,6 +29064,45 @@ fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
 
 fn remap_key_binding_text(command: &str) -> String {
     format!("<remap> <{command}>")
+}
+
+fn command_name_for_remapping(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
+        Value::Cons(_, _) => value
+            .to_vec()
+            .ok()
+            .and_then(|items| match items.as_slice() {
+                [Value::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
+                    command_name_for_remapping(inner)
+                }
+                _ => None,
+            }),
+        _ => None,
+    }
+}
+
+fn command_remapping(
+    interp: &Interpreter,
+    command: &Value,
+    keymaps: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let Some(command_name) = command_name_for_remapping(command) else {
+        return Ok(Value::Nil);
+    };
+    let remap_key = remap_key_binding_text(&command_name);
+    let maps = match keymaps {
+        Some(keymaps) => where_is_internal_maps(interp, Some(keymaps), env)?,
+        None => current_active_maps(interp, env)?,
+    };
+    for map in maps {
+        let binding = keymap_lookup_binding(interp, &map, &remap_key)?;
+        if !binding.is_nil() {
+            return Ok(binding);
+        }
+    }
+    Ok(Value::Nil)
 }
 
 fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<Value, LispError> {

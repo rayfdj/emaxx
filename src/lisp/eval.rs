@@ -16017,6 +16017,24 @@ mod tests {
     }
 
     #[test]
+    fn command_remapping_reads_active_minor_mode_maps() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setq sample-mode t)
+                  (let ((map (make-sparse-keymap "demo")))
+                    (define-key map [remap display-buffer-other-frame] 'demo-display)
+                    (setq sample-mode-map-entry (cons 'sample-mode map))
+                    (add-to-list 'minor-mode-map-alist sample-mode-map-entry)
+                    (command-remapping 'display-buffer-other-frame)))
+                "#
+            ),
+            Value::Symbol("demo-display".into())
+        );
+    }
+
+    #[test]
     fn commandp_accepts_bare_interactive_forms() {
         assert_eq!(
             eval_str(
