@@ -12904,6 +12904,16 @@ mod tests {
     }
 
     #[test]
+    fn aref_out_of_range_signals_args_out_of_range_condition() {
+        assert_eq!(
+            eval_str(
+                "(condition-case nil (aref [1] 1) (args-out-of-range 'caught) (error 'plain-error))"
+            ),
+            Value::Symbol("caught".into())
+        );
+    }
+
+    #[test]
     fn handler_bind_handlers_do_not_apply_inside_handlers() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -18524,6 +18534,43 @@ IHdvcmxkIQ==")))
         assert_eq!(
             eval_str(r#"(string-match-p (rx ", " symbol-start) ", --sign")"#),
             Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn bracket_expressions_keep_literal_backslashes_as_members() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((pattern (concat "[" (string 92 46) "]"))
+                      (text (string 97 92 46 99)))
+                  (string-match pattern text)
+                  (list (match-beginning 0) (match-end 0)))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((pattern (concat "[" (string 92 94 97 98) "]"))
+                      (text (string 99 92 100)))
+                  (string-match pattern text)
+                  (list (match-beginning 0) (match-end 0)))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((pattern (concat "[" (string 36 92 40 42 92 41 94) "]*"))
+                      (text (string 36 92 40 41 42 94)))
+                  (string-match pattern text)
+                  (list (match-beginning 0) (match-end 0)))
+                "#
+            ),
+            Value::list([Value::Integer(0), Value::Integer(6)])
         );
     }
 

@@ -13342,7 +13342,11 @@ pub fn call(
                         .and_then(|string| string.text.chars().nth(idx).map(|ch| (string, ch)))
                     {
                         Some((string, ch)) => Ok(string_sequence_value(&string, ch)),
-                        None => Err(LispError::Signal("Args out of range".into())),
+                        None => Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("args-out-of-range".into()),
+                            args[0].clone(),
+                            args[1].clone(),
+                        ]))),
                     }
                 }
                 Value::CharTable(id) => {
@@ -13354,28 +13358,35 @@ pub fn call(
                         LispError::TypeError("record".into(), format!("record<{id}>"))
                     })?;
                     if record.type_name == "bool-vector" {
-                        return record
-                            .slots
-                            .get(idx)
-                            .cloned()
-                            .ok_or_else(|| LispError::Signal("Args out of range".into()));
+                        return record.slots.get(idx).cloned().ok_or_else(|| {
+                            LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                args[0].clone(),
+                                args[1].clone(),
+                            ]))
+                        });
                     }
                     if idx == 0 {
                         Ok(Value::Symbol(record.type_name.clone()))
                     } else {
-                        record
-                            .slots
-                            .get(idx - 1)
-                            .cloned()
-                            .ok_or_else(|| LispError::Signal("Args out of range".into()))
+                        record.slots.get(idx - 1).cloned().ok_or_else(|| {
+                            LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                args[0].clone(),
+                                args[1].clone(),
+                            ]))
+                        })
                     }
                 }
                 _ => {
                     let items = vector_items(&args[0])?;
-                    items
-                        .get(idx)
-                        .cloned()
-                        .ok_or_else(|| LispError::Signal("Args out of range".into()))
+                    items.get(idx).cloned().ok_or_else(|| {
+                        LispError::SignalValue(Value::list([
+                            Value::Symbol("args-out-of-range".into()),
+                            args[0].clone(),
+                            args[1].clone(),
+                        ]))
+                    })
                 }
             }
         }
@@ -16338,31 +16349,7 @@ fn consume_regex_class_atom(
             }
             Some(RegexClassAtom::Char('['))
         }
-        '\\' => {
-            let Some(next) = chars.peek().copied() else {
-                return Some(RegexClassAtom::Char('\\'));
-            };
-            match next {
-                '-' | '\\' | '^' => {
-                    chars.next();
-                    Some(RegexClassAtom::Char(next))
-                }
-                ']' => {
-                    let mut preview = chars.clone();
-                    preview.next();
-                    if preview.peek() == Some(&']') {
-                        chars.next();
-                        Some(RegexClassAtom::Char(']'))
-                    } else {
-                        Some(RegexClassAtom::Char('\\'))
-                    }
-                }
-                _ => {
-                    chars.next();
-                    Some(RegexClassAtom::Char(next))
-                }
-            }
-        }
+        '\\' => Some(RegexClassAtom::Char('\\')),
         ch => Some(RegexClassAtom::Char(ch)),
     }
 }
@@ -16904,24 +16891,22 @@ fn split_string_impl(
     let text = string_text(string)?;
     let separator = separator
         .filter(|value| !value.is_nil())
-        .map(string_text)
+        .map(|value| {
+            string_like(value)
+                .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
+        })
         .transpose()?;
     let omit_nulls = omit_nulls.is_some_and(Value::is_truthy);
     let parts = if let Some(separator) = separator {
-        if separator.is_empty() {
+        if separator.text.is_empty() {
             text.chars()
                 .map(|ch| ch.to_string())
                 .filter(|part| !(omit_nulls && part.is_empty()))
                 .map(Value::String)
                 .collect::<Vec<_>>()
         } else {
-            let pattern = StringLike {
-                text: separator,
-                props: Vec::new(),
-                multibyte: false,
-            };
-            validate_elisp_regex(&pattern.text)?;
-            let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+            validate_elisp_regex(&separator.text)?;
+            let regex = compile_elisp_regex(interp, &separator, env, "", true)?;
             let mut parts = Vec::new();
             let mut last_end = 0usize;
             let mut search_start = 0usize;
@@ -18908,9 +18893,28 @@ fn strip_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
 }
 
 fn detect_eol_type(bytes: &[u8]) -> i64 {
-    if bytes.windows(2).any(|window| window == b"\r\n") {
+    let mut saw_crlf = false;
+    let mut saw_lf = false;
+    let mut saw_cr = false;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+                saw_crlf = true;
+                index += 2;
+                continue;
+            }
+            b'\r' => saw_cr = true,
+            b'\n' => saw_lf = true,
+            _ => {}
+        }
+        index += 1;
+    }
+
+    if saw_crlf && !saw_lf {
         1
-    } else if bytes.contains(&b'\r') {
+    } else if saw_cr && !saw_crlf && !saw_lf {
         2
     } else {
         0
@@ -23036,6 +23040,29 @@ mod tests {
             )
             .expect("split-string should accept regexp separators"),
             Value::list([Value::String("-k".into()), Value::String("basename".into()),])
+        );
+    }
+
+    #[test]
+    fn split_string_supports_multibyte_regexp_separators() {
+        let interp = Interpreter::new();
+        let env = Vec::new();
+        assert_eq!(
+            split_string_impl(
+                &interp,
+                &Value::String("2¦4¦bb*¦abbbc¦".into()),
+                Some(&Value::String("¦".into())),
+                None,
+                &env,
+            )
+            .expect("split-string should accept multibyte regexp separators"),
+            Value::list([
+                Value::String("2".into()),
+                Value::String("4".into()),
+                Value::String("bb*".into()),
+                Value::String("abbbc".into()),
+                Value::String("".into()),
+            ])
         );
     }
 }
@@ -31548,6 +31575,40 @@ mod compat_runtime_tests {
         assert_eq!(decompressed_interp.buffer.buffer_string(), "hello\n");
 
         std::fs::remove_file(path).expect("cleanup gzip file");
+    }
+
+    #[test]
+    fn detect_eol_type_preserves_embedded_cr_in_unix_files() {
+        assert_eq!(detect_eol_type(b"left\rmiddle\nnext\n"), 0);
+        assert_eq!(
+            decode_bytes_with_explicit_eol(
+                b"left\rmiddle\nnext\n",
+                detect_eol_type(b"left\rmiddle\nnext\n")
+            ),
+            b"left\rmiddle\nnext\n"
+        );
+    }
+
+    #[test]
+    fn insert_file_contents_preserves_embedded_cr_in_unix_files() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-insert-file-contents-eol-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"left\rmiddle\nnext\n").expect("write fixture");
+
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        call(
+            &mut interp,
+            "insert-file-contents",
+            &[Value::String(path.display().to_string())],
+            &mut env,
+        )
+        .expect("insert file contents should preserve embedded carriage returns");
+        assert_eq!(interp.buffer.buffer_string(), "left\rmiddle\nnext\n");
+
+        std::fs::remove_file(path).expect("cleanup fixture");
     }
 
     #[test]
