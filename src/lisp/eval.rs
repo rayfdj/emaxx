@@ -800,6 +800,7 @@ impl Interpreter {
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
                 ("process-connection-type".into(), Value::T),
+                ("selection-converter-alist".into(), Value::Nil),
                 ("system-uses-terminfo".into(), Value::T),
                 (
                     "vc-directory-exclusion-list".into(),
@@ -827,6 +828,7 @@ impl Interpreter {
                 "overwrite-mode".into(),
                 "process-connection-type".into(),
                 "process-environment".into(),
+                "selection-converter-alist".into(),
                 "scroll-preserve-screen-position".into(),
                 "scroll-up-aggressively".into(),
                 "standard-output".into(),
@@ -4910,6 +4912,7 @@ impl Interpreter {
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
+            "selection-converter-alist" => Some(Value::Nil),
             "early-init-file" => Some(Value::Nil),
             "init-file-user" => Some(Value::Nil),
             "site-run-file" => Some(Value::Nil),
