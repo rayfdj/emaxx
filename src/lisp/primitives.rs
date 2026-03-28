@@ -514,17 +514,27 @@ fn is_raw_like_byte_char(code: u32) -> bool {
     matches!(code, 0x00CF | 0x00EF | 0x00FF)
 }
 
-fn normalize_case_key(key: u32) -> u32 {
+fn raw_case_byte(key: u32) -> Option<u32> {
     if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&key) {
-        key - RAW_BYTE8_BASE
+        Some(key - RAW_BYTE8_BASE)
+    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&key) {
+        Some(key - RAW_BYTE_REGEX_BASE)
     } else {
-        key
+        None
     }
+}
+
+fn normalize_case_key(key: u32) -> u32 {
+    raw_case_byte(key).unwrap_or(key)
 }
 
 fn denormalize_case_key(template: u32, mapped: u32) -> u32 {
     if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&template) && mapped <= 0xFF {
         RAW_BYTE8_BASE + mapped
+    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&template)
+        && mapped <= 0xFF
+    {
+        RAW_BYTE_REGEX_BASE + mapped
     } else {
         mapped
     }
@@ -535,6 +545,8 @@ fn alternate_case_key(key: u32) -> Option<u32> {
         Some(RAW_BYTE8_BASE + key)
     } else if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&key) {
         Some(key - RAW_BYTE8_BASE)
+    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&key) {
+        Some(RAW_BYTE8_BASE + (key - RAW_BYTE_REGEX_BASE))
     } else {
         None
     }
@@ -717,7 +729,9 @@ fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_words: bool) -
 fn full_upcase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
     let code = ch as u32;
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
-        return char::from_u32(mapped).unwrap_or(ch).to_string();
+        return char::from_u32(denormalize_case_key(code, mapped))
+            .unwrap_or(ch)
+            .to_string();
     }
     match code {
         _ if is_raw_like_byte_char(code) => ch.to_string(),
@@ -733,7 +747,9 @@ fn full_downcase_string(
 ) -> String {
     let code = ch as u32;
     if let Some(mapped) = explicit_case_table_mapping(interp, down_table, code) {
-        return char::from_u32(mapped).unwrap_or(ch).to_string();
+        return char::from_u32(denormalize_case_key(code, mapped))
+            .unwrap_or(ch)
+            .to_string();
     }
     match code {
         0x03A3 => char::from_u32(simple_downcase_char(code, final_sigma))
@@ -747,14 +763,16 @@ fn full_downcase_string(
 fn full_titlecase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {
     let code = ch as u32;
     if let Some(mapped) = explicit_case_table_mapping(interp, up_table, code) {
-        return char::from_u32(mapped).unwrap_or(ch).to_string();
+        return char::from_u32(denormalize_case_key(code, mapped))
+            .unwrap_or(ch)
+            .to_string();
     }
     match code {
         0x00DF => "Ss".into(),
         0xFB01 => "Fi".into(),
         0x01C4..=0x01C6 => '\u{01C5}'.to_string(),
         _ if is_raw_like_byte_char(code) => ch.to_string(),
-        _ => char::from_u32(simple_titlecase_char(code))
+        _ => char::from_u32(denormalize_case_key(code, simple_titlecase_char(code)))
             .unwrap_or(ch)
             .to_string(),
     }
@@ -767,7 +785,7 @@ fn simple_case_char_for_action(
     code: u32,
     action: CaseAction,
 ) -> u32 {
-    match action {
+    let mapped = match action {
         CaseAction::Up => explicit_case_table_mapping(interp, up_table, code)
             .unwrap_or_else(|| simple_upcase_char(code)),
         CaseAction::Down => explicit_case_table_mapping(interp, down_table, code)
@@ -776,7 +794,8 @@ fn simple_case_char_for_action(
             explicit_case_table_mapping(interp, up_table, code)
                 .unwrap_or_else(|| simple_titlecase_char(code))
         }
-    }
+    };
+    denormalize_case_key(code, mapped)
 }
 
 fn casify_string(
@@ -22852,6 +22871,83 @@ mod tests {
         )
         .expect("key-description should normalize raw unibyte meta bytes");
         assert_eq!(raw_byte, Value::String("M-a".into()));
+    }
+
+    #[test]
+    fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![PathBuf::from("/Users/alpha/CodexProjects/emacs/lisp")]);
+        interp.load_target("case-table").expect("load case-table");
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (let* ((tab (copy-case-table (standard-case-table)))
+                   (byte8 #x3FFF00)
+                   (input (decode-coding-string "\xff\xff\xef Foo baR \xcf\xcf" 'binary)))
+              (set-case-table tab)
+              (set-case-syntax-pair (+ byte8 #xef) (+ byte8 #xff) tab)
+              (list (upcase input)
+                    (downcase input)
+                    (capitalize input)
+                    (upcase-initials input)))
+            "#,
+        )
+        .read_all()
+        .expect("case-table byte8 test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("case-table byte8 forms should evaluate");
+        let actual = result.to_vec().expect("result list");
+        let expected = [
+            bytes_to_unibyte_value(b"\xef\xef\xef FOO BAR \xcf\xcf"),
+            bytes_to_unibyte_value(b"\xff\xff\xff foo bar \xcf\xcf"),
+            bytes_to_unibyte_value(b"\xef\xff\xff Foo Bar \xcf\xcf"),
+            bytes_to_unibyte_value(b"\xef\xff\xef Foo BaR \xcf\xcf"),
+        ];
+
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            let actual_string = string_like(actual).expect("actual string");
+            let expected_string = string_like(expected).expect("expected string");
+            assert_eq!(actual_string.text, expected_string.text);
+            assert!(!actual_string.multibyte);
+        }
+    }
+
+    #[test]
+    fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_regions() {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![PathBuf::from("/Users/alpha/CodexProjects/emacs/lisp")]);
+        interp.load_target("case-table").expect("load case-table");
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (let* ((tab (copy-case-table (standard-case-table)))
+                   (byte8 #x3FFF00)
+                   (input (decode-coding-string "\xff\xff\xef Foo baR \xcf\xcf" 'binary)))
+              (with-temp-buffer
+                (set-case-table tab)
+                (set-case-syntax-pair (+ byte8 #xef) (+ byte8 #xff) tab)
+                (toggle-enable-multibyte-characters)
+                (insert input)
+                (upcase-region (point-min) (point-max))
+                (list (buffer-string) (multibyte-string-p (buffer-string)))))
+            "#,
+        )
+        .read_all()
+        .expect("case-table byte8 region test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("case-table byte8 region forms should evaluate");
+        let items = result.to_vec().expect("region result list");
+        let actual = string_like(&items[0]).expect("region result string");
+        let expected = string_like(&bytes_to_unibyte_value(b"\xef\xef\xef FOO BAR \xcf\xcf"))
+            .expect("expected string");
+
+        assert_eq!(actual.text, expected.text);
+        assert!(!actual.multibyte);
+        assert_eq!(items[1], Value::Nil);
     }
 
     #[test]
