@@ -945,8 +945,32 @@ impl Interpreter {
             suspend_condition_case_count: 0,
             condition_case_depth: 0,
         };
+        let esc_map = primitives::make_runtime_keymap(&mut interp, Some("esc-map"));
+        interp.set_global_binding("esc-map", esc_map.clone());
+        let ctl_x_4_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-4-map"));
+        interp.set_global_binding("ctl-x-4-map", ctl_x_4_map.clone());
+        let ctl_x_5_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-5-map"));
+        interp.set_global_binding("ctl-x-5-map", ctl_x_5_map.clone());
+        let tab_prefix_map = primitives::make_runtime_keymap(&mut interp, Some("tab-prefix-map"));
+        interp.set_global_binding("tab-prefix-map", tab_prefix_map.clone());
+        let ctl_x_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-map"));
+        interp.set_global_binding("ctl-x-map", ctl_x_map.clone());
+        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
+        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
+        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let global_map = interp
+            .lookup_var("global-map", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let esc_map = interp
+            .lookup_var("esc-map", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let ctl_x_map = interp
+            .lookup_var("ctl-x-map", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{1b}", esc_map);
+        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{18}", ctl_x_map);
         let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
         interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
         let input_decode_map =
@@ -5722,22 +5746,27 @@ impl Interpreter {
             Value::Symbol(name) => self.lookup_function(&name, env)?,
             other => other,
         };
-        let func = if is_lambda_form(&func) {
-            self.eval(&func, env)?
-        } else {
-            func
-        };
-        let func = if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
-            let Some(name) = original_name else {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("invalid-function".into()),
-                    func,
-                ])));
-            };
-            self.load_target(&file)?;
-            self.lookup_function(name, env)?
-        } else {
-            func
+        let func = match func {
+            Value::Cons(_, _) => {
+                let func = if is_lambda_form(&func) {
+                    self.eval(&func, env)?
+                } else {
+                    func
+                };
+                if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
+                    let Some(name) = original_name else {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("invalid-function".into()),
+                            func,
+                        ])));
+                    };
+                    self.load_target(&file)?;
+                    self.lookup_function(name, env)?
+                } else {
+                    func
+                }
+            }
+            other => other,
         };
 
         match func {

@@ -420,6 +420,38 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
     )
 }
 
+fn make_advice_wrapper_after(original: Value, advice: Value) -> Value {
+    let args_name = "__emaxx-advice-after-args".to_string();
+    let original_name = "__emaxx-advice-after-original".to_string();
+    let advice_name = "__emaxx-advice-after-function".to_string();
+    Value::Lambda(
+        vec!["&rest".into(), args_name.clone()],
+        vec![Value::list([
+            Value::Symbol("emaxx-apply-after-advice".into()),
+            Value::Symbol(original_name.clone()),
+            Value::Symbol(advice_name.clone()),
+            Value::Symbol(args_name),
+        ])],
+        shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
+    )
+}
+
+fn make_advice_wrapper_around(original: Value, advice: Value) -> Value {
+    let args_name = "__emaxx-advice-around-args".to_string();
+    let original_name = "__emaxx-advice-around-original".to_string();
+    let advice_name = "__emaxx-advice-around-function".to_string();
+    Value::Lambda(
+        vec!["&rest".into(), args_name.clone()],
+        vec![Value::list([
+            Value::Symbol("emaxx-apply-around-advice".into()),
+            Value::Symbol(original_name.clone()),
+            Value::Symbol(advice_name.clone()),
+            Value::Symbol(args_name),
+        ])],
+        shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
+    )
+}
+
 fn activate_major_mode(interp: &mut Interpreter, mode: &str, mode_name: &str) {
     let buffer_id = interp.current_buffer_id();
     interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol(mode.into()));
@@ -1835,6 +1867,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "ask-user-about-supersession-threat"
             | "advice-add"
             | "advice-remove"
+            | "emaxx-apply-around-advice"
+            | "emaxx-apply-after-advice"
             | "remove-function"
             | "userlock--handle-unlock-error"
             | "recent-auto-save-p"
@@ -11673,14 +11707,19 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let function_name = args[0].as_symbol()?.to_string();
-            if args[1].as_symbol()? != ":override" {
-                return Ok(Value::Nil);
-            }
+            let where_sym = args[1].as_symbol()?;
+            let original = interp.lookup_function(&function_name, env)?;
             let advice = match &args[2] {
                 Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
                 other => other.clone(),
             };
-            interp.push_function_binding(&function_name, advice);
+            let wrapped = match where_sym {
+                ":override" => advice,
+                ":after" => make_advice_wrapper_after(original, advice),
+                ":around" => make_advice_wrapper_around(original, advice),
+                _ => return Ok(Value::Nil),
+            };
+            interp.push_function_binding(&function_name, wrapped);
             Ok(Value::Nil)
         }
         "advice-remove" => {
@@ -11688,6 +11727,24 @@ pub fn call(
             let function_name = args[0].as_symbol()?.to_string();
             interp.pop_function_binding(&function_name);
             Ok(Value::Nil)
+        }
+        "emaxx-apply-around-advice" => {
+            need_args(name, args, 3)?;
+            let original = args[0].clone();
+            let advice = args[1].clone();
+            let mut advice_args = Vec::with_capacity(1 + args[2].to_vec()?.len());
+            advice_args.push(original);
+            advice_args.extend(args[2].to_vec()?);
+            interp.call_function_value(advice, None, &advice_args, env)
+        }
+        "emaxx-apply-after-advice" => {
+            need_args(name, args, 3)?;
+            let original = args[0].clone();
+            let advice = args[1].clone();
+            let original_args = args[2].to_vec()?;
+            let result = interp.call_function_value(original, None, &original_args, env)?;
+            interp.call_function_value(advice, None, &original_args, env)?;
+            Ok(result)
         }
         "remove-function" => {
             need_args(name, args, 2)?;
@@ -31265,6 +31322,201 @@ mod compat_runtime_tests {
         assert_eq!(
             interp.buffer_local_value(interp.current_buffer_id(), "revert-buffer-function"),
             Some(Value::Symbol("archive--mode-revert".into()))
+        );
+    }
+
+    #[test]
+    fn advice_add_supports_around_message_builtin() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (setq emaxx-test-message-log nil)
+              (defun emaxx-test-message-advice (orig &rest args)
+                (setq emaxx-test-message-log (apply #'format-message args))
+                (funcall orig "%s" emaxx-test-message-log))
+              (advice-add 'message :around #'emaxx-test-message-advice)
+              (let ((result (message "value=%s" 42))
+                    (current (current-message)))
+                (advice-remove 'message #'emaxx-test-message-advice)
+                (list emaxx-test-message-log result current)))
+            "#,
+        )
+        .read_all()
+        .expect("message advice test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("message advice should evaluate");
+        assert_eq!(
+            result,
+            Value::list([
+                Value::String("value=42".into()),
+                Value::String("value=42".into()),
+                Value::String("value=42".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn funcall_message_builtin_from_lambda() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (defun emaxx-test-call-message (orig &rest args)
+                (setq emaxx-test-message-log (apply #'format-message args))
+                (funcall orig "%s" emaxx-test-message-log))
+              (funcall #'emaxx-test-call-message (symbol-function 'message) "value=%s" 42))
+            "#,
+        )
+        .read_all()
+        .expect("direct message-call test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("direct message-call should evaluate");
+        assert_eq!(result, Value::String("value=42".into()));
+    }
+
+    #[test]
+    fn apply_format_message_from_lambda() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (defun emaxx-test-format-message (&rest args)
+                (apply #'format-message args))
+              (emaxx-test-format-message "value=%s" 42))
+            "#,
+        )
+        .read_all()
+        .expect("format-message lambda test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("format-message lambda should evaluate");
+        assert_eq!(result, Value::String("value=42".into()));
+    }
+
+    #[test]
+    fn apply_format_message_top_level() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(r#"(apply #'format-message '("value=%s" 42))"#)
+            .read_all()
+            .expect("top-level apply format-message should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("top-level apply format-message should evaluate");
+        assert_eq!(result, Value::String("value=42".into()));
+    }
+
+    #[test]
+    fn direct_format_message_top_level() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(r#"(format-message "value=%s" 42)"#)
+            .read_all()
+            .expect("top-level direct format-message should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("top-level direct format-message should evaluate");
+        assert_eq!(result, Value::String("value=42".into()));
+    }
+
+    #[test]
+    fn advice_add_supports_around_read_event_override_without_side_effects() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (defun emaxx-test-read-event-advice (_orig &rest _args)
+                ?x)
+              (advice-add 'read-event :around #'emaxx-test-read-event-advice)
+              (let ((last-input-event nil)
+                    (unread-command-events nil))
+                (prog1
+                    (list (read-event)
+                          last-input-event
+                          unread-command-events)
+                  (advice-remove 'read-event #'emaxx-test-read-event-advice))))
+            "#,
+        )
+        .read_all()
+        .expect("read-event advice test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("read-event advice should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::Integer('x' as i64), Value::Nil, Value::Nil,])
+        );
+    }
+
+    #[test]
+    fn advice_add_supports_after_function() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (setq emaxx-test-after-log nil)
+              (defun emaxx-test-after-target () 'done)
+              (defun emaxx-test-after-advice (&rest _args)
+                (setq emaxx-test-after-log 'after))
+              (advice-add 'emaxx-test-after-target :after #'emaxx-test-after-advice)
+              (prog1
+                  (list (emaxx-test-after-target) emaxx-test-after-log)
+                (advice-remove 'emaxx-test-after-target #'emaxx-test-after-advice)))
+            "#,
+        )
+        .read_all()
+        .expect("after advice test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("after advice should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::Symbol("done".into()), Value::Symbol("after".into())])
+        );
+    }
+
+    #[test]
+    fn advice_add_supports_after_end_kbd_macro() {
+        let mut interp = Interpreter::new();
+        interp.load_target("kmacro").expect("load kmacro");
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (setq emaxx-test-after-log nil)
+              (defun emaxx-test-end-kbd-macro-advice (&rest _args)
+                (setq emaxx-test-after-log 'after))
+              (advice-add 'end-kbd-macro :after #'emaxx-test-end-kbd-macro-advice)
+              (kmacro-start-macro nil)
+              (prog1
+                  (list (end-kbd-macro) emaxx-test-after-log)
+                (advice-remove 'end-kbd-macro #'emaxx-test-end-kbd-macro-advice)))
+            "#,
+        )
+        .read_all()
+        .expect("end-kbd-macro advice test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("end-kbd-macro advice should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::Nil, Value::Symbol("after".into())])
         );
     }
 
