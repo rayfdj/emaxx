@@ -5851,7 +5851,7 @@ impl Interpreter {
 
                 let captured_snapshot = closure_env.borrow().clone();
                 let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
-                let (mut call_env, captured_positions) =
+                let (mut call_env, captured_positions, current_positions) =
                     Self::merge_lambda_env(env, &captured_snapshot, &frame_mapping);
                 self.push_backtrace_frame(original_name.map(str::to_string), args.to_vec());
                 call_env.push(frame);
@@ -5869,6 +5869,13 @@ impl Interpreter {
                         {
                             stored_env[captured_index] = updated.clone();
                         }
+                    }
+                }
+                for (current_index, position) in current_positions.iter().enumerate() {
+                    if let Some(updated) = call_env.get(*position)
+                        && current_index < env.len()
+                    {
+                        env[current_index] = updated.clone();
                     }
                 }
                 for (captured_index, current_index) in frame_mapping.iter().enumerate() {
@@ -8832,15 +8839,17 @@ impl Interpreter {
         current: &Env,
         captured: &Env,
         mapping: &[Option<usize>],
-    ) -> (Env, Vec<Option<usize>>) {
+    ) -> (Env, Vec<Option<usize>>, Vec<usize>) {
         let mut merged = Vec::new();
         let mut positions = vec![None; captured.len()];
+        let mut current_positions = Vec::with_capacity(current.len());
         let mut current_cursor = 0usize;
 
         for (captured_index, current_index) in mapping.iter().enumerate() {
             if let Some(current_index) = current_index {
                 while current_cursor <= *current_index {
                     merged.push(current[current_cursor].clone());
+                    current_positions.push(merged.len() - 1);
                     current_cursor += 1;
                 }
                 positions[captured_index] = merged.len().checked_sub(1);
@@ -8852,10 +8861,11 @@ impl Interpreter {
 
         while current_cursor < current.len() {
             merged.push(current[current_cursor].clone());
+            current_positions.push(merged.len() - 1);
             current_cursor += 1;
         }
 
-        (merged, positions)
+        (merged, positions, current_positions)
     }
 
     fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -15693,6 +15703,21 @@ mod tests {
                    (list (eval form nil) (eval form t)))"
             ),
             Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn dynamic_lambdas_write_back_mutated_caller_bindings() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((x nil)
+                      (f (eval '(lambda () (setq x t)) nil)))
+                  (funcall f)
+                  x)
+                "#
+            ),
+            Value::T
         );
     }
 
