@@ -800,6 +800,7 @@ impl Interpreter {
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
                 ("process-connection-type".into(), Value::T),
+                ("selection-converter-alist".into(), Value::Nil),
                 ("system-uses-terminfo".into(), Value::T),
                 (
                     "vc-directory-exclusion-list".into(),
@@ -827,6 +828,7 @@ impl Interpreter {
                 "overwrite-mode".into(),
                 "process-connection-type".into(),
                 "process-environment".into(),
+                "selection-converter-alist".into(),
                 "scroll-preserve-screen-position".into(),
                 "scroll-up-aggressively".into(),
                 "standard-output".into(),
@@ -945,8 +947,32 @@ impl Interpreter {
             suspend_condition_case_count: 0,
             condition_case_depth: 0,
         };
+        let esc_map = primitives::make_runtime_keymap(&mut interp, Some("esc-map"));
+        interp.set_global_binding("esc-map", esc_map.clone());
+        let ctl_x_4_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-4-map"));
+        interp.set_global_binding("ctl-x-4-map", ctl_x_4_map.clone());
+        let ctl_x_5_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-5-map"));
+        interp.set_global_binding("ctl-x-5-map", ctl_x_5_map.clone());
+        let tab_prefix_map = primitives::make_runtime_keymap(&mut interp, Some("tab-prefix-map"));
+        interp.set_global_binding("tab-prefix-map", tab_prefix_map.clone());
+        let ctl_x_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-map"));
+        interp.set_global_binding("ctl-x-map", ctl_x_map.clone());
+        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
+        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
+        let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let global_map = interp
+            .lookup_var("global-map", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let esc_map = interp
+            .lookup_var("esc-map", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let ctl_x_map = interp
+            .lookup_var("ctl-x-map", &Vec::new())
+            .unwrap_or(Value::Nil);
+        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{1b}", esc_map);
+        let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{18}", ctl_x_map);
         let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
         interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
         let input_decode_map =
@@ -4886,6 +4912,7 @@ impl Interpreter {
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
+            "selection-converter-alist" => Some(Value::Nil),
             "early-init-file" => Some(Value::Nil),
             "init-file-user" => Some(Value::Nil),
             "site-run-file" => Some(Value::Nil),
@@ -5722,22 +5749,27 @@ impl Interpreter {
             Value::Symbol(name) => self.lookup_function(&name, env)?,
             other => other,
         };
-        let func = if is_lambda_form(&func) {
-            self.eval(&func, env)?
-        } else {
-            func
-        };
-        let func = if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
-            let Some(name) = original_name else {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("invalid-function".into()),
-                    func,
-                ])));
-            };
-            self.load_target(&file)?;
-            self.lookup_function(name, env)?
-        } else {
-            func
+        let func = match func {
+            Value::Cons(_, _) => {
+                let func = if is_lambda_form(&func) {
+                    self.eval(&func, env)?
+                } else {
+                    func
+                };
+                if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
+                    let Some(name) = original_name else {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("invalid-function".into()),
+                            func,
+                        ])));
+                    };
+                    self.load_target(&file)?;
+                    self.lookup_function(name, env)?
+                } else {
+                    func
+                }
+            }
+            other => other,
         };
 
         match func {
@@ -15981,6 +16013,24 @@ mod tests {
                     (setq sample-mode-map-entry (cons 'sample-mode map))
                     (add-to-list 'minor-mode-map-alist sample-mode-map-entry)
                     (key-binding (kbd "C-x 5 C-o"))))
+                "#
+            ),
+            Value::Symbol("demo-display".into())
+        );
+    }
+
+    #[test]
+    fn command_remapping_reads_active_minor_mode_maps() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setq sample-mode t)
+                  (let ((map (make-sparse-keymap "demo")))
+                    (define-key map [remap display-buffer-other-frame] 'demo-display)
+                    (setq sample-mode-map-entry (cons 'sample-mode map))
+                    (add-to-list 'minor-mode-map-alist sample-mode-map-entry)
+                    (command-remapping 'display-buffer-other-frame)))
                 "#
             ),
             Value::Symbol("demo-display".into())
