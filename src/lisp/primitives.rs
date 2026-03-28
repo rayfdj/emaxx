@@ -6523,7 +6523,8 @@ pub fn call(
                 && string_like(object).is_some()
             {
                 let pos = args[0].as_integer()?.max(0) as usize;
-                return Ok(string_property_at(object, pos, &prop).unwrap_or(Value::Nil));
+                return Ok(string_property_at_with_category(interp, object, pos, &prop)
+                    .unwrap_or(Value::Nil));
             }
             let pos = position_from_value(interp, &args[0])?;
             let buffer_id = match args.get(2) {
@@ -6533,11 +6534,15 @@ pub fn call(
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-            Ok(
-                highest_priority_overlay_property(buffer, pos, &prop, name == "get-pos-property")
-                    .or_else(|| buffer.text_property_at(pos, &prop))
-                    .unwrap_or(Value::Nil),
+            Ok(highest_priority_overlay_property(
+                interp,
+                buffer,
+                pos,
+                &prop,
+                name == "get-pos-property",
             )
+            .or_else(|| buffer_property_at_with_category(interp, buffer, pos, &prop))
+            .unwrap_or(Value::Nil))
         }
         "get-text-property" => {
             if args.len() < 2 || args.len() > 3 {
@@ -6547,7 +6552,8 @@ pub fn call(
             if let Some(object) = args.get(2) {
                 if string_like(object).is_some() {
                     let pos = args[0].as_integer()?.max(0) as usize;
-                    Ok(string_property_at(object, pos, &prop).unwrap_or(Value::Nil))
+                    Ok(string_property_at_with_category(interp, object, pos, &prop)
+                        .unwrap_or(Value::Nil))
                 } else {
                     let pos = position_from_value(interp, &args[0])?;
                     let buffer_id = if object.is_nil() {
@@ -6558,14 +6564,15 @@ pub fn call(
                     let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
                         LispError::Signal(format!("No buffer with id {}", buffer_id))
                     })?;
-                    Ok(buffer.text_property_at(pos, &prop).unwrap_or(Value::Nil))
+                    Ok(buffer_property_at_with_category(interp, buffer, pos, &prop)
+                        .unwrap_or(Value::Nil))
                 }
             } else {
                 let pos = position_from_value(interp, &args[0])?;
-                Ok(interp
-                    .buffer
-                    .text_property_at(pos, &prop)
-                    .unwrap_or(Value::Nil))
+                Ok(
+                    buffer_property_at_with_category(interp, &interp.buffer, pos, &prop)
+                        .unwrap_or(Value::Nil),
+                )
             }
         }
         "text-property-any" | "text-property-not-all" => {
@@ -12865,7 +12872,9 @@ pub fn call(
                 _ => return Err(LispError::TypeError("symbol".into(), args[1].type_name())),
             };
             match interp.find_overlay(ov_id) {
-                Some(ov) => Ok(ov.get_prop(&key).cloned().unwrap_or(Value::Nil)),
+                Some(ov) => {
+                    Ok(overlay_property_with_category(interp, ov, &key).unwrap_or(Value::Nil))
+                }
                 None => Ok(Value::Nil),
             }
         }
@@ -14587,6 +14596,7 @@ fn take_overlay(interp: &mut Interpreter, overlay_id: u64) -> Option<crate::over
 }
 
 fn highest_priority_overlay_property(
+    interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
     prop: &str,
@@ -14606,7 +14616,7 @@ fn highest_priority_overlay_property(
     });
     overlays
         .last()
-        .and_then(|overlay| overlay.get_prop(prop).cloned())
+        .and_then(|overlay| overlay_property_with_category(interp, overlay, prop))
 }
 
 fn overlay_covers_position(
@@ -22414,6 +22424,84 @@ mod tests {
     }
 
     #[test]
+    fn get_text_property_inherits_from_category_symbol() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+        interp.put_symbol_property(
+            "sample-button-category",
+            "type",
+            Value::Symbol("sample-button-type".into()),
+        );
+        let mut env = Vec::new();
+
+        call(
+            &mut interp,
+            "put-text-property",
+            &[
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Symbol("category".into()),
+                Value::Symbol("sample-button-category".into()),
+            ],
+            &mut env,
+        )
+        .expect("put-text-property should assign a category");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-text-property",
+                &[Value::Integer(1), Value::Symbol("type".into())],
+                &mut env,
+            )
+            .expect("get-text-property should inherit button properties"),
+            Value::Symbol("sample-button-type".into())
+        );
+    }
+
+    #[test]
+    fn overlay_get_inherits_from_category_symbol() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
+        interp.put_symbol_property(
+            "sample-button-category",
+            "type",
+            Value::Symbol("sample-button-type".into()),
+        );
+        let mut env = Vec::new();
+
+        let overlay = call(
+            &mut interp,
+            "make-overlay",
+            &[Value::Integer(1), Value::Integer(2)],
+            &mut env,
+        )
+        .expect("make-overlay should create an overlay");
+        call(
+            &mut interp,
+            "overlay-put",
+            &[
+                overlay.clone(),
+                Value::Symbol("category".into()),
+                Value::Symbol("sample-button-category".into()),
+            ],
+            &mut env,
+        )
+        .expect("overlay-put should assign a category");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "overlay-get",
+                &[overlay, Value::Symbol("type".into())],
+                &mut env,
+            )
+            .expect("overlay-get should inherit button properties"),
+            Value::Symbol("sample-button-type".into())
+        );
+    }
+
+    #[test]
     fn substitute_command_keys_uses_explicit_keymaps() {
         let mut interp = Interpreter::new();
         let keymap = make_runtime_keymap(&mut interp, Some("button-tests--map"));
@@ -23148,6 +23236,54 @@ fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPropertySpan>
     merged
 }
 
+fn property_from_category_symbol(
+    interp: &Interpreter,
+    props: &[(String, Value)],
+    prop: &str,
+) -> Option<Value> {
+    if prop == "category" {
+        return None;
+    }
+    let category = props
+        .iter()
+        .find(|(name, _)| name == "category")
+        .and_then(|(_, value)| value.as_symbol().ok())?;
+    interp.get_symbol_property(category, prop)
+}
+
+fn property_from_props_with_category(
+    interp: &Interpreter,
+    props: &[(String, Value)],
+    prop: &str,
+) -> Option<Value> {
+    props
+        .iter()
+        .find(|(name, _)| name == prop)
+        .map(|(_, value)| value.clone())
+        .or_else(|| property_from_category_symbol(interp, props, prop))
+}
+
+fn buffer_property_at_with_category(
+    interp: &Interpreter,
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    prop: &str,
+) -> Option<Value> {
+    if pos < buffer.point_min() || pos >= buffer.point_max() {
+        return None;
+    }
+    let props = buffer.text_properties_at(pos);
+    property_from_props_with_category(interp, &props, prop)
+}
+
+fn overlay_property_with_category(
+    interp: &Interpreter,
+    overlay: &crate::overlay::Overlay,
+    prop: &str,
+) -> Option<Value> {
+    property_from_props_with_category(interp, &overlay.plist, prop)
+}
+
 fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {
     let string = string_like(value)?;
     string
@@ -23160,6 +23296,20 @@ fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {
                 .find(|(name, _)| name == prop)
                 .map(|(_, value)| value.clone())
         })
+}
+
+fn string_property_at_with_category(
+    interp: &Interpreter,
+    value: &Value,
+    pos: usize,
+    prop: &str,
+) -> Option<Value> {
+    let string = string_like(value)?;
+    let span = string
+        .props
+        .iter()
+        .find(|span| span.start <= pos && pos < span.end)?;
+    property_from_props_with_category(interp, &span.props, prop)
 }
 
 fn text_property_search_buffer(
