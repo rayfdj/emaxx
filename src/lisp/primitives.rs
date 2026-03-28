@@ -14482,14 +14482,16 @@ pub fn call(
             } else {
                 decode_coding_text(interp, &region, coding.as_deref(), destination, env)?
             };
+            let transformed_text = string_text(&transformed)?;
             if let Some(buffer_id) = destination_buffer {
                 let saved_buffer_id = interp.current_buffer_id();
                 interp.switch_to_buffer_id(buffer_id)?;
                 let insert_at = interp.buffer.point();
-                let transformed_text = string_text(&transformed)?;
                 insert_text_with_hooks(interp, &transformed_text, &[], false, false, env)?;
                 interp.buffer.goto_char(insert_at);
                 let _ = interp.switch_to_buffer_id(saved_buffer_id);
+            } else if !destination {
+                replace_buffer_region_with_text(interp, start, end, &transformed_text)?;
             }
             if destination {
                 Ok(transformed)
@@ -19469,10 +19471,20 @@ fn decode_coding_text(
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(coding))?;
     set_last_coding_system_used(interp, &canonical, env);
-    if nocopy && string_identity_for_coding(&string.text, &canonical, interp, false) {
+    let text = match interp.coding_system_eol_type_value(&canonical) {
+        Some(1) if string.text.contains('\r') => string.text.replace("\r\n", "\n"),
+        Some(2) if string.text.contains('\r') => string.text.replace('\r', "\n"),
+        _ => string.text.clone(),
+    };
+    if nocopy
+        && text == string.text
+        && string_identity_for_coding(&string.text, &canonical, interp, false)
+    {
         Ok(value.clone())
-    } else {
+    } else if text == string.text {
         shared_string_copy(value)
+    } else {
+        Ok(string_like_value(text, string.props))
     }
 }
 

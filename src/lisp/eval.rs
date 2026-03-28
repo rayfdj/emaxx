@@ -17487,6 +17487,31 @@ mod tests {
     }
 
     #[test]
+    fn decode_coding_region_rewrites_dos_eol_in_place() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (encode-coding-string "あ" 'euc-jp) "\r" "\n")
+                     (decode-coding-region (point-min) (point-max) 'euc-jp-dos)
+                     (string-search "\r" (buffer-string)))"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn decode_coding_string_normalizes_dos_eol() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((decoded (decode-coding-string "A\r\n" 'utf-8-dos)))
+                     (string-search "\r" decoded))"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn base64_decode_string_ignores_wrapped_input() {
         assert_eq!(
             eval_str(
