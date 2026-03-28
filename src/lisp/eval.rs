@@ -15168,6 +15168,75 @@ mod tests {
     }
 
     #[test]
+    fn variable_watchers_allow_mutating_lexical_callback_state() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let* ((watch-data nil)
+                            (collect-watch-data
+                             (lambda (&rest args) (push args watch-data))))
+                       (defvar data-tests-var 0)
+                       (add-variable-watcher 'data-tests-var collect-watch-data)
+                       (setq data-tests-var 1)
+                       (remove-variable-watcher 'data-tests-var collect-watch-data)
+                       watch-data)"
+                ),
+                Value::list([Value::list([
+                    Value::Symbol("data-tests-var".into()),
+                    Value::Integer(1),
+                    Value::Symbol("set".into()),
+                    Value::Nil,
+                ])])
+            );
+        });
+    }
+
+    #[test]
+    fn local_variable_watchers_allow_mutating_lexical_callback_state() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let* ((watch-data nil)
+                            (collect-watch-data
+                             (lambda (&rest args) (push args watch-data))))
+                       (defvar-local data-tests-lvar 0)
+                       (with-temp-buffer
+                         (add-variable-watcher 'data-tests-lvar collect-watch-data)
+                         (setq data-tests-lvar 1)
+                         (remove-variable-watcher 'data-tests-lvar collect-watch-data)
+                         (let ((event (car watch-data)))
+                           (list (car event)
+                                 (nth 1 event)
+                                 (nth 2 event)
+                                 (bufferp (nth 3 event))))))"
+                ),
+                Value::list([
+                    Value::Symbol("data-tests-lvar".into()),
+                    Value::Integer(1),
+                    Value::Symbol("set".into()),
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(progn
+                       (require 'cl-extra)
+                       (list (cl-find-class 'fixnum)
+                             (built-in-class-p (cl-find-class 'fixnum))
+                             (cl-typep 10 'fixnum)))"
+                ),
+                Value::list([Value::Symbol("fixnum".into()), Value::T, Value::T,])
+            );
+        });
+    }
+
+    #[test]
     fn macrop_recognizes_defined_and_autoloaded_macros() {
         run_with_large_stack(|| {
             let mut interp = Interpreter::new();
