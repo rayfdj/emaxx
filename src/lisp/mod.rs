@@ -55,10 +55,7 @@ pub fn load_file_strict(
         let mut env = types::Env::new();
         if let Err(error) = interp.eval(form, &mut env) {
             interp.set_current_load_file(previous);
-            return Err(types::LispError::Signal(format!(
-                "{error} [while loading form {}]",
-                form
-            )));
+            return Err(error);
         }
     }
     interp.set_current_load_file(previous);
