@@ -179,9 +179,9 @@ struct SpecialBindingRestore {
     previous: Option<Value>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct BacktraceFrame {
-    function: Option<String>,
+    function: Value,
     args: Vec<Value>,
     debug_on_exit: bool,
 }
@@ -2357,7 +2357,10 @@ impl Interpreter {
     pub fn thread_backtrace_frames_snapshot(
         &self,
         record_id: u64,
-    ) -> Vec<(Option<String>, Vec<Value>, bool)> {
+    ) -> Vec<(Value, Vec<Value>, bool)> {
+        if record_id == self.active_thread_id {
+            return self.backtrace_frames_snapshot();
+        }
         let Some(thread) = self.find_thread_state(record_id) else {
             return Vec::new();
         };
@@ -2367,12 +2370,12 @@ impl Interpreter {
                 ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id)),
             ) => vec![
                 (
-                    Some("mutex-lock".into()),
+                    Value::Symbol("mutex-lock".into()),
                     vec![Value::Record(*mutex_id)],
                     false,
                 ),
                 (
-                    Some("thread-tests--thread-function".into()),
+                    Value::Symbol("thread-tests--thread-function".into()),
                     Vec::new(),
                     false,
                 ),
@@ -4171,7 +4174,7 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn push_backtrace_frame(&mut self, function: Option<String>, args: Vec<Value>) {
+    pub fn push_backtrace_frame(&mut self, function: Value, args: Vec<Value>) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
@@ -4189,7 +4192,7 @@ impl Interpreter {
         }
     }
 
-    pub fn current_backtrace_frame(&self) -> Option<(Option<String>, Vec<Value>, bool)> {
+    pub fn current_backtrace_frame(&self) -> Option<(Value, Vec<Value>, bool)> {
         self.backtrace_frames.last().map(|frame| {
             (
                 frame.function.clone(),
@@ -4199,7 +4202,7 @@ impl Interpreter {
         })
     }
 
-    pub fn backtrace_frames_snapshot(&self) -> Vec<(Option<String>, Vec<Value>, bool)> {
+    pub fn backtrace_frames_snapshot(&self) -> Vec<(Value, Vec<Value>, bool)> {
         self.backtrace_frames
             .iter()
             .rev()
@@ -5639,7 +5642,7 @@ impl Interpreter {
                         }
                         "catch" => return self.sf_catch(&items, env),
                         "add-to-list" => return self.sf_add_to_list(&items, env),
-                        "ert-deftest" => return self.sf_ert_deftest(&items),
+                        "ert-deftest" => return self.sf_ert_deftest(&items, env),
                         "should" => return self.sf_should(&items, env),
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
@@ -5853,7 +5856,10 @@ impl Interpreter {
                 let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
                 let (mut call_env, captured_positions, current_positions) =
                     Self::merge_lambda_env(env, &captured_snapshot, &frame_mapping);
-                self.push_backtrace_frame(original_name.map(str::to_string), args.to_vec());
+                let backtrace_function = original_name
+                    .map(|name| Value::Symbol(name.to_string()))
+                    .unwrap_or_else(|| func.clone());
+                self.push_backtrace_frame(backtrace_function, args.to_vec());
                 call_env.push(frame);
                 let result = self.sf_progn(function_executable_body(body), &mut call_env);
                 call_env.pop();
@@ -10438,7 +10444,7 @@ impl Interpreter {
 
     // ── ERT support ──
 
-    fn sf_ert_deftest(&mut self, items: &[Value]) -> Result<Value, LispError> {
+    fn sf_ert_deftest(&mut self, items: &[Value], env: &Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
         }
@@ -10480,8 +10486,10 @@ impl Interpreter {
             cursor += 2;
         }
 
-        let body = Value::list(
-            std::iter::once(Value::symbol("progn")).chain(items[cursor..].iter().cloned()),
+        let body = Value::Lambda(
+            Vec::new(),
+            items[cursor..].to_vec(),
+            shared_env(env.clone()),
         );
         self.ert_tests.push(ErtTestDefinition {
             name,
@@ -10577,7 +10585,7 @@ impl Interpreter {
         for test in &tests {
             let mut env: Env = Vec::new();
             let previous = self.set_current_load_file(test.source_file.clone());
-            let result = self.eval(&test.body, &mut env);
+            let result = self.call_function_value(test.body.clone(), None, &[], &mut env);
             self.set_current_load_file(previous);
             match result {
                 Ok(_) => {
@@ -17068,6 +17076,28 @@ mod tests {
     }
 
     #[test]
+    fn ert_runner_exposes_current_test_frame_to_backtrace_queries() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest backtrace-thread-frame ()
+              (let* ((frames (backtrace--frames-from-thread (current-thread)))
+                     (found nil))
+                (dolist (frame frames)
+                  (when (and (consp frame)
+                             (memq (car frame) '(t nil))
+                             (functionp (cadr frame)))
+                    (setq found t)))
+                (should found)))
+            "#,
+        );
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
     fn defalias_can_reference_incf_via_function_quote() {
         assert_eq!(
             eval_str(
@@ -18939,6 +18969,24 @@ IHdvcmxkIQ==")))
                     Value::Integer(1),
                 ]),
             ])
+        );
+    }
+
+    #[test]
+    fn backtrace_frames_from_current_thread_returns_live_frames() {
+        let mut interp = Interpreter::new();
+        let current_thread = interp.current_thread_value();
+        interp.push_backtrace_frame(Value::Symbol("sample-backtrace-frame".into()), Vec::new());
+
+        assert_eq!(
+            interp.thread_backtrace_frames_snapshot(
+                interp.resolve_thread_id(&current_thread).unwrap()
+            ),
+            vec![(
+                Value::Symbol("sample-backtrace-frame".into()),
+                Vec::new(),
+                false,
+            )]
         );
     }
 }
