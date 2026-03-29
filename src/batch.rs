@@ -197,7 +197,10 @@ fn format_backtrace_summary(interpreter: &Interpreter) -> String {
         .into_iter()
         .take(8)
         .map(|(function, args, _)| {
-            let name = function.unwrap_or_else(|| "<anonymous>".into());
+            let name = match function {
+                Value::Nil => "<anonymous>".into(),
+                other => other.to_string(),
+            };
             if args.is_empty() {
                 name
             } else {

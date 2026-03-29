@@ -12194,7 +12194,6 @@ pub fn call(
             } else {
                 Value::Nil
             };
-            let function = function.map(Value::Symbol).unwrap_or(Value::Nil);
             interp.call_function_value(
                 callback,
                 None,
@@ -12375,8 +12374,7 @@ pub fn call(
                 .thread_backtrace_frames_snapshot(interp.resolve_thread_id(&args[0])?)
                 .into_iter()
                 .map(|(function, frame_args, _debug_on_exit)| {
-                    let mut items =
-                        vec![Value::T, function.map(Value::Symbol).unwrap_or(Value::Nil)];
+                    let mut items = vec![Value::T, function];
                     items.extend(frame_args);
                     Value::list(items)
                 })
@@ -12415,8 +12413,7 @@ pub fn call(
                 .unwrap_or_else(|| interp.create_buffer("*Thread Backtrace*").0);
             let mut text = format!("Backtrace for thread `{thread_name}':\n");
             for (function, frame_args, _) in interp.thread_backtrace_frames_snapshot(thread_id) {
-                let function = function.unwrap_or_else(|| "nil".into());
-                text.push_str(&function);
+                text.push_str(&render_prin1(interp, &function, env)?);
                 for arg in frame_args {
                     text.push(' ');
                     text.push_str(&render_prin1(interp, &arg, env)?);
