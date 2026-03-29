@@ -26648,13 +26648,11 @@ fn file_change_cache_value(path: &str) -> Result<Option<(u64, u128)>, LispError>
     Ok(Some((metadata.len(), modified)))
 }
 
-fn is_circular_list_value(interp: &Interpreter, value: &Value) -> bool {
-    match value {
-        Value::Record(id) => interp
-            .find_record(*id)
-            .is_some_and(|record| record.type_name == "circular-list"),
-        _ => false,
-    }
+fn is_circular_list_value(value: &Value) -> bool {
+    matches!(
+        value.to_vec(),
+        Err(LispError::SignalValue(signal)) if circular_list_signal_p(&signal)
+    )
 }
 
 fn make_temp_file_internal(
@@ -27064,7 +27062,7 @@ fn insert_file_contents(
         interp.buffer.goto_char(start);
     }
     if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env)
-        && is_circular_list_value(interp, &hooks)
+        && is_circular_list_value(&hooks)
     {
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("circular-list".into()),

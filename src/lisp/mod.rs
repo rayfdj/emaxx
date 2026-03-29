@@ -35,6 +35,9 @@ pub fn load_file_strict(
     path: &Path,
 ) -> Result<(), types::LispError> {
     let previous = interp.set_current_load_file(Some(path.display().to_string()));
+    let previous_load_list = interp
+        .lookup_var("current-load-list", &types::Env::new())
+        .unwrap_or(types::Value::Nil);
     let lexical_binding = file_lexical_binding(path)?;
     interp.set_global_binding(
         "lexical-binding",
@@ -44,9 +47,14 @@ pub fn load_file_strict(
             types::Value::Nil
         },
     );
+    interp.set_global_binding(
+        "current-load-list",
+        types::Value::list([types::Value::String(path.display().to_string())]),
+    );
     let forms = match read_forms(path) {
         Ok(forms) => forms,
         Err(error) => {
+            interp.set_global_binding("current-load-list", previous_load_list);
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -54,10 +62,12 @@ pub fn load_file_strict(
     for form in &forms {
         let mut env = types::Env::new();
         if let Err(error) = interp.eval(form, &mut env) {
+            interp.set_global_binding("current-load-list", previous_load_list);
             interp.set_current_load_file(previous);
             return Err(error);
         }
     }
+    interp.set_global_binding("current-load-list", previous_load_list);
     interp.set_current_load_file(previous);
     Ok(())
 }
@@ -69,6 +79,9 @@ pub fn run_ert_file(
 ) -> Result<(usize, usize, usize, Vec<TestResult>), types::LispError> {
     let mut interp = eval::Interpreter::new();
     let previous = interp.set_current_load_file(Some(path.display().to_string()));
+    let previous_load_list = interp
+        .lookup_var("current-load-list", &types::Env::new())
+        .unwrap_or(types::Value::Nil);
     let lexical_binding = file_lexical_binding(path)?;
     interp.set_global_binding(
         "lexical-binding",
@@ -78,9 +91,14 @@ pub fn run_ert_file(
             types::Value::Nil
         },
     );
+    interp.set_global_binding(
+        "current-load-list",
+        types::Value::list([types::Value::String(path.display().to_string())]),
+    );
     let forms = match read_forms(path) {
         Ok(forms) => forms,
         Err(error) => {
+            interp.set_global_binding("current-load-list", previous_load_list);
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -92,6 +110,7 @@ pub fn run_ert_file(
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);
     }
+    interp.set_global_binding("current-load-list", previous_load_list);
     interp.set_current_load_file(previous);
 
     // Run the collected tests
