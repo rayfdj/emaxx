@@ -795,6 +795,7 @@ impl Interpreter {
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
                 ),
+                ("current-load-list".into(), Value::Nil),
                 ("exec-path".into(), current_exec_path()),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
@@ -814,6 +815,7 @@ impl Interpreter {
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
                 "cl--proclaims-deferred".into(),
+                "current-load-list".into(),
                 "display-hourglass".into(),
                 "exec-path".into(),
                 "file-name-handler-alist".into(),
@@ -15812,6 +15814,37 @@ mod tests {
     }
 
     #[test]
+    fn load_file_strict_prebinds_current_load_list() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-current-load-list-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(setq sample-current-load-entry (car (last current-load-list)))\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_string_value(
+            interp
+                .lookup_var("sample-current-load-entry", &Vec::new())
+                .expect("sample-current-load-entry"),
+            &path.display().to_string(),
+        );
+        assert_eq!(
+            interp.lookup_var("current-load-list", &Vec::new()),
+            Some(Value::Nil)
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn load_file_strict_preserves_original_load_errors() {
         let path = std::env::temp_dir().join(format!(
             "emaxx-load-error-{}.el",
@@ -15914,6 +15947,32 @@ mod tests {
                    (list (point) (point-min) (point-max)))"
             )),
             Value::list([Value::Integer(1), Value::Integer(1), Value::Integer(4)])
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn insert_file_contents_rejects_circular_after_insert_file_functions() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-insert-file-contents-circular-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "hello\n").unwrap();
+
+        let path_literal = path.display().to_string().replace('\\', "\\\\");
+        assert_eq!(
+            eval_str(&format!(
+                "(let ((after-insert-file-functions (list 'identity))) \
+                   (setcdr after-insert-file-functions after-insert-file-functions) \
+                   (condition-case err \
+                       (insert-file-contents \"{path_literal}\") \
+                     (circular-list (car err))))"
+            )),
+            Value::Symbol("circular-list".into())
         );
 
         std::fs::remove_file(path).unwrap();
