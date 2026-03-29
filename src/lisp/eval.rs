@@ -15804,6 +15804,31 @@ mod tests {
     }
 
     #[test]
+    fn load_file_strict_preserves_original_load_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-load-error-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(require 'mod-test \"/tmp/emaxx-missing-mod-test\")\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        let error = crate::lisp::load_file_strict(&mut interp, &path).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot open load file: No such file or directory, /tmp/emaxx-missing-mod-test"
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn eval_second_argument_controls_lambda_capture() {
         assert_eq!(
             eval_str(
