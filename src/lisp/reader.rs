@@ -1,6 +1,9 @@
-use super::types::{LispError, SharedStringState, StringPropertySpan, Value};
+use super::types::{
+    LispError, SharedStringState, StringPropertySpan, Value, make_uninterned_symbol_name,
+};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::{cell::RefCell, rc::Rc};
 use unicode_names2::character as unicode_character;
 
@@ -9,6 +12,44 @@ const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
 const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
 const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
+static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn structure_slot_eval_form(value: Value) -> Value {
+    match value {
+        Value::Nil
+        | Value::T
+        | Value::Integer(_)
+        | Value::BigInteger(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::StringObject(_)
+        | Value::Buffer(_, _)
+        | Value::Marker(_)
+        | Value::Overlay(_)
+        | Value::CharTable(_)
+        | Value::Record(_)
+        | Value::Finalizer(_)
+        | Value::BuiltinFunc(_)
+        | Value::Lambda(_, _, _) => value,
+        Value::Symbol(symbol) => Value::list([Value::symbol("quote"), Value::Symbol(symbol)]),
+        Value::Cons(_, _) => {
+            if let Ok(items) = value.to_vec()
+                && matches!(
+                    items.first(),
+                    Some(Value::Symbol(symbol))
+                        if symbol == "vector-literal"
+                            || symbol == BOOL_VECTOR_LITERAL_SYMBOL
+                            || symbol == "record"
+                            || symbol == "quote"
+                )
+            {
+                value
+            } else {
+                Value::list([Value::symbol("quote"), value])
+            }
+        }
+    }
+}
 
 fn encode_raw_byte(byte: u8) -> char {
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
@@ -21,13 +62,22 @@ fn encode_raw_byte(byte: u8) -> char {
 pub struct Reader<'a> {
     input: &'a [u8],
     pos: usize,
+    symbol_shorthands: Vec<(String, String)>,
 }
 
 impl<'a> Reader<'a> {
     pub fn new(input: &'a str) -> Self {
+        Self::with_symbol_shorthands(input, Vec::new())
+    }
+
+    pub fn with_symbol_shorthands(
+        input: &'a str,
+        symbol_shorthands: Vec<(String, String)>,
+    ) -> Self {
         Reader {
             input: input.as_bytes(),
             pos: 0,
+            symbol_shorthands,
         }
     }
 
@@ -103,6 +153,15 @@ impl<'a> Reader<'a> {
             forms.push(val);
         }
         Ok(forms)
+    }
+
+    fn apply_symbol_shorthands(&self, token: String) -> String {
+        for (short, long) in &self.symbol_shorthands {
+            if let Some(rest) = token.strip_prefix(short) {
+                return format!("{long}{rest}");
+            }
+        }
+        token
     }
 
     fn read_list(&mut self) -> Result<Option<Value>, LispError> {
@@ -637,6 +696,17 @@ impl<'a> Reader<'a> {
                     ),
                 )))
             }
+            Some(b':') => {
+                self.advance();
+                let symbol = self.read_atom()?.ok_or(LispError::EndOfInput)?;
+                let Value::Symbol(base) = symbol else {
+                    return Err(LispError::ReadError(
+                        "invalid uninterned symbol syntax".into(),
+                    ));
+                };
+                let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+                Ok(Some(Value::Symbol(make_uninterned_symbol_name(&base, id))))
+            }
             Some(b'(') => {
                 // #(...) — either a self-evaluating vector literal or a
                 // string literal with text properties.
@@ -783,14 +853,6 @@ impl<'a> Reader<'a> {
                 let Some(kind) = self.read()? else {
                     return Err(LispError::EndOfInput);
                 };
-                let Value::Symbol(kind_name) = kind else {
-                    return Err(LispError::ReadError("invalid #s structure name".into()));
-                };
-                if kind_name != "hash-table" {
-                    return Err(LispError::ReadError(format!(
-                        "unsupported #s structure `{kind_name}`"
-                    )));
-                }
                 let mut fields = Vec::new();
                 loop {
                     self.skip_whitespace_and_comments();
@@ -806,15 +868,23 @@ impl<'a> Reader<'a> {
                         }
                     }
                 }
-                let literal = Value::list(
-                    std::iter::once(Value::symbol(HASH_TABLE_LITERAL_SYMBOL)).chain(fields),
-                );
-                Ok(Some(Value::list([Value::symbol("quote"), literal])))
+                if matches!(&kind, Value::Symbol(kind_name) if kind_name == "hash-table") {
+                    let literal = Value::list(
+                        std::iter::once(Value::symbol(HASH_TABLE_LITERAL_SYMBOL)).chain(fields),
+                    );
+                    Ok(Some(Value::list([Value::symbol("quote"), literal])))
+                } else {
+                    Ok(Some(Value::list(
+                        std::iter::once(Value::symbol("record"))
+                            .chain(std::iter::once(structure_slot_eval_form(kind)))
+                            .chain(fields.into_iter().map(structure_slot_eval_form)),
+                    )))
+                }
             }
             _ => {
-                // Skip unknown hash syntax, try to read as atom
-                let val = self.read()?.ok_or(LispError::EndOfInput)?;
-                Ok(Some(val))
+                // Treat unknown hash-prefixed syntax as a symbol token that starts with '#'.
+                self.pos = self.pos.saturating_sub(1);
+                self.read_atom()
             }
         }
     }
@@ -943,6 +1013,8 @@ impl<'a> Reader<'a> {
         {
             return Ok(Some(Value::Float(f)));
         }
+
+        let token = self.apply_symbol_shorthands(token);
 
         // Special atoms
         match token.as_str() {
@@ -1097,6 +1169,18 @@ mod tests {
             read_one("buffer-string"),
             Value::Symbol("buffer-string".into())
         );
+        assert_eq!(read_one("##"), Value::Symbol("##".into()));
+    }
+
+    #[test]
+    fn uninterned_symbols() {
+        let value = read_one("#:a");
+        let Value::Symbol(symbol) = value else {
+            panic!("expected symbol");
+        };
+        assert_eq!(crate::lisp::types::visible_symbol_name(&symbol), "a");
+        assert_ne!(symbol, "a");
+        assert_ne!(symbol, ":a");
     }
 
     #[test]
@@ -1312,6 +1396,45 @@ mod tests {
                     Value::list([Value::String("bla".into()), Value::String("ble".into())]),
                 ]),
             ])
+        );
+    }
+
+    #[test]
+    fn reads_record_structure_syntax_as_record_constructor_form() {
+        assert_eq!(
+            read_one("#s(a b #s(c d) [e])"),
+            Value::list([
+                Value::Symbol("record".into()),
+                Value::list([Value::Symbol("quote".into()), Value::Symbol("a".into())]),
+                Value::list([Value::Symbol("quote".into()), Value::Symbol("b".into())]),
+                Value::list([
+                    Value::Symbol("record".into()),
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol("c".into())]),
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol("d".into())]),
+                ]),
+                Value::list([
+                    Value::Symbol("vector-literal".into()),
+                    Value::Symbol("e".into()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn expands_symbol_shorthands_while_reading_atoms() {
+        let mut reader = Reader::with_symbol_shorthands(
+            "(ft--helper 'ft-hash-table-weakness)",
+            vec![("ft-".into(), "fns-tests-".into())],
+        );
+        assert_eq!(
+            reader.read_all().unwrap(),
+            vec![Value::list([
+                Value::Symbol("fns-tests--helper".into()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("fns-tests-hash-table-weakness".into()),
+                ]),
+            ])]
         );
     }
 
