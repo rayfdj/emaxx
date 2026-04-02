@@ -211,6 +211,7 @@ enum ThreadStatus {
 enum ThreadProgram {
     Main,
     Ignore,
+    Call(Value),
     SetGlobal {
         name: String,
         value: Value,
@@ -1878,6 +1879,14 @@ impl Interpreter {
         self.records.iter_mut().find(|record| record.id == id)
     }
 
+    pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
+        self.records
+            .iter()
+            .filter(|record| record.type_name == type_name)
+            .map(|record| record.id)
+            .collect()
+    }
+
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
         if let Some((_, existing)) = self
             .sqlite_handles
@@ -2674,6 +2683,18 @@ impl Interpreter {
                 self.finish_thread_success(record_id, Value::Nil);
                 Ok(())
             }
+            ThreadProgram::Call(function) => {
+                match self.call_function_value(function, None, &[], env) {
+                    Ok(value) => {
+                        self.finish_thread_success(record_id, value);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.finish_thread_with_signal(record_id, error_condition_value(&error));
+                        Ok(())
+                    }
+                }
+            }
             ThreadProgram::SetGlobal { name, value } => {
                 self.set_global_binding(&name, value.clone());
                 self.finish_thread_success(record_id, value);
@@ -2816,11 +2837,14 @@ impl Interpreter {
     fn thread_program_from_callable(&self, function: &Value) -> Result<ThreadProgram, LispError> {
         match function {
             Value::Symbol(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::Symbol(name) => self.thread_program_from_symbol(name),
+            Value::Symbol(name) => self
+                .thread_program_from_symbol(name)
+                .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
             Value::BuiltinFunc(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::Lambda(params, body, _) if params.is_empty() => {
-                self.thread_program_from_lambda(function_executable_body(body))
-            }
+            Value::BuiltinFunc(_) => Ok(ThreadProgram::Call(function.clone())),
+            Value::Lambda(params, body, _) if params.is_empty() => self
+                .thread_program_from_lambda(function_executable_body(body))
+                .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
             _ => Err(LispError::Signal("Unsupported thread entry point".into())),
         }
     }
@@ -4247,6 +4271,7 @@ impl Interpreter {
         }
         let error_value = error_condition_value(&error);
         let error_type = error.condition_type();
+        let mut handled = false;
         self.handler_dispatch_depth += 1;
         for (condition, handler) in self.active_handlers.clone().into_iter().rev() {
             if condition != "error" && condition != error_type {
@@ -4255,7 +4280,7 @@ impl Interpreter {
             let result =
                 self.call_function_value(handler, None, std::slice::from_ref(&error_value), env);
             match result {
-                Ok(_) => {}
+                Ok(_) => handled = true,
                 Err(next) => {
                     self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
                     if !matches!(next, LispError::Throw(_, _)) && self.condition_case_depth > 1 {
@@ -4266,7 +4291,11 @@ impl Interpreter {
             }
         }
         self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
-        Err(error)
+        if handled {
+            Err(LispError::SignalValue(error_value))
+        } else {
+            Err(error)
+        }
     }
 
     pub fn effective_labeled_restriction(
@@ -8107,10 +8136,12 @@ impl Interpreter {
         enum LoopAction {
             Do(Vec<Value>),
             Collect(Value),
+            Append(Value),
             Thereis { expr: Value, until: Option<Value> },
             Always(Value),
             Sum(Value),
             Return(Value),
+            WhenReturn { condition: Value, expr: Value },
             UnlessDo { condition: Value, body: Vec<Value> },
         }
 
@@ -8311,11 +8342,44 @@ impl Interpreter {
             self.bind_cl_pattern(pattern, value, frame)?;
         }
 
+        let mut final_return = None;
         let action = match items.get(index) {
+            Some(Value::Symbol(symbol)) if symbol == "when" => {
+                if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "return") {
+                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                }
+                if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
+                    || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
+                {
+                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                }
+                final_return = Some(
+                    items
+                        .get(index + 6)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                );
+                LoopAction::WhenReturn {
+                    condition: items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                    expr: items
+                        .get(index + 3)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                }
+            }
             Some(Value::Symbol(symbol)) if symbol == "do" => {
                 LoopAction::Do(items[index + 1..].to_vec())
             }
             Some(Value::Symbol(symbol)) if symbol == "collect" => LoopAction::Collect(
+                items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
+            Some(Value::Symbol(symbol)) if symbol == "append" => LoopAction::Append(
                 items
                     .get(index + 1)
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
@@ -8372,6 +8436,7 @@ impl Interpreter {
         };
 
         let mut result = Value::Nil;
+        let mut returned_early = false;
         let mut collected = Vec::new();
         let mut sum = 0i64;
         for iteration in 0..iterations {
@@ -8418,6 +8483,10 @@ impl Interpreter {
             match &action {
                 LoopAction::Do(body) => result = self.eval_cl_loop_do_body(body, env)?,
                 LoopAction::Collect(expr) => collected.push(self.eval(expr, env)?),
+                LoopAction::Append(expr) => {
+                    let values = self.eval(expr, env)?.to_vec()?;
+                    collected.extend(values);
+                }
                 LoopAction::Thereis { expr, until } => {
                     if let Some(until_expr) = until
                         && self.eval(until_expr, env)?.is_truthy()
@@ -8445,7 +8514,15 @@ impl Interpreter {
                 }
                 LoopAction::Return(expr) => {
                     result = self.eval(expr, env)?;
+                    returned_early = true;
                     break;
+                }
+                LoopAction::WhenReturn { condition, expr } => {
+                    if self.eval(condition, env)?.is_truthy() {
+                        result = self.eval(expr, env)?;
+                        returned_early = true;
+                        break;
+                    }
                 }
                 LoopAction::UnlessDo { condition, body } => {
                     if !self.eval(condition, env)?.is_truthy() {
@@ -8455,9 +8532,18 @@ impl Interpreter {
             }
         }
 
+        if let Some(expr) = final_return.as_ref()
+            && !returned_early
+        {
+            result = self.eval(expr, env)?;
+        }
+
         env.pop();
+        if final_return.is_some() {
+            return Ok(result);
+        }
         Ok(match action {
-            LoopAction::Collect(_) => Value::list(collected),
+            LoopAction::Collect(_) | LoopAction::Append(_) => Value::list(collected),
             LoopAction::Always(_) if result.is_nil() => Value::Nil,
             LoopAction::Always(_) => Value::T,
             LoopAction::Sum(_) => Value::Integer(sum),
@@ -9785,6 +9871,15 @@ impl Interpreter {
                 )?;
                 return Ok(new_value);
             }
+            if primitives::is_vector_value(&current) {
+                primitives::call(
+                    self,
+                    "aset",
+                    &[current, index_value, new_value.clone()],
+                    env,
+                )?;
+                return Ok(new_value);
+            }
             let index = index_value.as_integer()? as usize;
             if matches!(current, Value::String(_) | Value::StringObject(_)) {
                 let updated = primitives::aset_string_value(&current, index, &new_value)?;
@@ -9913,7 +10008,10 @@ impl Interpreter {
                         let tail = self.eval_backquote_with_depth(&current, env, depth)?;
                         return Ok(cons_list_with_tail(result, tail));
                     }
-
+                    if !result.is_empty() && is_backquote_atomic_cons_tail(&current) {
+                        let tail = self.eval_backquote_with_depth(&current, env, depth)?;
+                        return Ok(cons_list_with_tail(result, tail));
+                    }
                     match current {
                         Value::Cons(car, cdr) => {
                             let car_value = car.borrow().clone();
@@ -9941,7 +10039,11 @@ impl Interpreter {
                         }
                     }
                 }
-                Ok(Value::list(result))
+                let result = Value::list(result);
+                if depth == 0 && is_record_literal_reader_form(expr) {
+                    return self.eval(&result, env);
+                }
+                Ok(result)
             }
             _ => Ok(expr.clone()),
         }
@@ -10202,6 +10304,7 @@ impl Interpreter {
             "cl-case" => self.expand_cl_case(args, env).map(Some),
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
             "letrec" => self.expand_letrec(args).map(Some),
+            "named-let" => self.expand_named_let(args).map(Some),
             "with-selected-frame" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(
@@ -10285,6 +10388,55 @@ impl Interpreter {
                 .chain(initializers)
                 .chain(args[1..].iter().cloned()),
         ))
+    }
+
+    fn expand_named_let(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        let name = args
+            .first()
+            .ok_or_else(|| LispError::WrongNumberOfArgs("named-let".into(), 0))?
+            .as_symbol()?
+            .to_string();
+        let bindings = args
+            .get(1)
+            .ok_or_else(|| LispError::WrongNumberOfArgs("named-let".into(), 1))?
+            .to_vec()?;
+        let mut params = Vec::with_capacity(bindings.len());
+        let mut inits = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            match binding {
+                Value::Symbol(symbol) => {
+                    params.push(Value::Symbol(symbol));
+                    inits.push(Value::Nil);
+                }
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    let Some(param) = parts.first() else {
+                        return Err(LispError::ReadError("bad named-let binding".into()));
+                    };
+                    params.push(Value::Symbol(param.as_symbol()?.to_string()));
+                    inits.push(parts.get(1).cloned().unwrap_or(Value::Nil));
+                }
+                other => return Err(wrong_type_argument("listp", other)),
+            }
+        }
+
+        let lambda = Value::list(
+            std::iter::once(Value::Symbol("lambda".into()))
+                .chain(std::iter::once(Value::list(params)))
+                .chain(if args.len() > 2 {
+                    args[2..].iter().cloned().collect::<Vec<_>>()
+                } else {
+                    vec![Value::Nil]
+                }),
+        );
+        let binding = Value::list([Value::Symbol(name.clone()), lambda]);
+        let call = Value::list(std::iter::once(Value::Symbol(name)).chain(inits));
+
+        Ok(Value::list([
+            Value::Symbol("letrec".into()),
+            Value::list([binding]),
+            call,
+        ]))
     }
 
     fn expand_cl_case(&mut self, args: &[Value], _env: &mut Env) -> Result<Value, LispError> {
@@ -11235,6 +11387,63 @@ fn is_vector_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal"),
     )
+}
+
+fn is_bool_vector_literal(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "bool-vector-literal"),
+    )
+}
+
+fn is_record_literal_slot_form(value: &Value) -> bool {
+    match value {
+        Value::Nil
+        | Value::T
+        | Value::Integer(_)
+        | Value::BigInteger(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::StringObject(_)
+        | Value::Buffer(_, _)
+        | Value::Marker(_)
+        | Value::Overlay(_)
+        | Value::CharTable(_)
+        | Value::Record(_)
+        | Value::Finalizer(_)
+        | Value::BuiltinFunc(_)
+        | Value::Lambda(_, _, _) => true,
+        Value::Cons(_, _) => {
+            let Ok(items) = value.to_vec() else {
+                return false;
+            };
+            matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote")
+                || is_vector_literal(value)
+                || is_bool_vector_literal(value)
+                || is_record_literal_reader_form(value)
+        }
+        Value::Symbol(_) => false,
+    }
+}
+
+fn is_record_literal_reader_form(value: &Value) -> bool {
+    let Ok(items) = value.to_vec() else {
+        return false;
+    };
+    matches!(items.first(), Some(Value::Symbol(name)) if name == "record")
+        && items[1..].iter().all(is_record_literal_slot_form)
+}
+
+fn is_quote_form(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote"),
+    )
+}
+
+fn is_backquote_atomic_cons_tail(value: &Value) -> bool {
+    is_quote_form(value)
+        || is_vector_literal(value)
+        || is_bool_vector_literal(value)
+        || is_record_literal_reader_form(value)
 }
 
 fn is_lambda_form(value: &Value) -> bool {
@@ -12914,6 +13123,27 @@ mod tests {
     }
 
     #[test]
+    fn handler_bind_preserves_error_object_identity_for_condition_case() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (let* (inner-error
+                   (outer-error
+                    (condition-case err
+                        (handler-bind ((error (lambda (err) (setq inner-error err))))
+                          (car 1))
+                      (error err))))
+              (eq inner-error outer-error))
+            "#,
+        )
+        .read_all()
+        .unwrap();
+        let result = interp.eval(&forms[0], &mut env).unwrap();
+        assert_eq!(result, Value::T);
+    }
+
+    #[test]
     fn aref_out_of_range_signals_args_out_of_range_condition() {
         assert_eq!(
             eval_str(
@@ -13670,6 +13900,18 @@ mod tests {
     }
 
     #[test]
+    fn copy_alist_rejects_vectors_and_strings() {
+        assert!(matches!(
+            eval_str("(condition-case err (copy-alist [(a . 1)]) (wrong-type-argument 'caught))"),
+            Value::Symbol(name) if name == "caught"
+        ));
+        assert!(matches!(
+            eval_str("(condition-case err (copy-alist \"abc\") (wrong-type-argument 'caught))"),
+            Value::Symbol(name) if name == "caught"
+        ));
+    }
+
+    #[test]
     fn float_constants_are_available_as_builtin_variables() {
         assert_eq!(eval_str("float-e"), Value::Float(std::f64::consts::E));
         assert_eq!(eval_str("float-pi"), Value::Float(std::f64::consts::PI));
@@ -14255,6 +14497,97 @@ mod tests {
             ]
         );
         assert_string_value(items[4].clone(), "\0\0\0");
+    }
+
+    #[test]
+    fn thread_join_executes_zero_arg_lambda_with_closure_state() {
+        assert_eq!(
+            eval_str("(let ((value 42)) (thread-join (make-thread (lambda () value))))"),
+            Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn custom_hash_table_tests_are_registered_and_used_for_lookup() {
+        assert_eq!(
+            eval_str(
+                "(let ((calls 0))
+                   (defun my-cmp (a b)
+                     (setq calls (1+ calls))
+                     (equal a b))
+                   (defun my-hash (_value) 0)
+                   (let ((spec (define-hash-table-test 'my-test 'my-cmp 'my-hash))
+                         (table (make-hash-table :test 'my-test)))
+                     (puthash \"a\" 1 table)
+                     (list spec
+                           (hash-table-test table)
+                           (gethash (copy-sequence \"a\") table 'missing)
+                           (> calls 0))))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("my-cmp".into()),
+                    Value::Symbol("my-hash".into()),
+                ]),
+                Value::Symbol("my-test".into()),
+                Value::Integer(1),
+                Value::T,
+            ])
+        );
+    }
+
+    #[test]
+    fn custom_hash_table_hash_functions_cannot_mutate_their_table() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-hash-table-test 'badeq 'eq 'bad-hash)
+                   (let ((h (make-hash-table :test 'badeq :size 1 :rehash-size 1)))
+                     (defun bad-hash (k)
+                       (if (eq k 100)
+                           (clrhash h))
+                       (sxhash-eq k))
+                     (should-error
+                      (dotimes (k 200)
+                        (puthash k k h)))
+                     (hash-table-count h)))"
+            ),
+            Value::Integer(100)
+        );
+    }
+
+    #[test]
+    fn assoc_honors_optional_test_function() {
+        assert_eq!(
+            eval_str(
+                "(let ((alist '((\"a\" . 1) (\"b\" . 2))))
+                   (list
+                    (assoc \"a\" alist #'ignore)
+                    (eq (assoc \"b\" alist #'string-equal) (cadr alist))
+                    (assoc \"b\" alist #'eq)))"
+            ),
+            Value::list([Value::Nil, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn garbage_collect_prunes_synthetic_weak_hash_table_entries() {
+        assert_eq!(
+            eval_str(
+                "(let ((table (make-hash-table :weakness 'key)))
+                   (puthash \"00-key-alive\" \"00-val-alive\" table)
+                   (puthash \"01-key-dead\" \"01-val-alive\" table)
+                   (garbage-collect)
+                   (list (hash-table-count table)
+                         (gethash \"00-key-alive\" table)
+                         (gethash \"01-key-dead\" table 'missing)))"
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::String("00-val-alive".into()),
+                Value::Symbol("missing".into()),
+            ])
+        );
     }
 
     #[test]
@@ -15870,6 +16203,20 @@ mod tests {
     }
 
     #[test]
+    fn generic_record_reader_forms_evaluate_to_literal_records() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(&mut interp, "#s(#s(a b) c)");
+        let Value::Record(id) = value else {
+            panic!("expected a record literal");
+        };
+        let record = interp.find_record(id).expect("record state");
+        assert_eq!(record.type_name, "literal-record");
+        assert_eq!(record.slots.len(), 2);
+        assert!(matches!(record.slots[0], Value::Record(_)));
+        assert_eq!(record.slots[1], Value::Symbol("c".into()));
+    }
+
+    #[test]
     fn eval_second_argument_controls_lambda_capture() {
         assert_eq!(
             eval_str(
@@ -17342,6 +17689,21 @@ mod tests {
     }
 
     #[test]
+    fn named_let_expands_to_recursive_binding() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (named-let loop ((n 3) (acc nil))
+                  (if (> n 0)
+                      (loop (1- n) (cons n acc))
+                    acc))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),])
+        );
+    }
+
+    #[test]
     fn alist_get_supports_equal_test_function() {
         assert_eq!(
             eval_str("(alist-get \"b\" '((\"a\" . 1) (\"b\" . 2)) nil nil #'equal)"),
@@ -17799,6 +18161,87 @@ IHdvcmxkIQ==")))
     }
 
     #[test]
+    fn base64_decode_region_reports_unibyte_byte_count() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert "FPucA9l+")
+                     (let ((len (base64-decode-region (point-min) (point-max))))
+                       (list len
+                             (string-bytes (buffer-string))
+                             (string-to-list (buffer-string))
+                             (multibyte-string-p (buffer-string)))))"#
+            ),
+            Value::list([
+                Value::Integer(6),
+                Value::Integer(6),
+                Value::list([
+                    Value::Integer(20),
+                    Value::Integer(251),
+                    Value::Integer(156),
+                    Value::Integer(3),
+                    Value::Integer(217),
+                    Value::Integer(126),
+                ]),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn base64_encode_string_rejects_multibyte_non_ascii_input() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                    (condition-case _ (base64-encode-string "ü") (error 'caught))
+                    (condition-case _ (base64url-encode-string "ƒ") (error 'caught)))"#
+            ),
+            Value::list([
+                Value::Symbol("caught".into()),
+                Value::Symbol("caught".into())
+            ])
+        );
+    }
+
+    #[test]
+    fn sha1_and_buffer_hash_match_for_ascii_buffer_contents() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                    (sha1 "foo")
+                    (with-temp-buffer
+                      (insert "foo")
+                      (buffer-hash)))"#
+            ),
+            Value::list([
+                Value::String("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33".into()),
+                Value::String("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn secure_hash_supports_core_algorithms_and_iv_auto() {
+        let result = eval_str(
+            r#"(list
+                (secure-hash 'md5 "foobar")
+                (secure-hash 'sha1 "foobar")
+                (length (secure-hash 'sha512 'iv-auto 100)))"#,
+        );
+        let items = result.to_vec().expect("hash result list");
+        assert_eq!(
+            items[0],
+            Value::String("3858f62230ac3c915f300c664312c63f".into())
+        );
+        assert_eq!(
+            items[1],
+            Value::String("8843d7f92416211de9ebb963ff4ce28125932878".into())
+        );
+        assert_eq!(items[2], Value::Integer(128));
+    }
+
+    #[test]
     fn format_binary_negative() {
         assert_eq!(
             eval_str(r#"(format "%b" #x-5A)"#),
@@ -17926,6 +18369,37 @@ IHdvcmxkIQ==")))
             eval_str(r#"`(#xFFF . ,(make-string 12 ?1))"#),
             Value::cons(Value::Integer(0xFFF), Value::String("111111111111".into()))
         );
+    }
+
+    #[test]
+    fn backquote_preserves_record_literal_dotted_pair_tails() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(&mut interp, r#"`(#s(a 1) . #s(b 2))"#);
+        let (left, right) = value.cons_values().expect("dotted pair");
+        assert!(matches!(left, Value::Record(_)));
+        assert!(matches!(right, Value::Record(_)));
+    }
+
+    #[test]
+    fn backquote_materializes_record_literals() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
+        let items = value.to_vec().expect("backquoted list");
+        assert_eq!(items.len(), 2);
+        let Value::Record(inner_id) = &items[0] else {
+            panic!("expected inner record");
+        };
+        let inner = interp.find_record(*inner_id).expect("inner record");
+        assert_eq!(inner.type_name, "a");
+        assert_eq!(inner.slots, vec![Value::Symbol("b".into())]);
+        let Value::Record(outer_id) = &items[1] else {
+            panic!("expected outer record");
+        };
+        let outer = interp.find_record(*outer_id).expect("outer record");
+        assert_eq!(outer.type_name, "literal-record");
+        assert_eq!(outer.slots.len(), 2);
+        assert!(matches!(outer.slots[0], Value::Record(_)));
+        assert!(matches!(outer.slots[1], Value::Symbol(ref symbol) if symbol == "e"));
     }
 
     #[test]

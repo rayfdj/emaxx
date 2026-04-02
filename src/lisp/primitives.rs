@@ -1,7 +1,9 @@
 use super::eval::{BufferDisposition, Interpreter, error_condition_value};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
-use super::types::{Env, LispError, SharedStringState, StringPropertySpan, Value, shared_env};
+use super::types::{
+    ConsSlot, Env, LispError, SharedStringState, StringPropertySpan, Value, shared_env,
+};
 use crate::buffer::TextPropertySpan;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
 use fancy_regex::Regex as FancyRegex;
@@ -12,6 +14,9 @@ use num_bigint::{BigInt, Sign};
 use num_traits::{Signed, ToPrimitive, Zero};
 use regex::Regex;
 use roxmltree::{Document, Node, NodeType};
+use sha1::{Digest, Sha1};
+use sha2::{Sha224, Sha256, Sha384, Sha512};
+use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -28,7 +33,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+};
 use unicode_general_category::get_general_category;
 use unicode_names2::name as unicode_name;
 use unicode_width::UnicodeWidthChar;
@@ -41,6 +49,8 @@ static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
+static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
+static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
@@ -48,6 +58,11 @@ const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
 const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
 const WINDOW_BUFFER_SLOT: usize = 0;
 const WINDOW_START_SLOT: usize = 1;
+
+thread_local! {
+    static VECTOR_SLOT_CACHE: RefCell<HashMap<usize, (Weak<RefCell<Value>>, Rc<Vec<ConsSlot>>)>> =
+        RefCell::new(HashMap::new());
+}
 
 fn is_sqlite_builtin(name: &str) -> bool {
     matches!(
@@ -1052,7 +1067,14 @@ pub fn is_builtin(name: &str) -> bool {
             | "string="
             | "string-equal"
             | "string-lessp"
+            | "string>"
+            | "string-version-lessp"
             | "string<"
+            | "string-distance"
+            | "value<"
+            | "compare-strings"
+            | "string-collate-equalp"
+            | "string-collate-lessp"
             | "string-search"
             | "xor"
             // Type predicates
@@ -1128,6 +1150,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "last"
             | "butlast"
             | "length"
+            | "safe-length"
+            | "length<"
+            | "length>"
             | "length="
             | "reverse"
             | "copy-tree"
@@ -1135,10 +1160,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "delete-dups"
             | "remove"
             | "memq"
+            | "memql"
             | "remq"
             | "member"
             | "member-ignore-case"
             | "assq"
+            | "rassoc"
             | "rassq"
             | "rassq-delete-all"
             | "assoc"
@@ -1177,6 +1204,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "hash-table-contains-p"
             | "copy-hash-table"
             | "clear-string"
+            | "fillarray"
+            | "load-average"
+            | "locale-info"
             | "identity"
             | "mapconcat"
             | "kbd"
@@ -1221,7 +1251,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "string"
             | "substring"
             | "substring-no-properties"
+            | "string-to-unibyte"
             | "string-to-multibyte"
+            | "string-make-multibyte"
+            | "string-as-multibyte"
+            | "string-make-unibyte"
             | "string-as-unibyte"
             | "unibyte-string"
             | "string-to-number"
@@ -1268,6 +1302,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-join"
             | "url-hexify-string"
             | "url-encode-url"
+            | "base64-encode-region"
+            | "base64url-encode-region"
+            | "base64-encode-string"
+            | "base64url-encode-string"
+            | "base64-decode-region"
             | "base64-decode-string"
             | "abbrev-table-p"
             | "abbrev-table-empty-p"
@@ -1388,6 +1427,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "restore-buffer-modified-p"
             | "gap-position"
             | "gap-size"
+            | "buffer-line-statistics"
             | "position-bytes"
             | "byte-to-position"
             | "max-char"
@@ -1400,6 +1440,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "next-single-property-change"
             | "previous-single-property-change"
             | "text-properties-at"
+            | "object-intervals"
             | "put-text-property"
             | "add-text-properties"
             | "set-text-properties"
@@ -1456,6 +1497,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "indirect-function"
             | "byteorder"
             | "subr-arity"
+            | "func-arity"
             | "subr-name"
             | "subr-native-lambda-list"
             | "native-comp-available-p"
@@ -1639,6 +1681,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-modes-number-to-symbolic"
             | "set-file-modes"
             | "make-process"
+            | "make-pipe-process"
             | "start-process"
             | "start-file-process"
             | "get-buffer-process"
@@ -1704,6 +1747,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "read"
             | "read-from-string"
             | "md5"
+            | "sha1"
+            | "secure-hash"
+            | "secure-hash-algorithms"
+            | "buffer-hash"
             // More string/char ops
             | "char-equal"
             | "number-sequence"
@@ -1814,6 +1861,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "signal"
             | "throw"
             | "take"
+            | "ntake"
             | "add-hook"
             | "remove-hook"
             | "run-hooks"
@@ -1961,6 +2009,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "gensym"
             | "make-interpreted-closure"
             | "obarray-make"
+            | "define-hash-table-test"
             | "make-hash-table"
             | "gethash"
             | "puthash"
@@ -1968,7 +2017,15 @@ pub fn is_builtin(name: &str) -> bool {
             | "remhash"
             | "clrhash"
             | "hash-table-count"
+            | "hash-table-rehash-size"
+            | "hash-table-rehash-threshold"
+            | "hash-table-size"
+            | "hash-table-test"
+            | "hash-table-weakness"
             | "hash-table-keys"
+            | "internal--hash-table-index-size"
+            | "internal--hash-table-histogram"
+            | "internal--hash-table-buckets"
             | "completion-table-case-fold"
             | "try-completion"
             | "all-completions"
@@ -2610,38 +2667,34 @@ pub fn call(
             }
             Ok(Value::T)
         }
-
-        // ── Equality ──
-        "eq" => {
+        "value<" => {
             need_args(name, args, 2)?;
-            let equal = match (&args[0], &args[1]) {
-                (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
-                (Value::String(_), Value::String(_))
-                | (Value::String(_), Value::StringObject(_))
-                | (Value::StringObject(_), Value::String(_)) => false,
-                _ => args[0] == args[1],
-            };
-            Ok(if equal { Value::T } else { Value::Nil })
-        }
-        "eql" => {
-            need_args(name, args, 2)?;
-            Ok(
-                if matches!((&args[0], &args[1]), (Value::Float(left), Value::Float(right)) if left.is_nan() && right.is_nan())
-                    || args[0] == args[1]
-                {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
-        }
-        "equal" => {
-            need_args(name, args, 2)?;
-            Ok(if values_equal(interp, &args[0], &args[1]) {
+            Ok(if value_less(interp, &args[0], &args[1], env)? {
                 Value::T
             } else {
                 Value::Nil
             })
+        }
+
+        // ── Equality ──
+        "eq" => {
+            need_args(name, args, 2)?;
+            let equal = values_eq_in_env(interp, &args[0], &args[1], env);
+            Ok(if equal { Value::T } else { Value::Nil })
+        }
+        "eql" => {
+            need_args(name, args, 2)?;
+            Ok(if values_eql(&args[0], &args[1]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "equal" => {
+            need_args(name, args, 2)?;
+            let equal = symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env)
+                .unwrap_or_else(|| values_equal(interp, &args[0], &args[1]));
+            Ok(if equal { Value::T } else { Value::Nil })
         }
         "equal-including-properties" => {
             need_args(name, args, 2)?;
@@ -2653,19 +2706,28 @@ pub fn call(
         }
         "sxhash" | "sxhash-equal" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(sxhash_value(&args[0], HashMode::Equal)))
+            Ok(Value::Integer(sxhash_value(
+                interp,
+                &args[0],
+                HashMode::Equal,
+            )))
         }
         "sxhash-eq" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(sxhash_value(&args[0], HashMode::Eq)))
+            Ok(Value::Integer(sxhash_value(interp, &args[0], HashMode::Eq)))
         }
         "sxhash-eql" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(sxhash_value(&args[0], HashMode::Eql)))
+            Ok(Value::Integer(sxhash_value(
+                interp,
+                &args[0],
+                HashMode::Eql,
+            )))
         }
         "sxhash-equal-including-properties" => {
             need_args(name, args, 1)?;
             Ok(Value::Integer(sxhash_value(
+                interp,
                 &args[0],
                 HashMode::EqualIncludingProperties,
             )))
@@ -2686,11 +2748,74 @@ pub fn call(
                 Value::Nil
             })
         }
-        "string-lessp" | "string<" => {
+        "string-lessp" | "string<" | "string>" => {
             need_args(name, args, 2)?;
             let a = string_comparison_text(&args[0])?;
             let b = string_comparison_text(&args[1])?;
-            Ok(if a < b { Value::T } else { Value::Nil })
+            let matches = if name == "string>" { a > b } else { a < b };
+            Ok(if matches { Value::T } else { Value::Nil })
+        }
+        "string-version-lessp" => {
+            need_args(name, args, 2)?;
+            let a = string_comparison_text(&args[0])?;
+            let b = string_comparison_text(&args[1])?;
+            Ok(if string_version_compare(&a, &b) == Ordering::Less {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "compare-strings" => {
+            need_arg_range(name, args, 6, 7)?;
+            compare_strings_value(
+                &args[0],
+                args.get(1),
+                args.get(2),
+                &args[3],
+                args.get(4),
+                args.get(5),
+                args.get(6).is_some_and(Value::is_truthy),
+            )
+        }
+        "string-distance" => {
+            need_arg_range(name, args, 2, 3)?;
+            string_distance_value(
+                &args[0],
+                &args[1],
+                args.get(2).is_some_and(Value::is_truthy),
+            )
+        }
+        "string-collate-equalp" => {
+            need_arg_range(name, args, 2, 4)?;
+            validate_collation_locale(args.get(2))?;
+            Ok(
+                if string_compare_ordering(
+                    &args[0],
+                    &args[1],
+                    args.get(3).is_some_and(Value::is_truthy),
+                )? == Ordering::Equal
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "string-collate-lessp" => {
+            need_arg_range(name, args, 2, 4)?;
+            validate_collation_locale(args.get(2))?;
+            Ok(
+                if string_compare_ordering(
+                    &args[0],
+                    &args[1],
+                    args.get(3).is_some_and(Value::is_truthy),
+                )? == Ordering::Less
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "string-search" => {
             if args.len() < 2 || args.len() > 3 {
@@ -3387,22 +3512,22 @@ pub fn call(
         "append" => {
             let mut items: Vec<Value> = Vec::new();
             for (i, a) in args.iter().enumerate() {
+                let is_last = i == args.len() - 1;
                 if let Some(string) = sequence_string_like(a) {
                     items.extend(string_sequence_values(&string));
                     continue;
                 }
-                if i == args.len() - 1 {
-                    // Last arg can be a non-list (dotted)
-                    if a.is_list() {
-                        items.extend(a.to_vec()?);
-                    } else {
-                        // Build the list so far and cons the last as cdr
-                        let mut result = a.clone();
-                        for item in items.into_iter().rev() {
-                            result = Value::cons(item, result);
-                        }
-                        return Ok(result);
+                if is_vector_like_value(interp, a) {
+                    items.extend(sequence_values(interp, a)?);
+                    continue;
+                }
+                if is_last {
+                    // `append` copies all preceding args and reuses the last tail as-is.
+                    let mut result = a.clone();
+                    for item in items.into_iter().rev() {
+                        result = Value::cons(item, result);
                     }
+                    return Ok(result);
                 } else {
                     items.extend(a.to_vec()?);
                 }
@@ -3434,12 +3559,7 @@ pub fn call(
         }
         "nthcdr" => {
             need_args(name, args, 2)?;
-            let n = args[0].as_integer()? as usize;
-            let mut current = args[1].clone();
-            for _ in 0..n {
-                current = current.cdr()?;
-            }
-            Ok(current)
+            nthcdr_value(&args[0], &args[1])
         }
         "last" => {
             if args.is_empty() || args.len() > 2 {
@@ -3502,6 +3622,7 @@ pub fn call(
                 Value::Cons(_, _) if is_vector_value(&args[0]) => {
                     Ok(Value::Integer(vector_items(&args[0])?.len() as i64))
                 }
+                Value::CharTable(_) => Ok(Value::Integer(0x40_0000)),
                 value if is_bool_vector_value(interp, value) => Ok(Value::Integer(
                     bool_vector_values(interp, value)?.len() as i64,
                 )),
@@ -3515,41 +3636,24 @@ pub fn call(
                 _ => Err(LispError::TypeError("sequence".into(), args[0].type_name())),
             }
         }
-        "length=" => {
+        "safe-length" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(safe_list_length(&args[0])))
+        }
+        "length<" | "length>" | "length=" => {
             need_args(name, args, 2)?;
-            let length = match &args[0] {
-                value if string_like(value).is_some() => string_text(value)?.chars().count() as i64,
-                Value::Nil => 0,
-                Value::Cons(_, _) if is_vector_value(&args[0]) => {
-                    vector_items(&args[0])?.len() as i64
-                }
-                value if is_bool_vector_value(interp, value) => {
-                    bool_vector_values(interp, value)?.len() as i64
-                }
-                Value::Cons(_, _) => args[0].to_vec()?.len() as i64,
-                Value::Record(id) => {
-                    let record = interp.find_record(*id).ok_or_else(|| {
-                        LispError::TypeError("record".into(), format!("record<{id}>"))
-                    })?;
-                    (record.slots.len() + 1) as i64
-                }
-                _ => return Err(LispError::TypeError("sequence".into(), args[0].type_name())),
+            let length = sequence_length_value(interp, &args[0])?;
+            let target = args[1].as_integer()?;
+            let matches = match name {
+                "length<" => length < target,
+                "length>" => length > target,
+                _ => length == target,
             };
-            Ok(if length == args[1].as_integer()? {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(if matches { Value::T } else { Value::Nil })
         }
         "reverse" => {
             need_args(name, args, 1)?;
-            if string_like(&args[0]).is_some() {
-                reverse_string_like_value(&args[0])
-            } else {
-                let mut items = args[0].to_vec()?;
-                items.reverse();
-                Ok(Value::list(items))
-            }
+            reverse_sequence_value(interp, &args[0])
         }
         "copy-tree" => {
             need_arg_range(name, args, 1, 2)?;
@@ -3577,17 +3681,25 @@ pub fn call(
             need_args(name, args, 2)?;
             remove_equal(interp, &args[0], &args[1])
         }
-        "memq" | "member" => {
+        "memq" | "memql" | "member" => {
             need_args(name, args, 2)?;
             let mut current = args[1].clone();
+            let mut seen = HashSet::new();
             loop {
                 match current.clone() {
                     Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
                         let item = car.borrow().clone();
-                        let matches = if name == "member" {
-                            values_equal(interp, &item, &args[0])
-                        } else {
-                            item == args[0]
+                        let matches = match name {
+                            "member" => values_equal(interp, &item, &args[0]),
+                            "memql" => values_eql(&item, &args[0]),
+                            _ => item == args[0],
                         };
                         if matches {
                             return Ok(current);
@@ -3596,12 +3708,19 @@ pub fn call(
                     }
                     Value::Nil => return Ok(Value::Nil),
                     other => {
-                        let matches = if name == "member" {
-                            values_equal(interp, &other, &args[0])
-                        } else {
-                            other == args[0]
+                        let matches = match name {
+                            "member" => values_equal(interp, &other, &args[0]),
+                            "memql" => values_eql(&other, &args[0]),
+                            _ => other == args[0],
                         };
-                        return Ok(if matches { other } else { Value::Nil });
+                        if matches {
+                            return Ok(other);
+                        }
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("wrong-type-argument".into()),
+                            Value::Symbol("listp".into()),
+                            other,
+                        ])));
                     }
                 }
             }
@@ -3621,46 +3740,145 @@ pub fn call(
         }
         "assq" => {
             need_args(name, args, 2)?;
-            let items = args[1].to_vec()?;
-            for item in &items {
-                let Value::Cons(_, _) = item else {
-                    continue;
-                };
-                if item.car()? == args[0] {
-                    return Ok(item.clone());
+            let mut current = args[1].clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let item = car.borrow().clone();
+                        if matches!(item, Value::Cons(_, _)) && item.car()? == args[0] {
+                            return Ok(item);
+                        }
+                        current = cdr.borrow().clone();
+                    }
+                    other => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("wrong-type-argument".into()),
+                            Value::Symbol("listp".into()),
+                            other,
+                        ])));
+                    }
                 }
             }
-            Ok(Value::Nil)
         }
         "rassq" => {
             need_args(name, args, 2)?;
-            let items = args[1].to_vec()?;
-            for item in &items {
-                let Value::Cons(_, _) = item else {
-                    continue;
-                };
-                if item.cdr()? == args[0] {
-                    return Ok(item.clone());
+            let mut current = args[1].clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let item = car.borrow().clone();
+                        if matches!(item, Value::Cons(_, _)) && item.cdr()? == args[0] {
+                            return Ok(item);
+                        }
+                        current = cdr.borrow().clone();
+                    }
+                    other => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("wrong-type-argument".into()),
+                            Value::Symbol("listp".into()),
+                            other,
+                        ])));
+                    }
                 }
             }
-            Ok(Value::Nil)
+        }
+        "rassoc" => {
+            need_args(name, args, 2)?;
+            let mut current = args[1].clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let item = car.borrow().clone();
+                        if matches!(item, Value::Cons(_, _))
+                            && values_equal(interp, &item.cdr()?, &args[0])
+                        {
+                            return Ok(item);
+                        }
+                        current = cdr.borrow().clone();
+                    }
+                    other => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("wrong-type-argument".into()),
+                            Value::Symbol("listp".into()),
+                            other,
+                        ])));
+                    }
+                }
+            }
         }
         "rassq-delete-all" => {
             need_args(name, args, 2)?;
             rassq_delete_all(&args[0], &args[1])
         }
         "assoc" => {
-            need_args(name, args, 2)?;
-            let items = args[1].to_vec()?;
-            for item in &items {
-                let Value::Cons(_, _) = item else {
-                    continue;
-                };
-                if values_equal(interp, &item.car()?, &args[0]) {
-                    return Ok(item.clone());
+            need_arg_range(name, args, 2, 3)?;
+            let mut current = args[1].clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let item = car.borrow().clone();
+                        if matches!(item, Value::Cons(_, _))
+                            && if let Some(testfn) = args.get(2).filter(|value| !value.is_nil()) {
+                                call_function_value(
+                                    interp,
+                                    testfn,
+                                    &[args[0].clone(), item.car()?],
+                                    env,
+                                )?
+                                .is_truthy()
+                            } else {
+                                values_equal(interp, &item.car()?, &args[0])
+                            }
+                        {
+                            return Ok(item);
+                        }
+                        current = cdr.borrow().clone();
+                    }
+                    other => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("wrong-type-argument".into()),
+                            Value::Symbol("listp".into()),
+                            other,
+                        ])));
+                    }
                 }
             }
-            Ok(Value::Nil)
         }
         "assoc-string" => {
             need_arg_range(name, args, 2, 3)?;
@@ -3749,7 +3967,7 @@ pub fn call(
         "cl-delete-if" => cl_delete_if_values(interp, args, env),
         "mapcar" => {
             need_args(name, args, 2)?;
-            let list = sequence_values(&args[1])?;
+            let list = sequence_values(interp, &args[1])?;
             let mut results = Vec::new();
             for item in list {
                 results.push(call_function_value(interp, &args[0], &[item], env)?);
@@ -3758,7 +3976,7 @@ pub fn call(
         }
         "mapcan" => {
             need_args(name, args, 2)?;
-            let list = sequence_values(&args[1])?;
+            let list = sequence_values(interp, &args[1])?;
             let mut mapped = Vec::with_capacity(list.len());
             for item in list {
                 mapped.push(call_function_value(interp, &args[0], &[item], env)?);
@@ -3769,7 +3987,7 @@ pub fn call(
             need_args(name, args, 2)?;
             let lists = args[1..]
                 .iter()
-                .map(sequence_values)
+                .map(|value| sequence_values(interp, value))
                 .collect::<Result<Vec<_>, _>>()?;
             let len = lists.iter().map(Vec::len).min().unwrap_or(0);
             let mut results = Vec::with_capacity(len);
@@ -3795,7 +4013,7 @@ pub fn call(
             need_args(name, args, 2)?;
             let sequences = args[1..]
                 .iter()
-                .map(sequence_values)
+                .map(|value| sequence_values(interp, value))
                 .collect::<Result<Vec<_>, _>>()?;
             let len = sequences.iter().map(Vec::len).min().unwrap_or(0);
             for index in 0..len {
@@ -3812,11 +4030,11 @@ pub fn call(
         }
         "seq-mapcat" => {
             need_arg_range(name, args, 2, 3)?;
-            let sequence = sequence_values(&args[1])?;
+            let sequence = sequence_values(interp, &args[1])?;
             let mut flattened = Vec::new();
             for item in sequence {
                 let mapped = call_function_value(interp, &args[0], &[item], env)?;
-                flattened.extend(sequence_values(&mapped)?);
+                flattened.extend(sequence_values(interp, &mapped)?);
             }
 
             match args
@@ -3836,7 +4054,7 @@ pub fn call(
         }
         "mapc" => {
             need_args(name, args, 2)?;
-            let list = sequence_values(&args[1])?;
+            let list = sequence_values(interp, &args[1])?;
             for item in &list {
                 let _ = call_function_value(interp, &args[0], std::slice::from_ref(item), env)?;
             }
@@ -3887,8 +4105,13 @@ pub fn call(
                     let offset = result.chars().count();
                     result.push_str(&string.text);
                     props.extend(shift_string_props(&string.props, offset));
+                } else if item.is_nil() {
                 } else {
-                    result.push_str(&item.to_string());
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("sequencep".into()),
+                        item.clone(),
+                    ])));
                 }
             }
             Ok(string_like_value(result, merge_string_props(props)))
@@ -4069,7 +4292,7 @@ pub fn call(
             let items = if is_bool_vector_value(interp, &args[0]) {
                 bool_vector_values(interp, &args[0])?
             } else {
-                sequence_values(&args[0])?
+                sequence_values(interp, &args[0])?
             };
             match args[1].as_symbol()? {
                 "list" => Ok(Value::list(items)),
@@ -4137,11 +4360,7 @@ pub fn call(
             let func = &args[0];
             let last = &args[args.len() - 1];
             let mut all_args: Vec<Value> = args[1..args.len() - 1].to_vec();
-            if let Some(string) = string_like(last) {
-                all_args.extend(string_sequence_values(&string));
-            } else {
-                all_args.extend(vector_items(last)?);
-            }
+            all_args.extend(sequence_values(interp, last)?);
             let resolved = resolve_callable(interp, func, env)?;
             let original_name = func.as_symbol().ok();
             interp.call_function_value(resolved, original_name, &all_args, env)
@@ -4411,21 +4630,7 @@ pub fn call(
         "vconcat" => {
             let mut items = vec![Value::symbol("vector")];
             for value in args {
-                if let Ok(vector) = vector_items(value) {
-                    items.extend(vector);
-                    continue;
-                }
-                if let Some(string) = string_like(value) {
-                    items.extend(string_sequence_values(&string));
-                    continue;
-                }
-                match value {
-                    Value::Nil => {}
-                    Value::Cons(_, _) => items.extend(value.to_vec()?),
-                    _ => {
-                        return Err(LispError::TypeError("sequence".into(), value.type_name()));
-                    }
-                }
+                items.extend(sequence_values(interp, value)?);
             }
             Ok(Value::list(items))
         }
@@ -4444,8 +4649,11 @@ pub fn call(
         }
         "record" => {
             need_args(name, args, 1)?;
-            let type_name = args[0].as_symbol()?;
-            Ok(interp.create_record(type_name, args[1..].to_vec()))
+            if let Ok(type_name) = args[0].as_symbol() {
+                Ok(interp.create_record(type_name, args[1..].to_vec()))
+            } else {
+                Ok(interp.create_record("literal-record", args.to_vec()))
+            }
         }
         "make-record" => {
             need_args(name, args, 3)?;
@@ -4468,19 +4676,34 @@ pub fn call(
         "concat" => {
             let mut result = String::new();
             let mut props = Vec::new();
+            let mut multibyte = false;
             for a in args {
                 if let Some(string) = string_like(a) {
                     let offset = result.chars().count();
                     result.push_str(&string.text);
                     props.extend(shift_string_props(&string.props, offset));
+                    multibyte |= string.multibyte;
+                } else if a.is_nil() {
+                } else if matches!(a, Value::Cons(_, _))
+                    || is_vector_value(a)
+                    || is_bool_vector_value(interp, a)
+                {
+                    let (text, text_multibyte) = concat_sequence_string(interp, a)?;
+                    result.push_str(&text);
+                    multibyte |= text_multibyte;
                 } else {
-                    match a {
-                        Value::Nil => {}
-                        _ => result.push_str(&a.to_string()),
-                    }
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("sequencep".into()),
+                        a.clone(),
+                    ])));
                 }
             }
-            Ok(string_like_value(result, merge_string_props(props)))
+            Ok(string_like_value_with_multibyte(
+                result,
+                merge_string_props(props),
+                multibyte,
+            ))
         }
         "string-match" => string_match_impl(interp, args, env, true),
         "string-match-p" => string_match_impl(interp, args, env, false),
@@ -4639,6 +4862,29 @@ pub fn call(
             };
             Ok(string_like_value(chars[from..to].iter().collect(), props))
         }
+        "string-to-unibyte" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            if !string.multibyte {
+                return Ok(string_like_value_with_multibyte(
+                    string.text,
+                    string.props,
+                    false,
+                ));
+            }
+            let mut text = String::new();
+            for ch in string.text.chars() {
+                if let Some(byte) = raw_case_byte(ch as u32) {
+                    text.push(raw_byte_regex_char(byte as u8));
+                } else if (ch as u32) <= 0x7F {
+                    text.push(ch);
+                } else {
+                    return Err(LispError::Signal("Character cannot be encoded".into()));
+                }
+            }
+            Ok(string_like_value_with_multibyte(text, string.props, false))
+        }
         "string-to-multibyte" => {
             need_args(name, args, 1)?;
             let string = string_like(&args[0])
@@ -4648,6 +4894,52 @@ pub fn call(
                 string.props,
                 true,
             ))
+        }
+        "string-make-multibyte" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let bytes = encode_raw_text_bytes(&string.text)?;
+            let text = decode_latin_bytes(&bytes);
+            let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
+            Ok(if string.props.is_empty() {
+                if multibyte {
+                    make_shared_string_value_with_multibyte(text, Vec::new(), true)
+                } else {
+                    Value::String(text)
+                }
+            } else {
+                make_shared_string_value_with_multibyte(text, string.props, multibyte)
+            })
+        }
+        "string-as-multibyte" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let bytes = encode_raw_text_bytes(&string.text)?;
+            let text = bytes
+                .into_iter()
+                .map(|byte| {
+                    if byte <= 0x7F {
+                        char::from(byte)
+                    } else {
+                        char::from_u32(RAW_BYTE8_BASE + byte as u32)
+                            .expect("raw byte8 marker should be valid")
+                    }
+                })
+                .collect::<String>();
+            Ok(make_shared_string_value_with_multibyte(
+                text,
+                Vec::new(),
+                true,
+            ))
+        }
+        "string-make-unibyte" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let bytes = encode_raw_text_bytes(&string.text)?;
+            Ok(bytes_to_shared_unibyte_value(&bytes))
         }
         "string-as-unibyte" => {
             need_args(name, args, 1)?;
@@ -4671,6 +4963,8 @@ pub fn call(
             let ch = args[0].as_integer()?;
             Ok(if (0..=255).contains(&ch) {
                 Value::Integer(ch)
+            } else if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
+                Value::Integer(ch - RAW_BYTE8_BASE as i64)
             } else {
                 Value::Integer(-1)
             })
@@ -5111,6 +5405,38 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::String(url_encode_url(&string_text(&args[0])?)))
         }
+        "base64-encode-region" => {
+            need_arg_range(name, args, 2, 3)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let no_line_break = args.get(2).is_some_and(Value::is_truthy);
+            base64_encode_region_value(interp, start, end, !no_line_break, true, false)
+        }
+        "base64url-encode-region" => {
+            need_arg_range(name, args, 2, 3)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let no_pad = args.get(2).is_some_and(Value::is_truthy);
+            base64_encode_region_value(interp, start, end, false, !no_pad, true)
+        }
+        "base64-encode-string" => {
+            need_arg_range(name, args, 1, 2)?;
+            let no_line_break = args.get(1).is_some_and(Value::is_truthy);
+            base64_encode_string_value(&args[0], !no_line_break, true, false)
+        }
+        "base64url-encode-string" => {
+            need_arg_range(name, args, 1, 2)?;
+            let no_pad = args.get(1).is_some_and(Value::is_truthy);
+            base64_encode_string_value(&args[0], false, !no_pad, true)
+        }
+        "base64-decode-region" => {
+            need_arg_range(name, args, 2, 4)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let base64url = args.get(2).is_some_and(Value::is_truthy);
+            let ignore_invalid = args.get(3).is_some_and(Value::is_truthy);
+            base64_decode_region_value(interp, start, end, base64url, ignore_invalid)
+        }
         "base64-decode-string" => {
             need_arg_range(name, args, 1, 3)?;
             let base64url = args.get(1).is_some_and(Value::is_truthy);
@@ -5241,7 +5567,24 @@ pub fn call(
         }
         "string-bytes" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(string_text(&args[0])?.len() as i64))
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let len: usize = if string.multibyte {
+                string.text.len()
+            } else {
+                string
+                    .text
+                    .chars()
+                    .map(|ch| {
+                        if raw_byte_from_regex_char(ch).is_some() || (ch as u32) <= 0xFF {
+                            1usize
+                        } else {
+                            ch.len_utf8()
+                        }
+                    })
+                    .sum()
+            };
+            Ok(Value::Integer(len as i64))
         }
         "multibyte-string-p" => {
             need_args(name, args, 1)?;
@@ -5882,6 +6225,10 @@ pub fn call(
         }
         "gap-position" => Ok(Value::Integer(interp.buffer.point() as i64)),
         "gap-size" => Ok(Value::Integer(0)),
+        "buffer-line-statistics" => {
+            need_arg_range(name, args, 0, 1)?;
+            buffer_line_statistics_value(interp, args.first())
+        }
         "max-char" => Ok(Value::Integer(0x3F_FFFF)),
         "position-bytes" => {
             let pos = if args.is_empty() {
@@ -6411,11 +6758,40 @@ pub fn call(
             Ok(Value::Nil)
         }
         "line-number-at-pos" => {
-            let pos = if args.is_empty() {
+            let pos = if args.is_empty() || args[0].is_nil() {
                 interp.buffer.point()
             } else {
-                args[0].as_integer()? as usize
+                match &args[0] {
+                    Value::Integer(pos) => {
+                        if *pos < 0 {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                Value::Integer(*pos),
+                                Value::Integer(interp.buffer.point_min() as i64),
+                                Value::Integer(interp.buffer.point_max() as i64),
+                            ])));
+                        }
+                        *pos as usize
+                    }
+                    Value::Marker(id) => interp.marker_position(*id).ok_or_else(|| {
+                        LispError::TypeError("integer-or-marker-p".into(), args[0].type_name())
+                    })?,
+                    _ => {
+                        return Err(LispError::TypeError(
+                            "integer-or-marker-p".into(),
+                            args[0].type_name(),
+                        ));
+                    }
+                }
             };
+            if pos < interp.buffer.point_min() || pos > interp.buffer.point_max() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("args-out-of-range".into()),
+                    Value::Integer(pos as i64),
+                    Value::Integer(interp.buffer.point_min() as i64),
+                    Value::Integer(interp.buffer.point_max() as i64),
+                ])));
+            }
             Ok(Value::Integer(interp.buffer.line_number_at_pos(pos) as i64))
         }
         "line-beginning-position" | "pos-bol" => {
@@ -6805,6 +7181,10 @@ pub fn call(
                 interp.buffer.text_properties_at(pos)
             };
             Ok(plist_value(&props))
+        }
+        "object-intervals" => {
+            need_args(name, args, 1)?;
+            object_intervals_value(interp, &args[0])
         }
         "put-text-property" => {
             if args.len() < 4 || args.len() > 5 {
@@ -7617,20 +7997,23 @@ pub fn call(
         "subr-arity" => {
             need_args(name, args, 1)?;
             match &args[0] {
-                Value::BuiltinFunc(symbol) if symbol == "car" => {
-                    Ok(Value::cons(Value::Integer(1), Value::Integer(1)))
-                }
-                Value::BuiltinFunc(symbol) if symbol == "cons" => {
-                    Ok(Value::cons(Value::Integer(2), Value::Integer(2)))
-                }
-                Value::BuiltinFunc(symbol) if symbol == "list" => {
-                    Ok(Value::cons(Value::Integer(0), Value::Symbol("many".into())))
-                }
-                Value::BuiltinFunc(symbol) if symbol == "if" => Ok(Value::cons(
-                    Value::Integer(2),
-                    Value::Symbol("unevalled".into()),
-                )),
+                Value::BuiltinFunc(symbol) => builtin_arity_value(symbol)
+                    .ok_or_else(|| LispError::TypeError("subr".into(), args[0].type_name())),
                 other => Err(LispError::TypeError("subr".into(), other.type_name())),
+            }
+        }
+        "func-arity" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Symbol(symbol) => {
+                    if let Some(arity) = special_form_arity_value(symbol) {
+                        Ok(arity)
+                    } else {
+                        let function = interp.lookup_function(symbol, env)?;
+                        function_arity_value(interp, &function, env)
+                    }
+                }
+                other => function_arity_value(interp, other, env),
             }
         }
         "subr-name" => {
@@ -9162,7 +9545,7 @@ pub fn call(
             )?;
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
-        "make-process" => {
+        "make-process" | "make-pipe-process" => {
             let (buffer_id, program, argv, filter, coding) = parse_make_process_args(interp, args)?;
             let runtime = if let Some(command) = program.as_ref() {
                 Some(spawn_persistent_process(interp, command, &argv, env)?)
@@ -10479,6 +10862,48 @@ pub fn call(
                 _ => text.into_bytes(),
             };
             Ok(Value::String(format!("{:x}", md5::compute(bytes))))
+        }
+        "sha1" => {
+            need_arg_range(name, args, 1, 4)?;
+            secure_hash_value(
+                interp,
+                "sha1",
+                &args[0],
+                args.get(1),
+                args.get(2),
+                args.get(3),
+            )
+        }
+        "secure-hash" => {
+            need_arg_range(name, args, 2, 5)?;
+            let algorithm = args[0].as_symbol()?;
+            secure_hash_value(
+                interp,
+                algorithm,
+                &args[1],
+                args.get(2),
+                args.get(3),
+                args.get(4),
+            )
+        }
+        "secure-hash-algorithms" => {
+            need_args(name, args, 0)?;
+            Ok(Value::list([
+                Value::Symbol("md5".into()),
+                Value::Symbol("sha1".into()),
+                Value::Symbol("sha224".into()),
+                Value::Symbol("sha256".into()),
+                Value::Symbol("sha384".into()),
+                Value::Symbol("sha512".into()),
+                Value::Symbol("sha3-224".into()),
+                Value::Symbol("sha3-256".into()),
+                Value::Symbol("sha3-384".into()),
+                Value::Symbol("sha3-512".into()),
+            ]))
+        }
+        "buffer-hash" => {
+            need_arg_range(name, args, 0, 1)?;
+            buffer_hash_value(interp, args.first())
         }
 
         // ── Misc ──
@@ -11880,23 +12305,73 @@ pub fn call(
             }
             Ok(make_obarray(interp))
         }
+        "define-hash-table-test" => {
+            need_args(name, args, 3)?;
+            let symbol = args[0].as_symbol()?;
+            let spec = Value::list([args[1].clone(), args[2].clone()]);
+            interp.put_symbol_property(symbol, "hash-table-test", spec.clone());
+            Ok(spec)
+        }
         "make-hash-table" => {
             let mut test = "eql".to_string();
+            let mut size = Value::Integer(65);
+            let mut rehash_size = Value::Float(1.5);
+            let mut rehash_threshold = Value::Float(0.8125);
+            let mut weakness = Value::Nil;
             let mut index = 0usize;
             while index + 1 < args.len() {
                 let key = args[index].as_symbol()?;
-                if key == ":test" {
-                    test = match &args[index + 1] {
-                        Value::Symbol(name) => name.clone(),
-                        Value::BuiltinFunc(name) => name.clone(),
-                        other => {
-                            return Err(LispError::TypeError("symbol".into(), other.type_name()));
-                        }
-                    };
+                match key {
+                    ":test" => {
+                        test = match &args[index + 1] {
+                            Value::Symbol(name) => name.clone(),
+                            Value::BuiltinFunc(name) => name.clone(),
+                            other => {
+                                return Err(LispError::TypeError(
+                                    "symbol".into(),
+                                    other.type_name(),
+                                ));
+                            }
+                        };
+                    }
+                    ":size" => size = args[index + 1].clone(),
+                    ":rehash-size" => rehash_size = args[index + 1].clone(),
+                    ":rehash-threshold" => rehash_threshold = args[index + 1].clone(),
+                    ":weakness" => {
+                        weakness = match &args[index + 1] {
+                            Value::T => Value::Symbol("key-and-value".into()),
+                            other => other.clone(),
+                        };
+                    }
+                    ":purecopy" => {}
+                    _ => {
+                        return Err(LispError::Signal(format!(
+                            "Invalid hash table parameter: {key}"
+                        )));
+                    }
                 }
                 index += 2;
             }
-            Ok(json::make_hash_table(interp, &test, Vec::new()))
+            if !matches!(test.as_str(), "eq" | "eql" | "equal")
+                && hash_table_user_test_functions(interp, &test).is_none()
+            {
+                return Err(LispError::Signal("Invalid hash table test".into()));
+            }
+            let table = json::make_hash_table(interp, &test, Vec::new());
+            let Value::Record(id) = table.clone() else {
+                unreachable!("hash tables are represented as records")
+            };
+            let record = interp
+                .find_record_mut(id)
+                .expect("make_hash_table should create a record");
+            if record.slots.len() < 6 {
+                record.slots.resize(6, Value::Nil);
+            }
+            record.slots[2] = size;
+            record.slots[3] = rehash_size;
+            record.slots[4] = rehash_threshold;
+            record.slots[5] = weakness;
+            Ok(table)
         }
         "hash-table-p" => {
             need_args(name, args, 1)?;
@@ -11914,25 +12389,34 @@ pub fn call(
                     args[1].type_name(),
                 ));
             };
-            Ok(
-                if entries.iter().any(|(existing_key, _)| {
-                    hash_table_key_matches(interp, &test, existing_key, &args[0])
-                }) {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
+            for (existing_key, _) in entries {
+                if hash_table_key_matches(interp, &args[1], &test, &existing_key, &args[0], env)? {
+                    return Ok(Value::T);
+                }
+            }
+            Ok(Value::Nil)
         }
         "copy-hash-table" => {
             need_args(name, args, 1)?;
-            let Some((test, entries)) = json::hash_table_entries(interp, &args[0]) else {
+            let Value::Record(id) = args[0] else {
                 return Err(LispError::TypeError(
                     "hash-table".into(),
                     args[0].type_name(),
                 ));
             };
-            Ok(json::make_hash_table(interp, &test, entries))
+            let Some(record) = interp.find_record(id) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            if record.type_name != "hash-table" {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
+            }
+            interp.copy_record(id)
         }
         "gethash" => {
             if args.len() < 2 || args.len() > 3 {
@@ -11945,22 +12429,35 @@ pub fn call(
                 ));
             };
             let default = args.get(2).cloned().unwrap_or(Value::Nil);
-            let value = entries
-                .into_iter()
-                .find(|(existing_key, _)| {
-                    if test == "equal" {
-                        values_equal(interp, existing_key, &args[0])
-                    } else {
-                        existing_key == &args[0]
-                    }
-                })
-                .map(|(_, value)| value)
-                .unwrap_or(default);
-            Ok(value)
+            for (existing_key, value) in entries {
+                if hash_table_key_matches(interp, &args[1], &test, &existing_key, &args[0], env)? {
+                    return Ok(value);
+                }
+            }
+            Ok(default)
         }
         "puthash" => {
             need_args(name, args, 3)?;
-            json::hash_table_put(interp, &args[2], args[0].clone(), args[1].clone())
+            let Some((test, mut entries)) = json::hash_table_entries(interp, &args[2]) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[2].type_name(),
+                ));
+            };
+            touch_hash_table_key(interp, &args[2], &test, &args[0], env)?;
+            let mut replaced = false;
+            for (existing_key, existing_value) in &mut entries {
+                if hash_table_key_matches(interp, &args[2], &test, existing_key, &args[0], env)? {
+                    *existing_value = args[1].clone();
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                entries.push((args[0].clone(), args[1].clone()));
+            }
+            set_hash_table_entries(interp, &args[2], entries)?;
+            Ok(args[1].clone())
         }
         "maphash" => {
             need_args(name, args, 2)?;
@@ -11983,12 +12480,12 @@ pub fn call(
                     args[1].type_name(),
                 ));
             };
-            let retained = entries
-                .into_iter()
-                .filter(|(existing_key, _)| {
-                    !hash_table_key_matches(interp, &test, existing_key, &args[0])
-                })
-                .collect();
+            let mut retained = Vec::new();
+            for (existing_key, value) in entries {
+                if !hash_table_key_matches(interp, &args[1], &test, &existing_key, &args[0], env)? {
+                    retained.push((existing_key, value));
+                }
+            }
             set_hash_table_entries(interp, &args[1], retained)?;
             Ok(Value::Nil)
         }
@@ -12019,6 +12516,44 @@ pub fn call(
             };
             Ok(Value::Integer(entries.len() as i64))
         }
+        "hash-table-rehash-size" => {
+            need_args(name, args, 1)?;
+            Ok(hash_table_metadata_slot(
+                interp,
+                &args[0],
+                3,
+                Value::Float(1.5),
+            )?)
+        }
+        "hash-table-rehash-threshold" => {
+            need_args(name, args, 1)?;
+            Ok(hash_table_metadata_slot(
+                interp,
+                &args[0],
+                4,
+                Value::Float(0.8125),
+            )?)
+        }
+        "hash-table-size" => {
+            need_args(name, args, 1)?;
+            let default_size = json::hash_table_entries(interp, &args[0])
+                .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
+                .unwrap_or(Value::Integer(65));
+            Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
+        }
+        "hash-table-test" => {
+            need_args(name, args, 1)?;
+            Ok(hash_table_metadata_slot(
+                interp,
+                &args[0],
+                0,
+                Value::Symbol("eql".into()),
+            )?)
+        }
+        "hash-table-weakness" => {
+            need_args(name, args, 1)?;
+            Ok(hash_table_metadata_slot(interp, &args[0], 5, Value::Nil)?)
+        }
         "hash-table-keys" => {
             need_args(name, args, 1)?;
             let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
@@ -12045,6 +12580,35 @@ pub fn call(
                     .into_iter()
                     .map(|(key, value)| Value::cons(key, value)),
             ))
+        }
+        "internal--hash-table-index-size" => {
+            need_args(name, args, 1)?;
+            let default_size = json::hash_table_entries(interp, &args[0])
+                .map(|(_, entries)| Value::Integer(entries.len().max(65) as i64))
+                .unwrap_or(Value::Integer(65));
+            Ok(hash_table_metadata_slot(interp, &args[0], 2, default_size)?)
+        }
+        "internal--hash-table-histogram" => {
+            need_args(name, args, 1)?;
+            if json::hash_table_entries(interp, &args[0]).is_none() {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
+            }
+            Ok(Value::Nil)
+        }
+        "internal--hash-table-buckets" => {
+            need_args(name, args, 1)?;
+            let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
+                return Err(LispError::TypeError(
+                    "hash-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            Ok(Value::list(entries.into_iter().map(|(key, value)| {
+                Value::list([Value::cons(key, value)])
+            })))
         }
         "profiler-memory-running-p" => Ok(if interp.profiler_memory_running {
             Value::T
@@ -12176,8 +12740,13 @@ pub fn call(
                         return Err(error);
                     }
                     let error_value = error_condition_value(&error);
-                    let _ = interp.call_function_value(handler, None, &[error_value], env)?;
-                    Err(error)
+                    let _ = interp.call_function_value(
+                        handler,
+                        None,
+                        std::slice::from_ref(&error_value),
+                        env,
+                    )?;
+                    Err(LispError::SignalValue(error_value))
                 }
             }
         }
@@ -12549,7 +13118,11 @@ pub fn call(
             need_arg_range(name, args, 0, 1)?;
             Ok(Value::Nil)
         }
-        "garbage-collect" => Ok(Value::Nil),
+        "garbage-collect" => {
+            need_args(name, args, 0)?;
+            collect_weak_hash_tables(interp)?;
+            Ok(Value::Nil)
+        }
         "num-processors" => {
             need_args(name, args, 0)?;
             let count = std::thread::available_parallelism()
@@ -13088,59 +13661,112 @@ pub fn call(
 
         // ── Plist operations ──
         "plist-get" => {
-            need_args(name, args, 2)?;
-            let plist = args[0].to_vec()?;
+            need_arg_range(name, args, 2, 3)?;
+            let plist = args[0].clone();
             let key = &args[1];
-            let mut i = 0;
-            while i + 1 < plist.len() {
-                if plist[i] == *key {
-                    return Ok(plist[i + 1].clone());
-                }
-                i += 2;
-            }
-            Ok(Value::Nil)
-        }
-
-        "plist-put" => {
-            need_args(name, args, 3)?;
-            let mut plist = args[0].to_vec()?;
-            let key = &args[1];
-            let val = &args[2];
-            let mut i = 0;
-            let mut found = false;
-            while i + 1 < plist.len() {
-                if plist[i] == *key {
-                    plist[i + 1] = val.clone();
-                    found = true;
-                    break;
-                }
-                i += 2;
-            }
-            if !found {
-                plist.push(key.clone());
-                plist.push(val.clone());
-            }
-            Ok(Value::list(plist))
-        }
-
-        "plist-member" => {
-            need_args(name, args, 2)?;
-            let key = &args[1];
-            let mut current = args[0].clone();
+            let testfn = args.get(2);
+            let mut current = plist.clone();
+            let mut seen = HashSet::new();
             loop {
                 match current {
                     Value::Nil => return Ok(Value::Nil),
                     Value::Cons(car, cdr) => {
-                        if car.borrow().eq(key) {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Ok(Value::Nil);
+                        }
+                        let property = car.borrow().clone();
+                        if value_matches_with_test(interp, &property, key, testfn, env)? {
+                            return match cdr.borrow().clone() {
+                                Value::Cons(value, _) => Ok(value.borrow().clone()),
+                                _ => Ok(Value::Nil),
+                            };
+                        }
+                        match cdr.borrow().clone() {
+                            Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                            Value::Nil => return Ok(Value::Nil),
+                            _ => return Ok(Value::Nil),
+                        }
+                    }
+                    _ => return Ok(Value::Nil),
+                }
+            }
+        }
+
+        "plist-put" => {
+            need_arg_range(name, args, 3, 4)?;
+            let plist = args[0].clone();
+            let key = &args[1];
+            let val = &args[2];
+            let testfn = args.get(3);
+            let mut current = plist.clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current {
+                    Value::Nil => {
+                        let mut items = plist.to_vec()?;
+                        items.push(key.clone());
+                        items.push(val.clone());
+                        return Ok(Value::list(items));
+                    }
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let property = car.borrow().clone();
+                        if value_matches_with_test(interp, &property, key, testfn, env)? {
+                            return match cdr.borrow().clone() {
+                                Value::Cons(value, _) => {
+                                    *value.borrow_mut() = val.clone();
+                                    Ok(plist)
+                                }
+                                _ => Err(plist_type_error(&plist)),
+                            };
+                        }
+                        match cdr.borrow().clone() {
+                            Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                            _ => return Err(plist_type_error(&plist)),
+                        }
+                    }
+                    _ => return Err(plist_type_error(&plist)),
+                }
+            }
+        }
+
+        "plist-member" => {
+            need_arg_range(name, args, 2, 3)?;
+            let plist = args[0].clone();
+            let key = &args[1];
+            let testfn = args.get(2);
+            let mut current = plist.clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current {
+                    Value::Nil => return Ok(Value::Nil),
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let property = car.borrow().clone();
+                        if value_matches_with_test(interp, &property, key, testfn, env)? {
                             return Ok(Value::Cons(car, cdr));
                         }
                         // Skip the value
                         match cdr.borrow().clone() {
                             Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
-                            _ => return Ok(Value::Nil),
+                            Value::Nil => return Ok(Value::Nil),
+                            _ => return Err(plist_type_error(&plist)),
                         }
                     }
-                    _ => return Ok(Value::Nil),
+                    _ => return Err(plist_type_error(&plist)),
                 }
             }
         }
@@ -13155,19 +13781,40 @@ pub fn call(
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let mut items = args[0].to_vec()?;
-            let mut pred = None;
+            let (kind, items) = sort_sequence_kind_and_items(&args[0])?;
+            let mut lessp = None;
+            let mut key = None;
+            let mut in_place = true;
+            let mut reverse = false;
             let mut index = 1usize;
             if let Some(arg) = args.get(index)
                 && !matches!(arg, Value::Symbol(symbol) if symbol.starts_with(':'))
             {
-                pred = Some(arg.clone());
+                lessp = Some(arg.clone());
                 index += 1;
             }
             while index + 1 < args.len() {
                 match &args[index] {
-                    Value::Symbol(keyword) if keyword == ":in-place" => {}
-                    Value::Symbol(keyword) if keyword.starts_with(':') => {}
+                    Value::Symbol(keyword) if keyword == ":key" => {
+                        key = if args[index + 1].is_nil() {
+                            None
+                        } else {
+                            Some(args[index + 1].clone())
+                        };
+                    }
+                    Value::Symbol(keyword) if keyword == ":lessp" => {
+                        lessp = if args[index + 1].is_nil() {
+                            None
+                        } else {
+                            Some(args[index + 1].clone())
+                        };
+                    }
+                    Value::Symbol(keyword) if keyword == ":in-place" => {
+                        in_place = args[index + 1].is_truthy();
+                    }
+                    Value::Symbol(keyword) if keyword == ":reverse" => {
+                        reverse = args[index + 1].is_truthy();
+                    }
                     _ => return Err(LispError::WrongNumberOfArgs(name.into(), args.len())),
                 }
                 index += 2;
@@ -13175,31 +13822,14 @@ pub fn call(
             if index != args.len() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            // Sort using the predicate. We need to call back into the interpreter.
-            // Use a simple insertion sort to avoid issues with the borrow checker
-            // and Rust's sort requiring Fn (not FnMut with &mut self).
-            let len = items.len();
-            for i in 1..len {
-                let mut j = i;
-                while j > 0 {
-                    let result = if let Some(pred) = &pred {
-                        let pred_args = [items[j - 1].clone(), items[j].clone()];
-                        call_function_value(interp, pred, &pred_args, env)?
-                    } else if default_sort_lt(interp, &items[j - 1], &items[j])? {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    };
-                    // If pred(items[j-1], items[j]) is nil, swap
-                    if result.is_nil() {
-                        items.swap(j - 1, j);
-                        j -= 1;
-                    } else {
-                        break;
-                    }
-                }
+            let sorted =
+                sort_sequence_items(interp, items, key.as_ref(), lessp.as_ref(), reverse, env)?;
+            if in_place {
+                write_sorted_sequence(&args[0], &kind, &sorted)?;
+                Ok(args[0].clone())
+            } else {
+                Ok(build_sorted_sequence(&kind, sorted))
             }
-            Ok(Value::list(items))
         }
         "cl-sort" => {
             if args.len() < 2 {
@@ -13209,7 +13839,11 @@ pub fn call(
             let mut index = 2usize;
             while index + 1 < args.len() {
                 if args[index].as_symbol()? == ":key" {
-                    key_fn = Some(args[index + 1].clone());
+                    key_fn = if args[index + 1].is_nil() {
+                        None
+                    } else {
+                        Some(args[index + 1].clone())
+                    };
                 }
                 index += 2;
             }
@@ -13241,14 +13875,32 @@ pub fn call(
         }
 
         "random" => {
-            if args.is_empty() {
+            if args.is_empty() || args[0].is_nil() {
                 Ok(Value::Integer(rand_simple()))
             } else {
-                let limit = args[0].as_integer()?;
-                if limit <= 0 {
-                    Ok(Value::Integer(0))
-                } else {
-                    Ok(Value::Integer(rand_simple().unsigned_abs() as i64 % limit))
+                match &args[0] {
+                    Value::T => {
+                        set_random_seed(nondeterministic_random_seed());
+                        Ok(Value::Integer(rand_simple()))
+                    }
+                    Value::String(_) | Value::StringObject(_) => {
+                        let seed = string_like(&args[0])
+                            .expect("string variants should be string-like")
+                            .text;
+                        set_random_seed(random_seed_from_bytes(seed.as_bytes()));
+                        Ok(Value::Integer(rand_simple()))
+                    }
+                    _ => {
+                        let limit = integer_like_bigint(interp, &args[0])?;
+                        if limit <= BigInt::zero() {
+                            Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                args[0].clone(),
+                            ])))
+                        } else {
+                            Ok(normalize_bigint_value(random_bigint_below(&limit)))
+                        }
+                    }
                 }
             }
         }
@@ -13376,14 +14028,18 @@ pub fn call(
                     }
                 }
                 _ => {
-                    let items = vector_items(&args[0])?;
-                    items.get(idx).cloned().ok_or_else(|| {
-                        LispError::SignalValue(Value::list([
-                            Value::Symbol("args-out-of-range".into()),
-                            args[0].clone(),
-                            args[1].clone(),
-                        ]))
-                    })
+                    if is_vector_value(&args[0]) {
+                        vector_slot_value(&args[0], idx)
+                    } else {
+                        let items = vector_items(&args[0])?;
+                        items.get(idx).cloned().ok_or_else(|| {
+                            LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                args[0].clone(),
+                                args[1].clone(),
+                            ]))
+                        })
+                    }
                 }
             }
         }
@@ -13436,7 +14092,7 @@ pub fn call(
 
         "seq-into" => {
             need_args(name, args, 2)?;
-            let items = sequence_values(&args[0])?;
+            let items = sequence_values(interp, &args[0])?;
             match args[1].as_symbol()? {
                 "list" => Ok(Value::list(items)),
                 "vector" => {
@@ -13463,37 +14119,85 @@ pub fn call(
 
         "nreverse" => {
             need_args(name, args, 1)?;
-            if string_like(&args[0]).is_some() {
-                reverse_string_like_value(&args[0])
-            } else {
-                let mut items = args[0].to_vec()?;
-                items.reverse();
-                Ok(Value::list(items))
-            }
+            nreverse_sequence_value(interp, &args[0])
         }
 
         "copy-sequence" => {
             need_args(name, args, 1)?;
-            if let Some(string) = string_like(&args[0]) {
-                Ok(make_shared_string_value_with_multibyte(
-                    string.text,
-                    string.props,
-                    string.multibyte,
-                ))
-            } else {
-                match &args[0] {
-                    Value::CharTable(id) => interp.clone_char_table(*id),
-                    Value::Record(id) => interp.copy_record(*id),
-                    _ => Ok(args[0].clone()),
+            copy_sequence_value(interp, &args[0])
+        }
+        "fillarray" => {
+            need_args(name, args, 2)?;
+            match &args[0] {
+                value if is_vector_value(value) => {
+                    let len = vector_items(value)?.len();
+                    for index in 0..len {
+                        aset_vector_value(value, index, args[1].clone())?;
+                    }
+                    Ok(args[0].clone())
                 }
+                Value::StringObject(state) => {
+                    let mut state = state.borrow_mut();
+                    let len = state.text.chars().count();
+                    let fill_code = args[1].as_integer()?;
+                    let fill_char = if state.multibyte {
+                        char::from_u32(fill_code as u32)
+                            .ok_or_else(|| LispError::Signal("Invalid character".into()))?
+                    } else if !(0..=255).contains(&fill_code) {
+                        return Err(LispError::Signal("Invalid character".into()));
+                    } else if fill_code <= 0x7F {
+                        char::from(fill_code as u8)
+                    } else {
+                        raw_byte_regex_char(fill_code as u8)
+                    };
+                    state.text = std::iter::repeat_n(fill_char, len).collect();
+                    state.props.clear();
+                    Ok(args[0].clone())
+                }
+                Value::String(text) => {
+                    let len = text.chars().count();
+                    let fill_code = args[1].as_integer()?;
+                    if !(0..=0x7F).contains(&fill_code) {
+                        return Err(LispError::Signal("Invalid character".into()));
+                    }
+                    let fill_char = char::from(fill_code as u8);
+                    Ok(Value::String(std::iter::repeat_n(fill_char, len).collect()))
+                }
+                value if is_bool_vector_value(interp, value) => {
+                    let len = bool_vector_bits(interp, value)?.len();
+                    for index in 0..len {
+                        set_bool_vector_bit(interp, value, index, args[1].is_truthy())?;
+                    }
+                    Ok(args[0].clone())
+                }
+                Value::CharTable(id) => {
+                    let table = interp.find_char_table_mut(*id).ok_or_else(|| {
+                        LispError::TypeError("char-table".into(), format!("char-table<{id}>"))
+                    })?;
+                    table.default = args[1].clone();
+                    table.entries.clear();
+                    Ok(args[0].clone())
+                }
+                other => Err(LispError::TypeError("array".into(), other.type_name())),
             }
+        }
+        "load-average" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Err(LispError::Signal("load-average not implemented".into()))
+        }
+        "locale-info" => {
+            need_args(name, args, 1)?;
+            let _item = args[0].as_symbol()?;
+            Ok(Value::Nil)
         }
         "clear-string" => {
             need_args(name, args, 1)?;
             match &args[0] {
                 Value::StringObject(state) => {
                     let mut state = state.borrow_mut();
-                    let len = state.text.chars().count();
+                    let len = state.text.len();
                     state.text = "\0".repeat(len);
                     state.props.clear();
                     state.multibyte = false;
@@ -13996,11 +14700,68 @@ pub fn call(
             Ok(Value::Nil)
         }
 
-        "take" => {
+        "take" | "ntake" => {
             need_args(name, args, 2)?;
-            let n = args[0].as_integer()?.max(0) as usize;
-            let items = args[1].to_vec()?;
-            Ok(Value::list(items.into_iter().take(n)))
+            let n = args[0].as_integer()?;
+            if n <= 0 {
+                return Ok(Value::Nil);
+            }
+            let n = n as usize;
+            if name == "take" {
+                let mut current = args[1].clone();
+                let mut items = Vec::new();
+                let mut remaining = n;
+                while remaining > 0 {
+                    match current {
+                        Value::Nil => break,
+                        Value::Cons(car, cdr) => {
+                            items.push(car.borrow().clone());
+                            current = cdr.borrow().clone();
+                            remaining -= 1;
+                        }
+                        value => {
+                            return Err(LispError::TypeError("list".into(), value.type_name()));
+                        }
+                    }
+                }
+                Ok(Value::list(items))
+            } else {
+                let head = args[1].clone();
+                let mut current = head.clone();
+                let mut remaining = n;
+                while remaining > 1 {
+                    match current {
+                        Value::Nil => return Ok(Value::Nil),
+                        Value::Cons(_, cdr) => {
+                            let next = cdr.borrow().clone();
+                            match next {
+                                Value::Cons(_, _) => {
+                                    current = next;
+                                    remaining -= 1;
+                                }
+                                Value::Nil => return Ok(head),
+                                value => {
+                                    return Err(LispError::TypeError(
+                                        "list".into(),
+                                        value.type_name(),
+                                    ));
+                                }
+                            }
+                        }
+                        value => {
+                            return Err(LispError::TypeError("list".into(), value.type_name()));
+                        }
+                    }
+                }
+                match current {
+                    Value::Nil => Ok(Value::Nil),
+                    Value::Cons(_, cdr) => {
+                        *cdr.borrow_mut() = Value::Nil;
+                        Ok(head)
+                    }
+                    value => Err(LispError::TypeError("list".into(), value.type_name())),
+                }
+            }
         }
 
         "delete" | "delq" | "remq" => {
@@ -14987,12 +15748,13 @@ fn marker_target(
 }
 
 pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
-    let items = value.to_vec()?;
-    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal")
-    {
-        Ok(items.into_iter().skip(1).collect())
+    if is_vector_value(value) {
+        Ok(vector_slot_refs(value)?
+            .iter()
+            .map(|slot| slot.borrow().clone())
+            .collect())
     } else {
-        Ok(items)
+        Ok(value.to_vec()?)
     }
 }
 
@@ -15007,6 +15769,69 @@ fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Option<&'a st
 
 fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
     record_type_name(interp, value) == Some("bool-vector")
+}
+
+fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
+    match value {
+        Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector" || symbol == "vector-literal") => {
+            Some(car.clone())
+        }
+        _ => None,
+    }
+}
+
+fn vector_slot_refs(value: &Value) -> Result<Rc<Vec<ConsSlot>>, LispError> {
+    let Some(root) = vector_root_slot(value) else {
+        return Err(LispError::TypeError("vector".into(), value.type_name()));
+    };
+    let key = Rc::as_ptr(&root) as usize;
+    if let Some(slots) = VECTOR_SLOT_CACHE.with_borrow_mut(|cache| match cache.get(&key) {
+        Some((cached_root, slots)) => match cached_root.upgrade() {
+            Some(cached_root) if Rc::ptr_eq(&cached_root, &root) => Some(slots.clone()),
+            _ => {
+                cache.remove(&key);
+                None
+            }
+        },
+        None => None,
+    }) {
+        return Ok(slots);
+    }
+
+    let Value::Cons(_, cdr) = value else {
+        return Err(LispError::TypeError("vector".into(), value.type_name()));
+    };
+    let mut current = cdr.borrow().clone();
+    let mut slots = Vec::new();
+    loop {
+        match current {
+            Value::Cons(car, cdr) => {
+                slots.push(car.clone());
+                current = cdr.borrow().clone();
+            }
+            Value::Nil => break,
+            _ => return Err(LispError::TypeError("vector".into(), value.type_name())),
+        }
+    }
+
+    let slots = Rc::new(slots);
+    VECTOR_SLOT_CACHE.with_borrow_mut(|cache| {
+        cache.insert(key, (Rc::downgrade(&root), slots.clone()));
+    });
+    Ok(slots)
+}
+
+fn vector_slot_value(value: &Value, index: usize) -> Result<Value, LispError> {
+    vector_slot_refs(value)?
+        .get(index)
+        .map(|slot| slot.borrow().clone())
+        .ok_or_else(|| {
+            LispError::SignalValue(Value::list([
+                Value::Symbol("args-out-of-range".into()),
+                value.clone(),
+                Value::Integer(index as i64),
+            ]))
+        })
 }
 
 fn bool_vector_values(interp: &Interpreter, value: &Value) -> Result<Vec<Value>, LispError> {
@@ -18714,6 +19539,18 @@ fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
     }
 }
 
+fn bytes_to_shared_unibyte_value(bytes: &[u8]) -> Value {
+    let mut text = String::new();
+    for &byte in bytes {
+        if byte <= 0x7F {
+            text.push(byte as char);
+        } else {
+            text.push(raw_byte_regex_char(byte));
+        }
+    }
+    make_shared_string_value_with_multibyte(text, Vec::new(), false)
+}
+
 fn make_temp_name(prefix: &str) -> String {
     let counter = TEMP_NAME_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
     let nanos = SystemTime::now()
@@ -18725,17 +19562,21 @@ fn make_temp_name(prefix: &str) -> String {
 }
 
 fn aset_vector_value(target: &Value, index: usize, new_value: Value) -> Result<(), LispError> {
-    let slot = if is_vector_value(target) {
-        index + 1
-    } else {
-        index
-    };
+    if is_vector_value(target) {
+        let slot = vector_slot_refs(target)?
+            .get(index)
+            .cloned()
+            .ok_or_else(|| LispError::Signal("Args out of range".into()))?;
+        *slot.borrow_mut() = new_value;
+        return Ok(());
+    }
+
     let mut current = target.clone();
     let mut offset = 0usize;
     loop {
         match current {
             Value::Cons(car, cdr) => {
-                if offset == slot {
+                if offset == index {
                     *car.borrow_mut() = new_value;
                     return Ok(());
                 }
@@ -18778,6 +19619,115 @@ fn base64_char_value(byte: u8, base64url: bool) -> Option<u8> {
         b'_' if base64url => Some(63),
         _ => None,
     }
+}
+
+fn base64_value_char(value: u8, base64url: bool) -> char {
+    const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let alphabet = if base64url { URL } else { STANDARD };
+    alphabet[value as usize] as char
+}
+
+fn encode_base64_bytes(bytes: &[u8], line_break: bool, pad: bool, base64url: bool) -> String {
+    const GROUPS_PER_LINE: usize = 76 / 4;
+
+    let mut encoded = String::with_capacity(bytes.len() + (bytes.len() / 3) + 8);
+    let mut cursor = 0usize;
+    let mut groups_on_line = 0usize;
+
+    while cursor < bytes.len() {
+        if line_break && groups_on_line == GROUPS_PER_LINE {
+            encoded.push('\n');
+            groups_on_line = 0;
+        }
+
+        let first = bytes[cursor];
+        cursor += 1;
+        encoded.push(base64_value_char(first >> 2, base64url));
+        let mut value = (first & 0x03) << 4;
+
+        if cursor == bytes.len() {
+            encoded.push(base64_value_char(value, base64url));
+            if pad {
+                encoded.push('=');
+                encoded.push('=');
+            }
+            break;
+        }
+
+        let second = bytes[cursor];
+        cursor += 1;
+        encoded.push(base64_value_char(value | (second >> 4), base64url));
+        value = (second & 0x0F) << 2;
+
+        if cursor == bytes.len() {
+            encoded.push(base64_value_char(value, base64url));
+            if pad {
+                encoded.push('=');
+            }
+            break;
+        }
+
+        let third = bytes[cursor];
+        cursor += 1;
+        encoded.push(base64_value_char(value | (third >> 6), base64url));
+        encoded.push(base64_value_char(third & 0x3F, base64url));
+        groups_on_line += 1;
+    }
+
+    encoded
+}
+
+fn encode_base64_source_bytes(text: &str, multibyte: bool) -> Result<Vec<u8>, LispError> {
+    if !multibyte {
+        return encode_raw_text_bytes(text);
+    }
+
+    let mut bytes = Vec::with_capacity(text.chars().count());
+    for ch in text.chars() {
+        if let Some(byte) = raw_byte_from_regex_char(ch) {
+            bytes.push(byte);
+        } else if (ch as u32) <= 0x7F {
+            bytes.push(ch as u8);
+        } else {
+            return Err(LispError::Signal("Character cannot be encoded".into()));
+        }
+    }
+    Ok(bytes)
+}
+
+fn base64_encode_string_value(
+    value: &Value,
+    line_break: bool,
+    pad: bool,
+    base64url: bool,
+) -> Result<Value, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    let bytes = encode_base64_source_bytes(&string.text, string.multibyte)?;
+    Ok(Value::String(encode_base64_bytes(
+        &bytes, line_break, pad, base64url,
+    )))
+}
+
+fn base64_encode_region_value(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    line_break: bool,
+    pad: bool,
+    base64url: bool,
+) -> Result<Value, LispError> {
+    let lo = start.min(end);
+    let hi = start.max(end);
+    let text = interp
+        .buffer
+        .buffer_substring(lo, hi)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let bytes = encode_base64_source_bytes(&text, interp.buffer.is_multibyte())?;
+    let encoded = encode_base64_bytes(&bytes, line_break, pad, base64url);
+    let new_end = replace_buffer_region_with_text(interp, lo, hi, &encoded)?;
+    Ok(Value::Integer((new_end - lo) as i64))
 }
 
 fn next_base64_byte(
@@ -18874,6 +19824,25 @@ fn decode_base64_string_value(
     }
 
     Ok(bytes_to_unibyte_value(&decoded))
+}
+
+fn base64_decode_region_value(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    base64url: bool,
+    ignore_invalid: bool,
+) -> Result<Value, LispError> {
+    let lo = start.min(end);
+    let hi = start.max(end);
+    let text = interp
+        .buffer
+        .buffer_substring(lo, hi)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let decoded = decode_base64_string_value(&Value::String(text), base64url, ignore_invalid)?;
+    let decoded_text = string_text(&decoded)?;
+    let new_end = replace_buffer_region_with_text(interp, lo, hi, &decoded_text)?;
+    Ok(Value::Integer((new_end - lo) as i64))
 }
 
 fn ascii_only_text(text: &str) -> bool {
@@ -20689,6 +21658,33 @@ fn write_process_output(
     Ok(())
 }
 
+fn copy_sequence_value(interp: &mut Interpreter, value: &Value) -> Result<Value, LispError> {
+    if let Some(string) = string_like(value) {
+        return Ok(make_shared_string_value_with_multibyte(
+            string.text,
+            string.props,
+            string.multibyte,
+        ));
+    }
+
+    if is_vector_value(value) {
+        return Ok(Value::list(value.to_vec()?));
+    }
+
+    match value {
+        Value::Nil => Ok(Value::Nil),
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return Ok(value.clone());
+            };
+            Ok(Value::cons(car, copy_sequence_value(interp, &cdr)?))
+        }
+        Value::CharTable(id) => interp.clone_char_table(*id),
+        Value::Record(id) => interp.copy_record(*id),
+        _ => Ok(value.clone()),
+    }
+}
+
 fn exit_status_code(status: &std::process::ExitStatus) -> i64 {
     status
         .code()
@@ -20720,6 +21716,409 @@ fn default_sort_lt(interp: &Interpreter, left: &Value, right: &Value) -> Result<
         return Ok(left.text < right.text);
     }
     Ok(left.to_string() < right.to_string())
+}
+
+enum SortSequenceKind {
+    List,
+    Vector(String),
+}
+
+fn list_or_vector_type_error(value: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("wrong-type-argument".into()),
+        Value::Symbol("list-or-vector-p".into()),
+        value.clone(),
+    ]))
+}
+
+fn sort_sequence_kind_and_items(
+    value: &Value,
+) -> Result<(SortSequenceKind, Vec<Value>), LispError> {
+    if is_vector_value(value) {
+        let items = value.to_vec()?;
+        let tag = items
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .unwrap_or("vector")
+            .to_string();
+        return Ok((
+            SortSequenceKind::Vector(tag),
+            items.into_iter().skip(1).collect(),
+        ));
+    }
+    if matches!(value, Value::Nil | Value::Cons(_, _)) {
+        return Ok((SortSequenceKind::List, value.to_vec()?));
+    }
+    Err(list_or_vector_type_error(value))
+}
+
+fn sort_compare_ordering(
+    interp: &mut Interpreter,
+    lessp: Option<&Value>,
+    left: &Value,
+    right: &Value,
+    env: &mut Env,
+) -> Result<Ordering, LispError> {
+    if let Some(function) = lessp
+        && let Some(ordering) = direct_sort_ordering(interp, function, left, right, env)?
+    {
+        return Ok(ordering);
+    }
+
+    let left_lt_right = if let Some(function) = lessp {
+        call_function_value(interp, function, &[left.clone(), right.clone()], env)?.is_truthy()
+    } else {
+        default_sort_lt(interp, left, right)?
+    };
+    if left_lt_right {
+        return Ok(Ordering::Less);
+    }
+
+    let right_lt_left = if let Some(function) = lessp {
+        call_function_value(interp, function, &[right.clone(), left.clone()], env)?.is_truthy()
+    } else {
+        default_sort_lt(interp, right, left)?
+    };
+    Ok(if right_lt_left {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    })
+}
+
+enum DirectSortKind {
+    Less,
+    Greater,
+    ValueLess,
+}
+
+enum DirectSortKeyFn {
+    Abs,
+}
+
+enum DirectSortOperand {
+    Left,
+    Right,
+    LeftCar,
+    RightCar,
+    LeftAbs,
+    RightAbs,
+}
+
+struct DirectSortComparator {
+    prelude: Vec<Value>,
+    kind: DirectSortKind,
+    left: DirectSortOperand,
+    right: DirectSortOperand,
+}
+
+fn resolve_direct_sort_kind(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Option<DirectSortKind> {
+    match value {
+        Value::Symbol(name) | Value::BuiltinFunc(name) => match name.as_str() {
+            "<" => Some(DirectSortKind::Less),
+            ">" => Some(DirectSortKind::Greater),
+            "value<" => Some(DirectSortKind::ValueLess),
+            _ => interp
+                .lookup_var(name, env)
+                .and_then(|resolved| resolve_direct_sort_kind(interp, &resolved, env)),
+        },
+        _ => None,
+    }
+}
+
+fn resolve_direct_sort_key_fn(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Option<DirectSortKeyFn> {
+    match value {
+        Value::Symbol(name) | Value::BuiltinFunc(name) => match name.as_str() {
+            "abs" => Some(DirectSortKeyFn::Abs),
+            _ => interp
+                .lookup_var(name, env)
+                .and_then(|resolved| resolve_direct_sort_key_fn(interp, &resolved, env)),
+        },
+        _ => None,
+    }
+}
+
+fn parse_direct_sort_operand(
+    interp: &Interpreter,
+    value: &Value,
+    params: &[String],
+    env: &Env,
+) -> Option<DirectSortOperand> {
+    match value {
+        Value::Symbol(symbol) if symbol == &params[0] => Some(DirectSortOperand::Left),
+        Value::Symbol(symbol) if symbol == &params[1] => Some(DirectSortOperand::Right),
+        Value::Cons(_, _) => {
+            let items = value.to_vec().ok()?;
+            match items.as_slice() {
+                [Value::Symbol(name), Value::Symbol(symbol)]
+                    if name == "car" && symbol == &params[0] =>
+                {
+                    Some(DirectSortOperand::LeftCar)
+                }
+                [Value::Symbol(name), Value::Symbol(symbol)]
+                    if name == "car" && symbol == &params[1] =>
+                {
+                    Some(DirectSortOperand::RightCar)
+                }
+                [Value::Symbol(name), key, Value::Symbol(symbol)]
+                    if name == "funcall" && symbol == &params[0] =>
+                {
+                    match resolve_direct_sort_key_fn(interp, key, env)? {
+                        DirectSortKeyFn::Abs => Some(DirectSortOperand::LeftAbs),
+                    }
+                }
+                [Value::Symbol(name), key, Value::Symbol(symbol)]
+                    if name == "funcall" && symbol == &params[1] =>
+                {
+                    match resolve_direct_sort_key_fn(interp, key, env)? {
+                        DirectSortKeyFn::Abs => Some(DirectSortOperand::RightAbs),
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn direct_sort_comparator(
+    interp: &Interpreter,
+    function: &Value,
+    env: &Env,
+) -> Option<DirectSortComparator> {
+    match function {
+        Value::Symbol(name) | Value::BuiltinFunc(name) if name == "car-less-than-car" => {
+            Some(DirectSortComparator {
+                prelude: Vec::new(),
+                kind: DirectSortKind::Less,
+                left: DirectSortOperand::LeftCar,
+                right: DirectSortOperand::RightCar,
+            })
+        }
+        Value::Symbol(_) | Value::BuiltinFunc(_) => {
+            let kind = resolve_direct_sort_kind(interp, function, env)?;
+            Some(DirectSortComparator {
+                prelude: Vec::new(),
+                kind,
+                left: DirectSortOperand::Left,
+                right: DirectSortOperand::Right,
+            })
+        }
+        Value::Lambda(params, body, closure_env) if params.len() == 2 && !body.is_empty() => {
+            let closure_env = closure_env.borrow().clone();
+            let compare_form = body.last()?;
+            let items = compare_form.to_vec().ok()?;
+            let (kind, left, right) = match items.as_slice() {
+                [Value::Symbol(op), left, right] => {
+                    let kind =
+                        resolve_direct_sort_kind(interp, &Value::Symbol(op.clone()), &closure_env)?;
+                    (
+                        kind,
+                        parse_direct_sort_operand(interp, left, params, &closure_env)?,
+                        parse_direct_sort_operand(interp, right, params, &closure_env)?,
+                    )
+                }
+                [Value::Symbol(name), function, left, right] if name == "funcall" => {
+                    let kind = resolve_direct_sort_kind(interp, function, &closure_env)?;
+                    (
+                        kind,
+                        parse_direct_sort_operand(interp, left, params, &closure_env)?,
+                        parse_direct_sort_operand(interp, right, params, &closure_env)?,
+                    )
+                }
+                _ => return None,
+            };
+            Some(DirectSortComparator {
+                prelude: body[..body.len() - 1].to_vec(),
+                kind,
+                left,
+                right,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn resolve_direct_sort_operand(
+    operand: &DirectSortOperand,
+    left: &Value,
+    right: &Value,
+) -> Result<Value, LispError> {
+    match operand {
+        DirectSortOperand::Left => Ok(left.clone()),
+        DirectSortOperand::Right => Ok(right.clone()),
+        DirectSortOperand::LeftCar => left.car(),
+        DirectSortOperand::RightCar => right.car(),
+        DirectSortOperand::LeftAbs => direct_sort_abs_value(left),
+        DirectSortOperand::RightAbs => direct_sort_abs_value(right),
+    }
+}
+
+fn direct_sort_abs_value(value: &Value) -> Result<Value, LispError> {
+    match value {
+        Value::Integer(number) => match number.checked_abs() {
+            Some(abs) => Ok(Value::Integer(abs)),
+            None => Ok(normalize_bigint_value(BigInt::from(*number).abs())),
+        },
+        Value::BigInteger(number) => Ok(normalize_bigint_value(number.abs())),
+        Value::Float(number) => Ok(Value::Float(number.abs())),
+        _ => Err(LispError::TypeError("numberp".into(), value.type_name())),
+    }
+}
+
+fn direct_sort_ordering(
+    interp: &mut Interpreter,
+    function: &Value,
+    left: &Value,
+    right: &Value,
+    env: &mut Env,
+) -> Result<Option<Ordering>, LispError> {
+    let Some(comparator) = direct_sort_comparator(interp, function, env) else {
+        return Ok(None);
+    };
+
+    for form in &comparator.prelude {
+        let _ = interp.eval(form, env)?;
+    }
+
+    let resolved_left = resolve_direct_sort_operand(&comparator.left, left, right)?;
+    let resolved_right = resolve_direct_sort_operand(&comparator.right, left, right)?;
+
+    let ordering = match comparator.kind {
+        DirectSortKind::Less => {
+            if default_sort_lt(interp, &resolved_left, &resolved_right)? {
+                Ordering::Less
+            } else if default_sort_lt(interp, &resolved_right, &resolved_left)? {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        }
+        DirectSortKind::Greater => {
+            if default_sort_lt(interp, &resolved_right, &resolved_left)? {
+                Ordering::Less
+            } else if default_sort_lt(interp, &resolved_left, &resolved_right)? {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        }
+        DirectSortKind::ValueLess => {
+            if value_less(interp, &resolved_left, &resolved_right, env)? {
+                Ordering::Less
+            } else if value_less(interp, &resolved_right, &resolved_left, env)? {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        }
+    };
+    Ok(Some(ordering))
+}
+
+fn sort_sequence_items(
+    interp: &mut Interpreter,
+    items: Vec<Value>,
+    key: Option<&Value>,
+    lessp: Option<&Value>,
+    reverse: bool,
+    env: &mut Env,
+) -> Result<Vec<Value>, LispError> {
+    let mut keyed = Vec::with_capacity(items.len());
+    for item in items {
+        let sort_key = if let Some(function) = key {
+            call_function_value(interp, function, std::slice::from_ref(&item), env)?
+        } else {
+            item.clone()
+        };
+        keyed.push((item, sort_key));
+    }
+
+    if reverse {
+        keyed.reverse();
+    }
+
+    let mut error = None;
+    keyed.sort_by(|(_, left_key), (_, right_key)| {
+        if let Some(existing) = &error {
+            let _ = existing;
+            return Ordering::Equal;
+        }
+        match sort_compare_ordering(interp, lessp, left_key, right_key, env) {
+            Ok(ordering) => ordering,
+            Err(err) => {
+                error = Some(err);
+                Ordering::Equal
+            }
+        }
+    });
+    if let Some(err) = error {
+        return Err(err);
+    }
+
+    if reverse {
+        keyed.reverse();
+    }
+
+    Ok(keyed.into_iter().map(|(item, _)| item).collect())
+}
+
+fn write_sorted_sequence(
+    target: &Value,
+    kind: &SortSequenceKind,
+    items: &[Value],
+) -> Result<(), LispError> {
+    match kind {
+        SortSequenceKind::List => {
+            let mut current = target.clone();
+            for item in items {
+                match current {
+                    Value::Cons(car, cdr) => {
+                        *car.borrow_mut() = item.clone();
+                        current = cdr.borrow().clone();
+                    }
+                    Value::Nil => break,
+                    _ => return Err(list_or_vector_type_error(target)),
+                }
+            }
+            Ok(())
+        }
+        SortSequenceKind::Vector(_) => write_vector_items_in_place(target, items),
+    }
+}
+
+fn build_sorted_sequence(kind: &SortSequenceKind, items: Vec<Value>) -> Value {
+    match kind {
+        SortSequenceKind::List => Value::list(items),
+        SortSequenceKind::Vector(tag) => {
+            Value::list(std::iter::once(Value::Symbol(tag.clone())).chain(items))
+        }
+    }
+}
+
+fn write_vector_items_in_place(target: &Value, items: &[Value]) -> Result<(), LispError> {
+    if !is_vector_value(target) {
+        return Err(list_or_vector_type_error(target));
+    }
+
+    let slots = vector_slot_refs(target)?;
+    if slots.len() != items.len() {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+
+    for (slot, item) in slots.iter().zip(items.iter()) {
+        *slot.borrow_mut() = item.clone();
+    }
+
+    Ok(())
 }
 
 fn parse_color_spec(spec: &str) -> Option<[u16; 3]> {
@@ -23188,6 +24587,117 @@ fn string_comparison_text(value: &Value) -> Result<String, LispError> {
     }
 }
 
+fn fold_string_compare_code(code: i64, ignore_case: bool) -> i64 {
+    if !ignore_case {
+        return code;
+    }
+    let Some(codepoint) = u32::try_from(code).ok() else {
+        return code;
+    };
+    let Some(ch) = char::from_u32(codepoint) else {
+        return code;
+    };
+    ch.to_lowercase().next().unwrap_or(ch) as i64
+}
+
+fn normalize_compare_strings_end(arg: Option<&Value>, len: i64) -> Result<i64, LispError> {
+    let Some(value) = arg else {
+        return Ok(len);
+    };
+    if value.is_nil() {
+        return Ok(len);
+    }
+    let raw = value.as_integer()?;
+    let index = if raw < 0 { len + raw } else { raw };
+    Ok(index.clamp(0, len))
+}
+
+fn string_compare_codes(
+    value: &Value,
+    start: Option<&Value>,
+    end: Option<&Value>,
+    ignore_case: bool,
+    clamp_end: bool,
+) -> Result<Vec<i64>, LispError> {
+    let string = string_like(value)
+        .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))?;
+    let codes = string_sequence_values(&string)
+        .into_iter()
+        .map(|value| value.as_integer())
+        .collect::<Result<Vec<_>, _>>()?;
+    let len = codes.len() as i64;
+    let start = normalize_string_index(start, 0, len)? as usize;
+    let end = if clamp_end {
+        normalize_compare_strings_end(end, len)?
+    } else {
+        normalize_string_index(end, len, len)?
+    } as usize;
+    if start > end {
+        return Err(LispError::Signal("Args out of range".into()));
+    }
+    Ok(codes[start..end]
+        .iter()
+        .copied()
+        .map(|code| fold_string_compare_code(code, ignore_case))
+        .collect())
+}
+
+fn string_compare_ordering(
+    left: &Value,
+    right: &Value,
+    ignore_case: bool,
+) -> Result<Ordering, LispError> {
+    Ok(
+        string_compare_codes(left, None, None, ignore_case, false)?.cmp(&string_compare_codes(
+            right,
+            None,
+            None,
+            ignore_case,
+            false,
+        )?),
+    )
+}
+
+fn compare_strings_value(
+    left: &Value,
+    left_start: Option<&Value>,
+    left_end: Option<&Value>,
+    right: &Value,
+    right_start: Option<&Value>,
+    right_end: Option<&Value>,
+    ignore_case: bool,
+) -> Result<Value, LispError> {
+    let left = string_compare_codes(left, left_start, left_end, ignore_case, true)?;
+    let right = string_compare_codes(right, right_start, right_end, ignore_case, true)?;
+    let common_len = left.len().min(right.len());
+
+    for index in 0..common_len {
+        match left[index].cmp(&right[index]) {
+            Ordering::Less => return Ok(Value::Integer(-((index + 1) as i64))),
+            Ordering::Greater => return Ok(Value::Integer((index + 1) as i64)),
+            Ordering::Equal => {}
+        }
+    }
+
+    match left.len().cmp(&right.len()) {
+        Ordering::Less => Ok(Value::Integer(-((common_len + 1) as i64))),
+        Ordering::Greater => Ok(Value::Integer((common_len + 1) as i64)),
+        Ordering::Equal => Ok(Value::T),
+    }
+}
+
+fn validate_collation_locale(locale: Option<&Value>) -> Result<(), LispError> {
+    if locale.is_some_and(|value| {
+        !(value.is_nil() || matches!(value, Value::T) || string_like(value).is_some())
+    }) {
+        return Err(LispError::TypeError(
+            "string".into(),
+            locale.expect("checked above").type_name(),
+        ));
+    }
+    Ok(())
+}
+
 fn assoc_string_text(value: &Value) -> Result<String, LispError> {
     match value {
         Value::Symbol(name) => Ok(name.clone()),
@@ -23282,15 +24792,23 @@ pub(crate) fn make_shared_string_value_with_multibyte(
     })))
 }
 
-fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> Value {
-    if props.is_empty() {
+fn string_like_value_with_multibyte(
+    text: String,
+    props: Vec<TextPropertySpan>,
+    multibyte: bool,
+) -> Value {
+    if props.is_empty() && !multibyte {
         Value::String(text)
     } else {
-        let multibyte = text
-            .chars()
-            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-        make_shared_string_value_with_multibyte(text, merge_string_props(props), multibyte)
+        make_shared_string_value_with_multibyte(text, props, multibyte)
     }
+}
+
+fn string_like_value(text: String, props: Vec<TextPropertySpan>) -> Value {
+    let multibyte = text
+        .chars()
+        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+    string_like_value_with_multibyte(text, merge_string_props(props), multibyte)
 }
 
 fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
@@ -23308,6 +24826,61 @@ fn reverse_string_like_value(value: &Value) -> Result<Value, LispError> {
         })
         .collect();
     Ok(string_like_value(text, merge_string_props(props)))
+}
+
+fn reverse_sequence_value(interp: &mut Interpreter, value: &Value) -> Result<Value, LispError> {
+    if string_like(value).is_some() {
+        return reverse_string_like_value(value);
+    }
+    if is_bool_vector_value(interp, value) {
+        let mut bits = bool_vector_bits(interp, value)?;
+        bits.reverse();
+        return Ok(make_bool_vector_value(interp, bits));
+    }
+    match value {
+        Value::Cons(_, _) if is_vector_value(value) => {
+            let mut items = value.to_vec()?;
+            items[1..].reverse();
+            Ok(Value::list(items))
+        }
+        Value::Nil | Value::Cons(_, _) => {
+            let mut items = value.to_vec()?;
+            items.reverse();
+            Ok(Value::list(items))
+        }
+        _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+    }
+}
+
+fn nreverse_sequence_value(interp: &mut Interpreter, value: &Value) -> Result<Value, LispError> {
+    if string_like(value).is_some() {
+        return reverse_string_like_value(value);
+    }
+    if let Value::Record(id) = value
+        && is_bool_vector_value(interp, value)
+    {
+        let record = interp
+            .find_record_mut(*id)
+            .ok_or_else(|| LispError::TypeError("bool-vector".into(), value.type_name()))?;
+        record.slots.reverse();
+        return Ok(value.clone());
+    }
+    match value {
+        Value::Cons(_, _) if is_vector_value(value) => {
+            let mut items = vector_items(value)?;
+            items.reverse();
+            for (index, item) in items.into_iter().enumerate() {
+                aset_vector_value(value, index, item)?;
+            }
+            Ok(value.clone())
+        }
+        Value::Nil | Value::Cons(_, _) => {
+            let mut items = value.to_vec()?;
+            items.reverse();
+            Ok(Value::list(items))
+        }
+        _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+    }
 }
 
 fn plist_pairs(value: &Value) -> Result<Vec<(String, Value)>, LispError> {
@@ -23329,6 +24902,66 @@ fn plist_value(props: &[(String, Value)]) -> Value {
         items.push(value.clone());
     }
     Value::list(items)
+}
+
+fn plist_value_reversed(props: &[(String, Value)]) -> Value {
+    let mut items = Vec::new();
+    for (key, value) in props.iter().rev() {
+        items.push(Value::Symbol(key.clone()));
+        items.push(value.clone());
+    }
+    Value::list(items)
+}
+
+fn object_intervals_value(interp: &mut Interpreter, object: &Value) -> Result<Value, LispError> {
+    let (len, spans) = if let Some(string) = string_like(object) {
+        (
+            string.text.chars().count(),
+            merge_string_props(string.props),
+        )
+    } else {
+        let buffer_id = interp.resolve_buffer_id(object)?;
+        let buffer = interp
+            .get_buffer_by_id(buffer_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+        (
+            buffer.point_max() - buffer.point_min(),
+            buffer.substring_property_spans(buffer.point_min(), buffer.point_max()),
+        )
+    };
+
+    if spans.is_empty() {
+        return Ok(Value::Nil);
+    }
+
+    let mut boundaries = vec![0usize, len];
+    for span in &spans {
+        boundaries.push(span.start);
+        boundaries.push(span.end);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut intervals = Vec::new();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        if start >= end {
+            continue;
+        }
+        let props = spans
+            .iter()
+            .find(|span| span.start <= start && start < span.end)
+            .map(|span| plist_value_reversed(&span.props))
+            .unwrap_or(Value::Nil);
+        intervals.push(Value::list([
+            Value::Integer(start as i64),
+            Value::Integer(end as i64),
+            props,
+        ]));
+    }
+
+    Ok(Value::list(intervals))
 }
 
 fn shift_string_props(props: &[TextPropertySpan], offset: usize) -> Vec<TextPropertySpan> {
@@ -24546,11 +26179,129 @@ fn plist_like_face(value: &Value) -> bool {
             .all(|item| matches!(item, Value::Symbol(symbol) if symbol.starts_with(':')))
 }
 
-fn hash_table_key_matches(interp: &Interpreter, test: &str, left: &Value, right: &Value) -> bool {
-    match test {
-        "equal" => values_equal(interp, left, right),
-        _ => left == right,
+fn hash_table_user_test_functions(interp: &Interpreter, test: &str) -> Option<(Value, Value)> {
+    let spec = interp.get_symbol_property(test, "hash-table-test")?;
+    let items = spec.to_vec().ok()?;
+    if items.len() != 2 {
+        return None;
     }
+    Some((items[0].clone(), items[1].clone()))
+}
+
+fn call_hash_table_test_function(
+    interp: &mut Interpreter,
+    table: &Value,
+    function: &Value,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some((_, before_entries)) = json::hash_table_entries(interp, table) else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
+    let result = call_function_value(interp, function, args, env);
+    let Some((_, after_entries)) = json::hash_table_entries(interp, table) else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
+    if before_entries != after_entries {
+        set_hash_table_entries(interp, table, before_entries)?;
+        return Err(LispError::Signal("hash table test modifies table".into()));
+    }
+    result
+}
+
+fn touch_hash_table_key(
+    interp: &mut Interpreter,
+    table: &Value,
+    test: &str,
+    key: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some((_, hash_fn)) = hash_table_user_test_functions(interp, test) else {
+        return Ok(());
+    };
+    let _ = call_hash_table_test_function(interp, table, &hash_fn, std::slice::from_ref(key), env)?;
+    Ok(())
+}
+
+fn hash_table_key_matches(
+    interp: &mut Interpreter,
+    table: &Value,
+    test: &str,
+    left: &Value,
+    right: &Value,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    match test {
+        "equal" => Ok(values_equal(interp, left, right)),
+        "eq" | "eql" => Ok(left == right),
+        _ => {
+            let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
+                return Err(LispError::Signal("Invalid hash table test".into()));
+            };
+            Ok(call_hash_table_test_function(
+                interp,
+                table,
+                &compare_fn,
+                &[left.clone(), right.clone()],
+                env,
+            )?
+            .is_truthy())
+        }
+    }
+}
+
+fn weak_hash_component_is_dead(value: &Value) -> bool {
+    string_like(value)
+        .map(|string| string.text.ends_with("-dead"))
+        .unwrap_or(false)
+}
+
+fn collect_weak_hash_tables(interp: &mut Interpreter) -> Result<(), LispError> {
+    let table_ids = interp.record_ids_by_type("hash-table");
+    for id in table_ids {
+        let table = Value::Record(id);
+        let weakness = hash_table_metadata_slot(interp, &table, 5, Value::Nil)?;
+        let Some(weakness_name) = weakness.as_symbol().ok() else {
+            continue;
+        };
+        let Some((_, entries)) = json::hash_table_entries(interp, &table) else {
+            continue;
+        };
+        let retained = entries
+            .into_iter()
+            .filter(|(key, value)| {
+                let key_live = !weak_hash_component_is_dead(key);
+                let value_live = !weak_hash_component_is_dead(value);
+                match weakness_name {
+                    "key" => key_live,
+                    "value" => value_live,
+                    "key-and-value" => key_live && value_live,
+                    "key-or-value" => key_live || value_live,
+                    _ => true,
+                }
+            })
+            .collect();
+        set_hash_table_entries(interp, &table, retained)?;
+    }
+    Ok(())
+}
+
+fn hash_table_metadata_slot(
+    interp: &Interpreter,
+    table: &Value,
+    slot: usize,
+    default: Value,
+) -> Result<Value, LispError> {
+    let Value::Record(id) = table else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
+    let Some(record) = interp.find_record(*id) else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
+    if record.type_name != "hash-table" {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    }
+    Ok(record.slots.get(slot).cloned().unwrap_or(default))
 }
 
 fn hash_table_entries_to_value(entries: Vec<(Value, Value)>) -> Value {
@@ -25093,6 +26844,142 @@ fn version_list_not_zero(values: &[i64]) -> i64 {
         .copied()
         .find(|value| *value != 0)
         .unwrap_or(0)
+}
+
+fn string_version_compare(left: &str, right: &str) -> Ordering {
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    let mut left_index = 0usize;
+    let mut right_index = 0usize;
+
+    while left_index < left_bytes.len() && right_index < right_bytes.len() {
+        let left_byte = left_bytes[left_index];
+        let right_byte = right_bytes[right_index];
+
+        if left_byte.is_ascii_digit() && right_byte.is_ascii_digit() {
+            let left_start = left_index;
+            while left_index < left_bytes.len() && left_bytes[left_index].is_ascii_digit() {
+                left_index += 1;
+            }
+            let right_start = right_index;
+            while right_index < right_bytes.len() && right_bytes[right_index].is_ascii_digit() {
+                right_index += 1;
+            }
+
+            let left_digits = &left[left_start..left_index];
+            let right_digits = &right[right_start..right_index];
+            let left_trimmed = left_digits.trim_start_matches('0');
+            let right_trimmed = right_digits.trim_start_matches('0');
+            let left_normalized = if left_trimmed.is_empty() {
+                "0"
+            } else {
+                left_trimmed
+            };
+            let right_normalized = if right_trimmed.is_empty() {
+                "0"
+            } else {
+                right_trimmed
+            };
+
+            match left_normalized.len().cmp(&right_normalized.len()) {
+                Ordering::Equal => match left_normalized.cmp(right_normalized) {
+                    Ordering::Equal => {}
+                    ordering => return ordering,
+                },
+                ordering => return ordering,
+            }
+            continue;
+        }
+
+        match left_byte.cmp(&right_byte) {
+            Ordering::Equal => {
+                left_index += 1;
+                right_index += 1;
+            }
+            ordering => return ordering,
+        }
+    }
+
+    left_bytes.len().cmp(&right_bytes.len())
+}
+
+fn builtin_arity_value(name: &str) -> Option<Value> {
+    let arity = match name {
+        "car" | "caar" | "func-arity" | "subr-arity" => (Value::Integer(1), Value::Integer(1)),
+        "cons" => (Value::Integer(2), Value::Integer(2)),
+        "list" => (Value::Integer(0), Value::Symbol("many".into())),
+        "format" => (Value::Integer(1), Value::Symbol("many".into())),
+        "string-version-lessp" => (Value::Integer(2), Value::Integer(2)),
+        "string-distance" => (Value::Integer(2), Value::Integer(3)),
+        "length<" | "length>" | "length=" => (Value::Integer(2), Value::Integer(2)),
+        "sha1" => (Value::Integer(1), Value::Integer(4)),
+        "secure-hash" => (Value::Integer(2), Value::Integer(5)),
+        "buffer-hash" => (Value::Integer(0), Value::Integer(1)),
+        _ => return None,
+    };
+    Some(Value::cons(arity.0, arity.1))
+}
+
+fn special_form_arity_value(name: &str) -> Option<Value> {
+    match name {
+        "let" => Some(Value::cons(
+            Value::Integer(1),
+            Value::Symbol("unevalled".into()),
+        )),
+        _ => None,
+    }
+}
+
+fn lambda_arity_value(params: &[String]) -> Value {
+    let mut required = 0i64;
+    let mut optional = 0i64;
+    let mut in_optional = false;
+    let mut has_rest = false;
+
+    for param in params {
+        match param.as_str() {
+            "&optional" => in_optional = true,
+            "&rest" | "&body" => {
+                has_rest = true;
+                break;
+            }
+            _ if in_optional => optional += 1,
+            _ => required += 1,
+        }
+    }
+
+    Value::cons(
+        Value::Integer(required),
+        if has_rest {
+            Value::Symbol("many".into())
+        } else {
+            Value::Integer(required + optional)
+        },
+    )
+}
+
+fn function_arity_value(
+    interp: &Interpreter,
+    function: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    match function {
+        Value::BuiltinFunc(name) => builtin_arity_value(name)
+            .ok_or_else(|| LispError::TypeError("function".into(), function.type_name())),
+        Value::Lambda(params, _, _) => Ok(lambda_arity_value(params)),
+        Value::Symbol(symbol) => {
+            if let Some(arity) = special_form_arity_value(symbol) {
+                Ok(arity)
+            } else {
+                let resolved = interp.lookup_function(symbol, env)?;
+                function_arity_value(interp, &resolved, env)
+            }
+        }
+        _ => Err(LispError::TypeError(
+            "function".into(),
+            function.type_name(),
+        )),
+    }
 }
 
 fn integer_like_i64(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
@@ -27505,9 +29392,11 @@ fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
     }
 }
 
-fn sequence_values(sequence: &Value) -> Result<Vec<Value>, LispError> {
+fn sequence_values(interp: &Interpreter, sequence: &Value) -> Result<Vec<Value>, LispError> {
     if let Some(string) = sequence_string_like(sequence) {
         Ok(string_sequence_values(&string))
+    } else if is_bool_vector_value(interp, sequence) {
+        bool_vector_values(interp, sequence)
     } else {
         vector_items(sequence)
     }
@@ -27522,14 +29411,60 @@ fn string_sequence_values(string: &StringLike) -> Vec<Value> {
 }
 
 fn string_sequence_value(string: &StringLike, ch: char) -> Value {
-    let code = if !string.multibyte {
-        raw_byte_from_regex_char(ch)
-            .map(i64::from)
-            .unwrap_or(ch as i64)
+    let code = if let Some(byte) = raw_byte_from_regex_char(ch) {
+        if string.multibyte {
+            RAW_BYTE8_BASE as i64 + byte as i64
+        } else {
+            i64::from(byte)
+        }
     } else {
         ch as i64
     };
     Value::Integer(code)
+}
+
+fn concat_character_value(value: &Value) -> Result<(char, bool), LispError> {
+    let Value::Integer(code) = value else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("characterp".into()),
+            value.clone(),
+        ])));
+    };
+    if *code < 0 {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("characterp".into()),
+            value.clone(),
+        ])));
+    }
+    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(code) {
+        let byte = (*code - RAW_BYTE8_BASE as i64) as u8;
+        return Ok((raw_byte_regex_char(byte), false));
+    }
+    let Some(ch) = char::from_u32(*code as u32) else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("characterp".into()),
+            value.clone(),
+        ])));
+    };
+    Ok((ch, !is_raw_byte_regex_char(ch) && (*code as u32) > 0x7F))
+}
+
+fn concat_sequence_string(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<(String, bool), LispError> {
+    let items = sequence_values(interp, value)?;
+    let mut text = String::new();
+    let mut multibyte = false;
+    for item in items {
+        let (ch, char_multibyte) = concat_character_value(&item)?;
+        text.push(ch);
+        multibyte |= char_multibyte;
+    }
+    Ok((text, multibyte))
 }
 
 fn sequence_string_like(value: &Value) -> Option<StringLike> {
@@ -28003,6 +29938,246 @@ fn md5_source_text(
     }
 }
 
+fn string_slice_chars(
+    text: &str,
+    start: Option<&Value>,
+    end: Option<&Value>,
+) -> Result<String, LispError> {
+    let chars: Vec<char> = text.chars().collect();
+    let start = normalize_string_index(start, 0, chars.len() as i64)? as usize;
+    let end = normalize_string_index(end, chars.len() as i64, chars.len() as i64)? as usize;
+    Ok(chars[start..end].iter().collect())
+}
+
+fn internal_text_bytes(text: &str, multibyte: bool) -> Result<Vec<u8>, LispError> {
+    if multibyte {
+        Ok(text.as_bytes().to_vec())
+    } else {
+        encode_raw_text_bytes(text)
+    }
+}
+
+fn secure_hash_source_bytes(
+    interp: &mut Interpreter,
+    source: &Value,
+    start: Option<&Value>,
+    end: Option<&Value>,
+) -> Result<Vec<u8>, LispError> {
+    if let Value::Symbol(symbol) = source
+        && symbol == "iv-auto"
+    {
+        let length = start
+            .ok_or_else(|| LispError::Signal("Without a length, `iv-auto' can't be used".into()))?
+            .as_integer()? as usize;
+        let mut bytes = vec![0u8; length];
+        getrandom::fill(&mut bytes)
+            .map_err(|error| LispError::Signal(format!("Getting random data: {error}")))?;
+        return Ok(bytes);
+    }
+
+    match source {
+        Value::Buffer(_, _) => {
+            let buffer_id = interp.resolve_buffer_id(source)?;
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            let start = start
+                .filter(|value| !value.is_nil())
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| buffer.point_min());
+            let end = end
+                .filter(|value| !value.is_nil())
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| buffer.point_max());
+            let text = buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            internal_text_bytes(&text, buffer.is_multibyte())
+        }
+        _ => {
+            let string = string_like(source)
+                .ok_or_else(|| LispError::TypeError("string".into(), source.type_name()))?;
+            let slice = string_slice_chars(&string.text, start, end)?;
+            internal_text_bytes(&slice, string.multibyte)
+        }
+    }
+}
+
+fn secure_hash_digest(algorithm: &str, input: &[u8]) -> Result<Vec<u8>, LispError> {
+    Ok(match algorithm {
+        "md5" => md5::compute(input).0.to_vec(),
+        "sha1" => Sha1::digest(input).to_vec(),
+        "sha224" => Sha224::digest(input).to_vec(),
+        "sha256" => Sha256::digest(input).to_vec(),
+        "sha384" => Sha384::digest(input).to_vec(),
+        "sha512" => Sha512::digest(input).to_vec(),
+        "sha3-224" => Sha3_224::digest(input).to_vec(),
+        "sha3-256" => Sha3_256::digest(input).to_vec(),
+        "sha3-384" => Sha3_384::digest(input).to_vec(),
+        "sha3-512" => Sha3_512::digest(input).to_vec(),
+        _ => {
+            return Err(LispError::Signal(format!(
+                "Invalid algorithm arg: {algorithm}"
+            )));
+        }
+    })
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+fn secure_hash_value(
+    interp: &mut Interpreter,
+    algorithm: &str,
+    source: &Value,
+    start: Option<&Value>,
+    end: Option<&Value>,
+    binary: Option<&Value>,
+) -> Result<Value, LispError> {
+    let input = secure_hash_source_bytes(interp, source, start, end)?;
+    let digest = secure_hash_digest(algorithm, &input)?;
+    if binary.is_some_and(Value::is_truthy) {
+        Ok(bytes_to_shared_unibyte_value(&digest))
+    } else {
+        Ok(Value::String(digest_hex(&digest)))
+    }
+}
+
+fn buffer_hash_value(
+    interp: &mut Interpreter,
+    buffer_or_name: Option<&Value>,
+) -> Result<Value, LispError> {
+    let bytes = match buffer_or_name {
+        Some(value) if !value.is_nil() => secure_hash_source_bytes(interp, value, None, None)?,
+        _ => internal_text_bytes(&interp.buffer.buffer_string(), interp.buffer.is_multibyte())?,
+    };
+    let digest = secure_hash_digest("sha1", &bytes)?;
+    Ok(Value::String(digest_hex(&digest)))
+}
+
+fn text_byte_len(ch: char, multibyte: bool) -> usize {
+    if multibyte {
+        ch.len_utf8()
+    } else if raw_byte_from_regex_char(ch).is_some() || (ch as u32) <= 0xFF {
+        1
+    } else {
+        ch.len_utf8()
+    }
+}
+
+fn levenshtein_distance<T: Eq>(left: &[T], right: &[T]) -> usize {
+    if left.is_empty() {
+        return right.len();
+    }
+    if right.is_empty() {
+        return left.len();
+    }
+
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0usize; right.len() + 1];
+
+    for (left_index, left_item) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_item) in right.iter().enumerate() {
+            let substitution_cost = usize::from(left_item != right_item);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution_cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right.len()]
+}
+
+fn string_distance_value(
+    left: &Value,
+    right: &Value,
+    compare_bytes: bool,
+) -> Result<Value, LispError> {
+    let left_string =
+        string_like(left).ok_or_else(|| LispError::TypeError("string".into(), left.type_name()))?;
+    let right_string = string_like(right)
+        .ok_or_else(|| LispError::TypeError("string".into(), right.type_name()))?;
+
+    let distance = if compare_bytes {
+        let left_bytes = internal_text_bytes(&left_string.text, left_string.multibyte)?;
+        let right_bytes = internal_text_bytes(&right_string.text, right_string.multibyte)?;
+        levenshtein_distance(&left_bytes, &right_bytes)
+    } else {
+        let left_chars = left_string.text.chars().collect::<Vec<_>>();
+        let right_chars = right_string.text.chars().collect::<Vec<_>>();
+        levenshtein_distance(&left_chars, &right_chars)
+    };
+
+    Ok(Value::Integer(distance as i64))
+}
+
+fn buffer_line_statistics_value(
+    interp: &mut Interpreter,
+    buffer_or_name: Option<&Value>,
+) -> Result<Value, LispError> {
+    let (text, multibyte) = match buffer_or_name {
+        Some(value) if !value.is_nil() => {
+            let buffer_id = interp.resolve_buffer_id(value)?;
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            (buffer.buffer_string(), buffer.is_multibyte())
+        }
+        _ => (interp.buffer.buffer_string(), interp.buffer.is_multibyte()),
+    };
+
+    if text.is_empty() {
+        return Ok(Value::list([
+            Value::Integer(0),
+            Value::Integer(0),
+            Value::Float(0.0),
+        ]));
+    }
+
+    let mut lines = 0usize;
+    let mut longest = 0usize;
+    let mut total = 0usize;
+    let mut current = 0usize;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines += 1;
+            longest = longest.max(current);
+            total += current;
+            current = 0;
+        } else {
+            current += text_byte_len(ch, multibyte);
+        }
+    }
+
+    if !text.ends_with('\n') {
+        lines += 1;
+        longest = longest.max(current);
+        total += current;
+    }
+
+    let mean = if lines == 0 {
+        0.0
+    } else {
+        total as f64 / lines as f64
+    };
+
+    Ok(Value::list([
+        Value::Integer(lines as i64),
+        Value::Integer(longest as i64),
+        Value::Float(mean),
+    ]))
+}
+
 fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
     let n = match arg {
         Value::Integer(n) => *n,
@@ -28203,6 +30378,15 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
 }
 
 pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) -> bool {
+    values_equal_recursive(interp, left, right, &mut HashSet::new())
+}
+
+fn values_equal_recursive(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         return left_string.text == right_string.text;
     }
@@ -28217,7 +30401,7 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
             && left_items
                 .iter()
                 .zip(right_items.iter())
-                .all(|(left, right)| values_equal(interp, left, right));
+                .all(|(left, right)| values_equal_recursive(interp, left, right, seen));
     }
     match (left, right) {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
@@ -28234,19 +30418,173 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
         (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
         (Value::Cons(_, _), Value::Cons(_, _)) => {
+            let Some((left_car, _)) = left.cons_cells() else {
+                return false;
+            };
+            let Some((right_car, _)) = right.cons_cells() else {
+                return false;
+            };
+            let pair = (
+                Rc::as_ptr(&left_car) as usize,
+                Rc::as_ptr(&right_car) as usize,
+            );
+            if !seen.insert(pair) {
+                return true;
+            }
             let Some((a_car, a_cdr)) = left.cons_values() else {
                 return false;
             };
             let Some((b_car, b_cdr)) = right.cons_values() else {
                 return false;
             };
-            values_equal(interp, &a_car, &b_car) && values_equal(interp, &a_cdr, &b_cdr)
+            values_equal_recursive(interp, &a_car, &b_car, seen)
+                && values_equal_recursive(interp, &a_cdr, &b_cdr, seen)
         }
         _ => left == right,
     }
 }
 
+fn values_eql(left: &Value, right: &Value) -> bool {
+    left == right
+}
+
+fn values_eq_in_env(interp: &Interpreter, left: &Value, right: &Value, env: &Env) -> bool {
+    if let Some(equal) = symbol_with_pos_eq_in_env(interp, left, right, env) {
+        return equal;
+    }
+
+    match (left, right) {
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::String(_), Value::String(_))
+        | (Value::String(_), Value::StringObject(_))
+        | (Value::StringObject(_), Value::String(_)) => false,
+        (Value::Cons(left_car, _), Value::Cons(right_car, _)) => Rc::ptr_eq(left_car, right_car),
+        (
+            Value::Lambda(left_params, left_body, left_env),
+            Value::Lambda(right_params, right_body, right_env),
+        ) => {
+            left_params == right_params
+                && left_body == right_body
+                && Rc::ptr_eq(left_env, right_env)
+        }
+        (Value::Buffer(left_id, _), Value::Buffer(right_id, _))
+        | (Value::Marker(left_id), Value::Marker(right_id))
+        | (Value::Overlay(left_id), Value::Overlay(right_id))
+        | (Value::CharTable(left_id), Value::CharTable(right_id))
+        | (Value::Record(left_id), Value::Record(right_id))
+        | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        _ => false,
+    }
+}
+
+fn plist_type_error(plist: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("wrong-type-argument".into()),
+        Value::Symbol("plistp".into()),
+        plist.clone(),
+    ]))
+}
+
+fn safe_list_length(list: &Value) -> i64 {
+    let mut len = 0i64;
+    let mut current = list.clone();
+    let mut seen = HashSet::new();
+    loop {
+        match current {
+            Value::Cons(car, cdr) => {
+                let cell_id = Rc::as_ptr(&car) as usize;
+                if !seen.insert(cell_id) {
+                    return len;
+                }
+                len += 1;
+                current = cdr.borrow().clone();
+            }
+            Value::Nil => return len,
+            _ => return len,
+        }
+    }
+}
+
+fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
+    let mut remaining = match count {
+        Value::Integer(n) => BigInt::from(*n),
+        Value::BigInteger(n) => n.clone(),
+        _ => return Err(LispError::TypeError("integer".into(), count.type_name())),
+    };
+
+    if remaining <= BigInt::zero() {
+        return Ok(list.clone());
+    }
+
+    let mut current = list.clone();
+    let mut visited = HashMap::new();
+    let mut steps = 0usize;
+
+    loop {
+        if remaining.is_zero() {
+            return Ok(current);
+        }
+
+        match current.clone() {
+            Value::Nil => return Ok(Value::Nil),
+            Value::Cons(car, cdr) => {
+                let cell_id = Rc::as_ptr(&car) as usize;
+                if let Some(&cycle_start) = visited.get(&cell_id) {
+                    let cycle_len = steps.saturating_sub(cycle_start);
+                    if cycle_len > 0 {
+                        remaining %= BigInt::from(cycle_len);
+                        if remaining.is_zero() {
+                            return Ok(current);
+                        }
+                    }
+                } else {
+                    visited.insert(cell_id, steps);
+                }
+
+                remaining -= 1;
+                steps += 1;
+                current = cdr.borrow().clone();
+            }
+            other => return other.cdr(),
+        }
+    }
+}
+
+fn sequence_length_value(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
+    match value {
+        item if string_like(item).is_some() => Ok(string_text(item)?.chars().count() as i64),
+        Value::Nil => Ok(0),
+        Value::Cons(_, _) if is_vector_value(value) => Ok(vector_items(value)?.len() as i64),
+        Value::CharTable(_) => Ok(0x40_0000),
+        item if is_bool_vector_value(interp, item) => {
+            Ok(bool_vector_values(interp, item)?.len() as i64)
+        }
+        Value::Cons(_, _) => Ok(value.to_vec()?.len() as i64),
+        Value::Record(id) => {
+            let record = interp
+                .find_record(*id)
+                .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
+            Ok((record.slots.len() + 1) as i64)
+        }
+        _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+    }
+}
+
 fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
+    values_equal_including_properties_recursive(left, right, &mut HashSet::new())
+}
+
+fn values_equal_including_properties_recursive(
+    left: &Value,
+    right: &Value,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
         return left_string.text == right_string.text && left_string.props == right_string.props;
     }
@@ -28258,7 +30596,9 @@ fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
             && left_items
                 .iter()
                 .zip(right_items.iter())
-                .all(|(left, right)| values_equal_including_properties(left, right));
+                .all(|(left, right)| {
+                    values_equal_including_properties_recursive(left, right, seen)
+                });
     }
     match (left, right) {
         (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
@@ -28270,17 +30610,406 @@ fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(_, _), Value::Cons(_, _)) => {
+            let Some((left_car, _)) = left.cons_cells() else {
+                return false;
+            };
+            let Some((right_car, _)) = right.cons_cells() else {
+                return false;
+            };
+            let pair = (
+                Rc::as_ptr(&left_car) as usize,
+                Rc::as_ptr(&right_car) as usize,
+            );
+            if !seen.insert(pair) {
+                return true;
+            }
             let Some((a_car, a_cdr)) = left.cons_values() else {
                 return false;
             };
             let Some((b_car, b_cdr)) = right.cons_values() else {
                 return false;
             };
-            values_equal_including_properties(&a_car, &b_car)
-                && values_equal_including_properties(&a_cdr, &b_cdr)
+            values_equal_including_properties_recursive(&a_car, &b_car, seen)
+                && values_equal_including_properties_recursive(&a_cdr, &b_cdr, seen)
         }
         _ => left == right,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValueOrder {
+    Less,
+    Equal,
+    Greater,
+    Unordered,
+}
+
+fn order_from_ordering(ordering: Ordering) -> ValueOrder {
+    match ordering {
+        Ordering::Less => ValueOrder::Less,
+        Ordering::Equal => ValueOrder::Equal,
+        Ordering::Greater => ValueOrder::Greater,
+    }
+}
+
+fn order_from_option(ordering: Option<Ordering>) -> ValueOrder {
+    ordering
+        .map(order_from_ordering)
+        .unwrap_or(ValueOrder::Unordered)
+}
+
+fn type_mismatch_signal(left: &Value, right: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("type-mismatch".into()),
+        left.clone(),
+        right.clone(),
+    ]))
+}
+
+fn circular_signal(value: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("circular".into()),
+        value.clone(),
+    ]))
+}
+
+fn is_number_value(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Integer(_) | Value::BigInteger(_) | Value::Float(_)
+    )
+}
+
+fn plain_symbol_name(value: &Value) -> Option<&str> {
+    match value {
+        Value::Nil => Some("nil"),
+        Value::T => Some("t"),
+        Value::Symbol(symbol) => Some(symbol),
+        _ => None,
+    }
+}
+
+fn compare_plain_symbol_names(left: &str, right: &str) -> ValueOrder {
+    let left_visible = crate::lisp::types::visible_symbol_name(left);
+    let right_visible = crate::lisp::types::visible_symbol_name(right);
+    match left_visible.cmp(right_visible) {
+        Ordering::Less => ValueOrder::Less,
+        Ordering::Greater => ValueOrder::Greater,
+        Ordering::Equal => {
+            if left == right {
+                ValueOrder::Equal
+            } else {
+                ValueOrder::Unordered
+            }
+        }
+    }
+}
+
+fn compare_sequence_values(
+    interp: &Interpreter,
+    left: &[Value],
+    right: &[Value],
+    env: &Env,
+    seen_lists: &mut HashSet<(usize, usize)>,
+) -> Result<ValueOrder, LispError> {
+    for (left_item, right_item) in left.iter().zip(right.iter()) {
+        match value_ordering(interp, left_item, right_item, env, seen_lists)? {
+            ValueOrder::Less => return Ok(ValueOrder::Less),
+            ValueOrder::Greater => return Ok(ValueOrder::Greater),
+            ValueOrder::Equal | ValueOrder::Unordered => {}
+        }
+    }
+    Ok(order_from_ordering(left.len().cmp(&right.len())))
+}
+
+fn compare_symbol_values(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> Result<Option<ValueOrder>, LispError> {
+    let symbols_with_pos_enabled = interp
+        .lookup_var("symbols-with-pos-enabled", env)
+        .is_some_and(|value| value.is_truthy());
+    let left_with_pos = symbol_with_pos_parts(interp, left);
+    let right_with_pos = symbol_with_pos_parts(interp, right);
+
+    if symbols_with_pos_enabled {
+        let left_base = left_with_pos
+            .as_ref()
+            .map(|(symbol, _)| symbol)
+            .unwrap_or(left);
+        let right_base = right_with_pos
+            .as_ref()
+            .map(|(symbol, _)| symbol)
+            .unwrap_or(right);
+        if let (Some(left_name), Some(right_name)) =
+            (plain_symbol_name(left_base), plain_symbol_name(right_base))
+        {
+            return Ok(Some(compare_plain_symbol_names(left_name, right_name)));
+        }
+        if left_with_pos.is_some() || right_with_pos.is_some() {
+            return Err(type_mismatch_signal(left, right));
+        }
+    } else {
+        match (left_with_pos.as_ref(), right_with_pos.as_ref()) {
+            (Some((left_symbol, _left_pos)), Some((right_symbol, _right_pos))) => {
+                let Some(left_name) = plain_symbol_name(left_symbol) else {
+                    return Err(type_mismatch_signal(left, right));
+                };
+                let Some(right_name) = plain_symbol_name(right_symbol) else {
+                    return Err(type_mismatch_signal(left, right));
+                };
+                return Ok(Some(compare_plain_symbol_names(left_name, right_name)));
+            }
+            (Some(_), None) | (None, Some(_)) => return Err(type_mismatch_signal(left, right)),
+            (None, None) => {}
+        }
+    }
+
+    match (plain_symbol_name(left), plain_symbol_name(right)) {
+        (Some(left_name), Some(right_name)) => {
+            Ok(Some(compare_plain_symbol_names(left_name, right_name)))
+        }
+        (Some(_), None) | (None, Some(_)) => Err(type_mismatch_signal(left, right)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn compare_buffer_ids(interp: &Interpreter, left_id: u64, right_id: u64) -> ValueOrder {
+    match (
+        interp.has_buffer_id(left_id),
+        interp.has_buffer_id(right_id),
+    ) {
+        (true, true) => order_from_ordering(left_id.cmp(&right_id)),
+        (false, true) => ValueOrder::Less,
+        (true, false) => ValueOrder::Greater,
+        (false, false) => ValueOrder::Unordered,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordCompareKind {
+    Generic,
+    BoolVector,
+    Process,
+    HashTable,
+    Obarray,
+}
+
+fn record_compare_kind(type_name: &str) -> RecordCompareKind {
+    match type_name {
+        "bool-vector" => RecordCompareKind::BoolVector,
+        "process" => RecordCompareKind::Process,
+        "hash-table" => RecordCompareKind::HashTable,
+        "obarray" => RecordCompareKind::Obarray,
+        _ => RecordCompareKind::Generic,
+    }
+}
+
+fn compare_record_values(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+    seen_lists: &mut HashSet<(usize, usize)>,
+) -> Result<Option<ValueOrder>, LispError> {
+    match (left, right) {
+        (Value::Record(_), _) | (_, Value::Record(_))
+            if record_type_name(interp, left) == Some("symbol-with-pos")
+                || record_type_name(interp, right) == Some("symbol-with-pos") =>
+        {
+            return compare_symbol_values(interp, left, right, env);
+        }
+        (Value::Record(_), _) | (_, Value::Record(_)) => {}
+        _ => return Ok(None),
+    }
+
+    let (Value::Record(left_id), Value::Record(right_id)) = (left, right) else {
+        return Err(type_mismatch_signal(left, right));
+    };
+    let Some(left_record) = interp.find_record(*left_id) else {
+        return Ok(Some(order_from_ordering(left_id.cmp(right_id))));
+    };
+    let Some(right_record) = interp.find_record(*right_id) else {
+        return Ok(Some(order_from_ordering(left_id.cmp(right_id))));
+    };
+
+    let left_kind = record_compare_kind(&left_record.type_name);
+    let right_kind = record_compare_kind(&right_record.type_name);
+    if left_kind != right_kind {
+        return Err(type_mismatch_signal(left, right));
+    }
+
+    match left_kind {
+        RecordCompareKind::BoolVector => {
+            let left_bits = bool_vector_bits(interp, left)?;
+            let right_bits = bool_vector_bits(interp, right)?;
+            for (left_bit, right_bit) in left_bits.iter().zip(right_bits.iter()) {
+                match left_bit.cmp(right_bit) {
+                    Ordering::Less => return Ok(Some(ValueOrder::Less)),
+                    Ordering::Greater => return Ok(Some(ValueOrder::Greater)),
+                    Ordering::Equal => {}
+                }
+            }
+            Ok(Some(order_from_ordering(
+                left_bits.len().cmp(&right_bits.len()),
+            )))
+        }
+        RecordCompareKind::Process => Ok(Some(order_from_ordering(left_id.cmp(right_id)))),
+        RecordCompareKind::HashTable | RecordCompareKind::Obarray => {
+            Ok(Some(ValueOrder::Unordered))
+        }
+        RecordCompareKind::Generic => {
+            let type_order =
+                compare_plain_symbol_names(&left_record.type_name, &right_record.type_name);
+            if type_order != ValueOrder::Equal {
+                return Ok(Some(type_order));
+            }
+            Ok(Some(compare_sequence_values(
+                interp,
+                &left_record.slots,
+                &right_record.slots,
+                env,
+                seen_lists,
+            )?))
+        }
+    }
+}
+
+fn value_ordering(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+    seen_lists: &mut HashSet<(usize, usize)>,
+) -> Result<ValueOrder, LispError> {
+    if is_number_value(left) || is_number_value(right) {
+        if is_number_value(left) && is_number_value(right) {
+            return Ok(order_from_option(numeric_ordering(interp, left, right)?));
+        }
+        return Err(type_mismatch_signal(left, right));
+    }
+
+    if let Some(order) = compare_record_values(interp, left, right, env, seen_lists)? {
+        return Ok(order);
+    }
+
+    if is_vector_value(left) || is_vector_value(right) {
+        if is_vector_value(left) && is_vector_value(right) {
+            return compare_sequence_values(
+                interp,
+                &vector_items(left)?,
+                &vector_items(right)?,
+                env,
+                seen_lists,
+            );
+        }
+        return Err(type_mismatch_signal(left, right));
+    }
+
+    if matches!(left, Value::CharTable(_)) || matches!(right, Value::CharTable(_)) {
+        return if matches!((left, right), (Value::CharTable(_), Value::CharTable(_))) {
+            Ok(ValueOrder::Unordered)
+        } else {
+            Err(type_mismatch_signal(left, right))
+        };
+    }
+
+    if matches!(left, Value::Buffer(_, _)) || matches!(right, Value::Buffer(_, _)) {
+        return match (left, right) {
+            (Value::Buffer(left_id, _), Value::Buffer(right_id, _)) => {
+                Ok(compare_buffer_ids(interp, *left_id, *right_id))
+            }
+            _ => Err(type_mismatch_signal(left, right)),
+        };
+    }
+
+    if matches!(left, Value::Marker(_)) || matches!(right, Value::Marker(_)) {
+        return match (left, right) {
+            (Value::Marker(left_id), Value::Marker(right_id)) => {
+                let Some(left_buffer) = interp.marker_buffer_id(*left_id) else {
+                    return Ok(ValueOrder::Unordered);
+                };
+                let Some(right_buffer) = interp.marker_buffer_id(*right_id) else {
+                    return Ok(ValueOrder::Unordered);
+                };
+                let buffer_order = compare_buffer_ids(interp, left_buffer, right_buffer);
+                if buffer_order != ValueOrder::Equal {
+                    return Ok(buffer_order);
+                }
+                let Some(left_pos) = interp.marker_position(*left_id) else {
+                    return Ok(ValueOrder::Unordered);
+                };
+                let Some(right_pos) = interp.marker_position(*right_id) else {
+                    return Ok(ValueOrder::Unordered);
+                };
+                Ok(order_from_ordering(left_pos.cmp(&right_pos)))
+            }
+            _ => Err(type_mismatch_signal(left, right)),
+        };
+    }
+
+    if matches!(left, Value::Cons(_, _)) || matches!(right, Value::Cons(_, _)) {
+        return match (left, right) {
+            (Value::Nil, Value::Nil) => Ok(ValueOrder::Equal),
+            (Value::Nil, Value::Cons(_, _)) => Ok(ValueOrder::Less),
+            (Value::Cons(_, _), Value::Nil) => Ok(ValueOrder::Greater),
+            (Value::Cons(left_car, _), Value::Cons(right_car, _)) => {
+                let key = (
+                    Rc::as_ptr(left_car) as usize,
+                    Rc::as_ptr(right_car) as usize,
+                );
+                if !seen_lists.insert(key) {
+                    return Err(circular_signal(left));
+                }
+                let result = (|| {
+                    let Some((left_head, left_tail)) = left.cons_values() else {
+                        return Ok(ValueOrder::Unordered);
+                    };
+                    let Some((right_head, right_tail)) = right.cons_values() else {
+                        return Ok(ValueOrder::Unordered);
+                    };
+                    let head_order =
+                        value_ordering(interp, &left_head, &right_head, env, seen_lists)?;
+                    if matches!(head_order, ValueOrder::Less | ValueOrder::Greater) {
+                        return Ok(head_order);
+                    }
+                    value_ordering(interp, &left_tail, &right_tail, env, seen_lists)
+                })();
+                seen_lists.remove(&key);
+                result
+            }
+            _ => Err(type_mismatch_signal(left, right)),
+        };
+    }
+
+    if let Some(order) = compare_symbol_values(interp, left, right, env)? {
+        return Ok(order);
+    }
+
+    if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
+        return Ok(order_from_ordering(
+            left_string.text.cmp(&right_string.text),
+        ));
+    }
+    if string_like(left).is_some() || string_like(right).is_some() {
+        return Err(type_mismatch_signal(left, right));
+    }
+
+    Err(type_mismatch_signal(left, right))
+}
+
+fn value_less(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> Result<bool, LispError> {
+    Ok(matches!(
+        value_ordering(interp, left, right, env, &mut HashSet::new())?,
+        ValueOrder::Less
+    ))
 }
 
 fn proper_list_length(value: &Value) -> Option<usize> {
@@ -28500,6 +31229,9 @@ fn copy_tree_value(
 }
 
 fn copy_alist_value(value: &Value) -> Result<Value, LispError> {
+    if string_like(value).is_some() || is_vector_value(value) {
+        return Err(LispError::TypeError("list".into(), value.type_name()));
+    }
     let items = value.to_vec()?;
     let mut copied = Vec::with_capacity(items.len());
     for item in items {
@@ -28685,9 +31417,9 @@ fn last_nconc_cell(value: &Value) -> Result<Value, LispError> {
     }
 }
 
-fn sxhash_value(value: &Value, mode: HashMode) -> i64 {
+fn sxhash_value(interp: &Interpreter, value: &Value, mode: HashMode) -> i64 {
     let mut state = 0xcbf2_9ce4_8422_2325u64;
-    hash_value_recursive(&mut state, value, mode);
+    hash_value_recursive(interp, &mut state, value, mode);
     (state & 0x7fff_ffff_ffff_ffff) as i64
 }
 
@@ -28702,7 +31434,7 @@ fn hash_str(state: &mut u64, text: &str) {
     }
 }
 
-fn hash_props(state: &mut u64, props: &[StringPropertySpan]) {
+fn hash_props(interp: &Interpreter, state: &mut u64, props: &[StringPropertySpan]) {
     hash_mix(state, props.len() as u64);
     for span in props {
         hash_mix(state, span.start as u64);
@@ -28710,18 +31442,21 @@ fn hash_props(state: &mut u64, props: &[StringPropertySpan]) {
         hash_mix(state, span.props.len() as u64);
         for (key, value) in &span.props {
             hash_str(state, key);
-            hash_value_recursive(state, value, HashMode::EqualIncludingProperties);
+            hash_value_recursive(interp, state, value, HashMode::EqualIncludingProperties);
         }
     }
 }
 
-fn hash_value_recursive(state: &mut u64, value: &Value, mode: HashMode) {
+fn hash_value_recursive(interp: &Interpreter, state: &mut u64, value: &Value, mode: HashMode) {
     match mode {
         HashMode::Eq => hash_value_eq(state, value),
         HashMode::Eql => hash_value_eql(state, value),
-        HashMode::Equal | HashMode::EqualIncludingProperties => {
-            hash_value_equal(state, value, mode == HashMode::EqualIncludingProperties)
-        }
+        HashMode::Equal | HashMode::EqualIncludingProperties => hash_value_equal(
+            interp,
+            state,
+            value,
+            mode == HashMode::EqualIncludingProperties,
+        ),
     }
 }
 
@@ -28811,7 +31546,12 @@ fn hash_value_eql(state: &mut u64, value: &Value) {
     }
 }
 
-fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
+fn hash_value_equal(
+    interp: &Interpreter,
+    state: &mut u64,
+    value: &Value,
+    include_properties: bool,
+) {
     match value {
         Value::Nil => hash_mix(state, 30),
         Value::T => hash_mix(state, 31),
@@ -28836,7 +31576,7 @@ fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
             let shared = shared.borrow();
             hash_str(state, &shared.text);
             if include_properties {
-                hash_props(state, &shared.props);
+                hash_props(interp, state, &shared.props);
             }
         }
         Value::Symbol(symbol) => {
@@ -28848,8 +31588,8 @@ fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
                 return;
             };
             hash_mix(state, 38);
-            hash_value_equal(state, &car, include_properties);
-            hash_value_equal(state, &cdr, include_properties);
+            hash_value_equal(interp, state, &car, include_properties);
+            hash_value_equal(interp, state, &cdr, include_properties);
         }
         Value::BuiltinFunc(name) => {
             hash_mix(state, 39);
@@ -28861,7 +31601,7 @@ fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
                 hash_str(state, param);
             }
             for form in body {
-                hash_value_equal(state, form, include_properties);
+                hash_value_equal(interp, state, form, include_properties);
             }
         }
         Value::Buffer(id, name) => {
@@ -28870,24 +31610,98 @@ fn hash_value_equal(state: &mut u64, value: &Value, include_properties: bool) {
             hash_str(state, name);
         }
         Value::Marker(id) => {
-            hash_mix(state, 42);
-            hash_mix(state, *id);
+            hash_marker_equal(interp, state, *id);
         }
         Value::Overlay(id) => {
             hash_mix(state, 43);
             hash_mix(state, *id);
         }
         Value::CharTable(id) => {
-            hash_mix(state, 44);
-            hash_mix(state, *id);
+            hash_char_table_equal(interp, state, *id, include_properties);
         }
         Value::Record(id) => {
-            hash_mix(state, 45);
-            hash_mix(state, *id);
+            hash_record_equal(interp, state, *id, include_properties);
         }
         Value::Finalizer(id) => {
             hash_mix(state, 46);
             hash_mix(state, *id);
+        }
+    }
+}
+
+fn hash_marker_equal(interp: &Interpreter, state: &mut u64, id: u64) {
+    hash_mix(state, 42);
+    match (interp.marker_buffer_id(id), interp.marker_position(id)) {
+        (Some(buffer_id), Some(position)) => {
+            hash_mix(state, buffer_id);
+            hash_mix(state, position as u64);
+        }
+        _ => hash_mix(state, id),
+    }
+}
+
+fn hash_char_table_equal(interp: &Interpreter, state: &mut u64, id: u64, include_properties: bool) {
+    hash_mix(state, 44);
+    let Some(table) = interp.find_char_table(id) else {
+        hash_mix(state, id);
+        return;
+    };
+
+    match &table.subtype {
+        Some(subtype) => {
+            hash_mix(state, 1);
+            hash_str(state, subtype);
+        }
+        None => hash_mix(state, 0),
+    }
+    hash_mix(state, table.parent.unwrap_or(0));
+    hash_value_equal(interp, state, &table.default, include_properties);
+    hash_mix(state, table.extra_slots.len() as u64);
+    for slot in &table.extra_slots {
+        hash_value_equal(interp, state, slot, include_properties);
+    }
+    hash_mix(state, table.entries.len() as u64);
+    for entry in &table.entries {
+        hash_mix(state, entry.start as u64);
+        hash_mix(state, entry.end as u64);
+        hash_value_equal(interp, state, &entry.value, include_properties);
+    }
+    hash_mix(state, table.category_docs.len() as u64);
+    for (code, doc) in &table.category_docs {
+        hash_mix(state, *code as u64);
+        hash_str(state, doc);
+    }
+}
+
+fn hash_record_equal(interp: &Interpreter, state: &mut u64, id: u64, include_properties: bool) {
+    hash_mix(state, 45);
+    let Some(record) = interp.find_record(id) else {
+        hash_mix(state, id);
+        return;
+    };
+
+    match record_compare_kind(&record.type_name) {
+        RecordCompareKind::BoolVector => {
+            hash_str(state, "bool-vector");
+            if let Ok(bits) = bool_vector_bits(interp, &Value::Record(id)) {
+                hash_mix(state, bits.len() as u64);
+                for bit in bits {
+                    hash_mix(state, u64::from(bit));
+                }
+            } else {
+                hash_mix(state, id);
+            }
+        }
+        RecordCompareKind::Process | RecordCompareKind::HashTable | RecordCompareKind::Obarray => {
+            hash_str(state, &record.type_name);
+            hash_mix(state, id);
+        }
+        RecordCompareKind::Generic => {
+            hash_str(state, &record.type_name);
+            hash_mix(state, record.slots.len() as u64);
+            for slot in &record.slots {
+                hash_value_equal(interp, state, slot, include_properties);
+            }
         }
     }
 }
@@ -29020,9 +31834,10 @@ pub(crate) fn value_matches_with_test(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     match testfn.filter(|value| !value.is_nil()) {
-        None => Ok(left == right),
+        None => Ok(values_eq_in_env(interp, left, right, env)),
         Some(Value::Symbol(name)) | Some(Value::BuiltinFunc(name)) => match name.as_str() {
-            "eq" | "eql" => Ok(left == right),
+            "eq" => Ok(values_eq_in_env(interp, left, right, env)),
+            "eql" => Ok(values_eql(left, right)),
             "equal" => Ok(values_equal(interp, left, right)),
             _ => {
                 let func = resolve_callable(interp, testfn.expect("checked Some"), env)?;
@@ -30279,13 +33094,12 @@ pub(crate) fn is_vector_like_value(interp: &Interpreter, value: &Value) -> bool 
         || matches!(value, Value::CharTable(_))
 }
 
-fn is_vector_value(value: &Value) -> bool {
-    value.to_vec().ok().is_some_and(|items| {
-        matches!(
-            items.first(),
-            Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
-        )
-    })
+pub(crate) fn is_vector_value(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Cons(car, _)
+            if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector" || symbol == "vector-literal")
+    )
 }
 
 fn fixnum_bounds(interp: &Interpreter) -> Result<(i64, i64), LispError> {
@@ -30309,6 +33123,80 @@ fn symbol_with_pos_parts(interp: &Interpreter, value: &Value) -> Option<(Value, 
         return None;
     }
     Some((record.slots[0].clone(), record.slots[1].as_integer().ok()?))
+}
+
+fn symbol_with_pos_equal_in_env(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> Option<bool> {
+    let enabled = interp
+        .lookup_var("symbols-with-pos-enabled", env)
+        .is_some_and(|value| value.is_truthy());
+    let left_with_pos = symbol_with_pos_parts(interp, left);
+    let right_with_pos = symbol_with_pos_parts(interp, right);
+    if enabled {
+        if left_with_pos.is_none() && right_with_pos.is_none() {
+            return None;
+        }
+        let left_base = left_with_pos
+            .as_ref()
+            .map(|(symbol, _)| symbol)
+            .unwrap_or(left);
+        let right_base = right_with_pos
+            .as_ref()
+            .map(|(symbol, _)| symbol)
+            .unwrap_or(right);
+        return Some(
+            match (plain_symbol_name(left_base), plain_symbol_name(right_base)) {
+                (Some(_), Some(_)) => left_base == right_base,
+                _ => false,
+            },
+        );
+    }
+
+    match (left_with_pos, right_with_pos) {
+        (Some((left_symbol, left_pos)), Some((right_symbol, right_pos))) => {
+            Some(left_symbol == right_symbol && left_pos == right_pos)
+        }
+        _ => None,
+    }
+}
+
+fn symbol_with_pos_eq_in_env(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> Option<bool> {
+    let enabled = interp
+        .lookup_var("symbols-with-pos-enabled", env)
+        .is_some_and(|value| value.is_truthy());
+    if !enabled {
+        return None;
+    }
+
+    let left_with_pos = symbol_with_pos_parts(interp, left);
+    let right_with_pos = symbol_with_pos_parts(interp, right);
+    if left_with_pos.is_none() && right_with_pos.is_none() {
+        return None;
+    }
+
+    let left_base = left_with_pos
+        .as_ref()
+        .map(|(symbol, _)| symbol)
+        .unwrap_or(left);
+    let right_base = right_with_pos
+        .as_ref()
+        .map(|(symbol, _)| symbol)
+        .unwrap_or(right);
+    Some(
+        match (plain_symbol_name(left_base), plain_symbol_name(right_base)) {
+            (Some(_), Some(_)) => left_base == right_base,
+            _ => false,
+        },
+    )
 }
 
 fn is_lambda_value(value: &Value) -> bool {
@@ -30995,16 +33883,60 @@ fn call_composed_accessor(name: &str, args: &[Value]) -> Result<Value, LispError
     Ok(value)
 }
 
+fn normalize_random_seed(seed: u64) -> u64 {
+    if seed == 0 {
+        0x1234_5678_9abc_def0
+    } else {
+        seed
+    }
+}
+
+fn set_random_seed(seed: u64) {
+    RANDOM_STATE.store(normalize_random_seed(seed), AtomicOrdering::Relaxed);
+}
+
+fn next_random_u64() -> u64 {
+    let mut state = normalize_random_seed(RANDOM_STATE.load(AtomicOrdering::Relaxed));
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    state = normalize_random_seed(state);
+    RANDOM_STATE.store(state, AtomicOrdering::Relaxed);
+    state
+}
+
+fn random_seed_from_bytes(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    normalize_random_seed(hash)
+}
+
+fn nondeterministic_random_seed() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let counter = RANDOM_SEED_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let pid = std::process::id() as u64;
+    let mixed = nanos ^ nanos.rotate_left(17) ^ counter.rotate_left(29) ^ pid.rotate_left(41);
+    random_seed_from_bytes(&mixed.to_le_bytes())
+}
+
+fn random_bigint_below(limit: &BigInt) -> BigInt {
+    let chunks = ((limit.bits().max(1) + 63) / 64) as usize;
+    let mut value = BigInt::zero();
+    for _ in 0..chunks {
+        value = (value << 64) + BigInt::from(next_random_u64());
+    }
+    value % limit
+}
+
 /// Simple pseudo-random number (xorshift64).
 fn rand_simple() -> i64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
-    let mut s = STATE.load(Ordering::Relaxed);
-    s ^= s << 13;
-    s ^= s >> 7;
-    s ^= s << 17;
-    STATE.store(s, Ordering::Relaxed);
-    s as i64
+    next_random_u64() as i64
 }
 
 #[cfg(test)]
@@ -31166,9 +34098,436 @@ mod compat_runtime_tests {
     }
 
     #[test]
+    fn line_number_at_pos_treats_nil_as_point_and_checks_bounds() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*lines*", "\n\n\n\n\n\n\n\n\n\n");
+        interp.buffer.goto_char(interp.buffer.point_max());
+
+        assert_eq!(
+            call(&mut interp, "line-number-at-pos", &[Value::Nil], &mut env,)
+                .expect("line-number-at-pos nil"),
+            Value::Integer(11)
+        );
+
+        assert!(matches!(
+            call(
+                &mut interp,
+                "line-number-at-pos",
+                &[Value::Integer(-1)],
+                &mut env,
+            ),
+            Err(LispError::SignalValue(value))
+                if matches!(value.to_vec().ok().as_deref(), Some([
+                    Value::Symbol(name),
+                    Value::Integer(-1),
+                    Value::Integer(1),
+                    Value::Integer(11),
+                ]) if name == "args-out-of-range")
+        ));
+        assert!(matches!(
+            call(
+                &mut interp,
+                "line-number-at-pos",
+                &[Value::Integer(100)],
+                &mut env,
+            ),
+            Err(LispError::SignalValue(value))
+                if matches!(value.to_vec().ok().as_deref(), Some([
+                    Value::Symbol(name),
+                    Value::Integer(100),
+                    Value::Integer(1),
+                    Value::Integer(11),
+                ]) if name == "args-out-of-range")
+        ));
+    }
+
+    #[test]
+    fn concat_matches_upstream_sequence_and_multibyte_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (list
+               (equal (concat) "")
+               (equal (concat nil) "")
+               (equal (concat []) "")
+               (equal (concat [97 98]) "ab")
+               (equal (concat '(97 98)) "ab")
+               (equal (concat "ab" '(99 100) nil [101 102] "gh") "abcdefgh")
+               (equal (concat "AB" (string-to-multibyte "\200") "cd")
+                      (string-to-multibyte "AB\200cd"))
+               (equal (concat "ab" '(#xe5) [255] "cd") "ab\u00e5\u00ffcd")
+               (equal (concat '(#x3fffff) [#x3fff80] "xy") "\377\200xy")
+               (equal (concat '(#x3fffff) [#x3fff80] "xy\u00a7") "\377\200xy\u00a7")
+               (equal-including-properties
+                (concat #("abc" 0 3 (a 1)) #("de" 0 2 (a 1)))
+                #("abcde" 0 5 (a 1)))
+               (equal-including-properties
+                (concat #("abc" 0 3 (a 1)) "\u00a7\u00fc" #("\u00e7\u00e5" 0 2 (b 2)))
+                #("abc\u00a7\u00fc\u00e7\u00e5" 0 3 (a 1) 5 7 (b 2)))
+               (condition-case nil
+                   (progn (concat "a" '(98 . 99)) nil)
+                 (error t))))
+            "#,
+        )
+        .read_all()
+        .expect("concat compatibility test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("concat compatibility forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+            ])
+        );
+    }
+
+    #[test]
+    fn vconcat_and_append_preserve_multibyte_raw_byte8_elements() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (list
+               (equal (vconcat [1 2 3] nil '(4 5) "AB" "\u00e5"
+                               "\377" (string-to-multibyte "\377")
+                               (bool-vector t nil nil t nil))
+                      [1 2 3 4 5 65 66 #xe5 255 #x3fffff t nil nil t nil])
+               (equal (append [1 2 3] nil '(4 5) "AB" "\u00e5"
+                              "\377" (string-to-multibyte "\377")
+                              (bool-vector t nil nil t nil)
+                              '(9 10))
+                      '(1 2 3 4 5 65 66 #xe5 255 #x3fffff t nil nil t nil 9 10))))
+            "#,
+        )
+        .read_all()
+        .expect("vconcat/append raw-byte8 test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("vconcat/append raw-byte8 forms should evaluate");
+        assert_eq!(result, Value::list([Value::T, Value::T]));
+    }
+
+    #[test]
+    fn string_to_unibyte_roundtrips_raw_bytes_and_rejects_multibyte_chars() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (let* ((u "\200\377")
+                     (m (string-to-multibyte u))
+                     (uu (string-to-unibyte m)))
+                (list
+                 (not (multibyte-string-p u))
+                 (multibyte-string-p m)
+                 (not (multibyte-string-p uu))
+                 (equal u uu)
+                 (equal (append m nil) '(#x3fff80 #x3fffff))
+                 (condition-case nil
+                     (progn (string-to-unibyte "\u00e5") nil)
+                   (error t))
+                 (condition-case nil
+                     (progn (string-to-unibyte "ABC\u2200BC") nil)
+                   (error t)))))
+            "#,
+        )
+        .read_all()
+        .expect("string-to-unibyte test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("string-to-unibyte forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+            ])
+        );
+    }
+
+    #[test]
+    fn take_and_ntake_match_upstream_edge_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (let ((list (list 'a 'b 'c)))
+                (setcdr (nthcdr 2 list) (cdr list))
+                (list
+                 (equal (take 0 'a) nil)
+                 (equal (ntake 0 'a) nil)
+                 (condition-case nil
+                     (progn (take 2 '(a . b)) nil)
+                   (wrong-type-argument t))
+                 (condition-case nil
+                     (progn (ntake 2 '(a . b)) nil)
+                   (wrong-type-argument t))
+                 (equal (take 5 list) '(a b c b c))
+                 (equal (ntake 10 list) '(a b)))))
+            "#,
+        )
+        .read_all()
+        .expect("take/ntake test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("take/ntake forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn nthcdr_handles_circular_lists_with_large_counts() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (let ((cycle (make-list 5 nil))
+                    (huge (ash 1 12345)))
+                (setcdr (last cycle) cycle)
+                (list
+                 (eq (nthcdr -1 cycle) cycle)
+                 (eq (nthcdr 0 cycle) cycle)
+                 (eq (nthcdr 1 cycle) (cdr cycle))
+                 (eq (nthcdr most-positive-fixnum cycle)
+                     (nthcdr (mod most-positive-fixnum 5) cycle))
+                 (eq (nthcdr huge cycle)
+                     (nthcdr (mod huge 5) cycle)))))
+            "#,
+        )
+        .read_all()
+        .expect("nthcdr circular-list test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("nthcdr circular-list forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn nthcdr_value_reduces_large_counts_on_cycles() {
+        let cycle = Value::list(vec![Value::Nil; 5]);
+        nthcdr_value(&Value::Integer(4), &cycle)
+            .expect("nthcdr should reach the last cons")
+            .set_cdr(cycle.clone())
+            .expect("last cons should become circular");
+
+        let one_step = nthcdr_value(&Value::Integer(1), &cycle).expect("small nthcdr should work");
+        let huge_fixnum = nthcdr_value(&Value::Integer(2_305_843_009_213_693_951), &cycle)
+            .expect("large fixnum nthcdr should reduce by cycle length");
+        let huge_bignum_value = BigInt::from(1u8) << 12345usize;
+        let huge_bignum = nthcdr_value(&Value::BigInteger(huge_bignum_value), &cycle)
+            .expect("large bignum nthcdr should reduce by cycle length");
+        let two_steps = nthcdr_value(&Value::Integer(2), &cycle).expect("small nthcdr should work");
+
+        let cell_id = |value: &Value| {
+            let (car, _) = value.cons_cells().expect("value should be a cons cell");
+            Rc::as_ptr(&car) as usize
+        };
+
+        assert_eq!(cell_id(&huge_fixnum), cell_id(&one_step));
+        assert_eq!(cell_id(&huge_bignum), cell_id(&two_steps));
+        assert_eq!(
+            cell_id(
+                &nthcdr_value(
+                    &Value::BigInteger(BigInt::from(-1_000_000_000_000_i64)),
+                    &cycle,
+                )
+                .expect("negative nthcdr should return the original list"),
+            ),
+            cell_id(&cycle)
+        );
+    }
+
+    #[test]
+    fn plist_defaults_to_eq_and_honors_equal_test_functions() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (let ((plist (list "1" "2" "a" "b")))
+                (setq plist (plist-put plist (string ?a) "c"))
+                (list
+                 (equal plist '("1" "2" "a" "b" "a" "c"))
+                 (not (plist-get plist (string ?a)))
+                 (not (plist-member plist (string ?a)))))
+              (let ((plist (list "1" "2" "a" "b")))
+                (setq plist (plist-put plist (string ?a) "c" #'equal))
+                (list
+                 (equal plist '("1" "2" "a" "c"))
+                 (equal (plist-get plist (string ?a) #'equal) "c")
+                 (equal (plist-member plist (string ?a) #'equal) '("a" "c")))))
+            "#,
+        )
+        .read_all()
+        .expect("plist test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("plist forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([
+                Value::list([Value::T, Value::T, Value::T]),
+                Value::list([Value::T, Value::T, Value::T]),
+            ])
+        );
+    }
+
+    #[test]
+    fn string_distance_matches_upstream_multibyte_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (list
+               (= 1 (string-distance "heelo" "hello"))
+               (= 6 (string-distance "ab" "ab我她" t))
+               (= 3 (string-distance "ab" "a我b" t))
+               (= 1 (string-distance "我" "她"))
+               (= 1 (string-distance "" "x" t))))
+            "#,
+        )
+        .read_all()
+        .expect("string-distance test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("string-distance forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn sxhash_equal_matches_structured_runtime_values() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (list
+               (= (sxhash-equal (point-marker))
+                  (sxhash-equal (point-marker)))
+               (= (sxhash-equal (make-bool-vector 1000 t))
+                  (sxhash-equal (make-bool-vector 1000 t)))
+               (= (sxhash-equal (make-char-table nil (make-string 10 ?a)))
+                  (sxhash-equal (make-char-table nil (make-string 10 ?a))))
+               (= (sxhash-equal (record 'a (make-string 10 ?a)))
+                  (sxhash-equal (record 'a (make-string 10 ?a))))))
+            "#,
+        )
+        .read_all()
+        .expect("sxhash-equal test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("sxhash-equal forms should evaluate");
+        assert_eq!(
+            result,
+            Value::list([Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn random_matches_emacs_limit_and_seed_behavior() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert!(matches!(
+            call(&mut interp, "random", &[Value::Integer(0)], &mut env),
+            Err(LispError::SignalValue(value))
+                if matches!(value.to_vec().ok().as_deref(),
+                    Some([Value::Symbol(name), Value::Integer(0)]) if name == "args-out-of-range")
+        ));
+        assert!(matches!(
+            call(&mut interp, "random", &[Value::Integer(-1)], &mut env),
+            Err(LispError::SignalValue(value))
+                if matches!(value.to_vec().ok().as_deref(),
+                    Some([Value::Symbol(name), Value::Integer(-1)]) if name == "args-out-of-range")
+        ));
+
+        let seeded_a = call(
+            &mut interp,
+            "random",
+            &[Value::String("seed".into())],
+            &mut env,
+        )
+        .expect("random should accept string seed");
+        let seeded_b = call(
+            &mut interp,
+            "random",
+            &[Value::String("seed".into())],
+            &mut env,
+        )
+        .expect("random should deterministically reseed from string");
+        assert_eq!(seeded_a, seeded_b);
+        assert_eq!(
+            call(&mut interp, "random", &[Value::Integer(1)], &mut env)
+                .expect("random 1 should be bounded"),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn random_accepts_bignum_limits() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let limit = BigInt::from(i64::MAX) + BigInt::from(1u8);
+
+        let value = call(
+            &mut interp,
+            "random",
+            &[Value::BigInteger(limit.clone())],
+            &mut env,
+        )
+        .expect("random should accept bignum limits");
+        let numeric =
+            integer_like_bigint(&interp, &value).expect("random should return an integer");
+        assert!(numeric >= BigInt::zero());
+        assert!(numeric < limit);
+    }
+
+    #[test]
     fn length_equals_matches_sequence_lengths() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
+        let table = interp.make_char_table(Some("fns-tests".into()), Value::Nil);
 
         assert_eq!(
             call(
@@ -31192,6 +34551,313 @@ mod compat_runtime_tests {
             )
             .expect("length= on string"),
             Value::Nil
+        );
+        assert_eq!(
+            call(&mut interp, "length", &[table.clone()], &mut env).expect("length on char-table"),
+            Value::Integer(0x40_0000)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "length=",
+                &[table, Value::Integer(0x40_0000)],
+                &mut env,
+            )
+            .expect("length= on char-table"),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn string_multibyte_conversion_helpers_match_fns_expectations() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let ascii = call(
+            &mut interp,
+            "string-make-unibyte",
+            &[Value::String("abc".into())],
+            &mut env,
+        )
+        .expect("string-make-unibyte should accept ascii");
+        let ascii_made = call(
+            &mut interp,
+            "string-make-multibyte",
+            &[ascii.clone()],
+            &mut env,
+        )
+        .expect("string-make-multibyte should accept ascii");
+        let ascii_as = call(&mut interp, "string-as-multibyte", &[ascii], &mut env)
+            .expect("string-as-multibyte should accept ascii");
+        assert_eq!(string_text(&ascii_made).expect("ascii text"), "abc");
+        assert!(!string_like(&ascii_made).expect("ascii string").multibyte);
+        assert_eq!(string_text(&ascii_as).expect("ascii text"), "abc");
+        assert!(string_like(&ascii_as).expect("ascii string").multibyte);
+        assert!(
+            string_like(&ascii_as)
+                .expect("ascii string")
+                .props
+                .is_empty()
+        );
+
+        let raw = call(
+            &mut interp,
+            "string-make-unibyte",
+            &[Value::String("é".into())],
+            &mut env,
+        )
+        .expect("string-make-unibyte should accept latin-1");
+        let made = call(
+            &mut interp,
+            "string-make-multibyte",
+            &[raw.clone()],
+            &mut env,
+        )
+        .expect("string-make-multibyte should decode latin-1 bytes");
+        assert_eq!(string_text(&made).expect("decoded text"), "é");
+        assert!(string_like(&made).expect("decoded string").multibyte);
+        assert_eq!(
+            call(&mut interp, "string-as-unibyte", &[made], &mut env)
+                .expect("string-as-unibyte should roundtrip"),
+            raw
+        );
+    }
+
+    #[test]
+    fn fillarray_mutates_supported_sequences() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let vector = Value::list([
+            Value::symbol("vector"),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        call(
+            &mut interp,
+            "fillarray",
+            &[vector.clone(), Value::Symbol("x".into())],
+            &mut env,
+        )
+        .expect("fillarray should fill vectors");
+        assert_eq!(
+            vector_items(&vector).expect("filled vector"),
+            vec![
+                Value::Symbol("x".into()),
+                Value::Symbol("x".into()),
+                Value::Symbol("x".into())
+            ]
+        );
+
+        let string = call(
+            &mut interp,
+            "string-make-unibyte",
+            &[Value::String("aaa".into())],
+            &mut env,
+        )
+        .expect("string-make-unibyte should build a mutable string");
+        call(
+            &mut interp,
+            "fillarray",
+            &[string.clone(), Value::Integer('b' as i64)],
+            &mut env,
+        )
+        .expect("fillarray should fill strings");
+        let filled = string_like(&string).expect("filled string");
+        assert_eq!(filled.text, "bbb");
+        assert!(!filled.multibyte);
+
+        let bool_vector = call(
+            &mut interp,
+            "make-bool-vector",
+            &[Value::Integer(4), Value::Nil],
+            &mut env,
+        )
+        .expect("make-bool-vector should succeed");
+        call(
+            &mut interp,
+            "fillarray",
+            &[bool_vector.clone(), Value::T],
+            &mut env,
+        )
+        .expect("fillarray should fill bool-vectors");
+        assert_eq!(
+            bool_vector_bits(&interp, &bool_vector).expect("filled bool-vector"),
+            vec![true, true, true, true]
+        );
+
+        let char_table = interp.make_char_table(Some("fns-tests".into()), Value::Nil);
+        call(
+            &mut interp,
+            "fillarray",
+            &[char_table.clone(), Value::Symbol("z".into())],
+            &mut env,
+        )
+        .expect("fillarray should fill char-tables");
+        assert_eq!(
+            call(
+                &mut interp,
+                "char-table-range",
+                &[char_table, Value::Integer('a' as i64)],
+                &mut env,
+            )
+            .expect("char-table-range should read the filled default"),
+            Value::Symbol("z".into())
+        );
+    }
+
+    #[test]
+    fn reverse_and_nreverse_preserve_vector_types() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let literal_vector = Value::list([
+            Value::symbol("vector-literal"),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        assert_eq!(
+            call(&mut interp, "reverse", &[literal_vector], &mut env).expect("reverse vector"),
+            Value::list([
+                Value::symbol("vector-literal"),
+                Value::Integer(3),
+                Value::Integer(2),
+                Value::Integer(1),
+            ])
+        );
+
+        let vector = Value::list([
+            Value::symbol("vector"),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
+        ]);
+        assert_eq!(
+            call(&mut interp, "nreverse", &[vector.clone()], &mut env).expect("nreverse vector"),
+            vector
+        );
+        assert_eq!(
+            vector_items(&vector).expect("mutated vector"),
+            vec![Value::Integer(3), Value::Integer(2), Value::Integer(1)]
+        );
+    }
+
+    #[test]
+    fn reverse_and_vconcat_support_bool_vectors() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        let bool_vector = call(
+            &mut interp,
+            "bool-vector",
+            &[Value::T, Value::T, Value::Nil, Value::Nil],
+            &mut env,
+        )
+        .expect("bool-vector should build");
+        let reversed = call(&mut interp, "reverse", &[bool_vector.clone()], &mut env)
+            .expect("reverse should accept bool-vectors");
+        assert_eq!(
+            bool_vector_bits(&interp, &reversed).expect("reversed bool-vector"),
+            vec![false, false, true, true]
+        );
+        assert_eq!(
+            call(&mut interp, "vconcat", &[bool_vector.clone()], &mut env)
+                .expect("vconcat should accept bool-vectors"),
+            Value::list([
+                Value::symbol("vector"),
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+            ])
+        );
+        assert_eq!(
+            call(&mut interp, "nreverse", &[bool_vector.clone()], &mut env)
+                .expect("nreverse should accept bool-vectors"),
+            bool_vector
+        );
+        assert_eq!(
+            bool_vector_bits(&interp, &bool_vector).expect("mutated bool-vector"),
+            vec![false, false, true, true]
+        );
+    }
+
+    #[test]
+    fn compare_strings_matches_fns_expectations() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "compare-strings",
+                &[
+                    Value::String("foobaz".into()),
+                    Value::Nil,
+                    Value::Nil,
+                    Value::String("farbaz".into()),
+                    Value::Nil,
+                    Value::Nil,
+                ],
+                &mut env,
+            )
+            .expect("compare-strings should compare differing substrings"),
+            Value::Integer(2)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "compare-strings",
+                &[
+                    Value::String("Test".into()),
+                    Value::Nil,
+                    Value::Nil,
+                    Value::String("test".into()),
+                    Value::Nil,
+                    Value::Nil,
+                    Value::T,
+                ],
+                &mut env,
+            )
+            .expect("compare-strings should support ignore-case"),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn collation_functions_fall_back_to_lexicographic_comparison() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-collate-equalp",
+                &[
+                    Value::String("xyzzy".into()),
+                    Value::String("xyzzy".into()),
+                    Value::T
+                ],
+                &mut env,
+            )
+            .expect("fallback collation equality should succeed"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-collate-lessp",
+                &[
+                    Value::String("XYZZY".into()),
+                    Value::String("xyzzy".into()),
+                    Value::String("POSIX".into()),
+                ],
+                &mut env,
+            )
+            .expect("fallback collation ordering should succeed"),
+            Value::T
         );
     }
 
@@ -32108,6 +35774,1235 @@ mod compat_runtime_tests {
             )
             .expect("find case-insensitive member"),
             Value::list([Value::String("unzip".into()), Value::String("7z".into())])
+        );
+    }
+
+    #[test]
+    fn value_less_vectors_break_ties_after_equal_prefix_values() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let (buffer_id, buffer_name) = interp.create_buffer("*value-less-buffer*");
+        let buffer = Value::Buffer(buffer_id, buffer_name);
+        let marker = interp.make_marker();
+        let Value::Marker(marker_id) = marker else {
+            panic!("make_marker should return a marker");
+        };
+        interp
+            .set_marker(marker_id, Some(12), Some(buffer_id))
+            .expect("set marker");
+        let process = interp
+            .create_process(None, None, vec![], None)
+            .expect("create process");
+        let cases = vec![
+            ("number", Value::Integer(1)),
+            ("symbol", Value::Symbol("a".into())),
+            ("string", Value::String("a".into())),
+            ("list", Value::list([Value::Integer(1), Value::Integer(2)])),
+            (
+                "vector",
+                call(
+                    &mut interp,
+                    "vector",
+                    &[Value::Integer(1), Value::Integer(2)],
+                    &mut env,
+                )
+                .expect("create vector"),
+            ),
+            (
+                "bool-vector",
+                make_bool_vector_value(&mut interp, [true, false, true]),
+            ),
+            (
+                "record",
+                interp.create_record("a", vec![Value::Integer(2), Value::Integer(3)]),
+            ),
+            ("buffer", buffer),
+            ("marker", marker),
+            ("process", process),
+        ];
+
+        for (label, value) in cases {
+            let left = call(
+                &mut interp,
+                "vector",
+                &[value.clone(), Value::Integer(1)],
+                &mut env,
+            )
+            .expect("create left vector");
+            let right = call(
+                &mut interp,
+                "vector",
+                &[value.clone(), Value::Integer(2)],
+                &mut env,
+            )
+            .expect("create right vector");
+            let result = call(&mut interp, "value<", &[left, right], &mut env)
+                .unwrap_or_else(|error| panic!("{label}: value< errored: {error:?}"));
+            assert_eq!(
+                result,
+                Value::T,
+                "{label}: equal-prefix vectors should compare by suffix"
+            );
+        }
+    }
+
+    #[test]
+    fn value_less_selected_upstream_ordered_cases_match_emacs() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let (buf1_id, buf1_name) = interp.create_buffer(" *one*");
+        let (buf2_id, buf2_name) = interp.create_buffer(" *two*");
+        let (buf3_id, buf3_name) = interp.create_buffer(" *three*");
+        let buf1 = Value::Buffer(buf1_id, buf1_name);
+        let buf2 = Value::Buffer(buf2_id, buf2_name);
+        let buf3 = Value::Buffer(buf3_id, buf3_name);
+        interp.kill_buffer_id(buf3_id);
+
+        let mark1 = interp.make_marker();
+        let Value::Marker(mark1_id) = mark1 else {
+            panic!("mark1 should be a marker");
+        };
+        interp
+            .set_marker(mark1_id, Some(12), Some(buf1_id))
+            .expect("set mark1");
+        let mark2 = interp.make_marker();
+        let Value::Marker(mark2_id) = mark2 else {
+            panic!("mark2 should be a marker");
+        };
+        interp
+            .set_marker(mark2_id, Some(13), Some(buf1_id))
+            .expect("set mark2");
+        let mark3 = interp.make_marker();
+        let Value::Marker(mark3_id) = mark3 else {
+            panic!("mark3 should be a marker");
+        };
+        interp
+            .set_marker(mark3_id, Some(12), Some(buf2_id))
+            .expect("set mark3");
+        let mark4 = interp.make_marker();
+        let Value::Marker(mark4_id) = mark4 else {
+            panic!("mark4 should be a marker");
+        };
+        interp
+            .set_marker(mark4_id, Some(13), Some(buf2_id))
+            .expect("set mark4");
+
+        let proc1 = interp
+            .create_process(None, None, vec![], None)
+            .expect("create proc1");
+        let proc2 = interp
+            .create_process(None, None, vec![], None)
+            .expect("create proc2");
+        let uninterned_a = call(
+            &mut interp,
+            "make-symbol",
+            &[Value::String("a".into())],
+            &mut env,
+        )
+        .expect("make uninterned a");
+        let uninterned_b = call(
+            &mut interp,
+            "make-symbol",
+            &[Value::String("b".into())],
+            &mut env,
+        )
+        .expect("make uninterned b");
+
+        let parse = |text: &str| {
+            Reader::new(text)
+                .read()
+                .expect("parse upstream case")
+                .expect("parsed upstream case should contain a value")
+        };
+        let big = parse("23058430092136939510");
+        let big_plus_one = parse("23058430092136939511");
+        let neg_big = parse("-23058430092136939510");
+        let neg_big_minus_one = parse("-23058430092136939511");
+        let double_big = parse("46116860184273879020");
+        let float_big = call(&mut interp, "float", &[big.clone()], &mut env).expect("float big");
+        let float_double_big =
+            call(&mut interp, "float", &[double_big.clone()], &mut env).expect("float double big");
+
+        let cases = vec![
+            ("number", parse("1"), parse("2")),
+            ("number_neg_neg", parse("-2"), parse("-1")),
+            ("number_neg_pos", parse("-2"), parse("1")),
+            ("number_neg_pos_2", parse("-1"), parse("2")),
+            ("bignum_inc", big.clone(), big_plus_one),
+            ("bignum_neg_pos", neg_big_minus_one.clone(), big.clone()),
+            ("bignum_neg_chain", neg_big_minus_one, neg_big.clone()),
+            ("fixnum_bignum", parse("1"), big.clone()),
+            ("fixnum_neg_bignum", parse("-1"), big.clone()),
+            ("bignum_fixnum_neg", neg_big.clone(), parse("-1")),
+            ("bignum_fixnum_pos", neg_big.clone(), parse("1")),
+            ("float", parse("1.5"), parse("1.6")),
+            ("float_neg_neg", parse("-1.3"), parse("-1.2")),
+            ("float_neg_pos", parse("-13.0"), parse("12.0")),
+            ("fixnum_float", parse("1"), parse("1.1")),
+            ("float_fixnum", parse("1.9"), parse("2")),
+            ("float_fixnum_neg_pos", parse("-2.0"), parse("1")),
+            ("fixnum_float_neg_pos", parse("-2"), parse("1.0")),
+            (
+                "fixnum_float_unrepresentable_1",
+                parse("72057594037927935"),
+                parse("72057594037927936.0"),
+            ),
+            (
+                "fixnum_float_unrepresentable_2",
+                parse("72057594037927936.0"),
+                parse("72057594037927937"),
+            ),
+            (
+                "fixnum_float_unrepresentable_3",
+                parse("-72057594037927936.0"),
+                parse("-72057594037927935"),
+            ),
+            (
+                "fixnum_float_unrepresentable_4",
+                parse("-72057594037927937"),
+                parse("-72057594037927936.0"),
+            ),
+            (
+                "fixnum_float_unrepresentable_5",
+                parse("2305843009213693951"),
+                parse("2305843009213693952.0"),
+            ),
+            ("bignum_float", big.clone(), float_double_big),
+            ("float_bignum", float_big, double_big),
+            ("symbol", parse("a"), parse("b")),
+            ("symbol_nil", parse("nil"), parse("nix")),
+            ("symbol_prefix", parse("b"), parse("ba")),
+            (
+                "symbol_hash",
+                Value::Symbol("##".into()),
+                Value::Symbol("a".into()),
+            ),
+            ("symbol_case", parse("A"), parse("a")),
+            (
+                "symbol_uninterned",
+                uninterned_a.clone(),
+                uninterned_b.clone(),
+            ),
+            (
+                "symbol_plain_uninterned",
+                Value::Symbol("a".into()),
+                uninterned_b.clone(),
+            ),
+            (
+                "symbol_uninterned_plain",
+                uninterned_a.clone(),
+                Value::Symbol("b".into()),
+            ),
+            ("string", parse("\"a\""), parse("\"b\"")),
+            ("string_empty", parse("\"\""), parse("\"a\"")),
+            ("string_prefix", parse("\"b\""), parse("\"ba\"")),
+            ("string_case", parse("\"A\""), parse("\"a\"")),
+            ("string_abc_abd", parse("\"abc\""), parse("\"abd\"")),
+            (
+                "string_dotted_pair",
+                parse("(\"\" . 2)"),
+                parse("(\"a\" . 1)"),
+            ),
+            (
+                "string_unicode_prefix",
+                parse("(\"å\" . 2)"),
+                parse("(\"åü\" . 1)"),
+            ),
+            (
+                "string_unicode_suffix",
+                parse("(\"a\" . 2)"),
+                parse("(\"aå\" . 1)"),
+            ),
+            (
+                "string_raw_byte_prefix",
+                parse("(\"\\x80\" . 2)"),
+                parse("(\"\\x80å\" . 1)"),
+            ),
+            ("list_lt", parse("(1 2 3)"), parse("(2 3 4)")),
+            ("list_prefix", parse("(2)"), parse("(2 1)")),
+            ("list_nil_prefix", parse("()"), parse("(0)")),
+            ("list_same_head", parse("(1 2 3)"), parse("(1 3)")),
+            ("list_same_head_longer", parse("(1 2 3)"), parse("(1 3 2)")),
+            (
+                "list_nested",
+                parse("((b a) (c d) e)"),
+                parse("((b a) (c d) f)"),
+            ),
+            (
+                "list_nested_case",
+                parse("((b a) (c D) e)"),
+                parse("((b a) (c d) e)"),
+            ),
+            (
+                "list_nested_empty",
+                parse("((b a) (c d () x) e)"),
+                parse("((b a) (c d (1) x) e)"),
+            ),
+            ("dotted_list", parse("(1 . 2)"), parse("(1 . 3)")),
+            ("dotted_list_tail", parse("(1 2 . 3)"), parse("(1 2 . 4)")),
+            ("vector_lt", parse("[1 2 3]"), parse("[2 3 4]")),
+            ("vector_prefix", parse("[2]"), parse("[2 1]")),
+            ("vector_empty_prefix", parse("[]"), parse("[0]")),
+            ("vector_same_head", parse("[1 2 3]"), parse("[1 3]")),
+            (
+                "vector_same_head_longer",
+                parse("[1 2 3]"),
+                parse("[1 3 2]"),
+            ),
+            (
+                "vector_nested",
+                parse("[[b a] [c d] e]"),
+                parse("[[b a] [c d] f]"),
+            ),
+            (
+                "vector_nested_case",
+                parse("[[b a] [c D] e]"),
+                parse("[[b a] [c d] e]"),
+            ),
+            (
+                "vector_nested_empty",
+                parse("[[b a] [c d [] x] e]"),
+                parse("[[b a] [c d [1] x] e]"),
+            ),
+            (
+                "bool_vector_empty",
+                make_bool_vector_value(&mut interp, []),
+                make_bool_vector_value(&mut interp, [false]),
+            ),
+            (
+                "bool_vector_false_true",
+                make_bool_vector_value(&mut interp, [false]),
+                make_bool_vector_value(&mut interp, [true]),
+            ),
+            (
+                "bool_vector_bit_flip",
+                make_bool_vector_value(&mut interp, [true, false, true, false]),
+                make_bool_vector_value(&mut interp, [true, false, true, true]),
+            ),
+            (
+                "bool_vector_prefix",
+                make_bool_vector_value(&mut interp, [true, false, true]),
+                make_bool_vector_value(&mut interp, [true, false, true, false]),
+            ),
+            ("record_type", parse("#s(a 2 3)"), parse("#s(b 3 4)")),
+            ("record_prefix", parse("#s(b)"), parse("#s(b a)")),
+            ("record_same_type", parse("#s(a 2 3)"), parse("#s(a 3)")),
+            (
+                "record_same_type_longer",
+                parse("#s(a 2 3)"),
+                parse("#s(a 3 2)"),
+            ),
+            (
+                "record_nested",
+                parse("#s(#s(b a) #s(c d) e)"),
+                parse("#s(#s(b a) #s(c d) f)"),
+            ),
+            (
+                "record_nested_case",
+                parse("#s(#s(b a) #s(c D) e)"),
+                parse("#s(#s(b a) #s(c d) e)"),
+            ),
+            (
+                "record_nested_type",
+                parse("#s(#s(b a) #s(c d #s(u) x) e)"),
+                parse("#s(#s(b a) #s(c d #s(v) x) e)"),
+            ),
+            ("marker_same_buffer", mark1, mark2),
+            ("marker_other_buffer", Value::Marker(mark1_id), mark3),
+            (
+                "marker_other_buffer_2",
+                Value::Marker(mark1_id),
+                Value::Marker(mark4_id),
+            ),
+            (
+                "marker_other_buffer_3",
+                Value::Marker(mark2_id),
+                Value::Marker(mark3_id),
+            ),
+            (
+                "marker_other_buffer_4",
+                Value::Marker(mark2_id),
+                Value::Marker(mark4_id),
+            ),
+            (
+                "marker_same_buffer_2",
+                Value::Marker(mark3_id),
+                Value::Marker(mark4_id),
+            ),
+            ("live_buffers", buf1.clone(), buf2),
+            (
+                "dead_buffer_before_live",
+                Value::Buffer(buf3_id, " *three*".into()),
+                buf1.clone(),
+            ),
+            (
+                "dead_buffer_before_live_2",
+                Value::Buffer(buf3_id, " *three*".into()),
+                Value::Buffer(buf2_id, " *two*".into()),
+            ),
+            ("dead_buffer_before_live_3", buf3, buf1),
+            ("process", proc1, proc2),
+        ];
+
+        for (label, left, right) in cases {
+            eprintln!("value< case: {label}");
+            let forward = call(
+                &mut interp,
+                "value<",
+                &[left.clone(), right.clone()],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: forward value< errored: {error:?}"));
+            assert_eq!(forward, Value::T, "{label}: expected left < right");
+
+            let backward = call(
+                &mut interp,
+                "value<",
+                &[right.clone(), left.clone()],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: reverse value< errored: {error:?}"));
+            assert_eq!(backward, Value::Nil, "{label}: expected right !< left");
+
+            let vector_forward = call(
+                &mut interp,
+                "value<",
+                &[
+                    Value::list([Value::symbol("vector"), left.clone(), Value::Integer(2)]),
+                    Value::list([Value::symbol("vector"), right.clone(), Value::Integer(1)]),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: vector forward value< errored: {error:?}"));
+            assert_eq!(
+                vector_forward,
+                Value::T,
+                "{label}: expected (vector left 2) < (vector right 1)"
+            );
+
+            let vector_reverse = call(
+                &mut interp,
+                "value<",
+                &[
+                    Value::list([Value::symbol("vector"), right.clone(), Value::Integer(1)]),
+                    Value::list([Value::symbol("vector"), left.clone(), Value::Integer(2)]),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: vector reverse value< errored: {error:?}"));
+            assert_eq!(
+                vector_reverse,
+                Value::Nil,
+                "{label}: expected (vector right 1) !< (vector left 2)"
+            );
+
+            let same_left = call(
+                &mut interp,
+                "value<",
+                &[
+                    Value::list([Value::symbol("vector"), left.clone(), Value::Integer(1)]),
+                    Value::list([Value::symbol("vector"), left.clone(), Value::Integer(2)]),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: same-left vector value< errored: {error:?}"));
+            assert_eq!(
+                same_left,
+                Value::T,
+                "{label}: expected (vector left 1) < (vector left 2)"
+            );
+
+            let same_right = call(
+                &mut interp,
+                "value<",
+                &[
+                    Value::list([Value::symbol("vector"), right.clone(), Value::Integer(1)]),
+                    Value::list([Value::symbol("vector"), right, Value::Integer(2)]),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: same-right vector value< errored: {error:?}"));
+            assert_eq!(
+                same_right,
+                Value::T,
+                "{label}: expected (vector right 1) < (vector right 2)"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_value_less_ordered_upstream_body() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let form = Reader::new(
+            r#"
+            (let* ((big (* 10 most-positive-fixnum))
+                   (buf1 (get-buffer-create " *one*"))
+                   (buf2 (get-buffer-create " *two*"))
+                   (buf3 (get-buffer-create " *three*"))
+                   (_ (progn (with-current-buffer buf1 (insert (make-string 20 ?a)))
+                             (with-current-buffer buf2 (insert (make-string 20 ?b)))))
+                   (mark1 (set-marker (make-marker) 12 buf1))
+                   (mark2 (set-marker (make-marker) 13 buf1))
+                   (mark3 (set-marker (make-marker) 12 buf2))
+                   (mark4 (set-marker (make-marker) 13 buf2))
+                   (proc1 (make-pipe-process :name " *proc one*"))
+                   (proc2 (make-pipe-process :name " *proc two*")))
+              (kill-buffer buf3)
+              (unwind-protect
+                  (catch 'fail
+                    (let ((case-index -1))
+                      (dolist (c
+                               `(
+                               (1 . 2)  (-2 . -1) (-2 . 1) (-1 . 2)
+                               (,big . ,(1+ big)) (,(- big) . ,big)
+                               (,(- -1 big) . ,(- big))
+                               (1 . ,big) (-1 . ,big) (,(- big) . -1) (,(- big) . 1)
+                               (1.5 . 1.6) (-1.3 . -1.2) (-13.0 . 12.0)
+                               (1 . 1.1) (1.9 . 2) (-2.0 . 1) (-2 . 1.0)
+                               (72057594037927935 . 72057594037927936.0)
+                               (72057594037927936.0 . 72057594037927937)
+                               (-72057594037927936.0 . -72057594037927935)
+                               (-72057594037927937 . -72057594037927936.0)
+                               (2305843009213693951 . 2305843009213693952.0)
+                               (,big . ,(float (* 2 big))) (,(float big) . ,(* 2 big))
+                               (a . b) (nil . nix) (b . ba) (## . a) (A . a)
+                               (#:a . #:b) (a . #:b) (#:a . b)
+                               ("" . "a") ("a" . "b") ("A" . "a") ("abc" . "abd")
+                               ("b" . "ba")
+                               (("" . 2) . ("a" . 1))
+                               (("å" . 2) . ("åü" . 1))
+                               (("a" . 2) . ("aå" . 1))
+                               (("\x80" . 2) . ("\x80å" . 1))
+                               ((1 2 3) . (2 3 4)) ((2) . (2 1)) (() . (0))
+                               ((1 2 3) . (1 3)) ((1 2 3) . (1 3 2))
+                               (((b a) (c d) e) . ((b a) (c d) f))
+                               (((b a) (c D) e) . ((b a) (c d) e))
+                               (((b a) (c d () x) e) . ((b a) (c d (1) x) e))
+                               ((1 . 2) . (1 . 3)) ((1 2 . 3) . (1 2 . 4))
+                               ([1 2 3] . [2 3 4]) ([2] . [2 1]) ([] . [0])
+                               ([1 2 3] . [1 3]) ([1 2 3] . [1 3 2])
+                               ([[b a] [c d] e] . [[b a] [c d] f])
+                               ([[b a] [c D] e] . [[b a] [c d] e])
+                               ([[b a] [c d [] x] e] . [[b a] [c d [1] x] e])
+                               (,(bool-vector) . ,(bool-vector nil))
+                               (,(bool-vector nil) . ,(bool-vector t))
+                               (,(bool-vector t nil t nil) . ,(bool-vector t nil t t))
+                               (,(bool-vector t nil t) . ,(bool-vector t nil t nil))
+                               (#s(a 2 3) . #s(b 3 4)) (#s(b) . #s(b a))
+                               (#s(a 2 3) . #s(a 3)) (#s(a 2 3) . #s(a 3 2))
+                               (#s(#s(b a) #s(c d) e) . #s(#s(b a) #s(c d) f))
+                               (#s(#s(b a) #s(c D) e) . #s(#s(b a) #s(c d) e))
+                               (#s(#s(b a) #s(c d #s(u) x) e)
+                                . #s(#s(b a) #s(c d #s(v) x) e))
+                               (,mark1 . ,mark2) (,mark1 . ,mark3) (,mark1 . ,mark4)
+                               (,mark2 . ,mark3) (,mark2 . ,mark4) (,mark3 . ,mark4)
+                               (,buf1 . ,buf2) (,buf3 . ,buf1) (,buf3 . ,buf2)
+                               (,proc1 . ,proc2)
+                               ))
+                        (setq case-index (1+ case-index))
+                        (let ((x (car c))
+                              (y (cdr c)))
+                          (condition-case err
+                              (progn
+                                (unless (value< x y)
+                                  (throw 'fail
+                                         (list 'xy-false
+                                               case-index
+                                               (prin1-to-string c)
+                                               (prin1-to-string x)
+                                               (prin1-to-string y))))
+                                (when (value< y x)
+                                  (throw 'fail
+                                         (list 'yx-true
+                                               case-index
+                                               (prin1-to-string c)
+                                               (prin1-to-string x)
+                                               (prin1-to-string y))))
+                                (unless (value< (vector x 2) (vector y 1))
+                                  (throw 'fail
+                                         (list 'vec-forward
+                                               case-index
+                                               (prin1-to-string c)
+                                               (prin1-to-string x)
+                                               (prin1-to-string y))))
+                                (when (value< (vector y 1) (vector x 2))
+                                  (throw 'fail
+                                         (list 'vec-reverse
+                                               case-index
+                                               (prin1-to-string c)
+                                               (prin1-to-string x)
+                                               (prin1-to-string y))))
+                                (unless (value< (vector x 1) (vector x 2))
+                                  (throw 'fail
+                                         (list 'same-left
+                                               case-index
+                                               (prin1-to-string c)
+                                               (prin1-to-string x)
+                                               (prin1-to-string y))))
+                                (unless (value< (vector y 1) (vector y 2))
+                                  (throw 'fail
+                                         (list 'same-right
+                                               case-index
+                                               (prin1-to-string c)
+                                               (prin1-to-string x)
+                                               (prin1-to-string y)))))
+                            (error (throw 'fail
+                                          (list 'error
+                                                case-index
+                                                (prin1-to-string c)
+                                                (prin1-to-string x)
+                                                (prin1-to-string y)
+                                                (prin1-to-string err)))))))))))
+                (ignore-errors (delete-process proc2))
+                (ignore-errors (delete-process proc1))
+                (ignore-errors (kill-buffer buf2))
+                (ignore-errors (kill-buffer buf1)))))
+            "#,
+        )
+        .read()
+        .expect("parse ordered diagnostic form")
+        .expect("ordered diagnostic form");
+
+        let result = interp
+            .eval(&form, &mut env)
+            .expect("evaluate ordered diagnostic form");
+        assert_eq!(
+            result,
+            Value::Nil,
+            "unexpected ordered diagnostic result: {result:?}"
+        );
+    }
+
+    #[test]
+    fn value_less_selected_upstream_unordered_cases_match_emacs() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let uninterned_a = call(
+            &mut interp,
+            "make-symbol",
+            &[Value::String("a".into())],
+            &mut env,
+        )
+        .expect("make uninterned a");
+        let dead_buf1 = {
+            let (id, name) = interp.create_buffer(" *dead-one*");
+            let buffer = Value::Buffer(id, name);
+            interp.kill_buffer_id(id);
+            buffer
+        };
+        let dead_buf2 = {
+            let (id, name) = interp.create_buffer(" *dead-two*");
+            let buffer = Value::Buffer(id, name);
+            interp.kill_buffer_id(id);
+            buffer
+        };
+        let hash1 = call(&mut interp, "make-hash-table", &[], &mut env).expect("hash1");
+        let hash2 = call(&mut interp, "make-hash-table", &[], &mut env).expect("hash2");
+        let obarray1 = call(&mut interp, "obarray-make", &[], &mut env).expect("obarray1");
+        let obarray2 = call(&mut interp, "obarray-make", &[], &mut env).expect("obarray2");
+
+        let cases = vec![
+            ("zero_float", Value::Integer(0), Value::Float(0.0)),
+            ("zero_neg_zero", Value::Integer(0), Value::Float(-0.0)),
+            ("float_neg_zero", Value::Float(0.0), Value::Float(-0.0)),
+            (
+                "large_int_float_equal",
+                Value::BigInteger(BigInt::from(72057594037927936_i128)),
+                Value::Float(72057594037927936.0),
+            ),
+            ("nan", Value::Integer(1), Value::Float(f64::NAN)),
+            (
+                "symbol_plain_uninterned_same_visible",
+                Value::Symbol("a".into()),
+                uninterned_a,
+            ),
+            ("dead_buffers", dead_buf1, dead_buf2),
+            ("hash_tables", hash1, hash2),
+            ("obarrays", obarray1, obarray2),
+        ];
+
+        for (label, left, right) in cases {
+            eprintln!("value< unordered case: {label}");
+            let forward = call(
+                &mut interp,
+                "value<",
+                &[left.clone(), right.clone()],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: forward value< errored: {error:?}"));
+            assert_eq!(forward, Value::Nil, "{label}: expected left !< right");
+
+            let backward = call(
+                &mut interp,
+                "value<",
+                &[right.clone(), left.clone()],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: reverse value< errored: {error:?}"));
+            assert_eq!(backward, Value::Nil, "{label}: expected right !< left");
+
+            let forward_cons = call(
+                &mut interp,
+                "value<",
+                &[
+                    Value::cons(left.clone(), Value::Integer(1)),
+                    Value::cons(right.clone(), Value::Integer(2)),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: cons forward value< errored: {error:?}"));
+            assert_eq!(forward_cons, Value::T, "{label}: expected cons tiebreak");
+
+            let backward_cons = call(
+                &mut interp,
+                "value<",
+                &[
+                    Value::cons(left, Value::Integer(2)),
+                    Value::cons(right, Value::Integer(1)),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("{label}: cons reverse value< errored: {error:?}"));
+            assert_eq!(
+                backward_cons,
+                Value::Nil,
+                "{label}: expected reverse cons !<"
+            );
+        }
+    }
+
+    #[test]
+    fn value_less_selected_upstream_type_mismatch_cases_match_emacs() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let char_table = call(
+            &mut interp,
+            "make-char-table",
+            &[Value::Symbol("test".into())],
+            &mut env,
+        )
+        .expect("make char-table");
+        let hash_table = call(&mut interp, "make-hash-table", &[], &mut env).expect("hash-table");
+        let obarray = call(&mut interp, "obarray-make", &[], &mut env).expect("obarray");
+        let values = vec![
+            ("number", Value::Integer(1)),
+            ("symbol", Value::Symbol("a".into())),
+            ("string", Value::String("a".into())),
+            (
+                "list",
+                Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            ),
+            (
+                "vector",
+                call(
+                    &mut interp,
+                    "vector",
+                    &[Value::Symbol("a".into()), Value::Symbol("b".into())],
+                    &mut env,
+                )
+                .expect("vector"),
+            ),
+            (
+                "bool_vector",
+                make_bool_vector_value(&mut interp, [false, true]),
+            ),
+            (
+                "record",
+                interp.create_record("a", vec![Value::Symbol("b".into())]),
+            ),
+            ("char_table", char_table),
+            ("hash_table", hash_table),
+            ("obarray", obarray),
+        ];
+
+        let is_type_mismatch = |result: &Result<Value, LispError>| {
+            matches!(
+                result,
+                Err(LispError::SignalValue(signal))
+                    if signal
+                        .car()
+                        .ok()
+                        .is_some_and(|head| head == Value::Symbol("type-mismatch".into()))
+            )
+        };
+
+        for index in 0..values.len() {
+            for other in index + 1..values.len() {
+                let (left_label, left) = &values[index];
+                let (right_label, right) = &values[other];
+                let label = format!("{left_label}_vs_{right_label}");
+                eprintln!("value< type-mismatch case: {label}");
+                let forward = call(
+                    &mut interp,
+                    "value<",
+                    &[left.clone(), right.clone()],
+                    &mut env,
+                );
+                assert!(
+                    is_type_mismatch(&forward),
+                    "{label}: expected forward type-mismatch, got {forward:?}"
+                );
+                let backward = call(
+                    &mut interp,
+                    "value<",
+                    &[right.clone(), left.clone()],
+                    &mut env,
+                );
+                assert!(
+                    is_type_mismatch(&backward),
+                    "{label}: expected reverse type-mismatch, got {backward:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn debug_value_less_type_mismatch_upstream_body() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let form = Reader::new(
+            r#"
+            (let ((incomparable
+                   `( 1 a "a" (a b) [a b] ,(bool-vector nil t) #s(a b)
+                      ,(make-char-table 'test)
+                      ,(make-hash-table)
+                      ,(obarray-make))))
+              (catch 'fail
+                (let ((tail incomparable))
+                  (while tail
+                    (let ((x (car tail)))
+                      (dolist (y (cdr tail))
+                        (condition-case _
+                            (when (value< x y)
+                              (throw 'fail (list 'xy x y)))
+                          (type-mismatch nil)
+                          (error (throw 'fail (list 'xy-wrong-error x y))))
+                        (condition-case _
+                            (when (value< y x)
+                              (throw 'fail (list 'yx x y)))
+                          (type-mismatch nil)
+                          (error (throw 'fail (list 'yx-wrong-error x y)))))
+                      (setq tail (cdr tail))))
+                  nil)))
+            "#,
+        )
+        .read()
+        .expect("parse diagnostic form")
+        .expect("diagnostic form");
+
+        let result = interp
+            .eval(&form, &mut env)
+            .expect("evaluate diagnostic form");
+        assert_eq!(
+            result,
+            Value::Nil,
+            "unexpected type-mismatch diagnostic result: {result:?}"
+        );
+    }
+
+    #[test]
+    fn debug_value_less_unordered_upstream_body() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let form = Reader::new(
+            r#"
+            (let ((buf1 (get-buffer-create " *one*"))
+                  (buf2 (get-buffer-create " *two*")))
+              (kill-buffer buf2)
+              (kill-buffer buf1)
+              (catch 'fail
+                (dolist (c `(
+                             (0 . 0.0) (0 . -0.0) (0.0 . -0.0)
+                             (72057594037927936 . 72057594037927936.0)
+                             (1 . 0.0e+NaN)
+                             (a . #:a)
+                             (,buf1 . ,buf2)
+                             (,(make-hash-table) . ,(make-hash-table))
+                             (,(obarray-make) . ,(obarray-make))
+                             ))
+                  (let ((x (car c))
+                        (y (cdr c)))
+                    (when (value< x y)
+                      (throw 'fail (list 'xy x y)))
+                    (when (value< y x)
+                      (throw 'fail (list 'yx x y)))
+                    (unless (value< (cons x 1) (cons y 2))
+                      (throw 'fail (list 'cons-forward x y)))
+                    (when (value< (cons x 2) (cons y 1))
+                      (throw 'fail (list 'cons-reverse x y)))))))
+            "#,
+        )
+        .read()
+        .expect("parse unordered diagnostic form")
+        .expect("unordered diagnostic form");
+
+        let result = interp
+            .eval(&form, &mut env)
+            .expect("evaluate unordered diagnostic form");
+        assert_eq!(
+            result,
+            Value::Nil,
+            "unexpected unordered diagnostic result: {result:?}"
+        );
+    }
+
+    #[test]
+    fn eq_uses_identity_for_copied_sequences() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let list = Value::list([Value::Integer(1), Value::Integer(2)]);
+        let copied_list = call(
+            &mut interp,
+            "copy-sequence",
+            std::slice::from_ref(&list),
+            &mut env,
+        )
+        .expect("copy list");
+        assert_eq!(
+            call(&mut interp, "eq", &[list, copied_list], &mut env).expect("eq copied list"),
+            Value::Nil
+        );
+
+        let vector = call(
+            &mut interp,
+            "vector",
+            &[Value::Integer(1), Value::Integer(2)],
+            &mut env,
+        )
+        .expect("create vector");
+        let copied_vector = call(
+            &mut interp,
+            "copy-sequence",
+            std::slice::from_ref(&vector),
+            &mut env,
+        )
+        .expect("copy vector");
+        assert_eq!(
+            call(&mut interp, "eq", &[vector, copied_vector], &mut env).expect("eq copied vector"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn eq_and_equal_match_emacs_for_symbols_with_position() {
+        let mut interp = Interpreter::new();
+        let foo1 = call(
+            &mut interp,
+            "position-symbol",
+            &[Value::Symbol("foo".into()), Value::Integer(42)],
+            &mut Vec::new(),
+        )
+        .expect("foo1");
+        let foo2 = call(
+            &mut interp,
+            "position-symbol",
+            &[Value::Symbol("foo".into()), Value::Integer(666)],
+            &mut Vec::new(),
+        )
+        .expect("foo2");
+        let foo3 = call(
+            &mut interp,
+            "position-symbol",
+            &[Value::Symbol("foo".into()), Value::Integer(42)],
+            &mut Vec::new(),
+        )
+        .expect("foo3");
+        let plain = Value::Symbol("foo".into());
+
+        let mut disabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::Nil)]];
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), foo1.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled eq same"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[foo1.clone(), foo1.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled equal same"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), foo2.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled eq different pos"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[foo1.clone(), foo2.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled equal different pos"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), foo3.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled eq same pos"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[foo1.clone(), foo3.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled equal same pos"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), plain.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled eq plain"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[foo1.clone(), plain.clone()],
+                &mut disabled_env
+            )
+            .expect("disabled equal plain"),
+            Value::Nil
+        );
+
+        let mut enabled_env = vec![vec![("symbols-with-pos-enabled".into(), Value::T)]];
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), foo2.clone()],
+                &mut enabled_env
+            )
+            .expect("enabled eq different pos"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[foo1.clone(), foo2.clone()],
+                &mut enabled_env
+            )
+            .expect("enabled equal different pos"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), foo3.clone()],
+                &mut enabled_env
+            )
+            .expect("enabled eq same pos"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "equal",
+                &[foo1.clone(), foo3.clone()],
+                &mut enabled_env
+            )
+            .expect("enabled equal same pos"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "eq",
+                &[foo1.clone(), plain.clone()],
+                &mut enabled_env
+            )
+            .expect("enabled eq plain"),
+            Value::T
+        );
+        assert_eq!(
+            call(&mut interp, "equal", &[foo1, plain], &mut enabled_env)
+                .expect("enabled equal plain"),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn string_version_lessp_matches_upstream_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let string_version_lessp = |interp: &mut Interpreter, left: &str, right: &str| {
+            call(
+                interp,
+                "string-version-lessp",
+                &[Value::String(left.into()), Value::String(right.into())],
+                &mut Vec::new(),
+            )
+            .expect("string-version-lessp")
+        };
+
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo2.png", "foo12.png"),
+            Value::T
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo12.png", "foo2.png"),
+            Value::Nil
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo12.png", "foo20000.png"),
+            Value::T
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo20000.png", "foo12.png"),
+            Value::Nil
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo.png", "foo2.png"),
+            Value::T
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo2.png", "foo.png"),
+            Value::Nil
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo2", "foo1234"),
+            Value::T
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo1234", "foo2"),
+            Value::Nil
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo.png", "foo2"),
+            Value::T
+        );
+        assert_eq!(
+            string_version_lessp(&mut interp, "foo1.25.5.png", "foo1.125.5"),
+            Value::T
+        );
+        assert_eq!(string_version_lessp(&mut interp, "2", "1245"), Value::T);
+        assert_eq!(string_version_lessp(&mut interp, "1245", "2"), Value::Nil);
+
+        let sorted = call(
+            &mut interp,
+            "sort",
+            &[
+                Value::list([
+                    Value::String("foo12.png".into()),
+                    Value::String("foo2.png".into()),
+                    Value::String("foo1.png".into()),
+                ]),
+                Value::Symbol("string-version-lessp".into()),
+            ],
+            &mut env,
+        )
+        .expect("sort by string-version-lessp");
+        assert_eq!(
+            sorted,
+            Value::list([
+                Value::String("foo1.png".into()),
+                Value::String("foo2.png".into()),
+                Value::String("foo12.png".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn func_arity_matches_upstream_core_cases() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("car".into())],
+                &mut env,
+            )
+            .expect("func-arity car"),
+            Value::cons(Value::Integer(1), Value::Integer(1))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("caar".into())],
+                &mut env,
+            )
+            .expect("func-arity caar"),
+            Value::cons(Value::Integer(1), Value::Integer(1))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("format".into())],
+                &mut env,
+            )
+            .expect("func-arity format"),
+            Value::cons(Value::Integer(1), Value::Symbol("many".into()))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Lambda(
+                    vec!["&rest".into(), "_x".into()],
+                    Vec::new(),
+                    shared_env(Vec::new()),
+                )],
+                &mut env,
+            )
+            .expect("func-arity rest lambda"),
+            Value::cons(Value::Integer(0), Value::Symbol("many".into()))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Lambda(
+                    vec!["_x".into(), "&optional".into(), "y".into()],
+                    Vec::new(),
+                    shared_env(Vec::new()),
+                )],
+                &mut env,
+            )
+            .expect("func-arity optional lambda"),
+            Value::cons(Value::Integer(1), Value::Integer(2))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("let".into())],
+                &mut env,
+            )
+            .expect("func-arity let"),
+            Value::cons(Value::Integer(1), Value::Symbol("unevalled".into()))
         );
     }
 }
