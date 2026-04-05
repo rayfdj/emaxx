@@ -24411,6 +24411,41 @@ mod tests {
     }
 
     #[test]
+    fn completion_predicates_preserve_string_list_membership() {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let mut interp = Interpreter::new();
+                let mut env = Vec::new();
+                let forms = Reader::new(
+                    "(let* ((abcdef '(\"abc\" \"def\"))
+                            (pred (lambda (elt) (memq elt abcdef))))
+                       (list (try-completion \"a\" abcdef pred)
+                             (all-completions \"a\" abcdef pred)
+                             (test-completion \"abc\" abcdef pred)))",
+                )
+                .read_all()
+                .expect("completion test form should parse");
+                let result = forms
+                    .iter()
+                    .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+                    .expect("string-list completion predicates should keep matching members");
+                let expected = Value::list([
+                    Value::String("abc".into()),
+                    Value::list([Value::String("abc".into())]),
+                    Value::T,
+                ]);
+                assert!(
+                    values_equal(&interp, &result, &expected),
+                    "expected {expected}, got {result}"
+                );
+            })
+            .expect("spawn large-stack test thread")
+            .join()
+            .expect("join large-stack test thread");
+    }
+
+    #[test]
     fn shell_quote_argument_matches_upstream_batch_cases() {
         assert_eq!(shell_quote_argument("*.pl"), r"\*.pl");
         assert_eq!(shell_quote_argument("nfs"), "nfs");
@@ -32721,6 +32756,54 @@ fn completion_display_name(value: &Value) -> Result<String, LispError> {
     }
 }
 
+fn ensure_completion_list_item_identity(item: &Rc<RefCell<Value>>) -> Result<Value, LispError> {
+    let current = item.borrow().clone();
+    match current {
+        Value::String(text) => {
+            let shared = make_shared_string_value_with_multibyte(text, Vec::new(), false);
+            *item.borrow_mut() = shared.clone();
+            Ok(shared)
+        }
+        value => Ok(value),
+    }
+}
+
+fn completion_list_candidates(collection: &Value) -> Result<Vec<CompletionCandidate>, LispError> {
+    let mut candidates = Vec::new();
+    let mut current = collection.clone();
+    let mut seen = HashSet::new();
+
+    loop {
+        match current {
+            Value::Nil => return Ok(candidates),
+            Value::Cons(car, cdr) => {
+                let id = Rc::as_ptr(&car) as usize;
+                if !seen.insert(id) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                let item = ensure_completion_list_item_identity(&car)?;
+                if matches!(item, Value::Cons(_, _)) {
+                    let key = item.car()?;
+                    candidates.push(CompletionCandidate {
+                        name: completion_display_name(&key)?,
+                        predicate_args: vec![item],
+                    });
+                } else {
+                    candidates.push(CompletionCandidate {
+                        name: completion_display_name(&item)?,
+                        predicate_args: vec![item],
+                    });
+                }
+                current = cdr.borrow().clone();
+            }
+            _ => return Err(LispError::TypeError("list".into(), current.type_name())),
+        }
+    }
+}
+
 fn completion_candidates(
     interp: &Interpreter,
     collection: &Value,
@@ -32751,24 +32834,7 @@ fn completion_candidates(
         Err(LispError::TypeError(expected, _)) if expected == "obarray" => {}
         Err(error) => return Err(error),
     }
-    collection
-        .to_vec()?
-        .into_iter()
-        .map(|item| {
-            if matches!(item, Value::Cons(_, _)) {
-                let key = item.car()?;
-                Ok(CompletionCandidate {
-                    name: completion_display_name(&key)?,
-                    predicate_args: vec![item],
-                })
-            } else {
-                Ok(CompletionCandidate {
-                    name: completion_display_name(&item)?,
-                    predicate_args: vec![item],
-                })
-            }
-        })
-        .collect()
+    completion_list_candidates(collection)
 }
 
 fn completion_ignores_case(interp: &Interpreter, env: &Env) -> bool {
