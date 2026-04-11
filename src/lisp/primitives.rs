@@ -260,7 +260,7 @@ fn thread_list_row(
         if blocker.is_truthy() {
             (
                 String::from("Blocked"),
-                render_prin1(interp, &blocker, env)?,
+                render_prin1_ephemeral(interp, &blocker, env)?,
             )
         } else {
             (String::from("Yielded"), String::new())
@@ -1096,6 +1096,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "keywordp"
             | "functionp"
             | "compiled-function-p"
+            | "byte-code-function-p"
             | "closurep"
             | "interpreted-function-p"
             | "subrp"
@@ -1191,7 +1192,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "call-interactively"
             | "keyboard-quit"
             | "fset"
+            | "fmakunbound"
             | "eval"
+            | "eval-buffer"
             | "define-keymap"
             | "define-abbrev-table"
             | "read-event"
@@ -1212,6 +1215,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "kbd"
             | "key-description"
             | "single-key-description"
+            | "text-char-description"
             | "position-symbol"
             | "symbol-with-pos-pos"
             | "remove-pos-from-symbol"
@@ -1595,6 +1599,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "propertized-buffer-identification"
             | "set-buffer"
             | "switch-to-buffer"
+            | "pop-to-buffer"
             | "pop-to-buffer-same-window"
             | "create-file-buffer"
             | "buffer-file-name"
@@ -1637,7 +1642,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "ert-resource-directory"
             | "ert-resource-file"
             | "ert-fail"
+            | "get-load-suffixes"
             | "load"
+            | "locate-file-internal"
             | "directory-files"
             | "file-directory-p"
             | "file-accessible-directory-p"
@@ -1735,9 +1742,16 @@ pub fn is_builtin(name: &str) -> bool {
             | "accept-process-output"
             | "substitute-command-keys"
             | "prin1"
+            | "cl-prin1"
             | "prin1-to-string"
+            | "cl-prin1-to-string"
+            | "print--preprocess"
             | "princ"
             | "print"
+            | "terpri"
+            | "write-char"
+            | "redirect-debugging-output"
+            | "external-debugging-output"
             | "read-char-choice"
             | "y-or-n-p"
             | "yes-or-no-p"
@@ -1895,6 +1909,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "apropos-internal"
             | "intern"
             | "intern-soft"
+            | "unintern"
             | "autoload"
             | "autoload-do-load"
             | "autoloadp"
@@ -1906,6 +1921,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "documentation"
             | "documentation-property"
             | "daemonp"
+            | "set-language-environment"
             | "setenv"
             | "getenv"
             | "getenv-internal"
@@ -1953,6 +1969,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "keymap-set"
             | "keymap-unset"
             | "lookup-key"
+            | "accessible-keymaps"
             | "key-binding"
             | "command-remapping"
             | "keymap-lookup"
@@ -1964,6 +1981,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "use-local-map"
             | "current-local-map"
             | "copy-keymap"
+            | "keymap--get-keyelt"
+            | "describe-buffer-bindings"
+            | "help--describe-vector"
             | "current-global-map"
             | "global-set-key"
             | "local-set-key"
@@ -2005,10 +2025,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "defvar-1"
             | "defconst-1"
             | "internal-make-var-non-special"
+            | "lread--substitute-object-in-subtree"
             | "make-symbol"
             | "gensym"
             | "make-interpreted-closure"
             | "obarray-make"
+            | "internal--obarray-buckets"
             | "define-hash-table-test"
             | "make-hash-table"
             | "gethash"
@@ -3076,7 +3098,7 @@ pub fn call(
                 },
             )
         }
-        "compiled-function-p" => {
+        "compiled-function-p" | "byte-code-function-p" => {
             need_args(name, args, 1)?;
             Ok(
                 if record_type_name(interp, &args[0]) == Some("byte-code-function") {
@@ -3134,7 +3156,7 @@ pub fn call(
         }
         "current-active-maps" => {
             need_arg_range(name, args, 0, 2)?;
-            Ok(Value::list(current_active_maps(interp, env)?))
+            Ok(Value::list(current_active_maps(interp, env, args.get(1))?))
         }
         "commandp" => {
             need_args(name, args, 1)?;
@@ -3169,15 +3191,11 @@ pub fn call(
             let command = args[0].as_symbol()?;
             let first_only = args.get(2).is_some_and(Value::is_truthy);
             let keymaps = where_is_internal_maps(interp, args.get(1), env)?;
-            let matches = where_is_internal(interp, command, &keymaps);
+            let matches = where_is_internal(interp, command, &keymaps, env)?;
             if first_only {
-                Ok(matches
-                    .into_iter()
-                    .next()
-                    .map(Value::String)
-                    .unwrap_or(Value::Nil))
+                Ok(matches.into_iter().next().unwrap_or(Value::Nil))
             } else {
-                Ok(Value::list(matches.into_iter().map(Value::String)))
+                Ok(Value::list(matches))
             }
         }
         "default-boundp" => {
@@ -3330,17 +3348,22 @@ pub fn call(
         }
         "listp" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].is_list() {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if args[0].is_list() || keymap_list_items(interp, &args[0])?.is_some() {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "proper-list-p" => {
             need_args(name, args, 1)?;
-            Ok(match proper_list_length(&args[0]) {
-                Some(length) => Value::Integer(length as i64),
-                None => Value::Nil,
+            Ok(match keymap_list_items(interp, &args[0])? {
+                Some(items) => Value::Integer(items.len() as i64),
+                None => match proper_list_length(&args[0]) {
+                    Some(length) => Value::Integer(length as i64),
+                    None => Value::Nil,
+                },
             })
         }
         "bufferp" => {
@@ -3430,20 +3453,24 @@ pub fn call(
 
         "atom" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].is_cons() {
-                Value::Nil
-            } else {
-                Value::T
-            })
+            Ok(
+                if args[0].is_cons() || keymap_list_items(interp, &args[0])?.is_some() {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            )
         }
 
         "nlistp" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].is_list() {
-                Value::Nil
-            } else {
-                Value::T
-            })
+            Ok(
+                if args[0].is_list() || keymap_list_items(interp, &args[0])?.is_some() {
+                    Value::Nil
+                } else {
+                    Value::T
+                },
+            )
         }
 
         "characterp" => {
@@ -3469,11 +3496,13 @@ pub fn call(
         }
         "recordp" => {
             need_args(name, args, 1)?;
-            Ok(if matches!(args[0], Value::Record(_)) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if matches!(args[0], Value::Record(_)) || record_literal_items(&args[0]).is_some() {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
 
         // ── List operations ──
@@ -3483,24 +3512,36 @@ pub fn call(
         }
         "car" => {
             need_args(name, args, 1)?;
-            args[0].car()
+            if let Some(items) = keymap_list_items(interp, &args[0])? {
+                Ok(items.into_iter().next().unwrap_or(Value::Nil))
+            } else {
+                args[0].car()
+            }
         }
         "cdr" => {
             need_args(name, args, 1)?;
-            args[0].cdr()
+            if let Some(items) = keymap_list_items(interp, &args[0])? {
+                Ok(Value::list(items.into_iter().skip(1)))
+            } else {
+                args[0].cdr()
+            }
         }
         "car-safe" => {
             need_args(name, args, 1)?;
             Ok(match &args[0] {
                 Value::Cons(car, _) => car.borrow().clone(),
-                _ => Value::Nil,
+                value => keymap_list_items(interp, value)?
+                    .and_then(|items| items.into_iter().next())
+                    .unwrap_or(Value::Nil),
             })
         }
         "cdr-safe" => {
             need_args(name, args, 1)?;
             Ok(match &args[0] {
                 Value::Cons(_, cdr) => cdr.borrow().clone(),
-                _ => Value::Nil,
+                value => keymap_list_items(interp, value)?
+                    .map(|items| Value::list(items.into_iter().skip(1)))
+                    .unwrap_or(Value::Nil),
             })
         }
         "identity" => {
@@ -3565,6 +3606,15 @@ pub fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            if let Some(items) = keymap_list_items(interp, &args[0])? {
+                let projected = Value::list(items);
+                return call(
+                    interp,
+                    "last",
+                    &[projected, args.get(1).cloned().unwrap_or(Value::Integer(1))],
+                    env,
+                );
+            }
             let n = args
                 .get(1)
                 .map(Value::as_integer)
@@ -3614,6 +3664,12 @@ pub fn call(
         }
         "length" => {
             need_args(name, args, 1)?;
+            if let Some(items) = keymap_list_items(interp, &args[0])? {
+                return Ok(Value::Integer(items.len() as i64));
+            }
+            if let Some(items) = record_literal_items(&args[0]) {
+                return Ok(Value::Integer((items.len().saturating_sub(1)) as i64));
+            }
             match &args[0] {
                 value if string_like(value).is_some() => {
                     Ok(Value::Integer(string_text(value)?.chars().count() as i64))
@@ -3638,7 +3694,11 @@ pub fn call(
         }
         "safe-length" => {
             need_args(name, args, 1)?;
-            Ok(Value::Integer(safe_list_length(&args[0])))
+            Ok(Value::Integer(
+                keymap_list_items(interp, &args[0])?
+                    .map(|items| items.len() as i64)
+                    .unwrap_or_else(|| safe_list_length(&args[0])),
+            ))
         }
         "length<" | "length>" | "length=" => {
             need_args(name, args, 2)?;
@@ -4073,6 +4133,7 @@ pub fn call(
             Ok(acc)
         }
         "eval" => eval_impl(interp, args, env),
+        "eval-buffer" => eval_buffer_impl(interp, args, env),
         "mapconcat" => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -4399,6 +4460,12 @@ pub fn call(
                 Ok(args[1].clone())
             }
         }
+        "fmakunbound" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            interp.set_function_binding(symbol, None);
+            Ok(Value::Symbol(symbol.to_string()))
+        }
         "funcall-interactively" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -4611,7 +4678,19 @@ pub fn call(
             interp,
             args.iter().map(Value::is_truthy),
         )),
-        "make-keymap" | "make-sparse-keymap" => {
+        "make-keymap" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            Ok(make_runtime_full_keymap(
+                interp,
+                args.first()
+                    .and_then(string_like)
+                    .map(|string| string.text)
+                    .as_deref(),
+            ))
+        }
+        "make-sparse-keymap" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
@@ -5128,7 +5207,7 @@ pub fn call(
 
                 let (mut formatted, mut formatted_props) = match conv {
                     's' => format_s_conversion(arg, precision)?,
-                    'S' => (render_prin1(interp, arg, env)?, Vec::new()),
+                    'S' => (render_prin1_ephemeral(interp, arg, env)?, Vec::new()),
                     'd' | 'o' | 'x' | 'X' | 'b' | 'B' => (
                         format_numeric_conversion(
                             interp, arg, conv, flag_hash, flag_plus, flag_space, precision,
@@ -7998,6 +8077,7 @@ pub fn call(
             need_args(name, args, 1)?;
             match &args[0] {
                 Value::BuiltinFunc(symbol) => builtin_arity_value(symbol)
+                    .or_else(|| special_form_arity_value(symbol))
                     .ok_or_else(|| LispError::TypeError("subr".into(), args[0].type_name())),
                 other => Err(LispError::TypeError("subr".into(), other.type_name())),
             }
@@ -8559,7 +8639,7 @@ pub fn call(
             interp.switch_to_buffer_id(id)?;
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
-        "pop-to-buffer-same-window" => {
+        "pop-to-buffer" | "pop-to-buffer-same-window" => {
             need_args(name, args, 1)?;
             let id = if let Some(name) = string_like(&args[0]).map(|string| string.text) {
                 interp
@@ -9088,18 +9168,33 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let library = string_text(&args[0])?;
-            Ok(interp
-                .resolve_load_target(&library)
+            Ok(resolve_load_target_in_env(interp, &library, env)
                 .map(|path| Value::String(path.display().to_string()))
                 .unwrap_or(Value::Nil))
+        }
+        "get-load-suffixes" => {
+            need_args(name, args, 0)?;
+            get_load_suffixes_value(interp, env)
         }
         "load" => {
             if args.is_empty() || args.len() > 5 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let target = string_text(&args[0])?;
-            let _loaded = interp.load_target(&target)?;
+            let Some(path) = resolve_load_target_in_env(interp, &target, env) else {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("file-missing".into()),
+                    Value::String("Cannot open load file".into()),
+                    Value::String("No such file or directory".into()),
+                    Value::String(target),
+                ])));
+            };
+            crate::lisp::load_file_strict(interp, &path)?;
             Ok(Value::T)
+        }
+        "locate-file-internal" => {
+            need_args(name, args, 4)?;
+            locate_file_internal(interp, &args[0], &args[1], &args[2], &args[3], env)
         }
         "directory-files" => {
             need_arg_range(name, args, 1, 5)?;
@@ -9987,7 +10082,7 @@ pub fn call(
             )))
         }
         "message" => {
-            let text = if args.is_empty() {
+            let text = if args.is_empty() || args.first().is_some_and(Value::is_nil) {
                 String::new()
             } else {
                 string_text(&call(interp, "format", args, env)?)?
@@ -10009,10 +10104,19 @@ pub fn call(
                 captured.push_str(&text);
                 captured.push('\n');
             }
-            Ok(Value::String(text))
+            if args.first().is_some_and(Value::is_nil) {
+                Ok(Value::Nil)
+            } else {
+                Ok(Value::String(text))
+            }
         }
         "error-message-string" => {
             need_args(name, args, 1)?;
+            if let Err(LispError::SignalValue(signal)) = args[0].to_vec()
+                && circular_list_signal_p(&signal)
+            {
+                return Err(LispError::SignalValue(signal));
+            }
             let items = args[0].to_vec().ok();
             if let Some(items) = items
                 && let Some(message) = items.get(1).and_then(string_like)
@@ -10046,20 +10150,112 @@ pub fn call(
         }
         "prin1" => {
             need_arg_range(name, args, 1, 3)?;
-            let rendered = render_prin1(interp, &args[0], env)?;
-            write_printer_output(interp, &rendered, args.get(1))?;
+            let rendered = if matches!(args.get(2), None | Some(Value::Nil)) {
+                render_prin1(interp, &args[0], env)?
+            } else {
+                let mut print_env = printer_env_with_overrides(env, args.get(2))?;
+                let rendered = render_prin1(interp, &args[0], &mut print_env)?;
+                sync_print_number_table(env, args.get(2), &print_env);
+                let stream = printer_stream_value(interp, &print_env, args.get(1));
+                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+                return Ok(args[0].clone());
+            };
+            let stream = printer_stream_value(interp, env, args.get(1));
+            write_printer_output(interp, &rendered, stream.as_ref(), env)?;
             Ok(args[0].clone())
         }
-        "princ" | "print" => {
-            if args.is_empty() {
-                Ok(Value::Nil)
+        "cl-prin1" => {
+            need_arg_range(name, args, 1, 3)?;
+            let rendered = if matches!(args.get(2), None | Some(Value::Nil)) {
+                render_cl_prin1(interp, &args[0], env)?
             } else {
-                Ok(args[0].clone())
+                let mut print_env = printer_env_with_overrides(env, args.get(2))?;
+                let rendered = render_cl_prin1(interp, &args[0], &mut print_env)?;
+                sync_print_number_table(env, args.get(2), &print_env);
+                let stream = printer_stream_value(interp, &print_env, args.get(1));
+                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+                return Ok(args[0].clone());
+            };
+            let stream = printer_stream_value(interp, env, args.get(1));
+            write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+            Ok(args[0].clone())
+        }
+        "princ" => {
+            if args.is_empty() {
+                return Ok(Value::Nil);
             }
+            let rendered = render_princ(&args[0]);
+            let stream = printer_stream_value(interp, env, args.get(1));
+            write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+            Ok(args[0].clone())
+        }
+        "print" => {
+            if args.is_empty() {
+                return Ok(Value::Nil);
+            }
+            let rendered = format!("\n{}\n", render_prin1(interp, &args[0], env)?);
+            let stream = printer_stream_value(interp, env, args.get(1));
+            write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+            Ok(args[0].clone())
+        }
+        "terpri" => {
+            need_arg_range(name, args, 0, 2)?;
+            let stream = printer_stream_value(interp, env, args.first());
+            if args.get(1).is_some_and(Value::is_truthy)
+                && printer_stream_at_line_start(interp, stream.as_ref())?
+            {
+                return Ok(Value::Nil);
+            }
+            write_printer_output(interp, "\n", stream.as_ref(), env)?;
+            Ok(Value::T)
         }
         "prin1-to-string" => {
+            need_arg_range(name, args, 1, 3)?;
+            if matches!(args.get(2), None | Some(Value::Nil)) {
+                return Ok(Value::String(render_prin1(interp, &args[0], env)?));
+            }
+            let mut print_env = printer_env_with_overrides(env, args.get(2))?;
+            let rendered = render_prin1(interp, &args[0], &mut print_env)?;
+            sync_print_number_table(env, args.get(2), &print_env);
+            Ok(Value::String(rendered))
+        }
+        "cl-prin1-to-string" => {
+            need_arg_range(name, args, 1, 3)?;
+            if matches!(args.get(2), None | Some(Value::Nil)) {
+                return Ok(Value::String(render_cl_prin1(interp, &args[0], env)?));
+            }
+            let mut print_env = printer_env_with_overrides(env, args.get(2))?;
+            let rendered = render_cl_prin1(interp, &args[0], &mut print_env)?;
+            sync_print_number_table(env, args.get(2), &print_env);
+            Ok(Value::String(rendered))
+        }
+        "write-char" => {
+            need_arg_range(name, args, 1, 2)?;
+            let rendered = format_char_conversion(&args[0])?;
+            let stream = printer_stream_value(interp, env, args.get(1));
+            write_printer_output(interp, &rendered, stream.as_ref(), env)?;
+            Ok(args[0].clone())
+        }
+        "redirect-debugging-output" => {
+            need_arg_range(name, args, 0, 2)?;
+            let target = match args.first() {
+                None | Some(Value::Nil) => Value::Nil,
+                Some(value) => Value::String(string_text(value)?),
+            };
+            interp.set_global_binding("emaxx-external-debugging-output-target", target.clone());
+            Ok(target)
+        }
+        "external-debugging-output" => {
             need_args(name, args, 1)?;
-            Ok(Value::String(render_prin1(interp, &args[0], env)?))
+            let rendered = string_like(&args[0])
+                .map(|value| value.text)
+                .unwrap_or(format_char_conversion(&args[0])?);
+            append_external_debugging_output(interp, &rendered)?;
+            Ok(args[0].clone())
+        }
+        "print--preprocess" => {
+            need_args(name, args, 1)?;
+            print_preprocess(interp, &args[0], env)
         }
         "read-char-choice" => {
             need_args(name, args, 2)?;
@@ -10104,10 +10300,8 @@ pub fn call(
             };
             let step = if args.len() > 2 {
                 args[2].as_integer()?
-            } else if from <= to {
-                1
             } else {
-                -1
+                1
             };
             if step == 0 {
                 return Err(LispError::Signal(
@@ -10157,6 +10351,12 @@ pub fn call(
             let no_angles = args.get(1).is_some_and(Value::is_truthy);
             Ok(Value::String(single_key_description_text(
                 &args[0], no_angles,
+            )?))
+        }
+        "text-char-description" => {
+            need_args(name, args, 1)?;
+            Ok(Value::String(text_char_description_text(
+                args[0].as_integer()?,
             )?))
         }
 
@@ -10831,7 +11031,7 @@ pub fn call(
         // ── Reader ──
         "read" => {
             need_args(name, args, 1)?;
-            read_from_lisp_source(interp, &args[0])
+            read_from_lisp_source(interp, &args[0], env)
         }
         "read-from-string" => {
             if args.is_empty() || args.len() > 3 {
@@ -10845,10 +11045,13 @@ pub fn call(
             let slice: String = chars[start..end].iter().collect();
             let mut reader = super::reader::Reader::new(&slice);
             match reader.read()? {
-                Some(val) => Ok(Value::cons(
-                    val,
-                    Value::Integer((start + reader.position()) as i64),
-                )),
+                Some(val) => {
+                    let consumed = slice[..reader.position()].chars().count();
+                    Ok(Value::cons(
+                        super::reader::resolve_circular_read_syntax(val)?,
+                        Value::Integer((start + consumed) as i64),
+                    ))
+                }
                 None => Err(LispError::EndOfInput),
             }
         }
@@ -10965,6 +11168,7 @@ pub fn call(
                 Value::Symbol(symbol) => symbol.clone(),
                 _ => string_text(&args[0])?,
             };
+            let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
             match args.get(1) {
                 Some(obarray) if !obarray.is_nil() => {
                     intern_in_obarray(interp, obarray, &symbol_name)
@@ -10983,11 +11187,25 @@ pub fn call(
                 Value::Symbol(symbol) => symbol.clone(),
                 _ => string_text(&args[0])?,
             };
+            let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
             match args.get(1) {
                 Some(obarray) if !obarray.is_nil() => {
                     intern_soft_in_obarray(interp, obarray, &symbol_name)
                 }
                 _ => Ok(default_intern_soft_result(interp, &symbol_name, env)),
+            }
+        }
+        "unintern" => {
+            need_arg_range(name, args, 1, 2)?;
+            match args.get(1) {
+                Some(obarray) if !obarray.is_nil() => {
+                    Ok(if unintern_from_obarray(interp, obarray, &args[0], env)? {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    })
+                }
+                _ => Ok(Value::Nil),
             }
         }
         "make-symbol" => {
@@ -11002,7 +11220,10 @@ pub fn call(
             need_arg_range(name, args, 0, 1)?;
             let prefix = gensym_prefix(args.first())?;
             let id = GENSYM_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-            Ok(Value::Symbol(format!("{prefix}{id}")))
+            let visible = format!("{prefix}{id}");
+            Ok(Value::Symbol(
+                crate::lisp::types::make_uninterned_symbol_name(&visible, id),
+            ))
         }
         "autoload" => {
             if args.len() < 2 || args.len() > 5 {
@@ -11308,6 +11529,11 @@ pub fn call(
             }
             Ok(Value::Symbol(symbol))
         }
+        "lread--substitute-object-in-subtree" => {
+            need_args(name, args, 3)?;
+            substitute_object_in_subtree(interp, &args[0], &args[1], &args[2])?;
+            Ok(Value::Nil)
+        }
         "defvaralias" => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -11495,6 +11721,19 @@ pub fn call(
                 getenv_in_environment(&variable, &process_environment, from_explicit_env)?
                     .unwrap_or(Value::Nil),
             )
+        }
+        "set-language-environment" => {
+            need_args(name, args, 1)?;
+            let language = if args[0].is_nil() {
+                "English".to_string()
+            } else if let Ok(symbol) = args[0].as_symbol() {
+                symbol.to_string()
+            } else {
+                string_text(&args[0])?
+            };
+            let value = Value::String(language);
+            interp.set_global_binding("current-language-environment", value.clone());
+            Ok(value)
         }
         "setenv" => {
             need_arg_range(name, args, 1, 3)?;
@@ -11715,7 +11954,17 @@ pub fn call(
             Ok(Value::Nil)
         }
         "mapatoms" => {
-            need_args(name, args, 1)?;
+            need_arg_range(name, args, 1, 2)?;
+            let callback = resolve_callable(interp, &args[0], env)?;
+            let obarray = args.get(1).cloned().unwrap_or(Value::Nil);
+            for symbol in obarray_symbols_or_empty(interp, &obarray)? {
+                interp.call_function_value(
+                    callback.clone(),
+                    args[0].as_symbol().ok(),
+                    &[symbol],
+                    env,
+                )?;
+            }
             Ok(Value::Nil)
         }
         "remove-hook" => {
@@ -11744,36 +11993,83 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
-        "define-key" | "define-key-after" | "keymap-set" => {
-            if args.len() < 3 || args.len() > 5 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
+        "define-key" => {
+            need_arg_range(name, args, 3, 4)?;
             let key = key_sequence_binding_text(&args[1])?;
-            let after_prompt = !matches!(name, "define-key");
+            let key_parts = key_sequence_binding_parts(&args[1])?;
+            if args[2].is_nil() && args.get(3).is_some_and(Value::is_truthy) {
+                keymap_remove_binding(interp, &args[0], &key)?;
+            } else {
+                keymap_define_binding_with_placement(
+                    interp,
+                    &args[0],
+                    &key,
+                    Some(key_parts),
+                    args[2].clone(),
+                    false,
+                )?;
+            }
+            Ok(args[2].clone())
+        }
+        "define-key-after" => {
+            need_arg_range(name, args, 3, 4)?;
+            let key = key_sequence_binding_text(&args[1])?;
+            let key_parts = key_sequence_binding_parts(&args[1])?;
+            let after = args
+                .get(3)
+                .filter(|value| !value.is_nil())
+                .map(key_sequence_binding_parts)
+                .transpose()?;
+            keymap_define_binding_after(
+                interp,
+                &args[0],
+                &key,
+                Some(key_parts),
+                args[2].clone(),
+                after.as_deref(),
+            )?;
+            Ok(Value::Nil)
+        }
+        "keymap-set" => {
+            need_args(name, args, 3)?;
+            let key = key_sequence_binding_text(&args[1])?;
+            let key_parts = key_sequence_binding_parts(&args[1])?;
             keymap_define_binding_with_placement(
                 interp,
                 &args[0],
                 &key,
+                Some(key_parts),
                 args[2].clone(),
-                after_prompt,
+                true,
             )?;
             Ok(args[2].clone())
         }
         "keymap-unset" => {
-            if args.len() < 2 || args.len() > 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
+            need_arg_range(name, args, 2, 3)?;
             let key = key_sequence_binding_text(&args[1])?;
-            keymap_remove_binding(interp, &args[0], &key)?;
+            if args.get(2).is_some_and(Value::is_truthy) {
+                keymap_remove_binding(interp, &args[0], &key)?;
+            } else {
+                let key_parts = key_sequence_binding_parts(&args[1])?;
+                keymap_define_binding_with_placement(
+                    interp,
+                    &args[0],
+                    &key,
+                    Some(key_parts),
+                    Value::Nil,
+                    true,
+                )?;
+            }
             Ok(Value::Nil)
         }
         "lookup-key" | "keymap-lookup" => {
             if args.len() < 2 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let key = key_sequence_binding_text(&args[1])?;
-            keymap_lookup_binding(interp, &args[0], &key)
+            let key_parts = key_sequence_binding_parts(&args[1])?;
+            keymap_lookup_sequence_value(interp, &args[0], &key_parts, env)
         }
+        "accessible-keymaps" => accessible_keymaps(interp, args, env),
         "keymap--read-only-filter" => {
             need_args(name, args, 1)?;
             if interp
@@ -11798,6 +12094,12 @@ pub fn call(
                 ]),
             ]))
         }
+        "keymap--get-keyelt" => {
+            need_args(name, args, 2)?;
+            keymap_get_keyelt(interp, &args[0], args[1].is_truthy(), env)
+        }
+        "describe-buffer-bindings" => describe_buffer_bindings(interp, args, env),
+        "help--describe-vector" => help_describe_vector(interp, args, env),
         "key-binding" => {
             need_arg_range(name, args, 1, 3)?;
             let key = key_sequence_binding_text(&args[0])?;
@@ -11844,11 +12146,18 @@ pub fn call(
         }
         "use-local-map" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "current-local-map",
+                args[0].clone(),
+            );
+            Ok(args[0].clone())
         }
         "current-local-map" => {
             need_args(name, args, 0)?;
-            Ok(Value::Nil)
+            Ok(interp
+                .lookup_var("current-local-map", env)
+                .unwrap_or(Value::Nil))
         }
         "current-global-map" => {
             need_args(name, args, 0)?;
@@ -11859,10 +12168,18 @@ pub fn call(
         "global-set-key" => {
             need_args(name, args, 2)?;
             let key = key_sequence_binding_text(&args[0])?;
+            let key_parts = key_sequence_binding_parts(&args[0])?;
             let global_map = interp
                 .lookup_var("global-map", env)
                 .unwrap_or_else(|| keymap_placeholder(Some("global-map")));
-            keymap_define_binding(interp, &global_map, &key, args[1].clone())?;
+            keymap_define_binding_with_placement(
+                interp,
+                &global_map,
+                &key,
+                Some(key_parts),
+                args[1].clone(),
+                true,
+            )?;
             Ok(args[1].clone())
         }
         "local-set-key" => {
@@ -12009,26 +12326,24 @@ pub fn call(
         "symbol-function" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            Ok(match interp.lookup_function(symbol, env) {
-                Ok(value) => value,
-                Err(_) if matches!(symbol, "if" | "progn") => {
-                    Value::BuiltinFunc(symbol.to_string())
-                }
-                Err(_) if symbol == "benchmark-run" => Value::list([
+            Ok(match interp.raw_function_binding(symbol, env) {
+                Some(value) => value,
+                None if matches!(symbol, "if" | "progn") => Value::BuiltinFunc(symbol.to_string()),
+                None if symbol == "benchmark-run" => Value::list([
                     Value::Symbol("autoload".into()),
                     Value::String("benchmark.el".into()),
                     Value::String("Autoloaded benchmark-run.".into()),
                     Value::Nil,
                     Value::Nil,
                 ]),
-                Err(_) if symbol == "tetris" => Value::list([
+                None if symbol == "tetris" => Value::list([
                     Value::Symbol("autoload".into()),
                     Value::String("tetris.el".into()),
                     Value::String("Autoloaded tetris.".into()),
                     Value::T,
                     Value::Nil,
                 ]),
-                Err(_) => Value::String(format!("#<function {}>", symbol)),
+                None => Value::String(format!("#<function {}>", symbol)),
             })
         }
         "symbol-file" => {
@@ -12304,6 +12619,14 @@ pub fn call(
                 return Err(LispError::TypeError("natnump".into(), size.type_name()));
             }
             Ok(make_obarray(interp))
+        }
+        "internal--obarray-buckets" => {
+            need_args(name, args, 1)?;
+            Ok(Value::list(
+                obarray_symbols(interp, &args[0])?
+                    .into_iter()
+                    .map(|symbol| Value::list([symbol])),
+            ))
         }
         "define-hash-table-test" => {
             need_args(name, args, 3)?;
@@ -12982,10 +13305,10 @@ pub fn call(
                 .unwrap_or_else(|| interp.create_buffer("*Thread Backtrace*").0);
             let mut text = format!("Backtrace for thread `{thread_name}':\n");
             for (function, frame_args, _) in interp.thread_backtrace_frames_snapshot(thread_id) {
-                text.push_str(&render_prin1(interp, &function, env)?);
+                text.push_str(&render_prin1_ephemeral(interp, &function, env)?);
                 for arg in frame_args {
                     text.push(' ');
-                    text.push_str(&render_prin1(interp, &arg, env)?);
+                    text.push_str(&render_prin1_ephemeral(interp, &arg, env)?);
                 }
                 text.push('\n');
             }
@@ -13985,6 +14308,9 @@ pub fn call(
             need_args(name, args, 2)?;
             let idx = args[1].as_integer()? as usize;
             // Support both list-vectors and strings
+            if let Some(items) = record_literal_items(&args[0]) {
+                return record_literal_aref(&args[0], &items, idx, &args[1]);
+            }
             match &args[0] {
                 Value::String(_) | Value::StringObject(_) => {
                     match string_like(&args[0])
@@ -14007,6 +14333,15 @@ pub fn call(
                         LispError::TypeError("record".into(), format!("record<{id}>"))
                     })?;
                     if record.type_name == "bool-vector" {
+                        return record.slots.get(idx).cloned().ok_or_else(|| {
+                            LispError::SignalValue(Value::list([
+                                Value::Symbol("args-out-of-range".into()),
+                                args[0].clone(),
+                                args[1].clone(),
+                            ]))
+                        });
+                    }
+                    if record.type_name == "byte-code-function" {
                         return record.slots.get(idx).cloned().ok_or_else(|| {
                             LispError::SignalValue(Value::list([
                                 Value::Symbol("args-out-of-range".into()),
@@ -15357,7 +15692,7 @@ pub fn call(
         "insert-before-markers" => insert_impl(interp, args, env, false, true),
         "insert-before-markers-and-inherit" => insert_impl(interp, args, env, true, true),
 
-        _ if is_composed_accessor_name(name) => call_composed_accessor(name, args),
+        _ if is_composed_accessor_name(name) => call_composed_accessor(interp, name, args),
 
         _ => Err(LispError::Signal(format!("Unknown function: {}", name))),
     }
@@ -24290,6 +24625,62 @@ mod tests {
         )
         .expect("key-description should normalize raw unibyte meta bytes");
         assert_eq!(raw_byte, Value::String("M-a".into()));
+
+        let list_event = call(
+            &mut interp,
+            "key-description",
+            &[Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::list([Value::Symbol("control".into()), Value::Symbol("x".into())]),
+                Value::list([Value::Symbol("control".into()), Value::Symbol("f".into())]),
+            ])],
+            &mut env,
+        )
+        .expect("key-description should normalize list-form control events");
+        assert_eq!(list_event, Value::String("C-x C-f".into()));
+    }
+
+    #[test]
+    fn key_sequence_binding_parts_preserve_control_prefixes() {
+        assert_eq!(
+            key_sequence_binding_parts(&Value::String("C-c g".into())).unwrap(),
+            vec!["C-c".to_string(), "g".to_string()]
+        );
+        assert_eq!(
+            key_sequence_binding_parts(&Value::list([
+                Value::Symbol("vector".into()),
+                Value::Integer(3),
+                Value::Integer('g' as i64),
+            ]))
+            .unwrap(),
+            vec!["C-c".to_string(), "g".to_string()]
+        );
+    }
+
+    #[test]
+    fn keymap_set_where_is_internal_preserves_control_prefixes() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let keymap = make_runtime_keymap(&mut interp, Some("test-map"));
+        call(
+            &mut interp,
+            "keymap-set",
+            &[
+                keymap.clone(),
+                Value::String("C-c g".into()),
+                Value::Symbol("keymap-tests-command".into()),
+            ],
+            &mut env,
+        )
+        .expect("keymap-set should accept control-prefixed textual specs");
+        assert_eq!(
+            where_is_internal(&mut interp, "keymap-tests-command", &[keymap], &mut env,).unwrap(),
+            vec![Value::list([
+                Value::Symbol("vector-literal".into()),
+                Value::Integer(3),
+                Value::Integer('g' as i64),
+            ])]
+        );
     }
 
     #[test]
@@ -26363,6 +26754,9 @@ fn keymap_list_items(interp: &Interpreter, value: &Value) -> Result<Option<Vec<V
         return Ok(None);
     };
     let mut items = vec![Value::Symbol("keymap".into())];
+    if let Some(char_table) = keymap_char_table(record) {
+        items.push(char_table);
+    }
     let bindings = keymap_bindings(record)?;
     if let Some(name) = record.slots.first()
         && !name.is_nil()
@@ -26462,20 +26856,40 @@ fn is_separator_keymap_entry(interp: &Interpreter, entry: &Value) -> bool {
 #[derive(Clone)]
 struct RuntimeKeymapBinding {
     key: String,
+    parts: Option<Vec<String>>,
     value: Value,
     after_prompt: bool,
 }
 
 fn keymap_binding_entry(binding: &RuntimeKeymapBinding) -> Value {
-    Value::cons(keymap_entry_key_value(&binding.key), binding.value.clone())
+    Value::cons(
+        keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
+        binding.value.clone(),
+    )
 }
 
-fn keymap_entry_key_value(key: &str) -> Value {
-    if key.len() > 1 && !key.chars().any(char::is_whitespace) && !key.contains('<') {
-        Value::Symbol(key.into())
-    } else {
-        Value::String(key.into())
+fn keymap_entry_key_value(parts: &[String], key: &str) -> Value {
+    if let [part] = parts {
+        let (_, _, saw_prefix) = parse_kbd_prefixes(part);
+        if !part.starts_with('<')
+            && !part.ends_with('>')
+            && !saw_prefix
+            && named_kbd_key_code(part).is_none()
+            && part.chars().count() > 1
+        {
+            return Value::Symbol(part.clone());
+        }
+
+        let mut events = parse_kbd_token(part)
+            .into_iter()
+            .map(reader_key_event_value)
+            .collect::<Vec<_>>();
+        if events.len() == 1 {
+            return events.remove(0);
+        }
     }
+
+    Value::String(key.into())
 }
 
 fn set_hash_table_entries(
@@ -26957,8 +27371,16 @@ fn builtin_arity_value(name: &str) -> Option<Value> {
 
 fn special_form_arity_value(name: &str) -> Option<Value> {
     match name {
+        "if" => Some(Value::cons(
+            Value::Integer(2),
+            Value::Symbol("unevalled".into()),
+        )),
         "let" => Some(Value::cons(
             Value::Integer(1),
+            Value::Symbol("unevalled".into()),
+        )),
+        "progn" => Some(Value::cons(
+            Value::Integer(0),
             Value::Symbol("unevalled".into()),
         )),
         _ => None,
@@ -28298,6 +28720,23 @@ fn parse_decimal_string_to_number(text: &str) -> Value {
         return Value::Integer(0);
     };
     if prefix.contains(['.', 'e', 'E']) {
+        if prefix.ends_with('.')
+            && !prefix.contains(['e', 'E'])
+            && prefix
+                .trim_end_matches('.')
+                .chars()
+                .filter(|ch| !matches!(ch, '+' | '-'))
+                .all(|ch| ch.is_ascii_digit())
+        {
+            let integer = prefix.trim_end_matches('.');
+            if let Ok(value) = integer.parse::<i64>() {
+                return Value::Integer(value);
+            }
+            if let Ok(value) = integer.parse::<BigInt>() {
+                return normalize_bigint_value(value);
+            }
+            return Value::Integer(0);
+        }
         prefix
             .parse::<f64>()
             .map(Value::Float)
@@ -28792,10 +29231,50 @@ fn write_file_value(
     Ok(Value::String(path))
 }
 
+fn append_external_debugging_output(interp: &mut Interpreter, text: &str) -> Result<(), LispError> {
+    match interp.lookup_var("emaxx-external-debugging-output-target", &Vec::new()) {
+        Some(Value::String(path)) => {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            file.write_all(text.as_bytes())
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(())
+        }
+        Some(Value::StringObject(state)) => {
+            let path = state.borrow().text.clone();
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            file.write_all(text.as_bytes())
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(())
+        }
+        _ => {
+            let buffer_id = interp
+                .find_buffer(" *external-debugging-output*")
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer(" *external-debugging-output*").0);
+            let buffer = interp
+                .get_buffer_by_id_mut(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            let end = buffer.point_max();
+            buffer.goto_char(end);
+            buffer.insert(text);
+            Ok(())
+        }
+    }
+}
+
 fn write_printer_output(
     interp: &mut Interpreter,
     text: &str,
     stream: Option<&Value>,
+    env: &mut Env,
 ) -> Result<(), LispError> {
     match stream {
         None | Some(Value::Nil | Value::T) => {
@@ -28837,10 +29316,154 @@ fn write_printer_output(
             interp.set_marker(*id, Some(new_position), Some(buffer_id))?;
             Ok(())
         }
+        Some(Value::Symbol(name)) if name == "external-debugging-output" => {
+            append_external_debugging_output(interp, text)
+        }
+        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) => {
+            let function = stream.expect("matched Some").clone();
+            for ch in text.chars() {
+                call_function_value(interp, &function, &[Value::Integer(ch as i64)], env)?;
+            }
+            Ok(())
+        }
         Some(other) => Err(LispError::TypeError(
             "output-stream".into(),
             other.type_name(),
         )),
+    }
+}
+
+fn printer_stream_value(
+    interp: &Interpreter,
+    env: &Env,
+    explicit: Option<&Value>,
+) -> Option<Value> {
+    match explicit {
+        Some(Value::Nil) => interp.lookup_var("standard-output", env),
+        Some(value) => Some(value.clone()),
+        None => interp.lookup_var("standard-output", env),
+    }
+}
+
+fn printer_env_with_overrides(env: &Env, overrides: Option<&Value>) -> Result<Env, LispError> {
+    let Some(overrides) = overrides else {
+        return Ok(env.clone());
+    };
+    if overrides.is_nil() {
+        return Ok(env.clone());
+    }
+
+    let mut adjusted = env.clone();
+    let mut bindings = Vec::new();
+
+    match overrides {
+        Value::T => {
+            bindings.push(("print-length".into(), Value::Nil));
+            bindings.push(("print-level".into(), Value::Nil));
+        }
+        Value::Cons(_, _) => {
+            let items = overrides
+                .to_vec()
+                .map_err(|_| LispError::Signal("invalid print overrides".into()))?;
+            let mut start = 0usize;
+            if matches!(items.first(), Some(Value::T)) {
+                bindings.push(("print-length".into(), Value::Nil));
+                bindings.push(("print-level".into(), Value::Nil));
+                start = 1;
+            }
+            for item in &items[start..] {
+                let (name, value) = if let Ok(spec) = item.to_vec() {
+                    let [Value::Symbol(name), value] = spec.as_slice() else {
+                        return Err(LispError::Signal("invalid print overrides".into()));
+                    };
+                    (name.clone(), value.clone())
+                } else if let Some((car, cdr)) = item.cons_values() {
+                    let Value::Symbol(name) = car else {
+                        return Err(LispError::Signal("invalid print overrides".into()));
+                    };
+                    if matches!(cdr, Value::Nil | Value::Cons(_, _)) {
+                        return Err(LispError::Signal("invalid print overrides".into()));
+                    }
+                    (name, cdr)
+                } else {
+                    return Err(LispError::Signal("invalid print overrides".into()));
+                };
+                match name.as_str() {
+                    "length" => bindings.push(("print-length".into(), value)),
+                    "level" => bindings.push(("print-level".into(), value)),
+                    _ => return Err(LispError::Signal("invalid print overrides".into())),
+                }
+            }
+        }
+        _ => return Err(LispError::Signal("invalid print overrides".into())),
+    }
+
+    adjusted.push(bindings);
+    Ok(adjusted)
+}
+
+fn printer_stream_at_line_start(
+    interp: &Interpreter,
+    stream: Option<&Value>,
+) -> Result<bool, LispError> {
+    match stream {
+        None | Some(Value::Nil | Value::T) => Ok(buffer_position_at_line_start(
+            &interp.buffer,
+            interp.buffer.point(),
+        )),
+        Some(Value::Buffer(_, _)) => {
+            let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            Ok(buffer_position_at_line_start(buffer, buffer.point()))
+        }
+        Some(Value::Marker(id)) => {
+            let marker = interp
+                .find_marker(*id)
+                .ok_or_else(|| LispError::TypeError("marker".into(), format!("marker<{id}>")))?;
+            let buffer_id = marker
+                .buffer_id
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            let position = marker
+                .position
+                .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            Ok(buffer_position_at_line_start(buffer, position))
+        }
+        Some(Value::Symbol(name)) if name == "external-debugging-output" => {
+            let Some(buffer) = external_debugging_output_buffer(interp) else {
+                return Ok(false);
+            };
+            let empty = buffer.point_min() == buffer.point_max();
+            Ok(!empty && buffer_position_at_line_start(buffer, buffer.point()))
+        }
+        Some(Value::Symbol(_) | Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) => Ok(false),
+        Some(other) => Err(LispError::TypeError(
+            "output-stream".into(),
+            other.type_name(),
+        )),
+    }
+}
+
+fn external_debugging_output_buffer(interp: &Interpreter) -> Option<&crate::buffer::Buffer> {
+    let buffer_id = interp
+        .find_buffer(" *external-debugging-output*")
+        .map(|(id, _)| id)?;
+    interp.get_buffer_by_id(buffer_id)
+}
+
+fn buffer_position_at_line_start(buffer: &crate::buffer::Buffer, position: usize) -> bool {
+    position <= buffer.point_min() || buffer.char_at(position.saturating_sub(1)) == Some('\n')
+}
+
+fn render_princ(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::StringObject(state) => state.borrow().text.clone(),
+        _ => value.to_string(),
     }
 }
 
@@ -29263,7 +29886,7 @@ fn parse_kbd_token(token: &str) -> Vec<Value> {
         return vec![Value::Symbol(token[1..token.len() - 1].to_string())];
     }
     if token == "ESC" {
-        return vec![Value::Symbol("escape".into())];
+        return vec![Value::Integer(KEY_DESCRIPTION_META_PREFIX)];
     }
     if let Some(code) = named_kbd_key_code(token) {
         return vec![Value::Integer(code)];
@@ -29299,6 +29922,7 @@ fn named_kbd_key_code(token: &str) -> Option<i64> {
         "LFD" => Some('\n' as i64),
         "TAB" => Some('\t' as i64),
         "DEL" => Some(0x7F),
+        "ESC" => Some(KEY_DESCRIPTION_META_PREFIX),
         "SPC" => Some(0x20),
         _ => None,
     }
@@ -29329,21 +29953,41 @@ fn symbolic_kbd_event(modifiers: i64, name: &str) -> String {
 }
 
 fn key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
-    if string_like(value).is_some() {
-        return string_text(value);
+    Ok(key_sequence_binding_parts(value)?.join(" "))
+}
+
+fn looks_like_textual_key_spec(text: &str) -> bool {
+    if text.contains(char::is_whitespace) || text.contains('<') || text.contains('>') {
+        return true;
+    }
+    let (_, _, saw_prefix) = parse_kbd_prefixes(text);
+    saw_prefix
+}
+
+fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
+    if let Some(string) = string_like(value) {
+        if looks_like_textual_key_spec(&string.text) {
+            let parsed = parse_kbd_sequence(&string.text)?;
+            let mut parts = Vec::new();
+            append_key_description_parts(&parsed, &mut parts)?;
+            return Ok(parts);
+        }
+        let mut parts = Vec::new();
+        append_key_description_parts(value, &mut parts)?;
+        return Ok(parts);
     }
     if let Ok(events) = vector_items(value)
         && let [event] = events.as_slice()
     {
         match event {
-            Value::Symbol(symbol) => return Ok(symbol.clone()),
-            Value::T => return Ok("t".into()),
+            Value::Symbol(symbol) => return Ok(vec![symbol.clone()]),
+            Value::T => return Ok(vec!["t".into()]),
             _ => {}
         }
     }
     let mut parts = Vec::new();
     append_key_description_parts(value, &mut parts)?;
-    Ok(parts.join(" "))
+    Ok(parts)
 }
 
 fn append_key_description_parts(
@@ -29353,6 +29997,13 @@ fn append_key_description_parts(
     let events = key_description_events(sequence)?;
     let mut add_meta = false;
     for event in events {
+        if let Some(string) = string_like(&event)
+            && looks_like_textual_key_spec(&string.text)
+        {
+            let parsed = parse_kbd_sequence(&string.text)?;
+            append_key_description_parts(&parsed, output)?;
+            continue;
+        }
         if add_meta {
             match event {
                 Value::Integer(code)
@@ -29421,9 +30072,24 @@ fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
 
     match sequence {
         Value::Nil => Ok(Vec::new()),
-        Value::Cons(_, _) => Ok(vector_items(sequence)?),
-        Value::Integer(_) | Value::Symbol(_) => Ok(vec![sequence.clone()]),
+        Value::Cons(_, _) => Ok(vector_items(sequence)?
+            .into_iter()
+            .map(normalize_key_description_event)
+            .collect()),
+        Value::Integer(_) | Value::Symbol(_) => {
+            Ok(vec![normalize_key_description_event(sequence.clone())])
+        }
         _ => Err(LispError::TypeError("array".into(), sequence.type_name())),
+    }
+}
+
+fn normalize_key_description_event(event: Value) -> Value {
+    let Some((start, end)) = event.cons_values() else {
+        return event;
+    };
+    match (start, end) {
+        (Value::Integer(start), Value::Integer(end)) if start == end => Value::Integer(start),
+        _ => event,
     }
 }
 
@@ -29563,12 +30229,20 @@ fn list_event_key_description_text(key: &Value, no_angles: bool) -> Result<Strin
 
     match base {
         Value::Integer(code) => Ok(describe_key_code(*code | bits)),
-        Value::Symbol(symbol) => Ok(describe_symbolic_key(
-            &symbolic_kbd_event(bits, symbol),
-            no_angles,
-        )),
+        Value::Symbol(symbol) => {
+            if let Some(ch) = event_name_character(symbol) {
+                Ok(describe_key_code(ch as i64 | bits))
+            } else {
+                Ok(describe_symbolic_key(
+                    &symbolic_kbd_event(bits, symbol),
+                    no_angles,
+                ))
+            }
+        }
         Value::String(text) => {
-            if bits == 0 {
+            if let Some(ch) = event_name_character(text) {
+                Ok(describe_key_code(ch as i64 | bits))
+            } else if bits == 0 {
                 Ok(text.clone())
             } else {
                 Ok(describe_symbolic_key(
@@ -29579,7 +30253,9 @@ fn list_event_key_description_text(key: &Value, no_angles: bool) -> Result<Strin
         }
         Value::StringObject(state) => {
             let text = state.borrow().text.clone();
-            if bits == 0 {
+            if let Some(ch) = event_name_character(&text) {
+                Ok(describe_key_code(ch as i64 | bits))
+            } else if bits == 0 {
                 Ok(text)
             } else {
                 Ok(describe_symbolic_key(
@@ -29593,6 +30269,12 @@ fn list_event_key_description_text(key: &Value, no_angles: bool) -> Result<Strin
             base.type_name(),
         )),
     }
+}
+
+fn event_name_character(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
 }
 
 fn describe_symbolic_key(symbol: &str, no_angles: bool) -> String {
@@ -29682,6 +30364,26 @@ fn describe_key_code(code: i64) -> String {
     }
 
     text
+}
+
+fn text_char_description_text(code: i64) -> Result<String, LispError> {
+    if !(0..=0x3F_FFFF).contains(&code) || code & KEY_DESCRIPTION_MODIFIER_MASK != 0 {
+        return Err(LispError::Signal("Invalid character".into()));
+    }
+
+    if code > 0x7F {
+        return char::from_u32(code as u32)
+            .map(|ch| ch.to_string())
+            .ok_or_else(|| LispError::Signal("Invalid character".into()));
+    }
+
+    Ok(match code {
+        0x00..=0x1F => format!("^{}", char::from_u32((code + 64) as u32).unwrap_or('@')),
+        0x7F => "^?".into(),
+        _ => char::from_u32(code as u32)
+            .ok_or_else(|| LispError::Signal("Invalid character".into()))?
+            .to_string(),
+    })
 }
 
 fn seq_subseq(sequence: &Value, start: i64, end: Option<i64>) -> Result<Value, LispError> {
@@ -29788,62 +30490,962 @@ fn count_backward_line_moves(buffer: &crate::buffer::Buffer) -> usize {
     count
 }
 
-fn render_prin1(
+fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -> String {
+    let escape_multibyte = interp
+        .lookup_var("print-escape-multibyte", env)
+        .is_some_and(|value| value.is_truthy());
+    let escape_newlines = interp
+        .lookup_var("print-escape-newlines", env)
+        .is_some_and(|value| value.is_truthy());
+
+    if !escape_multibyte && !escape_newlines {
+        return format!("{:?}", text);
+    }
+
+    let mut rendered = String::with_capacity(text.len() + 2);
+    rendered.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => rendered.push_str("\\\""),
+            '\\' => rendered.push_str("\\\\"),
+            '\n' if escape_newlines => rendered.push_str("\\n"),
+            '\r' if escape_newlines => rendered.push_str("\\r"),
+            '\t' if escape_newlines => rendered.push_str("\\t"),
+            '\u{0008}' if escape_newlines => rendered.push_str("\\b"),
+            '\u{000C}' if escape_newlines => rendered.push_str("\\f"),
+            ch if escape_multibyte && !ch.is_ascii() => {
+                rendered.push_str(&format!("\\x{:04x}", ch as u32));
+            }
+            ch => rendered.push(ch),
+        }
+    }
+    rendered.push('"');
+    rendered
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PrintRefKey {
+    Cons(usize),
+    Record(u64),
+    StringObject(usize),
+    Symbol(String),
+}
+
+#[derive(Clone, Copy, Default)]
+struct PrintOptions {
+    circle: bool,
+    continuous_numbering: bool,
+    dialect: PrintDialect,
+    gensym: bool,
+    integers_as_characters: bool,
+    length: Option<usize>,
+    level: Option<usize>,
+    quoted: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum PrintDialect {
+    #[default]
+    Emacs,
+    Cl,
+}
+
+struct PrintContext {
+    options: PrintOptions,
+    counts: HashMap<PrintRefKey, usize>,
+    existing_labels: HashSet<PrintRefKey>,
+    labels: HashMap<PrintRefKey, usize>,
+    next_label: usize,
+    active: HashSet<PrintRefKey>,
+}
+
+impl PrintContext {
+    fn new(
+        interp: &Interpreter,
+        value: &Value,
+        env: &Env,
+        options: PrintOptions,
+    ) -> Result<Self, LispError> {
+        let (labels, next_label) = if options.circle && options.continuous_numbering {
+            parse_print_number_table(interp.lookup_var("print-number-table", env).as_ref())
+        } else {
+            (HashMap::new(), 1)
+        };
+        let mut counts = HashMap::new();
+        if options.circle {
+            collect_print_counts(interp, value, options, &mut counts, &mut HashSet::new())?;
+        }
+        Ok(Self {
+            options,
+            counts,
+            existing_labels: labels.keys().cloned().collect(),
+            labels,
+            next_label,
+            active: HashSet::new(),
+        })
+    }
+}
+
+fn print_options(interp: &Interpreter, env: &Env, dialect: PrintDialect) -> PrintOptions {
+    PrintOptions {
+        circle: interp
+            .lookup_var("print-circle", env)
+            .is_some_and(|value| value.is_truthy()),
+        continuous_numbering: dialect != PrintDialect::Cl
+            && interp
+                .lookup_var("print-continuous-numbering", env)
+                .is_some_and(|value| value.is_truthy()),
+        dialect,
+        gensym: interp
+            .lookup_var("print-gensym", env)
+            .is_some_and(|value| value.is_truthy()),
+        integers_as_characters: interp
+            .lookup_var("print-integers-as-characters", env)
+            .is_some_and(|value| value.is_truthy()),
+        length: interp
+            .lookup_var("print-length", env)
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok()),
+        level: interp
+            .lookup_var("print-level", env)
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok()),
+        quoted: interp
+            .lookup_var("print-quoted", env)
+            .is_some_and(|value| value.is_truthy()),
+    }
+}
+
+fn record_prin1_fields(interp: &Interpreter, id: u64, dialect: PrintDialect) -> Option<Vec<Value>> {
+    let record = interp.find_record(id)?;
+    match record.type_name.as_str() {
+        "thread" | "mutex" | "condition-variable" | "hash-table" | "process" | "obarray" => None,
+        "literal-record" => Some(record.slots.clone()),
+        _ => {
+            if dialect == PrintDialect::Cl
+                && let Some(slot_names) = interp
+                    .get_symbol_property(&record.type_name, "emaxx-struct-slots")
+                    .and_then(|value| value.to_vec().ok())
+                && slot_names.len() == record.slots.len()
+            {
+                let mut fields = Vec::with_capacity(1 + record.slots.len() * 2);
+                fields.push(Value::Symbol(record.type_name.clone()));
+                for (slot_name, slot_value) in slot_names.iter().zip(record.slots.iter()) {
+                    let Ok(slot_name) = slot_name.as_symbol() else {
+                        return None;
+                    };
+                    fields.push(Value::Symbol(format!(":{slot_name}")));
+                    fields.push(slot_value.clone());
+                }
+                return Some(fields);
+            }
+            Some(
+                std::iter::once(Value::Symbol(record.type_name.clone()))
+                    .chain(record.slots.iter().cloned())
+                    .collect(),
+            )
+        }
+    }
+}
+
+fn print_ref_key(
+    interp: &Interpreter,
+    value: &Value,
+    options: PrintOptions,
+) -> Option<PrintRefKey> {
+    match value {
+        Value::Cons(car, _) => Some(PrintRefKey::Cons(Rc::as_ptr(car) as usize)),
+        Value::StringObject(state) => Some(PrintRefKey::StringObject(Rc::as_ptr(state) as usize)),
+        Value::Symbol(symbol)
+            if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) =>
+        {
+            Some(PrintRefKey::Symbol(symbol.clone()))
+        }
+        Value::Record(id) if record_prin1_fields(interp, *id, PrintDialect::Emacs).is_some() => {
+            Some(PrintRefKey::Record(*id))
+        }
+        _ => None,
+    }
+}
+
+fn print_ref_placeholder(key: PrintRefKey) -> String {
+    match key {
+        PrintRefKey::Cons(id) => format!("#{id}"),
+        PrintRefKey::Record(id) => format!("#{id}"),
+        PrintRefKey::StringObject(_) => "#<string>".into(),
+        PrintRefKey::Symbol(_) => "#<symbol>".into(),
+    }
+}
+
+fn print_number_table_entry(key: &PrintRefKey, label: usize) -> Value {
+    let label = Value::Integer(label as i64);
+    match key {
+        PrintRefKey::Cons(id) => Value::list([
+            Value::Symbol("cons".into()),
+            Value::String(id.to_string()),
+            label,
+        ]),
+        PrintRefKey::Record(id) => Value::list([
+            Value::Symbol("record".into()),
+            Value::String(id.to_string()),
+            label,
+        ]),
+        PrintRefKey::StringObject(id) => Value::list([
+            Value::Symbol("string-object".into()),
+            Value::String(id.to_string()),
+            label,
+        ]),
+        PrintRefKey::Symbol(symbol) => Value::list([
+            Value::Symbol("symbol".into()),
+            Value::String(symbol.clone()),
+            label,
+        ]),
+    }
+}
+
+fn print_number_table_value(labels: &HashMap<PrintRefKey, usize>, next_label: usize) -> Value {
+    let mut entries = labels.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(_, label)| **label);
+
+    let mut items = Vec::with_capacity(entries.len() + 2);
+    items.push(Value::Symbol("emaxx-print-number-table".into()));
+    items.push(Value::Integer(next_label as i64));
+    for (key, label) in entries {
+        items.push(print_number_table_entry(key, *label));
+    }
+    Value::list(items)
+}
+
+fn parse_print_number_table(value: Option<&Value>) -> (HashMap<PrintRefKey, usize>, usize) {
+    let Some(value) = value else {
+        return (HashMap::new(), 1);
+    };
+    let Ok(items) = value.to_vec() else {
+        return (HashMap::new(), 1);
+    };
+    let [Value::Symbol(tag), next_label, rest @ ..] = items.as_slice() else {
+        return (HashMap::new(), 1);
+    };
+    if tag != "emaxx-print-number-table" {
+        return (HashMap::new(), 1);
+    }
+
+    let next_label = next_label
+        .as_integer()
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1);
+
+    let mut labels = HashMap::new();
+    for entry in rest {
+        let Ok(parts) = entry.to_vec() else {
+            continue;
+        };
+        let [Value::Symbol(kind), data, label] = parts.as_slice() else {
+            continue;
+        };
+        let Some(label) = label
+            .as_integer()
+            .ok()
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        let Ok(data) = data.as_string() else {
+            continue;
+        };
+        let key = match kind.as_str() {
+            "cons" => data.parse().ok().map(PrintRefKey::Cons),
+            "record" => data.parse().ok().map(PrintRefKey::Record),
+            "string-object" => data.parse().ok().map(PrintRefKey::StringObject),
+            "symbol" => Some(PrintRefKey::Symbol(data.to_string())),
+            _ => None,
+        };
+        if let Some(key) = key {
+            labels.insert(key, label);
+        }
+    }
+
+    let max_label = labels.values().copied().max().unwrap_or(0);
+    (labels, next_label.max(max_label + 1))
+}
+
+fn set_env_binding(env: &mut Env, name: &str, value: Value) {
+    for frame in env.iter_mut().rev() {
+        for (key, slot) in frame.iter_mut().rev() {
+            if key == name {
+                *slot = value;
+                return;
+            }
+        }
+    }
+    env.push(vec![(name.into(), value)]);
+}
+
+fn sync_print_number_table(target_env: &mut Env, overrides: Option<&Value>, source_env: &Env) {
+    if !matches!(overrides, None | Some(Value::Nil)) {
+        return;
+    }
+    let Some(value) = source_env
+        .iter()
+        .rev()
+        .flat_map(|frame| frame.iter().rev())
+        .find_map(|(name, value)| (name == "print-number-table").then(|| value.clone()))
+    else {
+        return;
+    };
+    set_env_binding(target_env, "print-number-table", value);
+}
+
+fn collect_print_counts(
+    interp: &Interpreter,
+    value: &Value,
+    options: PrintOptions,
+    counts: &mut HashMap<PrintRefKey, usize>,
+    expanded: &mut HashSet<PrintRefKey>,
+) -> Result<(), LispError> {
+    if let Some(key) = print_ref_key(interp, value, options) {
+        *counts.entry(key.clone()).or_insert(0) += 1;
+        if !expanded.insert(key) {
+            return Ok(());
+        }
+    }
+
+    match value {
+        Value::Cons(_, _) if is_vector_value(value) => {
+            for item in vector_items(value)? {
+                collect_print_counts(interp, &item, options, counts, expanded)?;
+            }
+        }
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return Ok(());
+            };
+            collect_print_counts(interp, &car, options, counts, expanded)?;
+            collect_print_counts(interp, &cdr, options, counts, expanded)?;
+        }
+        Value::StringObject(state) => {
+            let props = state.borrow().props.clone();
+            for span in props {
+                for (_, prop_value) in span.props {
+                    collect_print_counts(interp, &prop_value, options, counts, expanded)?;
+                }
+            }
+        }
+        Value::Record(id) => {
+            if let Some(fields) = record_prin1_fields(interp, *id, PrintDialect::Emacs) {
+                for field in fields {
+                    collect_print_counts(interp, &field, options, counts, expanded)?;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn collect_print_table_objects(
+    interp: &Interpreter,
+    value: &Value,
+    options: PrintOptions,
+    counts: &mut HashMap<PrintRefKey, (usize, Value)>,
+    expanded: &mut HashSet<PrintRefKey>,
+) -> Result<(), LispError> {
+    if let Some(key) = print_ref_key(interp, value, options) {
+        let entry = counts.entry(key.clone()).or_insert((0, value.clone()));
+        entry.0 += 1;
+        if !expanded.insert(key) {
+            return Ok(());
+        }
+    }
+
+    match value {
+        Value::Cons(_, _) if is_vector_value(value) => {
+            for item in vector_items(value)? {
+                collect_print_table_objects(interp, &item, options, counts, expanded)?;
+            }
+        }
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return Ok(());
+            };
+            collect_print_table_objects(interp, &car, options, counts, expanded)?;
+            collect_print_table_objects(interp, &cdr, options, counts, expanded)?;
+        }
+        Value::StringObject(state) => {
+            let props = state.borrow().props.clone();
+            for span in props {
+                for (_, prop_value) in span.props {
+                    collect_print_table_objects(interp, &prop_value, options, counts, expanded)?;
+                }
+            }
+        }
+        Value::Record(id) => {
+            if let Some(fields) = record_prin1_fields(interp, *id, PrintDialect::Emacs) {
+                for field in fields {
+                    collect_print_table_objects(interp, &field, options, counts, expanded)?;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn print_preprocess(
     interp: &mut Interpreter,
     value: &Value,
-    env: &super::types::Env,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if !interp
+        .lookup_var("print-circle", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(Value::Nil);
+    }
+
+    let table = match interp.lookup_var("print-number-table", env) {
+        Some(existing) if json::is_hash_table(interp, &existing) => existing,
+        _ => json::make_hash_table(interp, "eql", Vec::new()),
+    };
+    set_env_binding(env, "print-number-table", table.clone());
+
+    let mut counts = HashMap::new();
+    collect_print_table_objects(
+        interp,
+        value,
+        print_options(interp, env, PrintDialect::Emacs),
+        &mut counts,
+        &mut HashSet::new(),
+    )?;
+
+    let entries = counts
+        .into_values()
+        .filter(|(count, _)| *count > 1)
+        .map(|(_, object)| (object, Value::T))
+        .collect::<Vec<_>>();
+    set_hash_table_entries(interp, &table, entries)?;
+    Ok(Value::Nil)
+}
+
+fn render_prin1_list(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut super::types::Env,
+    context: &mut PrintContext,
+    depth: usize,
 ) -> Result<String, LispError> {
+    let Some((car, cdr)) = value.cons_values() else {
+        return Ok(value.to_string());
+    };
+    if context.options.level.is_some_and(|limit| depth >= limit) {
+        return Ok("...".into());
+    }
+    if context.options.length == Some(0) {
+        return Ok("(...)".into());
+    }
+
+    let mut rendered = vec![render_prin1_with_context(
+        interp,
+        &car,
+        env,
+        context,
+        depth + 1,
+    )?];
+    let mut tail_positions = HashMap::new();
+    if !context.options.circle
+        && let Some(key) = print_ref_key(interp, value, context.options)
+    {
+        tail_positions.insert(key, 0usize);
+    }
+    let mut tail = cdr;
+    loop {
+        match tail {
+            Value::Nil => return Ok(format!("({})", rendered.join(" "))),
+            Value::Cons(_, _) => {
+                if context
+                    .options
+                    .length
+                    .is_some_and(|limit| rendered.len() >= limit)
+                {
+                    rendered.push("...".into());
+                    return Ok(format!("({})", rendered.join(" ")));
+                }
+                if let Some(key) = print_ref_key(interp, &tail, context.options) {
+                    if should_label_value(&tail, &key, context) {
+                        let tail_rendered =
+                            render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
+                        return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+                    }
+                    if !context.options.circle
+                        && let Some(loopback_index) = tail_positions.get(&key)
+                    {
+                        return Ok(format!(
+                            "({} . {})",
+                            rendered.join(" "),
+                            format!("#{loopback_index}")
+                        ));
+                    }
+                    if !context.options.circle {
+                        tail_positions.insert(key.clone(), rendered.len());
+                    }
+                }
+                let Some((next_car, next_cdr)) = tail.cons_values() else {
+                    return Ok(value.to_string());
+                };
+                rendered.push(render_prin1_with_context(
+                    interp,
+                    &next_car,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
+                tail = next_cdr;
+            }
+            other => {
+                let tail_rendered =
+                    render_prin1_with_context(interp, &other, env, context, depth + 1)?;
+                return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+            }
+        }
+    }
+}
+
+fn should_label_value(value: &Value, key: &PrintRefKey, context: &PrintContext) -> bool {
+    if !context.options.circle {
+        return false;
+    }
+    if context.labels.contains_key(key) {
+        return true;
+    }
+    if context.counts.get(key).copied().unwrap_or(0) > 1 {
+        return true;
+    }
+    context.options.continuous_numbering
+        && context.options.gensym
+        && matches!(value, Value::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(symbol))
+}
+
+fn render_prin1_with_context(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut super::types::Env,
+    context: &mut PrintContext,
+    depth: usize,
+) -> Result<String, LispError> {
+    if context.options.circle
+        && let Some(rendered) = print_number_table_substitution(interp, value, env)?
+    {
+        return Ok(rendered);
+    }
+    if let Some(key) = print_ref_key(interp, value, context.options) {
+        if should_label_value(value, &key, context) {
+            if let Some(label) = context.labels.get(&key) {
+                return Ok(format!("#{label}#"));
+            }
+            let label = context.next_label;
+            context.next_label += 1;
+            context.labels.insert(key.clone(), label);
+            context.active.insert(key.clone());
+            let rendered = render_prin1_body(interp, value, env, context, depth);
+            context.active.remove(&key);
+            return rendered.map(|body| format!("#{label}={body}"));
+        }
+        if !context.active.insert(key.clone()) {
+            return Ok(print_ref_placeholder(key));
+        }
+        let rendered = render_prin1_body(interp, value, env, context, depth);
+        context.active.remove(&key);
+        return rendered;
+    }
+
+    render_prin1_body(interp, value, env, context, depth)
+}
+
+fn print_number_table_substitution(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<Option<String>, LispError> {
+    let Some(table) = interp.lookup_var("print-number-table", env) else {
+        return Ok(None);
+    };
+    let Some((_, entries)) = json::hash_table_entries(interp, &table) else {
+        return Ok(None);
+    };
+    for (key, replacement) in entries {
+        if key == *value
+            && let Some(text) = string_like(&replacement)
+        {
+            return Ok(Some(text.text));
+        }
+    }
+    Ok(None)
+}
+
+fn symbol_name_looks_like_number(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let signed = matches!(bytes.first(), Some(b'+' | b'-'));
+    let Some(first) = bytes.get(signed as usize).copied() else {
+        return false;
+    };
+    if !first.is_ascii_digit() && first != b'.' {
+        return false;
+    }
+    decimal_number_prefix(name).is_some_and(|prefix| prefix.len() == name.len())
+        || name
+            .split_once(['e', 'E'])
+            .is_some_and(|(mantissa, suffix)| {
+                mantissa.parse::<f64>().is_ok()
+                    && matches!(
+                        suffix.to_ascii_uppercase().as_str(),
+                        "NAN" | "+NAN" | "-NAN" | "INF" | "+INF" | "-INF"
+                    )
+            })
+}
+
+fn render_prin1_integer_as_character(value: &Value) -> Option<String> {
+    let code = match value {
+        Value::Integer(value) => *value,
+        Value::BigInteger(value) => value.to_i64()?,
+        _ => return None,
+    };
+    let codepoint = u32::try_from(code).ok()?;
+    let ch = char::from_u32(codepoint)?;
+    let body = match ch {
+        '?' => "?".into(),
+        ' ' => "\\s".into(),
+        '\n' => "\\n".into(),
+        '\r' => "\\r".into(),
+        '\t' => "\\t".into(),
+        '\u{0008}' => "\\b".into(),
+        '\u{000C}' => "\\f".into(),
+        '\'' => "\\'".into(),
+        '"' | '\\' | ';' | '(' | ')' | '{' | '}' | '[' | ']' => format!("\\{ch}"),
+        _ => {
+            if matches!(code, 7 | 11 | 27 | 127) {
+                return None;
+            }
+            match get_general_category(ch).abbreviation() {
+                "Cc" | "Cf" | "Cn" | "Co" | "Cs" | "Mc" | "Me" | "Mn" | "Zl" | "Zp" | "Zs" => {
+                    return None;
+                }
+                _ => ch.to_string(),
+            }
+        }
+    };
+    Some(format!("?{body}"))
+}
+
+fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String {
+    let visible = crate::lisp::types::visible_symbol_name(symbol);
+    if visible.is_empty() {
+        if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) {
+            return "#:##".into();
+        }
+        return "##".into();
+    }
+
+    let first = visible.chars().next();
+    let second = visible.chars().nth(1);
+    let mut confusing = symbol_name_looks_like_number(visible)
+        || first == Some('?')
+        || matches!(first, Some('.')) && !second.is_some_and(|ch| ch.is_ascii_alphabetic());
+
+    let mut rendered = String::new();
+    if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) {
+        rendered.push_str("#:");
+    }
+    for ch in visible.chars() {
+        if matches!(
+            ch,
+            '"' | '\\' | '\'' | ';' | '#' | '(' | ')' | ',' | '`' | '[' | ']'
+        ) || ch <= ' '
+            || ch == '\u{00A0}'
+            || confusing
+        {
+            rendered.push('\\');
+            confusing = false;
+        }
+        rendered.push(ch);
+    }
+    rendered
+}
+
+fn should_render_charset_text_property(
+    interp: &Interpreter,
+    env: &Env,
+    dialect: PrintDialect,
+    text: &str,
+    span: &StringPropertySpan,
+    value: &Value,
+) -> bool {
+    if dialect == PrintDialect::Cl {
+        return true;
+    }
+    let setting = interp
+        .lookup_var("print-charset-text-property", env)
+        .unwrap_or(Value::Nil);
+    if setting.is_nil() {
+        return false;
+    }
+    if !matches!(&setting, Value::Symbol(symbol) if symbol == "default") {
+        return true;
+    }
+
+    let Ok(charset) = value.as_symbol() else {
+        return true;
+    };
+    let expected = interp
+        .charset_canonical_name(charset)
+        .unwrap_or_else(|| charset.to_string());
+
+    text.chars()
+        .skip(span.start)
+        .take(span.end.saturating_sub(span.start))
+        .any(|ch| !ch.is_ascii() && charset_for_char(ch as u32) != expected)
+}
+
+fn render_hash_table_prin1(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+    context: &mut PrintContext,
+    depth: usize,
+) -> Result<String, LispError> {
+    let size = hash_table_metadata_slot(interp, value, 2, Value::Integer(65))?;
+    let test = hash_table_metadata_slot(interp, value, 0, Value::Symbol("eql".into()))?;
+    let rehash_size = hash_table_metadata_slot(interp, value, 3, Value::Float(1.5))?;
+    let rehash_threshold = hash_table_metadata_slot(interp, value, 4, Value::Float(0.8125))?;
+    let weakness = hash_table_metadata_slot(interp, value, 5, Value::Nil)?;
+    let entries = json::hash_table_entries(interp, value)
+        .map(|(_, entries)| entries)
+        .unwrap_or_default();
+    let mut data_parts = Vec::new();
+    for (index, (key, entry_value)) in entries.iter().enumerate() {
+        if context.options.length.is_some_and(|limit| index >= limit) {
+            data_parts.push("...".into());
+            break;
+        }
+        data_parts.push(render_prin1_with_context(
+            interp,
+            key,
+            env,
+            context,
+            depth + 1,
+        )?);
+        data_parts.push(render_prin1_with_context(
+            interp,
+            entry_value,
+            env,
+            context,
+            depth + 1,
+        )?);
+    }
+    let data_rendered = format!("({})", data_parts.join(" "));
+
+    let mut fields = vec![
+        Value::Symbol("hash-table".into()),
+        Value::Symbol("size".into()),
+        size,
+        Value::Symbol("test".into()),
+        test,
+        Value::Symbol("rehash-size".into()),
+        rehash_size,
+        Value::Symbol("rehash-threshold".into()),
+        rehash_threshold,
+    ];
+    if !weakness.is_nil() {
+        fields.push(Value::Symbol("weakness".into()));
+        fields.push(weakness);
+    }
+    let mut rendered_fields = fields
+        .iter()
+        .map(|field| render_prin1_with_context(interp, field, env, context, depth + 1))
+        .collect::<Result<Vec<_>, _>>()?;
+    rendered_fields.push("data".into());
+    rendered_fields.push(data_rendered);
+
+    Ok(format!("#s({})", rendered_fields.join(" ")))
+}
+
+fn render_prin1_body(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut super::types::Env,
+    context: &mut PrintContext,
+    depth: usize,
+) -> Result<String, LispError> {
+    let unreadable_override = |interp: &mut Interpreter,
+                               value: &Value,
+                               env: &mut super::types::Env|
+     -> Result<Option<String>, LispError> {
+        let Some(function) = interp.lookup_var("print-unreadable-function", env) else {
+            return Ok(None);
+        };
+        if !function.is_truthy() {
+            return Ok(None);
+        }
+        let rendered = call_function_value(interp, &function, &[value.clone(), Value::T], env)?;
+        if matches!(rendered, Value::T) {
+            return Ok(Some(String::new()));
+        }
+        if rendered.is_nil() {
+            return Ok(None);
+        }
+        Ok(Some(string_text(&rendered)?))
+    };
+
+    if context.options.dialect == PrintDialect::Cl
+        && context.options.level.is_some_and(|limit| depth >= limit)
+    {
+        match value {
+            Value::StringObject(state) if !state.borrow().props.is_empty() => {
+                return Ok("...".into());
+            }
+            Value::Cons(_, _) if is_vector_value(value) => return Ok("...".into()),
+            Value::Record(id)
+                if record_prin1_fields(interp, *id, context.options.dialect).is_some() =>
+            {
+                return Ok("...".into());
+            }
+            _ => {}
+        }
+    }
+
+    if context.options.quoted
+        && let Ok(items) = value.to_vec()
+    {
+        let quoted = match items.as_slice() {
+            [Value::Symbol(symbol), inner] if symbol == "quote" => Some(("'", inner)),
+            [Value::Symbol(symbol), inner]
+                if symbol == "function" || symbol == "function-quote" =>
+            {
+                Some(("#'", inner))
+            }
+            [Value::Symbol(symbol), inner] if symbol == "backquote" => Some(("`", inner)),
+            [Value::Symbol(symbol), inner] if symbol == "comma" => Some((",", inner)),
+            [Value::Symbol(symbol), inner] if symbol == "comma-at" => Some((",@", inner)),
+            _ => None,
+        };
+        if let Some((prefix, inner)) = quoted {
+            return Ok(format!(
+                "{prefix}{}",
+                render_prin1_with_context(interp, inner, env, context, depth + 1)?
+            ));
+        }
+    }
+
     match value {
-        Value::String(text) => Ok(format!("{:?}", text)),
+        Value::Integer(_) | Value::BigInteger(_) if context.options.integers_as_characters => {
+            if let Some(rendered) = render_prin1_integer_as_character(value) {
+                return Ok(rendered);
+            }
+            Ok(value.to_string())
+        }
+        Value::String(text) => Ok(render_prin1_string(interp, text, env)),
         Value::StringObject(state) => {
             let (text, props) = {
                 let state = state.borrow();
                 (state.text.clone(), state.props.clone())
             };
             if props.is_empty() {
-                return Ok(format!("{:?}", text));
+                return Ok(render_prin1_string(interp, &text, env));
             }
-            let mut rendered = vec![format!("{:?}", text)];
+            let mut rendered = vec![render_prin1_string(interp, &text, env)];
             for span in props {
+                let filtered_props = span
+                    .props
+                    .iter()
+                    .filter(|(name, value)| {
+                        name != "charset"
+                            || should_render_charset_text_property(
+                                interp,
+                                env,
+                                context.options.dialect,
+                                &text,
+                                &span,
+                                value,
+                            )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if filtered_props.is_empty() {
+                    continue;
+                }
                 rendered.push(span.start.to_string());
                 rendered.push(span.end.to_string());
-                rendered.push(render_prin1(interp, &plist_value(&span.props), env)?);
+                rendered.push(render_prin1_with_context(
+                    interp,
+                    &plist_value(&filtered_props),
+                    env,
+                    context,
+                    depth + 1,
+                )?);
+            }
+            if rendered.len() == 1 {
+                return Ok(render_prin1_string(interp, &text, env));
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
-        Value::Cons(_, _) => {
-            let raw_items = value.to_vec()?;
-            if matches!(
-                raw_items.first(),
-                Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
-            ) {
-                let items = vector_items(value)?;
-                Ok(format!(
-                    "[{}]",
-                    items
-                        .iter()
-                        .map(|item| render_prin1(interp, item, env))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .join(" ")
-                ))
-            } else {
-                Ok(value.to_string())
+        Value::Symbol(symbol) if symbol == "backquote" => Ok("\\`".into()),
+        Value::Symbol(symbol) if symbol == "comma" => Ok("\\,".into()),
+        Value::Symbol(symbol) if symbol == "comma-at" => Ok("\\,@".into()),
+        Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
+        Value::Cons(_, _) if is_vector_value(value) => {
+            let items = vector_items(value)?;
+            let mut rendered_items = Vec::new();
+            for (index, item) in items.iter().enumerate() {
+                if context.options.length.is_some_and(|limit| index >= limit) {
+                    rendered_items.push("...".into());
+                    break;
+                }
+                rendered_items.push(render_prin1_with_context(
+                    interp,
+                    item,
+                    env,
+                    context,
+                    depth + 1,
+                )?);
             }
+            Ok(format!("[{}]", rendered_items.join(" ")))
         }
+        Value::Cons(_, _) => render_prin1_list(interp, value, env, context, depth),
         Value::BuiltinFunc(_)
         | Value::Lambda(_, _, _)
         | Value::Buffer(_, _)
         | Value::Marker(_)
         | Value::Overlay(_)
         | Value::CharTable(_) => {
-            if let Some(function) = interp.lookup_var("print-unreadable-function", env)
-                && function.is_truthy()
-            {
-                let mut call_env = env.clone();
-                let rendered = call_function_value(interp, &function, &[], &mut call_env)?;
-                return string_text(&rendered);
+            if let Some(rendered) = unreadable_override(interp, value, env)? {
+                return Ok(rendered);
             }
-            Ok(value.to_string())
+            match value {
+                Value::Marker(id) => {
+                    if let Some(marker) = interp.find_marker(*id) {
+                        return Ok(match marker.buffer_id {
+                            Some(buffer_id) => {
+                                let buffer_name = interp
+                                    .get_buffer_by_id(buffer_id)
+                                    .map(|buffer| buffer.name.clone())
+                                    .unwrap_or_else(|| format!("buffer<{buffer_id}>"));
+                                match marker.position {
+                                    Some(position) => {
+                                        format!("#<marker at {position} in {buffer_name}>")
+                                    }
+                                    None => format!("#<marker in {buffer_name}>"),
+                                }
+                            }
+                            None => "#<marker in no buffer>".into(),
+                        });
+                    }
+                    Ok(value.to_string())
+                }
+                _ => Ok(value.to_string()),
+            }
         }
         Value::Record(id) => {
             if let Some(record) = interp.find_record(*id) {
@@ -29860,7 +31462,31 @@ fn render_prin1(
                         .condition_variable_name(*id)
                         .map(|name| format!("#<condvar {name}>"))
                         .unwrap_or_else(|| "#<condvar>".into()),
-                    _ => value.to_string(),
+                    "hash-table" => render_hash_table_prin1(interp, value, env, context, depth)?,
+                    "process" | "obarray" => value.to_string(),
+                    _ => {
+                        let Some(fields) =
+                            record_prin1_fields(interp, *id, context.options.dialect)
+                        else {
+                            return Ok(value.to_string());
+                        };
+                        format!(
+                            "#s({})",
+                            fields
+                                .iter()
+                                .map(|field| {
+                                    render_prin1_with_context(
+                                        interp,
+                                        field,
+                                        env,
+                                        context,
+                                        depth + 1,
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                                .join(" ")
+                        )
+                    }
                 };
                 return Ok(rendered);
             }
@@ -29870,17 +31496,147 @@ fn render_prin1(
     }
 }
 
+fn finish_print_number_table(env: &mut Env, context: &PrintContext) {
+    if !context.options.circle || !context.options.continuous_numbering {
+        return;
+    }
+    set_env_binding(
+        env,
+        "print-number-table",
+        print_number_table_value(&context.labels, context.next_label),
+    );
+}
+
+fn render_prin1(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut super::types::Env,
+) -> Result<String, LispError> {
+    let mut context = PrintContext::new(
+        interp,
+        value,
+        env,
+        print_options(interp, env, PrintDialect::Emacs),
+    )?;
+    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
+    finish_print_number_table(env, &context);
+    Ok(rendered)
+}
+
+fn render_cl_prin1(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut super::types::Env,
+) -> Result<String, LispError> {
+    let mut context = PrintContext::new(
+        interp,
+        value,
+        env,
+        print_options(interp, env, PrintDialect::Cl),
+    )?;
+    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
+    finish_print_number_table(env, &context);
+    Ok(rendered)
+}
+
+fn render_prin1_ephemeral(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &super::types::Env,
+) -> Result<String, LispError> {
+    let mut env = env.clone();
+    render_prin1(interp, value, &mut env)
+}
+
+fn render_cl_prin1_ephemeral(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &super::types::Env,
+) -> Result<String, LispError> {
+    let mut env = env.clone();
+    render_cl_prin1(interp, value, &mut env)
+}
+
 fn read_one_form(text: &str) -> Result<(Value, usize), LispError> {
     let mut reader = super::reader::Reader::new(text);
     let value = match reader.read()? {
-        Some(value) => value,
+        Some(value) => super::reader::resolve_circular_read_syntax(value)?,
         None => return Err(LispError::EndOfInput),
     };
     let consumed = text[..reader.position()].chars().count();
     Ok((value, consumed))
 }
 
-fn read_from_lisp_source(interp: &mut Interpreter, source: &Value) -> Result<Value, LispError> {
+fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
+    let items = value.to_vec().ok()?;
+    matches!(
+        items.first(),
+        Some(Value::Symbol(name)) if name == super::reader::RECORD_LITERAL_SYMBOL
+    )
+    .then_some(items)
+}
+
+fn record_literal_slot_data(value: &Value) -> Value {
+    if let Ok(items) = value.to_vec()
+        && let [Value::Symbol(symbol), inner] = items.as_slice()
+        && symbol == "quote"
+    {
+        return inner.clone();
+    }
+    value.clone()
+}
+
+fn record_literal_aref(
+    object: &Value,
+    items: &[Value],
+    idx: usize,
+    idx_value: &Value,
+) -> Result<Value, LispError> {
+    let slot = items.get(idx + 1).cloned().ok_or_else(|| {
+        LispError::SignalValue(Value::list([
+            Value::Symbol("args-out-of-range".into()),
+            object.clone(),
+            idx_value.clone(),
+        ]))
+    })?;
+    Ok(record_literal_slot_data(&slot))
+}
+
+fn read_from_callable_source(
+    interp: &mut Interpreter,
+    source: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let callable = resolve_callable(interp, source, env)?;
+    let original_name = source.as_symbol().ok();
+    let mut text = String::new();
+    loop {
+        let next = interp.call_function_value(callable.clone(), original_name, &[], env)?;
+        let Some(code) = (match next {
+            Value::Integer(code) => Some(code),
+            Value::Nil => None,
+            other => {
+                return Err(LispError::TypeError("integer".into(), other.type_name()));
+            }
+        }) else {
+            break;
+        };
+        if code < 0 {
+            break;
+        }
+        let Some(ch) = char::from_u32(code as u32) else {
+            return Err(LispError::Signal("Invalid character".into()));
+        };
+        text.push(ch);
+    }
+    read_one_form(&text).map(|(value, _)| value)
+}
+
+fn read_from_lisp_source(
+    interp: &mut Interpreter,
+    source: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     match source {
         Value::Buffer(_, _) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
@@ -29929,6 +31685,12 @@ fn read_from_lisp_source(interp: &mut Interpreter, source: &Value) -> Result<Val
             let (value, consumed) = read_one_form(&text)?;
             interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
             Ok(value)
+        }
+        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => {
+            read_from_callable_source(interp, source, env)
+        }
+        Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
+            read_from_callable_source(interp, source, env)
         }
         _ => {
             let s = string_text(source)?;
@@ -30416,6 +32178,103 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
     values_equal_recursive(interp, left, right, &mut HashSet::new())
 }
 
+fn keymap_records_equal(
+    interp: &Interpreter,
+    left_id: u64,
+    right_id: u64,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    let pair = (left_id as usize, right_id as usize);
+    if !seen.insert(pair) {
+        return true;
+    }
+
+    let left_value = Value::Record(left_id);
+    let right_value = Value::Record(right_id);
+    let Ok(Some(left_items)) = keymap_list_items(interp, &left_value) else {
+        return false;
+    };
+    let Ok(Some(right_items)) = keymap_list_items(interp, &right_value) else {
+        return false;
+    };
+    if left_items.len() != right_items.len()
+        || !left_items
+            .iter()
+            .zip(right_items.iter())
+            .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+    {
+        return false;
+    }
+
+    let left_parent = interp
+        .find_record(left_id)
+        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
+        .unwrap_or(Value::Nil);
+    let right_parent = interp
+        .find_record(right_id)
+        .and_then(|record| record.slots.get(KEYMAP_PARENT_SLOT).cloned())
+        .unwrap_or(Value::Nil);
+    values_equal_recursive(interp, &left_parent, &right_parent, seen)
+}
+
+fn keymap_record_equals_list(
+    interp: &Interpreter,
+    keymap_id: u64,
+    list: &Value,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    let keymap_value = Value::Record(keymap_id);
+    let Ok(Some(items)) = keymap_list_items(interp, &keymap_value) else {
+        return false;
+    };
+    let Ok(list_items) = list.to_vec() else {
+        return false;
+    };
+    items.len() == list_items.len()
+        && items
+            .iter()
+            .zip(list_items.iter())
+            .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+}
+
+fn record_equals_record_literal_form(
+    interp: &Interpreter,
+    record_id: u64,
+    form: &Value,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    let Some(record) = interp.find_record(record_id) else {
+        return false;
+    };
+    let Some(items) = record_literal_items(form) else {
+        return false;
+    };
+    if let Some((car, _)) = form.cons_cells() {
+        let pair = (record_id as usize, Rc::as_ptr(&car) as usize);
+        if !seen.insert(pair) {
+            return true;
+        }
+    }
+
+    let expected_fields = if record.type_name == "literal-record" {
+        record.slots.clone()
+    } else {
+        std::iter::once(Value::Symbol(record.type_name.clone()))
+            .chain(record.slots.iter().cloned())
+            .collect()
+    };
+    let actual_fields = &items[1..];
+
+    expected_fields.len() == actual_fields.len()
+        && expected_fields
+            .iter()
+            .zip(actual_fields.iter())
+            .all(|(left, right)| {
+                let right_value = record_literal_slot_data(right);
+                values_equal_recursive(interp, left, &right_value, seen)
+            })
+}
+
 fn values_equal_recursive(
     interp: &Interpreter,
     left: &Value,
@@ -30452,6 +32311,36 @@ fn values_equal_recursive(
         (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
         (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
+        (Value::Record(left_id), Value::Record(right_id))
+            if interp
+                .find_record(*left_id)
+                .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE)
+                && interp
+                    .find_record(*right_id)
+                    .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+        {
+            keymap_records_equal(interp, *left_id, *right_id, seen)
+        }
+        (Value::Record(left_id), Value::Cons(_, _))
+            if interp
+                .find_record(*left_id)
+                .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+        {
+            keymap_record_equals_list(interp, *left_id, right, seen)
+        }
+        (Value::Cons(_, _), Value::Record(right_id))
+            if interp
+                .find_record(*right_id)
+                .is_some_and(|record| record.type_name == KEYMAP_RECORD_TYPE) =>
+        {
+            keymap_record_equals_list(interp, *right_id, left, seen)
+        }
+        (Value::Record(left_id), _) if record_literal_items(right).is_some() => {
+            record_equals_record_literal_form(interp, *left_id, right, seen)
+        }
+        (_, Value::Record(right_id)) if record_literal_items(left).is_some() => {
+            record_equals_record_literal_form(interp, *right_id, left, seen)
+        }
         (Value::Cons(_, _), Value::Cons(_, _)) => {
             let Some((left_car, _)) = left.cons_cells() else {
                 return false;
@@ -31944,6 +33833,7 @@ pub(crate) fn keymap_placeholder(name: Option<&str>) -> Value {
 const KEYMAP_RECORD_TYPE: &str = "keymap";
 const KEYMAP_PARENT_SLOT: usize = 1;
 const KEYMAP_BINDINGS_SLOT: usize = 2;
+const KEYMAP_CHAR_TABLE_SLOT: usize = 3;
 
 pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
     interp.create_record(
@@ -31954,6 +33844,21 @@ pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) 
             Value::Nil,
         ],
     )
+}
+
+fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
+    let keymap = make_runtime_keymap(interp, name);
+    let Value::Record(id) = keymap.clone() else {
+        return keymap;
+    };
+    let char_table = interp.make_char_table(None, Value::Nil);
+    if let Some(record) = interp.find_record_mut(id) {
+        if record.slots.len() <= KEYMAP_CHAR_TABLE_SLOT {
+            record.slots.resize(KEYMAP_CHAR_TABLE_SLOT + 1, Value::Nil);
+        }
+        record.slots[KEYMAP_CHAR_TABLE_SLOT] = char_table;
+    }
+    keymap
 }
 
 fn is_keymap_placeholder(value: &Value) -> bool {
@@ -31976,6 +33881,14 @@ pub(crate) fn is_keymap_value(interp: &Interpreter, value: &Value) -> bool {
     is_keymap_placeholder(value) || keymap_record_id(interp, value).is_some()
 }
 
+fn keymap_char_table(record: &super::eval::RecordState) -> Option<Value> {
+    record
+        .slots
+        .get(KEYMAP_CHAR_TABLE_SLOT)
+        .cloned()
+        .filter(|value| !value.is_nil())
+}
+
 fn keymap_bindings(
     record: &super::eval::RecordState,
 ) -> Result<Vec<RuntimeKeymapBinding>, LispError> {
@@ -31992,6 +33905,18 @@ fn keymap_bindings(
         {
             result.push(RuntimeKeymapBinding {
                 key,
+                parts: items.get(3).and_then(|parts| {
+                    if parts.is_nil() {
+                        return None;
+                    }
+                    parts.to_vec().ok().and_then(|items| {
+                        let parts = items
+                            .into_iter()
+                            .filter_map(|item| string_text(&item).ok())
+                            .collect::<Vec<_>>();
+                        (!parts.is_empty()).then_some(parts)
+                    })
+                }),
                 value: items[1].clone(),
                 after_prompt: items.get(2).is_some_and(Value::is_truthy),
             });
@@ -32001,6 +33926,7 @@ fn keymap_bindings(
         let key = string_text(&entry.car()?)?;
         result.push(RuntimeKeymapBinding {
             key,
+            parts: None,
             value: entry.cdr()?,
             after_prompt: false,
         });
@@ -32018,6 +33944,10 @@ fn keymap_bindings_value(bindings: Vec<RuntimeKeymapBinding>) -> Value {
             } else {
                 Value::Nil
             },
+            binding
+                .parts
+                .map(|parts| Value::list(parts.into_iter().map(Value::String)))
+                .unwrap_or(Value::Nil),
         ])
     }))
 }
@@ -32028,13 +33958,14 @@ pub(crate) fn keymap_define_binding(
     key: &str,
     binding: Value,
 ) -> Result<(), LispError> {
-    keymap_define_binding_with_placement(interp, keymap, key, binding, true)
+    keymap_define_binding_with_placement(interp, keymap, key, None, binding, true)
 }
 
 pub(crate) fn keymap_define_binding_with_placement(
     interp: &mut Interpreter,
     keymap: &Value,
     key: &str,
+    key_parts: Option<Vec<String>>,
     binding: Value,
     after_prompt: bool,
 ) -> Result<(), LispError> {
@@ -32045,17 +33976,73 @@ pub(crate) fn keymap_define_binding_with_placement(
         return Ok(());
     };
     let mut bindings = keymap_bindings(record)?;
-    bindings.retain(|existing| existing.key != key);
+    let existing = bindings.iter().position(|existing| existing.key == key);
+    let (insert_at, after_prompt) = if let Some(index) = existing {
+        let placement = bindings[index].after_prompt;
+        bindings.remove(index);
+        (index.min(bindings.len()), placement)
+    } else if after_prompt {
+        (bindings.len(), true)
+    } else {
+        (0, false)
+    };
     let binding = RuntimeKeymapBinding {
         key: key.to_string(),
+        parts: key_parts,
         value: binding,
         after_prompt,
     };
-    if after_prompt {
-        bindings.push(binding);
-    } else {
-        bindings.insert(0, binding);
+    bindings.insert(insert_at, binding);
+    if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
+        record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
+    record.slots[KEYMAP_BINDINGS_SLOT] = keymap_bindings_value(bindings);
+    Ok(())
+}
+
+pub(crate) fn keymap_define_binding_after(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    key: &str,
+    key_parts: Option<Vec<String>>,
+    binding: Value,
+    after_parts: Option<&[String]>,
+) -> Result<(), LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(());
+    };
+    let Some(record) = interp.find_record_mut(id) else {
+        return Ok(());
+    };
+    let mut bindings = keymap_bindings(record)?;
+    if let Some(index) = bindings.iter().position(|existing| existing.key == key) {
+        bindings.remove(index);
+    }
+
+    let insert_at = after_parts
+        .and_then(|after| {
+            bindings
+                .iter()
+                .position(|existing| key_parts_match(&binding_key_parts(existing), after))
+                .map(|index| index + 1)
+        })
+        .or_else(|| {
+            bindings
+                .iter()
+                .rposition(|existing| existing.after_prompt)
+                .map(|index| index + 1)
+        })
+        .unwrap_or(bindings.len());
+
+    bindings.insert(
+        insert_at,
+        RuntimeKeymapBinding {
+            key: key.to_string(),
+            parts: key_parts,
+            value: binding,
+            after_prompt: true,
+        },
+    );
     if record.slots.len() <= KEYMAP_BINDINGS_SLOT {
         record.slots.resize(KEYMAP_BINDINGS_SLOT + 1, Value::Nil);
     }
@@ -32083,10 +34070,73 @@ pub(crate) fn keymap_remove_binding(
     Ok(())
 }
 
-pub(crate) fn keymap_lookup_binding(
+fn approximate_key_parts(key: &str) -> Vec<String> {
+    key_sequence_binding_parts(&Value::String(key.to_string()))
+        .unwrap_or_else(|_| key.split_whitespace().map(str::to_string).collect())
+}
+
+fn binding_key_parts(binding: &RuntimeKeymapBinding) -> Vec<String> {
+    binding
+        .parts
+        .clone()
+        .unwrap_or_else(|| approximate_key_parts(&binding.key))
+}
+
+fn canonical_key_part(part: &str) -> String {
+    part.trim_start_matches('<')
+        .trim_end_matches('>')
+        .replace("\\ ", "-")
+        .replace(' ', "-")
+        .to_lowercase()
+}
+
+fn key_parts_match(binding_parts: &[String], requested_parts: &[String]) -> bool {
+    if binding_parts.len() != requested_parts.len() {
+        return false;
+    }
+
+    let mut in_menu_path = false;
+    for (binding, requested) in binding_parts.iter().zip(requested_parts) {
+        if binding == requested {
+            if canonical_key_part(binding) == "menu-bar" {
+                in_menu_path = true;
+            }
+            continue;
+        }
+
+        let binding_canonical = canonical_key_part(binding);
+        let requested_canonical = canonical_key_part(requested);
+        let symbolic_like = binding.starts_with('<')
+            || binding.ends_with('>')
+            || requested.starts_with('<')
+            || requested.ends_with('>');
+        if binding_canonical == "menu-bar" && requested_canonical == "menu-bar" {
+            in_menu_path = true;
+            continue;
+        }
+
+        if (symbolic_like || in_menu_path) && binding_canonical == requested_canonical {
+            continue;
+        }
+
+        if binding_canonical != requested_canonical {
+            return false;
+        }
+    }
+
+    true
+}
+
+enum KeyLookupResult {
+    Missing,
+    Value(Value),
+    PrefixLen(usize),
+}
+
+fn keymap_lookup_binding_exact_parts(
     interp: &Interpreter,
     keymap: &Value,
-    key: &str,
+    key_parts: &[String],
 ) -> Result<Value, LispError> {
     let Some(id) = keymap_record_id(interp, keymap) else {
         return Ok(Value::Nil);
@@ -32094,15 +34144,435 @@ pub(crate) fn keymap_lookup_binding(
     let Some(record) = interp.find_record(id) else {
         return Ok(Value::Nil);
     };
-    for binding in keymap_bindings(record)?.into_iter().rev() {
-        if binding.key == key {
+    for binding in keymap_bindings(record)?.into_iter() {
+        if key_parts_match(&binding_key_parts(&binding), key_parts) {
             return Ok(binding.value);
+        }
+    }
+    if key_parts.len() == 1 {
+        for binding in keymap_bindings(record)?.into_iter() {
+            if binding_key_parts(&binding) == ["t".to_string()] {
+                return Ok(binding.value);
+            }
         }
     }
     match record.slots.get(KEYMAP_PARENT_SLOT) {
         Some(Value::Nil) | None => Ok(Value::Nil),
-        Some(parent) => keymap_lookup_binding(interp, parent, key),
+        Some(parent) => keymap_lookup_binding_exact_parts(interp, parent, key_parts),
     }
+}
+
+pub(crate) fn keymap_lookup_binding(
+    interp: &Interpreter,
+    keymap: &Value,
+    key: &str,
+) -> Result<Value, LispError> {
+    keymap_lookup_binding_exact_parts(interp, keymap, &approximate_key_parts(key))
+}
+
+fn keymap_lookup_sequence_single_map(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    key_parts: &[String],
+    env: &mut Env,
+) -> Result<KeyLookupResult, LispError> {
+    if key_parts.is_empty() {
+        return Ok(KeyLookupResult::Missing);
+    }
+
+    let binding = keymap_lookup_binding_exact_parts(interp, keymap, key_parts)?;
+    if !binding.is_nil() {
+        return Ok(KeyLookupResult::Value(keymap_get_keyelt(
+            interp, &binding, true, env,
+        )?));
+    }
+
+    for prefix_len in (1..key_parts.len()).rev() {
+        let binding = keymap_lookup_binding_exact_parts(interp, keymap, &key_parts[..prefix_len])?;
+        if binding.is_nil() {
+            continue;
+        }
+        let resolved = keymap_get_keyelt(interp, &binding, true, env)?;
+        if is_keymap_value(interp, &resolved) {
+            match keymap_lookup_sequence_single_map(
+                interp,
+                &resolved,
+                &key_parts[prefix_len..],
+                env,
+            )? {
+                KeyLookupResult::Missing => {}
+                KeyLookupResult::Value(value) => return Ok(KeyLookupResult::Value(value)),
+                KeyLookupResult::PrefixLen(len) => {
+                    return Ok(KeyLookupResult::PrefixLen(prefix_len + len));
+                }
+            }
+        } else {
+            return Ok(KeyLookupResult::PrefixLen(prefix_len));
+        }
+    }
+
+    Ok(KeyLookupResult::Missing)
+}
+
+fn keymap_lookup_sequence_value(
+    interp: &mut Interpreter,
+    keymap_or_maps: &Value,
+    key_parts: &[String],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if is_keymap_value(interp, keymap_or_maps) {
+        return Ok(
+            match keymap_lookup_sequence_single_map(interp, keymap_or_maps, key_parts, env)? {
+                KeyLookupResult::Missing => Value::Nil,
+                KeyLookupResult::Value(value) => value,
+                KeyLookupResult::PrefixLen(len) => Value::Integer(len as i64),
+            },
+        );
+    }
+
+    let mut prefix_match = None;
+    for keymap in keymap_or_maps.to_vec()? {
+        if !is_keymap_value(interp, &keymap) {
+            continue;
+        }
+        match keymap_lookup_sequence_single_map(interp, &keymap, key_parts, env)? {
+            KeyLookupResult::Missing => {}
+            KeyLookupResult::Value(value) => return Ok(value),
+            KeyLookupResult::PrefixLen(len) => prefix_match = Some(len),
+        }
+    }
+
+    Ok(prefix_match
+        .map(|len| Value::Integer(len as i64))
+        .unwrap_or(Value::Nil))
+}
+
+fn keymap_get_keyelt(
+    interp: &mut Interpreter,
+    object: &Value,
+    autoload: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut current = object.clone();
+    loop {
+        let Value::Cons(_, _) = current else {
+            return Ok(current);
+        };
+
+        let car = current.car()?;
+        if matches!(&car, Value::Symbol(symbol) if symbol == "menu-item") {
+            let Ok(items) = current.to_vec() else {
+                return Ok(current);
+            };
+            let Some(mut definition) = items.get(2).cloned() else {
+                return Ok(current);
+            };
+            if autoload {
+                let mut index = 3usize;
+                while index + 1 < items.len() {
+                    if matches!(&items[index], Value::Symbol(symbol) if symbol == ":filter") {
+                        definition = call_function_value(
+                            interp,
+                            &items[index + 1],
+                            std::slice::from_ref(&definition),
+                            env,
+                        )?;
+                        break;
+                    }
+                    index += 2;
+                }
+            }
+            current = definition;
+            continue;
+        }
+
+        if string_like(&car).is_some() {
+            current = current.cdr()?;
+            continue;
+        }
+
+        return Ok(current);
+    }
+}
+
+fn keymap_binding_display_name(value: &Value) -> String {
+    match value {
+        Value::Nil => "undefined".into(),
+        Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
+        value if matches!(value, Value::Record(_)) => "Prefix Command".into(),
+        Value::Cons(_, _) => value
+            .to_vec()
+            .ok()
+            .and_then(|items| match items.as_slice() {
+                [Value::Symbol(symbol), inner] if symbol == "function" || symbol == "quote" => {
+                    Some(keymap_binding_display_name(inner))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| value.to_string()),
+        _ => value.to_string(),
+    }
+}
+
+fn describe_buffer_bindings(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(LispError::WrongNumberOfArgs(
+            "describe-buffer-bindings".into(),
+            args.len(),
+        ));
+    }
+
+    let prefix = args
+        .get(1)
+        .filter(|value| !value.is_nil())
+        .map(key_sequence_binding_text)
+        .transpose()?;
+    let saved_buffer_id = interp.current_buffer_id();
+    let mut output = String::from("key             binding\n---             -------\n");
+    let mut seen = HashSet::new();
+
+    for map in current_active_maps(interp, env, None)? {
+        let Some(id) = keymap_record_id(interp, &map) else {
+            continue;
+        };
+        let Some(record) = interp.find_record(id) else {
+            continue;
+        };
+        for binding in keymap_bindings(record)? {
+            if !prefix.as_deref().is_none_or(|prefix| {
+                binding.key == prefix || binding.key.starts_with(&format!("{prefix} "))
+            }) {
+                continue;
+            }
+            if !seen.insert(binding.key.clone()) {
+                continue;
+            }
+            let resolved = keymap_get_keyelt(interp, &binding.value, true, env)?;
+            if resolved.is_nil() {
+                continue;
+            }
+            output.push_str(&format!(
+                "{:<16} {}\n",
+                binding.key,
+                keymap_binding_display_name(&resolved)
+            ));
+        }
+    }
+
+    interp.switch_to_buffer_id(saved_buffer_id)?;
+    interp.insert_current_buffer(&output);
+    Ok(Value::Nil)
+}
+
+fn reader_control_char(base: i64) -> Option<i64> {
+    let ch = char::from_u32(base as u32)?;
+    match ch {
+        '@' | '`' | ' ' => Some(0),
+        '?' => Some(0x7f),
+        _ if ch.is_ascii() => Some(i64::from((ch.to_ascii_lowercase() as u8) & 0x1f)),
+        _ => None,
+    }
+}
+
+fn reader_key_event_value(event: Value) -> Value {
+    let Value::Integer(code) = event else {
+        return event;
+    };
+    let base = code & !KEY_DESCRIPTION_MODIFIER_MASK;
+    let modifiers = code & KEY_DESCRIPTION_MODIFIER_MASK;
+    if modifiers & KEY_DESCRIPTION_CTRL_BIT == 0 {
+        return Value::Integer(code);
+    }
+
+    let other_modifiers = modifiers & !KEY_DESCRIPTION_CTRL_BIT;
+    let Some(control) = reader_control_char(base) else {
+        return Value::Integer(code);
+    };
+    Value::Integer(control | other_modifiers)
+}
+
+fn key_parts_to_sequence_value(parts: &[String]) -> Value {
+    let mut items = vec![Value::Symbol("vector-literal".into())];
+    for part in parts {
+        let (_, _, saw_prefix) = parse_kbd_prefixes(part);
+        if !part.starts_with('<')
+            && !part.ends_with('>')
+            && !saw_prefix
+            && named_kbd_key_code(part).is_none()
+            && part.chars().count() > 1
+        {
+            items.push(Value::Symbol(part.clone()));
+            continue;
+        }
+        items.extend(
+            parse_kbd_token(part)
+                .into_iter()
+                .map(reader_key_event_value),
+        );
+    }
+    Value::list(items)
+}
+
+fn accessible_keymaps(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_arg_range("accessible-keymaps", args, 1, 2)?;
+
+    let mut queue: Vec<(Vec<String>, Value)> = Vec::new();
+    if let Some(prefix) = args.get(1).filter(|value| !value.is_nil()) {
+        let prefix_parts = key_sequence_binding_parts(prefix)?;
+        let target = keymap_lookup_sequence_value(interp, &args[0], &prefix_parts, env)?;
+        if !is_keymap_value(interp, &target) {
+            return Ok(Value::Nil);
+        }
+        queue.push((prefix_parts, target));
+    } else if is_keymap_value(interp, &args[0]) {
+        queue.push((Vec::new(), args[0].clone()));
+    } else {
+        return Ok(Value::Nil);
+    }
+
+    let mut seen_maps = HashSet::new();
+    let mut index = 0usize;
+    while index < queue.len() {
+        let (_, map) = &queue[index];
+        index += 1;
+        let Some(id) = keymap_record_id(interp, map) else {
+            continue;
+        };
+        if !seen_maps.insert(id) {
+            continue;
+        }
+        let Some(record) = interp.find_record(id) else {
+            continue;
+        };
+        for binding in keymap_bindings(record)? {
+            let resolved = keymap_get_keyelt(interp, &binding.value, false, env)?;
+            if !is_keymap_value(interp, &resolved) {
+                continue;
+            }
+            let mut sequence = queue[index - 1].0.clone();
+            sequence.extend(binding_key_parts(&binding));
+            queue.push((sequence, resolved));
+        }
+    }
+
+    Ok(Value::list(queue.into_iter().map(|(parts, map)| {
+        Value::cons(key_parts_to_sequence_value(&parts), map)
+    })))
+}
+
+fn single_char_binding_key(parts: &[String]) -> Option<char> {
+    let [part] = parts else {
+        return None;
+    };
+    let mut chars = part.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none()).then_some(ch)
+}
+
+fn help_describe_vector(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_args("help--describe-vector", args, 7)?;
+
+    let mention_shadow = args[6].is_truthy();
+    let shadow = args[4].clone();
+    let entire_map = args[5].clone();
+    let Some(id) = keymap_record_id(interp, &entire_map) else {
+        return Ok(Value::Nil);
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Ok(Value::Nil);
+    };
+
+    let mut bindings = keymap_bindings(record)?
+        .into_iter()
+        .filter_map(|binding| {
+            let parts = binding_key_parts(&binding);
+            single_char_binding_key(&parts).map(|ch| (ch, binding.value))
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by_key(|(ch, _)| *ch as u32);
+
+    let mut lines = Vec::new();
+    let mut range_start = None::<char>;
+    let mut range_end = None::<char>;
+    let mut range_command = String::new();
+
+    let flush_range =
+        |lines: &mut Vec<String>, start: Option<char>, end: Option<char>, command: &str| {
+            if let (Some(start), Some(end)) = (start, end) {
+                let key = if start == end {
+                    start.to_string()
+                } else {
+                    format!("{start} .. {end}")
+                };
+                lines.push(format!("{key}{command}"));
+            }
+        };
+
+    for (key, binding) in bindings {
+        let resolved = keymap_get_keyelt(interp, &binding, true, env)?;
+        let command = keymap_binding_display_name(&resolved);
+        let shadow_binding =
+            keymap_lookup_binding_exact_parts(interp, &shadow, &[key.to_string()])?;
+        let shadow_text = if mention_shadow && !shadow_binding.is_nil() {
+            let shadow_resolved = keymap_get_keyelt(interp, &shadow_binding, true, env)?;
+            let shadow_name = keymap_binding_display_name(&shadow_resolved);
+            (shadow_name != command).then_some(shadow_name)
+        } else {
+            None
+        };
+
+        if let Some(shadow_name) = shadow_text {
+            flush_range(
+                &mut lines,
+                range_start.take(),
+                range_end.take(),
+                &range_command,
+            );
+            lines.push(format!(
+                "{key}{command}  (currently shadowed by `{shadow_name}')"
+            ));
+            range_command.clear();
+            continue;
+        }
+
+        match (range_start, range_end) {
+            (Some(start), Some(end))
+                if command == range_command && (end as u32).saturating_add(1) == key as u32 =>
+            {
+                range_start = Some(start);
+                range_end = Some(key);
+            }
+            _ => {
+                flush_range(
+                    &mut lines,
+                    range_start.take(),
+                    range_end.take(),
+                    &range_command,
+                );
+                range_start = Some(key);
+                range_end = Some(key);
+                range_command = command;
+            }
+        }
+    }
+    flush_range(&mut lines, range_start, range_end, &range_command);
+
+    if !lines.is_empty() {
+        interp.insert_current_buffer(&format!("\n{}\n", lines.join("\n")));
+    }
+    Ok(Value::Nil)
 }
 
 fn active_minor_mode_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>, LispError> {
@@ -32130,7 +34600,46 @@ fn active_minor_mode_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>,
     Ok(maps)
 }
 
-fn current_active_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>, LispError> {
+fn keymap_at_active_position(interp: &Interpreter, posn: Option<&Value>) -> Option<Value> {
+    let buffer_keymap = |pos: usize| {
+        buffer_property_at_with_category(interp, &interp.buffer, pos, "keymap")
+            .filter(|value| is_keymap_value(interp, value))
+    };
+
+    let string_keymap = |value: &Value| {
+        string_property_at_with_category(interp, value, 0, "keymap")
+            .filter(|value| is_keymap_value(interp, value))
+    };
+
+    match posn {
+        None => buffer_keymap(interp.buffer.point()),
+        Some(value) if value.is_nil() => buffer_keymap(interp.buffer.point()),
+        Some(value) if string_like(value).is_some() => {
+            string_keymap(value).or_else(|| buffer_keymap(interp.buffer.point()))
+        }
+        Some(value) => {
+            let items = value.to_vec().ok()?;
+            let area = items.get(1)?;
+            let string = items.get(4).and_then(|value| value.car().ok());
+            if let Some(string) = string.as_ref().and_then(string_keymap) {
+                return Some(string);
+            }
+            if !area.is_nil() {
+                return None;
+            }
+            match items.get(5) {
+                Some(Value::Integer(pos)) if *pos > 0 => buffer_keymap(*pos as usize),
+                _ => buffer_keymap(interp.buffer.point()),
+            }
+        }
+    }
+}
+
+fn current_active_maps(
+    interp: &Interpreter,
+    env: &Env,
+    posn: Option<&Value>,
+) -> Result<Vec<Value>, LispError> {
     let mut maps = Vec::new();
     if let Some(map) = interp.lookup_var("overriding-terminal-local-map", env)
         && is_keymap_value(interp, &map)
@@ -32140,6 +34649,9 @@ fn current_active_maps(interp: &Interpreter, env: &Env) -> Result<Vec<Value>, Li
     if let Some(map) = interp.lookup_var("overriding-local-map", env)
         && is_keymap_value(interp, &map)
     {
+        maps.push(map);
+    }
+    if let Some(map) = keymap_at_active_position(interp, posn) {
         maps.push(map);
     }
     maps.extend(active_minor_mode_maps(interp, env)?);
@@ -32162,10 +34674,10 @@ fn where_is_internal_maps(
     env: &Env,
 ) -> Result<Vec<Value>, LispError> {
     let Some(arg) = arg else {
-        return current_active_maps(interp, env);
+        return current_active_maps(interp, env, None);
     };
     if arg.is_nil() {
-        return current_active_maps(interp, env);
+        return current_active_maps(interp, env, None);
     }
     if is_keymap_value(interp, arg) {
         return Ok(vec![arg.clone()]);
@@ -32179,17 +34691,170 @@ fn where_is_internal_maps(
     Ok(maps)
 }
 
-fn where_is_internal(interp: &Interpreter, command: &str, keymaps: &[Value]) -> Vec<String> {
-    let mut matches = Vec::new();
+fn where_is_internal(
+    interp: &mut Interpreter,
+    command: &str,
+    keymaps: &[Value],
+    env: &mut Env,
+) -> Result<Vec<Value>, LispError> {
+    let maps_value = Value::list(keymaps.iter().cloned());
+    let remapped_command = command_remapping(
+        interp,
+        &Value::Symbol(command.into()),
+        Some(&maps_value),
+        env,
+    )
+    .ok()
+    .and_then(|value| command_name_for_remapping(&value));
+    let target_command = remapped_command.as_deref().unwrap_or(command);
+
+    let mut matches = Vec::<Vec<String>>::new();
     let mut seen = HashSet::new();
+    let mut visited = HashSet::new();
     for keymap in keymaps {
-        if let Some(binding) = keymap_binding_text_for_command(interp, keymap, command)
-            && seen.insert(binding.clone())
+        collect_where_is_matches(
+            interp,
+            keymap,
+            &[],
+            target_command,
+            env,
+            &mut visited,
+            &mut seen,
+            &mut matches,
+        )?;
+    }
+
+    let active_maps = Value::list(keymaps.iter().cloned());
+    matches.retain(|parts| {
+        keymap_lookup_sequence_value(interp, &active_maps, parts, env)
+            .ok()
+            .and_then(|value| command_name_for_remapping(&value))
+            .as_deref()
+            == Some(target_command)
+    });
+
+    if remapped_command.is_none()
+        && let Some(advertised) = interp
+            .get_symbol_property(command, ":advertised-binding")
+            .or_else(|| interp.get_symbol_property(command, "advertised-binding"))
+        && let Ok(advertised_parts) = key_sequence_binding_parts(&advertised)
+        && let Some(index) = matches.iter().position(|parts| parts == &advertised_parts)
+    {
+        let preferred = matches.remove(index);
+        matches.insert(0, preferred);
+    }
+
+    Ok(matches
+        .into_iter()
+        .map(|parts| {
+            key_parts_to_sequence_value(&maybe_prefer_modifier_notation(interp, &parts, env))
+        })
+        .collect())
+}
+
+fn key_part_is_non_key_event(interp: &Interpreter, part: &str) -> bool {
+    interp
+        .get_symbol_property(
+            part.trim_start_matches('<').trim_end_matches('>'),
+            "non-key-event",
+        )
+        .is_some_and(|value| value.is_truthy())
+}
+
+fn key_parts_are_remap(parts: &[String]) -> bool {
+    parts
+        .first()
+        .is_some_and(|part| canonical_key_part(part) == "remap")
+}
+
+fn maybe_prefer_modifier_notation(
+    interp: &Interpreter,
+    parts: &[String],
+    env: &Env,
+) -> Vec<String> {
+    let Some(preferred) = interp.lookup_var("where-is-preferred-modifier", env) else {
+        return parts.to_vec();
+    };
+    let Some(preferred) = (match preferred {
+        Value::Symbol(symbol) => Some(symbol),
+        Value::String(text) => Some(text),
+        Value::StringObject(state) => Some(state.borrow().text.clone()),
+        _ => None,
+    }) else {
+        return parts.to_vec();
+    };
+
+    if !matches!(preferred.as_str(), "alt" | "meta") || parts.len() < 2 {
+        return parts.to_vec();
+    }
+    if canonical_key_part(&parts[0]) != "esc" {
+        return parts.to_vec();
+    }
+
+    let mut preferred_parts = Vec::with_capacity(parts.len() - 1);
+    preferred_parts.push(format!("M-{}", parts[1]));
+    preferred_parts.extend(parts.iter().skip(2).cloned());
+    preferred_parts
+}
+
+fn collect_where_is_matches(
+    interp: &mut Interpreter,
+    keymap: &Value,
+    prefix: &[String],
+    target_command: &str,
+    env: &mut Env,
+    visited: &mut HashSet<(u64, String)>,
+    seen: &mut HashSet<String>,
+    matches: &mut Vec<Vec<String>>,
+) -> Result<(), LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(());
+    };
+    let prefix_key = prefix.join(" ");
+    if !visited.insert((id, prefix_key)) {
+        return Ok(());
+    }
+    let Some(record) = interp.find_record(id) else {
+        return Ok(());
+    };
+    for binding in keymap_bindings(record)? {
+        let parts = binding_key_parts(&binding);
+        if parts
+            .iter()
+            .any(|part| key_part_is_non_key_event(interp, part))
         {
-            matches.push(binding);
+            continue;
+        }
+        let full_parts = prefix
+            .iter()
+            .cloned()
+            .chain(parts.iter().cloned())
+            .collect::<Vec<_>>();
+        let resolved = keymap_get_keyelt(interp, &binding.value, true, env)?;
+        if !key_parts_are_remap(&full_parts)
+            && command_name_for_remapping(&resolved).as_deref() == Some(target_command)
+        {
+            let key = full_parts.join(" ");
+            if seen.insert(key) {
+                matches.push(full_parts.clone());
+            }
+        }
+
+        let nested = keymap_get_keyelt(interp, &binding.value, false, env)?;
+        if is_keymap_value(interp, &nested) {
+            collect_where_is_matches(
+                interp,
+                &nested,
+                &full_parts,
+                target_command,
+                env,
+                visited,
+                seen,
+                matches,
+            )?;
         }
     }
-    matches
+    Ok(())
 }
 
 fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
@@ -32233,7 +34898,7 @@ fn command_remapping(
     let remap_key = remap_key_binding_text(&command_name);
     let maps = match keymaps {
         Some(keymaps) => where_is_internal_maps(interp, Some(keymaps), env)?,
-        None => current_active_maps(interp, env)?,
+        None => current_active_maps(interp, env, None)?,
     };
     for map in maps {
         let binding = keymap_lookup_binding(interp, &map, &remap_key)?;
@@ -32481,6 +35146,167 @@ pub(crate) fn eval_impl(
     }
 }
 
+fn eval_buffer_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() > 5 {
+        return Err(LispError::WrongNumberOfArgs(
+            "eval-buffer".into(),
+            args.len(),
+        ));
+    }
+    let buffer_id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
+        interp.resolve_buffer_id(buffer)?
+    } else {
+        interp.current_buffer_id()
+    };
+    let text = interp
+        .get_buffer_by_id(buffer_id)
+        .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
+        .buffer_string();
+    let forms = super::reader::Reader::new(&text).read_all()?;
+    let mut result = Value::Nil;
+    for form in forms {
+        result = interp.eval(&form, env)?;
+    }
+    Ok(result)
+}
+
+fn resolve_load_target_in_env(interp: &Interpreter, target: &str, env: &Env) -> Option<PathBuf> {
+    let direct = PathBuf::from(target);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let with_el = (!target.ends_with(".el")).then(|| format!("{target}.el"));
+    let Some(load_path) = interp.lookup_var("load-path", env) else {
+        return interp.resolve_load_target(target);
+    };
+    let Ok(entries) = load_path.to_vec() else {
+        return interp.resolve_load_target(target);
+    };
+    for entry in entries {
+        let Some(root) = string_like(&entry).map(|string| PathBuf::from(string.text)) else {
+            continue;
+        };
+        let candidate = root.join(target);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if let Some(with_el) = &with_el {
+            let candidate = root.join(with_el);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    interp.resolve_load_target(target)
+}
+
+fn read_symbol_shorthands_in_env(
+    interp: &Interpreter,
+    env: &Env,
+) -> Result<Vec<(String, String)>, LispError> {
+    let Some(raw) = interp.lookup_var("read-symbol-shorthands", env) else {
+        return Ok(Vec::new());
+    };
+    let mut shorthands = Vec::new();
+    for entry in raw.to_vec()? {
+        let Some((from, to)) = entry.cons_values() else {
+            continue;
+        };
+        let Some(from) = string_like(&from).map(|string| string.text) else {
+            continue;
+        };
+        let Some(to) = string_like(&to).map(|string| string.text) else {
+            continue;
+        };
+        shorthands.push((from, to));
+    }
+    Ok(shorthands)
+}
+
+fn apply_symbol_shorthands_in_env(
+    interp: &Interpreter,
+    symbol_name: &str,
+    env: &Env,
+) -> Result<String, LispError> {
+    for (short, long) in read_symbol_shorthands_in_env(interp, env)? {
+        if let Some(rest) = symbol_name.strip_prefix(&short) {
+            return Ok(format!("{long}{rest}"));
+        }
+    }
+    Ok(symbol_name.to_string())
+}
+
+fn get_load_suffixes_value(interp: &Interpreter, env: &Env) -> Result<Value, LispError> {
+    let suffixes = interp
+        .lookup_var("load-suffixes", env)
+        .unwrap_or(Value::list([Value::String(".el".into())]))
+        .to_vec()?;
+    let rep_suffixes = interp
+        .lookup_var("load-file-rep-suffixes", env)
+        .unwrap_or(Value::list([Value::String(String::new())]))
+        .to_vec()?;
+    let mut values = Vec::new();
+    for suffix in suffixes {
+        let suffix = string_text(&suffix)?;
+        for rep in &rep_suffixes {
+            values.push(Value::String(format!("{suffix}{}", string_text(rep)?)));
+        }
+    }
+    Ok(Value::list(values))
+}
+
+fn locate_file_internal(
+    interp: &mut Interpreter,
+    file: &Value,
+    path: &Value,
+    suffixes: &Value,
+    predicate: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let file = string_text(file)?;
+    let path_entries = path.to_vec()?;
+    let suffixes = if suffixes.is_nil() {
+        vec![String::new()]
+    } else {
+        suffixes
+            .to_vec()?
+            .into_iter()
+            .map(|value| string_text(&value))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    for directory in path_entries {
+        let Some(directory) = string_like(&directory).map(|string| string.text) else {
+            continue;
+        };
+        for suffix in &suffixes {
+            let candidate = expand_file_name(&format!("{file}{suffix}"), Some(&directory));
+            let keep = if predicate.is_nil() {
+                fs::metadata(&candidate)
+                    .map(|metadata| metadata.is_file() && file_readable_p(&candidate))
+                    .unwrap_or(false)
+            } else {
+                let result = interp.call_function_value(
+                    resolve_callable(interp, predicate, env)?,
+                    predicate.as_symbol().ok(),
+                    &[Value::String(candidate.clone())],
+                    env,
+                )?;
+                result.is_truthy()
+            };
+            if keep {
+                return Ok(Value::String(candidate));
+            }
+        }
+    }
+
+    Ok(Value::Nil)
+}
+
 fn history_args_for_call(
     interp: &mut Interpreter,
     func: &Value,
@@ -32671,6 +35497,17 @@ fn make_obarray(interp: &mut Interpreter) -> Value {
     interp.create_record(OBARRAY_RECORD_TYPE, vec![Value::Nil])
 }
 
+fn obarray_symbols_or_empty(
+    interp: &Interpreter,
+    obarray: &Value,
+) -> Result<Vec<Value>, LispError> {
+    if obarray.is_nil() {
+        Ok(Vec::new())
+    } else {
+        obarray_symbols(interp, obarray)
+    }
+}
+
 fn obarray_symbols(interp: &Interpreter, obarray: &Value) -> Result<Vec<Value>, LispError> {
     let Value::Record(id) = obarray else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
@@ -32682,6 +35519,13 @@ fn obarray_symbols(interp: &Interpreter, obarray: &Value) -> Result<Vec<Value>, 
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     }
     record.slots.first().cloned().unwrap_or(Value::Nil).to_vec()
+}
+
+fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
+    matches!(
+        value,
+        Value::Symbol(name) if crate::lisp::types::visible_symbol_name(name) == symbol_name
+    )
 }
 
 fn intern_in_obarray(
@@ -32706,12 +35550,15 @@ fn intern_in_obarray(
         .to_vec()?;
     if let Some(existing) = symbols
         .iter()
-        .find(|value| matches!(value, Value::Symbol(name) if name == symbol_name))
+        .find(|value| obarray_symbol_matches(value, symbol_name))
         .cloned()
     {
         return Ok(existing);
     }
-    let symbol = Value::Symbol(symbol_name.into());
+    let symbol = Value::Symbol(crate::lisp::types::make_obarray_symbol_name(
+        symbol_name,
+        *id,
+    ));
     symbols.push(symbol.clone());
     if record.slots.is_empty() {
         record.slots.push(Value::list(symbols));
@@ -32728,8 +35575,206 @@ fn intern_soft_in_obarray(
 ) -> Result<Value, LispError> {
     Ok(obarray_symbols(interp, obarray)?
         .into_iter()
-        .find(|value| matches!(value, Value::Symbol(name) if name == symbol_name))
+        .find(|value| obarray_symbol_matches(value, symbol_name))
         .unwrap_or(Value::Nil))
+}
+
+fn unintern_from_obarray(
+    interp: &mut Interpreter,
+    obarray: &Value,
+    target: &Value,
+    env: &Env,
+) -> Result<bool, LispError> {
+    let Value::Record(id) = obarray else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    let Some(record) = interp.find_record(*id) else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    if record.type_name != OBARRAY_RECORD_TYPE {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    }
+    let mut symbols = record
+        .slots
+        .first()
+        .cloned()
+        .unwrap_or(Value::Nil)
+        .to_vec()?;
+    let original_len = symbols.len();
+    match target {
+        Value::Symbol(symbol_name) => {
+            symbols.retain(|value| !matches!(value, Value::Symbol(name) if name == symbol_name));
+        }
+        _ => {
+            let symbol_name = apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?;
+            symbols.retain(|value| !obarray_symbol_matches(value, &symbol_name));
+        }
+    }
+    let removed = symbols.len() != original_len;
+    let Some(record) = interp.find_record_mut(*id) else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    if record.slots.is_empty() {
+        record.slots.push(Value::list(symbols));
+    } else {
+        record.slots[0] = Value::list(symbols);
+    }
+    Ok(removed)
+}
+
+fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
+        (Value::Integer(a), Value::BigInteger(b)) | (Value::BigInteger(b), Value::Integer(a)) => {
+            &BigInt::from(*a) == b
+        }
+        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::String(_), Value::String(_))
+        | (Value::String(_), Value::StringObject(_))
+        | (Value::StringObject(_), Value::String(_)) => false,
+        (Value::Cons(left_car, _), Value::Cons(right_car, _)) => Rc::ptr_eq(left_car, right_car),
+        (
+            Value::Lambda(left_params, left_body, left_env),
+            Value::Lambda(right_params, right_body, right_env),
+        ) => {
+            left_params == right_params
+                && left_body == right_body
+                && Rc::ptr_eq(left_env, right_env)
+        }
+        (Value::Buffer(left_id, _), Value::Buffer(right_id, _))
+        | (Value::Marker(left_id), Value::Marker(right_id))
+        | (Value::Overlay(left_id), Value::Overlay(right_id))
+        | (Value::CharTable(left_id), Value::CharTable(right_id))
+        | (Value::Record(left_id), Value::Record(right_id))
+        | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        _ => false,
+    }
+}
+
+fn substitution_visit_key(value: &Value) -> Option<(u8, usize)> {
+    match value {
+        Value::Cons(car, _) => Some((0, Rc::as_ptr(car) as usize)),
+        Value::StringObject(state) => Some((1, Rc::as_ptr(state) as usize)),
+        Value::Record(id) => Some((2, *id as usize)),
+        Value::CharTable(id) => Some((3, *id as usize)),
+        _ => None,
+    }
+}
+
+fn substitute_object_recurse(
+    interp: &mut Interpreter,
+    object: &Value,
+    placeholder: &Value,
+    subtree: &Value,
+    seen: &mut HashSet<(u8, usize)>,
+) -> Result<Value, LispError> {
+    if values_eq_for_substitution(subtree, placeholder) {
+        return Ok(object.clone());
+    }
+
+    let Some(key) = substitution_visit_key(subtree) else {
+        return Ok(subtree.clone());
+    };
+    if !seen.insert(key) {
+        return Ok(subtree.clone());
+    }
+
+    match subtree {
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = subtree.cons_values() else {
+                return Ok(subtree.clone());
+            };
+            let Some((car_slot, cdr_slot)) = subtree.cons_cells() else {
+                return Ok(subtree.clone());
+            };
+            *car_slot.borrow_mut() =
+                substitute_object_recurse(interp, object, placeholder, &car, seen)?;
+            *cdr_slot.borrow_mut() =
+                substitute_object_recurse(interp, object, placeholder, &cdr, seen)?;
+            Ok(subtree.clone())
+        }
+        Value::StringObject(state) => {
+            let mut state = state.borrow_mut();
+            for span in &mut state.props {
+                for (_, prop_value) in &mut span.props {
+                    *prop_value =
+                        substitute_object_recurse(interp, object, placeholder, prop_value, seen)?;
+                }
+            }
+            Ok(subtree.clone())
+        }
+        Value::Record(id) => {
+            let slot_count = interp
+                .find_record(*id)
+                .map(|record| record.slots.len())
+                .unwrap_or(0);
+            for index in 0..slot_count {
+                let current = interp
+                    .find_record(*id)
+                    .and_then(|record| record.slots.get(index).cloned())
+                    .unwrap_or(Value::Nil);
+                let updated =
+                    substitute_object_recurse(interp, object, placeholder, &current, seen)?;
+                if let Some(record) = interp.find_record_mut(*id)
+                    && let Some(slot) = record.slots.get_mut(index)
+                {
+                    *slot = updated;
+                }
+            }
+            Ok(subtree.clone())
+        }
+        Value::CharTable(id) => {
+            let (default, extra_slots, entries) = match interp.find_char_table(*id) {
+                Some(table) => (
+                    table.default.clone(),
+                    table.extra_slots.clone(),
+                    table.entries.clone(),
+                ),
+                None => return Ok(subtree.clone()),
+            };
+
+            let default = substitute_object_recurse(interp, object, placeholder, &default, seen)?;
+            let mut updated_slots = Vec::with_capacity(extra_slots.len());
+            for slot in extra_slots {
+                updated_slots.push(substitute_object_recurse(
+                    interp,
+                    object,
+                    placeholder,
+                    &slot,
+                    seen,
+                )?);
+            }
+            let mut updated_entries = Vec::with_capacity(entries.len());
+            for mut entry in entries {
+                entry.value =
+                    substitute_object_recurse(interp, object, placeholder, &entry.value, seen)?;
+                updated_entries.push(entry);
+            }
+
+            if let Some(table) = interp.find_char_table_mut(*id) {
+                table.default = default;
+                table.extra_slots = updated_slots;
+                table.entries = updated_entries;
+            }
+            Ok(subtree.clone())
+        }
+        _ => Ok(subtree.clone()),
+    }
+}
+
+fn substitute_object_in_subtree(
+    interp: &mut Interpreter,
+    object: &Value,
+    placeholder: &Value,
+    _completed: &Value,
+) -> Result<(), LispError> {
+    let _ = substitute_object_recurse(interp, object, placeholder, object, &mut HashSet::new())?;
+    Ok(())
 }
 
 fn default_intern_soft_result(interp: &Interpreter, symbol_name: &str, env: &Env) -> Value {
@@ -32748,7 +35793,7 @@ fn default_intern_soft_result(interp: &Interpreter, symbol_name: &str, env: &Env
 fn completion_display_name(value: &Value) -> Result<String, LispError> {
     match value {
         Value::String(_) | Value::StringObject(_) => string_text(value),
-        Value::Symbol(symbol) => Ok(symbol.clone()),
+        Value::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(symbol).to_string()),
         _ => Err(LispError::TypeError(
             "string-or-symbol".into(),
             value.type_name(),
@@ -33936,10 +36981,22 @@ fn is_composed_accessor_name(name: &str) -> bool {
             .all(|byte| matches!(byte, b'a' | b'd'))
 }
 
-fn call_composed_accessor(name: &str, args: &[Value]) -> Result<Value, LispError> {
+fn call_composed_accessor(
+    interp: &Interpreter,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, LispError> {
     need_args(name, args, 1)?;
     let mut value = args[0].clone();
     for op in name[1..name.len() - 1].bytes().rev() {
+        if let Some(items) = keymap_list_items(interp, &value)? {
+            value = match op {
+                b'a' => items.into_iter().next().unwrap_or(Value::Nil),
+                b'd' => Value::list(items.into_iter().skip(1)),
+                _ => unreachable!("validated by is_composed_accessor_name"),
+            };
+            continue;
+        }
         value = match op {
             b'a' => value.car()?,
             b'd' => value.cdr()?,

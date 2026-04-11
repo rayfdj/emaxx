@@ -7,6 +7,7 @@ use std::fmt;
 use std::{cell::RefCell, rc::Rc};
 
 const UNINTERNED_SYMBOL_MARKER: &str = "\u{1F}";
+const OBARRAY_SYMBOL_MARKER: &str = "\u{1E}";
 
 pub type ConsSlot = Rc<RefCell<Value>>;
 pub type ConsCells = (ConsSlot, ConsSlot);
@@ -68,11 +69,28 @@ pub(crate) fn make_uninterned_symbol_name(base: &str, id: u64) -> String {
     format!("{base}{UNINTERNED_SYMBOL_MARKER}{id}")
 }
 
+pub(crate) fn make_obarray_symbol_name(base: &str, obarray_id: u64) -> String {
+    format!("{base}{OBARRAY_SYMBOL_MARKER}{obarray_id}")
+}
+
+pub(crate) fn is_uninterned_symbol(symbol: &str) -> bool {
+    symbol.contains(UNINTERNED_SYMBOL_MARKER)
+}
+
 pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
     symbol
         .split_once(UNINTERNED_SYMBOL_MARKER)
+        .or_else(|| symbol.split_once(OBARRAY_SYMBOL_MARKER))
         .map(|(visible, _)| visible)
         .unwrap_or(symbol)
+}
+
+pub(crate) fn format_float(value: f64) -> String {
+    let mut rendered = value.to_string();
+    if !rendered.contains(['.', 'e', 'E']) {
+        rendered.push_str(".0");
+    }
+    rendered
 }
 
 impl Value {
@@ -333,7 +351,7 @@ fn format_value(
         Value::T => write!(f, "t"),
         Value::Integer(n) => write!(f, "{}", n),
         Value::BigInteger(n) => write!(f, "{}", n),
-        Value::Float(v) => write!(f, "{}", v),
+        Value::Float(v) => write!(f, "{}", format_float(*v)),
         Value::String(s) => write!(f, "\"{}\"", s),
         Value::StringObject(state) => write!(f, "\"{}\"", state.borrow().text),
         Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
