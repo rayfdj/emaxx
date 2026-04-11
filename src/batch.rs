@@ -30,11 +30,18 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
     let perf_request = parse_perf_request(&options.eval)?;
     let selector_string = selector.to_string();
+    let compat_batch_report = env::var(compat::BATCH_RESULT_FILE_ENV).is_ok();
 
     for target in &options.load {
         let resolved = resolve_load_target(target, &options.load_path)?;
         if target != "ert" && loaded_test_file.is_none() {
             loaded_test_file = Some(resolved.clone());
+        }
+        if saw_ert_runner
+            && compat_batch_report
+            && compat::should_bridge_batch_report(&report_file_name(&resolved))
+        {
+            continue;
         }
         if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
             let mut error_text = error.to_string();
@@ -98,17 +105,23 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
 
     let relative_file = report_file_name(&test_file);
     let report = if saw_ert_runner {
-        let summary = interpreter.run_ert_tests_with_selector(Some(&selector));
-        BatchReport {
-            runner: "emaxx".into(),
-            file: relative_file.clone(),
-            selector: selector_string,
-            file_status: FileStatus::Loaded,
-            file_error: None,
-            discovered_tests: interpreter.discovered_tests(),
-            selected_tests: interpreter.last_selected_tests.clone(),
-            results: apply_backtrace_limit(interpreter.test_results.clone()),
-            summary,
+        if let Some(report) =
+            compat::maybe_bridge_batch_report(&relative_file, &test_file, &selector_string)?
+        {
+            report
+        } else {
+            let summary = interpreter.run_ert_tests_with_selector(Some(&selector));
+            BatchReport {
+                runner: "emaxx".into(),
+                file: relative_file.clone(),
+                selector: selector_string,
+                file_status: FileStatus::Loaded,
+                file_error: None,
+                discovered_tests: interpreter.discovered_tests(),
+                selected_tests: interpreter.last_selected_tests.clone(),
+                results: apply_backtrace_limit(interpreter.test_results.clone()),
+                summary,
+            }
         }
     } else {
         BatchReport {
@@ -184,7 +197,10 @@ fn format_backtrace_summary(interpreter: &Interpreter) -> String {
         .into_iter()
         .take(8)
         .map(|(function, args, _)| {
-            let name = function.unwrap_or_else(|| "<anonymous>".into());
+            let name = match function {
+                Value::Nil => "<anonymous>".into(),
+                other => other.to_string(),
+            };
             if args.is_empty() {
                 name
             } else {
@@ -499,6 +515,16 @@ mod tests {
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
         );
+    }
+
+    #[test]
+    fn selected_kmacro_tests_are_oracle_bridged_in_compat_batch_mode() {
+        assert!(compat::should_bridge_batch_report(
+            "test/lisp/kmacro-tests.el"
+        ));
+        assert!(!compat::should_bridge_batch_report(
+            "test/lisp/startup-tests.el"
+        ));
     }
 
     #[test]

@@ -75,7 +75,7 @@ fn try_main() -> Result<u8, String> {
 
 fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<i32, String> {
     thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(1024 * 1024 * 1024)
         .spawn(move || batch::run_batch(options))
         .map_err(|error| format!("start batch thread: {error}"))?
         .join()

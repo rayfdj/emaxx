@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -6,6 +7,7 @@ use std::process::Child;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
+use super::reader::RECORD_LITERAL_SYMBOL;
 use super::sqlite::SqliteHandleState;
 use super::types::{Env, LispError, Value, shared_env};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
@@ -179,9 +181,9 @@ struct SpecialBindingRestore {
     previous: Option<Value>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct BacktraceFrame {
-    function: Option<String>,
+    function: Value,
     args: Vec<Value>,
     debug_on_exit: bool,
 }
@@ -211,6 +213,7 @@ enum ThreadStatus {
 enum ThreadProgram {
     Main,
     Ignore,
+    Call(Value),
     SetGlobal {
         name: String,
         value: Value,
@@ -795,6 +798,7 @@ impl Interpreter {
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
                 ),
+                ("current-load-list".into(), Value::Nil),
                 ("exec-path".into(), current_exec_path()),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
@@ -806,6 +810,11 @@ impl Interpreter {
                     "vc-directory-exclusion-list".into(),
                     preloaded_vc_directory_exclusion_list(),
                 ),
+                (
+                    "standard-output".into(),
+                    Value::Symbol("external-debugging-output".into()),
+                ),
+                ("emaxx-external-debugging-output-target".into(), Value::Nil),
             ],
             variable_aliases: Vec::new(),
             special_variables: vec![
@@ -814,6 +823,7 @@ impl Interpreter {
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),
                 "cl--proclaims-deferred".into(),
+                "current-load-list".into(),
                 "display-hourglass".into(),
                 "exec-path".into(),
                 "file-name-handler-alist".into(),
@@ -825,6 +835,7 @@ impl Interpreter {
                 "line-spacing".into(),
                 "left-margin".into(),
                 "last-command".into(),
+                "load-force-doc-strings".into(),
                 "overwrite-mode".into(),
                 "process-connection-type".into(),
                 "process-environment".into(),
@@ -960,14 +971,39 @@ impl Interpreter {
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
+        let _ = primitives::keymap_define_binding_with_placement(
+            &mut interp,
+            &ctl_x_map,
+            "C-f",
+            Some(vec!["C-f".into()]),
+            Value::Symbol("find-file".into()),
+            true,
+        );
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let buffer_menu_mode_map =
+            primitives::make_runtime_keymap(&mut interp, Some("Buffer-menu-mode-map"));
+        interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
         let global_map = interp
             .lookup_var("global-map", &Vec::new())
             .unwrap_or(Value::Nil);
+        let _ = primitives::keymap_define_binding_with_placement(
+            &mut interp,
+            &buffer_menu_mode_map,
+            "SPC",
+            Some(vec!["SPC".into()]),
+            Value::Symbol("Buffer-menu-select".into()),
+            true,
+        );
         let esc_map = interp
             .lookup_var("esc-map", &Vec::new())
             .unwrap_or(Value::Nil);
+        let _ = primitives::keymap_define_binding(
+            &mut interp,
+            &esc_map,
+            "x",
+            Value::Symbol("execute-extended-command".into()),
+        );
         let ctl_x_map = interp
             .lookup_var("ctl-x-map", &Vec::new())
             .unwrap_or(Value::Nil);
@@ -979,6 +1015,7 @@ impl Interpreter {
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
+        interp.set_global_binding("minor-mode-map-alist", Value::Nil);
         interp.set_global_binding("font-lock-mode", Value::Nil);
         interp.mark_auto_buffer_local("font-lock-mode");
         interp.set_global_binding("font-lock-fontified", Value::Nil);
@@ -1876,6 +1913,14 @@ impl Interpreter {
         self.records.iter_mut().find(|record| record.id == id)
     }
 
+    pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
+        self.records
+            .iter()
+            .filter(|record| record.type_name == type_name)
+            .map(|record| record.id)
+            .collect()
+    }
+
     pub fn register_sqlite_handle(&mut self, id: u64, state: SqliteHandleState) {
         if let Some((_, existing)) = self
             .sqlite_handles
@@ -2357,7 +2402,10 @@ impl Interpreter {
     pub fn thread_backtrace_frames_snapshot(
         &self,
         record_id: u64,
-    ) -> Vec<(Option<String>, Vec<Value>, bool)> {
+    ) -> Vec<(Value, Vec<Value>, bool)> {
+        if record_id == self.active_thread_id {
+            return self.backtrace_frames_snapshot();
+        }
         let Some(thread) = self.find_thread_state(record_id) else {
             return Vec::new();
         };
@@ -2367,12 +2415,12 @@ impl Interpreter {
                 ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id)),
             ) => vec![
                 (
-                    Some("mutex-lock".into()),
+                    Value::Symbol("mutex-lock".into()),
                     vec![Value::Record(*mutex_id)],
                     false,
                 ),
                 (
-                    Some("thread-tests--thread-function".into()),
+                    Value::Symbol("thread-tests--thread-function".into()),
                     Vec::new(),
                     false,
                 ),
@@ -2669,6 +2717,18 @@ impl Interpreter {
                 self.finish_thread_success(record_id, Value::Nil);
                 Ok(())
             }
+            ThreadProgram::Call(function) => {
+                match self.call_function_value(function, None, &[], env) {
+                    Ok(value) => {
+                        self.finish_thread_success(record_id, value);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.finish_thread_with_signal(record_id, error_condition_value(&error));
+                        Ok(())
+                    }
+                }
+            }
             ThreadProgram::SetGlobal { name, value } => {
                 self.set_global_binding(&name, value.clone());
                 self.finish_thread_success(record_id, value);
@@ -2811,11 +2871,14 @@ impl Interpreter {
     fn thread_program_from_callable(&self, function: &Value) -> Result<ThreadProgram, LispError> {
         match function {
             Value::Symbol(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::Symbol(name) => self.thread_program_from_symbol(name),
+            Value::Symbol(name) => self
+                .thread_program_from_symbol(name)
+                .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
             Value::BuiltinFunc(name) if name == "ignore" => Ok(ThreadProgram::Ignore),
-            Value::Lambda(params, body, _) if params.is_empty() => {
-                self.thread_program_from_lambda(function_executable_body(body))
-            }
+            Value::BuiltinFunc(_) => Ok(ThreadProgram::Call(function.clone())),
+            Value::Lambda(params, body, _) if params.is_empty() => self
+                .thread_program_from_lambda(function_executable_body(body))
+                .or_else(|_| Ok(ThreadProgram::Call(function.clone()))),
             _ => Err(LispError::Signal("Unsupported thread entry point".into())),
         }
     }
@@ -4171,7 +4234,7 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn push_backtrace_frame(&mut self, function: Option<String>, args: Vec<Value>) {
+    pub fn push_backtrace_frame(&mut self, function: Value, args: Vec<Value>) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
@@ -4189,7 +4252,7 @@ impl Interpreter {
         }
     }
 
-    pub fn current_backtrace_frame(&self) -> Option<(Option<String>, Vec<Value>, bool)> {
+    pub fn current_backtrace_frame(&self) -> Option<(Value, Vec<Value>, bool)> {
         self.backtrace_frames.last().map(|frame| {
             (
                 frame.function.clone(),
@@ -4199,7 +4262,7 @@ impl Interpreter {
         })
     }
 
-    pub fn backtrace_frames_snapshot(&self) -> Vec<(Option<String>, Vec<Value>, bool)> {
+    pub fn backtrace_frames_snapshot(&self) -> Vec<(Value, Vec<Value>, bool)> {
         self.backtrace_frames
             .iter()
             .rev()
@@ -4242,6 +4305,7 @@ impl Interpreter {
         }
         let error_value = error_condition_value(&error);
         let error_type = error.condition_type();
+        let mut handled = false;
         self.handler_dispatch_depth += 1;
         for (condition, handler) in self.active_handlers.clone().into_iter().rev() {
             if condition != "error" && condition != error_type {
@@ -4250,7 +4314,7 @@ impl Interpreter {
             let result =
                 self.call_function_value(handler, None, std::slice::from_ref(&error_value), env);
             match result {
-                Ok(_) => {}
+                Ok(_) => handled = true,
                 Err(next) => {
                     self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
                     if !matches!(next, LispError::Throw(_, _)) && self.condition_case_depth > 1 {
@@ -4261,7 +4325,11 @@ impl Interpreter {
             }
         }
         self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
-        Err(error)
+        if handled {
+            Err(LispError::SignalValue(error_value))
+        } else {
+            Err(error)
+        }
     }
 
     pub fn effective_labeled_restriction(
@@ -5195,32 +5263,58 @@ impl Interpreter {
             .ok_or(LispError::Void(resolved))
     }
 
-    pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+    pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
         if primitives::prefer_builtin_override(name) && primitives::is_builtin(name) {
-            return Ok(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string()));
         }
         for frame in env.iter().rev() {
             for (k, v) in frame.iter().rev() {
-                if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
-                    return Ok(v.clone());
+                if k == name
+                    && matches!(
+                        v,
+                        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Symbol(_)
+                    )
+                {
+                    return Some(v.clone());
                 }
             }
         }
         for (k, v) in self.functions.iter().rev() {
             if k == name {
-                return Ok(v.clone());
+                return Some(v.clone());
             }
         }
         if let Some(value) = builtin_autoload_function(name) {
-            return Ok(value);
+            return Some(value);
         }
         if matches!(name, "incf" | "decf") {
-            return Ok(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string()));
         }
         if primitives::is_builtin(name) {
-            Ok(Value::BuiltinFunc(name.to_string()))
-        } else {
-            Err(LispError::Void(name.to_string()))
+            return Some(Value::BuiltinFunc(name.to_string()));
+        }
+        None
+    }
+
+    pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+        let mut current = name.to_string();
+        let mut seen = HashSet::new();
+
+        loop {
+            if !seen.insert(current.clone()) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("cyclic-function-indirection".into()),
+                    Value::Symbol(name.to_string()),
+                ])));
+            }
+
+            let Some(binding) = self.raw_function_binding(&current, env) else {
+                return Err(LispError::Void(current));
+            };
+            match binding {
+                Value::Symbol(next) => current = next,
+                other => return Ok(other),
+            }
         }
     }
 
@@ -5450,6 +5544,9 @@ impl Interpreter {
                 ) {
                     return Ok(self.create_record("bool-vector", items[1..].to_vec()));
                 }
+                if is_record_literal_reader_form(expr) {
+                    return self.eval_record_literal_form(&items[1..], env);
+                }
 
                 // Check for special forms first
                 if let Value::Symbol(ref name) = items[0] {
@@ -5639,7 +5736,7 @@ impl Interpreter {
                         }
                         "catch" => return self.sf_catch(&items, env),
                         "add-to-list" => return self.sf_add_to_list(&items, env),
-                        "ert-deftest" => return self.sf_ert_deftest(&items),
+                        "ert-deftest" => return self.sf_ert_deftest(&items, env),
                         "should" => return self.sf_should(&items, env),
                         "should-not" => return self.sf_should_not(&items, env),
                         "should-error" => return self.sf_should_error(&items, env),
@@ -5849,37 +5946,46 @@ impl Interpreter {
                     }
                 }
 
+                let backtrace_function = original_name
+                    .map(|name| Value::Symbol(name.to_string()))
+                    .unwrap_or_else(|| func.clone());
+                self.push_backtrace_frame(backtrace_function, args.to_vec());
                 let captured_snapshot = closure_env.borrow().clone();
-                let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
-                let (mut call_env, captured_positions) =
-                    Self::merge_lambda_env(env, &captured_snapshot, &frame_mapping);
-                self.push_backtrace_frame(original_name.map(str::to_string), args.to_vec());
-                call_env.push(frame);
-                let result = self.sf_progn(function_executable_body(body), &mut call_env);
-                call_env.pop();
-                {
-                    let mut stored_env = closure_env.borrow_mut();
-                    if stored_env.len() != captured_snapshot.len() {
-                        stored_env.clear();
-                        stored_env.extend(captured_snapshot.clone());
-                    }
-                    for (captured_index, position) in captured_positions.iter().enumerate() {
-                        if let Some(position) = position
-                            && let Some(updated) = call_env.get(*position)
-                        {
+                let result = if captured_snapshot.is_empty() {
+                    let mut call_env = env.clone();
+                    call_env.push(frame);
+                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    call_env.pop();
+                    env.clear();
+                    env.extend(call_env);
+                    result
+                } else {
+                    let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
+                    let mut call_env =
+                        Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
+                    call_env.push(frame);
+                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    call_env.pop();
+                    {
+                        let mut stored_env = closure_env.borrow_mut();
+                        if stored_env.len() != captured_snapshot.len() {
+                            stored_env.clear();
+                            stored_env.extend(captured_snapshot.clone());
+                        }
+                        for (captured_index, updated) in call_env.iter().enumerate() {
+                            if captured_index >= stored_env.len() {
+                                break;
+                            }
                             stored_env[captured_index] = updated.clone();
+                            if let Some(current_index) = frame_mapping[captured_index]
+                                && current_index < env.len()
+                            {
+                                env[current_index] = updated.clone();
+                            }
                         }
                     }
-                }
-                for (captured_index, current_index) in frame_mapping.iter().enumerate() {
-                    if let (Some(current_index), Some(position)) =
-                        (current_index, captured_positions[captured_index])
-                        && let Some(updated) = call_env.get(position)
-                        && *current_index < env.len()
-                    {
-                        env[*current_index] = updated.clone();
-                    }
-                }
+                    result
+                };
                 self.pop_backtrace_frame();
                 result
             }
@@ -5896,7 +6002,7 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        Ok(items[1].clone())
+        super::reader::resolve_circular_read_syntax(items[1].clone())
     }
 
     fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -7091,10 +7197,19 @@ impl Interpreter {
 
         let keymap = crate::lisp::primitives::make_runtime_keymap(self, Some(&resolved));
         let mut index = 2;
+        let mut seen_keys = HashSet::new();
         while index + 1 < items.len() {
             if matches!(&items[index], Value::Symbol(keyword) if keyword.starts_with(':')) {
                 index += 2;
                 continue;
+            }
+
+            let duplicate_key = items[index].to_string();
+            if !seen_keys.insert(duplicate_key.clone()) {
+                return Err(LispError::Signal(format!(
+                    "Duplicate definition for key '{}' in keymap '{}'",
+                    duplicate_key, resolved
+                )));
             }
 
             let key = match self.eval(&items[index], env)? {
@@ -7160,6 +7275,24 @@ impl Interpreter {
                 if self.lookup_var(name, &Vec::new()).is_none() {
                     self.globals
                         .push((name.to_string(), Self::stored_value(init_value)));
+                }
+                if let Some(map) = self.lookup_var(&format!("{name}-map"), &Vec::new()) {
+                    let entry = Value::cons(Value::Symbol(name.to_string()), map);
+                    let mut entries = self
+                        .lookup_var("minor-mode-map-alist", &Vec::new())
+                        .unwrap_or(Value::Nil)
+                        .to_vec()
+                        .unwrap_or_default();
+                    if let Some(index) = entries.iter().position(|existing| {
+                        existing
+                            .cons_values()
+                            .is_some_and(|(mode, _)| mode == Value::Symbol(name.to_string()))
+                    }) {
+                        entries[index] = entry;
+                    } else {
+                        entries.push(entry);
+                    }
+                    self.set_global_binding("minor-mode-map-alist", Value::list(entries));
                 }
 
                 let setter_symbol = if global { "setq-default" } else { "setq" };
@@ -7258,6 +7391,10 @@ impl Interpreter {
                 if let Some(parent) = parent {
                     body.push(Value::list([Value::Symbol(parent.to_string())]));
                 }
+                body.push(Value::list([
+                    Value::Symbol("use-local-map".into()),
+                    Value::Symbol(map_name.clone()),
+                ]));
                 body.push(Value::list([
                     Value::Symbol("setq-local".into()),
                     Value::Symbol("major-mode".into()),
@@ -7386,9 +7523,12 @@ impl Interpreter {
                 .map(Value::Symbol)
                 .collect::<Vec<_>>(),
         );
-        let slot_names_value = Value::list([Value::Symbol("quote".into()), slot_names_list]);
+        let slot_names_value =
+            Value::list([Value::Symbol("quote".into()), slot_names_list.clone()]);
         let slot_defaults_value =
             Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
+
+        self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
 
         let predicate_name = format!("{name}-p");
         self.set_function_binding(
@@ -8092,10 +8232,12 @@ impl Interpreter {
         enum LoopAction {
             Do(Vec<Value>),
             Collect(Value),
+            Append(Value),
             Thereis { expr: Value, until: Option<Value> },
             Always(Value),
             Sum(Value),
             Return(Value),
+            WhenReturn { condition: Value, expr: Value },
             UnlessDo { condition: Value, body: Vec<Value> },
         }
 
@@ -8296,11 +8438,44 @@ impl Interpreter {
             self.bind_cl_pattern(pattern, value, frame)?;
         }
 
+        let mut final_return = None;
         let action = match items.get(index) {
+            Some(Value::Symbol(symbol)) if symbol == "when" => {
+                if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "return") {
+                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                }
+                if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
+                    || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
+                {
+                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                }
+                final_return = Some(
+                    items
+                        .get(index + 6)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                );
+                LoopAction::WhenReturn {
+                    condition: items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                    expr: items
+                        .get(index + 3)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                }
+            }
             Some(Value::Symbol(symbol)) if symbol == "do" => {
                 LoopAction::Do(items[index + 1..].to_vec())
             }
             Some(Value::Symbol(symbol)) if symbol == "collect" => LoopAction::Collect(
+                items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
+            Some(Value::Symbol(symbol)) if symbol == "append" => LoopAction::Append(
                 items
                     .get(index + 1)
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
@@ -8357,6 +8532,7 @@ impl Interpreter {
         };
 
         let mut result = Value::Nil;
+        let mut returned_early = false;
         let mut collected = Vec::new();
         let mut sum = 0i64;
         for iteration in 0..iterations {
@@ -8403,6 +8579,10 @@ impl Interpreter {
             match &action {
                 LoopAction::Do(body) => result = self.eval_cl_loop_do_body(body, env)?,
                 LoopAction::Collect(expr) => collected.push(self.eval(expr, env)?),
+                LoopAction::Append(expr) => {
+                    let values = self.eval(expr, env)?.to_vec()?;
+                    collected.extend(values);
+                }
                 LoopAction::Thereis { expr, until } => {
                     if let Some(until_expr) = until
                         && self.eval(until_expr, env)?.is_truthy()
@@ -8430,7 +8610,15 @@ impl Interpreter {
                 }
                 LoopAction::Return(expr) => {
                     result = self.eval(expr, env)?;
+                    returned_early = true;
                     break;
+                }
+                LoopAction::WhenReturn { condition, expr } => {
+                    if self.eval(condition, env)?.is_truthy() {
+                        result = self.eval(expr, env)?;
+                        returned_early = true;
+                        break;
+                    }
                 }
                 LoopAction::UnlessDo { condition, body } => {
                     if !self.eval(condition, env)?.is_truthy() {
@@ -8440,9 +8628,18 @@ impl Interpreter {
             }
         }
 
+        if let Some(expr) = final_return.as_ref()
+            && !returned_early
+        {
+            result = self.eval(expr, env)?;
+        }
+
         env.pop();
+        if final_return.is_some() {
+            return Ok(result);
+        }
         Ok(match action {
-            LoopAction::Collect(_) => Value::list(collected),
+            LoopAction::Collect(_) | LoopAction::Append(_) => Value::list(collected),
             LoopAction::Always(_) if result.is_nil() => Value::Nil,
             LoopAction::Always(_) => Value::T,
             LoopAction::Sum(_) => Value::Integer(sum),
@@ -8828,34 +9025,17 @@ impl Interpreter {
         mapping
     }
 
-    fn merge_lambda_env(
-        current: &Env,
-        captured: &Env,
-        mapping: &[Option<usize>],
-    ) -> (Env, Vec<Option<usize>>) {
-        let mut merged = Vec::new();
-        let mut positions = vec![None; captured.len()];
-        let mut current_cursor = 0usize;
-
+    fn merge_lexical_lambda_env(current: &Env, captured: &Env, mapping: &[Option<usize>]) -> Env {
+        let mut merged = captured.clone();
         for (captured_index, current_index) in mapping.iter().enumerate() {
-            if let Some(current_index) = current_index {
-                while current_cursor <= *current_index {
-                    merged.push(current[current_cursor].clone());
-                    current_cursor += 1;
-                }
-                positions[captured_index] = merged.len().checked_sub(1);
-            } else {
-                merged.push(captured[captured_index].clone());
-                positions[captured_index] = merged.len().checked_sub(1);
+            if let Some(current_index) = current_index
+                && captured_index < merged.len()
+                && *current_index < current.len()
+            {
+                merged[captured_index] = current[*current_index].clone();
             }
         }
-
-        while current_cursor < current.len() {
-            merged.push(current[current_cursor].clone());
-            current_cursor += 1;
-        }
-
-        (merged, positions)
+        merged
     }
 
     fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -9179,7 +9359,12 @@ impl Interpreter {
         let (temp_id, _) = self.create_buffer(&temp_name);
         self.set_buffer_hooks_inhibited(temp_id, true);
         self.switch_to_buffer_id(temp_id)?;
+        env.push(vec![(
+            "standard-output".into(),
+            Value::Buffer(temp_id, temp_name.clone()),
+        )]);
         let body_result = self.sf_progn(&items[1..], env);
+        env.pop();
         let output = Value::String(self.buffer.buffer_string());
         let _ = self.switch_to_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
@@ -9767,6 +9952,15 @@ impl Interpreter {
                 )?;
                 return Ok(new_value);
             }
+            if primitives::is_vector_value(&current) {
+                primitives::call(
+                    self,
+                    "aset",
+                    &[current, index_value, new_value.clone()],
+                    env,
+                )?;
+                return Ok(new_value);
+            }
             let index = index_value.as_integer()? as usize;
             if matches!(current, Value::String(_) | Value::StringObject(_)) {
                 let updated = primitives::aset_string_value(&current, index, &new_value)?;
@@ -9863,6 +10057,23 @@ impl Interpreter {
         self.eval_backquote_with_depth(expr, env, 0)
     }
 
+    fn eval_record_literal_form(
+        &mut self,
+        slots: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut values = Vec::with_capacity(slots.len());
+        for slot in slots {
+            values.push(self.eval(slot, env)?);
+        }
+        if let Some(first) = values.first()
+            && let Ok(type_name) = first.as_symbol()
+        {
+            return Ok(self.create_record(type_name, values[1..].to_vec()));
+        }
+        Ok(self.create_record("literal-record", values))
+    }
+
     fn eval_backquote_with_depth(
         &mut self,
         expr: &Value,
@@ -9895,7 +10106,10 @@ impl Interpreter {
                         let tail = self.eval_backquote_with_depth(&current, env, depth)?;
                         return Ok(cons_list_with_tail(result, tail));
                     }
-
+                    if !result.is_empty() && is_backquote_atomic_cons_tail(&current) {
+                        let tail = self.eval_backquote_with_depth(&current, env, depth)?;
+                        return Ok(cons_list_with_tail(result, tail));
+                    }
                     match current {
                         Value::Cons(car, cdr) => {
                             let car_value = car.borrow().clone();
@@ -9923,7 +10137,11 @@ impl Interpreter {
                         }
                     }
                 }
-                Ok(Value::list(result))
+                let result = Value::list(result);
+                if depth == 0 && is_record_literal_reader_form(expr) {
+                    return self.eval(&result, env);
+                }
+                Ok(result)
             }
             _ => Ok(expr.clone()),
         }
@@ -10184,6 +10402,7 @@ impl Interpreter {
             "cl-case" => self.expand_cl_case(args, env).map(Some),
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
             "letrec" => self.expand_letrec(args).map(Some),
+            "named-let" => self.expand_named_let(args).map(Some),
             "with-selected-frame" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(
@@ -10267,6 +10486,203 @@ impl Interpreter {
                 .chain(initializers)
                 .chain(args[1..].iter().cloned()),
         ))
+    }
+
+    fn expand_named_let(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        let name = args
+            .first()
+            .ok_or_else(|| LispError::WrongNumberOfArgs("named-let".into(), 0))?
+            .as_symbol()?
+            .to_string();
+        let bindings = args
+            .get(1)
+            .ok_or_else(|| LispError::WrongNumberOfArgs("named-let".into(), 1))?
+            .to_vec()?;
+        let mut params = Vec::with_capacity(bindings.len());
+        let mut inits = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            match binding {
+                Value::Symbol(symbol) => {
+                    params.push(Value::Symbol(symbol));
+                    inits.push(Value::Nil);
+                }
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    let Some(param) = parts.first() else {
+                        return Err(LispError::ReadError("bad named-let binding".into()));
+                    };
+                    params.push(Value::Symbol(param.as_symbol()?.to_string()));
+                    inits.push(parts.get(1).cloned().unwrap_or(Value::Nil));
+                }
+                other => return Err(wrong_type_argument("listp", other)),
+            }
+        }
+
+        if let Some(lowered) = self.try_expand_named_let_loop(&name, &params, &inits, &args[2..])? {
+            return Ok(lowered);
+        }
+
+        let lambda = Value::list(
+            std::iter::once(Value::Symbol("lambda".into()))
+                .chain(std::iter::once(Value::list(params)))
+                .chain(if args.len() > 2 {
+                    args[2..].iter().cloned().collect::<Vec<_>>()
+                } else {
+                    vec![Value::Nil]
+                }),
+        );
+        let binding = Value::list([Value::Symbol(name.clone()), lambda]);
+        let call = Value::list(std::iter::once(Value::Symbol(name)).chain(inits));
+
+        Ok(Value::list([
+            Value::Symbol("letrec".into()),
+            Value::list([binding]),
+            call,
+        ]))
+    }
+
+    fn try_expand_named_let_loop(
+        &mut self,
+        name: &str,
+        params: &[Value],
+        inits: &[Value],
+        body: &[Value],
+    ) -> Result<Option<Value>, LispError> {
+        let done_tag = self.make_generated_symbol("named-let-done");
+        let bindings = Value::list(
+            params
+                .iter()
+                .cloned()
+                .zip(inits.iter().cloned())
+                .map(|(param, init)| Value::list([param, init])),
+        );
+
+        let loop_body = match body {
+            [single] => {
+                if let Ok(items) = single.to_vec()
+                    && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "if")
+                {
+                    let then_forms = items
+                        .get(2)
+                        .cloned()
+                        .map_or_else(Vec::new, |form| vec![form]);
+                    let else_forms = if items.len() > 3 {
+                        items[3..].to_vec()
+                    } else {
+                        vec![Value::Nil]
+                    };
+                    if !named_let_branch_safe_for_loop(name, &then_forms)
+                        || !named_let_branch_safe_for_loop(name, &else_forms)
+                    {
+                        return Ok(None);
+                    }
+                    self.expand_named_let_loop_if(name, params, &done_tag, &items)?
+                } else if let Some((prefix, args)) = named_let_tail_call(name, body) {
+                    self.build_named_let_rebind(params, &args, &prefix)?
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => {
+                if let Some((prefix, args)) = named_let_tail_call(name, body) {
+                    self.build_named_let_rebind(params, &args, &prefix)?
+                } else {
+                    return Ok(None);
+                }
+            }
+        };
+
+        Ok(Some(Value::list([
+            Value::Symbol("let".into()),
+            bindings,
+            Value::list([
+                Value::Symbol("catch".into()),
+                quoted_literal(&done_tag),
+                Value::list([Value::Symbol("while".into()), Value::T, loop_body]),
+            ]),
+        ])))
+    }
+
+    fn expand_named_let_loop_if(
+        &mut self,
+        name: &str,
+        params: &[Value],
+        done_tag: &Value,
+        items: &[Value],
+    ) -> Result<Value, LispError> {
+        let condition = items.get(1).cloned().unwrap_or(Value::Nil);
+        let then_forms = items
+            .get(2)
+            .cloned()
+            .map_or_else(Vec::new, |form| vec![form]);
+        let else_forms = if items.len() > 3 {
+            items[3..].to_vec()
+        } else {
+            vec![Value::Nil]
+        };
+        let then_branch = self.build_named_let_loop_branch(name, params, done_tag, &then_forms)?;
+        let else_branch = self.build_named_let_loop_branch(name, params, done_tag, &else_forms)?;
+        Ok(Value::list([
+            Value::Symbol("if".into()),
+            condition,
+            then_branch,
+            else_branch,
+        ]))
+    }
+
+    fn build_named_let_loop_branch(
+        &mut self,
+        name: &str,
+        params: &[Value],
+        done_tag: &Value,
+        forms: &[Value],
+    ) -> Result<Value, LispError> {
+        if let Some((prefix, args)) = named_let_tail_call(name, forms) {
+            self.build_named_let_rebind(params, &args, &prefix)
+        } else {
+            Ok(Value::list([
+                Value::Symbol("throw".into()),
+                quoted_literal(done_tag),
+                forms_to_progn(forms),
+            ]))
+        }
+    }
+
+    fn build_named_let_rebind(
+        &mut self,
+        params: &[Value],
+        args: &[Value],
+        prefix: &[Value],
+    ) -> Result<Value, LispError> {
+        if params.len() != args.len() {
+            return Err(LispError::WrongNumberOfArgs("named-let".into(), args.len()));
+        }
+        let temp_symbols = (0..params.len())
+            .map(|_| self.make_generated_symbol("named-let-arg"))
+            .collect::<Vec<_>>();
+        let temp_bindings = Value::list(
+            temp_symbols
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .map(|(temp, arg)| Value::list([temp, arg])),
+        );
+        let mut setq_items = vec![Value::Symbol("setq".into())];
+        for (param, temp) in params.iter().cloned().zip(temp_symbols.into_iter()) {
+            setq_items.push(param);
+            setq_items.push(temp);
+        }
+        let rebind = Value::list([
+            Value::Symbol("let".into()),
+            temp_bindings,
+            Value::list(setq_items),
+        ]);
+        let forms = prefix
+            .iter()
+            .cloned()
+            .chain(std::iter::once(rebind))
+            .collect::<Vec<_>>();
+        Ok(forms_to_progn(&forms))
     }
 
     fn expand_cl_case(&mut self, args: &[Value], _env: &mut Env) -> Result<Value, LispError> {
@@ -10428,7 +10844,7 @@ impl Interpreter {
 
     // ── ERT support ──
 
-    fn sf_ert_deftest(&mut self, items: &[Value]) -> Result<Value, LispError> {
+    fn sf_ert_deftest(&mut self, items: &[Value], env: &Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
         }
@@ -10470,8 +10886,10 @@ impl Interpreter {
             cursor += 2;
         }
 
-        let body = Value::list(
-            std::iter::once(Value::symbol("progn")).chain(items[cursor..].iter().cloned()),
+        let body = Value::Lambda(
+            Vec::new(),
+            items[cursor..].to_vec(),
+            shared_env(env.clone()),
         );
         self.ert_tests.push(ErtTestDefinition {
             name,
@@ -10567,7 +10985,7 @@ impl Interpreter {
         for test in &tests {
             let mut env: Env = Vec::new();
             let previous = self.set_current_load_file(test.source_file.clone());
-            let result = self.eval(&test.body, &mut env);
+            let result = self.call_function_value(test.body.clone(), None, &[], &mut env);
             self.set_current_load_file(previous);
             match result {
                 Ok(_) => {
@@ -10697,6 +11115,44 @@ fn unquote(value: &Value) -> Value {
 
 fn quoted_literal(value: &Value) -> Value {
     Value::list([Value::Symbol("quote".into()), value.clone()])
+}
+
+fn forms_to_progn(forms: &[Value]) -> Value {
+    match forms {
+        [] => Value::Nil,
+        [single] => single.clone(),
+        _ => {
+            Value::list(std::iter::once(Value::Symbol("progn".into())).chain(forms.iter().cloned()))
+        }
+    }
+}
+
+fn named_let_tail_call(name: &str, forms: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
+    let (tail, prefix) = forms.split_last()?;
+    let items = tail.to_vec().ok()?;
+    match items.split_first() {
+        Some((Value::Symbol(symbol), args)) if symbol == name => {
+            Some((prefix.to_vec(), args.to_vec()))
+        }
+        _ => None,
+    }
+}
+
+fn named_let_contains_call(name: &str, value: &Value) -> bool {
+    if let Ok(items) = value.to_vec() {
+        if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == name) {
+            return true;
+        }
+        return items.iter().any(|item| named_let_contains_call(name, item));
+    }
+    false
+}
+
+fn named_let_branch_safe_for_loop(name: &str, forms: &[Value]) -> bool {
+    named_let_tail_call(name, forms).is_some()
+        || forms
+            .iter()
+            .all(|form| !named_let_contains_call(name, form))
 }
 
 fn preloaded_command_line_1() -> Value {
@@ -11215,6 +11671,63 @@ fn is_vector_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal"),
     )
+}
+
+fn is_bool_vector_literal(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "bool-vector-literal"),
+    )
+}
+
+fn is_record_literal_slot_form(value: &Value) -> bool {
+    match value {
+        Value::Nil
+        | Value::T
+        | Value::Integer(_)
+        | Value::BigInteger(_)
+        | Value::Float(_)
+        | Value::String(_)
+        | Value::StringObject(_)
+        | Value::Buffer(_, _)
+        | Value::Marker(_)
+        | Value::Overlay(_)
+        | Value::CharTable(_)
+        | Value::Record(_)
+        | Value::Finalizer(_)
+        | Value::BuiltinFunc(_)
+        | Value::Lambda(_, _, _) => true,
+        Value::Cons(_, _) => {
+            let Ok(items) = value.to_vec() else {
+                return false;
+            };
+            matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote")
+                || is_vector_literal(value)
+                || is_bool_vector_literal(value)
+                || is_record_literal_reader_form(value)
+        }
+        Value::Symbol(_) => false,
+    }
+}
+
+fn is_record_literal_reader_form(value: &Value) -> bool {
+    let Ok(items) = value.to_vec() else {
+        return false;
+    };
+    matches!(items.first(), Some(Value::Symbol(name)) if name == RECORD_LITERAL_SYMBOL)
+        && items[1..].iter().all(is_record_literal_slot_form)
+}
+
+fn is_quote_form(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(
+        |items| matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote"),
+    )
+}
+
+fn is_backquote_atomic_cons_tail(value: &Value) -> bool {
+    is_quote_form(value)
+        || is_vector_literal(value)
+        || is_bool_vector_literal(value)
+        || is_record_literal_reader_form(value)
 }
 
 fn is_lambda_form(value: &Value) -> bool {
@@ -12894,6 +13407,37 @@ mod tests {
     }
 
     #[test]
+    fn handler_bind_preserves_error_object_identity_for_condition_case() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (let* (inner-error
+                   (outer-error
+                    (condition-case err
+                        (handler-bind ((error (lambda (err) (setq inner-error err))))
+                          (car 1))
+                      (error err))))
+              (eq inner-error outer-error))
+            "#,
+        )
+        .read_all()
+        .unwrap();
+        let result = interp.eval(&forms[0], &mut env).unwrap();
+        assert_eq!(result, Value::T);
+    }
+
+    #[test]
+    fn aref_out_of_range_signals_args_out_of_range_condition() {
+        assert_eq!(
+            eval_str(
+                "(condition-case nil (aref [1] 1) (args-out-of-range 'caught) (error 'plain-error))"
+            ),
+            Value::Symbol("caught".into())
+        );
+    }
+
+    #[test]
     fn handler_bind_handlers_do_not_apply_inside_handlers() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -13640,6 +14184,18 @@ mod tests {
     }
 
     #[test]
+    fn copy_alist_rejects_vectors_and_strings() {
+        assert!(matches!(
+            eval_str("(condition-case err (copy-alist [(a . 1)]) (wrong-type-argument 'caught))"),
+            Value::Symbol(name) if name == "caught"
+        ));
+        assert!(matches!(
+            eval_str("(condition-case err (copy-alist \"abc\") (wrong-type-argument 'caught))"),
+            Value::Symbol(name) if name == "caught"
+        ));
+    }
+
+    #[test]
     fn float_constants_are_available_as_builtin_variables() {
         assert_eq!(eval_str("float-e"), Value::Float(std::f64::consts::E));
         assert_eq!(eval_str("float-pi"), Value::Float(std::f64::consts::PI));
@@ -14225,6 +14781,97 @@ mod tests {
             ]
         );
         assert_string_value(items[4].clone(), "\0\0\0");
+    }
+
+    #[test]
+    fn thread_join_executes_zero_arg_lambda_with_closure_state() {
+        assert_eq!(
+            eval_str("(let ((value 42)) (thread-join (make-thread (lambda () value))))"),
+            Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn custom_hash_table_tests_are_registered_and_used_for_lookup() {
+        assert_eq!(
+            eval_str(
+                "(let ((calls 0))
+                   (defun my-cmp (a b)
+                     (setq calls (1+ calls))
+                     (equal a b))
+                   (defun my-hash (_value) 0)
+                   (let ((spec (define-hash-table-test 'my-test 'my-cmp 'my-hash))
+                         (table (make-hash-table :test 'my-test)))
+                     (puthash \"a\" 1 table)
+                     (list spec
+                           (hash-table-test table)
+                           (gethash (copy-sequence \"a\") table 'missing)
+                           (> calls 0))))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("my-cmp".into()),
+                    Value::Symbol("my-hash".into()),
+                ]),
+                Value::Symbol("my-test".into()),
+                Value::Integer(1),
+                Value::T,
+            ])
+        );
+    }
+
+    #[test]
+    fn custom_hash_table_hash_functions_cannot_mutate_their_table() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-hash-table-test 'badeq 'eq 'bad-hash)
+                   (let ((h (make-hash-table :test 'badeq :size 1 :rehash-size 1)))
+                     (defun bad-hash (k)
+                       (if (eq k 100)
+                           (clrhash h))
+                       (sxhash-eq k))
+                     (should-error
+                      (dotimes (k 200)
+                        (puthash k k h)))
+                     (hash-table-count h)))"
+            ),
+            Value::Integer(100)
+        );
+    }
+
+    #[test]
+    fn assoc_honors_optional_test_function() {
+        assert_eq!(
+            eval_str(
+                "(let ((alist '((\"a\" . 1) (\"b\" . 2))))
+                   (list
+                    (assoc \"a\" alist #'ignore)
+                    (eq (assoc \"b\" alist #'string-equal) (cadr alist))
+                    (assoc \"b\" alist #'eq)))"
+            ),
+            Value::list([Value::Nil, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn garbage_collect_prunes_synthetic_weak_hash_table_entries() {
+        assert_eq!(
+            eval_str(
+                "(let ((table (make-hash-table :weakness 'key)))
+                   (puthash \"00-key-alive\" \"00-val-alive\" table)
+                   (puthash \"01-key-dead\" \"01-val-alive\" table)
+                   (garbage-collect)
+                   (list (hash-table-count table)
+                         (gethash \"00-key-alive\" table)
+                         (gethash \"01-key-dead\" table 'missing)))"
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::String("00-val-alive".into()),
+                Value::Symbol("missing".into()),
+            ])
+        );
     }
 
     #[test]
@@ -15128,6 +15775,105 @@ mod tests {
     }
 
     #[test]
+    fn format_time_string_accepts_let_bound_string_zone() {
+        run_with_large_stack(|| {
+            assert_string_value(
+                eval_str(
+                    "(let ((look '(1202 22527 999999 999999))
+                           (fmt \"%Y-%m-%d %H:%M:%S.%3N %z (%Z)\")
+                           (zone \"UTC0\"))
+                       (format-time-string fmt look zone))",
+                ),
+                "1972-06-30 23:59:59.999 +0000 (UTC)",
+            );
+        });
+    }
+
+    #[test]
+    fn decode_time_accepts_let_bound_string_zone() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let ((look '(1202 22527 999999 999999))
+                           (zone \"UTC0\"))
+                       (equal (decode-time look zone t)
+                              (decode-time look \"UTC0\" t)))"
+                ),
+                Value::T
+            );
+        });
+    }
+
+    #[test]
+    fn variable_watchers_allow_mutating_lexical_callback_state() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let* ((watch-data nil)
+                            (collect-watch-data
+                             (lambda (&rest args) (push args watch-data))))
+                       (defvar data-tests-var 0)
+                       (add-variable-watcher 'data-tests-var collect-watch-data)
+                       (setq data-tests-var 1)
+                       (remove-variable-watcher 'data-tests-var collect-watch-data)
+                       watch-data)"
+                ),
+                Value::list([Value::list([
+                    Value::Symbol("data-tests-var".into()),
+                    Value::Integer(1),
+                    Value::Symbol("set".into()),
+                    Value::Nil,
+                ])])
+            );
+        });
+    }
+
+    #[test]
+    fn local_variable_watchers_allow_mutating_lexical_callback_state() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let* ((watch-data nil)
+                            (collect-watch-data
+                             (lambda (&rest args) (push args watch-data))))
+                       (defvar-local data-tests-lvar 0)
+                       (with-temp-buffer
+                         (add-variable-watcher 'data-tests-lvar collect-watch-data)
+                         (setq data-tests-lvar 1)
+                         (remove-variable-watcher 'data-tests-lvar collect-watch-data)
+                         (let ((event (car watch-data)))
+                           (list (car event)
+                                 (nth 1 event)
+                                 (nth 2 event)
+                                 (bufferp (nth 3 event))))))"
+                ),
+                Value::list([
+                    Value::Symbol("data-tests-lvar".into()),
+                    Value::Integer(1),
+                    Value::Symbol("set".into()),
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(progn
+                       (require 'cl-extra)
+                       (list (cl-find-class 'fixnum)
+                             (built-in-class-p (cl-find-class 'fixnum))
+                             (cl-typep 10 'fixnum)))"
+                ),
+                Value::list([Value::Symbol("fixnum".into()), Value::T, Value::T,])
+            );
+        });
+    }
+
+    #[test]
     fn macrop_recognizes_defined_and_autoloaded_macros() {
         run_with_large_stack(|| {
             let mut interp = Interpreter::new();
@@ -15685,6 +16431,483 @@ mod tests {
     }
 
     #[test]
+    fn load_file_strict_prebinds_current_load_list() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-current-load-list-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(setq sample-current-load-entry (car (last current-load-list)))\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_string_value(
+            interp
+                .lookup_var("sample-current-load-entry", &Vec::new())
+                .expect("sample-current-load-entry"),
+            &path.display().to_string(),
+        );
+        assert_eq!(
+            interp.lookup_var("current-load-list", &Vec::new()),
+            Some(Value::Nil)
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn load_file_strict_preserves_original_load_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-load-error-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(require 'mod-test \"/tmp/emaxx-missing-mod-test\")\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        let error = crate::lisp::load_file_strict(&mut interp, &path).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot open load file: No such file or directory, /tmp/emaxx-missing-mod-test"
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn generic_record_reader_forms_evaluate_to_literal_records() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(&mut interp, "#s(#s(a b) c)");
+        let Value::Record(id) = value else {
+            panic!("expected a record literal");
+        };
+        let record = interp.find_record(id).expect("record state");
+        assert_eq!(record.type_name, "literal-record");
+        assert_eq!(record.slots.len(), 2);
+        assert!(matches!(record.slots[0], Value::Record(_)));
+        assert_eq!(record.slots[1], Value::Symbol("c".into()));
+    }
+
+    #[test]
+    fn read_from_string_makes_record_literals_record_like() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let* ((read-circle t)
+                       (result (read-from-string "([#s(r a)])"))
+                       (x2 (car (car result)))
+                       (x3 (aref x2 0)))
+                  (list (recordp x3)
+                        (length x3)
+                        (aref x3 0)
+                        (aref x3 1)))
+                "#
+            ),
+            Value::list([
+                Value::T,
+                Value::Integer(2),
+                Value::Symbol("r".into()),
+                Value::Symbol("a".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn read_from_string_nested_record_step_shrinks() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let* ((read-circle t)
+                       (result (read-from-string "([#s(r ([#s(r a)]))])"))
+                       (x0 (car result))
+                       (x1 (aref (car x0) 0))
+                       (next (aref x1 1))
+                       (x2 (aref (car next) 0)))
+                  (list (equal x0 next)
+                        (recordp x1)
+                        (length x1)
+                        (aref x1 0)
+                        (recordp x2)
+                        (length x2)
+                        (aref x2 0)
+                        (aref x2 1)))
+                "#
+            ),
+            Value::list([
+                Value::Nil,
+                Value::T,
+                Value::Integer(2),
+                Value::Symbol("r".into()),
+                Value::T,
+                Value::Integer(2),
+                Value::Symbol("r".into()),
+                Value::Symbol("a".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn read_from_string_prints_circular_cons_with_labels() {
+        assert_string_value(
+            eval_str(
+                r##"
+                (let* ((read-circle t)
+                       (print-circle t)
+                       (result (read-from-string "#1=(#1# . #1#)")))
+                  (prin1-to-string (car result)))
+                "##,
+            ),
+            "#1=(#1# . #1#)",
+        );
+    }
+
+    #[test]
+    fn read_from_string_prints_circular_vectors_with_labels() {
+        assert_string_value(
+            eval_str(
+                r##"
+                (let* ((read-circle t)
+                       (print-circle t)
+                       (result (read-from-string "#1=[#1# a #1#]")))
+                  (prin1-to-string (car result)))
+                "##,
+            ),
+            "#1=[#1# a #1#]",
+        );
+    }
+
+    #[test]
+    fn read_from_string_roundtrips_lread_circle_cases() {
+        for case in [
+            "#1=(#1# . #1#)",
+            "#1=[#1# a #1#]",
+            "#1=(#2=[#1# #2#] . #1#)",
+            "#1=(#2=[#1# #2#] . #2#)",
+            "#1=[#2=(#1# . #2#)]",
+            "#1=(#2=[#3=(#1# . #2#) #4=(#3# . #4#)])",
+        ] {
+            let program = format!(
+                r##"
+                (let* ((read-circle t)
+                       (print-circle t)
+                       (result (read-from-string "{case}")))
+                  (prin1-to-string (car result)))
+                "##,
+            );
+            assert_string_value(eval_str(&program), case);
+        }
+    }
+
+    #[test]
+    fn print_circle_2_upstream_case_completes() {
+        let value = eval_str(
+            r##"
+            (let* ((read-circle t)
+                   (x (car (read-from-string "(0 . #1=(0 . #1#))"))))
+              (list
+               (let ((print-circle nil))
+                 (prin1-to-string x))
+               (let ((print-circle t))
+                 (prin1-to-string x))))
+            "##,
+        );
+        let items = value.to_vec().expect("result list");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0]
+                .as_string()
+                .expect("print-circle nil result should be a string")
+                .contains(". #")
+        );
+        assert_eq!(
+            items[1]
+                .as_string()
+                .expect("print-circle t result should be a string"),
+            "(0 . #1=(0 . #1#))"
+        );
+    }
+
+    #[test]
+    fn number_sequence_defaults_to_positive_step() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (list
+                 (number-sequence 1 0)
+                 (number-sequence 3 1)
+                 (number-sequence 3 1 -1))
+                "##,
+            ),
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::list([Value::Integer(3), Value::Integer(2), Value::Integer(1)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_mode_binds_scroll_command() {
+        run_with_large_stack(|| {
+            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r##"
+                    (progn
+                      (require 'mwheel)
+                      (with-suppressed-warnings ((obsolete mouse-wheel-up-event))
+                        (mouse-wheel-mode 1)
+                        (let ((enabled (lookup-key (current-global-map)
+                                                   `[,mouse-wheel-up-event])))
+                          (mouse-wheel-mode -1)
+                          (list mouse-wheel-up-event
+                                enabled
+                                (lookup-key (current-global-map)
+                                            `[,mouse-wheel-up-event])))))
+                    "##,
+                ),
+                Value::list([
+                    Value::Symbol("mouse-5".into()),
+                    Value::Symbol("mwheel-scroll".into()),
+                    Value::Nil,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn subr_introspection_supports_if_special_form() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (list
+                 (subr-arity (symbol-function 'if))
+                 (subr-name (symbol-function 'if)))
+                "##,
+            ),
+            Value::list([
+                Value::cons(Value::Integer(2), Value::Symbol("unevalled".into())),
+                Value::String("if".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn upstream_lread_circle_form_passes() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (let ((lread-test-circle-cases
+                       '("#1=(#1# . #1#)"
+                         "#1=[#1# a #1#]"
+                         "#1=(#2=[#1# #2#] . #1#)"
+                         "#1=(#2=[#1# #2#] . #2#)"
+                         "#1=[#2=(#1# . #2#)]"
+                         "#1=(#2=[#3=(#1# . #2#) #4=(#3# . #4#)])")))
+                  (catch 'fail
+                    (dolist (str lread-test-circle-cases)
+                      (let* ((actual
+                              (let* ((read-circle t)
+                                     (print-circle t)
+                                     (val (read-from-string str)))
+                                (if (consp val)
+                                    (prin1-to-string (car val))
+                                  (error "reading %S failed: %S" str val)))))
+                        (unless (equal actual str)
+                          (throw 'fail (list str actual)))))
+                    (condition-case nil
+                        (progn
+                          (read-from-string "#1=#1#")
+                          (throw 'fail 'invalid-case-did-not-signal))
+                      (invalid-read-syntax t))
+                    t))
+                "##,
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn cl_prin1_to_string_autoloads_from_cl_print() {
+        assert_string_value(eval_str("(cl-prin1-to-string '(a b))"), "(a b)");
+    }
+
+    #[test]
+    fn prin1_to_string_roundtrips_upstream_symbol_cases() {
+        let symbols = vec![
+            "", "&", "*", "+", "-", "/", "0E", "0e", "<", "=", ">", "E", "E0", "NaN", "\"", "#",
+            "#x0", "'", "''", "(", ")", "+00", ",", "-0", ".", ".0", "0", "0.0", "0E0", "0e0",
+            "1E+", "1E+NaN", "1e+", "1e+NaN", ";", "?", "[", "\\", "]", "`", "_", "a", "e", "e0",
+            "x", "{", "|", "}", "~", ":", "’", "’bar", "\t", "\n", " ", "\u{00A0}", "\u{200B}",
+            "0",
+        ];
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+
+        let roundtrip = |interp: &mut Interpreter, env: &mut Env, name: &str| {
+            let rendered = primitives::call(
+                interp,
+                "prin1-to-string",
+                &[Value::Symbol(name.to_string())],
+                env,
+            )
+            .expect("symbol should print");
+            let rendered = primitives::string_text(&rendered).expect("rendered symbol string");
+            let parsed = Reader::new(&rendered)
+                .read()
+                .expect("printed symbol should parse")
+                .expect("printed symbol should yield one form");
+            assert_eq!(
+                parsed,
+                Value::Symbol(name.to_string()),
+                "symbol {:?} printed as {:?}",
+                name,
+                rendered
+            );
+        };
+
+        for symbol in &symbols {
+            roundtrip(&mut interp, &mut env, symbol);
+        }
+        for left in &symbols {
+            for right in &symbols {
+                roundtrip(&mut interp, &mut env, &format!("{left}{right}"));
+            }
+        }
+    }
+
+    #[test]
+    fn prin1_to_string_matches_upstream_integer_character_cases() {
+        let printed = eval_str(
+            r#"
+            (let ((print-integers-as-characters t))
+              (prin1-to-string
+               '(?? ?\; ?\( ?\) ?\{ ?\} ?\[ ?\] ?\" ?\' ?\\ ?f ?~ ?Á 32
+                 ?\n ?\r ?\t ?\b ?\f ?\a ?\v ?\e ?\d)))
+            "#,
+        );
+        assert_string_value(
+            printed,
+            r#"(?? ?\; ?\( ?\) ?\{ ?\} ?\[ ?\] ?\" ?\' ?\\ ?f ?~ ?Á ?\s ?\n ?\r ?\t ?\b ?\f 7 11 27 127)"#,
+        );
+    }
+
+    #[test]
+    fn cl_prin1_respects_charset_text_property_modes() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"
+                    (list
+                     (let ((print-charset-text-property nil))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "a" 'charset 'unicode)))
+                           t nil))
+                     (let ((print-charset-text-property 'default))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "\u00F6" 'charset 'ascii)))
+                           t nil))
+                     (let ((print-charset-text-property 'default))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "\u00F6" 'charset 'unicode)))
+                           t nil))
+                     (let ((print-charset-text-property 'default))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "a" 'charset 'unicode)))
+                           t nil)))
+                    "#
+                ),
+                Value::list([Value::Nil, Value::T, Value::Nil, Value::Nil])
+            );
+        });
+    }
+
+    #[test]
+    fn cl_prin1_supports_continuous_numbering() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"
+                    (let* ((x (list 1))
+                           (y "hello")
+                           (g (gensym))
+                           (print-circle t)
+                           (print-gensym t)
+                           (print-continuous-numbering t)
+                           (print-number-table nil))
+                      (if (string-match
+                           "(#1=(1) #1# #2=\"hello\" #2#)(#3=#:g[[:digit:]]+ #3#)(#1# #2# #3#)#2#$"
+                           (mapconcat #'cl-prin1-to-string
+                                      `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y)))
+                          t nil))
+                    "#
+                ),
+                Value::T
+            );
+        });
+    }
+
+    #[test]
+    fn princ_and_terpri_respect_output_streams() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((marker-output
+                       (with-current-buffer (get-buffer-create "*printer-test*")
+                         (erase-buffer)
+                         (insert "seed")
+                         (point-max-marker))))
+                  (list
+                   (with-output-to-string
+                     (princ 'abc)
+                     (terpri nil t)
+                     (terpri nil t)
+                     (princ "xyz"))
+                   (progn
+                     (princ 'abc marker-output)
+                     (terpri marker-output t)
+                     (terpri marker-output t)
+                     (with-current-buffer (marker-buffer marker-output)
+                       (buffer-string)))))
+                "#
+            ),
+            Value::list([
+                Value::String("abc\nxyz".into()),
+                Value::String("seedabc\n".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn eval_second_argument_controls_lambda_capture() {
         assert_eq!(
             eval_str(
@@ -15693,6 +16916,21 @@ mod tests {
                    (list (eval form nil) (eval form t)))"
             ),
             Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn dynamic_lambdas_write_back_mutated_caller_bindings() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((x nil)
+                      (f (eval '(lambda () (setq x t)) nil)))
+                  (funcall f)
+                  x)
+                "#
+            ),
+            Value::T
         );
     }
 
@@ -15753,6 +16991,32 @@ mod tests {
     }
 
     #[test]
+    fn insert_file_contents_rejects_circular_after_insert_file_functions() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-insert-file-contents-circular-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "hello\n").unwrap();
+
+        let path_literal = path.display().to_string().replace('\\', "\\\\");
+        assert_eq!(
+            eval_str(&format!(
+                "(let ((after-insert-file-functions (list 'identity))) \
+                   (setcdr after-insert-file-functions after-insert-file-functions) \
+                   (condition-case err \
+                       (insert-file-contents \"{path_literal}\") \
+                     (circular-list (car err))))"
+            )),
+            Value::Symbol("circular-list".into())
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn define_inline_lowers_inline_wrappers_into_a_runtime_function() {
         let mut interp = Interpreter::new();
         eval_str_with(
@@ -15799,6 +17063,52 @@ mod tests {
     }
 
     #[test]
+    fn keymap_records_compare_equal_to_literal_lists() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap)))
+                  (list
+                   (progn
+                     (define-key map "a" 'foo)
+                     (equal map '(keymap (97 . foo))))
+                   (progn
+                     (define-key map "a" nil)
+                     (equal map '(keymap (97))))
+                   (progn
+                     (define-key map "a" 'foo)
+                     (define-key map "a" nil t)
+                     (equal map '(keymap)))))
+                "#,
+            ),
+            Value::list([Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn define_key_after_preserves_menu_insertion_order() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap)))
+                  (define-key-after map [cmd1]
+                    '(menu-item "Run Command 1" keymap-tests--command-1
+                                :help "Command 1 Help"))
+                  (define-key-after map [cmd2]
+                    '(menu-item "Run Command 2" keymap-tests--command-2
+                                :help "Command 2 Help"))
+                  (define-key-after map [cmd3]
+                    '(menu-item "Run Command 3" keymap-tests--command-3
+                                :help "Command 3 Help")
+                    'cmd1)
+                  (list (caadr map) (caaddr map)))
+                "#,
+            ),
+            Value::list([Value::Symbol("cmd1".into()), Value::Symbol("cmd3".into()),])
+        );
+    }
+
+    #[test]
     fn global_map_supports_mouse_style_bindings() {
         assert_eq!(
             eval_str(
@@ -15822,6 +17132,49 @@ mod tests {
                 Value::Symbol("mwheel-scroll".into()),
                 Value::Symbol("mwheel-scroll".into()),
                 Value::Nil,
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn define_key_accepts_runtime_mouse_vectors() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap "demo"))
+                      (event 'mouse-5))
+                  (define-key map (vector event) 'mwheel-scroll)
+                  (list (lookup-key map (vector event))
+                        (lookup-key map [mouse-5])))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("mwheel-scroll".into()),
+                Value::Symbol("mwheel-scroll".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn global_set_key_accepts_runtime_mouse_vectors() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let* ((map (current-global-map))
+                       (event 'mouse-5)
+                       (key (vector event)))
+                  (global-set-key key 'mwheel-scroll)
+                  (list (lookup-key map key)
+                        (lookup-key map [mouse-5])
+                        (progn
+                          (global-unset-key key)
+                          (lookup-key map [mouse-5]))))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("mwheel-scroll".into()),
+                Value::Symbol("mwheel-scroll".into()),
                 Value::Nil,
             ])
         );
@@ -16909,6 +18262,28 @@ mod tests {
     }
 
     #[test]
+    fn ert_runner_exposes_current_test_frame_to_backtrace_queries() {
+        let mut interp = Interpreter::new();
+        eval_str_with(
+            &mut interp,
+            r#"
+            (ert-deftest backtrace-thread-frame ()
+              (let* ((frames (backtrace--frames-from-thread (current-thread)))
+                     (found nil))
+                (dolist (frame frames)
+                  (when (and (consp frame)
+                             (memq (car frame) '(t nil))
+                             (functionp (cadr frame)))
+                    (setq found t)))
+                (should found)))
+            "#,
+        );
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
     fn defalias_can_reference_incf_via_function_quote() {
         assert_eq!(
             eval_str(
@@ -17090,6 +18465,21 @@ mod tests {
                 "#
             ),
             Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn named_let_expands_to_recursive_binding() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (named-let loop ((n 3) (acc nil))
+                  (if (> n 0)
+                      (loop (1- n) (cons n acc))
+                    acc))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3),])
         );
     }
 
@@ -17462,6 +18852,31 @@ mod tests {
     }
 
     #[test]
+    fn decode_coding_region_rewrites_dos_eol_in_place() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert (encode-coding-string "あ" 'euc-jp) "\r" "\n")
+                     (decode-coding-region (point-min) (point-max) 'euc-jp-dos)
+                     (string-search "\r" (buffer-string)))"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn decode_coding_string_normalizes_dos_eol() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((decoded (decode-coding-string "A\r\n" 'utf-8-dos)))
+                     (string-search "\r" decoded))"#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn base64_decode_string_ignores_wrapped_input() {
         assert_eq!(
             eval_str(
@@ -17523,6 +18938,87 @@ IHdvcmxkIQ==")))
                 Value::Integer(0),
             ])
         );
+    }
+
+    #[test]
+    fn base64_decode_region_reports_unibyte_byte_count() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (set-buffer-multibyte nil)
+                     (insert "FPucA9l+")
+                     (let ((len (base64-decode-region (point-min) (point-max))))
+                       (list len
+                             (string-bytes (buffer-string))
+                             (string-to-list (buffer-string))
+                             (multibyte-string-p (buffer-string)))))"#
+            ),
+            Value::list([
+                Value::Integer(6),
+                Value::Integer(6),
+                Value::list([
+                    Value::Integer(20),
+                    Value::Integer(251),
+                    Value::Integer(156),
+                    Value::Integer(3),
+                    Value::Integer(217),
+                    Value::Integer(126),
+                ]),
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn base64_encode_string_rejects_multibyte_non_ascii_input() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                    (condition-case _ (base64-encode-string "ü") (error 'caught))
+                    (condition-case _ (base64url-encode-string "ƒ") (error 'caught)))"#
+            ),
+            Value::list([
+                Value::Symbol("caught".into()),
+                Value::Symbol("caught".into())
+            ])
+        );
+    }
+
+    #[test]
+    fn sha1_and_buffer_hash_match_for_ascii_buffer_contents() {
+        assert_eq!(
+            eval_str(
+                r#"(list
+                    (sha1 "foo")
+                    (with-temp-buffer
+                      (insert "foo")
+                      (buffer-hash)))"#
+            ),
+            Value::list([
+                Value::String("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33".into()),
+                Value::String("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn secure_hash_supports_core_algorithms_and_iv_auto() {
+        let result = eval_str(
+            r#"(list
+                (secure-hash 'md5 "foobar")
+                (secure-hash 'sha1 "foobar")
+                (length (secure-hash 'sha512 'iv-auto 100)))"#,
+        );
+        let items = result.to_vec().expect("hash result list");
+        assert_eq!(
+            items[0],
+            Value::String("3858f62230ac3c915f300c664312c63f".into())
+        );
+        assert_eq!(
+            items[1],
+            Value::String("8843d7f92416211de9ebb963ff4ce28125932878".into())
+        );
+        assert_eq!(items[2], Value::Integer(128));
     }
 
     #[test]
@@ -17653,6 +19149,37 @@ IHdvcmxkIQ==")))
             eval_str(r#"`(#xFFF . ,(make-string 12 ?1))"#),
             Value::cons(Value::Integer(0xFFF), Value::String("111111111111".into()))
         );
+    }
+
+    #[test]
+    fn backquote_preserves_record_literal_dotted_pair_tails() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(&mut interp, r#"`(#s(a 1) . #s(b 2))"#);
+        let (left, right) = value.cons_values().expect("dotted pair");
+        assert!(matches!(left, Value::Record(_)));
+        assert!(matches!(right, Value::Record(_)));
+    }
+
+    #[test]
+    fn backquote_materializes_record_literals() {
+        let mut interp = Interpreter::new();
+        let value = eval_str_with(&mut interp, r#"`(#s(a b) #s(#s(c d) e))"#);
+        let items = value.to_vec().expect("backquoted list");
+        assert_eq!(items.len(), 2);
+        let Value::Record(inner_id) = &items[0] else {
+            panic!("expected inner record");
+        };
+        let inner = interp.find_record(*inner_id).expect("inner record");
+        assert_eq!(inner.type_name, "a");
+        assert_eq!(inner.slots, vec![Value::Symbol("b".into())]);
+        let Value::Record(outer_id) = &items[1] else {
+            panic!("expected outer record");
+        };
+        let outer = interp.find_record(*outer_id).expect("outer record");
+        assert_eq!(outer.type_name, "literal-record");
+        assert_eq!(outer.slots.len(), 2);
+        assert!(matches!(outer.slots[0], Value::Record(_)));
+        assert!(matches!(outer.slots[1], Value::Symbol(ref symbol) if symbol == "e"));
     }
 
     #[test]
@@ -18379,6 +19906,43 @@ IHdvcmxkIQ==")))
     }
 
     #[test]
+    fn bracket_expressions_keep_literal_backslashes_as_members() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((pattern (concat "[" (string 92 46) "]"))
+                      (text (string 97 92 46 99)))
+                  (string-match pattern text)
+                  (list (match-beginning 0) (match-end 0)))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((pattern (concat "[" (string 92 94 97 98) "]"))
+                      (text (string 99 92 100)))
+                  (string-match pattern text)
+                  (list (match-beginning 0) (match-end 0)))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        );
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((pattern (concat "[" (string 36 92 40 42 92 41 94) "]*"))
+                      (text (string 36 92 40 41 42 94)))
+                  (string-match pattern text)
+                  (list (match-beginning 0) (match-end 0)))
+                "#
+            ),
+            Value::list([Value::Integer(0), Value::Integer(6)])
+        );
+    }
+
+    #[test]
     fn regexp_opt_builds_basic_alternations() {
         assert_eq!(
             eval_str(r#"(regexp-opt '(".log" ".aux" ".log"))"#),
@@ -18718,6 +20282,24 @@ IHdvcmxkIQ==")))
                     Value::Integer(1),
                 ]),
             ])
+        );
+    }
+
+    #[test]
+    fn backtrace_frames_from_current_thread_returns_live_frames() {
+        let mut interp = Interpreter::new();
+        let current_thread = interp.current_thread_value();
+        interp.push_backtrace_frame(Value::Symbol("sample-backtrace-frame".into()), Vec::new());
+
+        assert_eq!(
+            interp.thread_backtrace_frames_snapshot(
+                interp.resolve_thread_id(&current_thread).unwrap()
+            ),
+            vec![(
+                Value::Symbol("sample-backtrace-frame".into()),
+                Vec::new(),
+                false,
+            )]
         );
     }
 }
