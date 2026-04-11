@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -6,6 +7,7 @@ use std::process::Child;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
+use super::reader::RECORD_LITERAL_SYMBOL;
 use super::sqlite::SqliteHandleState;
 use super::types::{Env, LispError, Value, shared_env};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
@@ -808,6 +810,11 @@ impl Interpreter {
                     "vc-directory-exclusion-list".into(),
                     preloaded_vc_directory_exclusion_list(),
                 ),
+                (
+                    "standard-output".into(),
+                    Value::Symbol("external-debugging-output".into()),
+                ),
+                ("emaxx-external-debugging-output-target".into(), Value::Nil),
             ],
             variable_aliases: Vec::new(),
             special_variables: vec![
@@ -828,6 +835,7 @@ impl Interpreter {
                 "line-spacing".into(),
                 "left-margin".into(),
                 "last-command".into(),
+                "load-force-doc-strings".into(),
                 "overwrite-mode".into(),
                 "process-connection-type".into(),
                 "process-environment".into(),
@@ -963,14 +971,39 @@ impl Interpreter {
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
+        let _ = primitives::keymap_define_binding_with_placement(
+            &mut interp,
+            &ctl_x_map,
+            "C-f",
+            Some(vec!["C-f".into()]),
+            Value::Symbol("find-file".into()),
+            true,
+        );
         let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
+        let buffer_menu_mode_map =
+            primitives::make_runtime_keymap(&mut interp, Some("Buffer-menu-mode-map"));
+        interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
         let global_map = interp
             .lookup_var("global-map", &Vec::new())
             .unwrap_or(Value::Nil);
+        let _ = primitives::keymap_define_binding_with_placement(
+            &mut interp,
+            &buffer_menu_mode_map,
+            "SPC",
+            Some(vec!["SPC".into()]),
+            Value::Symbol("Buffer-menu-select".into()),
+            true,
+        );
         let esc_map = interp
             .lookup_var("esc-map", &Vec::new())
             .unwrap_or(Value::Nil);
+        let _ = primitives::keymap_define_binding(
+            &mut interp,
+            &esc_map,
+            "x",
+            Value::Symbol("execute-extended-command".into()),
+        );
         let ctl_x_map = interp
             .lookup_var("ctl-x-map", &Vec::new())
             .unwrap_or(Value::Nil);
@@ -982,6 +1015,7 @@ impl Interpreter {
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
+        interp.set_global_binding("minor-mode-map-alist", Value::Nil);
         interp.set_global_binding("font-lock-mode", Value::Nil);
         interp.mark_auto_buffer_local("font-lock-mode");
         interp.set_global_binding("font-lock-fontified", Value::Nil);
@@ -5229,32 +5263,58 @@ impl Interpreter {
             .ok_or(LispError::Void(resolved))
     }
 
-    pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+    pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
         if primitives::prefer_builtin_override(name) && primitives::is_builtin(name) {
-            return Ok(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string()));
         }
         for frame in env.iter().rev() {
             for (k, v) in frame.iter().rev() {
-                if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
-                    return Ok(v.clone());
+                if k == name
+                    && matches!(
+                        v,
+                        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Symbol(_)
+                    )
+                {
+                    return Some(v.clone());
                 }
             }
         }
         for (k, v) in self.functions.iter().rev() {
             if k == name {
-                return Ok(v.clone());
+                return Some(v.clone());
             }
         }
         if let Some(value) = builtin_autoload_function(name) {
-            return Ok(value);
+            return Some(value);
         }
         if matches!(name, "incf" | "decf") {
-            return Ok(Value::BuiltinFunc(name.to_string()));
+            return Some(Value::BuiltinFunc(name.to_string()));
         }
         if primitives::is_builtin(name) {
-            Ok(Value::BuiltinFunc(name.to_string()))
-        } else {
-            Err(LispError::Void(name.to_string()))
+            return Some(Value::BuiltinFunc(name.to_string()));
+        }
+        None
+    }
+
+    pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
+        let mut current = name.to_string();
+        let mut seen = HashSet::new();
+
+        loop {
+            if !seen.insert(current.clone()) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("cyclic-function-indirection".into()),
+                    Value::Symbol(name.to_string()),
+                ])));
+            }
+
+            let Some(binding) = self.raw_function_binding(&current, env) else {
+                return Err(LispError::Void(current));
+            };
+            match binding {
+                Value::Symbol(next) => current = next,
+                other => return Ok(other),
+            }
         }
     }
 
@@ -5483,6 +5543,9 @@ impl Interpreter {
                     Some(Value::Symbol(name)) if name == "bool-vector-literal"
                 ) {
                     return Ok(self.create_record("bool-vector", items[1..].to_vec()));
+                }
+                if is_record_literal_reader_form(expr) {
+                    return self.eval_record_literal_form(&items[1..], env);
                 }
 
                 // Check for special forms first
@@ -5883,47 +5946,46 @@ impl Interpreter {
                     }
                 }
 
-                let captured_snapshot = closure_env.borrow().clone();
-                let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
-                let (mut call_env, captured_positions, current_positions) =
-                    Self::merge_lambda_env(env, &captured_snapshot, &frame_mapping);
                 let backtrace_function = original_name
                     .map(|name| Value::Symbol(name.to_string()))
                     .unwrap_or_else(|| func.clone());
                 self.push_backtrace_frame(backtrace_function, args.to_vec());
-                call_env.push(frame);
-                let result = self.sf_progn(function_executable_body(body), &mut call_env);
-                call_env.pop();
-                {
-                    let mut stored_env = closure_env.borrow_mut();
-                    if stored_env.len() != captured_snapshot.len() {
-                        stored_env.clear();
-                        stored_env.extend(captured_snapshot.clone());
-                    }
-                    for (captured_index, position) in captured_positions.iter().enumerate() {
-                        if let Some(position) = position
-                            && let Some(updated) = call_env.get(*position)
-                        {
+                let captured_snapshot = closure_env.borrow().clone();
+                let result = if captured_snapshot.is_empty() {
+                    let mut call_env = env.clone();
+                    call_env.push(frame);
+                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    call_env.pop();
+                    env.clear();
+                    env.extend(call_env);
+                    result
+                } else {
+                    let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
+                    let mut call_env =
+                        Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
+                    call_env.push(frame);
+                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    call_env.pop();
+                    {
+                        let mut stored_env = closure_env.borrow_mut();
+                        if stored_env.len() != captured_snapshot.len() {
+                            stored_env.clear();
+                            stored_env.extend(captured_snapshot.clone());
+                        }
+                        for (captured_index, updated) in call_env.iter().enumerate() {
+                            if captured_index >= stored_env.len() {
+                                break;
+                            }
                             stored_env[captured_index] = updated.clone();
+                            if let Some(current_index) = frame_mapping[captured_index]
+                                && current_index < env.len()
+                            {
+                                env[current_index] = updated.clone();
+                            }
                         }
                     }
-                }
-                for (current_index, position) in current_positions.iter().enumerate() {
-                    if let Some(updated) = call_env.get(*position)
-                        && current_index < env.len()
-                    {
-                        env[current_index] = updated.clone();
-                    }
-                }
-                for (captured_index, current_index) in frame_mapping.iter().enumerate() {
-                    if let (Some(current_index), Some(position)) =
-                        (current_index, captured_positions[captured_index])
-                        && let Some(updated) = call_env.get(position)
-                        && *current_index < env.len()
-                    {
-                        env[*current_index] = updated.clone();
-                    }
-                }
+                    result
+                };
                 self.pop_backtrace_frame();
                 result
             }
@@ -5940,7 +6002,7 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        Ok(items[1].clone())
+        super::reader::resolve_circular_read_syntax(items[1].clone())
     }
 
     fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -7135,10 +7197,19 @@ impl Interpreter {
 
         let keymap = crate::lisp::primitives::make_runtime_keymap(self, Some(&resolved));
         let mut index = 2;
+        let mut seen_keys = HashSet::new();
         while index + 1 < items.len() {
             if matches!(&items[index], Value::Symbol(keyword) if keyword.starts_with(':')) {
                 index += 2;
                 continue;
+            }
+
+            let duplicate_key = items[index].to_string();
+            if !seen_keys.insert(duplicate_key.clone()) {
+                return Err(LispError::Signal(format!(
+                    "Duplicate definition for key '{}' in keymap '{}'",
+                    duplicate_key, resolved
+                )));
             }
 
             let key = match self.eval(&items[index], env)? {
@@ -7204,6 +7275,24 @@ impl Interpreter {
                 if self.lookup_var(name, &Vec::new()).is_none() {
                     self.globals
                         .push((name.to_string(), Self::stored_value(init_value)));
+                }
+                if let Some(map) = self.lookup_var(&format!("{name}-map"), &Vec::new()) {
+                    let entry = Value::cons(Value::Symbol(name.to_string()), map);
+                    let mut entries = self
+                        .lookup_var("minor-mode-map-alist", &Vec::new())
+                        .unwrap_or(Value::Nil)
+                        .to_vec()
+                        .unwrap_or_default();
+                    if let Some(index) = entries.iter().position(|existing| {
+                        existing
+                            .cons_values()
+                            .is_some_and(|(mode, _)| mode == Value::Symbol(name.to_string()))
+                    }) {
+                        entries[index] = entry;
+                    } else {
+                        entries.push(entry);
+                    }
+                    self.set_global_binding("minor-mode-map-alist", Value::list(entries));
                 }
 
                 let setter_symbol = if global { "setq-default" } else { "setq" };
@@ -7302,6 +7391,10 @@ impl Interpreter {
                 if let Some(parent) = parent {
                     body.push(Value::list([Value::Symbol(parent.to_string())]));
                 }
+                body.push(Value::list([
+                    Value::Symbol("use-local-map".into()),
+                    Value::Symbol(map_name.clone()),
+                ]));
                 body.push(Value::list([
                     Value::Symbol("setq-local".into()),
                     Value::Symbol("major-mode".into()),
@@ -7430,9 +7523,12 @@ impl Interpreter {
                 .map(Value::Symbol)
                 .collect::<Vec<_>>(),
         );
-        let slot_names_value = Value::list([Value::Symbol("quote".into()), slot_names_list]);
+        let slot_names_value =
+            Value::list([Value::Symbol("quote".into()), slot_names_list.clone()]);
         let slot_defaults_value =
             Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
+
+        self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
 
         let predicate_name = format!("{name}-p");
         self.set_function_binding(
@@ -8929,37 +9025,17 @@ impl Interpreter {
         mapping
     }
 
-    fn merge_lambda_env(
-        current: &Env,
-        captured: &Env,
-        mapping: &[Option<usize>],
-    ) -> (Env, Vec<Option<usize>>, Vec<usize>) {
-        let mut merged = Vec::new();
-        let mut positions = vec![None; captured.len()];
-        let mut current_positions = Vec::with_capacity(current.len());
-        let mut current_cursor = 0usize;
-
+    fn merge_lexical_lambda_env(current: &Env, captured: &Env, mapping: &[Option<usize>]) -> Env {
+        let mut merged = captured.clone();
         for (captured_index, current_index) in mapping.iter().enumerate() {
-            if let Some(current_index) = current_index {
-                while current_cursor <= *current_index {
-                    merged.push(current[current_cursor].clone());
-                    current_positions.push(merged.len() - 1);
-                    current_cursor += 1;
-                }
-                positions[captured_index] = merged.len().checked_sub(1);
-            } else {
-                merged.push(captured[captured_index].clone());
-                positions[captured_index] = merged.len().checked_sub(1);
+            if let Some(current_index) = current_index
+                && captured_index < merged.len()
+                && *current_index < current.len()
+            {
+                merged[captured_index] = current[*current_index].clone();
             }
         }
-
-        while current_cursor < current.len() {
-            merged.push(current[current_cursor].clone());
-            current_positions.push(merged.len() - 1);
-            current_cursor += 1;
-        }
-
-        (merged, positions, current_positions)
+        merged
     }
 
     fn eval_cl_loop_do_body(&mut self, body: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -9283,7 +9359,12 @@ impl Interpreter {
         let (temp_id, _) = self.create_buffer(&temp_name);
         self.set_buffer_hooks_inhibited(temp_id, true);
         self.switch_to_buffer_id(temp_id)?;
+        env.push(vec![(
+            "standard-output".into(),
+            Value::Buffer(temp_id, temp_name.clone()),
+        )]);
         let body_result = self.sf_progn(&items[1..], env);
+        env.pop();
         let output = Value::String(self.buffer.buffer_string());
         let _ = self.switch_to_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
@@ -9976,6 +10057,23 @@ impl Interpreter {
         self.eval_backquote_with_depth(expr, env, 0)
     }
 
+    fn eval_record_literal_form(
+        &mut self,
+        slots: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut values = Vec::with_capacity(slots.len());
+        for slot in slots {
+            values.push(self.eval(slot, env)?);
+        }
+        if let Some(first) = values.first()
+            && let Ok(type_name) = first.as_symbol()
+        {
+            return Ok(self.create_record(type_name, values[1..].to_vec()));
+        }
+        Ok(self.create_record("literal-record", values))
+    }
+
     fn eval_backquote_with_depth(
         &mut self,
         expr: &Value,
@@ -10420,6 +10518,10 @@ impl Interpreter {
             }
         }
 
+        if let Some(lowered) = self.try_expand_named_let_loop(&name, &params, &inits, &args[2..])? {
+            return Ok(lowered);
+        }
+
         let lambda = Value::list(
             std::iter::once(Value::Symbol("lambda".into()))
                 .chain(std::iter::once(Value::list(params)))
@@ -10437,6 +10539,150 @@ impl Interpreter {
             Value::list([binding]),
             call,
         ]))
+    }
+
+    fn try_expand_named_let_loop(
+        &mut self,
+        name: &str,
+        params: &[Value],
+        inits: &[Value],
+        body: &[Value],
+    ) -> Result<Option<Value>, LispError> {
+        let done_tag = self.make_generated_symbol("named-let-done");
+        let bindings = Value::list(
+            params
+                .iter()
+                .cloned()
+                .zip(inits.iter().cloned())
+                .map(|(param, init)| Value::list([param, init])),
+        );
+
+        let loop_body = match body {
+            [single] => {
+                if let Ok(items) = single.to_vec()
+                    && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "if")
+                {
+                    let then_forms = items
+                        .get(2)
+                        .cloned()
+                        .map_or_else(Vec::new, |form| vec![form]);
+                    let else_forms = if items.len() > 3 {
+                        items[3..].to_vec()
+                    } else {
+                        vec![Value::Nil]
+                    };
+                    if !named_let_branch_safe_for_loop(name, &then_forms)
+                        || !named_let_branch_safe_for_loop(name, &else_forms)
+                    {
+                        return Ok(None);
+                    }
+                    self.expand_named_let_loop_if(name, params, &done_tag, &items)?
+                } else if let Some((prefix, args)) = named_let_tail_call(name, body) {
+                    self.build_named_let_rebind(params, &args, &prefix)?
+                } else {
+                    return Ok(None);
+                }
+            }
+            _ => {
+                if let Some((prefix, args)) = named_let_tail_call(name, body) {
+                    self.build_named_let_rebind(params, &args, &prefix)?
+                } else {
+                    return Ok(None);
+                }
+            }
+        };
+
+        Ok(Some(Value::list([
+            Value::Symbol("let".into()),
+            bindings,
+            Value::list([
+                Value::Symbol("catch".into()),
+                quoted_literal(&done_tag),
+                Value::list([Value::Symbol("while".into()), Value::T, loop_body]),
+            ]),
+        ])))
+    }
+
+    fn expand_named_let_loop_if(
+        &mut self,
+        name: &str,
+        params: &[Value],
+        done_tag: &Value,
+        items: &[Value],
+    ) -> Result<Value, LispError> {
+        let condition = items.get(1).cloned().unwrap_or(Value::Nil);
+        let then_forms = items
+            .get(2)
+            .cloned()
+            .map_or_else(Vec::new, |form| vec![form]);
+        let else_forms = if items.len() > 3 {
+            items[3..].to_vec()
+        } else {
+            vec![Value::Nil]
+        };
+        let then_branch = self.build_named_let_loop_branch(name, params, done_tag, &then_forms)?;
+        let else_branch = self.build_named_let_loop_branch(name, params, done_tag, &else_forms)?;
+        Ok(Value::list([
+            Value::Symbol("if".into()),
+            condition,
+            then_branch,
+            else_branch,
+        ]))
+    }
+
+    fn build_named_let_loop_branch(
+        &mut self,
+        name: &str,
+        params: &[Value],
+        done_tag: &Value,
+        forms: &[Value],
+    ) -> Result<Value, LispError> {
+        if let Some((prefix, args)) = named_let_tail_call(name, forms) {
+            self.build_named_let_rebind(params, &args, &prefix)
+        } else {
+            Ok(Value::list([
+                Value::Symbol("throw".into()),
+                quoted_literal(done_tag),
+                forms_to_progn(forms),
+            ]))
+        }
+    }
+
+    fn build_named_let_rebind(
+        &mut self,
+        params: &[Value],
+        args: &[Value],
+        prefix: &[Value],
+    ) -> Result<Value, LispError> {
+        if params.len() != args.len() {
+            return Err(LispError::WrongNumberOfArgs("named-let".into(), args.len()));
+        }
+        let temp_symbols = (0..params.len())
+            .map(|_| self.make_generated_symbol("named-let-arg"))
+            .collect::<Vec<_>>();
+        let temp_bindings = Value::list(
+            temp_symbols
+                .iter()
+                .cloned()
+                .zip(args.iter().cloned())
+                .map(|(temp, arg)| Value::list([temp, arg])),
+        );
+        let mut setq_items = vec![Value::Symbol("setq".into())];
+        for (param, temp) in params.iter().cloned().zip(temp_symbols.into_iter()) {
+            setq_items.push(param);
+            setq_items.push(temp);
+        }
+        let rebind = Value::list([
+            Value::Symbol("let".into()),
+            temp_bindings,
+            Value::list(setq_items),
+        ]);
+        let forms = prefix
+            .iter()
+            .cloned()
+            .chain(std::iter::once(rebind))
+            .collect::<Vec<_>>();
+        Ok(forms_to_progn(&forms))
     }
 
     fn expand_cl_case(&mut self, args: &[Value], _env: &mut Env) -> Result<Value, LispError> {
@@ -10869,6 +11115,44 @@ fn unquote(value: &Value) -> Value {
 
 fn quoted_literal(value: &Value) -> Value {
     Value::list([Value::Symbol("quote".into()), value.clone()])
+}
+
+fn forms_to_progn(forms: &[Value]) -> Value {
+    match forms {
+        [] => Value::Nil,
+        [single] => single.clone(),
+        _ => {
+            Value::list(std::iter::once(Value::Symbol("progn".into())).chain(forms.iter().cloned()))
+        }
+    }
+}
+
+fn named_let_tail_call(name: &str, forms: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
+    let (tail, prefix) = forms.split_last()?;
+    let items = tail.to_vec().ok()?;
+    match items.split_first() {
+        Some((Value::Symbol(symbol), args)) if symbol == name => {
+            Some((prefix.to_vec(), args.to_vec()))
+        }
+        _ => None,
+    }
+}
+
+fn named_let_contains_call(name: &str, value: &Value) -> bool {
+    if let Ok(items) = value.to_vec() {
+        if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == name) {
+            return true;
+        }
+        return items.iter().any(|item| named_let_contains_call(name, item));
+    }
+    false
+}
+
+fn named_let_branch_safe_for_loop(name: &str, forms: &[Value]) -> bool {
+    named_let_tail_call(name, forms).is_some()
+        || forms
+            .iter()
+            .all(|form| !named_let_contains_call(name, form))
 }
 
 fn preloaded_command_line_1() -> Value {
@@ -11429,7 +11713,7 @@ fn is_record_literal_reader_form(value: &Value) -> bool {
     let Ok(items) = value.to_vec() else {
         return false;
     };
-    matches!(items.first(), Some(Value::Symbol(name)) if name == "record")
+    matches!(items.first(), Some(Value::Symbol(name)) if name == RECORD_LITERAL_SYMBOL)
         && items[1..].iter().all(is_record_literal_slot_form)
 }
 
@@ -16217,6 +16501,413 @@ mod tests {
     }
 
     #[test]
+    fn read_from_string_makes_record_literals_record_like() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let* ((read-circle t)
+                       (result (read-from-string "([#s(r a)])"))
+                       (x2 (car (car result)))
+                       (x3 (aref x2 0)))
+                  (list (recordp x3)
+                        (length x3)
+                        (aref x3 0)
+                        (aref x3 1)))
+                "#
+            ),
+            Value::list([
+                Value::T,
+                Value::Integer(2),
+                Value::Symbol("r".into()),
+                Value::Symbol("a".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn read_from_string_nested_record_step_shrinks() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let* ((read-circle t)
+                       (result (read-from-string "([#s(r ([#s(r a)]))])"))
+                       (x0 (car result))
+                       (x1 (aref (car x0) 0))
+                       (next (aref x1 1))
+                       (x2 (aref (car next) 0)))
+                  (list (equal x0 next)
+                        (recordp x1)
+                        (length x1)
+                        (aref x1 0)
+                        (recordp x2)
+                        (length x2)
+                        (aref x2 0)
+                        (aref x2 1)))
+                "#
+            ),
+            Value::list([
+                Value::Nil,
+                Value::T,
+                Value::Integer(2),
+                Value::Symbol("r".into()),
+                Value::T,
+                Value::Integer(2),
+                Value::Symbol("r".into()),
+                Value::Symbol("a".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn read_from_string_prints_circular_cons_with_labels() {
+        assert_string_value(
+            eval_str(
+                r##"
+                (let* ((read-circle t)
+                       (print-circle t)
+                       (result (read-from-string "#1=(#1# . #1#)")))
+                  (prin1-to-string (car result)))
+                "##,
+            ),
+            "#1=(#1# . #1#)",
+        );
+    }
+
+    #[test]
+    fn read_from_string_prints_circular_vectors_with_labels() {
+        assert_string_value(
+            eval_str(
+                r##"
+                (let* ((read-circle t)
+                       (print-circle t)
+                       (result (read-from-string "#1=[#1# a #1#]")))
+                  (prin1-to-string (car result)))
+                "##,
+            ),
+            "#1=[#1# a #1#]",
+        );
+    }
+
+    #[test]
+    fn read_from_string_roundtrips_lread_circle_cases() {
+        for case in [
+            "#1=(#1# . #1#)",
+            "#1=[#1# a #1#]",
+            "#1=(#2=[#1# #2#] . #1#)",
+            "#1=(#2=[#1# #2#] . #2#)",
+            "#1=[#2=(#1# . #2#)]",
+            "#1=(#2=[#3=(#1# . #2#) #4=(#3# . #4#)])",
+        ] {
+            let program = format!(
+                r##"
+                (let* ((read-circle t)
+                       (print-circle t)
+                       (result (read-from-string "{case}")))
+                  (prin1-to-string (car result)))
+                "##,
+            );
+            assert_string_value(eval_str(&program), case);
+        }
+    }
+
+    #[test]
+    fn print_circle_2_upstream_case_completes() {
+        let value = eval_str(
+            r##"
+            (let* ((read-circle t)
+                   (x (car (read-from-string "(0 . #1=(0 . #1#))"))))
+              (list
+               (let ((print-circle nil))
+                 (prin1-to-string x))
+               (let ((print-circle t))
+                 (prin1-to-string x))))
+            "##,
+        );
+        let items = value.to_vec().expect("result list");
+        assert_eq!(items.len(), 2);
+        assert!(
+            items[0]
+                .as_string()
+                .expect("print-circle nil result should be a string")
+                .contains(". #")
+        );
+        assert_eq!(
+            items[1]
+                .as_string()
+                .expect("print-circle t result should be a string"),
+            "(0 . #1=(0 . #1#))"
+        );
+    }
+
+    #[test]
+    fn number_sequence_defaults_to_positive_step() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (list
+                 (number-sequence 1 0)
+                 (number-sequence 3 1)
+                 (number-sequence 3 1 -1))
+                "##,
+            ),
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::list([Value::Integer(3), Value::Integer(2), Value::Integer(1)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_mode_binds_scroll_command() {
+        run_with_large_stack(|| {
+            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r##"
+                    (progn
+                      (require 'mwheel)
+                      (with-suppressed-warnings ((obsolete mouse-wheel-up-event))
+                        (mouse-wheel-mode 1)
+                        (let ((enabled (lookup-key (current-global-map)
+                                                   `[,mouse-wheel-up-event])))
+                          (mouse-wheel-mode -1)
+                          (list mouse-wheel-up-event
+                                enabled
+                                (lookup-key (current-global-map)
+                                            `[,mouse-wheel-up-event])))))
+                    "##,
+                ),
+                Value::list([
+                    Value::Symbol("mouse-5".into()),
+                    Value::Symbol("mwheel-scroll".into()),
+                    Value::Nil,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn subr_introspection_supports_if_special_form() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (list
+                 (subr-arity (symbol-function 'if))
+                 (subr-name (symbol-function 'if)))
+                "##,
+            ),
+            Value::list([
+                Value::cons(Value::Integer(2), Value::Symbol("unevalled".into())),
+                Value::String("if".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn upstream_lread_circle_form_passes() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (let ((lread-test-circle-cases
+                       '("#1=(#1# . #1#)"
+                         "#1=[#1# a #1#]"
+                         "#1=(#2=[#1# #2#] . #1#)"
+                         "#1=(#2=[#1# #2#] . #2#)"
+                         "#1=[#2=(#1# . #2#)]"
+                         "#1=(#2=[#3=(#1# . #2#) #4=(#3# . #4#)])")))
+                  (catch 'fail
+                    (dolist (str lread-test-circle-cases)
+                      (let* ((actual
+                              (let* ((read-circle t)
+                                     (print-circle t)
+                                     (val (read-from-string str)))
+                                (if (consp val)
+                                    (prin1-to-string (car val))
+                                  (error "reading %S failed: %S" str val)))))
+                        (unless (equal actual str)
+                          (throw 'fail (list str actual)))))
+                    (condition-case nil
+                        (progn
+                          (read-from-string "#1=#1#")
+                          (throw 'fail 'invalid-case-did-not-signal))
+                      (invalid-read-syntax t))
+                    t))
+                "##,
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn cl_prin1_to_string_autoloads_from_cl_print() {
+        assert_string_value(eval_str("(cl-prin1-to-string '(a b))"), "(a b)");
+    }
+
+    #[test]
+    fn prin1_to_string_roundtrips_upstream_symbol_cases() {
+        let symbols = vec![
+            "", "&", "*", "+", "-", "/", "0E", "0e", "<", "=", ">", "E", "E0", "NaN", "\"", "#",
+            "#x0", "'", "''", "(", ")", "+00", ",", "-0", ".", ".0", "0", "0.0", "0E0", "0e0",
+            "1E+", "1E+NaN", "1e+", "1e+NaN", ";", "?", "[", "\\", "]", "`", "_", "a", "e", "e0",
+            "x", "{", "|", "}", "~", ":", "’", "’bar", "\t", "\n", " ", "\u{00A0}", "\u{200B}",
+            "0",
+        ];
+        let mut interp = Interpreter::new();
+        let mut env: Env = Vec::new();
+
+        let roundtrip = |interp: &mut Interpreter, env: &mut Env, name: &str| {
+            let rendered = primitives::call(
+                interp,
+                "prin1-to-string",
+                &[Value::Symbol(name.to_string())],
+                env,
+            )
+            .expect("symbol should print");
+            let rendered = primitives::string_text(&rendered).expect("rendered symbol string");
+            let parsed = Reader::new(&rendered)
+                .read()
+                .expect("printed symbol should parse")
+                .expect("printed symbol should yield one form");
+            assert_eq!(
+                parsed,
+                Value::Symbol(name.to_string()),
+                "symbol {:?} printed as {:?}",
+                name,
+                rendered
+            );
+        };
+
+        for symbol in &symbols {
+            roundtrip(&mut interp, &mut env, symbol);
+        }
+        for left in &symbols {
+            for right in &symbols {
+                roundtrip(&mut interp, &mut env, &format!("{left}{right}"));
+            }
+        }
+    }
+
+    #[test]
+    fn prin1_to_string_matches_upstream_integer_character_cases() {
+        let printed = eval_str(
+            r#"
+            (let ((print-integers-as-characters t))
+              (prin1-to-string
+               '(?? ?\; ?\( ?\) ?\{ ?\} ?\[ ?\] ?\" ?\' ?\\ ?f ?~ ?Á 32
+                 ?\n ?\r ?\t ?\b ?\f ?\a ?\v ?\e ?\d)))
+            "#,
+        );
+        assert_string_value(
+            printed,
+            r#"(?? ?\; ?\( ?\) ?\{ ?\} ?\[ ?\] ?\" ?\' ?\\ ?f ?~ ?Á ?\s ?\n ?\r ?\t ?\b ?\f 7 11 27 127)"#,
+        );
+    }
+
+    #[test]
+    fn cl_prin1_respects_charset_text_property_modes() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"
+                    (list
+                     (let ((print-charset-text-property nil))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "a" 'charset 'unicode)))
+                           t nil))
+                     (let ((print-charset-text-property 'default))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "\u00F6" 'charset 'ascii)))
+                           t nil))
+                     (let ((print-charset-text-property 'default))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "\u00F6" 'charset 'unicode)))
+                           t nil))
+                     (let ((print-charset-text-property 'default))
+                       (if (string-match
+                            "charset"
+                            (cl-prin1-to-string
+                             (propertize "a" 'charset 'unicode)))
+                           t nil)))
+                    "#
+                ),
+                Value::list([Value::Nil, Value::T, Value::Nil, Value::Nil])
+            );
+        });
+    }
+
+    #[test]
+    fn cl_prin1_supports_continuous_numbering() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"
+                    (let* ((x (list 1))
+                           (y "hello")
+                           (g (gensym))
+                           (print-circle t)
+                           (print-gensym t)
+                           (print-continuous-numbering t)
+                           (print-number-table nil))
+                      (if (string-match
+                           "(#1=(1) #1# #2=\"hello\" #2#)(#3=#:g[[:digit:]]+ #3#)(#1# #2# #3#)#2#$"
+                           (mapconcat #'cl-prin1-to-string
+                                      `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y)))
+                          t nil))
+                    "#
+                ),
+                Value::T
+            );
+        });
+    }
+
+    #[test]
+    fn princ_and_terpri_respect_output_streams() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((marker-output
+                       (with-current-buffer (get-buffer-create "*printer-test*")
+                         (erase-buffer)
+                         (insert "seed")
+                         (point-max-marker))))
+                  (list
+                   (with-output-to-string
+                     (princ 'abc)
+                     (terpri nil t)
+                     (terpri nil t)
+                     (princ "xyz"))
+                   (progn
+                     (princ 'abc marker-output)
+                     (terpri marker-output t)
+                     (terpri marker-output t)
+                     (with-current-buffer (marker-buffer marker-output)
+                       (buffer-string)))))
+                "#
+            ),
+            Value::list([
+                Value::String("abc\nxyz".into()),
+                Value::String("seedabc\n".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn eval_second_argument_controls_lambda_capture() {
         assert_eq!(
             eval_str(
@@ -16372,6 +17063,52 @@ mod tests {
     }
 
     #[test]
+    fn keymap_records_compare_equal_to_literal_lists() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap)))
+                  (list
+                   (progn
+                     (define-key map "a" 'foo)
+                     (equal map '(keymap (97 . foo))))
+                   (progn
+                     (define-key map "a" nil)
+                     (equal map '(keymap (97))))
+                   (progn
+                     (define-key map "a" 'foo)
+                     (define-key map "a" nil t)
+                     (equal map '(keymap)))))
+                "#,
+            ),
+            Value::list([Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn define_key_after_preserves_menu_insertion_order() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap)))
+                  (define-key-after map [cmd1]
+                    '(menu-item "Run Command 1" keymap-tests--command-1
+                                :help "Command 1 Help"))
+                  (define-key-after map [cmd2]
+                    '(menu-item "Run Command 2" keymap-tests--command-2
+                                :help "Command 2 Help"))
+                  (define-key-after map [cmd3]
+                    '(menu-item "Run Command 3" keymap-tests--command-3
+                                :help "Command 3 Help")
+                    'cmd1)
+                  (list (caadr map) (caaddr map)))
+                "#,
+            ),
+            Value::list([Value::Symbol("cmd1".into()), Value::Symbol("cmd3".into()),])
+        );
+    }
+
+    #[test]
     fn global_map_supports_mouse_style_bindings() {
         assert_eq!(
             eval_str(
@@ -16395,6 +17132,49 @@ mod tests {
                 Value::Symbol("mwheel-scroll".into()),
                 Value::Symbol("mwheel-scroll".into()),
                 Value::Nil,
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn define_key_accepts_runtime_mouse_vectors() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((map (make-sparse-keymap "demo"))
+                      (event 'mouse-5))
+                  (define-key map (vector event) 'mwheel-scroll)
+                  (list (lookup-key map (vector event))
+                        (lookup-key map [mouse-5])))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("mwheel-scroll".into()),
+                Value::Symbol("mwheel-scroll".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn global_set_key_accepts_runtime_mouse_vectors() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let* ((map (current-global-map))
+                       (event 'mouse-5)
+                       (key (vector event)))
+                  (global-set-key key 'mwheel-scroll)
+                  (list (lookup-key map key)
+                        (lookup-key map [mouse-5])
+                        (progn
+                          (global-unset-key key)
+                          (lookup-key map [mouse-5]))))
+                "#,
+            ),
+            Value::list([
+                Value::Symbol("mwheel-scroll".into()),
+                Value::Symbol("mwheel-scroll".into()),
                 Value::Nil,
             ])
         );

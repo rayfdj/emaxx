@@ -4,13 +4,14 @@ use super::types::{
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
 const CIRCULAR_READ_SYNTAX_SYMBOL: &str = "emaxx--circular-read-syntax";
 const HASH_TABLE_LITERAL_SYMBOL: &str = "emaxx--hash-table-literal";
+pub(crate) const RECORD_LITERAL_SYMBOL: &str = "emaxx--record-literal";
 const BOOL_VECTOR_LITERAL_SYMBOL: &str = "bool-vector-literal";
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -39,7 +40,7 @@ fn structure_slot_eval_form(value: Value) -> Value {
                     Some(Value::Symbol(symbol))
                         if symbol == "vector-literal"
                             || symbol == BOOL_VECTOR_LITERAL_SYMBOL
-                            || symbol == "record"
+                            || symbol == RECORD_LITERAL_SYMBOL
                             || symbol == "quote"
                 )
             {
@@ -51,9 +52,187 @@ fn structure_slot_eval_form(value: Value) -> Value {
     }
 }
 
+fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(symbol), Value::Integer(id), payload]
+            if symbol == CIRCULAR_READ_SYNTAX_SYMBOL && *id >= 0 =>
+        {
+            Some((*id as u32, payload.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn circular_read_ref_form(value: &Value) -> Option<u32> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(symbol), Value::Integer(id)]
+            if symbol == CIRCULAR_READ_SYNTAX_SYMBOL && *id >= 0 =>
+        {
+            Some(*id as u32)
+        }
+        _ => None,
+    }
+}
+
+fn invalid_circular_read_syntax() -> LispError {
+    LispError::ReadError("invalid-read-syntax".into())
+}
+
+fn contains_circular_read_syntax(value: &Value) -> bool {
+    if circular_read_ref_form(value).is_some() || circular_read_label_form(value).is_some() {
+        return true;
+    }
+    match value {
+        Value::Cons(_, _) => value.cons_values().is_some_and(|(car, cdr)| {
+            contains_circular_read_syntax(&car) || contains_circular_read_syntax(&cdr)
+        }),
+        _ => false,
+    }
+}
+
+fn quoted_hash_table_literal(value: &Value) -> Option<Value> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(symbol), literal] if symbol == "quote" => {
+            let literal_items = literal.to_vec().ok()?;
+            matches!(
+                literal_items.first(),
+                Some(Value::Symbol(symbol)) if symbol == HASH_TABLE_LITERAL_SYMBOL
+            )
+            .then_some(literal.clone())
+        }
+        _ => None,
+    }
+}
+
+fn circular_vector_skeleton(len: usize) -> Value {
+    let mut tail = Value::Nil;
+    for _ in 0..len {
+        tail = Value::cons(Value::Nil, tail);
+    }
+    Value::cons(Value::symbol("vector-literal"), tail)
+}
+
+fn fill_circular_label_value(
+    template: &Value,
+    target: &Value,
+    labels: &mut HashMap<u32, Value>,
+) -> Result<(), LispError> {
+    if let Ok(items) = template.to_vec()
+        && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
+    {
+        let Some((_, target_cdr)) = target.cons_cells() else {
+            return Err(invalid_circular_read_syntax());
+        };
+        let mut current = target_cdr.borrow().clone();
+        for item in &items[1..] {
+            let Some((slot, next)) = current.cons_cells() else {
+                return Err(invalid_circular_read_syntax());
+            };
+            *slot.borrow_mut() = resolve_circular_read_syntax_inner(item, labels)?;
+            current = next.borrow().clone();
+        }
+        return Ok(());
+    }
+
+    let Some((template_car, template_cdr)) = template.cons_values() else {
+        return Err(invalid_circular_read_syntax());
+    };
+    let Some((target_car, target_cdr)) = target.cons_cells() else {
+        return Err(invalid_circular_read_syntax());
+    };
+    *target_car.borrow_mut() = resolve_circular_read_syntax_inner(&template_car, labels)?;
+    *target_cdr.borrow_mut() = resolve_circular_read_syntax_inner(&template_cdr, labels)?;
+    Ok(())
+}
+
+fn resolve_circular_read_syntax_inner(
+    value: &Value,
+    labels: &mut HashMap<u32, Value>,
+) -> Result<Value, LispError> {
+    if let Some(literal) = quoted_hash_table_literal(value)
+        && contains_circular_read_syntax(&literal)
+    {
+        return Err(invalid_circular_read_syntax());
+    }
+
+    if let Some(id) = circular_read_ref_form(value) {
+        return labels
+            .get(&id)
+            .cloned()
+            .ok_or_else(invalid_circular_read_syntax);
+    }
+
+    if let Some((id, template)) = circular_read_label_form(value) {
+        if labels.contains_key(&id) {
+            return Err(invalid_circular_read_syntax());
+        }
+        if circular_read_ref_form(&template) == Some(id) {
+            return Err(invalid_circular_read_syntax());
+        }
+
+        let placeholder = if let Ok(items) = template.to_vec() {
+            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal") {
+                circular_vector_skeleton(items.len().saturating_sub(1))
+            } else {
+                Value::cons(Value::Nil, Value::Nil)
+            }
+        } else {
+            let resolved = resolve_circular_read_syntax_inner(&template, labels)?;
+            labels.insert(id, resolved.clone());
+            return Ok(resolved);
+        };
+
+        labels.insert(id, placeholder.clone());
+        fill_circular_label_value(&template, &placeholder, labels)?;
+        return Ok(placeholder);
+    }
+
+    if let Ok(items) = value.to_vec()
+        && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
+    {
+        return Ok(Value::list(
+            std::iter::once(Value::symbol("vector-literal")).chain(
+                items[1..]
+                    .iter()
+                    .map(|item| resolve_circular_read_syntax_inner(item, labels))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        ));
+    }
+
+    match value {
+        Value::Cons(_, _) => {
+            let Some((car, cdr)) = value.cons_values() else {
+                return Err(invalid_circular_read_syntax());
+            };
+            Ok(Value::cons(
+                resolve_circular_read_syntax_inner(&car, labels)?,
+                resolve_circular_read_syntax_inner(&cdr, labels)?,
+            ))
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
+pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispError> {
+    resolve_circular_read_syntax_inner(&value, &mut HashMap::new())
+}
+
 fn encode_raw_byte(byte: u8) -> char {
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
         .expect("raw byte regex marker is a valid private-use character")
+}
+
+fn raw_byte_from_source_char(ch: char) -> Option<u8> {
+    let code = ch as u32;
+    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+        Some((code - RAW_BYTE_REGEX_BASE) as u8)
+    } else {
+        None
+    }
 }
 
 /// A simple s-expression reader. Handles the subset of Elisp syntax
@@ -95,12 +274,36 @@ impl<'a> Reader<'a> {
         Some(ch)
     }
 
+    fn peek_char(&self) -> Option<char> {
+        match self.peek()? {
+            ch if ch < 0x80 => Some(ch as char),
+            _ => {
+                let first = *self.input.get(self.pos)?;
+                let len = if first < 0xE0 {
+                    2
+                } else if first < 0xF0 {
+                    3
+                } else {
+                    4
+                };
+                let s = std::str::from_utf8(self.input.get(self.pos..self.pos + len)?).ok()?;
+                s.chars().next()
+            }
+        }
+    }
+
+    fn advance_char(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
+    }
+
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             // Skip whitespace
-            while let Some(ch) = self.peek() {
-                if ch == b' ' || ch == b'\t' || ch == b'\n' || ch == b'\r' || ch == 0x0C {
-                    self.advance();
+            while let Some(ch) = self.peek_char() {
+                if ch.is_whitespace() {
+                    self.advance_char();
                 } else {
                     break;
                 }
@@ -183,9 +386,8 @@ impl<'a> Reader<'a> {
                         let saved = self.pos;
                         self.advance();
                         // Only a dot if followed by whitespace or paren
-                        match self.peek() {
-                            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') | Some(b')')
-                            | Some(0x0C) => {
+                        match self.peek_char() {
+                            Some(ch) if ch.is_whitespace() || ch == ')' => {
                                 let val = self.read()?.ok_or(LispError::EndOfInput)?;
                                 dotted_end = Some(val);
                                 self.skip_whitespace_and_comments();
@@ -264,6 +466,22 @@ impl<'a> Reader<'a> {
                 }
                 Some(b'\\') => {
                     self.advance();
+                    if self
+                        .peek()
+                        .is_some_and(|ch| matches!(ch, b'C' | b'M' | b'^'))
+                        && (self.peek() == Some(b'^')
+                            || self.input.get(self.pos + 1).copied() == Some(b'-'))
+                    {
+                        let code = self.read_string_modified_escape()?;
+                        Self::push_string_escape_code(
+                            &mut s,
+                            code,
+                            &mut has_explicit_multibyte,
+                            &mut has_raw_bytes,
+                            &mut has_invalid_unicode,
+                        );
+                        continue;
+                    }
                     match self.advance() {
                         None => return Err(LispError::EndOfInput),
                         Some(b'n') => s.push('\n'),
@@ -278,6 +496,7 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'\\') => s.push('\\'),
                         Some(b'"') => s.push('"'),
+                        Some(b's') => s.push(' '),
                         Some(b'a') => s.push('\x07'),
                         Some(b'b') => s.push('\x08'),
                         Some(b'f') => s.push('\x0C'),
@@ -384,6 +603,7 @@ impl<'a> Reader<'a> {
                             }
                         }
                         Some(ch) => {
+                            s.push('\\');
                             s.push(ch as char);
                         }
                     }
@@ -395,7 +615,11 @@ impl<'a> Reader<'a> {
                 Some(_) => {
                     // Multi-byte UTF-8: decode properly
                     if let Some(c) = self.read_utf8_char() {
-                        has_explicit_multibyte = true;
+                        if raw_byte_from_source_char(c).is_some() {
+                            has_raw_bytes = true;
+                        } else {
+                            has_explicit_multibyte = true;
+                        }
                         s.push(c);
                     } else {
                         self.advance(); // skip invalid byte
@@ -416,6 +640,89 @@ impl<'a> Reader<'a> {
             b'A'..=b'Z' => (ch - b'A' + 1) as u32,
             _ => (ch & 0x1F) as u32,
         })
+    }
+
+    fn push_string_escape_code(
+        s: &mut String,
+        code: u32,
+        has_explicit_multibyte: &mut bool,
+        has_raw_bytes: &mut bool,
+        has_invalid_unicode: &mut bool,
+    ) {
+        if code <= 0x7F {
+            s.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
+        } else if code <= 0xFF {
+            *has_raw_bytes = true;
+            s.push(encode_raw_byte(code as u8));
+        } else if valid_unicode_scalar(code) {
+            let c = char::from_u32(code).expect("validated scalar");
+            *has_explicit_multibyte = true;
+            s.push(c);
+        } else {
+            *has_invalid_unicode = true;
+            s.push(INVALID_UNICODE_SENTINEL);
+        }
+    }
+
+    fn read_string_modified_escape(&mut self) -> Result<u32, LispError> {
+        const CTRL_BIT: i64 = 1 << 26;
+        const META_BIT: i64 = 1 << 27;
+
+        let mut modifiers = 0i64;
+        loop {
+            if self.peek() == Some(b'\\')
+                && matches!(
+                    self.input.get(self.pos + 1).copied(),
+                    Some(b'C' | b'M' | b'^')
+                )
+            {
+                self.advance();
+            }
+            match (self.peek(), self.input.get(self.pos + 1).copied()) {
+                (Some(b'C'), Some(b'-')) => {
+                    modifiers |= CTRL_BIT;
+                    self.pos += 2;
+                }
+                (Some(b'M'), Some(b'-')) => {
+                    modifiers |= META_BIT;
+                    self.pos += 2;
+                }
+                (Some(b'^'), _) => {
+                    modifiers |= CTRL_BIT;
+                    self.pos += 1;
+                }
+                _ => break,
+            }
+        }
+
+        let mut value = if self.peek() == Some(b'\\') {
+            self.read_escaped_character_code()?
+        } else {
+            self.read_literal_character_code()?
+        };
+
+        if modifiers & CTRL_BIT != 0 && value != 0 {
+            value = match value {
+                0x3f => 0x7f,
+                n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
+                n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
+                n => n & 0x1f,
+            };
+            modifiers &= !CTRL_BIT;
+        }
+
+        if modifiers == META_BIT && value <= 0x7F {
+            value |= 0x80;
+            modifiers &= !META_BIT;
+        }
+
+        if modifiers != 0 {
+            return Err(LispError::ReadError(
+                "unsupported modified string escape".into(),
+            ));
+        }
+
+        Ok(value as u32)
     }
 
     fn read_hex_digits(&mut self, max: usize) -> u32 {
@@ -484,14 +791,19 @@ impl<'a> Reader<'a> {
                 const META_BIT: i64 = 1 << 27;
 
                 let mut modifiers = 0i64;
+                let mut ctrl_count = 0u8;
                 let mut saw_modifier = false;
                 loop {
-                    if self.peek() == Some(b'\\')
-                        && matches!(
+                    let escaped_modifier_start = self.peek() == Some(b'\\')
+                        && match (
                             self.input.get(self.pos + 1).copied(),
-                            Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's' | b'^')
-                        )
-                    {
+                            self.input.get(self.pos + 2).copied(),
+                        ) {
+                            (Some(b'^'), _) => true,
+                            (Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's'), Some(b'-')) => true,
+                            _ => false,
+                        };
+                    if escaped_modifier_start {
                         self.advance();
                     }
                     match (self.peek(), self.input.get(self.pos + 1).copied()) {
@@ -507,7 +819,7 @@ impl<'a> Reader<'a> {
                         }
                         (Some(b'C'), Some(b'-')) => {
                             saw_modifier = true;
-                            modifiers |= CTRL_BIT;
+                            ctrl_count = ctrl_count.saturating_add(1);
                             self.pos += 2;
                         }
                         (Some(b'H'), Some(b'-')) => {
@@ -527,7 +839,7 @@ impl<'a> Reader<'a> {
                         }
                         (Some(b'^'), _) => {
                             saw_modifier = true;
-                            modifiers |= CTRL_BIT;
+                            ctrl_count = ctrl_count.saturating_add(1);
                             self.pos += 1;
                         }
                         _ => break,
@@ -538,14 +850,22 @@ impl<'a> Reader<'a> {
                 } else {
                     self.read_literal_character_code()?
                 };
-                if modifiers & CTRL_BIT != 0 && value != 0 {
-                    value = match value {
-                        0x3f => 0x7f,
-                        n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
-                        n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
-                        n => n & 0x1f,
-                    };
-                    modifiers &= !CTRL_BIT;
+                if ctrl_count > 0 {
+                    if value == 0 {
+                        modifiers |= CTRL_BIT;
+                    } else if value <= 0x7f {
+                        value = match value {
+                            0x3f => 0x7f,
+                            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
+                            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
+                            n => n & 0x1f,
+                        };
+                        if ctrl_count > 1 {
+                            modifiers |= CTRL_BIT;
+                        }
+                    } else {
+                        modifiers |= CTRL_BIT;
+                    }
                 }
                 value |= modifiers;
                 Ok(Some(Value::Integer(value)))
@@ -570,7 +890,7 @@ impl<'a> Reader<'a> {
             }
             Some(_) => {
                 if let Some(c) = self.read_utf8_char() {
-                    Ok(c as i64)
+                    Ok(raw_byte_from_source_char(c).map_or(c as i64, i64::from))
                 } else {
                     let byte = self.advance().ok_or(LispError::EndOfInput)?;
                     Ok(byte as i64)
@@ -582,31 +902,88 @@ impl<'a> Reader<'a> {
     fn read_escaped_character_code(&mut self) -> Result<i64, LispError> {
         if self.peek() == Some(b'\\') {
             self.advance();
+            if matches!(self.peek(), Some(b'A' | b'S' | b'C' | b'H' | b'M'))
+                && self.input.get(self.pos + 1).copied() != Some(b'-')
+            {
+                return Err(LispError::ReadError(
+                    "invalid character modifier syntax".into(),
+                ));
+            }
+            if self.peek() == Some(b's') && self.input.get(self.pos + 1).copied() == Some(b'-') {
+                return Err(LispError::ReadError(
+                    "invalid character modifier syntax".into(),
+                ));
+            }
+            if self.peek() == Some(b'\\') && self.input.get(self.pos + 1).copied() == Some(b'\'') {
+                self.pos += 2;
+                return Ok('\'' as i64);
+            }
         }
         if self.peek().is_some_and(|ch| ch >= 0x80) {
-            return self
-                .read_utf8_char()
-                .map(|ch| ch as i64)
-                .ok_or_else(|| LispError::ReadError("invalid UTF-8 in character literal".into()));
+            return self.read_utf8_char().map_or_else(
+                || {
+                    Err(LispError::ReadError(
+                        "invalid UTF-8 in character literal".into(),
+                    ))
+                },
+                |ch| Ok(raw_byte_from_source_char(ch).map_or(ch as i64, i64::from)),
+            );
         }
         match self.advance() {
             None => Err(LispError::EndOfInput),
+            Some(b'\n') | Some(b'\r') => Err(LispError::ReadError(
+                "invalid escaped line feed in character literal".into(),
+            )),
             Some(b'n') => Ok('\n' as i64),
             Some(b't') => Ok('\t' as i64),
             Some(b'r') => Ok('\r' as i64),
+            Some(b'a') => Ok('\x07' as i64),
+            Some(b'd') => Ok('\x7F' as i64),
             Some(b'e') => Ok('\x1B' as i64),
+            Some(b'b') => Ok('\x08' as i64),
+            Some(b'f') => Ok('\x0C' as i64),
             Some(b's') => Ok(' ' as i64),
             Some(b' ') => Ok(' ' as i64),
+            Some(b'v') => Ok('\x0B' as i64),
             Some(b'\\') => Ok('\\' as i64),
             Some(b'N') => {
                 if self.peek() != Some(b'{') {
-                    return Ok('N' as i64);
+                    return Err(LispError::ReadError(
+                        "invalid named character escape".into(),
+                    ));
                 }
                 Ok(self.read_named_character_code()? as i64)
             }
-            Some(b'x') => Ok(self.read_hex_digits(6) as i64),
-            Some(b'u') => Ok(self.read_hex_digits(4) as i64),
-            Some(b'U') => Ok(self.read_hex_digits(8) as i64),
+            Some(b'x') => {
+                let start = self.pos;
+                let value = self.read_hex_digits(6);
+                if self.pos == start {
+                    return Err(LispError::ReadError(
+                        "missing hex digits in character escape".into(),
+                    ));
+                }
+                Ok(value as i64)
+            }
+            Some(b'u') => {
+                let start = self.pos;
+                let value = self.read_hex_digits(4);
+                if self.pos - start != 4 {
+                    return Err(LispError::ReadError(
+                        "unicode character escape must have four hex digits".into(),
+                    ));
+                }
+                Ok(value as i64)
+            }
+            Some(b'U') => {
+                let start = self.pos;
+                let value = self.read_hex_digits(8);
+                if self.pos - start != 8 {
+                    return Err(LispError::ReadError(
+                        "unicode character escape must have eight hex digits".into(),
+                    ));
+                }
+                Ok(value as i64)
+            }
             Some(ch) if ch.is_ascii_digit() => {
                 let mut val = (ch - b'0') as i64;
                 for _ in 0..2 {
@@ -645,11 +1022,72 @@ impl<'a> Reader<'a> {
     fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
         self.advance(); // consume '#'
         match self.peek() {
+            None => Err(LispError::ReadError("invalid-read-syntax".into())),
+            Some(b'#') => {
+                self.advance();
+                Ok(Some(Value::Symbol(String::new())))
+            }
+            Some(b'_') => {
+                self.advance();
+                Ok(Some(Value::Symbol(String::new())))
+            }
             Some(b'\'') => {
                 // #'symbol — function quote, treat as (function sym)
                 self.advance();
                 let inner = self.read()?.ok_or(LispError::EndOfInput)?;
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
+            }
+            Some(b'<') => {
+                self.advance();
+                Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("invalid-read-syntax".into()),
+                    Value::String("#<".into()),
+                    Value::Integer(1),
+                    Value::Integer(2),
+                ])))
+            }
+            Some(b'@') => {
+                self.advance();
+                let count_start = self.pos;
+                let count = self.read_unsigned_decimal();
+                if self.pos == count_start {
+                    return Err(LispError::ReadError("invalid-read-syntax".into()));
+                }
+                if count == 0 {
+                    self.pos = self.input.len();
+                    return Ok(Some(Value::Nil));
+                }
+                Err(LispError::ReadError("unsupported #@ syntax".into()))
+            }
+            Some(b'[') => {
+                self.advance();
+                let mut fields = Vec::new();
+                loop {
+                    self.skip_whitespace_and_comments();
+                    match self.peek() {
+                        None => return Err(LispError::EndOfInput),
+                        Some(b']') => {
+                            self.advance();
+                            break;
+                        }
+                        _ => {
+                            let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                            fields.push(value);
+                        }
+                    }
+                }
+                if fields.len() < 4 {
+                    return Err(LispError::ReadError(
+                        "invalid byte-code object syntax".into(),
+                    ));
+                }
+                Ok(Some(Value::list(
+                    std::iter::once(Value::symbol(RECORD_LITERAL_SYMBOL))
+                        .chain(std::iter::once(structure_slot_eval_form(Value::symbol(
+                            "byte-code-function",
+                        ))))
+                        .chain(fields.into_iter().map(structure_slot_eval_form)),
+                )))
             }
             Some(b'&') => {
                 self.advance();
@@ -743,12 +1181,19 @@ impl<'a> Reader<'a> {
                     }
                     Some(b'=') => {
                         self.advance();
-                        let _ = self.read()?.ok_or(LispError::EndOfInput)?;
-                        return Ok(Some(Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL)));
+                        let value = self.read()?.ok_or(LispError::EndOfInput)?;
+                        return Ok(Some(Value::list([
+                            Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL),
+                            Value::Integer(base as i64),
+                            value,
+                        ])));
                     }
                     Some(b'#') => {
                         self.advance();
-                        return Ok(Some(Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL)));
+                        return Ok(Some(Value::list([
+                            Value::symbol(CIRCULAR_READ_SYNTAX_SYMBOL),
+                            Value::Integer(base as i64),
+                        ])));
                     }
                     _ => {
                         return Err(LispError::ReadError(
@@ -875,7 +1320,7 @@ impl<'a> Reader<'a> {
                     Ok(Some(Value::list([Value::symbol("quote"), literal])))
                 } else {
                     Ok(Some(Value::list(
-                        std::iter::once(Value::symbol("record"))
+                        std::iter::once(Value::symbol(RECORD_LITERAL_SYMBOL))
                             .chain(std::iter::once(structure_slot_eval_form(kind)))
                             .chain(fields.into_iter().map(structure_slot_eval_form)),
                     )))
@@ -939,6 +1384,7 @@ impl<'a> Reader<'a> {
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
         let mut token = String::new();
+        let mut saw_escape = false;
         while let Some(ch) = self.peek() {
             if ch == b' '
                 || ch == b'\t'
@@ -955,6 +1401,7 @@ impl<'a> Reader<'a> {
                 break;
             }
             if ch == b'\\' {
+                saw_escape = true;
                 self.advance();
                 match self.peek() {
                     None => return Err(LispError::EndOfInput),
@@ -988,6 +1435,15 @@ impl<'a> Reader<'a> {
             return Err(LispError::EndOfInput);
         }
 
+        if saw_escape {
+            let token = self.apply_symbol_shorthands(token);
+            return Ok(Some(match token.as_str() {
+                "nil" => Value::Nil,
+                "t" => Value::T,
+                _ => Value::Symbol(token),
+            }));
+        }
+
         // Try parsing as integer
         if let Ok(n) = token.parse::<i64>() {
             return Ok(Some(Value::Integer(n)));
@@ -1004,14 +1460,11 @@ impl<'a> Reader<'a> {
             return Ok(Some(parse_radix_integer(base, digits)?));
         }
 
-        // Try parsing as float
         if let Some(f) = parse_special_float_token(&token) {
             return Ok(Some(Value::Float(f)));
         }
-        if (token.contains('.') || token.contains('e') || token.contains('E'))
-            && let Ok(f) = token.parse::<f64>()
-        {
-            return Ok(Some(Value::Float(f)));
+        if let Some(number) = parse_decimal_token(&token) {
+            return Ok(Some(number));
         }
 
         let token = self.apply_symbol_shorthands(token);
@@ -1060,6 +1513,26 @@ impl<'a> Reader<'a> {
 fn is_integer_token(token: &str) -> bool {
     let digits = token.strip_prefix(['+', '-']).unwrap_or(token);
     !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn parse_decimal_token(token: &str) -> Option<Value> {
+    if let Some(integer) = token.strip_suffix('.') {
+        let digits = integer.strip_prefix(['+', '-']).unwrap_or(integer);
+        if !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()) {
+            if let Ok(value) = integer.parse::<i64>() {
+                return Some(Value::Integer(value));
+            }
+            if let Ok(value) = integer.parse::<BigInt>() {
+                return Some(normalize_bigint(value));
+            }
+        }
+    }
+    if (token.contains('.') || token.contains('e') || token.contains('E'))
+        && let Ok(value) = token.parse::<f64>()
+    {
+        return Some(Value::Float(value));
+    }
+    None
 }
 
 fn parse_special_float_token(token: &str) -> Option<f64> {
@@ -1229,6 +1702,57 @@ mod tests {
         assert_eq!(read_one("?\\s"), Value::Integer(b' ' as i64));
         assert_eq!(read_one("?\\ "), Value::Integer(b' ' as i64));
         assert_eq!(read_one("?\\\\"), Value::Integer(b'\\' as i64));
+        assert_eq!(read_one("?\\'"), Value::Integer(b'\'' as i64));
+        assert_eq!(read_one("?\\a"), Value::Integer(b'\x07' as i64));
+        assert_eq!(read_one("?\\b"), Value::Integer(b'\x08' as i64));
+        assert_eq!(read_one("?\\d"), Value::Integer(b'\x7F' as i64));
+        assert_eq!(read_one("?\\e"), Value::Integer(b'\x1B' as i64));
+        assert_eq!(read_one("?\\f"), Value::Integer(b'\x0C' as i64));
+        assert_eq!(read_one("?\\v"), Value::Integer(b'\x0B' as i64));
+    }
+
+    #[test]
+    fn invalid_character_escapes_signal_errors() {
+        for input in [
+            "?\\",
+            "?\\C",
+            "?\\M",
+            "?\\S",
+            "?\\H",
+            "?\\A",
+            "?\\C-\\M",
+            "?\\x",
+            "?\\u",
+            "?\\u234",
+            "?\\U",
+            "?\\U0010010",
+            "?\\N",
+        ] {
+            assert!(Reader::new(input).read().is_err(), "{input} should fail");
+        }
+    }
+
+    #[test]
+    fn hash_dispatch_edge_cases() {
+        assert!(Reader::new("#").read().is_err());
+        assert_eq!(read_one("#_"), Value::Symbol(String::new()));
+        assert_eq!(read_one("#@00 ignored"), Value::Nil);
+        assert!(Reader::new("#[0 \"\"]").read().is_err());
+    }
+
+    #[test]
+    fn trailing_dot_decimals_read_as_integers() {
+        assert_eq!(read_one("13."), Value::Integer(13));
+        assert_eq!(read_one("+13."), Value::Integer(13));
+        assert_eq!(read_one("-13."), Value::Integer(-13));
+    }
+
+    #[test]
+    fn nonbreaking_space_counts_as_whitespace_after_dot() {
+        assert_eq!(
+            read_one("(a .\u{00A0}b)"),
+            Value::cons(Value::Symbol("a".into()), Value::Symbol("b".into()))
+        );
     }
 
     #[test]
@@ -1248,6 +1772,7 @@ mod tests {
     #[test]
     fn characters_with_modifiers() {
         assert_eq!(read_one("?\\A-x"), Value::Integer((1 << 22) | ('x' as i64)));
+        assert_eq!(read_one("?\\C-\\0"), Value::Integer(1 << 26));
         assert_eq!(read_one("?\\C-x"), Value::Integer(24));
         assert_eq!(read_one("?\\H-x"), Value::Integer((1 << 24) | ('x' as i64)));
         assert_eq!(read_one("?\\M-c"), Value::Integer((1 << 27) | ('c' as i64)));
@@ -1286,6 +1811,11 @@ mod tests {
     }
 
     #[test]
+    fn reads_control_escape_string_literals() {
+        assert_eq!(read_one(r#""\C-x\C-f""#), Value::String("\x18\x06".into()));
+    }
+
+    #[test]
     fn form_feed_is_treated_as_whitespace() {
         let forms = Reader::new("foo\x0Cbar").read_all().unwrap();
         assert_eq!(
@@ -1303,13 +1833,17 @@ mod tests {
 
     #[test]
     fn dotted_pair_with_modified_character_literal_cdr() {
-        let val = read_one("((?A . ?\\A-\\0) (?H . ?\\H-\\0))");
+        let val = read_one("((?A . ?\\A-\\0) (?C . ?\\C-\\0) (?H . ?\\H-\\0) (?M . ?\\M-\\0))");
         let items = val.to_vec().unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 4);
         assert_eq!(items[0].car().unwrap(), Value::Integer('A' as i64));
         assert_eq!(items[0].cdr().unwrap(), Value::Integer(1 << 22));
-        assert_eq!(items[1].car().unwrap(), Value::Integer('H' as i64));
-        assert_eq!(items[1].cdr().unwrap(), Value::Integer(1 << 24));
+        assert_eq!(items[1].car().unwrap(), Value::Integer('C' as i64));
+        assert_eq!(items[1].cdr().unwrap(), Value::Integer(1 << 26));
+        assert_eq!(items[2].car().unwrap(), Value::Integer('H' as i64));
+        assert_eq!(items[2].cdr().unwrap(), Value::Integer(1 << 24));
+        assert_eq!(items[3].car().unwrap(), Value::Integer('M' as i64));
+        assert_eq!(items[3].cdr().unwrap(), Value::Integer(1 << 27));
     }
 
     #[test]
@@ -1372,14 +1906,14 @@ mod tests {
     }
 
     #[test]
-    fn reads_reader_labels_as_circular_syntax_placeholders() {
-        assert_eq!(
-            read_one("'#1=((a . 1) . #1#)"),
-            Value::list([
-                Value::Symbol("quote".into()),
-                Value::Symbol(CIRCULAR_READ_SYNTAX_SYMBOL.into()),
-            ])
-        );
+    fn reads_reader_labels_as_circular_syntax_forms() {
+        let value = read_one("'#1=((a . 1) . #1#)");
+        let items = value.to_vec().expect("quote form");
+        assert!(matches!(
+            items.first(),
+            Some(Value::Symbol(symbol)) if symbol == "quote"
+        ));
+        assert!(circular_read_label_form(&items[1]).is_some());
     }
 
     #[test]
@@ -1400,15 +1934,15 @@ mod tests {
     }
 
     #[test]
-    fn reads_record_structure_syntax_as_record_constructor_form() {
+    fn reads_record_structure_syntax_as_record_literal_form() {
         assert_eq!(
             read_one("#s(a b #s(c d) [e])"),
             Value::list([
-                Value::Symbol("record".into()),
+                Value::Symbol(RECORD_LITERAL_SYMBOL.into()),
                 Value::list([Value::Symbol("quote".into()), Value::Symbol("a".into())]),
                 Value::list([Value::Symbol("quote".into()), Value::Symbol("b".into())]),
                 Value::list([
-                    Value::Symbol("record".into()),
+                    Value::Symbol(RECORD_LITERAL_SYMBOL.into()),
                     Value::list([Value::Symbol("quote".into()), Value::Symbol("c".into())]),
                     Value::list([Value::Symbol("quote".into()), Value::Symbol("d".into())]),
                 ]),
