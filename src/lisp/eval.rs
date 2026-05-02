@@ -20066,6 +20066,161 @@ IHdvcmxkIQ==")))
     }
 
     #[test]
+    fn abbrev_table_obarray_clear_removes_entries() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'abbrev)
+                (let ((table (make-abbrev-table)))
+                  (define-abbrev table "aa" "alpha")
+                  (obarray-clear table)
+                  (list (abbrev-expansion "aa" table)
+                        (obarrayp table)))
+                "#
+            ),
+            Value::list([Value::Nil, Value::T])
+        );
+    }
+
+    #[test]
+    fn abbrev_table_empty_obarray_symbol_preserves_table_properties() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'abbrev)
+                (let ((table (make-abbrev-table)))
+                  (abbrev-table-put table :marker 42)
+                  (obarray-put table "")
+                  (list (abbrev-table-get table :marker)
+                        (abbrev-expansion "" table)
+                        (abbrev-table-empty-p table)))
+                "#
+            ),
+            Value::list([Value::Integer(42), Value::Nil, Value::T])
+        );
+    }
+
+    #[test]
+    fn abbrev_edit_save_to_file_redefines_tables() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("emaxx-abbrev-edit-save-{unique}.el"));
+        let path_text = path.to_string_lossy().replace('\\', "\\\\");
+
+        assert_eq!(
+            eval_str_with_upstream_load_path(&format!(
+                r#"
+                (require 'abbrev)
+                (defvar emaxx-abbrev-edit-save-table nil)
+                (with-temp-buffer
+                  (insert "(emaxx-abbrev-edit-save-table)\n")
+                  (insert "\n" "\"aa\"\t" "0\t" "\"alpha\"\n")
+                  (abbrev-edit-save-to-file "{path_text}")
+                  (read-abbrev-file "{path_text}")
+                  (equal "alpha"
+                         (abbrev-expansion "aa" emaxx-abbrev-edit-save-table)))
+                "#
+            )),
+            Value::T
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn upstream_abbrev_edit_save_to_file_case() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("emaxx-upstream-abbrev-edit-save-{unique}.el"));
+        let path_text = path.to_string_lossy().replace('\\', "\\\\");
+
+        assert_eq!(
+            eval_str_with_upstream_load_path(&format!(
+                r#"
+                (require 'ert-x)
+                (require 'abbrev)
+                (defvar ert-test-abbrevs nil)
+                (defvar ert-save-test-table nil)
+                (define-abbrev-table 'ert-test-abbrevs '(("a-e-t" "abbrev-ert-test")))
+                (with-temp-buffer
+                  (goto-char (point-min))
+                  (insert "(ert-save-test-table)\n")
+                  (insert "\n" "\"s-a-t\"\t" "0\t" "\"save-abbrevs-test\"\n")
+                  (and (equal "abbrev-ert-test"
+                              (abbrev-expansion "a-e-t" ert-test-abbrevs))
+                       (progn (abbrev-edit-save-to-file "{path_text}") t)
+                       (not (abbrev-expansion "a-e-t" ert-test-abbrevs))
+                       (progn (read-abbrev-file "{path_text}") t)
+                       (equal "save-abbrevs-test"
+                              (abbrev-expansion "s-a-t" ert-save-test-table))))
+                "#
+            )),
+            Value::T
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn upstream_abbrev_edit_save_to_file_ert_case_passes() {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        eval_str_with(
+            &mut interp,
+            r#"
+            (require 'ert)
+            (require 'ert-x)
+            (require 'abbrev)
+
+            (defun emaxx-setup-test-abbrev-table ()
+              (defvar emaxx-ert-test-abbrevs nil)
+              (define-abbrev-table
+                'emaxx-ert-test-abbrevs
+                '(("a-e-t" "abbrev-ert-test")))
+              (abbrev-table-put emaxx-ert-test-abbrevs
+                                :ert-test "ert-test-value")
+              emaxx-ert-test-abbrevs)
+
+            (ert-deftest emaxx-abbrev-edit-save-to-file-test ()
+              (defvar emaxx-ert-save-test-table nil)
+              (ert-with-temp-file temp-test-file
+                (let ((ert-test-abbrevs (emaxx-setup-test-abbrev-table)))
+                  (with-temp-buffer
+                    (goto-char (point-min))
+                    (insert "(emaxx-ert-save-test-table)\n")
+                    (insert "\n" "\"s-a-t\"\t" "0\t"
+                            "\"save-abbrevs-test\"\n")
+                    (should (equal "abbrev-ert-test"
+                                   (abbrev-expansion
+                                    "a-e-t" ert-test-abbrevs)))
+                    (abbrev-edit-save-to-file temp-test-file)
+                    (should-not (abbrev-expansion
+                                 "a-e-t" ert-test-abbrevs))
+                    (read-abbrev-file temp-test-file)
+                    (should (equal "save-abbrevs-test"
+                                   (abbrev-expansion
+                                    "s-a-t"
+                                    emaxx-ert-save-test-table)))))))
+            "#,
+        );
+        let selector = Reader::new("emaxx-abbrev-edit-save-to-file-test")
+            .read()
+            .unwrap()
+            .unwrap();
+        let summary = interp.run_ert_tests_with_selector(Some(&selector));
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
     fn bracket_expressions_keep_literal_backslashes_as_members() {
         assert_eq!(
             eval_str(
