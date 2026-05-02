@@ -21065,6 +21065,13 @@ pub(crate) fn compat_data_directory() -> Option<String> {
         .map(|repo_root| path_to_directory_string(&repo_root.join("etc")))
 }
 
+pub(crate) fn compat_installation_directory() -> Option<String> {
+    std::env::var("EMACS_TEST_DIRECTORY")
+        .ok()
+        .and_then(|test_directory| compat_repo_root_from_test_directory(&test_directory))
+        .map(|repo_root| path_to_directory_string(&repo_root))
+}
+
 fn compat_invocation_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
     let repo_root = compat_repo_root_from_test_directory(test_directory)?;
     let candidate = repo_root.join("src").join("emacs");
@@ -23749,6 +23756,23 @@ mod tests {
             compat_emacsclient_path_from_test_directory(&test_directory),
             Some(lib_src_dir.join("emacsclient"))
         );
+        let old = std::env::var("EMACS_TEST_DIRECTORY").ok();
+        unsafe {
+            std::env::set_var("EMACS_TEST_DIRECTORY", &test_directory);
+        }
+        assert_eq!(
+            compat_installation_directory(),
+            Some(path_to_directory_string(&repo_root))
+        );
+        if let Some(value) = old {
+            unsafe {
+                std::env::set_var("EMACS_TEST_DIRECTORY", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("EMACS_TEST_DIRECTORY");
+            }
+        }
 
         let _ = std::fs::remove_dir_all(&repo_root);
     }
