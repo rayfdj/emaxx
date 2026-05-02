@@ -5162,7 +5162,11 @@ impl Interpreter {
                 Value::Symbol("data-directory".into()),
                 Value::Symbol("load-path".into()),
             ])),
-            "installation-directory" => Some(Value::Nil),
+            "installation-directory" => Some(
+                primitives::compat_installation_directory()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
             "tab-width" => Some(Value::Integer(8)),
             "indent-tabs-mode" => Some(Value::T),
             "use-dialog-box" => Some(Value::T),
