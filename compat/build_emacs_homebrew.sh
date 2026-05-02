@@ -28,8 +28,14 @@ libgccjit discovery on macOS.
 EOF
 }
 
+detect_default_jobs() {
+  sysctl -n hw.logicalcpu 2>/dev/null \
+    || getconf _NPROCESSORS_ONLN 2>/dev/null \
+    || printf '%s\n' 4
+}
+
 repo="/Users/alpha/CodexProjects/emacs"
-jobs="$(sysctl -n hw.logicalcpu)"
+jobs="$(detect_default_jobs)"
 configure_only="no"
 clean_first="no"
 enable_imagemagick="yes"
@@ -96,7 +102,9 @@ need_cmd() {
 }
 
 need_formula() {
-  if ! brew --prefix "$1" >/dev/null 2>&1; then
+  local prefix
+  prefix="$(brew --prefix "$1" 2>/dev/null || true)"
+  if [[ -z "$prefix" || ! -d "$prefix" ]]; then
     echo "Missing required Homebrew formula: $1" >&2
     exit 1
   fi
@@ -153,7 +161,14 @@ need_formula librsvg
 need_formula webp
 
 if [[ "$enable_tree_sitter" == "yes" ]]; then
-  need_formula tree-sitter@0.25
+  if [[ -d "$(brew --prefix tree-sitter@0.25 2>/dev/null || true)" ]]; then
+    tree_sitter_formula="tree-sitter@0.25"
+  elif [[ -d "$(brew --prefix tree-sitter 2>/dev/null || true)" ]]; then
+    tree_sitter_formula="tree-sitter"
+  else
+    echo "Missing required Homebrew formula: tree-sitter or tree-sitter@0.25" >&2
+    exit 1
+  fi
 fi
 if [[ "$enable_imagemagick" == "yes" ]]; then
   need_formula imagemagick
@@ -186,11 +201,11 @@ for formula in \
   gnutls \
   librsvg \
   webp \
-  tree-sitter@0.25 \
+  "${tree_sitter_formula:-tree-sitter}" \
   imagemagick \
   dbus
 do
-  if [[ "$formula" == "tree-sitter@0.25" && "$enable_tree_sitter" != "yes" ]]; then
+  if [[ "$formula" == "${tree_sitter_formula:-tree-sitter}" && "$enable_tree_sitter" != "yes" ]]; then
     continue
   fi
   if [[ "$formula" == "imagemagick" && "$enable_imagemagick" != "yes" ]]; then
