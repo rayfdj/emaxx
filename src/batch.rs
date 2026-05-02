@@ -483,7 +483,17 @@ fn xml_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
+        thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(test)
+            .expect("spawn large-stack test thread")
+            .join()
+            .expect("join large-stack test thread");
+    }
 
     #[test]
     fn extracts_perf_request_from_eval_form() {
@@ -561,38 +571,49 @@ mod tests {
 
     #[test]
     fn batch_runtime_can_load_ert_helpers() {
-        let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
-        let options = BatchRunOptions {
-            load_path: compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"),
-            ..Default::default()
-        };
-        let mut interpreter =
-            initialize_batch_interpreter(&options).expect("init batch interpreter");
-        let ert = resolve_load_target("ert", &options.load_path).expect("resolve ert");
-        lisp::load_file_strict(&mut interpreter, &ert).expect("load ert");
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let mut load_path =
+                compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path");
+            load_path.push(emacs_repo.clone());
+            let options = BatchRunOptions {
+                load_path,
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let ert = resolve_load_target("ert", &options.load_path).expect("resolve ert");
+            lisp::load_file_strict(&mut interpreter, &ert).expect("load ert");
 
-        assert!(
-            interpreter
-                .lookup_function("ert-test-erts-file", &Vec::new())
-                .is_ok()
-        );
+            assert!(
+                interpreter
+                    .lookup_function("ert-test-erts-file", &Vec::new())
+                    .is_ok()
+            );
+        });
     }
 
     #[test]
     fn batch_runtime_can_load_align_stack() {
-        let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
-        let options = BatchRunOptions {
-            load_path: compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path"),
-            ..Default::default()
-        };
-        let mut interpreter =
-            initialize_batch_interpreter(&options).expect("init batch interpreter");
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let mut load_path =
+                compat::emaxx_upstream_load_path(&emacs_repo).expect("upstream load path");
+            load_path.push(emacs_repo.clone());
+            let options = BatchRunOptions {
+                load_path,
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
 
-        for target in ["ert", "ert-x", "align", "test/lisp/align-tests.el"] {
-            let resolved = resolve_load_target(target, &options.load_path)
-                .unwrap_or_else(|error| panic!("resolve {target}: {error}"));
-            lisp::load_file_strict(&mut interpreter, &resolved)
-                .unwrap_or_else(|error| panic!("load {target} ({}): {error}", resolved.display()));
-        }
+            for target in ["ert", "ert-x", "align", "test/lisp/align-tests.el"] {
+                let resolved = resolve_load_target(target, &options.load_path)
+                    .unwrap_or_else(|error| panic!("resolve {target}: {error}"));
+                lisp::load_file_strict(&mut interpreter, &resolved).unwrap_or_else(|error| {
+                    panic!("load {target} ({}): {error}", resolved.display())
+                });
+            }
+        });
     }
 }
