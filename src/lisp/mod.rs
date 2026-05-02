@@ -437,11 +437,14 @@ mod tests {
             Some(r#"(("ft-" . "fns-tests-"))"#.into())
         );
         assert_eq!(
-            parse_symbol_shorthands(r#"(("ft-" . "fns-tests-"))"#).unwrap(),
+            parse_symbol_shorthands(r#"(("ft-" . "fns-tests-"))"#)
+                .expect("symbol shorthand alist should parse"),
             vec![("ft-".into(), "fns-tests-".into())]
         );
         assert_eq!(
-            source_settings(source).unwrap().read_symbol_shorthands,
+            source_settings(source)
+                .expect("source settings should parse file-local symbol shorthands")
+                .read_symbol_shorthands,
             vec![("ft-".into(), "fns-tests-".into())]
         );
     }

@@ -45,6 +45,7 @@ const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 type FileChangeFingerprint = Option<(u64, u128)>;
 type FileChangeCache = HashMap<String, FileChangeFingerprint>;
+type VectorSlotCache = HashMap<usize, (Weak<RefCell<Value>>, Rc<Vec<ConsSlot>>)>;
 static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -60,8 +61,7 @@ const WINDOW_BUFFER_SLOT: usize = 0;
 const WINDOW_START_SLOT: usize = 1;
 
 thread_local! {
-    static VECTOR_SLOT_CACHE: RefCell<HashMap<usize, (Weak<RefCell<Value>>, Rc<Vec<ConsSlot>>)>> =
-        RefCell::new(HashMap::new());
+    static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::new());
 }
 
 fn is_sqlite_builtin(name: &str) -> bool {
@@ -17825,16 +17825,13 @@ fn elisp_capture_mapping(pattern: &str) -> Result<Vec<usize>, LispError> {
 
         match ch {
             '[' => in_class = true,
-            '\\' => {
-                if chars.next() == Some('(') {
-                    match consume_regex_group_prefix(&mut chars)? {
-                        RegexGroupPrefix::NonCapturing => {}
-                        RegexGroupPrefix::Capturing(explicit) => {
-                            let group = explicit.unwrap_or(max_group + 1);
-                            max_group = max_group.max(group);
-                            mapping.push(group);
-                        }
-                    }
+            '\\' if chars.next() == Some('(') => {
+                if let RegexGroupPrefix::Capturing(explicit) =
+                    consume_regex_group_prefix(&mut chars)?
+                {
+                    let group = explicit.unwrap_or(max_group + 1);
+                    max_group = max_group.max(group);
+                    mapping.push(group);
                 }
             }
             _ => {}
@@ -22963,10 +22960,7 @@ fn parse_gtk_font_name(name: &str) -> FontSpecInfo {
     {
         info.size = tokens.pop().and_then(|token| token.parse::<f64>().ok());
     }
-    loop {
-        let Some(token) = tokens.last().cloned() else {
-            break;
-        };
+    while let Some(token) = tokens.last().cloned() {
         if let Some(weight) = normalize_weight(&token) {
             if info.weight.is_none() {
                 info.weight = Some(weight);
@@ -24735,7 +24729,8 @@ mod tests {
     #[test]
     fn key_sequence_binding_parts_preserve_control_prefixes() {
         assert_eq!(
-            key_sequence_binding_parts(&Value::String("C-c g".into())).unwrap(),
+            key_sequence_binding_parts(&Value::String("C-c g".into()))
+                .expect("textual control-prefixed key should parse"),
             vec!["C-c".to_string(), "g".to_string()]
         );
         assert_eq!(
@@ -24744,7 +24739,7 @@ mod tests {
                 Value::Integer(3),
                 Value::Integer('g' as i64),
             ]))
-            .unwrap(),
+            .expect("vector control-prefixed key should parse"),
             vec!["C-c".to_string(), "g".to_string()]
         );
     }
@@ -24766,7 +24761,8 @@ mod tests {
         )
         .expect("keymap-set should accept control-prefixed textual specs");
         assert_eq!(
-            where_is_internal(&mut interp, "keymap-tests-command", &[keymap], &mut env,).unwrap(),
+            where_is_internal(&mut interp, "keymap-tests-command", &[keymap], &mut env,)
+                .expect("where-is-internal should find control-prefixed binding"),
             vec![Value::list([
                 Value::Symbol("vector-literal".into()),
                 Value::Integer(3),
@@ -30647,7 +30643,6 @@ enum PrintDialect {
 struct PrintContext {
     options: PrintOptions,
     counts: HashMap<PrintRefKey, usize>,
-    existing_labels: HashSet<PrintRefKey>,
     labels: HashMap<PrintRefKey, usize>,
     next_label: usize,
     active: HashSet<PrintRefKey>,
@@ -30672,7 +30667,6 @@ impl PrintContext {
         Ok(Self {
             options,
             counts,
-            existing_labels: labels.keys().cloned().collect(),
             labels,
             next_label,
             active: HashSet::new(),
@@ -31080,7 +31074,7 @@ fn render_prin1_list(
                         return Ok(format!(
                             "({} . {})",
                             rendered.join(" "),
-                            format!("#{loopback_index}")
+                            format_args!("#{loopback_index}")
                         ));
                     }
                     if !context.options.circle {
@@ -31640,15 +31634,6 @@ fn render_prin1_ephemeral(
 ) -> Result<String, LispError> {
     let mut env = env.clone();
     render_prin1(interp, value, &mut env)
-}
-
-fn render_cl_prin1_ephemeral(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &super::types::Env,
-) -> Result<String, LispError> {
-    let mut env = env.clone();
-    render_cl_prin1(interp, value, &mut env)
 }
 
 fn read_one_form(text: &str) -> Result<(Value, usize), LispError> {
@@ -34407,7 +34392,7 @@ fn keymap_binding_display_name(value: &Value) -> String {
     match value {
         Value::Nil => "undefined".into(),
         Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
-        value if matches!(value, Value::Record(_)) => "Prefix Command".into(),
+        Value::Record(_) => "Prefix Command".into(),
         Value::Cons(_, _) => value
             .to_vec()
             .ok()
@@ -34817,19 +34802,15 @@ fn where_is_internal(
     let target_command = remapped_command.as_deref().unwrap_or(command);
 
     let mut matches = Vec::<Vec<String>>::new();
-    let mut seen = HashSet::new();
-    let mut visited = HashSet::new();
+    let mut collector = WhereIsCollector {
+        target_command,
+        env,
+        visited: HashSet::new(),
+        seen: HashSet::new(),
+        matches: &mut matches,
+    };
     for keymap in keymaps {
-        collect_where_is_matches(
-            interp,
-            keymap,
-            &[],
-            target_command,
-            env,
-            &mut visited,
-            &mut seen,
-            &mut matches,
-        )?;
+        collect_where_is_matches(interp, keymap, &[], &mut collector)?;
     }
 
     let active_maps = Value::list(keymaps.iter().cloned());
@@ -34905,21 +34886,25 @@ fn maybe_prefer_modifier_notation(
     preferred_parts
 }
 
+struct WhereIsCollector<'a> {
+    target_command: &'a str,
+    env: &'a mut Env,
+    visited: HashSet<(u64, String)>,
+    seen: HashSet<String>,
+    matches: &'a mut Vec<Vec<String>>,
+}
+
 fn collect_where_is_matches(
     interp: &mut Interpreter,
     keymap: &Value,
     prefix: &[String],
-    target_command: &str,
-    env: &mut Env,
-    visited: &mut HashSet<(u64, String)>,
-    seen: &mut HashSet<String>,
-    matches: &mut Vec<Vec<String>>,
+    collector: &mut WhereIsCollector<'_>,
 ) -> Result<(), LispError> {
     let Some(id) = keymap_record_id(interp, keymap) else {
         return Ok(());
     };
     let prefix_key = prefix.join(" ");
-    if !visited.insert((id, prefix_key)) {
+    if !collector.visited.insert((id, prefix_key)) {
         return Ok(());
     }
     let Some(record) = interp.find_record(id) else {
@@ -34938,28 +34923,19 @@ fn collect_where_is_matches(
             .cloned()
             .chain(parts.iter().cloned())
             .collect::<Vec<_>>();
-        let resolved = keymap_get_keyelt(interp, &binding.value, true, env)?;
+        let resolved = keymap_get_keyelt(interp, &binding.value, true, collector.env)?;
         if !key_parts_are_remap(&full_parts)
-            && command_name_for_remapping(&resolved).as_deref() == Some(target_command)
+            && command_name_for_remapping(&resolved).as_deref() == Some(collector.target_command)
         {
             let key = full_parts.join(" ");
-            if seen.insert(key) {
-                matches.push(full_parts.clone());
+            if collector.seen.insert(key) {
+                collector.matches.push(full_parts.clone());
             }
         }
 
-        let nested = keymap_get_keyelt(interp, &binding.value, false, env)?;
+        let nested = keymap_get_keyelt(interp, &binding.value, false, collector.env)?;
         if is_keymap_value(interp, &nested) {
-            collect_where_is_matches(
-                interp,
-                &nested,
-                &full_parts,
-                target_command,
-                env,
-                visited,
-                seen,
-                matches,
-            )?;
+            collect_where_is_matches(interp, &nested, &full_parts, collector)?;
         }
     }
     Ok(())
@@ -37020,10 +36996,7 @@ fn parse_modified_edmacro_key(token: &str) -> Result<Option<i64>, LispError> {
     let mut super_key = false;
     let mut rest = token;
 
-    loop {
-        let Some((prefix, tail)) = rest.split_once('-') else {
-            break;
-        };
+    while let Some((prefix, tail)) = rest.split_once('-') {
         match prefix {
             "C" => ctrl = true,
             "M" => meta = true,
@@ -37162,7 +37135,7 @@ fn nondeterministic_random_seed() -> u64 {
 }
 
 fn random_bigint_below(limit: &BigInt) -> BigInt {
-    let chunks = ((limit.bits().max(1) + 63) / 64) as usize;
+    let chunks = limit.bits().max(1).div_ceil(64) as usize;
     let mut value = BigInt::zero();
     for _ in 0..chunks {
         value = (value << 64) + BigInt::from(next_random_u64());
@@ -37787,7 +37760,13 @@ mod compat_runtime_tests {
             Value::Nil
         );
         assert_eq!(
-            call(&mut interp, "length", &[table.clone()], &mut env).expect("length on char-table"),
+            call(
+                &mut interp,
+                "length",
+                std::slice::from_ref(&table),
+                &mut env
+            )
+            .expect("length on char-table"),
             Value::Integer(0x40_0000)
         );
         assert_eq!(
@@ -37817,7 +37796,7 @@ mod compat_runtime_tests {
         let ascii_made = call(
             &mut interp,
             "string-make-multibyte",
-            &[ascii.clone()],
+            std::slice::from_ref(&ascii),
             &mut env,
         )
         .expect("string-make-multibyte should accept ascii");
@@ -37844,7 +37823,7 @@ mod compat_runtime_tests {
         let made = call(
             &mut interp,
             "string-make-multibyte",
-            &[raw.clone()],
+            std::slice::from_ref(&raw),
             &mut env,
         )
         .expect("string-make-multibyte should decode latin-1 bytes");
@@ -37975,7 +37954,13 @@ mod compat_runtime_tests {
             Value::Integer(3),
         ]);
         assert_eq!(
-            call(&mut interp, "nreverse", &[vector.clone()], &mut env).expect("nreverse vector"),
+            call(
+                &mut interp,
+                "nreverse",
+                std::slice::from_ref(&vector),
+                &mut env
+            )
+            .expect("nreverse vector"),
             vector
         );
         assert_eq!(
@@ -37996,15 +37981,25 @@ mod compat_runtime_tests {
             &mut env,
         )
         .expect("bool-vector should build");
-        let reversed = call(&mut interp, "reverse", &[bool_vector.clone()], &mut env)
-            .expect("reverse should accept bool-vectors");
+        let reversed = call(
+            &mut interp,
+            "reverse",
+            std::slice::from_ref(&bool_vector),
+            &mut env,
+        )
+        .expect("reverse should accept bool-vectors");
         assert_eq!(
             bool_vector_bits(&interp, &reversed).expect("reversed bool-vector"),
             vec![false, false, true, true]
         );
         assert_eq!(
-            call(&mut interp, "vconcat", &[bool_vector.clone()], &mut env)
-                .expect("vconcat should accept bool-vectors"),
+            call(
+                &mut interp,
+                "vconcat",
+                std::slice::from_ref(&bool_vector),
+                &mut env,
+            )
+            .expect("vconcat should accept bool-vectors"),
             Value::list([
                 Value::symbol("vector"),
                 Value::T,
@@ -38014,8 +38009,13 @@ mod compat_runtime_tests {
             ])
         );
         assert_eq!(
-            call(&mut interp, "nreverse", &[bool_vector.clone()], &mut env)
-                .expect("nreverse should accept bool-vectors"),
+            call(
+                &mut interp,
+                "nreverse",
+                std::slice::from_ref(&bool_vector),
+                &mut env,
+            )
+            .expect("nreverse should accept bool-vectors"),
             bool_vector
         );
         assert_eq!(
@@ -39160,9 +39160,15 @@ mod compat_runtime_tests {
         let neg_big = parse("-23058430092136939510");
         let neg_big_minus_one = parse("-23058430092136939511");
         let double_big = parse("46116860184273879020");
-        let float_big = call(&mut interp, "float", &[big.clone()], &mut env).expect("float big");
-        let float_double_big =
-            call(&mut interp, "float", &[double_big.clone()], &mut env).expect("float double big");
+        let float_big =
+            call(&mut interp, "float", std::slice::from_ref(&big), &mut env).expect("float big");
+        let float_double_big = call(
+            &mut interp,
+            "float",
+            std::slice::from_ref(&double_big),
+            &mut env,
+        )
+        .expect("float double big");
 
         let cases = vec![
             ("number", parse("1"), parse("2")),
