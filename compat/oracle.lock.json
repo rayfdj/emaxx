@@ -1,7 +1,7 @@
 {
   "format_version": 2,
-  "emacs_version": "31.0.50",
-  "emacs_repo_commit": "f15ad18a1446b492188d4f9c83f113b8c7b66a8e",
+  "emacs_version": "30.2",
+  "emacs_repo_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
   "system_type": "darwin",
   "native_compilation": true,
   "selector_default": "(not (or (tag :expensive-test) (tag :unstable)))",
