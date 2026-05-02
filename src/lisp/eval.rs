@@ -10448,6 +10448,7 @@ impl Interpreter {
         match name {
             "cl-case" => self.expand_cl_case(args, env).map(Some),
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+            "ert-simulate-keys" => self.expand_ert_simulate_keys(args).map(Some),
             "letrec" => self.expand_letrec(args).map(Some),
             "named-let" => self.expand_named_let(args).map(Some),
             "with-selected-frame" => {
@@ -10468,6 +10469,31 @@ impl Interpreter {
             }
             _ => Ok(None),
         }
+    }
+
+    fn expand_ert_simulate_keys(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        if args.is_empty() {
+            return Err(LispError::WrongNumberOfArgs("ert-simulate-keys".into(), 0));
+        }
+        let bindings = Value::list([
+            Value::list([
+                Value::Symbol("unread-command-events".into()),
+                Value::list([
+                    Value::Symbol("append".into()),
+                    args[0].clone(),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::list([Value::Integer(7), Value::Integer(7), Value::Integer(7)]),
+                    ]),
+                ]),
+            ]),
+            Value::list([Value::Symbol("executing-kbd-macro".into()), Value::T]),
+        ]);
+        Ok(Value::list(
+            std::iter::once(Value::Symbol("let".into()))
+                .chain(std::iter::once(bindings))
+                .chain(args[1..].iter().cloned()),
+        ))
     }
 
     fn expand_cl_with_gensyms(
@@ -13027,6 +13053,16 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "seq" | ":" => compile_rx_sequence(interp, env, &items[1..]),
+                "regexp" => {
+                    if items.len() != 2 {
+                        return Err(LispError::Signal("rx `regexp' needs one string".into()));
+                    }
+                    match &items[1] {
+                        Value::String(text) => Ok(text.clone()),
+                        Value::StringObject(state) => Ok(state.borrow().text.clone()),
+                        other => Err(LispError::TypeError("string".into(), other.type_name())),
+                    }
+                }
                 "repeat" => {
                     if items.len() < 3 {
                         return Err(LispError::Signal(
@@ -19935,6 +19971,10 @@ IHdvcmxkIQ==")))
             Value::String("\\(?2:\\(?1:\\(?:[0-9]\\)+\\):\\(?:[0-9]\\)+\\)".into())
         );
         assert_eq!(
+            eval_str(r#"(rx bol (regexp "\\(?:\\sw\\|\\s_\\|\\\\.\\)+") eol)"#),
+            Value::String("^\\(?:\\sw\\|\\s_\\|\\\\.\\)+$".into())
+        );
+        assert_eq!(
             eval_str(
                 r#"(string-match-p
                     (rx "find " (+ nonl)
@@ -19978,6 +20018,50 @@ IHdvcmxkIQ==")))
         assert_eq!(
             eval_str(r#"(string-match-p (rx ", " symbol-start) ", --sign")"#),
             Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn abbrev_possibly_save_writes_file_and_resets_changed_flag() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("emaxx-abbrev-save-{unique}.el"));
+        let path_text = path.to_string_lossy().replace('\\', "\\\\");
+
+        assert_eq!(
+            eval_str_with_upstream_load_path(&format!(
+                r#"
+                (require 'abbrev)
+                (let ((abbrev-file-name "{path_text}")
+                      (save-abbrevs t))
+                  (let ((abbrevs-changed t))
+                    (list (abbrev--possibly-save nil t)
+                          abbrevs-changed
+                          (file-exists-p abbrev-file-name))))
+                "#
+            )),
+            Value::list([Value::Nil, Value::Nil, Value::T])
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn abbrev_possibly_save_honors_simulated_no_response() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'abbrev)
+                (let ((abbrev-file-name "/tmp/emaxx-abbrev-unused")
+                      (save-abbrevs t))
+                  (let ((abbrevs-changed t))
+                    (ert-simulate-keys '(?n ?\C-m)
+                      (list (abbrev--possibly-save nil) abbrevs-changed))))
+                "#
+            ),
+            Value::list([Value::T, Value::Nil])
         );
     }
 

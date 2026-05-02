@@ -1456,6 +1456,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "font-lock-append-text-property"
             | "font-lock-prepend-text-property"
             | "font-lock--remove-face-from-text-property"
+            | "unencodable-char-position"
             | "put"
             | "define-symbol-prop"
             | "function-put"
@@ -2038,6 +2039,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-symbol"
             | "gensym"
             | "make-interpreted-closure"
+            | "obarrayp"
             | "obarray-make"
             | "internal--obarray-buckets"
             | "define-hash-table-test"
@@ -7557,6 +7559,15 @@ pub fn call(
             interp.put_symbol_property(symbol, property, args[2].clone());
             Ok(args[2].clone())
         }
+        "unencodable-char-position" => {
+            need_arg_range(name, args, 2, 4)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            if start > end || end > interp.buffer.point_max() {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            Ok(Value::Nil)
+        }
         "set-advertised-calling-convention" => {
             need_args(name, args, 3)?;
             let function = advertised_function_name(interp, &args[0])?;
@@ -10307,7 +10318,15 @@ pub fn call(
             need_args(name, args, 1)?;
             ensure_interaction_allowed(interp, env)?;
             let _ = call(interp, "message", args, env)?;
-            Ok(Value::T)
+            match pop_unread_command_event_value(interp, env)
+                .ok()
+                .and_then(|event| unread_event_char(&event))
+                .map(|ch| ch.to_ascii_lowercase())
+            {
+                Some('n') => Ok(Value::Nil),
+                Some('y') => Ok(Value::T),
+                _ => Ok(Value::T),
+            }
         }
 
         // ── More string/char ops ──
@@ -12707,6 +12726,14 @@ pub fn call(
                 return Err(LispError::TypeError("natnump".into(), size.type_name()));
             }
             Ok(make_obarray(interp))
+        }
+        "obarrayp" => {
+            need_args(name, args, 1)?;
+            Ok(if is_obarray_like_value(interp, &args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "internal--obarray-buckets" => {
             need_args(name, args, 1)?;
@@ -16505,9 +16532,36 @@ fn set_abbrev_table_entries(
     }
     record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::list(
         entries
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|(name, expansion, props)| Value::list([Value::String(name), expansion, props])),
     );
+    for (entry_name, expansion, props) in entries {
+        set_abbrev_symbol_state(interp, id, &entry_name, expansion, props)?;
+    }
+    Ok(())
+}
+
+fn abbrev_symbol_name(table_id: u64, name: &str) -> String {
+    crate::lisp::types::make_obarray_symbol_name(name, table_id)
+}
+
+fn set_abbrev_symbol_state(
+    interp: &mut Interpreter,
+    table_id: u64,
+    name: &str,
+    expansion: Value,
+    props: Value,
+) -> Result<(), LispError> {
+    let symbol = abbrev_symbol_name(table_id, name);
+    let hook = abbrev_prop(&props, ":hook").unwrap_or(Value::Nil);
+    interp.set_global_binding(&symbol, expansion);
+    if hook.is_nil() {
+        interp.set_function_binding(&symbol, None);
+    } else {
+        interp.set_function_binding(&symbol, Some(hook));
+    }
+    interp.set_symbol_plist(&symbol, props)?;
     Ok(())
 }
 
@@ -35610,6 +35664,18 @@ fn make_obarray(interp: &mut Interpreter) -> Value {
     interp.create_record(OBARRAY_RECORD_TYPE, vec![Value::Nil])
 }
 
+fn is_obarray_like_value(interp: &Interpreter, value: &Value) -> bool {
+    let Value::Record(id) = value else {
+        return false;
+    };
+    interp.find_record(*id).is_some_and(|record| {
+        matches!(
+            record.type_name.as_str(),
+            OBARRAY_RECORD_TYPE | ABBREV_TABLE_RECORD_TYPE
+        )
+    })
+}
+
 fn obarray_symbols_or_empty(
     interp: &Interpreter,
     obarray: &Value,
@@ -35628,10 +35694,18 @@ fn obarray_symbols(interp: &Interpreter, obarray: &Value) -> Result<Vec<Value>, 
     let Some(record) = interp.find_record(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
-    if record.type_name != OBARRAY_RECORD_TYPE {
-        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    if record.type_name == ABBREV_TABLE_RECORD_TYPE {
+        return abbrev_table_entries(interp, obarray).map(|entries| {
+            entries
+                .into_iter()
+                .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(*id, &name)))
+                .collect()
+        });
     }
-    record.slots.first().cloned().unwrap_or(Value::Nil).to_vec()
+    if record.type_name == OBARRAY_RECORD_TYPE {
+        return record.slots.first().cloned().unwrap_or(Value::Nil).to_vec();
+    }
+    Err(LispError::TypeError("obarray".into(), obarray.type_name()))
 }
 
 fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
@@ -35652,6 +35726,16 @@ fn intern_in_obarray(
     let Some(record) = interp.find_record_mut(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
+    if record.type_name == ABBREV_TABLE_RECORD_TYPE {
+        if abbrev_table_entries(interp, obarray)?
+            .iter()
+            .any(|(existing, _, _)| existing == symbol_name)
+        {
+            return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name)));
+        }
+        define_abbrev_entry(interp, obarray, symbol_name, Value::Nil, Value::Nil)?;
+        return Ok(Value::Symbol(abbrev_symbol_name(*id, symbol_name)));
+    }
     if record.type_name != OBARRAY_RECORD_TYPE {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     }
