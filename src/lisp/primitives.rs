@@ -2041,6 +2041,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-interpreted-closure"
             | "obarrayp"
             | "obarray-make"
+            | "obarray-clear"
             | "internal--obarray-buckets"
             | "define-hash-table-test"
             | "make-hash-table"
@@ -12735,6 +12736,10 @@ pub fn call(
                 Value::Nil
             })
         }
+        "obarray-clear" => {
+            need_args(name, args, 1)?;
+            clear_obarray(interp, &args[0])
+        }
         "internal--obarray-buckets" => {
             need_args(name, args, 1)?;
             Ok(Value::list(
@@ -16367,14 +16372,29 @@ fn is_abbrev_table_value(interp: &Interpreter, value: &Value) -> bool {
 }
 
 fn make_runtime_abbrev_table(interp: &mut Interpreter, name: Option<&str>, props: Value) -> Value {
-    interp.create_record(
+    let props = abbrev_table_props_with_modiff(props);
+    let table = interp.create_record(
         ABBREV_TABLE_RECORD_TYPE,
         vec![
             name.map(Value::symbol).unwrap_or(Value::Nil),
-            props,
+            props.clone(),
             Value::Nil,
         ],
-    )
+    );
+    if let Value::Record(id) = table {
+        let symbol = abbrev_symbol_name(id, "");
+        interp.set_global_binding(&symbol, Value::Nil);
+        let _ = interp.set_symbol_plist(&symbol, props);
+    }
+    table
+}
+
+fn abbrev_table_props_with_modiff(props: Value) -> Value {
+    let mut pairs = plist_pairs(&props).unwrap_or_default();
+    if !pairs.iter().any(|(key, _)| key == ":abbrev-table-modiff") {
+        pairs.push((":abbrev-table-modiff".into(), Value::Integer(0)));
+    }
+    plist_value(&pairs)
 }
 
 fn abbrev_table_name_value(interp: &Interpreter, table: &Value) -> Option<Value> {
@@ -16427,6 +16447,9 @@ fn set_abbrev_table_props_value(
         record.slots.resize(ABBREV_TABLE_PROPS_SLOT + 1, Value::Nil);
     }
     record.slots[ABBREV_TABLE_PROPS_SLOT] = props;
+    let symbol = abbrev_symbol_name(id, "");
+    interp.set_global_binding(&symbol, Value::Nil);
+    interp.set_symbol_plist(&symbol, abbrev_table_props_value(interp, table)?)?;
     Ok(())
 }
 
@@ -35664,6 +35687,34 @@ fn make_obarray(interp: &mut Interpreter) -> Value {
     interp.create_record(OBARRAY_RECORD_TYPE, vec![Value::Nil])
 }
 
+fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
+    let Value::Record(id) = obarray else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    let Some(record) = interp.find_record_mut(*id) else {
+        return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
+    };
+    match record.type_name.as_str() {
+        OBARRAY_RECORD_TYPE => {
+            if record.slots.is_empty() {
+                record.slots.push(Value::Nil);
+            } else {
+                record.slots[0] = Value::Nil;
+            }
+        }
+        ABBREV_TABLE_RECORD_TYPE => {
+            if record.slots.len() <= ABBREV_TABLE_ENTRIES_SLOT {
+                record
+                    .slots
+                    .resize(ABBREV_TABLE_ENTRIES_SLOT + 1, Value::Nil);
+            }
+            record.slots[ABBREV_TABLE_ENTRIES_SLOT] = Value::Nil;
+        }
+        _ => return Err(LispError::TypeError("obarray".into(), obarray.type_name())),
+    }
+    Ok(Value::Nil)
+}
+
 fn is_obarray_like_value(interp: &Interpreter, value: &Value) -> bool {
     let Value::Record(id) = value else {
         return false;
@@ -35696,9 +35747,12 @@ fn obarray_symbols(interp: &Interpreter, obarray: &Value) -> Result<Vec<Value>, 
     };
     if record.type_name == ABBREV_TABLE_RECORD_TYPE {
         return abbrev_table_entries(interp, obarray).map(|entries| {
-            entries
-                .into_iter()
-                .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(*id, &name)))
+            std::iter::once(Value::Symbol(abbrev_symbol_name(*id, "")))
+                .chain(
+                    entries
+                        .into_iter()
+                        .map(|(name, _, _)| Value::Symbol(abbrev_symbol_name(*id, &name))),
+                )
                 .collect()
         });
     }
@@ -35727,6 +35781,11 @@ fn intern_in_obarray(
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
     if record.type_name == ABBREV_TABLE_RECORD_TYPE {
+        if symbol_name.is_empty() {
+            let symbol = abbrev_symbol_name(*id, "");
+            interp.set_global_binding(&symbol, Value::Nil);
+            return Ok(Value::Symbol(symbol));
+        }
         if abbrev_table_entries(interp, obarray)?
             .iter()
             .any(|(existing, _, _)| existing == symbol_name)
