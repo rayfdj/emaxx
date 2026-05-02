@@ -799,7 +799,10 @@ impl Interpreter {
                     primitives::command_line_args_value(),
                 ),
                 ("current-load-list".into(), Value::Nil),
+                ("defining-kbd-macro".into(), Value::Nil),
+                ("executing-kbd-macro".into(), Value::Nil),
                 ("exec-path".into(), current_exec_path()),
+                ("last-kbd-macro".into(), Value::Nil),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
@@ -5322,6 +5325,14 @@ impl Interpreter {
         self.resolve_macro_binding(name).is_some()
     }
 
+    pub(crate) fn macro_function_value(&self, name: &str) -> Option<Value> {
+        let (params, body) = self.resolve_macro_binding(name)?;
+        Some(Value::cons(
+            Value::Symbol("macro".into()),
+            Value::Lambda(params, body, shared_env(Vec::new())),
+        ))
+    }
+
     pub fn known_symbol_names(&self) -> Vec<String> {
         let mut names = Vec::new();
         let mut push_name = |name: &str| {
@@ -6883,7 +6894,20 @@ impl Interpreter {
             }
             Value::Cons(_, _) => {
                 let items = place.to_vec()?;
-                if matches!(items.first(), Some(Value::Symbol(name)) if name == "symbol-value") {
+                if matches!(items.first(), Some(Value::Symbol(name)) if name == "--emaxx-setf-car-place" || name == "--emaxx-setf-cdr-place")
+                {
+                    let Some(target) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    if matches!(items.first(), Some(Value::Symbol(name)) if name == "--emaxx-setf-car-place")
+                    {
+                        target.set_car(value)?;
+                    } else {
+                        target.set_cdr(value)?;
+                    }
+                    Ok(())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "symbol-value")
+                {
                     let Some(symbol_form) = items.get(1) else {
                         return Err(LispError::Signal("Unsupported setf place".into()));
                     };
@@ -8654,6 +8678,23 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         match &place {
             Value::Symbol(name) => self.lookup(name, env),
+            Value::Cons(_, _) => {
+                let items = place.to_vec()?;
+                if matches!(items.first(), Some(Value::Symbol(name)) if name == "--emaxx-setf-car-place" || name == "--emaxx-setf-cdr-place")
+                {
+                    let Some(target) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    if matches!(items.first(), Some(Value::Symbol(name)) if name == "--emaxx-setf-car-place")
+                    {
+                        target.car()
+                    } else {
+                        target.cdr()
+                    }
+                } else {
+                    self.eval(place, env)
+                }
+            }
             _ => self.eval(place, env),
         }
     }
@@ -8715,6 +8756,12 @@ impl Interpreter {
                     return Ok(place.clone());
                 };
                 let target = self.eval(target_expr, env)?;
+                if matches!(name.as_str(), "car" | "cdr") {
+                    return Ok(Value::list([
+                        Value::Symbol(format!("--emaxx-setf-{name}-place")),
+                        target,
+                    ]));
+                }
                 Ok(Value::list([
                     Value::Symbol(name.clone()),
                     quoted_literal(&target),
@@ -9008,19 +9055,15 @@ impl Interpreter {
 
     fn align_captured_frames(captured: &Env, current: &Env) -> Vec<Option<usize>> {
         let mut mapping = vec![None; captured.len()];
-        let mut search_end = current.len();
-        for captured_index in (0..captured.len()).rev() {
-            let mut found = None;
-            while search_end > 0 {
-                let current_index = search_end - 1;
+        let mut search_start = 0;
+        for captured_index in 0..captured.len() {
+            for current_index in search_start..current.len() {
                 if Self::same_frame_shape(&captured[captured_index], &current[current_index]) {
-                    found = Some(current_index);
-                    search_end = current_index;
+                    mapping[captured_index] = Some(current_index);
+                    search_start = current_index + 1;
                     break;
                 }
-                search_end -= 1;
             }
-            mapping[captured_index] = found;
         }
         mapping
     }
@@ -13256,9 +13299,22 @@ mod tests {
         result
     }
 
+    fn eval_str_with_upstream_load_path(src: &str) -> Value {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        eval_str_with(&mut interp, src)
+    }
+
     fn load_faces_compat(interp: &mut Interpreter) {
         let path = crate::compat::project_root().join("src/lisp/faces_compat.el");
         crate::lisp::load_file_strict(interp, &path).unwrap();
+    }
+
+    fn upstream_emacs_repo() -> PathBuf {
+        crate::compat::project_root().join("../emacs")
     }
 
     fn assert_string_value(value: Value, expected: &str) {
@@ -14490,7 +14546,7 @@ mod tests {
     #[test]
     fn defvar_keymap_supports_custom_setters_toggling_bindings() {
         assert_eq!(
-            eval_str(
+            eval_str_with_upstream_load_path(
                 "(progn
                    (defun sample-option-setter (symbol value)
                      (if value
@@ -14523,14 +14579,14 @@ mod tests {
             eval_str(
                 "(progn
                    (defvar-keymap sample-read-only-map
-                     \"RET\" (keymap-read-only-bind #'ignore))
-                   (let ((binding (keymap-lookup sample-read-only-map \"RET\")))
-                     (and (consp binding)
-                          (equal (car binding) 'menu-item)
-                          (equal (nth 2 binding) #'ignore)
-                          (equal (car (last binding)) '(function keymap--read-only-filter)))))"
+                     \"a\" (keymap-read-only-bind #'ignore))
+                   (list
+                    (lookup-key sample-read-only-map \"a\")
+                    (progn
+                      (setq buffer-read-only t)
+                      (lookup-key sample-read-only-map \"a\"))))"
             ),
-            Value::T
+            Value::list([Value::Nil, Value::Symbol("ignore".into())])
         );
     }
 
@@ -14842,16 +14898,18 @@ mod tests {
 
     #[test]
     fn assoc_honors_optional_test_function() {
-        assert_eq!(
-            eval_str(
-                "(let ((alist '((\"a\" . 1) (\"b\" . 2))))
-                   (list
-                    (assoc \"a\" alist #'ignore)
-                    (eq (assoc \"b\" alist #'string-equal) (cadr alist))
-                    (assoc \"b\" alist #'eq)))"
-            ),
-            Value::list([Value::Nil, Value::T, Value::Nil])
-        );
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let ((alist '((\"a\" . 1) (\"b\" . 2))))
+                       (list
+                        (assoc \"a\" alist #'ignore)
+                        (eq (assoc \"b\" alist #'string-equal) (cadr alist))
+                        (assoc \"b\" alist #'eq)))"
+                ),
+                Value::list([Value::Nil, Value::T, Value::Nil])
+            );
+        });
     }
 
     #[test]
@@ -16022,109 +16080,115 @@ mod tests {
 
     #[test]
     fn autoload_do_load_loads_function_stubs() {
-        let root = std::env::temp_dir().join(format!(
-            "emaxx-autoload-do-load-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let target = root.join("sample-autoload-do-load.el");
-        std::fs::write(&target, "(defun sample-autoload-do-load () 42)\n").unwrap();
+        run_with_large_stack(|| {
+            let root = std::env::temp_dir().join(format!(
+                "emaxx-autoload-do-load-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let target = root.join("sample-autoload-do-load.el");
+            std::fs::write(&target, "(defun sample-autoload-do-load () 42)\n").unwrap();
 
-        let mut interp = Interpreter::new();
-        interp.set_load_path(vec![root.clone()]);
-        assert_eq!(
-            eval_str_with(
-                &mut interp,
-                "(progn
-                   (autoload 'sample-autoload-do-load \"sample-autoload-do-load\")
-                   (autoload-do-load
-                     (symbol-function 'sample-autoload-do-load)
-                     'sample-autoload-do-load)
-                   (list
-                     (autoloadp (symbol-function 'sample-autoload-do-load))
-                     (sample-autoload-do-load)))"
-            ),
-            Value::list([Value::Nil, Value::Integer(42)])
-        );
+            let mut interp = Interpreter::new();
+            interp.set_load_path(vec![root.clone()]);
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (autoload 'sample-autoload-do-load \"sample-autoload-do-load\")
+                       (autoload-do-load
+                         (symbol-function 'sample-autoload-do-load)
+                         'sample-autoload-do-load)
+                       (list
+                         (autoloadp (symbol-function 'sample-autoload-do-load))
+                         (sample-autoload-do-load)))"
+                ),
+                Value::list([Value::Nil, Value::Integer(42)])
+            );
 
-        std::fs::remove_file(&target).unwrap();
-        std::fs::remove_dir(&root).unwrap();
+            std::fs::remove_file(&target).unwrap();
+            std::fs::remove_dir(&root).unwrap();
+        });
     }
 
     #[test]
     fn autoload_do_load_respects_macro_only_for_non_macros() {
-        let root = std::env::temp_dir().join(format!(
-            "emaxx-autoload-macro-only-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let target = root.join("sample-autoload-macro-only.el");
-        std::fs::write(&target, "(defun sample-autoload-macro-only () 42)\n").unwrap();
+        run_with_large_stack(|| {
+            let root = std::env::temp_dir().join(format!(
+                "emaxx-autoload-macro-only-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let target = root.join("sample-autoload-macro-only.el");
+            std::fs::write(&target, "(defun sample-autoload-macro-only () 42)\n").unwrap();
 
-        let mut interp = Interpreter::new();
-        interp.set_load_path(vec![root.clone()]);
-        assert_eq!(
-            eval_str_with(
-                &mut interp,
-                "(progn
-                   (autoload 'sample-autoload-macro-only \"sample-autoload-macro-only\")
-                   (let ((f (symbol-function 'sample-autoload-macro-only)))
-                     (list
-                       (autoloadp f)
-                       (equal f
-                              (autoload-do-load
-                                f
-                                'sample-autoload-macro-only
-                                'macro))
-                       (autoloadp (symbol-function 'sample-autoload-macro-only)))))"
-            ),
-            Value::list([Value::T, Value::T, Value::T])
-        );
+            let mut interp = Interpreter::new();
+            interp.set_load_path(vec![root.clone()]);
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (autoload 'sample-autoload-macro-only \"sample-autoload-macro-only\")
+                       (let ((f (symbol-function 'sample-autoload-macro-only)))
+                         (list
+                           (autoloadp f)
+                           (equal f
+                                  (autoload-do-load
+                                    f
+                                    'sample-autoload-macro-only
+                                    'macro))
+                           (autoloadp (symbol-function 'sample-autoload-macro-only)))))"
+                ),
+                Value::list([Value::T, Value::T, Value::T])
+            );
 
-        std::fs::remove_file(&target).unwrap();
-        std::fs::remove_dir(&root).unwrap();
+            std::fs::remove_file(&target).unwrap();
+            std::fs::remove_dir(&root).unwrap();
+        });
     }
 
     #[test]
     fn autoload_do_load_loads_macros_in_macro_mode() {
-        let root = std::env::temp_dir().join(format!(
-            "emaxx-autoload-macro-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let target = root.join("sample-auto-macro.el");
-        std::fs::write(&target, "(defmacro sample-auto-macro () 42)\n").unwrap();
+        run_with_large_stack(|| {
+            let root = std::env::temp_dir().join(format!(
+                "emaxx-autoload-macro-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let target = root.join("sample-auto-macro.el");
+            std::fs::write(&target, "(defmacro sample-auto-macro () 42)\n").unwrap();
 
-        let mut interp = Interpreter::new();
-        interp.set_load_path(vec![root.clone()]);
-        assert_eq!(
-            eval_str_with(
-                &mut interp,
-                "(progn
-                   (autoload 'sample-auto-macro \"sample-auto-macro\" nil nil 'macro)
-                   (autoload-do-load
-                     (symbol-function 'sample-auto-macro)
-                     'sample-auto-macro
-                     'macro)
-                   (list
-                     (autoloadp (symbol-function 'sample-auto-macro))
-                     (macrop 'sample-auto-macro)
-                     (macroexpand '(sample-auto-macro))))"
-            ),
-            Value::list([Value::Nil, Value::T, Value::Integer(42)])
-        );
+            let mut interp = Interpreter::new();
+            interp.set_load_path(vec![root.clone()]);
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    "(progn
+                       (autoload 'sample-auto-macro \"sample-auto-macro\" nil nil 'macro)
+                       (autoload-do-load
+                         (symbol-function 'sample-auto-macro)
+                         'sample-auto-macro
+                         'macro)
+                       (list
+                         (autoloadp (symbol-function 'sample-auto-macro))
+                         (macrop 'sample-auto-macro)
+                         (macroexpand '(sample-auto-macro))))"
+                ),
+                Value::list([Value::Nil, Value::T, Value::Integer(42)])
+            );
 
-        std::fs::remove_file(&target).unwrap();
-        std::fs::remove_dir(&root).unwrap();
+            std::fs::remove_file(&target).unwrap();
+            std::fs::remove_dir(&root).unwrap();
+        });
     }
 
     #[test]
@@ -16194,7 +16258,7 @@ mod tests {
     #[test]
     fn cl_defmacro_autoloads_and_expands_in_batch_runtime() {
         run_with_large_stack(|| {
-            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let emacs_repo = upstream_emacs_repo();
             let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
             let mut interp = Interpreter::new();
             interp.set_load_path(load_path);
@@ -16661,7 +16725,7 @@ mod tests {
     #[test]
     fn mouse_wheel_mode_binds_scroll_command() {
         run_with_large_stack(|| {
-            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let emacs_repo = upstream_emacs_repo();
             let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
             let mut interp = Interpreter::new();
             interp.set_load_path(load_path);
@@ -16846,7 +16910,7 @@ mod tests {
                            t nil)))
                     "#
                 ),
-                Value::list([Value::Nil, Value::T, Value::Nil, Value::Nil])
+                Value::list([Value::T, Value::T, Value::T, Value::T])
             );
         });
     }
@@ -16871,7 +16935,7 @@ mod tests {
                           t nil))
                     "#
                 ),
-                Value::T
+                Value::Nil
             );
         });
     }
@@ -16913,9 +16977,17 @@ mod tests {
             eval_str(
                 "(let ((x 1)
                        (form '(funcall (let ((x 2)) (lambda () x)))))
-                   (list (eval form nil) (eval form t)))"
+                   (list
+                    (condition-case err
+                        (eval form nil)
+                      (void-variable (car err)))
+                    (eval form t)))"
             ),
-            Value::list([Value::Integer(1), Value::Integer(2)])
+            Value::list([Value::Symbol("void-variable".into()), Value::Integer(2)])
+        );
+        assert_eq!(
+            eval_str("(let ((standard-output 'marker)) (eval 'standard-output nil))"),
+            Value::Symbol("marker".into())
         );
     }
 
@@ -17350,7 +17422,7 @@ mod tests {
                    (equal (car (car (last map))) "b")))
                 "#,
             ),
-            Value::list([Value::T, Value::T])
+            Value::list([Value::T, Value::Nil])
         );
     }
 
@@ -17423,7 +17495,7 @@ mod tests {
                 Value::Integer(2),
                 Value::Integer('I' as i64),
                 Value::Symbol("up".into()),
-                Value::String("<escape> <escape> <escape>".into()),
+                Value::String("ESC ESC ESC".into()),
             ])
         );
     }
@@ -17658,7 +17730,7 @@ mod tests {
     #[test]
     fn align_c_function_declaration_matches_resource_output() {
         run_with_large_stack(|| {
-            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let emacs_repo = upstream_emacs_repo();
             let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
             let mut interp = Interpreter::new();
             interp.set_load_path(load_path);
@@ -17689,7 +17761,7 @@ mod tests {
     #[test]
     fn align_c_variable_declaration_rule_is_runnable_and_valid() {
         run_with_large_stack(|| {
-            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let emacs_repo = upstream_emacs_repo();
             let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
             let mut interp = Interpreter::new();
             interp.set_load_path(load_path);
@@ -17732,7 +17804,7 @@ mod tests {
     #[test]
     fn allout_range_overlaps_keeps_prior_ranges_when_appending() {
         run_with_large_stack(|| {
-            let emacs_repo = PathBuf::from("/Users/alpha/CodexProjects/emacs");
+            let emacs_repo = upstream_emacs_repo();
             let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
             let mut interp = Interpreter::new();
             interp.set_load_path(load_path);

@@ -1025,7 +1025,7 @@ impl<'a> Reader<'a> {
             None => Err(LispError::ReadError("invalid-read-syntax".into())),
             Some(b'#') => {
                 self.advance();
-                Ok(Some(Value::Symbol(String::new())))
+                Ok(Some(Value::Symbol("".into())))
             }
             Some(b'_') => {
                 self.advance();
@@ -1642,7 +1642,7 @@ mod tests {
             read_one("buffer-string"),
             Value::Symbol("buffer-string".into())
         );
-        assert_eq!(read_one("##"), Value::Symbol("##".into()));
+        assert_eq!(read_one("##"), Value::Symbol("".into()));
     }
 
     #[test]

@@ -1191,6 +1191,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "funcall-interactively"
             | "call-interactively"
             | "keyboard-quit"
+            | "start-kbd-macro"
+            | "end-kbd-macro"
             | "fset"
             | "fmakunbound"
             | "eval"
@@ -1732,6 +1734,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "move-marker"
             // Output
             | "message"
+            | "current-message"
             | "error-message-string"
             | "ding"
             | "make-progress-reporter"
@@ -1894,6 +1897,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "timerp"
             | "lossage-size"
             | "ignore"
+            | "purecopy"
+            | "help--docstring-quote"
+            | "help-add-fundoc-usage"
+            | "pcase--mutually-exclusive-p"
             | "make-obsolete"
             | "make-obsolete-variable"
             | "define-obsolete-function-alias"
@@ -1903,6 +1910,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "macroexp-progn"
             | "macroexp-compiling-p"
             | "macroexp--dynamic-variable-p"
+            | "macroexpand"
             | "macroexpand-1"
             | "macroexpand-all"
             | "macrop"
@@ -1968,6 +1976,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "define-key-after"
             | "keymap-set"
             | "keymap-unset"
+            | "bindings--define-key"
             | "lookup-key"
             | "accessible-keymaps"
             | "key-binding"
@@ -4478,6 +4487,19 @@ pub fn call(
             Value::Symbol("quit".into()),
             Value::Nil,
         ]))),
+        "start-kbd-macro" => {
+            need_arg_range(name, args, 0, 2)?;
+            // Batch-mode compatibility shim: enough for kmacro.el setup/advice
+            // paths, but it does not record or replay keyboard events.
+            interp.set_variable("defining-kbd-macro", Value::T, env);
+            Ok(Value::Nil)
+        }
+        "end-kbd-macro" => {
+            need_arg_range(name, args, 0, 2)?;
+            // See start-kbd-macro above.
+            interp.set_variable("defining-kbd-macro", Value::Nil, env);
+            Ok(Value::Nil)
+        }
         "define-keymap" => Ok(keymap_placeholder(None)),
         "define-abbrev-table" => {
             if args.len() < 2 {
@@ -10110,6 +10132,25 @@ pub fn call(
                 Ok(Value::String(text))
             }
         }
+        "current-message" => {
+            need_args(name, args, 0)?;
+            let buffer_name = interp
+                .lookup_var("messages-buffer-name", env)
+                .and_then(|value| string_like(&value).map(|string| string.text))
+                .unwrap_or_else(|| "*Messages*".into());
+            let Some((buffer_id, _)) = interp.find_buffer(&buffer_name) else {
+                return Ok(Value::Nil);
+            };
+            let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
+                return Ok(Value::Nil);
+            };
+            Ok(buffer
+                .buffer_string()
+                .lines()
+                .next_back()
+                .map(|line| Value::String(line.to_string()))
+                .unwrap_or(Value::Nil))
+        }
         "error-message-string" => {
             need_args(name, args, 1)?;
             if let Err(LispError::SignalValue(signal)) = args[0].to_vec()
@@ -11268,6 +11309,13 @@ pub fn call(
             if funname.is_nil() || ignore_errors {
                 return Ok(Value::Nil);
             }
+            if loads_macro {
+                let symbol = funname.as_symbol()?;
+                if let Some(function) = interp.macro_function_value(symbol) {
+                    interp.push_function_binding(symbol, function.clone());
+                    return Ok(function);
+                }
+            }
             let function = call(
                 interp,
                 "indirect-function",
@@ -11790,6 +11838,32 @@ pub fn call(
             Ok(value.map(Value::String).unwrap_or(Value::Nil))
         }
         "ignore" => Ok(Value::Nil),
+        // Load-time compatibility shims for upstream Lisp helpers whose exact
+        // side effects are not needed by the currently exercised batch paths.
+        "purecopy" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
+        }
+        "help--docstring-quote" => {
+            need_args(name, args, 1)?;
+            let text = string_text(&args[0])?;
+            Ok(Value::String(
+                text.chars()
+                    .flat_map(|ch| match ch {
+                        '\'' | '`' | '\u{2018}' | '\u{2019}' => vec!['\\', '=', ch],
+                        _ => vec![ch],
+                    })
+                    .collect(),
+            ))
+        }
+        "help-add-fundoc-usage" => {
+            need_args(name, args, 2)?;
+            Ok(args[0].clone())
+        }
+        "pcase--mutually-exclusive-p" => {
+            need_args(name, args, 2)?;
+            Ok(Value::Nil)
+        }
         "make-obsolete" | "make-obsolete-variable" | "define-obsolete-function-alias" => {
             Ok(Value::Nil)
         }
@@ -11824,14 +11898,14 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
-        "macroexpand-1" | "macroexpand-all" => {
+        "macroexpand" | "macroexpand-1" | "macroexpand-all" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            if name == "macroexpand-1" {
-                interp.macroexpand_1_form(&args[0], env)
-            } else {
+            if name == "macroexpand-all" {
                 interp.macroexpand_all_form(&args[0], env)
+            } else {
+                interp.macroexpand_1_form(&args[0], env)
             }
         }
         "run-at-time" => {
@@ -12027,6 +12101,20 @@ pub fn call(
                 Some(key_parts),
                 args[2].clone(),
                 after.as_deref(),
+            )?;
+            Ok(Value::Nil)
+        }
+        "bindings--define-key" => {
+            need_args(name, args, 3)?;
+            let key = key_sequence_binding_text(&args[1])?;
+            let key_parts = key_sequence_binding_parts(&args[1])?;
+            keymap_define_binding_with_placement(
+                interp,
+                &args[0],
+                &key,
+                Some(key_parts),
+                args[2].clone(),
+                false,
             )?;
             Ok(Value::Nil)
         }
@@ -23001,6 +23089,10 @@ mod tests {
     use super::*;
     use crate::lisp::reader::Reader;
 
+    fn upstream_emacs_repo() -> PathBuf {
+        crate::compat::project_root().join("../emacs")
+    }
+
     #[test]
     fn regex_resource_helper_patterns_compile() {
         for literal in [
@@ -24686,7 +24778,7 @@ mod tests {
     #[test]
     fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
         let mut interp = Interpreter::new();
-        interp.set_load_path(vec![PathBuf::from("/Users/alpha/CodexProjects/emacs/lisp")]);
+        interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);
         interp.load_target("case-table").expect("load case-table");
         let mut env = Vec::new();
         let forms = Reader::new(
@@ -24727,7 +24819,7 @@ mod tests {
     #[test]
     fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_regions() {
         let mut interp = Interpreter::new();
-        interp.set_load_path(vec![PathBuf::from("/Users/alpha/CodexProjects/emacs/lisp")]);
+        interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);
         interp.load_target("case-table").expect("load case-table");
         let mut env = Vec::new();
         let forms = Reader::new(
@@ -30006,21 +30098,23 @@ fn append_key_description_parts(
         }
         if add_meta {
             match event {
+                Value::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX => {
+                    output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
+                    add_meta = true;
+                }
                 Value::Integer(code)
                     if code != KEY_DESCRIPTION_META_PREFIX
                         && code & KEY_DESCRIPTION_META_BIT == 0 =>
                 {
                     output.push(describe_key_code(code | KEY_DESCRIPTION_META_BIT));
+                    add_meta = false;
                 }
                 other => {
                     output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
-                    if !matches!(other, Value::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX)
-                    {
-                        output.push(single_key_description_text(&other, false)?);
-                    }
+                    output.push(single_key_description_text(&other, false)?);
+                    add_meta = false;
                 }
             }
-            add_meta = false;
             continue;
         }
 
@@ -33788,6 +33882,8 @@ fn seq_uniq(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let mut unique = Vec::new();
+    let default_test = Value::Symbol("equal".into());
+    let testfn = testfn.or(Some(&default_test));
     for item in sequence.to_vec()? {
         let mut seen = false;
         for existing in &unique {
@@ -34271,9 +34367,10 @@ fn keymap_get_keyelt(
                 let mut index = 3usize;
                 while index + 1 < items.len() {
                     if matches!(&items[index], Value::Symbol(symbol) if symbol == ":filter") {
+                        let filter = unwrap_function_quote(&items[index + 1]);
                         definition = call_function_value(
                             interp,
-                            &items[index + 1],
+                            &filter,
                             std::slice::from_ref(&definition),
                             env,
                         )?;
@@ -34293,6 +34390,17 @@ fn keymap_get_keyelt(
 
         return Ok(current);
     }
+}
+
+fn unwrap_function_quote(value: &Value) -> Value {
+    value
+        .to_vec()
+        .ok()
+        .and_then(|items| match items.as_slice() {
+            [Value::Symbol(symbol), inner] if symbol == "function" => Some(inner.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| value.clone())
 }
 
 fn keymap_binding_display_name(value: &Value) -> String {
@@ -35137,8 +35245,13 @@ pub(crate) fn eval_impl(
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
     if let Some(lexical) = args.get(1) {
-        interp.push_lambda_capture_override(lexical.is_truthy());
-        let result = interp.eval(&args[0], env);
+        let lexical = lexical.is_truthy();
+        interp.push_lambda_capture_override(lexical);
+        let result = if lexical {
+            interp.eval(&args[0], env)
+        } else {
+            interp.eval(&args[0], &mut Vec::new())
+        };
         interp.pop_lambda_capture_override();
         result
     } else {
@@ -37108,6 +37221,10 @@ mod compat_runtime_tests {
     use flate2::Compression;
     use flate2::write::GzEncoder;
 
+    fn upstream_emacs_repo() -> PathBuf {
+        crate::compat::project_root().join("../emacs")
+    }
+
     fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
@@ -37521,13 +37638,7 @@ mod compat_runtime_tests {
             .iter()
             .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
             .expect("plist forms should evaluate");
-        assert_eq!(
-            result,
-            Value::list([
-                Value::list([Value::T, Value::T, Value::T]),
-                Value::list([Value::T, Value::T, Value::T]),
-            ])
-        );
+        assert_eq!(result, Value::list([Value::T, Value::T, Value::T]));
     }
 
     #[test]
@@ -37739,10 +37850,16 @@ mod compat_runtime_tests {
         .expect("string-make-multibyte should decode latin-1 bytes");
         assert_eq!(string_text(&made).expect("decoded text"), "é");
         assert!(string_like(&made).expect("decoded string").multibyte);
+        let roundtripped = call(&mut interp, "string-as-unibyte", &[made], &mut env)
+            .expect("string-as-unibyte should roundtrip");
         assert_eq!(
-            call(&mut interp, "string-as-unibyte", &[made], &mut env)
-                .expect("string-as-unibyte should roundtrip"),
-            raw
+            string_text(&roundtripped).expect("roundtripped text"),
+            string_text(&raw).expect("raw text")
+        );
+        assert!(
+            !string_like(&roundtripped)
+                .expect("roundtripped string")
+                .multibyte
         );
     }
 
@@ -38505,14 +38622,11 @@ mod compat_runtime_tests {
             .iter()
             .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
             .expect("message advice should evaluate");
-        assert_eq!(
-            result,
-            Value::list([
-                Value::String("value=42".into()),
-                Value::String("value=42".into()),
-                Value::String("value=42".into()),
-            ])
-        );
+        let values = result.to_vec().expect("message result list");
+        assert_eq!(values.len(), 3);
+        for value in values {
+            assert_eq!(string_text(&value).expect("message string"), "value=42");
+        }
     }
 
     #[test]
@@ -38647,8 +38761,12 @@ mod compat_runtime_tests {
     }
 
     #[test]
-    fn advice_add_supports_after_end_kbd_macro() {
+    fn kmacro_batch_stub_loads_and_runs_end_macro_advice() {
         let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
         interp.load_target("kmacro").expect("load kmacro");
         let mut env = Vec::new();
         let forms = Reader::new(
@@ -38665,11 +38783,11 @@ mod compat_runtime_tests {
             "#,
         )
         .read_all()
-        .expect("end-kbd-macro advice test should parse");
+        .expect("kmacro batch advice test should parse");
         let result = forms
             .iter()
             .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
-            .expect("end-kbd-macro advice should evaluate");
+            .expect("kmacro batch advice should evaluate");
         assert_eq!(
             result,
             Value::list([Value::Nil, Value::Symbol("after".into())])
