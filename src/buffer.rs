@@ -403,7 +403,7 @@ impl Buffer {
                 let idx0 = self.pt - 1;
                 let mut found = false;
                 for (i, ch) in self.text.chars_at(idx0).enumerate() {
-                    if idx0 + i + 1 >= self.zv - 1 + 1 {
+                    if idx0 + i + 1 > self.zv - 1 {
                         // hit end of accessible region
                         break;
                     }

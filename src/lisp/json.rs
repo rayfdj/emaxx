@@ -644,36 +644,6 @@ pub(crate) fn hash_table_entries(
     Some((test, entries))
 }
 
-pub(crate) fn hash_table_put(
-    interp: &mut Interpreter,
-    table: &Value,
-    key: Value,
-    value: Value,
-) -> Result<Value, LispError> {
-    let Value::Record(id) = table else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
-    };
-    let Some((test, mut entries)) = hash_table_entries(interp, table) else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
-    };
-    if let Some((_, existing_value)) = entries
-        .iter_mut()
-        .find(|(existing_key, _)| hash_key_equal(interp, &test, existing_key, &key))
-    {
-        *existing_value = value.clone();
-    } else {
-        entries.push((key, value.clone()));
-    }
-    let Some(record) = interp.find_record_mut(*id) else {
-        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
-    };
-    if record.slots.len() < 2 {
-        record.slots.resize(2, Value::Nil);
-    }
-    record.slots[1] = entries_to_list(entries);
-    Ok(value)
-}
-
 fn convert_source(text: &str, multibyte: bool) -> Result<ConvertedSource, LispError> {
     let mut bytes = Vec::new();
     let mut byte_positions = Vec::new();
@@ -1082,13 +1052,6 @@ fn list_to_flat_pairs(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
         index += 2;
     }
     Ok(pairs)
-}
-
-fn hash_key_equal(interp: &Interpreter, test: &str, left: &Value, right: &Value) -> bool {
-    match test {
-        "equal" => super::primitives::values_equal(interp, left, right),
-        _ => left == right,
-    }
 }
 
 fn json_error(condition: &str, message: &str, position: usize) -> LispError {

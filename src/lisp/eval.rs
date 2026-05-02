@@ -9057,8 +9057,8 @@ impl Interpreter {
         let mut mapping = vec![None; captured.len()];
         let mut search_start = 0;
         for captured_index in 0..captured.len() {
-            for current_index in search_start..current.len() {
-                if Self::same_frame_shape(&captured[captured_index], &current[current_index]) {
+            for (current_index, current_frame) in current.iter().enumerate().skip(search_start) {
+                if Self::same_frame_shape(&captured[captured_index], current_frame) {
                     mapping[captured_index] = Some(current_index);
                     search_start = current_index + 1;
                     break;
@@ -10569,7 +10569,7 @@ impl Interpreter {
             std::iter::once(Value::Symbol("lambda".into()))
                 .chain(std::iter::once(Value::list(params)))
                 .chain(if args.len() > 2 {
-                    args[2..].iter().cloned().collect::<Vec<_>>()
+                    args[2..].to_vec()
                 } else {
                     vec![Value::Nil]
                 }),
@@ -10711,7 +10711,7 @@ impl Interpreter {
                 .map(|(temp, arg)| Value::list([temp, arg])),
         );
         let mut setq_items = vec![Value::Symbol("setq".into())];
-        for (param, temp) in params.iter().cloned().zip(temp_symbols.into_iter()) {
+        for (param, temp) in params.iter().cloned().zip(temp_symbols) {
             setq_items.push(param);
             setq_items.push(temp);
         }

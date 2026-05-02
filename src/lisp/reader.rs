@@ -795,14 +795,14 @@ impl<'a> Reader<'a> {
                 let mut saw_modifier = false;
                 loop {
                     let escaped_modifier_start = self.peek() == Some(b'\\')
-                        && match (
-                            self.input.get(self.pos + 1).copied(),
-                            self.input.get(self.pos + 2).copied(),
-                        ) {
-                            (Some(b'^'), _) => true,
-                            (Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's'), Some(b'-')) => true,
-                            _ => false,
-                        };
+                        && matches!(
+                            (
+                                self.input.get(self.pos + 1).copied(),
+                                self.input.get(self.pos + 2).copied(),
+                            ),
+                            (Some(b'^'), _)
+                                | (Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's'), Some(b'-'))
+                        );
                     if escaped_modifier_start {
                         self.advance();
                     }
