@@ -3954,13 +3954,16 @@ pub fn call(
         }
         "assoc-string" => {
             need_arg_range(name, args, 2, 3)?;
+            let items = args[1].to_vec()?;
+            if items.is_empty() {
+                return Ok(Value::Nil);
+            }
             let key = assoc_string_text(&args[0])?;
             let key = if args.get(2).is_some_and(|value| !value.is_nil()) {
                 assoc_string_folded_text(interp, &key)?
             } else {
                 key
             };
-            let items = args[1].to_vec()?;
             for item in &items {
                 let thiscar = match item {
                     Value::Cons(_, _) => item.car()?,
@@ -25432,6 +25435,8 @@ fn validate_collation_locale(locale: Option<&Value>) -> Result<(), LispError> {
 
 fn assoc_string_text(value: &Value) -> Result<String, LispError> {
     match value {
+        Value::Nil => Ok("nil".into()),
+        Value::T => Ok("t".into()),
         Value::Symbol(name) => Ok(name.clone()),
         _ => string_text(value),
     }
@@ -25439,6 +25444,8 @@ fn assoc_string_text(value: &Value) -> Result<String, LispError> {
 
 fn assoc_string_candidate_text(value: &Value) -> Option<String> {
     match value {
+        Value::Nil => Some("nil".into()),
+        Value::T => Some("t".into()),
         Value::Symbol(name) => Some(name.clone()),
         _ => string_like(value).map(|string| string.text),
     }
