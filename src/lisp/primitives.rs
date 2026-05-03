@@ -5425,7 +5425,14 @@ pub fn call(
                         &source.text,
                     )?);
                 } else {
-                    set_match_data(interp, 0, &source.text, &captures, regex.capture_mapping());
+                    set_match_data(
+                        interp,
+                        0,
+                        &source.text,
+                        &captures,
+                        regex.capture_mapping(),
+                        None,
+                    );
                     let matched_text = slice_string_chars(&source.text, replace_start, replace_end);
                     let value =
                         call_function_value(interp, &args[1], &[Value::String(matched_text)], env)?;
@@ -6088,6 +6095,7 @@ pub fn call(
             match result {
                 Some((start, end)) => {
                     interp.last_match_data = Some(vec![Some((start, end))]);
+                    interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
                     let point = if name == "search-backward" {
                         start
                     } else {
@@ -15270,30 +15278,61 @@ pub fn call(
             if args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let items = interp
-                .last_match_data
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .flat_map(|entry| match entry {
+            let use_integers = args.first().is_some_and(Value::is_truthy);
+            let source_buffer_id = if use_integers {
+                None
+            } else {
+                interp.last_match_data_buffer_id
+            };
+            let mut items = Vec::new();
+            for entry in interp.last_match_data.clone().unwrap_or_default() {
+                match entry {
                     Some((start, end)) => {
-                        vec![Value::Integer(start as i64), Value::Integer(end as i64)]
+                        if let Some(buffer_id) = source_buffer_id {
+                            let start_marker = interp.make_marker();
+                            let Value::Marker(start_id) = start_marker else {
+                                unreachable!("make_marker always returns a marker")
+                            };
+                            let end_marker = interp.make_marker();
+                            let Value::Marker(end_id) = end_marker else {
+                                unreachable!("make_marker always returns a marker")
+                            };
+                            interp.set_marker(start_id, Some(start), Some(buffer_id))?;
+                            interp.set_marker(end_id, Some(end), Some(buffer_id))?;
+                            items.push(start_marker);
+                            items.push(end_marker);
+                        } else {
+                            items.push(Value::Integer(start as i64));
+                            items.push(Value::Integer(end as i64));
+                        }
                     }
-                    None => vec![Value::Nil, Value::Nil],
-                })
-                .collect::<Vec<_>>();
+                    None => {
+                        items.push(Value::Nil);
+                        items.push(Value::Nil);
+                    }
+                }
+            }
             Ok(Value::list(items))
         }
         "set-match-data" => {
             need_arg_range(name, args, 1, 2)?;
             if args[0].is_nil() {
                 interp.last_match_data = None;
+                interp.last_match_data_buffer_id = None;
                 return Ok(Value::Nil);
             }
             let items = args[0].to_vec()?;
             let mut restored = Vec::new();
+            let mut restored_buffer_id = None;
             let mut index = 0usize;
             while index + 1 < items.len() {
+                for item in [&items[index], &items[index + 1]] {
+                    if let Value::Marker(marker_id) = item
+                        && restored_buffer_id.is_none()
+                    {
+                        restored_buffer_id = interp.marker_buffer_id(*marker_id);
+                    }
+                }
                 let start = if items[index].is_nil() {
                     None
                 } else {
@@ -15311,6 +15350,7 @@ pub fn call(
                 index += 2;
             }
             interp.last_match_data = Some(restored);
+            interp.last_match_data_buffer_id = restored_buffer_id;
             Ok(args[0].clone())
         }
         "match-string" | "match-string-no-properties" => match_string_impl(interp, args),
@@ -15328,8 +15368,10 @@ pub fn call(
         "looking-at-p" => {
             need_args(name, args, 1)?;
             let saved_match_data = interp.last_match_data.clone();
+            let saved_match_data_buffer_id = interp.last_match_data_buffer_id;
             let result = looking_at_impl(interp, &args[0], env);
             interp.last_match_data = saved_match_data;
+            interp.last_match_data_buffer_id = saved_match_data_buffer_id;
             result
         }
 
@@ -15370,6 +15412,7 @@ pub fn call(
                     end,
                     replacement.chars().count(),
                 ));
+                interp.last_match_data_buffer_id = None;
                 return Ok(make_shared_string_value_with_multibyte(
                     updated,
                     Vec::new(),
@@ -15410,6 +15453,7 @@ pub fn call(
                 end,
                 replacement_len,
             ));
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
             Ok(Value::Nil)
         }
 
@@ -18095,6 +18139,7 @@ fn set_match_data(
     haystack: &str,
     captures: &fancy_regex::Captures<'_>,
     capture_mapping: &[usize],
+    source_buffer_id: Option<u64>,
 ) {
     interp.last_match_data = Some(match_data_from_captures(
         start_pos,
@@ -18102,6 +18147,7 @@ fn set_match_data(
         captures,
         capture_mapping,
     ));
+    interp.last_match_data_buffer_id = source_buffer_id;
 }
 
 fn string_match_impl(
@@ -18137,7 +18183,14 @@ fn string_match_impl(
     {
         let match_start = start + tail[..matched.start()].chars().count();
         if update_match_data {
-            set_match_data(interp, start, &tail, &captures, regex.capture_mapping());
+            set_match_data(
+                interp,
+                start,
+                &tail,
+                &captures,
+                regex.capture_mapping(),
+                None,
+            );
         }
         Ok(Value::Integer(match_start as i64))
     } else {
@@ -19680,10 +19733,18 @@ fn looking_at_impl(
         && let Some(matched) = captures.get(0)
         && matched.start() == 0
     {
-        set_match_data(interp, pos, &tail, &captures, regex.capture_mapping());
+        set_match_data(
+            interp,
+            pos,
+            &tail,
+            &captures,
+            regex.capture_mapping(),
+            Some(interp.current_buffer_id()),
+        );
         Ok(Value::T)
     } else {
         interp.last_match_data = None;
+        interp.last_match_data_buffer_id = None;
         Ok(Value::Nil)
     }
 }
@@ -19738,17 +19799,25 @@ fn buffer_regex_search(
                 ])))
             };
         }
-        let tail = interp
+        let haystack = interp
             .buffer
-            .buffer_substring(start, limit)
+            .buffer_substring(interp.buffer.point_min(), limit)
             .map_err(|error| LispError::Signal(error.to_string()))?;
+        let start_offset = start.saturating_sub(interp.buffer.point_min());
         if let Some(captures) = regex
-            .captures(&tail)
+            .captures_from_pos(&haystack, start_offset)
             .map_err(|error| LispError::Signal(error.to_string()))?
             && let Some(matched) = captures.get(0)
         {
-            let pos = start + tail[..matched.end()].chars().count();
-            set_match_data(interp, start, &tail, &captures, regex.capture_mapping());
+            let pos = interp.buffer.point_min() + haystack[..matched.end()].chars().count();
+            set_match_data(
+                interp,
+                interp.buffer.point_min(),
+                &haystack,
+                &captures,
+                regex.capture_mapping(),
+                Some(interp.current_buffer_id()),
+            );
             interp.buffer.goto_char(pos);
             return Ok(Value::Integer(pos as i64));
         }
@@ -19802,7 +19871,14 @@ fn buffer_regex_search(
                 .get(0)
                 .is_some_and(|matched| matched.start() == start_byte)
         {
-            set_match_data(interp, limit, &prefix, &captures, regex.capture_mapping());
+            set_match_data(
+                interp,
+                limit,
+                &prefix,
+                &captures,
+                regex.capture_mapping(),
+                Some(interp.current_buffer_id()),
+            );
             interp.buffer.goto_char(match_start);
             return Ok(Value::Integer(match_start as i64));
         }
