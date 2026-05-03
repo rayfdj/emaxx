@@ -546,7 +546,9 @@ fn eieio_slot_specs(
 }
 
 fn eieio_slot_index(slots: &[EieioSlotSpec], slot_name: &str) -> Option<usize> {
-    slots.iter().position(|slot| slot.name == slot_name)
+    slots.iter().position(|slot| {
+        slot.name == slot_name || slot.initargs.iter().any(|initarg| initarg == slot_name)
+    })
 }
 
 fn make_eieio_instance(
@@ -2059,6 +2061,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "remove-hook"
             | "run-hooks"
             | "run-hook-with-args"
+            | "run-hook-with-args-until-success"
             | "run-mode-hooks"
             | "run-hook-wrapped"
             | "mapatoms"
@@ -2146,6 +2149,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "unlock-buffer"
             | "ask-user-about-supersession-threat"
             | "advice-add"
+            | "advice-member-p"
             | "advice-remove"
             | "emaxx-apply-around-advice"
             | "emaxx-apply-after-advice"
@@ -12322,6 +12326,19 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "run-hook-with-args-until-success" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let hook_name = args[0].as_symbol()?;
+            for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
+                let result = call_function_value(interp, &hook, &args[1..], env)?;
+                if result.is_truthy() {
+                    return Ok(result);
+                }
+            }
+            Ok(Value::Nil)
+        }
         "eval-after-load" => Ok(Value::Nil),
         "run-hook-wrapped" => {
             if args.len() < 2 {
@@ -12903,6 +12920,10 @@ pub fn call(
                 _ => return Ok(Value::Nil),
             };
             interp.push_function_binding(&function_name, wrapped);
+            Ok(Value::Nil)
+        }
+        "advice-member-p" => {
+            need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
         "advice-remove" => {

@@ -8353,6 +8353,7 @@ impl Interpreter {
             Sum(Value),
             Return(Value),
             WhenReturn { condition: Value, expr: Value },
+            UnlessCollect { condition: Value, expr: Value },
             UnlessDo { condition: Value, body: Vec<Value> },
         }
 
@@ -8417,18 +8418,37 @@ impl Interpreter {
                                             env,
                                         )?
                                         .as_integer()?;
+                                    let mut step = 1usize;
+                                    let mut next_index = 6usize;
+                                    if matches!(items.get(index + 6), Some(Value::Symbol(by)) if by == "by")
+                                    {
+                                        step = self
+                                            .eval(
+                                                items.get(index + 7).ok_or_else(|| {
+                                                    LispError::Signal(
+                                                        "Unsupported cl-loop syntax".into(),
+                                                    )
+                                                })?,
+                                                env,
+                                            )?
+                                            .as_integer()?
+                                            .max(1)
+                                            as usize;
+                                        next_index = 8;
+                                    }
                                     let values = match bound_kind {
-                                        "to" | "upto" if start <= end => {
-                                            (start..=end).map(Value::Integer).collect()
-                                        }
+                                        "to" | "upto" if start <= end => (start..=end)
+                                            .step_by(step)
+                                            .map(Value::Integer)
+                                            .collect(),
                                         "below" if start < end => {
-                                            (start..end).map(Value::Integer).collect()
+                                            (start..end).step_by(step).map(Value::Integer).collect()
                                         }
                                         "to" | "upto" | "below" => Vec::new(),
                                         _ => unreachable!(),
                                     };
                                     specs.push(LoopSpec::Range { name, values });
-                                    index += 6;
+                                    index += next_index;
                                 }
                                 _ => {
                                     specs.push(LoopSpec::From { name, start });
@@ -8448,16 +8468,33 @@ impl Interpreter {
                                     env,
                                 )?
                                 .as_integer()?;
+                            let mut step = 1usize;
+                            let mut next_index = 4usize;
+                            if matches!(items.get(index + 4), Some(Value::Symbol(by)) if by == "by")
+                            {
+                                step = self
+                                    .eval(
+                                        items.get(index + 5).ok_or_else(|| {
+                                            LispError::Signal("Unsupported cl-loop syntax".into())
+                                        })?,
+                                        env,
+                                    )?
+                                    .as_integer()?
+                                    .max(1) as usize;
+                                next_index = 6;
+                            }
                             let values = match kind.as_str() {
                                 "to" | "upto" if end >= 0 => {
-                                    (0..=end).map(Value::Integer).collect()
+                                    (0..=end).step_by(step).map(Value::Integer).collect()
                                 }
-                                "below" if end > 0 => (0..end).map(Value::Integer).collect(),
+                                "below" if end > 0 => {
+                                    (0..end).step_by(step).map(Value::Integer).collect()
+                                }
                                 "to" | "upto" | "below" => Vec::new(),
                                 _ => unreachable!(),
                             };
                             specs.push(LoopSpec::Range { name, values });
-                            index += 4;
+                            index += next_index;
                         }
                         Some(Value::Symbol(kind)) if kind == "in" => {
                             let values = self
@@ -8631,18 +8668,26 @@ impl Interpreter {
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
                     .clone(),
             ),
-            Some(Value::Symbol(symbol)) if symbol == "unless" => {
-                if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "do") {
-                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
-                }
-                LoopAction::UnlessDo {
+            Some(Value::Symbol(symbol)) if symbol == "unless" => match items.get(index + 2) {
+                Some(Value::Symbol(kind)) if kind == "collect" => LoopAction::UnlessCollect {
+                    condition: items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                    expr: items
+                        .get(index + 3)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                },
+                Some(Value::Symbol(kind)) if kind == "do" => LoopAction::UnlessDo {
                     condition: items
                         .get(index + 1)
                         .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
                         .clone(),
                     body: items[index + 3..].to_vec(),
-                }
-            }
+                },
+                _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+            },
             _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
         };
 
@@ -8735,6 +8780,11 @@ impl Interpreter {
                         break;
                     }
                 }
+                LoopAction::UnlessCollect { condition, expr } => {
+                    if !self.eval(condition, env)?.is_truthy() {
+                        collected.push(self.eval(expr, env)?);
+                    }
+                }
                 LoopAction::UnlessDo { condition, body } => {
                     if !self.eval(condition, env)?.is_truthy() {
                         result = self.sf_progn(body, env)?;
@@ -8758,6 +8808,7 @@ impl Interpreter {
             LoopAction::Always(_) if result.is_nil() => Value::Nil,
             LoopAction::Always(_) => Value::T,
             LoopAction::Sum(_) => Value::Integer(sum),
+            LoopAction::UnlessCollect { .. } => Value::list(collected),
             _ => result,
         })
     }
@@ -14162,6 +14213,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn run_hook_with_args_until_success_returns_first_truthy_result() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar sample-success-hook nil)
+                   (setq sample-success-hook
+                         (list
+                          (lambda (value) nil)
+                          (lambda (value) (list 'hit value))
+                          (lambda (value) (error \"must not run\"))))
+                   (run-hook-with-args-until-success 'sample-success-hook 7))"
+            ),
+            Value::list([Value::Symbol("hit".into()), Value::Integer(7)])
+        );
+    }
+
+    #[test]
+    fn advice_member_p_defaults_to_nil_for_untracked_advice() {
+        assert_eq!(
+            eval_str("(advice-member-p 'sample-advice 'sample-function)"),
+            Value::Nil
+        );
+    }
+
     fn assert_format_prompt_uses_first_default_choice() {
         assert_eq!(
             eval_str(r#"(format-prompt "Regexp to unhighlight" '("a" "b"))"#),
@@ -15500,6 +15576,21 @@ mod tests {
         assert_eq!(
             eval_str("(let ((n 0)) (cl-loop for i from 1 to 3 do (setq n (+ n i))) n)"),
             Value::Integer(6)
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_step_and_unless_collect() {
+        assert_eq!(
+            eval_str(
+                "(cl-loop for i below 6 by 2
+                          unless (memq i '(2))
+                          collect (nth i '(:alpha \"sample\" :max 1 :omega 22)))"
+            ),
+            Value::list([
+                Value::Symbol(":alpha".into()),
+                Value::Symbol(":omega".into())
+            ])
         );
     }
 
@@ -18233,12 +18324,14 @@ mod tests {
                      (list
                       (type-of backend)
                       (slot-value backend 'type)
+                      (slot-value backend :source)
                       (eieio-oref backend 'source)
                       (eieio-oref backend 'host))))"
             ),
             Value::list([
                 Value::Symbol("sample-backend".into()),
                 Value::Symbol("password-store".into()),
+                Value::String(".".into()),
                 Value::String(".".into()),
                 Value::String("example.org".into()),
             ])
