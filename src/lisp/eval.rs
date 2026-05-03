@@ -5608,6 +5608,7 @@ impl Interpreter {
                         "pcase" => return self.sf_pcase(&items, env),
                         "pcase-defmacro" => return self.sf_pcase_defmacro(&items, env),
                         "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
+                        "and-let*" => return self.sf_and_let_star(&items, env),
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
                         "not" => return self.sf_not(&items, env),
@@ -6150,6 +6151,60 @@ impl Interpreter {
                 ))),
         );
         self.eval(&rewritten, env)
+    }
+
+    fn sf_and_let_star(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "and-let*".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let bindings = items[1].to_vec()?;
+        env.push(Vec::new());
+        let mut last_value = Value::T;
+        for binding in bindings {
+            let value = match binding {
+                Value::Symbol(name) => self.lookup(&name, env)?,
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    match parts.as_slice() {
+                        [expr] => self.eval(expr, env)?,
+                        [Value::Symbol(name), expr] => {
+                            let value = self.eval(expr, env)?;
+                            if name != "_"
+                                && let Some(frame) = env.last_mut()
+                            {
+                                frame.push((name.clone(), Self::stored_value(value.clone())));
+                            }
+                            value
+                        }
+                        _ => {
+                            env.pop();
+                            return Err(LispError::Signal("Invalid and-let* binding".into()));
+                        }
+                    }
+                }
+                _ => {
+                    env.pop();
+                    return Err(LispError::Signal("Invalid and-let* binding".into()));
+                }
+            };
+
+            if !value.is_truthy() {
+                env.pop();
+                return Ok(Value::Nil);
+            }
+            last_value = value;
+        }
+
+        let result = if items.len() > 2 {
+            self.sf_progn(&items[2..], env)
+        } else {
+            Ok(last_value)
+        };
+        env.pop();
+        result
     }
 
     fn sf_when_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -6709,6 +6764,9 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "plist-get" => {
+                self.sf_setf_plist_get(&place, &items[2], env)
+            }
             Some(Value::Symbol(name)) if name == "gethash" => {
                 self.sf_setf_gethash(&place, &items[2], env)
             }
@@ -6829,6 +6887,31 @@ impl Interpreter {
         }
 
         self.set_setf_place_value(alist_place, Value::list(new_entries), env)?;
+        Ok(value)
+    }
+
+    fn sf_setf_plist_get(
+        &mut self,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(plist_place) = place.get(1) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let Some(key_expr) = place.get(2) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let plist = self.eval(plist_place, env)?;
+        let key = self.eval(key_expr, env)?;
+        let value = self.eval(value_expr, env)?;
+        let updated = if let Some(testfn_expr) = place.get(3) {
+            let testfn = self.eval(testfn_expr, env)?;
+            primitives::call(self, "plist-put", &[plist, key, value.clone(), testfn], env)?
+        } else {
+            primitives::call(self, "plist-put", &[plist, key, value.clone()], env)?
+        };
+        self.set_setf_place_value(plist_place, updated, env)?;
         Ok(value)
     }
 
@@ -7060,6 +7143,10 @@ impl Interpreter {
                 {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_alist_get(&items, &value_expr, env).map(|_| ())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "plist-get")
+                {
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_plist_get(&items, &value_expr, env).map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "aref") {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_aref(&items, &value_expr, env).map(|_| ())
@@ -8342,6 +8429,7 @@ impl Interpreter {
             List { pattern: Value, values: Vec<Value> },
             From { name: String, start: i64 },
             Assign { name: String, expr: Value },
+            Repeat { count: usize },
         }
 
         enum LoopAction {
@@ -8547,6 +8635,19 @@ impl Interpreter {
                     );
                     index += 2;
                 }
+                Some(Value::Symbol(symbol)) if symbol == "repeat" => {
+                    let count = self
+                        .eval(
+                            items.get(index + 1).ok_or_else(|| {
+                                LispError::Signal("Unsupported cl-loop syntax".into())
+                            })?,
+                            env,
+                        )?
+                        .as_integer()?
+                        .max(0) as usize;
+                    specs.push(LoopSpec::Repeat { count });
+                    index += 2;
+                }
                 _ => break,
             }
         }
@@ -8561,6 +8662,7 @@ impl Interpreter {
                 LoopSpec::Range { values, .. } | LoopSpec::List { values, .. } => {
                     Some(values.len())
                 }
+                LoopSpec::Repeat { count } => Some(*count),
                 LoopSpec::From { .. } | LoopSpec::Assign { .. } => None,
             })
             .min()
@@ -8572,7 +8674,7 @@ impl Interpreter {
                 LoopSpec::Range { name, .. }
                 | LoopSpec::From { name, .. }
                 | LoopSpec::Assign { name, .. } => Some((name.clone(), Value::Nil)),
-                LoopSpec::List { .. } => None,
+                LoopSpec::List { .. } | LoopSpec::Repeat { .. } => None,
             })
             .collect::<Vec<_>>();
         for spec in &specs {
@@ -8718,6 +8820,7 @@ impl Interpreter {
                             );
                         }
                         LoopSpec::Assign { .. } => {}
+                        LoopSpec::Repeat { .. } => {}
                     }
                 }
             }
@@ -8961,6 +9064,25 @@ impl Interpreter {
                     resolved.push(quoted_literal(&remove));
                 }
                 if let Some(testfn_expr) = items.get(5) {
+                    let testfn = self.eval(testfn_expr, env)?;
+                    resolved.push(quoted_literal(&testfn));
+                }
+                Ok(Value::list(resolved))
+            }
+            Some(Value::Symbol(name)) if name == "plist-get" => {
+                let Some(plist_place) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(key_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let key = self.eval(key_expr, env)?;
+                let mut resolved = vec![
+                    Value::Symbol("plist-get".into()),
+                    self.resolve_setf_place(plist_place, env)?,
+                    quoted_literal(&key),
+                ];
+                if let Some(testfn_expr) = items.get(3) {
                     let testfn = self.eval(testfn_expr, env)?;
                     resolved.push(quoted_literal(&testfn));
                 }
@@ -13345,8 +13467,10 @@ fn compile_rx_form(
             Ok(quote_rx_string_literal(&ch.to_string()))
         }
         Value::Symbol(symbol) => match symbol.as_str() {
-            "bos" | "bol" => Ok("^".into()),
-            "eos" | "eol" => Ok("$".into()),
+            "bol" => Ok("^".into()),
+            "eol" => Ok("$".into()),
+            "bos" | "string-start" | "bot" | "buffer-start" => Ok("\\`".into()),
+            "eos" | "string-end" | "eot" | "buffer-end" => Ok("\\'".into()),
             "bow" | "eow" => Ok("\\b".into()),
             "digit" => Ok("[0-9]".into()),
             "xdigit" => Ok("[0-9A-Fa-f]".into()),
@@ -15591,6 +15715,14 @@ mod tests {
                 Value::Symbol(":alpha".into()),
                 Value::Symbol(":omega".into())
             ])
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_repeat_collect() {
+        assert_eq!(
+            eval_str("(let ((n 0)) (cl-loop repeat 3 collect (setq n (1+ n))))"),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)])
         );
     }
 
@@ -19557,6 +19689,31 @@ mod tests {
     }
 
     #[test]
+    fn setf_plist_get_updates_and_adds_entries() {
+        assert_eq!(
+            eval_str(
+                "(let ((plist '(:host \"example.org\")))
+                   (setf (plist-get plist :secret) \"pw\")
+                   plist)"
+            ),
+            Value::list([
+                Value::Symbol(":host".into()),
+                Value::String("example.org".into()),
+                Value::Symbol(":secret".into()),
+                Value::String("pw".into()),
+            ])
+        );
+        assert_eq!(
+            eval_str(
+                "(let ((plist (list \"host\" \"old\")))
+                   (setf (plist-get plist \"host\" #'equal) \"new\")
+                   plist)"
+            ),
+            Value::list([Value::String("host".into()), Value::String("new".into()),])
+        );
+    }
+
+    #[test]
     fn setf_image_property_updates_image_descriptors() {
         assert_eq!(
             eval_str(
@@ -19602,6 +19759,23 @@ mod tests {
             Value::Symbol("fallback".into())
         );
         assert_eq!(eval_str("(when-let (a 5) (+ a 6))"), Value::Integer(11));
+    }
+
+    #[test]
+    fn and_let_star_returns_body_or_last_binding_value() {
+        assert_eq!(
+            eval_str("(and-let* ((a 1) (b (+ a 2))) (+ a b))"),
+            Value::Integer(4)
+        );
+        assert_eq!(
+            eval_str("(and-let* ((a 1) (b nil)) (error \"must not run\"))"),
+            Value::Nil
+        );
+        assert_eq!(
+            eval_str("(and-let* ((a 1) (b (+ a 2))))"),
+            Value::Integer(3)
+        );
+        assert_eq!(eval_str("(and-let* nil)"), Value::T);
     }
 
     #[test]
@@ -20855,26 +21029,30 @@ IHdvcmxkIQ==")))
     fn rx_compiles_common_test_patterns() {
         assert_eq!(
             eval_str(r#"(rx-to-string '(seq "ab" eos) t)"#),
-            Value::String("ab$".into())
+            Value::String("ab\\'".into())
         );
         assert_eq!(
             eval_str(
                 r#"(let ((tramp-local-host-names '("foo" "bar")))
                      (rx-to-string `(: bos (| . ,tramp-local-host-names) eos)))"#
             ),
-            Value::String("^\\(?:foo\\|bar\\)$".into())
+            Value::String("\\`\\(?:foo\\|bar\\)\\'".into())
         );
         assert_eq!(
             eval_str(
                 r#"(let ((tramp-local-host-names '("foo" "bar")))
                      (rx-to-string `(: bos (| \, tramp-local-host-names) eos)))"#
             ),
-            Value::String("^\\(?:foo\\|bar\\)$".into())
+            Value::String("\\`\\(?:foo\\|bar\\)\\'".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx bot "body" eot)"#),
+            Value::String("\\`body\\'".into())
         );
         assert_eq!(eval_str(r#"(rx "\\(")"#), Value::String("\\\\(".into()));
         assert_eq!(
             eval_str(r#"(rx bos (group (+ digit)) (+ blank) "Hi" eol)"#),
-            Value::String("^\\(\\(?:[0-9]\\)+\\)\\(?:[[:blank:]]\\)+Hi$".into())
+            Value::String("\\`\\(\\(?:[0-9]\\)+\\)\\(?:[[:blank:]]\\)+Hi$".into())
         );
         assert_eq!(
             eval_str(r#"(rx (group xdigit xdigit))"#),
