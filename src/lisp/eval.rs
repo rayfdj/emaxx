@@ -1495,6 +1495,18 @@ impl Interpreter {
         output
     }
 
+    pub(crate) fn value_is_instance_of_class(&self, value: &Value, class_name: &str) -> bool {
+        let Value::Record(record_id) = value else {
+            return false;
+        };
+        let Some(record) = self.find_record(*record_id) else {
+            return false;
+        };
+        self.class_allparents(&record.type_name)
+            .iter()
+            .any(|parent| matches!(parent, Value::Symbol(name) if name == class_name))
+    }
+
     pub(crate) fn class_children(&self, name: &str) -> Vec<Value> {
         self.find_class_state(name)
             .map(|state| {
@@ -7993,6 +8005,21 @@ impl Interpreter {
                         Value::Symbol(name.to_string()),
                     ]),
                     Value::Symbol("initargs".into()),
+                ])],
+                shared_env(Vec::new()),
+            )),
+        );
+        self.set_function_binding(
+            &format!("{name}-p"),
+            Some(Value::Lambda(
+                vec!["object".into()],
+                vec![Value::list([
+                    Value::Symbol("emaxx-class-p".into()),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(name.to_string()),
+                    ]),
+                    Value::Symbol("object".into()),
                 ])],
                 shared_env(Vec::new()),
             )),
@@ -18484,6 +18511,22 @@ mod tests {
                 ]),
                 Value::list([Value::Symbol("sample-child".into())]),
             ])
+        );
+    }
+
+    #[test]
+    fn defclass_registers_instance_predicate() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-parent nil nil)
+                   (defclass sample-child (sample-parent) nil)
+                   (let ((child (make-instance 'sample-child)))
+                     (list (sample-child-p child)
+                           (sample-parent-p child)
+                           (sample-child-p 'not-an-object))))"
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
         );
     }
 
