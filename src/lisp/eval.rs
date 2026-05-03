@@ -749,6 +749,8 @@ pub struct Interpreter {
     pub last_selected_tests: Vec<String>,
     /// The latest regexp match data in buffer coordinates.
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
+    /// Source buffer for buffer-origin match data; string searches leave this unset.
+    pub last_match_data_buffer_id: Option<u64>,
     pub profiler_memory_running: bool,
     pub profiler_memory_log_pending: bool,
     pub profiler_cpu_running: bool,
@@ -922,6 +924,7 @@ impl Interpreter {
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),
             last_match_data: None,
+            last_match_data_buffer_id: None,
             profiler_memory_running: false,
             profiler_memory_log_pending: false,
             profiler_cpu_running: false,
@@ -9793,8 +9796,51 @@ impl Interpreter {
 
     fn sf_save_match_data(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         let saved = self.last_match_data.clone();
+        let saved_buffer_id = self.last_match_data_buffer_id;
+        let saved_markers = if let (Some(buffer_id), Some(match_data)) = (saved_buffer_id, &saved) {
+            let mut marker_data = Vec::new();
+            for entry in match_data {
+                if let Some((start, end)) = entry {
+                    let Value::Marker(start_marker) = self.make_marker() else {
+                        unreachable!("make_marker always returns a marker")
+                    };
+                    let Value::Marker(end_marker) = self.make_marker() else {
+                        unreachable!("make_marker always returns a marker")
+                    };
+                    self.set_marker(start_marker, Some(*start), Some(buffer_id))?;
+                    self.set_marker(end_marker, Some(*end), Some(buffer_id))?;
+                    marker_data.push(Some((start_marker, end_marker)));
+                } else {
+                    marker_data.push(None);
+                }
+            }
+            Some(marker_data)
+        } else {
+            None
+        };
         let result = self.sf_progn(&items[1..], env);
-        self.last_match_data = saved;
+        self.last_match_data = if let Some(marker_data) = saved_markers {
+            let mut restored = Vec::new();
+            for entry in marker_data {
+                restored.push(match entry {
+                    Some((start_marker, end_marker)) => {
+                        let start = self.marker_position(start_marker);
+                        let end = self.marker_position(end_marker);
+                        let _ = self.set_marker(start_marker, None, None);
+                        let _ = self.set_marker(end_marker, None, None);
+                        match (start, end) {
+                            (Some(start), Some(end)) => Some((start, end)),
+                            _ => None,
+                        }
+                    }
+                    None => None,
+                });
+            }
+            Some(restored)
+        } else {
+            saved
+        };
+        self.last_match_data_buffer_id = saved_buffer_id;
         result
     }
 
@@ -18022,6 +18068,223 @@ mod tests {
                 ])
             );
         });
+    }
+
+    #[test]
+    fn align_css_declaration_rule_matches_only_declarations() {
+        run_with_large_stack(|| {
+            let emacs_repo = upstream_emacs_repo();
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'align)
+                         (let ((rule (assq 'css-declaration align-rules-list)))
+                           (with-temp-buffer
+                             (css-mode)
+                             (list (align--rule-should-run rule)
+                                   (string-match (cdr (assq 'regexp rule)) "  color: red;")
+                                   (string-match (cdr (assq 'regexp rule)) "p.center {")))))"#
+                ),
+                Value::list([Value::T, Value::Integer(0), Value::Nil])
+            );
+        });
+    }
+
+    #[test]
+    fn align_css_declaration_search_positions_match_buffer_lines() {
+        run_with_large_stack(|| {
+            let emacs_repo = upstream_emacs_repo();
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'align)
+                         (let ((rule (assq 'css-declaration align-rules-list)))
+                           (with-temp-buffer
+                             (css-mode)
+                             (insert "  border: 1px solid black;\n  padding: 25px 50px 75px 100px;\n")
+                             (goto-char (point-min))
+                             (re-search-forward (cdr (assq 'regexp rule)))
+                             (let ((first (list (match-beginning 0) (match-end 0)
+                                                (match-beginning 1) (match-end 1))))
+                               (re-search-forward (cdr (assq 'regexp rule)))
+                               (list first
+                                     (list (match-beginning 0) (match-end 0)
+                                           (match-beginning 1) (match-end 1)))))))"#
+                ),
+                Value::list([
+                    Value::list([
+                        Value::Integer(1),
+                        Value::Integer(27),
+                        Value::Integer(10),
+                        Value::Integer(11),
+                    ]),
+                    Value::list([
+                        Value::Integer(28),
+                        Value::Integer(60),
+                        Value::Integer(38),
+                        Value::Integer(39),
+                    ]),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn align_region_separator_finds_brace_line_between_css_blocks() {
+        run_with_large_stack(|| {
+            let emacs_repo = upstream_emacs_repo();
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'align)
+                         (with-temp-buffer
+                           (insert "div {\n  border: 1px solid black;\n  padding: 25px 50px 75px 100px;\n  background-color: lightblue;\n}\np.center {\n  text-align: center;\n  color: red;\n}\n")
+                           (align-new-section-p 86 124 align-region-separate)))"#
+                ),
+                Value::Integer(99)
+            );
+        });
+    }
+
+    #[test]
+    fn align_region_separator_accepts_marker_bounds() {
+        run_with_large_stack(|| {
+            let emacs_repo = upstream_emacs_repo();
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'align)
+                         (with-temp-buffer
+                           (insert "div {\n  border: 1px solid black;\n  padding: 25px 50px 75px 100px;\n  background-color: lightblue;\n}\np.center {\n  text-align: center;\n  color: red;\n}\n")
+                           (align-new-section-p (copy-marker 86 t)
+                                                (copy-marker 124 t)
+                                                align-region-separate)))"#
+                ),
+                Value::Integer(99)
+            );
+        });
+    }
+
+    #[test]
+    fn align_css_resource_case_matches_output() {
+        run_with_large_stack(|| {
+            let emacs_repo = upstream_emacs_repo();
+            let load_path = crate::compat::emaxx_upstream_load_path(&emacs_repo).unwrap();
+            let mut interp = Interpreter::new();
+            interp.set_load_path(load_path);
+            interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+            interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+            let _ = interp.load_target("backquote");
+            let _ = interp.load_target("seq");
+            load_faces_compat(&mut interp);
+
+            assert_eq!(
+                eval_str_with(
+                    &mut interp,
+                    r#"(progn
+                         (require 'align)
+                         (with-temp-buffer
+                           (let ((indent-tabs-mode nil))
+                             (css-mode)
+                             (insert "div {\n  border: 1px solid black;\n  padding: 25px 50px 75px 100px;\n  background-color: lightblue;\n}\np.center {\n  text-align: center;\n  color: red;\n}\n")
+                             (align (point-min) (point-max))
+                             (buffer-string))))"#
+                ),
+                Value::String(
+                    "div {\n  border:           1px solid black;\n  padding:          25px 50px 75px 100px;\n  background-color: lightblue;\n}\np.center {\n  text-align: center;\n  color:      red;\n}\n"
+                        .into()
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn buffer_match_data_restores_live_marker_positions() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (insert "aa bb")
+                     (goto-char (point-min))
+                     (re-search-forward "aa\\( \\)bb")
+                     (let ((data (match-data)))
+                       (goto-char (point-min))
+                       (insert "XX")
+                       (set-match-data data)
+                       (list (match-beginning 1) (match-end 1))))"#
+            ),
+            Value::list([Value::Integer(5), Value::Integer(6)])
+        );
+    }
+
+    #[test]
+    fn save_match_data_restores_live_buffer_positions() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (insert "aa bb")
+                     (goto-char (point-min))
+                     (re-search-forward "aa\\( \\)bb")
+                     (save-match-data
+                       (goto-char (point-min))
+                       (insert "XX"))
+                     (list (match-beginning 1) (match-end 1)))"#
+            ),
+            Value::list([Value::Integer(5), Value::Integer(6)])
+        );
+    }
+
+    #[test]
+    fn re_search_forward_anchor_keeps_context_after_point() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (insert "a\nb\n")
+                     (goto-char 2)
+                     (re-search-forward "^b")
+                     (list (match-beginning 0) (match-end 0) (point)))"#
+            ),
+            Value::list([Value::Integer(3), Value::Integer(4), Value::Integer(4)])
+        );
     }
 
     #[test]
