@@ -1019,6 +1019,9 @@ impl Interpreter {
         let input_decode_map =
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
+        let minibuffer_local_map =
+            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
+        interp.set_global_binding("minibuffer-local-map", minibuffer_local_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         interp.set_global_binding("minor-mode-map-alist", Value::Nil);
         interp.set_global_binding("font-lock-mode", Value::Nil);
@@ -12881,7 +12884,7 @@ fn build_signal_value(condition: Value, data: Value) -> Value {
 }
 
 fn compile_rx_sequence(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     env: &Env,
     items: &[Value],
 ) -> Result<String, LispError> {
@@ -12893,7 +12896,7 @@ fn compile_rx_sequence(
 }
 
 pub(crate) fn compile_rx_to_string(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     form: &Value,
     env: &Env,
     _no_group: bool,
@@ -12933,6 +12936,23 @@ fn expand_rx_splice_markers(
         index += 1;
     }
     Ok(expanded)
+}
+
+fn compile_rx_literal_form(
+    interp: &mut Interpreter,
+    env: &Env,
+    items: &[Value],
+) -> Result<String, LispError> {
+    if items.len() != 2 {
+        return Err(LispError::Signal("rx `literal' needs one argument".into()));
+    }
+    let mut literal_env = env.clone();
+    let value = interp.eval(&items[1], &mut literal_env)?;
+    match value {
+        Value::String(text) => Ok(quote_rx_string_literal(&text)),
+        Value::StringObject(state) => Ok(quote_rx_string_literal(&state.borrow().text)),
+        other => Err(LispError::TypeError("string".into(), other.type_name())),
+    }
 }
 
 fn quote_rx_string_literal(text: &str) -> String {
@@ -13192,7 +13212,11 @@ fn compile_rx_char_class(items: &[Value], negated: bool) -> Result<String, LispE
     Ok(regex)
 }
 
-fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<String, LispError> {
+fn compile_rx_form(
+    interp: &mut Interpreter,
+    env: &Env,
+    value: &Value,
+) -> Result<String, LispError> {
     match value {
         Value::String(text) => Ok(quote_rx_string_literal(text)),
         Value::StringObject(state) => Ok(quote_rx_string_literal(&state.borrow().text)),
@@ -13292,6 +13316,7 @@ fn compile_rx_form(interp: &Interpreter, env: &Env, value: &Value) -> Result<Str
                         other => Err(LispError::TypeError("string".into(), other.type_name())),
                     }
                 }
+                "literal" => compile_rx_literal_form(interp, env, &items),
                 "repeat" => {
                     if items.len() < 3 {
                         return Err(LispError::Signal(
@@ -17509,6 +17534,26 @@ mod tests {
     }
 
     #[test]
+    fn standard_minibuffer_local_map_is_available() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (list (boundp 'minibuffer-local-map)
+                      (keymapp minibuffer-local-map)
+                      (define-key minibuffer-local-map (kbd "C-c t") 'ignore)
+                      (lookup-key minibuffer-local-map (kbd "C-c t")))
+                "#
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::Symbol("ignore".into()),
+                Value::Symbol("ignore".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn keymap_records_compare_equal_to_literal_lists() {
         assert_eq!(
             eval_str(
@@ -18850,6 +18895,28 @@ mod tests {
         assert_eq!(
             eval_str("(rx (repeat 3 \"ab\"))"),
             Value::String("\\(?:ab\\)\\{3\\}".into())
+        );
+    }
+
+    #[test]
+    fn rx_literal_evaluates_and_quotes_string_forms() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (let ((needle "a.b"))
+                  (list
+                   (rx (literal needle))
+                   (rx bol (literal (concat needle "?")) eol)
+                   (string-match-p (rx (literal needle)) "a.b")
+                   (string-match-p (rx (literal needle)) "axb")))
+                "#
+            ),
+            Value::list([
+                Value::String("a\\.b".into()),
+                Value::String("^a\\.b\\?$".into()),
+                Value::Integer(0),
+                Value::Nil,
+            ])
         );
     }
 
