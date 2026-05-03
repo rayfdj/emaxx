@@ -15015,6 +15015,89 @@ mod tests {
     }
 
     #[test]
+    fn faces_compat_color_at_point_skips_unspecified_faces() {
+        let mut interp = Interpreter::new();
+        load_faces_compat(&mut interp);
+
+        let value = eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defface sample-color-face
+                   '((t :background "black" :foreground "black"))
+                   "doc")
+                 (defface sample-box-face '((t :box 1)) "doc")
+                 (with-temp-buffer
+                   (insert (propertize "STRING"
+                                       'face
+                                       '(sample-box-face sample-color-face)))
+                   (goto-char (point-min))
+                   (list (background-color-at-point)
+                         (foreground-color-at-point))))"#,
+        );
+        let items = value.to_vec().unwrap();
+        assert_string_value(items[0].clone(), "black");
+        assert_string_value(items[1].clone(), "black");
+    }
+
+    #[test]
+    fn faces_compat_color_at_point_matches_upstream_cases() {
+        let mut interp = Interpreter::new();
+        load_faces_compat(&mut interp);
+
+        let value = eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defface sample-color-face
+                   '((t :background "black" :foreground "black"))
+                   "doc")
+                 (defface sample-box-face '((t :box 1)) "doc")
+                 (list
+                  (with-temp-buffer
+                    (insert (propertize "STRING"
+                                        'face
+                                        '(sample-box-face sample-color-face)))
+                    (goto-char (point-min))
+                    (list (background-color-at-point)
+                          (foreground-color-at-point)))
+                  (with-temp-buffer
+                    (insert (propertize "STRING"
+                                        'face
+                                        '(:foreground "black" :background "black")))
+                    (goto-char (point-min))
+                    (list (background-color-at-point)
+                          (foreground-color-at-point)))
+                  (with-temp-buffer
+                    (emacs-lisp-mode)
+                    (setq-local font-lock-comment-face 'sample-color-face)
+                    (setq-local font-lock-constant-face 'sample-box-face)
+                    (insert ";; `symbol'")
+                    (font-lock-fontify-region (point-min) (point-max))
+                    (goto-char (point-min))
+                    (let ((comment (list (background-color-at-point)
+                                         (foreground-color-at-point))))
+                      (goto-char 6)
+                      (list comment
+                            (list (background-color-at-point)
+                                  (foreground-color-at-point)))))))"#,
+        );
+        let cases = value.to_vec().unwrap();
+        assert_eq!(cases.len(), 3);
+        for pair in cases[0].to_vec().unwrap() {
+            assert_string_value(pair, "black");
+        }
+        for pair in cases[1].to_vec().unwrap() {
+            assert_string_value(pair, "black");
+        }
+        let font_lock_cases = cases[2].to_vec().unwrap();
+        for pair in font_lock_cases[0].to_vec().unwrap() {
+            assert_string_value(pair, "black");
+        }
+        for pair in font_lock_cases[1].to_vec().unwrap() {
+            assert_string_value(pair, "black");
+        }
+    }
+
+    #[test]
     fn faces_compat_load_theme_recomputes_theme_faces() {
         run_large_stack_test(assert_faces_compat_load_theme_recomputes_theme_faces);
     }
