@@ -1909,6 +1909,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "move-marker"
             // Output
             | "message"
+            | "warn"
             | "current-message"
             | "error-message-string"
             | "ding"
@@ -10425,6 +10426,20 @@ pub fn call(
             } else {
                 Ok(Value::String(text))
             }
+        }
+        "warn" => {
+            let text = if args.is_empty() {
+                String::new()
+            } else {
+                string_text(&call(interp, "format", args, env)?)?
+            };
+            let warning = if text.is_empty() {
+                "Warning".to_string()
+            } else {
+                format!("Warning: {text}")
+            };
+            let _ = call(interp, "message", &[Value::String(warning)], env)?;
+            Ok(Value::Nil)
         }
         "current-message" => {
             need_args(name, args, 0)?;
