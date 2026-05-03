@@ -442,6 +442,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "cl-typep"
             | "built-in-class-p"
             | "cl-functionp"
+            | "url-scheme-get-property"
             | "macroexpand-1"
             | "macroexpand-all"
             | "read-key"
@@ -2136,6 +2137,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-typep"
             | "built-in-class-p"
             | "cl-functionp"
+            | "cl-proclaim"
+            | "url-scheme-get-property"
             | "current-cpu-time"
             | "file-truename"
             | "save-buffer"
@@ -13994,6 +13997,59 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "cl-proclaim" => {
+            need_args(name, args, 1)?;
+            let existing = interp
+                .lookup_var("cl--proclaims-deferred", env)
+                .unwrap_or(Value::Nil);
+            interp.set_global_binding(
+                "cl--proclaims-deferred",
+                Value::cons(args[0].clone(), existing),
+            );
+            Ok(Value::Nil)
+        }
+        "url-scheme-get-property" => {
+            need_args(name, args, 2)?;
+            let scheme = match &args[0] {
+                Value::Symbol(symbol) => symbol.clone(),
+                _ => string_text(&args[0])?,
+            }
+            .to_ascii_lowercase();
+            let property = args[1].as_symbol()?;
+            let value = match property {
+                "default-port" => match scheme.as_str() {
+                    "ftp" => Value::Integer(21),
+                    "http" => Value::Integer(80),
+                    "https" => Value::Integer(443),
+                    "imap" => Value::Integer(143),
+                    "ldap" => Value::Integer(389),
+                    "nntp" => Value::Integer(119),
+                    "pop" | "pop3" => Value::Integer(110),
+                    "smtp" => Value::Integer(25),
+                    "telnet" => Value::Integer(23),
+                    _ => Value::Integer(0),
+                },
+                "name" => {
+                    if scheme.is_empty() {
+                        Value::String("unknown".into())
+                    } else {
+                        Value::String(scheme)
+                    }
+                }
+                "loader" => {
+                    if scheme.is_empty() {
+                        Value::Symbol("url-scheme-default-loader".into())
+                    } else {
+                        Value::Symbol(format!("url-{scheme}"))
+                    }
+                }
+                "parse-url" => Value::Symbol("url-generic-parse-url".into()),
+                "asynchronous-p" => Value::Nil,
+                "file-directory-p" => Value::Symbol("ignore".into()),
+                _ => Value::Nil,
+            };
+            Ok(value)
         }
 
         // ── Overlay operations ──

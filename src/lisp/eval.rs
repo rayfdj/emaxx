@@ -14069,6 +14069,19 @@ mod tests {
     }
 
     #[test]
+    fn url_scheme_get_property_reports_standard_default_ports() {
+        assert_eq!(
+            eval_str(
+                "(list
+                   (url-scheme-get-property \"https\" 'default-port)
+                   (url-scheme-get-property \"http\" 'default-port)
+                   (url-scheme-get-property \"unknown\" 'default-port))"
+            ),
+            Value::list([Value::Integer(443), Value::Integer(80), Value::Integer(0)])
+        );
+    }
+
+    #[test]
     fn assoc_matches_strings_bound_in_lexical_variables() {
         assert_eq!(
             eval_str(
@@ -17924,6 +17937,17 @@ mod tests {
         assert_eq!(
             interp.lookup_var("vc-directory-exclusion-list", &Vec::new()),
             Some(preloaded_vc_directory_exclusion_list())
+        );
+    }
+
+    #[test]
+    fn cl_proclaim_records_deferred_specs_without_error() {
+        assert_eq!(
+            eval_str("(progn (cl-proclaim '(inline sample-fn)) cl--proclaims-deferred)"),
+            Value::list([Value::list([
+                Value::Symbol("inline".into()),
+                Value::Symbol("sample-fn".into()),
+            ])])
         );
     }
 
