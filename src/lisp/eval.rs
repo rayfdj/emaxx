@@ -739,6 +739,8 @@ pub struct Interpreter {
     functions: Vec<(String, Value)>,
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
+    /// Forms waiting for a feature to be provided.
+    after_load_forms: Vec<(String, Vec<Value>, Env)>,
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
     /// Collected ERT test definitions.
@@ -919,6 +921,7 @@ impl Interpreter {
                 "lcms2".into(),
                 "threads".into(),
             ],
+            after_load_forms: Vec::new(),
             current_load_file: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
@@ -1177,8 +1180,7 @@ impl Interpreter {
             return Ok(Value::Symbol(feature.to_string()));
         }
         if is_compat_preloaded_feature(feature) {
-            self.provide_feature(feature);
-            return Ok(Value::Symbol(feature.to_string()));
+            return self.provide_feature_with_after_load(feature);
         }
         let load_target = target.unwrap_or(feature);
         let Some(path) = self.resolve_load_target(load_target) else {
@@ -1189,7 +1191,7 @@ impl Interpreter {
         self.loading_features.pop();
         load_result?;
         if !self.has_feature(feature) {
-            self.provide_feature(feature);
+            return self.provide_feature_with_after_load(feature);
         }
         Ok(Value::Symbol(feature.to_string()))
     }
@@ -1970,6 +1972,24 @@ impl Interpreter {
         if feature == "abbrev" {
             primitives::ensure_standard_abbrev_tables(self);
         }
+    }
+
+    fn provide_feature_with_after_load(&mut self, feature: &str) -> Result<Value, LispError> {
+        self.provide_feature(feature);
+        let mut pending = Vec::new();
+        let mut index = 0usize;
+        while index < self.after_load_forms.len() {
+            if self.after_load_forms[index].0 == feature {
+                let (_, body, env) = self.after_load_forms.remove(index);
+                pending.push((body, env));
+            } else {
+                index += 1;
+            }
+        }
+        for (body, mut env) in pending {
+            self.sf_progn(&body, &mut env)?;
+        }
+        Ok(Value::Symbol(feature.to_string()))
     }
 
     pub fn has_feature(&self, feature: &str) -> bool {
@@ -5792,12 +5812,13 @@ impl Interpreter {
                         }
                         "provide" => {
                             if let Some(feature) = items.get(1).and_then(feature_name) {
-                                self.provide_feature(&feature);
-                                return Ok(Value::Symbol(feature));
+                                return self.provide_feature_with_after_load(&feature);
                             }
                             return Ok(Value::Nil);
                         }
-                        "with-eval-after-load" => return Ok(Value::Nil),
+                        "with-eval-after-load" => {
+                            return self.sf_with_eval_after_load(&items, env);
+                        }
                         "with-no-warnings" => return self.sf_progn(&items[1..], env),
                         "declare"
                         | "declare-function"
@@ -11103,6 +11124,38 @@ impl Interpreter {
         Ok(Value::Symbol(name))
     }
 
+    fn sf_with_eval_after_load(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "with-eval-after-load".into(),
+                0,
+            ));
+        }
+        let feature_value = self.eval(&items[1], env)?;
+        let feature = match feature_value {
+            Value::Symbol(name) => name,
+            Value::String(name) => name,
+            Value::StringObject(state) => state.borrow().text.clone(),
+            other => {
+                return Err(LispError::TypeError(
+                    "string-or-symbol".into(),
+                    other.type_name(),
+                ));
+            }
+        };
+        if self.has_feature(&feature) {
+            self.sf_progn(&items[2..], env)
+        } else {
+            self.after_load_forms
+                .push((feature, items[2..].to_vec(), env.clone()));
+            Ok(Value::Nil)
+        }
+    }
+
     fn sf_with_memoization(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Err(LispError::WrongNumberOfArgs(
@@ -13855,6 +13908,28 @@ mod tests {
                    (with-connection-local-variables 1 2 3))",
             ),
             Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn with_eval_after_load_runs_forms_when_feature_is_provided() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setq emaxx-after-load-events nil)
+                  (with-eval-after-load 'sample-after-load
+                    (push 'deferred emaxx-after-load-events))
+                  (with-eval-after-load 'emaxx
+                    (push 'immediate emaxx-after-load-events))
+                  (provide 'sample-after-load)
+                  emaxx-after-load-events)
+                "#
+            ),
+            Value::list([
+                Value::Symbol("deferred".into()),
+                Value::Symbol("immediate".into()),
+            ])
         );
     }
 
