@@ -792,7 +792,6 @@ impl Interpreter {
         let mut interp = Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
-                ("abbrev-table-name-list".into(), Value::Nil),
                 ("cl--proclaims-deferred".into(), Value::Nil),
                 (
                     "command-line-args".into(),
@@ -1961,6 +1960,9 @@ impl Interpreter {
     pub fn provide_feature(&mut self, feature: &str) {
         if !self.provided_features.iter().any(|name| name == feature) {
             self.provided_features.push(feature.to_string());
+        }
+        if feature == "abbrev" {
+            primitives::ensure_standard_abbrev_tables(self);
         }
     }
 
@@ -20097,6 +20099,46 @@ IHdvcmxkIQ==")))
                 "#
             ),
             Value::list([Value::Integer(42), Value::Nil, Value::T])
+        );
+    }
+
+    #[test]
+    fn abbrev_require_seeds_standard_table_name_list() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'abbrev)
+                (list (not (null (memq 'fundamental-mode-abbrev-table
+                                        abbrev-table-name-list)))
+                      (not (null (memq 'global-abbrev-table
+                                        abbrev-table-name-list)))
+                      (abbrev-table-p fundamental-mode-abbrev-table)
+                      (abbrev-table-p global-abbrev-table))
+                "#
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn abbrev_require_preserves_mode_tables_loaded_first() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'lisp-mode)
+                (require 'abbrev)
+                (list (not (null (memq 'lisp-mode-abbrev-table
+                                        abbrev-table-name-list)))
+                      (not (null (memq 'fundamental-mode-abbrev-table
+                                        abbrev-table-name-list)))
+                      (not (null (memq 'global-abbrev-table
+                                        abbrev-table-name-list)))
+                      (abbrev-table-p lisp-mode-abbrev-table)
+                      (abbrev-table-p fundamental-mode-abbrev-table)
+                      (abbrev-table-p global-abbrev-table))
+                "#
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
         );
     }
 

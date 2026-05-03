@@ -16744,6 +16744,32 @@ fn set_abbrev_table_entries_from_definitions(
     set_abbrev_table_entries(interp, table, entries)
 }
 
+pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
+    for symbol in ["fundamental-mode-abbrev-table", "global-abbrev-table"] {
+        if !interp
+            .lookup_var(symbol, &Vec::new())
+            .is_some_and(|value| is_abbrev_table_value(interp, &value))
+        {
+            let table = make_runtime_abbrev_table(interp, Some(symbol), Value::Nil);
+            interp.set_global_binding(symbol, table);
+        }
+    }
+
+    let existing = interp
+        .lookup_var("abbrev-table-name-list", &Vec::new())
+        .unwrap_or(Value::Nil);
+    let mut items = existing.to_vec().unwrap_or_default();
+    for symbol in ["fundamental-mode-abbrev-table", "global-abbrev-table"] {
+        if !items
+            .iter()
+            .any(|value| value.as_symbol().ok() == Some(symbol))
+        {
+            items.push(Value::Symbol(symbol.to_string()));
+        }
+    }
+    interp.set_global_binding("abbrev-table-name-list", Value::list(items));
+}
+
 fn register_abbrev_table_symbol(interp: &mut Interpreter, symbol: &str) {
     let existing = interp
         .lookup_var("abbrev-table-name-list", &Vec::new())
