@@ -19,11 +19,15 @@ use sha2::{Sha224, Sha256, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
@@ -1649,6 +1653,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "load"
             | "locate-file-internal"
             | "directory-files"
+            | "directory-files-and-attributes"
             | "file-directory-p"
             | "file-accessible-directory-p"
             | "file-readable-p"
@@ -1688,8 +1693,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-binary-mode"
             | "write-region"
             | "write-file"
+            | "file-modes"
             | "file-modes-number-to-symbolic"
             | "set-file-modes"
+            | "set-file-times"
             | "make-process"
             | "make-pipe-process"
             | "start-process"
@@ -9255,6 +9262,45 @@ pub fn call(
                 .map(|value| value.max(0) as usize);
             directory_files(interp, &directory, full, matcher, nosort, count, env)
         }
+        "directory-files-and-attributes" => {
+            need_arg_range(name, args, 1, 6)?;
+            let directory = string_text(&args[0])?;
+            let full = args.get(1).is_some_and(Value::is_truthy);
+            let id_format = args.get(4).cloned().unwrap_or(Value::Nil);
+            let mut directory_files_args = vec![
+                args[0].clone(),
+                args.get(1).cloned().unwrap_or(Value::Nil),
+                args.get(2).cloned().unwrap_or(Value::Nil),
+                args.get(3).cloned().unwrap_or(Value::Nil),
+            ];
+            if let Some(count) = args.get(5) {
+                directory_files_args.push(count.clone());
+            }
+            let file_names = call(interp, "directory-files", &directory_files_args, env)?;
+            let entries = file_names
+                .to_vec()?
+                .into_iter()
+                .map(|name_value| {
+                    let name_text = string_text(&name_value)?;
+                    let attribute_path = if full {
+                        name_text.clone()
+                    } else {
+                        Path::new(&resolve_file_name_in_env(interp, env, &directory))
+                            .join(&name_text)
+                            .display()
+                            .to_string()
+                    };
+                    let attributes = call(
+                        interp,
+                        "file-attributes",
+                        &[Value::String(attribute_path), id_format.clone()],
+                        env,
+                    )?;
+                    Ok(Value::cons(name_value, attributes))
+                })
+                .collect::<Result<Vec<_>, LispError>>()?;
+            Ok(Value::list(entries))
+        }
         "file-directory-p" | "file-accessible-directory-p" => {
             need_args(name, args, 1)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -9547,6 +9593,30 @@ pub fn call(
             }
             write_file_value(interp, args, env)
         }
+        "file-modes" => {
+            need_arg_range(name, args, 1, 2)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&path)?;
+            #[cfg(unix)]
+            {
+                let metadata = if args.get(1).is_some_and(Value::is_truthy) {
+                    fs::symlink_metadata(&path)
+                } else {
+                    fs::metadata(&path)
+                };
+                Ok(metadata
+                    .map(|metadata| Value::Integer((metadata.permissions().mode() & 0o7777) as i64))
+                    .unwrap_or(Value::Nil))
+            }
+            #[cfg(not(unix))]
+            {
+                Ok(if fs::metadata(&path).is_ok() {
+                    Value::Integer(0)
+                } else {
+                    Value::Nil
+                })
+            }
+        }
         "file-modes-number-to-symbolic" => {
             need_arg_range(name, args, 1, 2)?;
             let mode = args[0].as_integer()?;
@@ -9581,6 +9651,17 @@ pub fn call(
                     .map_err(|error| LispError::Signal(error.to_string()))?;
             }
             Ok(Value::Nil)
+        }
+        "set-file-times" => {
+            need_arg_range(name, args, 1, 3)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&path)?;
+            let modified = match args.get(1) {
+                None | Some(Value::Nil) => SystemTime::now(),
+                Some(value) => file_modtime_from_value(interp, value)?.modified,
+            };
+            set_file_times_path(&path, modified, args.get(2).is_some_and(Value::is_truthy))?;
+            Ok(Value::T)
         }
         "insert-directory" => {
             need_arg_range(name, args, 2, 4)?;
@@ -27671,6 +27752,11 @@ fn builtin_arity_value(name: &str) -> Option<Value> {
         "cons" => (Value::Integer(2), Value::Integer(2)),
         "list" => (Value::Integer(0), Value::Symbol("many".into())),
         "format" => (Value::Integer(1), Value::Symbol("many".into())),
+        "directory-files" => (Value::Integer(1), Value::Integer(5)),
+        "directory-files-and-attributes" => (Value::Integer(1), Value::Integer(6)),
+        "file-modes" => (Value::Integer(1), Value::Integer(2)),
+        "set-file-modes" => (Value::Integer(2), Value::Integer(3)),
+        "set-file-times" => (Value::Integer(1), Value::Integer(3)),
         "string-version-lessp" => (Value::Integer(2), Value::Integer(2)),
         "string-distance" => (Value::Integer(2), Value::Integer(3)),
         "length<" | "length>" | "length=" => (Value::Integer(2), Value::Integer(2)),
@@ -29245,6 +29331,59 @@ fn file_modtime_from_value(
             .ok_or_else(|| LispError::Signal("Time out of range".into()))?
     };
     Ok(crate::buffer::FileModTime { modified })
+}
+
+#[cfg(unix)]
+fn system_time_to_timeval(time: SystemTime) -> Result<libc::timeval, LispError> {
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    Ok(libc::timeval {
+        tv_sec: duration.as_secs() as libc::time_t,
+        tv_usec: duration.subsec_micros() as libc::suseconds_t,
+    })
+}
+
+fn set_file_times_path(path: &str, modified: SystemTime, nofollow: bool) -> Result<(), LispError> {
+    #[cfg(unix)]
+    {
+        let c_path = CString::new(Path::new(path).as_os_str().as_bytes())
+            .map_err(|_| LispError::Signal("File name contains nul byte".into()))?;
+        let metadata = if nofollow {
+            fs::symlink_metadata(path)
+        } else {
+            fs::metadata(path)
+        }
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+        let accessed = metadata.accessed().unwrap_or(modified);
+        let times = [
+            system_time_to_timeval(accessed)?,
+            system_time_to_timeval(modified)?,
+        ];
+        let result = if nofollow {
+            // SAFETY: c_path is a valid nul-terminated path, and times points to
+            // two initialized timeval values for the duration of this call.
+            unsafe { libc::lutimes(c_path.as_ptr(), times.as_ptr()) }
+        } else {
+            // SAFETY: c_path is a valid nul-terminated path, and times points to
+            // two initialized timeval values for the duration of this call.
+            unsafe { libc::utimes(c_path.as_ptr(), times.as_ptr()) }
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(LispError::Signal(
+                std::io::Error::last_os_error().to_string(),
+            ))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (modified, nofollow);
+        fs::metadata(path)
+            .map(|_| ())
+            .map_err(|error| LispError::Signal(error.to_string()))
+    }
 }
 
 fn lock_path_for_file(path: &str) -> PathBuf {
@@ -37571,6 +37710,148 @@ mod compat_runtime_tests {
             .expect("format setuid mode"),
             Value::String("---S------".into())
         );
+    }
+
+    #[test]
+    fn file_modes_reads_permissions_and_reports_arity() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-file-modes-{}-{}",
+            std::process::id(),
+            nondeterministic_random_seed()
+        ));
+        std::fs::write(&path, "mode").expect("write temp file");
+
+        call(
+            &mut interp,
+            "set-file-modes",
+            &[
+                Value::String(path.display().to_string()),
+                Value::Integer(0o600),
+            ],
+            &mut env,
+        )
+        .expect("set file modes");
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-modes",
+                &[Value::String(path.display().to_string())],
+                &mut env,
+            )
+            .expect("read file modes"),
+            Value::Integer(0o600)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("file-modes".into())],
+                &mut env,
+            )
+            .expect("file-modes arity"),
+            Value::cons(Value::Integer(1), Value::Integer(2))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("set-file-modes".into())],
+                &mut env,
+            )
+            .expect("set-file-modes arity"),
+            Value::cons(Value::Integer(2), Value::Integer(3))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("set-file-times".into())],
+                &mut env,
+            )
+            .expect("set-file-times arity"),
+            Value::cons(Value::Integer(1), Value::Integer(3))
+        );
+        call(
+            &mut interp,
+            "set-file-times",
+            &[
+                Value::String(path.display().to_string()),
+                Value::Integer(1_700_000_000),
+            ],
+            &mut env,
+        )
+        .expect("set file times");
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .modified()
+                .expect("modified time")
+                .duration_since(UNIX_EPOCH)
+                .expect("duration")
+                .as_secs(),
+            1_700_000_000
+        );
+
+        std::fs::remove_file(&path).expect("cleanup temp file");
+    }
+
+    #[test]
+    fn directory_files_and_attributes_reports_entries_and_arity() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let directory = std::env::temp_dir().join(format!(
+            "emaxx-directory-attributes-{}-{}",
+            std::process::id(),
+            nondeterministic_random_seed()
+        ));
+        std::fs::create_dir_all(&directory).expect("create temp dir");
+        std::fs::write(directory.join("sample.txt"), "sample").expect("write sample");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("directory-files".into())],
+                &mut env,
+            )
+            .expect("directory-files arity"),
+            Value::cons(Value::Integer(1), Value::Integer(5))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "func-arity",
+                &[Value::Symbol("directory-files-and-attributes".into())],
+                &mut env,
+            )
+            .expect("directory-files-and-attributes arity"),
+            Value::cons(Value::Integer(1), Value::Integer(6))
+        );
+        let entries = call(
+            &mut interp,
+            "directory-files-and-attributes",
+            &[
+                Value::String(directory.display().to_string()),
+                Value::Nil,
+                Value::String("sample".into()),
+            ],
+            &mut env,
+        )
+        .expect("directory entries with attributes")
+        .to_vec()
+        .expect("entry list");
+        assert_eq!(entries.len(), 1);
+        let (name, attributes) = entries[0].cons_values().expect("entry cons");
+        assert_eq!(name, Value::String("sample.txt".into()));
+        assert_eq!(
+            call(&mut interp, "file-attribute-size", &[attributes], &mut env,)
+                .expect("attribute size"),
+            Value::Integer(6)
+        );
+
+        std::fs::remove_dir_all(&directory).expect("cleanup temp dir");
     }
 
     #[test]
