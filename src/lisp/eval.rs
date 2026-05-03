@@ -14033,6 +14033,28 @@ mod tests {
     }
 
     #[test]
+    fn assoc_string_handles_nil_t_and_empty_alists_like_symbols() {
+        assert_eq!(
+            eval_str(
+                r#"(list (assoc-string nil nil)
+                         (assoc-string 1 nil)
+                         (assoc-string nil '((nil . nil-value) ("nil" . string-value)))
+                         (assoc-string t '((t . t-value) ("t" . string-value)))
+                         (assoc-string "nil" '((nil . nil-value)))
+                         (assoc-string "t" '((t . t-value))))"#
+            ),
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::cons(Value::Nil, Value::Symbol("nil-value".into())),
+                Value::cons(Value::T, Value::Symbol("t-value".into())),
+                Value::cons(Value::Nil, Value::Symbol("nil-value".into())),
+                Value::cons(Value::T, Value::Symbol("t-value".into())),
+            ])
+        );
+    }
+
+    #[test]
     fn assoc_string_case_fold_avoids_multi_character_uppercase_matches() {
         let value =
             eval_str("(assoc-string \"ß\" '((\"ss\" . wrong) (\"ß\" . right) (\"ẞ\" . upper)) t)");
