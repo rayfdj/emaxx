@@ -192,7 +192,7 @@
   (cond
    ((and face (symbolp face))
     (let ((value (face-attribute face attribute nil t)))
-      (if (eq value 'unspecified)
+      (if (member value '(nil unspecified "unspecified-fg" "unspecified-bg"))
           nil
         value)))
    ((and (consp face) (keywordp (car face)))
@@ -228,11 +228,11 @@
       (goto-char beg)
       (while (re-search-forward "^;.*$" end t)
         (put-text-property (match-beginning 0) (match-end 0)
-                           'face 'font-lock-comment-face))
+                           'face font-lock-comment-face))
       (goto-char beg)
       (while (re-search-forward "`[^']+'" end t)
-        (put-text-property (match-beginning 0) (match-end 0)
-                           'face 'font-lock-constant-face))))
+        (font-lock-prepend-text-property (match-beginning 0) (match-end 0)
+                                         'face font-lock-constant-face))))
   nil)
 
 (defun tty-find-type (pred type)
