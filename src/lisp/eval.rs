@@ -5571,8 +5571,10 @@ impl Interpreter {
                     match name.as_str() {
                         "quote" => return self.sf_quote(&items),
                         "if" | "static-if" => return self.sf_if(&items, env),
+                        "if-let" => return self.sf_if_let(&items, env),
                         "if-let*" => return self.sf_if_let_star(&items, env),
                         "when" | "static-when" => return self.sf_when(&items, env),
+                        "when-let" => return self.sf_when_let(&items, env),
                         "when-let*" => return self.sf_when_let_star(&items, env),
                         "unless" | "static-unless" => return self.sf_unless(&items, env),
                         "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
@@ -6102,6 +6104,40 @@ impl Interpreter {
         let result = self.eval(&items[2], env);
         env.pop();
         result
+    }
+
+    fn sf_if_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "if-let".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let spec = normalize_if_let_spec(&items[1])?;
+        let rewritten = Value::list(
+            std::iter::once(Value::symbol("if-let*"))
+                .chain(std::iter::once(spec))
+                .chain(std::iter::once(items[2].clone()))
+                .chain(std::iter::once(forms_to_progn(
+                    items.get(3..).unwrap_or(&[]),
+                ))),
+        );
+        self.eval(&rewritten, env)
+    }
+
+    fn sf_when_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "when-let".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let rewritten = Value::list([
+            Value::symbol("if-let"),
+            items[1].clone(),
+            forms_to_progn(items.get(2..).unwrap_or(&[])),
+        ]);
+        self.eval(&rewritten, env)
     }
 
     fn sf_when_let_star(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
@@ -11333,6 +11369,18 @@ fn forms_to_progn(forms: &[Value]) -> Value {
             Value::list(std::iter::once(Value::Symbol("progn".into())).chain(forms.iter().cloned()))
         }
     }
+}
+
+fn normalize_if_let_spec(spec: &Value) -> Result<Value, LispError> {
+    let items = spec.to_vec()?;
+    let old_single_binding_syntax = !items.is_empty()
+        && items.len() <= 2
+        && !matches!(items[0], Value::Nil | Value::Cons(_, _));
+    Ok(if old_single_binding_syntax {
+        Value::list([spec.clone()])
+    } else {
+        spec.clone()
+    })
 }
 
 fn named_let_tail_call(name: &str, forms: &[Value]) -> Option<(Vec<Value>, Vec<Value>)> {
@@ -18810,6 +18858,19 @@ mod tests {
             eval_str("(when-let* ((a 1) (b 2)) (+ a b))"),
             Value::Integer(3)
         );
+    }
+
+    #[test]
+    fn if_let_and_when_let_support_single_binding_compat_syntax() {
+        assert_eq!(
+            eval_str("(if-let (a 3) (+ a 4) 'fallback)"),
+            Value::Integer(7)
+        );
+        assert_eq!(
+            eval_str("(if-let ((a nil) (b 2)) (+ a b) 'fallback)"),
+            Value::Symbol("fallback".into())
+        );
+        assert_eq!(eval_str("(when-let (a 5) (+ a 6))"), Value::Integer(11));
     }
 
     #[test]
