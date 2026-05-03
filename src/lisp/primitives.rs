@@ -21988,7 +21988,7 @@ fn run_external_process(
     apply_process_environment(interp, env, &mut command);
     let mut child = command
         .spawn()
-        .map_err(|error| LispError::Signal(error.to_string()))?;
+        .map_err(|error| LispError::SignalValue(file_error_value(&error.to_string(), program)))?;
     if let Some(stdin_data) = input
         && let Some(mut stdin) = child.stdin.take()
     {

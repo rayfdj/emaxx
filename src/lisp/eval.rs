@@ -19638,6 +19638,21 @@ mod tests {
     }
 
     #[test]
+    fn call_process_missing_program_signals_file_error() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (condition-case nil
+                    (call-process "/definitely/missing/emaxx-program" nil nil nil)
+                  (file-error 'caught)
+                  (error 'wrong-condition))
+                "#
+            ),
+            Value::Symbol("caught".into())
+        );
+    }
+
+    #[test]
     fn ignore_error_catches_requested_conditions() {
         assert_eq!(
             eval_str(
