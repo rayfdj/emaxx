@@ -16768,6 +16768,10 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
         }
     }
     interp.set_global_binding("abbrev-table-name-list", Value::list(items));
+    interp.mark_auto_buffer_local("local-abbrev-table");
+    if let Some(table) = interp.lookup_var("fundamental-mode-abbrev-table", &Vec::new()) {
+        interp.set_global_binding("local-abbrev-table", table);
+    }
 }
 
 fn register_abbrev_table_symbol(interp: &mut Interpreter, symbol: &str) {
@@ -19201,13 +19205,24 @@ fn find_comment_ending_at(
     None
 }
 
-fn syntax_class_matches(spec: &str, ch: char) -> bool {
-    match spec {
+fn syntax_class_char_matches(class: &str, ch: char) -> bool {
+    match class {
         " " => matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}'),
         "w" => ch.is_alphanumeric(),
         "_" => ch == '_',
         _ => false,
     }
+}
+
+fn syntax_class_matches(spec: &str, ch: char) -> bool {
+    let (negated, classes) = spec
+        .strip_prefix('^')
+        .map(|rest| (true, rest))
+        .unwrap_or((false, spec));
+    let matched = classes
+        .chars()
+        .any(|class| syntax_class_char_matches(&class.to_string(), ch));
+    if negated { !matched } else { matched }
 }
 
 fn skip_syntax_impl(
