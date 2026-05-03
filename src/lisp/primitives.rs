@@ -435,6 +435,10 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "cl-find-class"
             | "cl--class-allparents"
             | "cl--class-children"
+            | "make-instance"
+            | "eieio-oref"
+            | "eieio-oset"
+            | "slot-value"
             | "cl-typep"
             | "built-in-class-p"
             | "cl-functionp"
@@ -476,6 +480,164 @@ fn make_advice_wrapper_around(original: Value, advice: Value) -> Value {
         ])],
         shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
     )
+}
+
+#[derive(Clone)]
+struct EieioSlotSpec {
+    name: String,
+    initargs: Vec<String>,
+    initform: Value,
+}
+
+fn eieio_slot_specs(
+    interp: &Interpreter,
+    class_name: &str,
+) -> Result<Vec<EieioSlotSpec>, LispError> {
+    let mut slots = Vec::new();
+    if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
+        && let Ok(parent_values) = parents.to_vec()
+    {
+        for parent in parent_values {
+            if let Ok(parent_name) = parent.as_symbol() {
+                slots.extend(eieio_slot_specs(interp, parent_name)?);
+            }
+        }
+    }
+
+    let Some(raw_slots) = interp.get_symbol_property(class_name, "emaxx-class-slots") else {
+        return Ok(slots);
+    };
+    for raw_slot in raw_slots.to_vec()? {
+        let parts = raw_slot.to_vec()?;
+        let Some(slot_name) = parts
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let mut initargs = Vec::new();
+        let mut initform = Value::Nil;
+        let mut index = 1usize;
+        while index + 1 < parts.len() {
+            let Some(keyword) = parts[index].as_symbol().ok() else {
+                index += 1;
+                continue;
+            };
+            match keyword {
+                ":initarg" => {
+                    if let Ok(initarg) = parts[index + 1].as_symbol() {
+                        initargs.push(initarg.to_string());
+                    }
+                }
+                ":initform" => initform = parts[index + 1].clone(),
+                _ => {}
+            }
+            index += 2;
+        }
+        slots.push(EieioSlotSpec {
+            name: slot_name,
+            initargs,
+            initform,
+        });
+    }
+    Ok(slots)
+}
+
+fn eieio_slot_index(slots: &[EieioSlotSpec], slot_name: &str) -> Option<usize> {
+    slots.iter().position(|slot| slot.name == slot_name)
+}
+
+fn make_eieio_instance(
+    interp: &mut Interpreter,
+    class_name: &str,
+    initargs: &[Value],
+    skip_obsolete_name: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let slots = eieio_slot_specs(interp, class_name)?;
+    let mut values = Vec::with_capacity(slots.len());
+    for slot in &slots {
+        values.push(interp.eval(&slot.initform, env)?);
+    }
+
+    let mut index = 0usize;
+    if skip_obsolete_name
+        && matches!(
+            initargs.first(),
+            Some(Value::Nil | Value::String(_) | Value::StringObject(_))
+        )
+    {
+        index = 1;
+    }
+
+    while index + 1 < initargs.len() {
+        let initarg = initargs[index].as_symbol()?;
+        if !initarg.starts_with(':') {
+            return Err(LispError::Signal(format!("Invalid initarg {initarg}")));
+        }
+        if let Some(slot_index) = slots
+            .iter()
+            .position(|slot| slot.initargs.iter().any(|candidate| candidate == initarg))
+        {
+            values[slot_index] = initargs[index + 1].clone();
+        }
+        index += 2;
+    }
+
+    Ok(interp.create_record(class_name, values))
+}
+
+fn eieio_slot_value(
+    interp: &Interpreter,
+    object: &Value,
+    slot_name: &str,
+) -> Result<Value, LispError> {
+    let Value::Record(record_id) = object else {
+        return Err(LispError::TypeError(
+            "eieio-object".into(),
+            object.type_name(),
+        ));
+    };
+    let record = interp
+        .find_record(*record_id)
+        .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?;
+    let slots = eieio_slot_specs(interp, &record.type_name)?;
+    let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
+        return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
+    };
+    Ok(record.slots.get(slot_index).cloned().unwrap_or(Value::Nil))
+}
+
+fn set_eieio_slot_value(
+    interp: &mut Interpreter,
+    object: &Value,
+    slot_name: &str,
+    value: Value,
+) -> Result<Value, LispError> {
+    let Value::Record(record_id) = object else {
+        return Err(LispError::TypeError(
+            "eieio-object".into(),
+            object.type_name(),
+        ));
+    };
+    let type_name = interp
+        .find_record(*record_id)
+        .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?
+        .type_name
+        .clone();
+    let slots = eieio_slot_specs(interp, &type_name)?;
+    let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
+        return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
+    };
+    let record = interp
+        .find_record_mut(*record_id)
+        .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?;
+    if record.slots.len() <= slot_index {
+        record.slots.resize(slot_index + 1, Value::Nil);
+    }
+    record.slots[slot_index] = value.clone();
+    Ok(value)
 }
 
 fn activate_major_mode(interp: &mut Interpreter, mode: &str, mode_name: &str) {
@@ -1144,6 +1306,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "cons"
             | "car"
             | "cdr"
+            | "cl-first"
+            | "cl-second"
+            | "cl-third"
             | "car-safe"
             | "cdr-safe"
             | "list"
@@ -1599,6 +1764,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "setcdr"
             | "emaxx-default-region-extract-function"
             | "emaxx-default-revert-buffer-function"
+            | "emaxx-class-make"
             | "emaxx-struct-make"
             | "emaxx-struct-p"
             | "emaxx-struct-ref"
@@ -1963,6 +2129,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-find-class"
             | "cl--class-allparents"
             | "cl--class-children"
+            | "make-instance"
+            | "eieio-oref"
+            | "eieio-oset"
+            | "slot-value"
             | "cl-typep"
             | "built-in-class-p"
             | "cl-functionp"
@@ -3536,6 +3706,19 @@ pub fn call(
             } else {
                 args[0].car()
             }
+        }
+        "cl-first" | "cl-second" | "cl-third" => {
+            need_args(name, args, 1)?;
+            let index = match name {
+                "cl-first" => 0,
+                "cl-second" => 1,
+                _ => 2,
+            };
+            let mut tail = args[0].clone();
+            for _ in 0..index {
+                tail = tail.cdr()?;
+            }
+            tail.car()
         }
         "cdr" => {
             need_args(name, args, 1)?;
@@ -6263,6 +6446,10 @@ pub fn call(
             let mut arg_index = 0usize;
             let mut spec_index = 0usize;
             while spec_index < constructor_spec.len() && constructor_spec[spec_index] != "&key" {
+                if constructor_spec[spec_index] == "&optional" {
+                    spec_index += 1;
+                    continue;
+                }
                 if arg_index >= call_args.len() {
                     break;
                 }
@@ -13740,6 +13927,31 @@ pub fn call(
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
             Ok(Value::list(interp.class_children(&symbol)))
+        }
+        "make-instance" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            make_eieio_instance(interp, &class_name, &args[1..], false, env)
+        }
+        "emaxx-class-make" => {
+            need_args(name, args, 2)?;
+            let class_name = args[0].as_symbol()?;
+            let initargs = args[1].to_vec()?;
+            make_eieio_instance(interp, class_name, &initargs, true, env)
+        }
+        "eieio-oref" | "slot-value" => {
+            need_args(name, args, 2)?;
+            let slot_name = args[1].as_symbol()?;
+            eieio_slot_value(interp, &args[0], slot_name)
+        }
+        "eieio-oset" => {
+            need_args(name, args, 3)?;
+            let slot_name = args[1].as_symbol()?;
+            set_eieio_slot_value(interp, &args[0], slot_name, args[2].clone())
         }
         "built-in-class-p" => {
             need_args(name, args, 1)?;

@@ -7895,6 +7895,21 @@ impl Interpreter {
             .unwrap_or_default();
         let options = items.get(4..).unwrap_or(&[]).to_vec();
         self.register_class(name, parents, slot_specs, options);
+        self.set_function_binding(
+            name,
+            Some(Value::Lambda(
+                vec!["&rest".into(), "initargs".into()],
+                vec![Value::list([
+                    Value::Symbol("emaxx-class-make".into()),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(name.to_string()),
+                    ]),
+                    Value::Symbol("initargs".into()),
+                ])],
+                shared_env(Vec::new()),
+            )),
+        );
         Ok(Value::Symbol(name.to_string()))
     }
 
@@ -14078,6 +14093,18 @@ mod tests {
     }
 
     #[test]
+    fn cl_list_accessors_return_positional_elements() {
+        assert_eq!(
+            eval_str("(list (cl-first '(a b c)) (cl-second '(a b c)) (cl-third '(a b c)))"),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn proper_list_p_returns_length_for_proper_lists_only() {
         assert_eq!(
             eval_str(
@@ -15675,6 +15702,25 @@ mod tests {
                       (sample-struct-beta sample))))"
             ),
             Value::list([Value::T, Value::Integer(3), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn cl_defstruct_constructor_respects_optional_marker() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defstruct (optional-struct
+                                  (:constructor make-optional-struct
+                                                (&optional alpha beta gamma)))
+                     alpha beta gamma)
+                   (let ((sample (make-optional-struct 1 2 3)))
+                     (list
+                      (optional-struct-alpha sample)
+                      (optional-struct-beta sample)
+                      (optional-struct-gamma sample))))"
+            ),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)])
         );
     }
 
@@ -18131,6 +18177,51 @@ mod tests {
                 ]),
                 Value::list([Value::Symbol("sample-child".into())]),
             ])
+        );
+    }
+
+    #[test]
+    fn defclass_constructor_initializes_and_updates_slots() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-backend nil
+                     ((type :initarg :type :initform 'netrc)
+                      (source :initarg :source)
+                      (host :initarg :host :initform t)))
+                   (let ((backend (sample-backend \"obsolete-name\"
+                                                  :source \".\"
+                                                  :type 'password-store)))
+                     (eieio-oset backend 'host \"example.org\")
+                     (list
+                      (type-of backend)
+                      (slot-value backend 'type)
+                      (eieio-oref backend 'source)
+                      (eieio-oref backend 'host))))"
+            ),
+            Value::list([
+                Value::Symbol("sample-backend".into()),
+                Value::Symbol("password-store".into()),
+                Value::String(".".into()),
+                Value::String("example.org".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn make_instance_uses_class_slot_defaults() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-instance nil
+                     ((alpha :initarg :alpha :initform 7)
+                      (beta :initarg :beta :initform (+ 2 3))))
+                   (let ((object (make-instance 'sample-instance :alpha 11)))
+                     (list
+                      (slot-value object 'alpha)
+                      (slot-value object 'beta))))"
+            ),
+            Value::list([Value::Integer(11), Value::Integer(5)])
         );
     }
 
