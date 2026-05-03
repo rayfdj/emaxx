@@ -1639,6 +1639,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "setplist"
             | "zlib-available-p"
             | "zlib-decompress-region"
+            | "libxml-available-p"
             | "libxml-parse-xml-region"
             | "compare-buffer-substrings"
             | "field-beginning"
@@ -1770,6 +1771,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "emaxx-class-make"
             | "emaxx-struct-make"
             | "emaxx-struct-p"
+            | "emaxx-class-p"
             | "emaxx-struct-ref"
             | "connection-local-value"
             | "propertized-buffer-identification"
@@ -3535,6 +3537,7 @@ pub fn call(
             })
         }
         "zlib-available-p" => Ok(Value::T),
+        "libxml-available-p" => Ok(Value::T),
         "consp" => {
             need_args(name, args, 1)?;
             Ok(if args[0].is_cons() {
@@ -6506,6 +6509,15 @@ pub fn call(
                     Value::T
                 }
                 _ => Value::Nil,
+            })
+        }
+        "emaxx-class-p" => {
+            need_args(name, args, 2)?;
+            let class_name = args[0].as_symbol()?;
+            Ok(if interp.value_is_instance_of_class(&args[1], class_name) {
+                Value::T
+            } else {
+                Value::Nil
             })
         }
         "emaxx-struct-ref" => {
@@ -15314,8 +15326,20 @@ pub fn call(
             if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let code = u32::try_from(args[0].as_integer()?)
-                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            let (start, end) = match &args[0] {
+                Value::Cons(_, _) => {
+                    let start = u32::try_from(args[0].car()?.as_integer()?)
+                        .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                    let end = u32::try_from(args[0].cdr()?.as_integer()?)
+                        .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                    (start, end)
+                }
+                _ => {
+                    let code = u32::try_from(args[0].as_integer()?)
+                        .map_err(|_| LispError::Signal("Invalid character".into()))?;
+                    (code, code)
+                }
+            };
             let syntax = string_text(&args[1])?;
             let table_id = match args.get(2) {
                 Some(Value::CharTable(id)) => *id,
@@ -15324,11 +15348,13 @@ pub fn call(
                 }
                 None => interp.current_syntax_table_id(),
             };
-            interp.char_table_set(table_id, code, Value::String(syntax.clone()))?;
+            interp.char_table_set_range(table_id, start, end, Value::String(syntax.clone()))?;
             if table_id == interp.standard_syntax_table_id()
                 || table_id == interp.current_syntax_table_id()
             {
-                interp.set_syntax_word_char(normalize_case_key(code), syntax.starts_with('w'));
+                for code in start.min(end)..=start.max(end) {
+                    interp.set_syntax_word_char(normalize_case_key(code), syntax.starts_with('w'));
+                }
             }
             Ok(Value::Nil)
         }
@@ -38799,6 +38825,55 @@ mod compat_runtime_tests {
             )
             .expect("char-table-range should read the filled default"),
             Value::Symbol("z".into())
+        );
+    }
+
+    #[test]
+    fn modify_syntax_entry_accepts_character_ranges() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let table = interp.make_char_table(Some("syntax-table".into()), Value::Nil);
+        let range = Value::cons(Value::Integer('A' as i64), Value::Integer('Z' as i64));
+
+        call(
+            &mut interp,
+            "modify-syntax-entry",
+            &[range, Value::String("w".into()), table.clone()],
+            &mut env,
+        )
+        .expect("modify-syntax-entry should accept a cons character range");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "char-table-range",
+                &[table.clone(), Value::Integer('A' as i64)],
+                &mut env,
+            )
+            .expect("range start should be set"),
+            Value::String("w".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "char-table-range",
+                &[table, Value::Integer('M' as i64)],
+                &mut env,
+            )
+            .expect("range middle should be set"),
+            Value::String("w".into())
+        );
+    }
+
+    #[test]
+    fn libxml_available_p_tracks_builtin_xml_parser() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(&mut interp, "libxml-available-p", &[], &mut env)
+                .expect("libxml-available-p should be callable"),
+            Value::T
         );
     }
 
