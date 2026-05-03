@@ -14149,6 +14149,19 @@ mod tests {
         run_large_stack_test(assert_format_prompt_uses_first_default_choice);
     }
 
+    #[test]
+    fn warn_formats_message_and_returns_nil() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (warn \"sample %s\" \"warning\")
+                   (list (current-message)
+                         (warn \"ignored\")))"
+            ),
+            Value::list([Value::String("Warning: sample warning".into()), Value::Nil])
+        );
+    }
+
     fn assert_format_prompt_uses_first_default_choice() {
         assert_eq!(
             eval_str(r#"(format-prompt "Regexp to unhighlight" '("a" "b"))"#),
