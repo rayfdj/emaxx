@@ -9730,16 +9730,63 @@ impl Interpreter {
             ));
         }
         let name = items[1].as_symbol()?.to_string();
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("emaxx-{stamp}.tmp"));
-        fs::write(&path, "").map_err(|error| LispError::Signal(error.to_string()))?;
-        env.push(vec![(name, Value::String(path.display().to_string()))]);
-        let result = self.sf_progn(&items[2..], env);
+        let mut index = 2usize;
+        let mut prefix = Value::String("emaxx-".into());
+        let mut suffix = Value::String(".tmp".into());
+        let mut directory = Value::Nil;
+        let mut text = Value::Nil;
+        let mut buffer_name = None;
+
+        while let Some(Value::Symbol(keyword)) = items.get(index) {
+            if !keyword.starts_with(':') {
+                break;
+            }
+            let value_expr = items.get(index + 1).ok_or_else(|| {
+                LispError::Signal(format!("ert-with-temp-file missing value for {keyword}"))
+            })?;
+            match keyword.as_str() {
+                ":prefix" => prefix = self.eval(value_expr, env)?,
+                ":suffix" => suffix = self.eval(value_expr, env)?,
+                ":directory" => directory = self.eval(value_expr, env)?,
+                ":text" => text = self.eval(value_expr, env)?,
+                ":buffer" => buffer_name = Some(value_expr.as_symbol()?.to_string()),
+                ":coding" => {
+                    let _ = self.eval(value_expr, env)?;
+                }
+                _ => {
+                    return Err(LispError::Signal(format!(
+                        "ert-with-temp-file invalid keyword: {keyword}"
+                    )));
+                }
+            }
+            index += 2;
+        }
+
+        let path_value = primitives::call(
+            self,
+            "make-temp-file",
+            &[prefix, directory.clone(), suffix, text],
+            env,
+        )?;
+        let path = primitives::string_text(&path_value)?;
+        let mut frame = vec![(name, path_value.clone())];
+        if let Some(buffer_name) = buffer_name {
+            let buffer = primitives::call(
+                self,
+                "find-file-noselect",
+                std::slice::from_ref(&path_value),
+                env,
+            )?;
+            frame.push((buffer_name, Self::stored_value(buffer)));
+        }
+        env.push(frame);
+        let result = self.sf_progn(&items[index..], env);
         env.pop();
-        let _ = fs::remove_file(&path);
+        let _ = if directory.is_truthy() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
         result
     }
 
@@ -19710,6 +19757,20 @@ mod tests {
                    plist)"
             ),
             Value::list([Value::String("host".into()), Value::String("new".into()),])
+        );
+    }
+
+    #[test]
+    fn ert_with_temp_file_honors_text_keyword() {
+        assert_eq!(
+            eval_str(
+                "(ert-with-temp-file sample-file
+                   :text \"alpha\\nbeta\\n\"
+                   (with-temp-buffer
+                     (insert-file-contents sample-file)
+                     (buffer-string)))"
+            ),
+            Value::String("alpha\nbeta\n".into())
         );
     }
 
