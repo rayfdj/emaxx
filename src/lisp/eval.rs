@@ -4925,6 +4925,7 @@ impl Interpreter {
             )),
             "case-fold-search" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
+            "translation-table-vector" => Some(Value::list([Value::symbol("vector")])),
             "float-e" => Some(Value::Float(std::f64::consts::E)),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
@@ -6457,7 +6458,13 @@ impl Interpreter {
                 }
                 let value = self.eval(&parts[1], env)?;
                 let mut frame_bindings = Vec::new();
-                if !pcase_pattern_bindings(self, env, &parts[0], &value, &mut frame_bindings)? {
+                if !pcase_pattern_bindings_lenient_list(
+                    self,
+                    env,
+                    &parts[0],
+                    &value,
+                    &mut frame_bindings,
+                )? {
                     env.pop();
                     return Err(LispError::Signal("pcase-let*: no matching clause".into()));
                 }
@@ -6480,7 +6487,7 @@ impl Interpreter {
                 return Err(LispError::ReadError("bad pcase-let binding".into()));
             }
             let value = self.eval(&parts[1], env)?;
-            if !pcase_pattern_bindings(self, env, &parts[0], &value, &mut frame)? {
+            if !pcase_pattern_bindings_lenient_list(self, env, &parts[0], &value, &mut frame)? {
                 return Err(LispError::Signal("pcase-let: no matching clause".into()));
             }
         }
@@ -10453,6 +10460,10 @@ impl Interpreter {
             "ert-simulate-keys" => self.expand_ert_simulate_keys(args).map(Some),
             "letrec" => self.expand_letrec(args).map(Some),
             "named-let" => self.expand_named_let(args).map(Some),
+            "with-wrapper-hook" => self.expand_with_wrapper_hook(args).map(Some),
+            "subr--with-wrapper-hook-no-warnings" => {
+                self.expand_subr_with_wrapper_hook(args).map(Some)
+            }
             "with-selected-frame" => {
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(
@@ -10471,6 +10482,128 @@ impl Interpreter {
             }
             _ => Ok(None),
         }
+    }
+
+    fn expand_with_wrapper_hook(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        if args.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "with-wrapper-hook".into(),
+                args.len(),
+            ));
+        }
+        Ok(Value::list(
+            std::iter::once(Value::Symbol("subr--with-wrapper-hook-no-warnings".into()))
+                .chain(args.iter().cloned()),
+        ))
+    }
+
+    fn expand_subr_with_wrapper_hook(&mut self, args: &[Value]) -> Result<Value, LispError> {
+        if args.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "subr--with-wrapper-hook-no-warnings".into(),
+                args.len(),
+            ));
+        }
+
+        let hook = args[0].clone();
+        let arg_list = args[1].clone();
+        let body = &args[2..];
+        let funs = self.make_generated_symbol("funs");
+        let global = self.make_generated_symbol("global");
+        let argssym = self.make_generated_symbol("args");
+        let runrestofhook = self.make_generated_symbol("runrestofhook");
+
+        let lambda_body = Value::list([
+            Value::Symbol("if".into()),
+            Value::list([Value::Symbol("consp".into()), funs.clone()]),
+            Value::list([
+                Value::Symbol("if".into()),
+                Value::list([
+                    Value::Symbol("eq".into()),
+                    Value::T,
+                    Value::list([Value::Symbol("car".into()), funs.clone()]),
+                ]),
+                Value::list([
+                    Value::Symbol("funcall".into()),
+                    runrestofhook.clone(),
+                    Value::list([
+                        Value::Symbol("append".into()),
+                        global.clone(),
+                        Value::list([Value::Symbol("cdr".into()), funs.clone()]),
+                    ]),
+                    Value::Nil,
+                    argssym.clone(),
+                ]),
+                Value::list([
+                    Value::Symbol("apply".into()),
+                    Value::list([Value::Symbol("car".into()), funs.clone()]),
+                    Value::list([
+                        Value::Symbol("apply-partially".into()),
+                        Value::list([
+                            Value::Symbol("lambda".into()),
+                            Value::list([
+                                funs.clone(),
+                                global.clone(),
+                                Value::Symbol("&rest".into()),
+                                argssym.clone(),
+                            ]),
+                            Value::list([
+                                Value::Symbol("funcall".into()),
+                                runrestofhook.clone(),
+                                funs.clone(),
+                                global.clone(),
+                                argssym.clone(),
+                            ]),
+                        ]),
+                        Value::list([Value::Symbol("cdr".into()), funs.clone()]),
+                        global.clone(),
+                    ]),
+                    argssym.clone(),
+                ]),
+            ]),
+            Value::list([
+                Value::Symbol("apply".into()),
+                Value::list(
+                    std::iter::once(Value::Symbol("lambda".into()))
+                        .chain(std::iter::once(arg_list))
+                        .chain(body.iter().cloned()),
+                ),
+                argssym.clone(),
+            ]),
+        ]);
+
+        let global_form = match &hook {
+            Value::Symbol(_) => Value::list([
+                Value::Symbol("if".into()),
+                Value::list([
+                    Value::Symbol("local-variable-p".into()),
+                    quoted_literal(&hook),
+                ]),
+                Value::list([Value::Symbol("default-value".into()), quoted_literal(&hook)]),
+            ]),
+            _ => Value::Nil,
+        };
+
+        let wrapper_args = args[1].to_vec()?;
+
+        Ok(Value::list([
+            Value::Symbol("letrec".into()),
+            Value::list([Value::list([
+                runrestofhook.clone(),
+                Value::list([
+                    Value::Symbol("lambda".into()),
+                    Value::list([funs, global, argssym.clone()]),
+                    lambda_body,
+                ]),
+            ])]),
+            Value::list([
+                Value::Symbol("funcall".into()),
+                runrestofhook,
+                hook,
+                global_form,
+                Value::list(std::iter::once(Value::Symbol("list".into())).chain(wrapper_args)),
+            ]),
+        ]))
     }
 
     fn expand_ert_simulate_keys(&mut self, args: &[Value]) -> Result<Value, LispError> {
@@ -17945,6 +18078,22 @@ mod tests {
     }
 
     #[test]
+    fn pcase_let_lenient_backquoted_lists_bind_missing_nil_and_ignore_extra() {
+        assert_eq!(
+            eval_str(
+                "(list (pcase-let ((`(,a ,b ,c) '(1 2))) (list a b c)) \
+                       (pcase-let ((`(,a ,b) '(1 2 3))) (list a b)) \
+                       (pcase-let ((`(,a ,b) nil)) (list a b)))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2), Value::Nil]),
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::list([Value::Nil, Value::Nil]),
+            ])
+        );
+    }
+
+    #[test]
     fn bool_vector_literals_eval_to_runtime_values() {
         assert_eq!(
             eval_str(
@@ -20139,6 +20288,116 @@ IHdvcmxkIQ==")))
                 "#
             ),
             Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
+        );
+    }
+
+    #[test]
+    fn abbrev_initializes_local_abbrev_table_default() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'lisp-mode)
+                (require 'abbrev)
+                (let ((initial (with-temp-buffer
+                                 (eq local-abbrev-table
+                                     fundamental-mode-abbrev-table))))
+                  (list initial
+                        (with-temp-buffer
+                          (eq local-abbrev-table
+                              fundamental-mode-abbrev-table))))
+                "#
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn translation_table_vector_is_bound_vector_not_abbrev_table() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'abbrev)
+                (list (boundp 'translation-table-vector)
+                      (vectorp translation-table-vector)
+                      (abbrev-table-p translation-table-vector))
+                "#
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn wrapper_hook_nil_path_runs_body() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (let ((sample-wrapper-hook nil))
+                  (subr--with-wrapper-hook-no-warnings sample-wrapper-hook ()
+                    'body-ran))
+                "#
+            ),
+            Value::Symbol("body-ran".into())
+        );
+    }
+
+    #[test]
+    fn wrapper_hook_non_nil_wraps_body_through_continuation() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (let ((calls nil)
+                      (sample-wrapper-hook
+                       (list (lambda (fun)
+                               (push 'wrapper calls)
+                               (let ((result (funcall fun)))
+                                 (push result calls)
+                                 'wrapped)))))
+                  (list (subr--with-wrapper-hook-no-warnings sample-wrapper-hook ()
+                          'body)
+                        calls))
+                "#
+            ),
+            Value::list([
+                Value::Symbol("wrapped".into()),
+                Value::list([
+                    Value::Symbol("body".into()),
+                    Value::Symbol("wrapper".into())
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn inverse_add_abbrev_skips_trailing_nonword() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"
+                (require 'abbrev)
+                (let ((table (make-abbrev-table)))
+                  (with-temp-buffer
+                    (insert "some text foo ")
+                    (cl-letf (((symbol-function 'read-string)
+                               (lambda (&rest _) "bar")))
+                      (inverse-add-abbrev table "Global" 1)))
+                  (string= (abbrev-expansion "foo" table) "bar"))
+                "#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn skip_syntax_backward_supports_negated_word_class() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "some text foo ")
+                  (skip-syntax-backward "^w")
+                  (buffer-substring-no-properties (point) (point-max)))
+                "#
+            ),
+            Value::String(" ".into())
         );
     }
 
