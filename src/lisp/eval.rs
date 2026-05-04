@@ -15127,6 +15127,17 @@ mod tests {
                 Value::String("/tmp/x".into()),
             ])
         );
+        assert_eq!(
+            eval_str(
+                r#"(list
+                     (file-local-name "/tmp/local")
+                     (file-local-name "/ssh:user@host:/tmp/x"))"#,
+            ),
+            Value::list([
+                Value::String("/tmp/local".into()),
+                Value::String("/tmp/x".into()),
+            ])
+        );
     }
 
     #[test]
