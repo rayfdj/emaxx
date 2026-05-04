@@ -20427,6 +20427,37 @@ mod tests {
     }
 
     #[test]
+    fn dired_revert_refreshes_directory_listing() {
+        let directory = std::env::temp_dir().join(format!(
+            "emaxx-dired-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).expect("create dired test directory");
+        let file = directory.join("listed-file");
+        fs::write(&file, "contents").expect("write dired test file");
+        let directory_text = directory.to_string_lossy();
+        let form = format!(
+            r#"(let ((buf (dired-noselect "{directory_text}/")))
+                 (with-current-buffer buf
+                   (let ((before (string-match-p "listed-file" (buffer-string))))
+                     (delete-file "{directory_text}/listed-file")
+                     (list (not (null before))
+                           (dired-buffer-stale-p)
+                           (progn
+                             (revert-buffer 'ignore-auto 'dont-ask 'preserve-modes)
+                             (string-match-p "listed-file" (buffer-string)))))))"#
+        );
+        assert_eq!(
+            eval_str_with_upstream_load_path(&form),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn time_convert_list_accepts_float_precision_loss_like_emacs() {
         assert_eq!(
             eval_str("(time-convert 0.1 'list)"),
