@@ -5158,6 +5158,7 @@ impl Interpreter {
             "file-coding-system-alist" => Some(Value::Nil),
             "file-name-coding-system" => Some(Value::Nil),
             "default-file-name-coding-system" => Some(Value::Nil),
+            "version-control" => Some(Value::Nil),
             "inhibit-eol-conversion" => Some(Value::Nil),
             "inhibit-null-byte-detection" => Some(Value::Nil),
             "inhibit-iso-escape-detection" => Some(Value::Nil),
@@ -5367,6 +5368,8 @@ impl Interpreter {
             ),
             "tab-width" => Some(Value::Integer(8)),
             "indent-tabs-mode" => Some(Value::T),
+            "indent-line-function" => Some(Value::Symbol("indent-relative".into())),
+            "tab-stop-list" => Some(Value::Nil),
             "use-dialog-box" => Some(Value::T),
             "use-file-dialog" => Some(Value::T),
             "help-char" => Some(Value::Integer(8)),
@@ -6954,6 +6957,7 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "gethash" => {
                 self.sf_setf_gethash(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "nth" => self.sf_setf_nth(&place, &items[2], env),
             Some(Value::Symbol(name)) if name == "aref" => {
                 self.sf_setf_aref(&place, &items[2], env)
             }
@@ -7137,6 +7141,25 @@ impl Interpreter {
         let table = self.eval(table_expr, env)?;
         let value = self.eval(value_expr, env)?;
         primitives::call(self, "puthash", &[key, value.clone(), table], env)?;
+        Ok(value)
+    }
+
+    fn sf_setf_nth(
+        &mut self,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if place.len() < 3 {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        }
+        let index = self.eval(&place[1], env)?.as_integer()?.max(0) as usize;
+        let mut cell = self.eval(&place[2], env)?;
+        for _ in 0..index {
+            cell = cell.cdr()?;
+        }
+        let value = self.eval(value_expr, env)?;
+        cell.set_car(value.clone())?;
         Ok(value)
     }
 
@@ -7362,6 +7385,9 @@ impl Interpreter {
                 {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_plist_get(&items, &value_expr, env).map(|_| ())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "nth") {
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_nth(&items, &value_expr, env).map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "aref") {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_aref(&items, &value_expr, env).map(|_| ())
@@ -7889,23 +7915,19 @@ impl Interpreter {
                     match parts.get(1) {
                         Some(Value::Nil) => {}
                         Some(Value::Symbol(constructor_name)) => {
-                            let params = parts
+                            let (params, aux_bindings) = parts
                                 .get(2)
                                 .and_then(|value| value.to_vec().ok())
-                                .map(|items| {
-                                    items
-                                        .into_iter()
-                                        .filter_map(|value| {
-                                            value.as_symbol().ok().map(str::to_string)
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
+                                .map(parse_cl_defstruct_constructor_params)
                                 .unwrap_or_else(|| {
-                                    std::iter::once("&key".to_string())
-                                        .chain(slot_names.iter().cloned())
-                                        .collect::<Vec<_>>()
+                                    (
+                                        std::iter::once("&key".to_string())
+                                            .chain(slot_names.iter().cloned())
+                                            .collect::<Vec<_>>(),
+                                        Vec::new(),
+                                    )
                                 });
-                            constructors.push((constructor_name.clone(), params));
+                            constructors.push((constructor_name.clone(), params, aux_bindings));
                         }
                         _ => {}
                     }
@@ -7926,6 +7948,7 @@ impl Interpreter {
                 std::iter::once("&key".to_string())
                     .chain(slot_names.iter().cloned())
                     .collect::<Vec<_>>(),
+                Vec::new(),
             ));
         }
 
@@ -7985,22 +8008,65 @@ impl Interpreter {
             );
         }
 
-        for (constructor_name, params) in constructors {
-            let params_list =
-                Value::list(params.into_iter().map(Value::Symbol).collect::<Vec<_>>());
+        for (constructor_name, params, aux_bindings) in constructors {
+            let params_for_make = if aux_bindings.is_empty() {
+                params.clone()
+            } else {
+                params
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once("&key".to_string()))
+                    .chain(slot_names.iter().cloned())
+                    .collect::<Vec<_>>()
+            };
+            let params_list = Value::list(params_for_make.into_iter().map(Value::Symbol));
             let params_value = Value::list([Value::Symbol("quote".into()), params_list]);
+            let call_args = if aux_bindings.is_empty() {
+                Value::Symbol("args".into())
+            } else {
+                let aux_keywords = aux_bindings
+                    .iter()
+                    .flat_map(|(name, _)| {
+                        [
+                            Value::Symbol(format!(":{name}")),
+                            Value::Symbol(name.clone()),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                Value::list([
+                    Value::Symbol("append".into()),
+                    Value::Symbol("args".into()),
+                    Value::list(
+                        std::iter::once(Value::Symbol("list".into()))
+                            .chain(aux_keywords)
+                            .collect::<Vec<_>>(),
+                    ),
+                ])
+            };
+            let make_form = Value::list([
+                Value::Symbol("emaxx-struct-make".into()),
+                struct_name.clone(),
+                slot_names_value.clone(),
+                slot_defaults_value.clone(),
+                params_value,
+                call_args,
+            ]);
+            let body = if aux_bindings.is_empty() {
+                make_form
+            } else {
+                let let_bindings = Value::list(
+                    aux_bindings
+                        .into_iter()
+                        .map(|(name, form)| Value::list([Value::Symbol(name), form]))
+                        .collect::<Vec<_>>(),
+                );
+                Value::list([Value::Symbol("let*".into()), let_bindings, make_form])
+            };
             self.set_function_binding(
                 &constructor_name,
                 Some(Value::Lambda(
                     vec!["&rest".into(), "args".into()],
-                    vec![Value::list([
-                        Value::Symbol("emaxx-struct-make".into()),
-                        struct_name.clone(),
-                        slot_names_value.clone(),
-                        slot_defaults_value.clone(),
-                        params_value,
-                        Value::Symbol("args".into()),
-                    ])],
+                    vec![body],
                     shared_env(Vec::new()),
                 )),
             );
@@ -13252,6 +13318,37 @@ fn deep_copy_value(value: &Value) -> Value {
     }
 }
 
+fn parse_cl_defstruct_constructor_params(items: Vec<Value>) -> (Vec<String>, Vec<(String, Value)>) {
+    let mut params = Vec::new();
+    let mut aux_bindings = Vec::new();
+    let mut in_aux = false;
+    for item in items {
+        if matches!(&item, Value::Symbol(name) if name == "&aux") {
+            in_aux = true;
+            continue;
+        }
+        if in_aux {
+            match item {
+                Value::Symbol(name) => aux_bindings.push((name, Value::Nil)),
+                Value::Cons(_, _) => {
+                    if let Ok(parts) = item.to_vec()
+                        && let Some(name) = parts.first().and_then(|value| value.as_symbol().ok())
+                    {
+                        aux_bindings.push((
+                            name.to_string(),
+                            parts.get(1).cloned().unwrap_or(Value::Nil),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        } else if let Ok(name) = item.as_symbol() {
+            params.push(name.to_string());
+        }
+    }
+    (params, aux_bindings)
+}
+
 fn pcase_pattern_bindings(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -13379,6 +13476,76 @@ fn pcase_pattern_bindings_with_mode(
             )?
             .is_truthy();
             return Ok(if negated { !matches } else { matches });
+        }
+        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "cl-struct")
+            && parts.len() >= 2
+        {
+            let Some(type_name) = parts.get(1).and_then(|value| value.as_symbol().ok()) else {
+                return Ok(false);
+            };
+            let Value::Record(record_id) = value else {
+                return Ok(false);
+            };
+            let Some(record) = interp.find_record(*record_id) else {
+                return Ok(false);
+            };
+            if record.type_name != type_name {
+                return Ok(false);
+            }
+            let slots = record.slots.clone();
+            let slot_names = interp
+                .get_symbol_property(type_name, "emaxx-struct-slots")
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+                .collect::<Vec<_>>();
+            let start = bindings.len();
+            for slot_pattern in &parts[2..] {
+                let (slot_name, nested_pattern) = match slot_pattern {
+                    Value::Symbol(name) => (name.clone(), slot_pattern.clone()),
+                    Value::Cons(_, _) => {
+                        let Ok(slot_parts) = slot_pattern.to_vec() else {
+                            bindings.truncate(start);
+                            return Ok(false);
+                        };
+                        let Some(slot_name) =
+                            slot_parts.first().and_then(|value| value.as_symbol().ok())
+                        else {
+                            bindings.truncate(start);
+                            return Ok(false);
+                        };
+                        (
+                            slot_name.to_string(),
+                            slot_parts
+                                .get(1)
+                                .cloned()
+                                .unwrap_or_else(|| slot_pattern.clone()),
+                        )
+                    }
+                    _ => {
+                        bindings.truncate(start);
+                        return Ok(false);
+                    }
+                };
+                let Some(slot_index) = slot_names.iter().position(|name| name == &slot_name) else {
+                    bindings.truncate(start);
+                    return Ok(false);
+                };
+                let slot_value = slots.get(slot_index).cloned().unwrap_or(Value::Nil);
+                if !pcase_pattern_bindings_with_mode(
+                    interp,
+                    env,
+                    &nested_pattern,
+                    &slot_value,
+                    bindings,
+                    lenient_list_match,
+                )? {
+                    bindings.truncate(start);
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
         }
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
             return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
@@ -16370,6 +16537,22 @@ mod tests {
     }
 
     #[test]
+    fn setf_nth_mutates_existing_list_cell() {
+        assert_eq!(
+            eval_str(
+                "(let ((state (list 'depth 'last 'old)))
+                   (setf (nth 2 state) 'new)
+                   state)"
+            ),
+            Value::list([
+                Value::Symbol("depth".into()),
+                Value::Symbol("last".into()),
+                Value::Symbol("new".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn define_abbrev_table_creates_real_runtime_table() {
         assert_eq!(
             eval_str(
@@ -16512,6 +16695,25 @@ mod tests {
                    (defaulted-struct-beta (make-defaulted-struct :alpha 1)))"
             ),
             Value::Integer(7)
+        );
+    }
+
+    #[test]
+    fn cl_defstruct_constructor_evaluates_aux_slot_initializers() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defstruct (aux-struct
+                                  (:constructor make-aux-struct
+                                                (&aux
+                                                 (alpha 3)
+                                                 (beta (+ alpha 4)))))
+                     alpha beta)
+                   (let ((sample (make-aux-struct)))
+                     (list (aux-struct-alpha sample)
+                           (aux-struct-beta sample))))"
+            ),
+            Value::list([Value::Integer(3), Value::Integer(7)])
         );
     }
 
@@ -19537,6 +19739,31 @@ mod tests {
     }
 
     #[test]
+    fn pcase_let_matches_cl_struct_slot_patterns() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (cl-defstruct sample-pcase-state stack ppss ppss-point)
+                  (pcase-let* (((cl-struct sample-pcase-state
+                                            (stack indent-stack)
+                                            ppss ppss-point)
+                                 (make-sample-pcase-state
+                                  :stack '(cached)
+                                  :ppss '(0 nil)
+                                  :ppss-point 7)))
+                    (list indent-stack ppss ppss-point)))
+                "#
+            ),
+            Value::list([
+                Value::list([Value::Symbol("cached".into())]),
+                Value::list([Value::Integer(0), Value::Nil]),
+                Value::Integer(7),
+            ])
+        );
+    }
+
+    #[test]
     fn bool_vector_literals_eval_to_runtime_values() {
         assert_eq!(
             eval_str(
@@ -20885,6 +21112,14 @@ mod tests {
     }
 
     #[test]
+    fn select_safe_coding_system_uses_default_candidates() {
+        assert_eq!(
+            eval_str("(select-safe-coding-system (point-min) (point-max) (list t 'utf-8-emacs))"),
+            Value::Symbol("utf-8".into())
+        );
+    }
+
+    #[test]
     fn decode_char_supports_eight_bit_charset() {
         assert_eq!(
             eval_str(
@@ -22081,6 +22316,66 @@ IHdvcmxkIQ==")))
                 Value::String("abcd   ".into()),
                 Value::Integer(7),
             ])
+        );
+    }
+
+    #[test]
+    fn default_indent_line_function_is_indent_relative() {
+        assert_eq!(
+            eval_str("(default-value 'indent-line-function)"),
+            Value::Symbol("indent-relative".into())
+        );
+    }
+
+    #[test]
+    fn indent_relative_uses_previous_line_indent_points() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((indent-tabs-mode nil))
+                    (insert "alpha beta\nx")
+                    (goto-char (point-max))
+                    (indent-relative)
+                    (buffer-string)))
+                "#
+            ),
+            Value::String("alpha beta\nx     ".into())
+        );
+    }
+
+    #[test]
+    fn forward_and_backward_sexp_move_over_balanced_lists() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "(alpha (beta gamma)) tail")
+                  (goto-char (point-min))
+                  (forward-sexp)
+                  (let ((after-forward (point)))
+                    (backward-sexp)
+                    (list after-forward (point))))
+                "#
+            ),
+            Value::list([Value::Integer(21), Value::Integer(1)])
+        );
+    }
+
+    #[test]
+    fn syntax_ppss_returns_parse_state_without_moving_point() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "(alpha\n beta)")
+                  (goto-char (point-max))
+                  (let ((state (syntax-ppss 8))
+                        (after (point)))
+                    (list (car state) after)))
+                "#
+            ),
+            Value::list([Value::Integer(1), Value::Integer(14)])
         );
     }
 
