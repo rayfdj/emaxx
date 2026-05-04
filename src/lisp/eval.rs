@@ -1023,7 +1023,7 @@ impl Interpreter {
             suspend_condition_case_count: 0,
             condition_case_depth: 0,
         };
-        let esc_map = primitives::make_runtime_keymap(&mut interp, Some("esc-map"));
+        let esc_map = primitives::make_runtime_full_keymap(&mut interp, Some("esc-map"));
         interp.set_global_binding("esc-map", esc_map.clone());
         let ctl_x_4_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-4-map"));
         interp.set_global_binding("ctl-x-4-map", ctl_x_4_map.clone());
@@ -1031,7 +1031,7 @@ impl Interpreter {
         interp.set_global_binding("ctl-x-5-map", ctl_x_5_map.clone());
         let tab_prefix_map = primitives::make_runtime_keymap(&mut interp, Some("tab-prefix-map"));
         interp.set_global_binding("tab-prefix-map", tab_prefix_map.clone());
-        let ctl_x_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-map"));
+        let ctl_x_map = primitives::make_runtime_full_keymap(&mut interp, Some("ctl-x-map"));
         interp.set_global_binding("ctl-x-map", ctl_x_map.clone());
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
@@ -1044,7 +1044,7 @@ impl Interpreter {
             Value::Symbol("find-file".into()),
             true,
         );
-        let global_map = primitives::make_runtime_keymap(&mut interp, Some("global-map"));
+        let global_map = primitives::make_runtime_full_keymap(&mut interp, Some("global-map"));
         interp.set_global_binding("global-map", global_map);
         let buffer_menu_mode_map =
             primitives::make_runtime_keymap(&mut interp, Some("Buffer-menu-mode-map"));
@@ -5141,8 +5141,18 @@ impl Interpreter {
             "region-extract-function" => Some(Value::Symbol(
                 "emaxx-default-region-extract-function".into(),
             )),
+            "region-insert-function" => Some(Value::Symbol(
+                "emaxx-default-region-insert-function".into(),
+            )),
+            "redisplay-highlight-region-function" => {
+                Some(Value::Symbol("redisplay--highlight-overlay-function".into()))
+            }
+            "redisplay-unhighlight-region-function" => Some(Value::Symbol(
+                "redisplay--unhighlight-overlay-function".into(),
+            )),
             "case-fold-search" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
+            "meta-prefix-char" => Some(Value::Integer(27)),
             "translation-table-vector" => Some(Value::list([Value::symbol("vector")])),
             "float-e" => Some(Value::Float(std::f64::consts::E)),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
@@ -5929,6 +5939,7 @@ impl Interpreter {
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
                         "with-restriction" => return self.sf_with_restriction(&items, env),
                         "without-restriction" => return self.sf_without_restriction(&items, env),
+                        "add-function" => return self.sf_add_function(&items, env),
                         "with-selected-window" => return self.sf_progn(&items[2..], env),
                         "save-match-data" => return self.sf_save_match_data(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
@@ -10294,6 +10305,32 @@ impl Interpreter {
         let result = self.sf_progn(&items[2..], env);
         let _ = self.switch_to_buffer_id(saved_buffer_id);
         result
+    }
+
+    fn sf_add_function(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 4 || items.len() > 5 {
+            return Err(LispError::WrongNumberOfArgs(
+                "add-function".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let how = self.eval(&items[1], env)?;
+        let place = match &items[2] {
+            Value::Symbol(symbol) => Value::Symbol(symbol.clone()),
+            other => self.eval(other, env)?,
+        };
+        let function = self.eval(&items[3], env)?;
+        let props = if let Some(props) = items.get(4) {
+            vec![self.eval(props, env)?]
+        } else {
+            Vec::new()
+        };
+        let mut args = Vec::with_capacity(3 + props.len());
+        args.push(how);
+        args.push(place);
+        args.push(function);
+        args.extend(props);
+        primitives::call(self, "add-function", &args, env)
     }
 
     fn sf_with_environment_variables(
@@ -20171,6 +20208,38 @@ mod tests {
             ),
             Value::list([Value::T, Value::T, Value::T])
         );
+    }
+
+    #[test]
+    fn region_extension_function_variables_are_bound() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (list (boundp 'region-extract-function)
+                      (boundp 'region-insert-function)
+                      (boundp 'redisplay-highlight-region-function)
+                      (boundp 'redisplay-unhighlight-region-function))"#
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn built_in_prefix_keymaps_are_full_keymaps() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (list (char-table-p (nth 1 esc-map))
+                      (char-table-p (nth 1 ctl-x-map))
+                      (char-table-p (nth 1 global-map)))"#
+            ),
+            Value::list([Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn meta_prefix_char_defaults_to_escape() {
+        assert_eq!(eval_str("meta-prefix-char"), Value::Integer(27));
     }
 
     #[test]

@@ -495,6 +495,15 @@ fn make_advice_wrapper_around(original: Value, advice: Value) -> Value {
     )
 }
 
+fn wrap_advice(where_sym: &str, original: Value, advice: Value) -> Option<Value> {
+    match where_sym {
+        ":override" => Some(advice),
+        ":after" => Some(make_advice_wrapper_after(original, advice)),
+        ":around" => Some(make_advice_wrapper_around(original, advice)),
+        _ => None,
+    }
+}
+
 fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
     let seconds = args
         .first()
@@ -2229,6 +2238,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "keymap--read-only-filter"
             | "keymap-parent"
             | "set-keymap-parent"
+            | "map-keymap"
             | "suppress-keymap"
             | "use-local-map"
             | "current-local-map"
@@ -3868,7 +3878,7 @@ pub fn call(
         "nth" => {
             need_args(name, args, 2)?;
             let n = args[0].as_integer()? as usize;
-            let list = args[1].to_vec()?;
+            let list = list_sequence_items(interp, &args[1])?;
             Ok(list.get(n).cloned().unwrap_or(Value::Nil))
         }
         "elt" => {
@@ -3890,6 +3900,9 @@ pub fn call(
         }
         "nthcdr" => {
             need_args(name, args, 2)?;
+            if let Some(items) = keymap_list_items(interp, &args[1])? {
+                return nthcdr_value(&args[0], &Value::list(items));
+            }
             nthcdr_value(&args[0], &args[1])
         }
         "last" => {
@@ -9371,19 +9384,33 @@ pub fn call(
         }
         "add-function" => {
             need_arg_range(name, args, 3, 4)?;
-            let place = args[1].to_vec()?;
-            if place.len() == 2
-                && place[0] == Value::Symbol("emaxx-local-function-place".into())
-                && let Value::Symbol(variable) = &place[1]
-            {
-                interp.set_buffer_local_value(
-                    interp.current_buffer_id(),
-                    variable,
-                    args[2].clone(),
-                );
-                return Ok(Value::Nil);
+            let where_sym = args[0].as_symbol()?;
+            let advice = match &args[2] {
+                Value::Symbol(symbol) => interp
+                    .lookup_function(symbol, env)
+                    .unwrap_or(args[2].clone()),
+                other => other.clone(),
+            };
+            match &args[1] {
+                Value::Symbol(variable) => {
+                    let original = interp.lookup_var(variable, env).unwrap_or(Value::Nil);
+                    if let Some(wrapped) = wrap_advice(where_sym, original, advice) {
+                        interp.set_global_binding(variable, wrapped);
+                    }
+                    Ok(Value::Nil)
+                }
+                place_value => {
+                    let place = place_value.to_vec()?;
+                    if place.len() == 2
+                        && place[0] == Value::Symbol("emaxx-local-function-place".into())
+                        && let Value::Symbol(variable) = &place[1]
+                    {
+                        interp.set_buffer_local_value(interp.current_buffer_id(), variable, advice);
+                        return Ok(Value::Nil);
+                    }
+                    Err(LispError::Signal("Unsupported add-function place".into()))
+                }
             }
-            Err(LispError::Signal("Unsupported add-function place".into()))
         }
         "fundamental-mode" => {
             need_args(name, args, 0)?;
@@ -13085,6 +13112,28 @@ pub fn call(
                     record.slots.resize(KEYMAP_PARENT_SLOT + 1, Value::Nil);
                 }
                 record.slots[KEYMAP_PARENT_SLOT] = args[1].clone();
+            }
+            Ok(Value::Nil)
+        }
+        "map-keymap" => {
+            need_args(name, args, 2)?;
+            let Some(id) = keymap_record_id(interp, &args[1]) else {
+                return Ok(Value::Nil);
+            };
+            let Some(record) = interp.find_record(id) else {
+                return Ok(Value::Nil);
+            };
+            let bindings = keymap_bindings(record)?;
+            for binding in bindings {
+                interp.call_function_value(
+                    args[0].clone(),
+                    None,
+                    &[
+                        keymap_entry_key_value(&binding_key_parts(&binding), &binding.key),
+                        binding.value,
+                    ],
+                    env,
+                )?;
             }
             Ok(Value::Nil)
         }
@@ -26479,6 +26528,35 @@ mod tests {
     }
 
     #[test]
+    fn map_keymap_visits_runtime_keymap_bindings() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (let ((map (make-sparse-keymap))
+                  seen)
+              (define-key map "x" 'sample-command)
+              (map-keymap (lambda (key value)
+                            (setq seen (cons (cons key value) seen)))
+                          map)
+              seen)"#,
+        )
+        .read_all()
+        .expect("map-keymap test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("map-keymap should visit bindings");
+        assert_eq!(
+            result,
+            Value::list([Value::cons(
+                Value::Integer(i64::from(b'x')),
+                Value::Symbol("sample-command".into()),
+            )])
+        );
+    }
+
+    #[test]
     fn completion_predicates_preserve_string_list_membership() {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
@@ -35908,7 +35986,7 @@ pub(crate) fn make_runtime_keymap(interp: &mut Interpreter, name: Option<&str>) 
     )
 }
 
-fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
+pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, name: Option<&str>) -> Value {
     let keymap = make_runtime_keymap(interp, name);
     let Value::Record(id) = keymap.clone() else {
         return keymap;
@@ -39739,6 +39817,27 @@ mod compat_runtime_tests {
     }
 
     #[test]
+    fn nth_and_nthcdr_project_runtime_keymaps_as_lists() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (let ((map (make-keymap)))
+              (define-key map "x" 'sample-command)
+              (list (char-table-p (nth 1 map))
+                    (equal (car (nthcdr 2 map)) '(120 . sample-command))))
+            "#,
+        )
+        .read_all()
+        .expect("keymap nth test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("keymap nth forms should evaluate");
+        assert_eq!(result, Value::list([Value::T, Value::T]));
+    }
+
+    #[test]
     fn nthcdr_value_reduces_large_counts_on_cycles() {
         let cycle = Value::list(vec![Value::Nil; 5]);
         nthcdr_value(&Value::Integer(4), &cycle)
@@ -40941,6 +41040,31 @@ mod compat_runtime_tests {
             interp.buffer_local_value(interp.current_buffer_id(), "revert-buffer-function"),
             Some(Value::Symbol("archive--mode-revert".into()))
         );
+    }
+
+    #[test]
+    fn add_function_supports_symbol_variable_place() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let forms = Reader::new(
+            r#"
+            (progn
+              (defun emaxx-add-function-original () "base")
+              (defun emaxx-add-function-around (orig)
+                (concat "wrapped-" (funcall orig)))
+              (setq emaxx-add-function-target #'emaxx-add-function-original)
+              (add-function :around emaxx-add-function-target
+                            #'emaxx-add-function-around)
+              (funcall emaxx-add-function-target))
+            "#,
+        )
+        .read_all()
+        .expect("add-function symbol-place test should parse");
+        let result = forms
+            .iter()
+            .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+            .expect("add-function symbol-place should evaluate");
+        assert_eq!(result, Value::String("wrapped-base".into()));
     }
 
     #[test]
