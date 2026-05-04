@@ -21115,8 +21115,14 @@ mod tests {
     fn select_safe_coding_system_uses_default_candidates() {
         assert_eq!(
             eval_str("(select-safe-coding-system (point-min) (point-max) (list t 'utf-8-emacs))"),
-            Value::Symbol("utf-8".into())
+            Value::Symbol("utf-8-emacs".into())
         );
+    }
+
+    #[test]
+    fn utf8_decoding_preserves_invalid_bytes_as_raw_chars() {
+        let decoded = eval_str(r#"(decode-coding-string "\xe3\x32" 'utf-8)"#);
+        assert_eq!(primitives::string_text(&decoded).unwrap(), "\u{e0e3}2");
     }
 
     #[test]
