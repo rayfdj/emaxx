@@ -14277,7 +14277,7 @@ mod tests {
 
     fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         thread::Builder::new()
-            .stack_size(32 * 1024 * 1024)
+            .stack_size(128 * 1024 * 1024)
             .spawn(test)
             .unwrap()
             .join()
@@ -19855,6 +19855,23 @@ mod tests {
     }
 
     #[test]
+    fn quit_window_buries_current_buffer_without_killing_it() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (let ((target (get-buffer-create "*quit-window-target*")))
+                  (switch-to-buffer target)
+                  (quit-window)
+                  (list (not (eq (current-buffer) target))
+                        (buffer-live-p target)))"#
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
     fn push_resolves_progn_place_once() {
         assert_eq!(
             eval_str(
@@ -22280,44 +22297,48 @@ IHdvcmxkIQ==")))
 
     #[test]
     fn abbrev_require_preserves_mode_tables_loaded_first() {
-        assert_eq!(
-            eval_str_with_upstream_load_path(
-                r#"
-                (require 'lisp-mode)
-                (require 'abbrev)
-                (list (not (null (memq 'lisp-mode-abbrev-table
-                                        abbrev-table-name-list)))
-                      (not (null (memq 'fundamental-mode-abbrev-table
-                                        abbrev-table-name-list)))
-                      (not (null (memq 'global-abbrev-table
-                                        abbrev-table-name-list)))
-                      (abbrev-table-p lisp-mode-abbrev-table)
-                      (abbrev-table-p fundamental-mode-abbrev-table)
-                      (abbrev-table-p global-abbrev-table))
-                "#
-            ),
-            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
-        );
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"
+                    (require 'lisp-mode)
+                    (require 'abbrev)
+                    (list (not (null (memq 'lisp-mode-abbrev-table
+                                            abbrev-table-name-list)))
+                          (not (null (memq 'fundamental-mode-abbrev-table
+                                            abbrev-table-name-list)))
+                          (not (null (memq 'global-abbrev-table
+                                            abbrev-table-name-list)))
+                          (abbrev-table-p lisp-mode-abbrev-table)
+                          (abbrev-table-p fundamental-mode-abbrev-table)
+                          (abbrev-table-p global-abbrev-table))
+                    "#
+                ),
+                Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,])
+            );
+        });
     }
 
     #[test]
     fn abbrev_initializes_local_abbrev_table_default() {
-        assert_eq!(
-            eval_str_with_upstream_load_path(
-                r#"
-                (require 'lisp-mode)
-                (require 'abbrev)
-                (let ((initial (with-temp-buffer
-                                 (eq local-abbrev-table
-                                     fundamental-mode-abbrev-table))))
-                  (list initial
-                        (with-temp-buffer
-                          (eq local-abbrev-table
-                              fundamental-mode-abbrev-table))))
-                "#
-            ),
-            Value::list([Value::T, Value::T])
-        );
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"
+                    (require 'lisp-mode)
+                    (require 'abbrev)
+                    (let ((initial (with-temp-buffer
+                                     (eq local-abbrev-table
+                                         fundamental-mode-abbrev-table))))
+                      (list initial
+                            (with-temp-buffer
+                              (eq local-abbrev-table
+                                  fundamental-mode-abbrev-table))))
+                    "#
+                ),
+                Value::list([Value::T, Value::T])
+            );
+        });
     }
 
     #[test]
