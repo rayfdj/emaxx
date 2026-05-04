@@ -1035,7 +1035,11 @@ impl Interpreter {
         interp.mark_auto_buffer_local("major-mode");
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
         interp.mark_auto_buffer_local("mode-name");
+        interp.set_global_binding("buffer-read-only", Value::Nil);
+        interp.mark_auto_buffer_local("buffer-read-only");
         interp.set_global_binding("current-prefix-arg", Value::Nil);
+        interp.set_global_binding("this-command", Value::Nil);
+        interp.set_global_binding("last-command", Value::Nil);
         interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
         interp.set_global_binding("search-spaces-regexp", Value::Nil);
         interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
@@ -14993,6 +14997,25 @@ mod tests {
                       case-fold-search))"#
             ),
             Value::list([Value::Nil, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn editing_command_state_defaults_are_bound() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(list
+                    buffer-read-only
+                    this-command
+                    last-command
+                    (with-temp-buffer
+                      (setq buffer-read-only t)
+                      (default-value 'buffer-read-only))
+                    buffer-read-only)"#
+            ),
+            Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil, Value::Nil])
         );
     }
 

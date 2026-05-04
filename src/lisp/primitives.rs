@@ -2025,6 +2025,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-window-point"
             | "read-string"
             | "format-prompt"
+            | "text-mode"
             // Overlay operations
             | "make-overlay"
             | "overlayp"
@@ -6578,6 +6579,11 @@ pub fn call(
             Ok(byte_to_position(interp, byte as usize)
                 .map(|pos| Value::Integer(pos as i64))
                 .unwrap_or(Value::Nil))
+        }
+        "text-mode" => {
+            derived_mode_set_parent(interp, "text-mode", Some("fundamental-mode"));
+            activate_major_mode(interp, "text-mode", "Text");
+            Ok(Value::Nil)
         }
         "c-mode" => {
             derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
@@ -38934,6 +38940,31 @@ mod compat_runtime_tests {
             )
             .expect("appended property should be visible through original plist"),
             Value::Symbol("save".into())
+        );
+    }
+
+    #[test]
+    fn text_mode_activates_major_mode_for_derived_mode_checks() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(&mut interp, "text-mode", &[], &mut env).expect("text-mode should activate"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.lookup_var("major-mode", &env),
+            Some(Value::Symbol("text-mode".into()))
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "derived-mode-p",
+                &[Value::Symbol("text-mode".into())],
+                &mut env,
+            )
+            .expect("text-mode should match derived-mode-p"),
+            Value::T
         );
     }
 
