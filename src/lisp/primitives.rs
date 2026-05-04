@@ -8115,6 +8115,9 @@ pub fn call(
                 buffer.overlays = overlays;
             }
             interp.register_indirect_buffer(new_id, base_id);
+            if clone {
+                interp.clone_buffer_local_state(base_id, new_id);
+            }
             if !inhibit_hooks {
                 run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
             }
@@ -30767,6 +30770,7 @@ fn insert_file_contents(
         ));
     }
     let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+    let visit = args.get(1).is_some_and(Value::is_truthy);
     let start = args
         .get(2)
         .filter(|value| !value.is_nil())
@@ -30814,6 +30818,12 @@ fn insert_file_contents(
         "buffer-file-coding-system",
         Value::Symbol(detected.clone()),
     );
+    if visit {
+        interp.buffer.file = Some(path.clone());
+        interp.buffer.file_truename = Some(path.clone());
+        interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+        interp.buffer.set_unmodified();
+    }
     set_last_coding_system_used(interp, &detected, env);
     Ok(Value::list([
         Value::String(path),
@@ -30975,6 +30985,8 @@ fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Result<(), Lisp
         return Ok(());
     };
     let (text, coding, multibyte) = current_buffer_file_text(interp, env, &path)?;
+    let current_id = interp.current_buffer_id();
+    let related = interp.related_buffer_ids(current_id);
     let name = interp.buffer.name.clone();
     let file = interp.buffer.file.clone();
     let file_truename = interp.buffer.file_truename.clone();
@@ -30989,8 +31001,34 @@ fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Result<(), Lisp
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
         "buffer-file-coding-system",
-        Value::Symbol(coding),
+        Value::Symbol(coding.clone()),
     );
+    let visited_file_modtime = file_modtime(&path)?;
+    for buffer_id in related {
+        if buffer_id == current_id {
+            continue;
+        }
+        if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+            let name = buffer.name.clone();
+            let file = buffer.file.clone();
+            let file_truename = buffer.file_truename.clone();
+            let inhibit_hooks = buffer.inhibit_hooks;
+            let point = buffer.point().min(text.chars().count() + 1);
+            *buffer = crate::buffer::Buffer::from_text(&name, &text);
+            buffer.set_multibyte(multibyte);
+            buffer.file = file;
+            buffer.file_truename = file_truename;
+            buffer.inhibit_hooks = inhibit_hooks;
+            buffer.goto_char(point);
+            buffer.set_unmodified();
+            buffer.set_visited_file_modtime(visited_file_modtime);
+        }
+        interp.set_buffer_local_value(
+            buffer_id,
+            "buffer-file-coding-system",
+            Value::Symbol(coding.clone()),
+        );
+    }
     Ok(())
 }
 
