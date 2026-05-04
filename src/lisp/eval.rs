@@ -16251,6 +16251,17 @@ mod tests {
     }
 
     #[test]
+    fn assoc_delete_all_filters_matching_alist_keys_with_equal() {
+        assert_eq!(
+            eval_str("(assoc-delete-all \"drop\" '(noise (\"drop\" . a) (\"keep\" . b)))"),
+            Value::list([
+                Value::Symbol("noise".into()),
+                Value::cons(Value::String("keep".into()), Value::Symbol("b".into())),
+            ])
+        );
+    }
+
+    #[test]
     fn add_to_list_updates_quoted_variable() {
         let mut interp = Interpreter::new();
         eval_str_with(&mut interp, "(setq sample-list '(b c))");
