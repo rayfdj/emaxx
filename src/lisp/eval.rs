@@ -20603,6 +20603,36 @@ mod tests {
     }
 
     #[test]
+    fn format_spec_applies_width_precision_and_flags() {
+        assert_eq!(
+            eval_str(r#"(format-spec "%2a%-3b%.1p%%" '((?a . "") (?b . "-") (?p . "99")))"#),
+            Value::String("  -  9%".into())
+        );
+        assert_eq!(
+            eval_str(r#"(format-spec "%2a%-3b%.1p%%" '((?b . "-") (?p . "99")) 'delete)"#),
+            Value::String("-  9%".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"(format-spec "%^a %_b %04c %<3d %>3e" '((?a . "abc") (?b . "XYZ") (?c . "7") (?d . "abcdef") (?e . "abcdef")))"#
+            ),
+            Value::String("ABC xyz 0007 def abc".into())
+        );
+    }
+
+    #[test]
+    fn format_spec_supports_function_values_and_split() {
+        assert_eq!(
+            eval_str(r#"(format-spec "a%xb" `((?x . ,(lambda () "X"))) nil t)"#),
+            Value::list([
+                Value::String("a".into()),
+                Value::String("X".into()),
+                Value::String("b".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn insert_file_contents_visit_marks_buffer_as_visiting_file() {
         let path = std::env::temp_dir().join(format!(
             "emaxx-insert-visit-{}",
