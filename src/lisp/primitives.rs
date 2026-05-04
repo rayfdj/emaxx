@@ -1361,6 +1361,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "assq"
             | "rassoc"
             | "rassq"
+            | "assq-delete-all"
             | "rassq-delete-all"
             | "assoc"
             | "assoc-string"
@@ -4169,6 +4170,10 @@ pub fn call(
         "rassq-delete-all" => {
             need_args(name, args, 2)?;
             rassq_delete_all(&args[0], &args[1])
+        }
+        "assq-delete-all" => {
+            need_args(name, args, 2)?;
+            assq_delete_all(&args[0], &args[1])
         }
         "assoc" => {
             need_arg_range(name, args, 2, 3)?;
@@ -34552,6 +34557,18 @@ fn rassq_delete_all(key: &Value, alist: &Value) -> Result<Value, LispError> {
         .into_iter()
         .filter(|entry| match entry {
             Value::Cons(_, _) => entry.cdr().is_ok_and(|value| value != *key),
+            _ => true,
+        })
+        .collect::<Vec<_>>();
+    Ok(Value::list(filtered))
+}
+
+fn assq_delete_all(key: &Value, alist: &Value) -> Result<Value, LispError> {
+    let filtered = alist
+        .to_vec()?
+        .into_iter()
+        .filter(|entry| match entry {
+            Value::Cons(_, _) => entry.car().is_ok_and(|value| value != *key),
             _ => true,
         })
         .collect::<Vec<_>>();

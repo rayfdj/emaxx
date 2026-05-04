@@ -16240,6 +16240,17 @@ mod tests {
     }
 
     #[test]
+    fn assq_delete_all_filters_matching_alist_keys() {
+        assert_eq!(
+            eval_str("(assq-delete-all 'drop '(noise (drop . a) (keep . b) (drop . c)))"),
+            Value::list([
+                Value::Symbol("noise".into()),
+                Value::cons(Value::Symbol("keep".into()), Value::Symbol("b".into())),
+            ])
+        );
+    }
+
+    #[test]
     fn add_to_list_updates_quoted_variable() {
         let mut interp = Interpreter::new();
         eval_str_with(&mut interp, "(setq sample-list '(b c))");
