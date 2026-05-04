@@ -2026,6 +2026,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "read-string"
             | "format-prompt"
             | "text-mode"
+            | "skeleton-insert"
             // Overlay operations
             | "make-overlay"
             | "overlayp"
@@ -6028,6 +6029,15 @@ pub fn call(
                 .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", byte)))?;
             let text: String = std::iter::repeat_n(c, count).collect();
             insert_text_with_hooks(interp, &text, &[], false, false, env)?;
+            Ok(Value::Nil)
+        }
+        "skeleton-insert" => {
+            need_arg_range(name, args, 1, 3)?;
+            let mut point = None;
+            skeleton_insert_value(interp, &args[0], env, &mut point)?;
+            if let Some(point) = point {
+                interp.buffer.goto_char(point);
+            }
             Ok(Value::Nil)
         }
         "insert-buffer-substring" => {
@@ -27803,6 +27813,41 @@ pub(crate) fn insert_impl(
     Ok(Value::Nil)
 }
 
+fn skeleton_insert_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+    point: &mut Option<usize>,
+) -> Result<(), LispError> {
+    match value {
+        Value::Nil => Ok(()),
+        Value::String(_) | Value::StringObject(_) => {
+            insert_impl(interp, std::slice::from_ref(value), env, false, false)?;
+            Ok(())
+        }
+        Value::Integer(code) => {
+            insert_char_impl(interp, std::slice::from_ref(value), env)?;
+            if char::from_u32(*code as u32).is_none() {
+                return Err(LispError::Signal(format!("Invalid character: {code}")));
+            }
+            Ok(())
+        }
+        Value::Symbol(symbol) if symbol == "_" => {
+            point.get_or_insert_with(|| interp.buffer.point());
+            Ok(())
+        }
+        Value::Symbol(_) => Ok(()),
+        Value::Cons(_, _) => {
+            let items = value.to_vec()?;
+            for item in items.iter().skip(1) {
+                skeleton_insert_value(interp, item, env, point)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn insert_char_impl(
     interp: &mut Interpreter,
     args: &[Value],
@@ -38976,6 +39021,26 @@ mod compat_runtime_tests {
             .expect("text-mode should match derived-mode-p"),
             Value::T
         );
+    }
+
+    #[test]
+    fn skeleton_insert_inserts_strings_and_restores_point_marker() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let skeleton = Value::list([
+            Value::Nil,
+            Value::String("f".into()),
+            Value::Symbol("_".into()),
+            Value::String("oo".into()),
+        ]);
+
+        assert_eq!(
+            call(&mut interp, "skeleton-insert", &[skeleton], &mut env)
+                .expect("skeleton-insert should insert simple skeletons"),
+            Value::Nil
+        );
+        assert_eq!(interp.buffer.buffer_string(), "foo");
+        assert_eq!(interp.buffer.point(), interp.buffer.point_min() + 1);
     }
 
     #[test]
