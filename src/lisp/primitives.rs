@@ -6558,12 +6558,13 @@ pub fn call(
             need_args(name, args, 2)?;
             let from = position_from_value(interp, &args[0])?;
             let to = position_from_value(interp, &args[1])?;
-            match interp.buffer.buffer_substring(from, to) {
+            let (start, end) = if from <= to { (from, to) } else { (to, from) };
+            match interp.buffer.buffer_substring(start, end) {
                 Ok(s) => {
                     if name == "buffer-substring" {
                         Ok(string_like_value(
                             s,
-                            interp.buffer.substring_property_spans(from, to),
+                            interp.buffer.substring_property_spans(start, end),
                         ))
                     } else {
                         Ok(Value::String(s))
@@ -25691,6 +25692,62 @@ mod tests {
                 Value::Symbol("face".into()),
                 Value::Symbol("underline".into()),
             ])
+        );
+    }
+
+    #[test]
+    fn buffer_substring_accepts_reversed_bounds() {
+        let mut interp = Interpreter::new();
+        interp.buffer.insert("abcdef");
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "buffer-substring-no-properties",
+                &[Value::Integer(5), Value::Integer(2)],
+                &mut env,
+            )
+            .expect("buffer-substring-no-properties should accept reversed bounds"),
+            Value::String("bcd".into())
+        );
+    }
+
+    #[test]
+    fn buffer_substring_preserves_properties_with_reversed_bounds() {
+        let mut interp = Interpreter::new();
+        interp.buffer.insert("abcdef");
+        let mut env = Vec::new();
+        call(
+            &mut interp,
+            "set-text-properties",
+            &[
+                Value::Integer(2),
+                Value::Integer(5),
+                Value::list([Value::Symbol("face".into()), Value::Symbol("bold".into())]),
+            ],
+            &mut env,
+        )
+        .expect("set-text-properties should install buffer props");
+
+        let string = call(
+            &mut interp,
+            "buffer-substring",
+            &[Value::Integer(5), Value::Integer(2)],
+            &mut env,
+        )
+        .expect("buffer-substring should accept reversed bounds");
+
+        let props = call(
+            &mut interp,
+            "text-properties-at",
+            &[Value::Integer(0), string],
+            &mut env,
+        )
+        .expect("text-properties-at should read reversed substring props");
+        assert_eq!(
+            props,
+            Value::list([Value::Symbol("face".into()), Value::Symbol("bold".into())])
         );
     }
 
