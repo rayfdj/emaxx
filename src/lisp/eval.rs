@@ -3672,6 +3672,37 @@ impl Interpreter {
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
     }
 
+    pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
+        let locals = self
+            .buffer_locals
+            .iter()
+            .filter(|(id, _, _)| *id == from_buffer_id)
+            .map(|(_, name, value)| (name.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        for (name, value) in locals {
+            self.set_buffer_local_value(to_buffer_id, &name, value);
+        }
+
+        let hooks = self
+            .buffer_local_hooks
+            .iter()
+            .filter(|(id, _, _)| *id == from_buffer_id)
+            .map(|(_, name, values)| (name.clone(), values.clone()))
+            .collect::<Vec<_>>();
+        for (name, values) in hooks {
+            self.set_buffer_local_hook(to_buffer_id, &name, values);
+        }
+
+        if let Some((_, table)) = self
+            .buffer_case_tables
+            .iter()
+            .find(|(id, _)| *id == from_buffer_id)
+            .cloned()
+        {
+            self.buffer_case_tables.push((to_buffer_id, table));
+        }
+    }
+
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
         let mut vars = Vec::new();
         for (id, name, value) in &self.buffer_locals {
@@ -5134,6 +5165,7 @@ impl Interpreter {
             "buffer-stale-function" => Some(Value::Symbol(
                 "buffer-stale--default-function".into(),
             )),
+            "buffer-auto-revert-by-notification" => Some(Value::Nil),
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
@@ -20541,6 +20573,90 @@ mod tests {
                      (global-auto-revert-mode 0))))"#
         );
         assert_eq!(eval_str_with_upstream_load_path(&form), Value::T);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn make_indirect_buffer_clone_copies_buffer_local_modes() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((base (get-buffer-create " indirect-base")))
+                     (with-current-buffer base
+                       (setq-local sample-mode t)
+                       (let ((cloned (make-indirect-buffer base " indirect-clone" 'clone))
+                             (plain (make-indirect-buffer base " indirect-plain" nil)))
+                         (unwind-protect
+                             (list (buffer-local-value 'sample-mode cloned)
+                                   (local-variable-p 'sample-mode cloned)
+                                   (local-variable-p 'sample-mode plain))
+                           (kill-buffer cloned)
+                           (kill-buffer plain)
+                           (kill-buffer base)))))"#
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn buffer_auto_revert_by_notification_defaults_to_nil() {
+        assert_eq!(eval_str("buffer-auto-revert-by-notification"), Value::Nil);
+    }
+
+    #[test]
+    fn insert_file_contents_visit_marks_buffer_as_visiting_file() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-insert-visit-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(&path, "visited").expect("create insert visit test file");
+        let path_text = path.to_string_lossy();
+        let form = format!(
+            r#"(let ((buf (generate-new-buffer " insert-visit")))
+                 (unwind-protect
+                     (with-current-buffer buf
+                       (insert-file-contents "{path_text}" 'visit)
+                       (list buffer-file-name
+                             (buffer-modified-p)
+                             (verify-visited-file-modtime buf)))
+                   (kill-buffer buf)))"#
+        );
+        assert_eq!(
+            eval_str_with_upstream_load_path(&form),
+            Value::list([Value::String(path_text.to_string()), Value::Nil, Value::T])
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn revert_buffer_refreshes_related_indirect_buffers() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-indirect-revert-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(&path, "old").expect("create indirect revert test file");
+        let path_text = path.to_string_lossy();
+        let form = format!(
+            r#"(let* ((base (find-file-noselect "{path_text}"))
+                      (clone (make-indirect-buffer base " indirect-revert-clone" 'clone)))
+                 (unwind-protect
+                     (with-current-buffer base
+                       (write-region "new" nil "{path_text}" nil 'no-message)
+                       (revert-buffer 'ignore-auto 'dont-ask 'preserve-modes)
+                       (list (buffer-string)
+                             (with-current-buffer clone (buffer-string))))
+                   (kill-buffer clone)
+                   (kill-buffer base)))"#
+        );
+        assert_eq!(
+            eval_str_with_upstream_load_path(&form),
+            Value::list([Value::String("new".into()), Value::String("new".into())])
+        );
         let _ = fs::remove_file(path);
     }
 
