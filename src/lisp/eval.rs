@@ -17059,6 +17059,16 @@ mod tests {
     }
 
     #[test]
+    fn current_time_string_formats_known_time_with_zone() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str("(current-time-string 0 t)"),
+                Value::String("Thu Jan  1 00:00:00 1970".into())
+            );
+        });
+    }
+
+    #[test]
     fn variable_watchers_allow_mutating_lexical_callback_state() {
         run_with_large_stack(|| {
             assert_eq!(
