@@ -2337,6 +2337,43 @@ impl Interpreter {
         Ok(())
     }
 
+    fn run_due_elisp_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
+        if self
+            .raw_function_binding("timer-event-handler", env)
+            .is_none()
+            || self.raw_function_binding("timer--time", env).is_none()
+        {
+            return Ok(());
+        }
+
+        let timers = self
+            .lookup_var("timer-list", env)
+            .unwrap_or(Value::Nil)
+            .to_vec()
+            .unwrap_or_default();
+        for timer in timers {
+            if primitives::call(self, "timerp", std::slice::from_ref(&timer), env)?.is_nil() {
+                continue;
+            }
+            let timer_time = self.call_function_value(
+                Value::Symbol("timer--time".into()),
+                Some("timer--time"),
+                std::slice::from_ref(&timer),
+                env,
+            )?;
+            let future = primitives::call(self, "time-less-p", &[Value::Nil, timer_time], env)?;
+            if future.is_nil() {
+                self.call_function_value(
+                    Value::Symbol("timer-event-handler".into()),
+                    Some("timer-event-handler"),
+                    std::slice::from_ref(&timer),
+                    env,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn current_thread_value(&self) -> Value {
         Value::Record(self.active_thread_id)
     }
@@ -2601,6 +2638,7 @@ impl Interpreter {
         }
         if wake_sleepers {
             self.run_pending_timers(env)?;
+            self.run_due_elisp_timers(env)?;
         }
         Ok(())
     }
@@ -5081,6 +5119,13 @@ impl Interpreter {
                 .into(),
             )),
             "minor-mode-alist" => Some(Value::Nil),
+            "timer-list" | "timer-idle-list" => Some(Value::Nil),
+            "revert-buffer-function" => {
+                Some(Value::Symbol("emaxx-default-revert-buffer-function".into()))
+            }
+            "buffer-stale-function" => Some(Value::Symbol(
+                "buffer-stale--default-function".into(),
+            )),
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
@@ -5321,12 +5366,7 @@ impl Interpreter {
         }
         for frame in env.iter().rev() {
             for (k, v) in frame.iter().rev() {
-                if k == name
-                    && matches!(
-                        v,
-                        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) | Value::Symbol(_)
-                    )
-                {
+                if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
                     return Some(v.clone());
                 }
             }
@@ -5713,7 +5753,9 @@ impl Interpreter {
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "ignore-error" => return self.sf_ignore_error(&items, env),
                         "ignore-errors" => return self.sf_ignore_errors(&items, env),
-                        "condition-case" => return self.sf_condition_case(&items, env),
+                        "condition-case" | "condition-case-unless-debug" => {
+                            return self.sf_condition_case(&items, env);
+                        }
                         "handler-bind" => return self.sf_handler_bind(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
                         "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
@@ -6770,12 +6812,23 @@ impl Interpreter {
                     Ok(value)
                 }
             }
+            Some(Value::Symbol(name)) if matches!(name.as_str(), "cond" | "if" | "progn") => {
+                let resolved = self.resolve_setf_place(&items[1], env)?;
+                let value = self.eval(&items[2], env)?;
+                self.set_resolved_setf_place_value(&resolved, value.clone(), env)?;
+                Ok(value)
+            }
             Some(Value::Symbol(name))
                 if self
                     .get_symbol_property(name, "emaxx-struct-slot")
                     .is_some() =>
             {
                 self.sf_setf_struct_accessor(name, &place, &items[2], env)
+            }
+            Some(Value::Symbol(name))
+                if self.get_symbol_property(name, "emaxx-gv-setter").is_some() =>
+            {
+                self.sf_setf_gv_setter(name, &place, &items[2], env)
             }
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
@@ -6844,6 +6897,28 @@ impl Interpreter {
             )));
         }
         record.slots[slot_index] = value.clone();
+        Ok(value)
+    }
+
+    fn sf_setf_gv_setter(
+        &mut self,
+        accessor: &str,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let setter = self
+            .get_symbol_property(accessor, "emaxx-gv-setter")
+            .and_then(|value| value.as_symbol().ok().map(str::to_string))
+            .ok_or_else(|| LispError::Signal(format!("Unknown gv setter: {accessor}")))?;
+        let mut args = Vec::with_capacity(place.len());
+        for arg in &place[1..] {
+            args.push(self.eval(arg, env)?);
+        }
+        let value = self.eval(value_expr, env)?;
+        args.push(value.clone());
+        let setter_function = self.lookup_function(&setter, env)?;
+        self.call_function_value(setter_function, Some(&setter), &args, env)?;
         Ok(value)
     }
 
@@ -7098,6 +7173,15 @@ impl Interpreter {
                     let accessor = items[0].as_symbol().expect("checked symbol").to_string();
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_struct_accessor(&accessor, &items, &value_expr, env)
+                        .map(|_| ())
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name))
+                        if self.get_symbol_property(name, "emaxx-gv-setter").is_some()
+                ) {
+                    let accessor = items[0].as_symbol().expect("checked symbol").to_string();
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_gv_setter(&accessor, &items, &value_expr, env)
                         .map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "car" || name == "cdr")
                 {
@@ -7679,33 +7763,45 @@ impl Interpreter {
 
         let mut constructors = Vec::new();
         let mut saw_constructor_option = false;
+        let mut conc_name = format!("{name}-");
         for option in options {
             let Some(parts) = option.to_vec().ok() else {
                 continue;
             };
-            if !matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == ":constructor") {
-                continue;
-            }
-            saw_constructor_option = true;
-            match parts.get(1) {
-                Some(Value::Nil) => {}
-                Some(Value::Symbol(constructor_name)) => {
-                    let params = parts
-                        .get(2)
-                        .and_then(|value| value.to_vec().ok())
-                        .map(|items| {
-                            items
-                                .into_iter()
-                                .filter_map(|value| value.as_symbol().ok().map(str::to_string))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_else(|| {
-                            std::iter::once("&key".to_string())
-                                .chain(slot_names.iter().cloned())
-                                .collect::<Vec<_>>()
-                        });
-                    constructors.push((constructor_name.clone(), params));
+            match parts.first() {
+                Some(Value::Symbol(keyword)) if keyword == ":constructor" => {
+                    saw_constructor_option = true;
+                    match parts.get(1) {
+                        Some(Value::Nil) => {}
+                        Some(Value::Symbol(constructor_name)) => {
+                            let params = parts
+                                .get(2)
+                                .and_then(|value| value.to_vec().ok())
+                                .map(|items| {
+                                    items
+                                        .into_iter()
+                                        .filter_map(|value| {
+                                            value.as_symbol().ok().map(str::to_string)
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_else(|| {
+                                    std::iter::once("&key".to_string())
+                                        .chain(slot_names.iter().cloned())
+                                        .collect::<Vec<_>>()
+                                });
+                            constructors.push((constructor_name.clone(), params));
+                        }
+                        _ => {}
+                    }
                 }
+                Some(Value::Symbol(keyword)) if keyword == ":conc-name" => match parts.get(1) {
+                    Some(Value::Nil) => conc_name.clear(),
+                    Some(Value::Symbol(prefix)) => conc_name = prefix.clone(),
+                    Some(Value::String(prefix)) => conc_name = prefix.clone(),
+                    Some(Value::StringObject(prefix)) => conc_name = prefix.borrow().text.clone(),
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -7748,7 +7844,7 @@ impl Interpreter {
         );
 
         for (index, slot_name) in slot_names.iter().enumerate() {
-            let accessor_name = format!("{name}-{slot_name}");
+            let accessor_name = format!("{conc_name}{slot_name}");
             self.put_symbol_property(
                 &accessor_name,
                 "emaxx-struct-type",
@@ -7973,6 +8069,11 @@ impl Interpreter {
             3
         };
 
+        if body_start < items.len()
+            && let Some(setter) = function_declare_gv_setter(&items[body_start])
+        {
+            self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter));
+        }
         let body: Vec<Value> = items[body_start..].to_vec();
         let lambda = Value::Lambda(params, body, shared_env(env.clone()));
         self.functions.push((name.clone(), lambda));
@@ -9026,7 +9127,8 @@ impl Interpreter {
                 if matches!(name.as_str(), "car" | "cdr")
                     || self
                         .get_symbol_property(name, "emaxx-struct-slot")
-                        .is_some() =>
+                        .is_some()
+                    || self.get_symbol_property(name, "emaxx-gv-setter").is_some() =>
             {
                 let Some(target_expr) = items.get(1) else {
                     return Ok(place.clone());
@@ -9037,6 +9139,16 @@ impl Interpreter {
                         Value::Symbol(format!("--emaxx-setf-{name}-place")),
                         target,
                     ]));
+                }
+                if self.get_symbol_property(name, "emaxx-gv-setter").is_some() {
+                    let mut resolved = Vec::with_capacity(items.len());
+                    resolved.push(Value::Symbol(name.clone()));
+                    resolved.push(quoted_literal(&target));
+                    for arg in &items[2..] {
+                        let evaluated = self.eval(arg, env)?;
+                        resolved.push(quoted_literal(&evaluated));
+                    }
+                    return Ok(Value::list(resolved));
                 }
                 Ok(Value::list([
                     Value::Symbol(name.clone()),
@@ -12285,6 +12397,22 @@ fn is_function_declare_form(form: &Value) -> bool {
     )
 }
 
+fn function_declare_gv_setter(form: &Value) -> Option<String> {
+    let items = form.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
+        return None;
+    }
+    items[1..].iter().find_map(|declaration| {
+        let declaration_items = declaration.to_vec().ok()?;
+        match declaration_items.as_slice() {
+            [Value::Symbol(kind), Value::Symbol(setter)] if kind == "gv-setter" => {
+                Some(setter.clone())
+            }
+            _ => None,
+        }
+    })
+}
+
 fn is_function_interactive_form(form: &Value) -> bool {
     form.to_vec().ok().is_some_and(
         |items| matches!(items.first(), Some(Value::Symbol(name)) if name == "interactive"),
@@ -13274,6 +13402,23 @@ fn compile_rx_literal_form(
     }
 }
 
+fn compile_rx_regexp_form(
+    interp: &mut Interpreter,
+    env: &Env,
+    items: &[Value],
+) -> Result<String, LispError> {
+    if items.len() != 2 {
+        return Err(LispError::Signal("rx `regexp' needs one string".into()));
+    }
+    let mut regexp_env = env.clone();
+    let value = interp.eval(&items[1], &mut regexp_env)?;
+    match value {
+        Value::String(text) => Ok(text),
+        Value::StringObject(state) => Ok(state.borrow().text.clone()),
+        other => Err(LispError::TypeError("string".into(), other.type_name())),
+    }
+}
+
 fn quote_rx_string_literal(text: &str) -> String {
     let mut quoted = String::new();
     for ch in text.chars() {
@@ -13627,16 +13772,7 @@ fn compile_rx_form(
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
                 "seq" | ":" => compile_rx_sequence(interp, env, &items[1..]),
-                "regexp" => {
-                    if items.len() != 2 {
-                        return Err(LispError::Signal("rx `regexp' needs one string".into()));
-                    }
-                    match &items[1] {
-                        Value::String(text) => Ok(text.clone()),
-                        Value::StringObject(state) => Ok(state.borrow().text.clone()),
-                        other => Err(LispError::TypeError("string".into(), other.type_name())),
-                    }
-                }
+                "regexp" => compile_rx_regexp_form(interp, env, &items),
                 "literal" => compile_rx_literal_form(interp, env, &items),
                 "repeat" => {
                     if items.len() < 3 {
@@ -13703,6 +13839,20 @@ fn compile_rx_form(
                         }
                         other => compile_rx_char_class(std::slice::from_ref(other), true),
                     }
+                }
+                "=" => {
+                    if items.len() < 3 {
+                        return Err(LispError::Signal("rx `=' needs a count and a form".into()));
+                    }
+                    let count = items[1].as_integer()?;
+                    if count < 0 {
+                        return Err(LispError::Signal("rx repetition count must be >= 0".into()));
+                    }
+                    Ok(format!(
+                        "\\(?:{}\\)\\{{{}\\}}",
+                        compile_rx_sequence(interp, env, &items[2..])?,
+                        count
+                    ))
                 }
                 ">=" => {
                     if items.len() < 3 {
@@ -14257,6 +14407,40 @@ mod tests {
                 Value::Integer(0),
                 Value::Integer(7),
             ])
+        );
+    }
+
+    #[test]
+    fn setf_uses_symbol_gv_setter_declarations() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defstruct sample-gv alpha beta)
+                   (defun sample-alpha-setter (object value)
+                     (setf (sample-gv-alpha object) value)
+                     value)
+                   (defun sample-alpha-view (object)
+                     (declare (gv-setter sample-alpha-setter))
+                     (sample-gv-alpha object))
+                   (let ((object (make-sample-gv :alpha 1 :beta 2)))
+                     (list
+                      (setf (sample-alpha-view object) 9)
+                      (sample-gv-alpha object)
+                      (sample-gv-beta object))))"
+            ),
+            Value::list([Value::Integer(9), Value::Integer(9), Value::Integer(2),])
+        );
+    }
+
+    #[test]
+    fn setf_resolves_conditional_places() {
+        assert_eq!(
+            eval_str(
+                "(let ((left nil) (right nil) (choose-right t))
+                   (setf (cond (choose-right right) (t left)) '(stored))
+                   (list left right))"
+            ),
+            Value::list([Value::Nil, Value::list([Value::Symbol("stored".into())])])
         );
     }
 
@@ -16048,6 +16232,26 @@ mod tests {
                       (sample-struct-beta sample))))"
             ),
             Value::list([Value::T, Value::Integer(3), Value::Integer(2)])
+        );
+    }
+
+    #[test]
+    fn cl_defstruct_honors_conc_name_for_accessors_and_setf() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (cl-defstruct (sample-conc
+                                  (:constructor make-sample-conc)
+                                  (:conc-name sample--))
+                     alpha beta)
+                   (let ((sample (make-sample-conc :alpha 1 :beta 2)))
+                     (setf (sample--alpha sample) 7)
+                     (list
+                      (fboundp 'sample--alpha)
+                      (sample--alpha sample)
+                      (sample--beta sample))))"
+            ),
+            Value::list([Value::T, Value::Integer(7), Value::Integer(2)])
         );
     }
 
@@ -19238,6 +19442,42 @@ mod tests {
     }
 
     #[test]
+    fn version_to_list_exposes_parsed_version_components() {
+        assert_eq!(
+            eval_str("(version-to-list \"2.7.3.30.2\")"),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(7),
+                Value::Integer(3),
+                Value::Integer(30),
+                Value::Integer(2),
+            ])
+        );
+        assert_eq!(
+            eval_str("(version-to-list \"1.0pre2\")"),
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(0),
+                Value::Integer(-1),
+                Value::Integer(2),
+            ])
+        );
+    }
+
+    #[test]
+    fn lexical_symbol_variables_do_not_shadow_function_namespace() {
+        assert_eq!(
+            eval_str(
+                "(let ((append 'append) (car 'cdr)) (list (append '(1) '(2)) (car '(3 . 4))))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(1), Value::Integer(2)]),
+                Value::Integer(3),
+            ])
+        );
+    }
+
+    #[test]
     fn replace_match_updates_match_data_for_subexpressions() {
         assert_eq!(
             eval_str(
@@ -19436,6 +19676,19 @@ mod tests {
         assert_eq!(
             eval_str("(rx (repeat 3 \"ab\"))"),
             Value::String("\\(?:ab\\)\\{3\\}".into())
+        );
+        assert_eq!(
+            eval_str("(rx (= 3 digit))"),
+            Value::String("\\(?:[0-9]\\)\\{3\\}".into())
+        );
+        assert_eq!(
+            eval_str(
+                r#"(list
+                     (string-match-p (rx bos (= 3 digit) eos) "123")
+                     (string-match-p (rx bos (= 3 digit) eos) "12")
+                     (string-match-p (rx bos (= 3 digit) eos) "1234"))"#
+            ),
+            Value::list([Value::Integer(0), Value::Nil, Value::Nil])
         );
     }
 
@@ -20096,6 +20349,91 @@ mod tests {
                    (list (timerp timer) flag))"
             ),
             Value::list([Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn timerp_recognizes_loaded_timer_records() {
+        assert_eq!(
+            eval_str_with_upstream_load_path("(progn (require 'timer) (timerp (timer-create)))"),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn timer_queue_variables_default_to_empty_lists() {
+        assert_eq!(
+            eval_str("(list timer-list timer-idle-list)"),
+            Value::list([Value::Nil, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn loaded_timer_queue_fires_during_waits() {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                "(progn
+                   (require 'timer)
+                   (setq fired nil)
+                   (run-with-timer 0 nil (lambda () (setq fired t)))
+                   (sleep-for 0)
+                   fired)"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn auto_revert_mode_reloads_changed_file() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-auto-revert-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        let path_text = path.to_string_lossy();
+        let form = format!(
+            r#"(progn
+                 (require 'autorevert)
+                 (setq auto-revert-interval 0)
+                 (write-region "any text" nil "{path_text}" nil 'no-message)
+                 (let ((buf (find-file-noselect "{path_text}")))
+                   (with-current-buffer buf
+                     (auto-revert-mode 1)
+                     (write-region "another text" nil "{path_text}" nil 'no-message)
+                     (set-file-times "{path_text}" (time-subtract nil 1))
+                     (sleep-for 0)
+                     (prog1 (buffer-string)
+                       (set-buffer-modified-p nil)
+                       (kill-buffer buf)))))"#
+        );
+        assert_eq!(
+            eval_str_with_upstream_load_path(&form),
+            Value::String("another text".into())
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn time_convert_list_accepts_float_precision_loss_like_emacs() {
+        assert_eq!(
+            eval_str("(time-convert 0.1 'list)"),
+            Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(100000),
+                Value::Integer(0),
+            ])
+        );
+        assert_eq!(
+            eval_str("(time-convert -0.1 'list)"),
+            Value::list([
+                Value::Integer(-1),
+                Value::Integer(65535),
+                Value::Integer(899999),
+                Value::Integer(999999),
+            ])
         );
     }
 
@@ -21249,6 +21587,10 @@ IHdvcmxkIQ==")))
         assert_eq!(
             eval_str(r#"(rx bol (regexp "\\(?:\\sw\\|\\s_\\|\\\\.\\)+") eol)"#),
             Value::String("^\\(?:\\sw\\|\\s_\\|\\\\.\\)+$".into())
+        );
+        assert_eq!(
+            eval_str(r#"(let ((part "[[:alpha:]]+")) (rx bos (regexp part) eos))"#),
+            Value::String("\\`[[:alpha:]]+\\'".into())
         );
         assert_eq!(
             eval_str(

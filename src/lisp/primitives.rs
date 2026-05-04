@@ -448,6 +448,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "read-key"
             | "regexp-opt"
             | "rx-to-string"
+            | "timerp"
     )
 }
 
@@ -481,6 +482,20 @@ fn make_advice_wrapper_around(original: Value, advice: Value) -> Value {
         ])],
         shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
     )
+}
+
+fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
+    let seconds = args
+        .first()
+        .map(Value::as_float)
+        .transpose()?
+        .unwrap_or(0.0);
+    let millis = args.get(1).map(Value::as_float).transpose()?.unwrap_or(0.0);
+    let total = seconds + millis / 1000.0;
+    if !total.is_finite() || total <= 0.0 {
+        return Ok(Duration::ZERO);
+    }
+    Ok(Duration::from_secs_f64(total.min(1.0)))
 }
 
 #[derive(Clone)]
@@ -1221,6 +1236,7 @@ pub fn is_builtin(name: &str) -> bool {
             | ">="
             | "/="
             | "version<="
+            | "version-to-list"
             | "emacs-version"
             | "emacs-pid"
             // Equality
@@ -1768,6 +1784,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "setcdr"
             | "emaxx-default-region-extract-function"
             | "emaxx-default-revert-buffer-function"
+            | "buffer-stale--default-function"
             | "emaxx-class-make"
             | "emaxx-struct-make"
             | "emaxx-struct-p"
@@ -1783,6 +1800,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-file-name"
             | "visited-file-modtime"
             | "set-visited-file-modtime"
+            | "verify-visited-file-modtime"
             | "rename-visited-file"
             | "set-buffer-file-coding-system"
             | "after-insert-file-set-coding"
@@ -1920,9 +1938,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-progress-reporter"
             | "progress-reporter-update"
             | "progress-reporter-done"
+            | "vc-refresh-state"
             | "sleep-for"
             | "sit-for"
             | "accept-process-output"
+            | "input-pending-p"
             | "substitute-command-keys"
             | "prin1"
             | "cl-prin1"
@@ -1967,6 +1987,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "frame-char-width"
             | "selected-window"
             | "window-buffer"
+            | "walk-windows"
             | "selected-frame"
             | "frame-list"
             | "windowp"
@@ -2830,6 +2851,14 @@ pub fn call(
                     Value::Nil
                 },
             )
+        }
+        "version-to-list" => {
+            need_args(name, args, 1)?;
+            Ok(Value::list(
+                parse_version_components(&string_text(&args[0])?)?
+                    .into_iter()
+                    .map(Value::Integer),
+            ))
         }
         "emacs-version" => {
             need_args(name, args, 0)?;
@@ -8968,6 +8997,22 @@ pub fn call(
             .visited_file_modtime()
             .and_then(|modtime| system_time_seconds_value(modtime.modified).ok())
             .unwrap_or(Value::Integer(0))),
+        "verify-visited-file-modtime" => {
+            need_args(name, args, 1)?;
+            let buffer_id = interp.resolve_buffer_id(&args[0])?;
+            let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
+                return Ok(Value::Nil);
+            };
+            let Some(path) = buffer.file.as_deref() else {
+                return Ok(Value::T);
+            };
+            let current = file_modtime(path)?;
+            Ok(if buffer.visited_file_modtime() == current {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "set-visited-file-modtime" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -10521,15 +10566,29 @@ pub fn call(
             need_arg_range(name, args, 1, 3)?;
             Ok(Value::Nil)
         }
+        "vc-refresh-state" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Nil)
+        }
         "sleep-for" => {
             need_arg_range(name, args, 1, 2)?;
+            std::thread::sleep(wait_duration(args)?);
             interp.drive_threads(env, true)?;
             Ok(Value::Nil)
         }
         "sit-for" | "accept-process-output" => {
             need_arg_range(name, args, 0, 2)?;
+            std::thread::sleep(wait_duration(args)?);
             interp.drive_threads(env, true)?;
             Ok(Value::T)
+        }
+        "input-pending-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(if unread_command_events(interp, env)?.is_empty() {
+                Value::Nil
+            } else {
+                Value::T
+            })
         }
         "prin1" => {
             need_arg_range(name, args, 1, 3)?;
@@ -11259,6 +11318,16 @@ pub fn call(
             } else {
                 Err(LispError::TypeError("window".into(), window.type_name()))
             }
+        }
+        "walk-windows" => {
+            need_arg_range(name, args, 1, 3)?;
+            call_function_value(
+                interp,
+                &args[0],
+                std::slice::from_ref(&interp.selected_window_value()),
+                env,
+            )?;
+            Ok(Value::Nil)
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
         "frame-list" => Ok(Value::list([Value::Symbol("frame".into())])),
@@ -12288,6 +12357,7 @@ pub fn call(
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            interp.schedule_timer(args[2].clone(), args[3..].to_vec());
             Ok(Value::String("#<timer>".into()))
         }
         "cancel-timer" => Ok(Value::Nil),
@@ -12296,6 +12366,7 @@ pub fn call(
             Ok(
                 if matches!(&args[0], Value::String(text) if text == "#<timer>")
                     || matches!(&args[0], Value::StringObject(state) if state.borrow().text == "#<timer>")
+                    || matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.type_name == "timer"))
                 {
                     Value::T
                 } else {
@@ -12927,6 +12998,21 @@ pub fn call(
         "emaxx-default-revert-buffer-function" => {
             revert_current_buffer(interp, env)?;
             Ok(Value::Nil)
+        }
+        "buffer-stale--default-function" => {
+            need_arg_range(name, args, 0, 1)?;
+            let Some(path) = interp.buffer.file.clone() else {
+                return Ok(Value::Nil);
+            };
+            if interp.buffer.is_modified() || !Path::new(&path).is_file() {
+                return Ok(Value::Nil);
+            }
+            let current = file_modtime(&path)?;
+            Ok(if interp.buffer.visited_file_modtime() != current {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "revert-buffer" => {
             if let Some(revert_function) =
@@ -24655,6 +24741,38 @@ mod tests {
     }
 
     #[test]
+    fn run_with_timer_callbacks_fire_on_accept_process_output() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let callback = Value::Lambda(
+            Vec::new(),
+            vec![
+                Value::list([
+                    Value::Symbol("setq".into()),
+                    Value::Symbol("timer-fired".into()),
+                    Value::T,
+                ]),
+                Value::T,
+            ],
+            shared_env(Vec::new()),
+        );
+
+        call(
+            &mut interp,
+            "run-with-timer",
+            &[Value::Integer(0), Value::Nil, callback],
+            &mut env,
+        )
+        .expect("run-with-timer should succeed");
+        assert_eq!(interp.lookup_var("timer-fired", &env), None);
+
+        call(&mut interp, "accept-process-output", &[], &mut env)
+            .expect("accept-process-output should succeed");
+
+        assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
+    }
+
+    #[test]
     fn indent_rigidly_shifts_each_line_in_region() {
         let mut interp = Interpreter::new();
         interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
@@ -28168,6 +28286,7 @@ fn builtin_arity_value(name: &str) -> Option<Value> {
         "file-modes" => (Value::Integer(1), Value::Integer(2)),
         "set-file-modes" => (Value::Integer(2), Value::Integer(3)),
         "set-file-times" => (Value::Integer(1), Value::Integer(3)),
+        "version-to-list" => (Value::Integer(1), Value::Integer(1)),
         "string-version-lessp" => (Value::Integer(2), Value::Integer(2)),
         "string-distance" => (Value::Integer(2), Value::Integer(3)),
         "length<" | "length>" | "length=" => (Value::Integer(2), Value::Integer(2)),
@@ -28757,10 +28876,7 @@ fn exact_time_to_scaled_pair(time: &ExactTimeValue, hz: &BigInt) -> Result<Value
 
 fn exact_time_to_old_style(time: &ExactTimeValue) -> Result<Value, LispError> {
     let scaled = &time.ticks * BigInt::from(1_000_000_000_000u64);
-    let (picoseconds, remainder) = floor_div_mod(&scaled, &time.hz);
-    if !remainder.is_zero() {
-        return Err(LispError::Signal("Time conversion lost precision".into()));
-    }
+    let (picoseconds, _) = floor_div_mod(&scaled, &time.hz);
     let (whole_seconds, fractional_picoseconds) =
         floor_div_mod(&picoseconds, &BigInt::from(1_000_000_000_000u64));
     let (high, low) = floor_div_mod(&whole_seconds, &BigInt::from(65_536u32));
@@ -40059,6 +40175,58 @@ mod compat_runtime_tests {
         assert!(!interp.buffer.is_multibyte());
 
         std::fs::remove_file(path).expect("cleanup raw file");
+    }
+
+    #[test]
+    fn buffer_stale_default_detects_clean_file_modtime_changes() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let path = call(
+            &mut interp,
+            "make-temp-file",
+            &[Value::String("emaxx-buffer-stale-".into())],
+            &mut env,
+        )
+        .expect("create source file")
+        .as_string()
+        .expect("temp file path")
+        .to_string();
+        std::fs::write(&path, "fresh").expect("write initial file contents");
+
+        interp.buffer = crate::buffer::Buffer::from_text("*stale*", "fresh");
+        interp.buffer.file = Some(path.clone());
+        interp.buffer.file_truename = Some(path.clone());
+        interp
+            .buffer
+            .set_visited_file_modtime(file_modtime(&path).expect("source modtime"));
+
+        std::fs::write(&path, "changed").expect("update file contents");
+        interp.buffer.set_unmodified();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "buffer-stale--default-function",
+                &[Value::T],
+                &mut env,
+            )
+            .expect("check stale file"),
+            Value::T
+        );
+
+        interp.buffer.set_modified();
+        assert_eq!(
+            call(
+                &mut interp,
+                "buffer-stale--default-function",
+                &[Value::T],
+                &mut env,
+            )
+            .expect("modified buffers are not stale"),
+            Value::Nil
+        );
+
+        std::fs::remove_file(path).expect("cleanup stale file");
     }
 
     #[test]
