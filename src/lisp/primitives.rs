@@ -3290,6 +3290,7 @@ pub fn call(
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
             Ok(
                 if matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _))
+                    || is_lambda_expression(&value)
                     || record_type_name(interp, &value) == Some("byte-code-function")
                 {
                     Value::T
@@ -14058,13 +14059,15 @@ pub fn call(
         "cl-functionp" => {
             need_args(name, args, 1)?;
             Ok(
-                if matches!(
-                    cl_type_name(interp, &args[0])?,
-                    "primitive-function"
-                        | "special-form"
-                        | "interpreted-function"
-                        | "byte-code-function"
-                ) {
+                if is_lambda_expression(&args[0])
+                    || matches!(
+                        cl_type_name(interp, &args[0])?,
+                        "primitive-function"
+                            | "special-form"
+                            | "interpreted-function"
+                            | "byte-code-function"
+                    )
+                {
                     Value::T
                 } else {
                     Value::Nil
@@ -34545,6 +34548,13 @@ fn resolve_callable(interp: &Interpreter, value: &Value, env: &Env) -> Result<Va
         Value::Symbol(name) => interp.lookup_function(name, env),
         _ => Ok(value.clone()),
     }
+}
+
+fn is_lambda_expression(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda")
+            && items.get(1).is_some()
+    })
 }
 
 fn literal_form(value: &Value) -> Value {
