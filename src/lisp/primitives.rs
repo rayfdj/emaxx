@@ -1833,6 +1833,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-name-unquote"
             | "file-local-name"
             | "file-remote-p"
+            | "dired-noselect"
+            | "dired-revert"
+            | "dired-buffer-stale-p"
             | "shell-quote-argument"
             | "locate-user-emacs-file"
             | "locate-library"
@@ -9422,6 +9425,56 @@ pub fn call(
                 _ => Value::String(remote.prefix),
             };
             Ok(result)
+        }
+        "dired-noselect" => {
+            need_arg_range(name, args, 1, 2)?;
+            let directory = string_text(&args[0])?;
+            let buffer_name = format!("{}{}", directory_file_name(&directory), "/");
+            let (buffer_id, buffer_name) = interp
+                .find_buffer(&buffer_name)
+                .unwrap_or_else(|| interp.create_buffer(&buffer_name));
+            let saved_buffer_id = interp.current_buffer_id();
+            interp.switch_to_buffer_id(buffer_id)?;
+            initialize_dired_buffer(interp, &buffer_name, &directory)?;
+            interp.switch_to_buffer_id(saved_buffer_id)?;
+            Ok(Value::Buffer(buffer_id, buffer_name))
+        }
+        "dired-revert" => {
+            need_arg_range(name, args, 0, 4)?;
+            let directory = interp
+                .buffer_local_value(interp.current_buffer_id(), "dired-directory")
+                .and_then(|value| string_like(&value).map(|string| string.text))
+                .ok_or_else(|| LispError::Signal("Current buffer is not a Dired buffer".into()))?;
+            let buffer_name = interp.buffer.name.clone();
+            initialize_dired_buffer(interp, &buffer_name, &directory)?;
+            Ok(Value::Nil)
+        }
+        "dired-buffer-stale-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let Some(directory) = interp
+                .buffer_local_value(interp.current_buffer_id(), "dired-directory")
+                .and_then(|value| string_like(&value).map(|string| string.text))
+            else {
+                return Ok(Value::Nil);
+            };
+            if !interp
+                .lookup_var("buffer-read-only", env)
+                .unwrap_or(Value::Nil)
+                .is_truthy()
+            {
+                return Ok(Value::Nil);
+            }
+            let current = file_modtime(&directory)?;
+            let listing_changed = dired_listing_for_directory(&directory)
+                .map(|listing| listing != interp.buffer.buffer_string())
+                .unwrap_or(false);
+            Ok(
+                if interp.buffer.visited_file_modtime() != current || listing_changed {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "shell-quote-argument" => {
             need_args(name, args, 1)?;
@@ -22157,6 +22210,74 @@ fn directory_file_name(path: &str) -> String {
         };
     }
     path.trim_end_matches('/').to_string()
+}
+
+fn dired_listing_for_directory(directory: &str) -> Result<String, LispError> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| {
+            LispError::SignalValue(file_error_with_detail_value(
+                "Opening directory",
+                &error.to_string(),
+                directory,
+            ))
+        })?
+        .map(|entry| {
+            entry
+                .map_err(|error| {
+                    LispError::SignalValue(file_error_with_detail_value(
+                        "Reading directory",
+                        &error.to_string(),
+                        directory,
+                    ))
+                })
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Result<Vec<String>, LispError>>()?;
+    entries.sort();
+
+    let mut listing = String::new();
+    listing.push_str(&file_name_as_directory(directory));
+    listing.push_str(":\n");
+    listing.push_str(".\n..\n");
+    for entry in entries {
+        listing.push_str(&entry);
+        listing.push('\n');
+    }
+    Ok(listing)
+}
+
+fn initialize_dired_buffer(
+    interp: &mut Interpreter,
+    buffer_name: &str,
+    directory: &str,
+) -> Result<(), LispError> {
+    let listing = dired_listing_for_directory(directory)?;
+    interp.buffer = crate::buffer::Buffer::from_text(buffer_name, &listing);
+    interp.buffer.set_unmodified();
+    interp
+        .buffer
+        .set_visited_file_modtime(file_modtime(directory)?);
+    let buffer_id = interp.current_buffer_id();
+    interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol("dired-mode".into()));
+    interp.set_buffer_local_value(buffer_id, "mode-name", Value::String("Dired".into()));
+    interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::T);
+    interp.set_buffer_local_value(
+        buffer_id,
+        "dired-directory",
+        Value::String(file_name_as_directory(directory)),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "revert-buffer-function",
+        Value::Symbol("dired-revert".into()),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "buffer-stale-function",
+        Value::Symbol("dired-buffer-stale-p".into()),
+    );
+    interp.set_buffer_local_value(buffer_id, "buffer-auto-revert-by-notification", Value::Nil);
+    Ok(())
 }
 
 fn directory_name_p(path: &str) -> bool {
