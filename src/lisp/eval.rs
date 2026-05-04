@@ -19628,6 +19628,19 @@ mod tests {
     }
 
     #[test]
+    fn functionp_and_funcall_accept_quoted_lambda_expressions() {
+        assert_eq!(
+            eval_str(
+                "(list
+                   (functionp '(lambda () t))
+                   (cl-functionp '(lambda () t))
+                   (funcall '(lambda (value) (concat value \"bar\")) \"foo\"))"
+            ),
+            Value::list([Value::T, Value::T, Value::String("foobar".into())])
+        );
+    }
+
+    #[test]
     fn preloaded_sh_mode_sets_imenu_configuration() {
         let value = eval_str(
             "(with-temp-buffer
