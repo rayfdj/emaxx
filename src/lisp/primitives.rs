@@ -11327,7 +11327,26 @@ pub fn call(
             let _ = string_text(&args[0])?;
             Ok(Value::Nil)
         }
-        "get-buffer-window" | "minibuffer-window" => Ok(interp.selected_window_value()),
+        "get-buffer-window" => {
+            need_arg_range(name, args, 0, 3)?;
+            let buffer_id = if let Some(buffer) = args.first() {
+                if buffer.is_nil() {
+                    Some(interp.current_buffer_id())
+                } else if let Some(string) = string_like(buffer) {
+                    interp.find_buffer(&string.text).map(|(id, _)| id)
+                } else {
+                    Some(interp.resolve_buffer_id(buffer)?)
+                }
+            } else {
+                Some(interp.current_buffer_id())
+            };
+            Ok(if buffer_id == Some(interp.selected_window_buffer_id()) {
+                interp.selected_window_value()
+            } else {
+                Value::Nil
+            })
+        }
+        "minibuffer-window" => Ok(interp.selected_window_value()),
         "get-buffer-window-list" => {
             need_arg_range(name, args, 0, 4)?;
             let buffer_id = if let Some(buffer) = args.first() {
@@ -14579,7 +14598,15 @@ pub fn call(
                             };
                         }
                         match cdr.borrow().clone() {
-                            Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                            Value::Cons(_, next_cdr) => {
+                                let next = next_cdr.borrow().clone();
+                                if next.is_nil() {
+                                    *next_cdr.borrow_mut() =
+                                        Value::list([key.clone(), val.clone()]);
+                                    return Ok(plist);
+                                }
+                                current = next;
+                            }
                             _ => return Err(plist_type_error(&plist)),
                         }
                     }
@@ -38878,6 +38905,39 @@ mod compat_runtime_tests {
     }
 
     #[test]
+    fn plist_put_appends_absent_property_in_place() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let plist = Value::list([
+            Value::Symbol(":host".into()),
+            Value::String("example".into()),
+        ]);
+
+        call(
+            &mut interp,
+            "plist-put",
+            &[
+                plist.clone(),
+                Value::Symbol(":save-function".into()),
+                Value::Symbol("save".into()),
+            ],
+            &mut env,
+        )
+        .expect("plist-put should append an absent property");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "plist-get",
+                &[plist, Value::Symbol(":save-function".into())],
+                &mut env,
+            )
+            .expect("appended property should be visible through original plist"),
+            Value::Symbol("save".into())
+        );
+    }
+
+    #[test]
     fn reverse_and_nreverse_preserve_vector_types() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -39241,6 +39301,35 @@ mod compat_runtime_tests {
         assert_eq!(
             call(&mut interp, "window-start", &[window], &mut env).expect("window-start"),
             Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn get_buffer_window_only_reports_selected_buffer() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let (buffer_id, buffer_name) = interp.create_buffer("*not-visible*");
+        let other_buffer = Value::Buffer(buffer_id, buffer_name);
+
+        assert_eq!(
+            call(&mut interp, "get-buffer-window", &[other_buffer], &mut env)
+                .expect("get-buffer-window for non-visible buffer"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "get-buffer-window",
+                &[Value::String("*missing*".into())],
+                &mut env,
+            )
+            .expect("get-buffer-window for missing buffer name"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(&mut interp, "get-buffer-window", &[Value::Nil], &mut env)
+                .expect("get-buffer-window for current buffer"),
+            interp.selected_window_value()
         );
     }
 
