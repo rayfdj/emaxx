@@ -1831,6 +1831,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "insert-directory-wildcard-in-dir-p"
             | "file-name-concat"
             | "file-name-unquote"
+            | "file-local-name"
             | "file-remote-p"
             | "shell-quote-argument"
             | "locate-user-emacs-file"
@@ -9395,6 +9396,13 @@ pub fn call(
         "file-name-unquote" => {
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?))
+        }
+        "file-local-name" => {
+            need_args(name, args, 1)?;
+            let file = string_text(&args[0])?;
+            Ok(parse_remote_file_name(&file)
+                .map(|remote| Value::String(remote.localname))
+                .unwrap_or(Value::String(file)))
         }
         "file-remote-p" => {
             if args.is_empty() || args.len() > 3 {
