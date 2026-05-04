@@ -11880,16 +11880,22 @@ pub fn call(
                 interp.kill_buffer_id(buffer_id);
                 return Ok(Value::Nil);
             }
-            if buffer_id == interp.current_buffer_id()
-                && let Some((next_id, _)) = interp
-                    .buffer_list
-                    .iter()
-                    .rev()
-                    .find(|(id, _)| *id != buffer_id)
-                    .cloned()
-            {
-                interp.switch_to_buffer_id(next_id)?;
-                interp.set_selected_window_buffer_id(next_id);
+            if buffer_id == interp.current_buffer_id() {
+                let next = interp
+                    .selected_window_previous_buffer_id()
+                    .filter(|id| *id != buffer_id)
+                    .or_else(|| {
+                        interp
+                            .buffer_list
+                            .iter()
+                            .rev()
+                            .find(|(id, _)| *id != buffer_id)
+                            .map(|(id, _)| *id)
+                    });
+                if let Some(next_id) = next {
+                    interp.switch_to_buffer_id(next_id)?;
+                    interp.set_selected_window_buffer_id(next_id);
+                }
             }
             Ok(Value::Nil)
         }

@@ -1314,11 +1314,22 @@ impl Interpreter {
         self.current_buffer_id = id;
         let point_min = self.buffer.point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
+            let previous = window
+                .slots
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(current_id as i64);
             window.slots[0] = Value::Integer(id as i64);
             if window.slots.len() < 2 {
                 window.slots.push(Value::Integer(point_min));
             } else {
                 window.slots[1] = Value::Integer(point_min);
+            }
+            if previous != id as i64 {
+                if window.slots.len() < 3 {
+                    window.slots.resize(3, Value::Nil);
+                }
+                window.slots[2] = Value::Integer(previous);
             }
         }
         Ok(())
@@ -1338,6 +1349,14 @@ impl Interpreter {
             .and_then(|value| value.as_integer().ok())
             .map(|value| value.max(0) as u64)
             .unwrap_or(self.current_buffer_id)
+    }
+
+    pub fn selected_window_previous_buffer_id(&self) -> Option<u64> {
+        self.find_record(self.selected_window_id)
+            .and_then(|record| record.slots.get(2))
+            .and_then(|value| value.as_integer().ok())
+            .map(|value| value.max(0) as u64)
+            .filter(|id| self.has_buffer_id(*id))
     }
 
     pub fn buffer_bounds_by_id(&self, id: u64) -> Option<(usize, usize)> {
@@ -1373,12 +1392,24 @@ impl Interpreter {
         let (point_min, _) = self
             .buffer_bounds_by_id(buffer_id)
             .unwrap_or((self.buffer.point_min(), self.buffer.point_max()));
+        let current_buffer_id = self.current_buffer_id as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
+            let previous = window
+                .slots
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(current_buffer_id);
             if window.slots.len() < 2 {
                 window.slots.resize(2, Value::Nil);
             }
             window.slots[0] = Value::Integer(buffer_id as i64);
             window.slots[1] = Value::Integer(point_min as i64);
+            if previous != buffer_id as i64 {
+                if window.slots.len() < 3 {
+                    window.slots.resize(3, Value::Nil);
+                }
+                window.slots[2] = Value::Integer(previous);
+            }
         }
     }
 
@@ -20117,6 +20148,28 @@ mod tests {
                         (buffer-live-p target)))"#
             ),
             Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn quit_window_returns_to_previous_pop_to_buffer_target() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (let ((origin (get-buffer-create "*quit-origin*"))
+                      (first (get-buffer-create "*quit-first*"))
+                      (second (get-buffer-create "*quit-second*")))
+                  (switch-to-buffer origin)
+                  (pop-to-buffer first)
+                  (pop-to-buffer second)
+                  (quit-window)
+                  (list (eq (current-buffer) first)
+                        (eq (window-buffer (selected-window)) first)
+                        (buffer-live-p second)))"#
+            ),
+            Value::list([Value::T, Value::T, Value::T])
         );
     }
 
