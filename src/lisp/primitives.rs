@@ -96,6 +96,7 @@ fn is_time_builtin(name: &str) -> bool {
         name,
         "current-time-zone"
             | "current-time"
+            | "current-time-string"
             | "decode-time"
             | "encode-time"
             | "float-time"
@@ -29713,6 +29714,15 @@ fn call_time_builtin(
         "current-time" => {
             need_arg_range(name, args, 0, 0)?;
             Ok(exact_time_to_value(&now))
+        }
+        "current-time-string" => {
+            need_arg_range(name, args, 0, 2)?;
+            let time = exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
+            let zone = zone_spec_from_value(args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
+            let (datetime, _) = time_local_datetime(&time, &zone)?;
+            Ok(Value::String(
+                datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
+            ))
         }
         "time-since" => {
             need_args(name, args, 1)?;
