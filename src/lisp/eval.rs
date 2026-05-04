@@ -8683,13 +8683,30 @@ impl Interpreter {
             Do(Vec<Value>),
             Collect(Value),
             Append(Value),
-            Thereis { expr: Value, until: Option<Value> },
+            Thereis {
+                expr: Value,
+                until: Option<Value>,
+            },
             Always(Value),
             Sum(Value),
             Return(Value),
-            WhenReturn { condition: Value, expr: Value },
-            UnlessCollect { condition: Value, expr: Value },
-            UnlessDo { condition: Value, body: Vec<Value> },
+            WhenReturn {
+                condition: Value,
+                expr: Value,
+            },
+            WhenCollectInto {
+                condition: Value,
+                expr: Value,
+                name: String,
+            },
+            UnlessCollect {
+                condition: Value,
+                expr: Value,
+            },
+            UnlessDo {
+                condition: Value,
+                body: Vec<Value>,
+            },
         }
 
         if items.len() < 3 {
@@ -8941,32 +8958,62 @@ impl Interpreter {
 
         let mut final_return = None;
         let action = match items.get(index) {
-            Some(Value::Symbol(symbol)) if symbol == "when" => {
-                if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "return") {
-                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+            Some(Value::Symbol(symbol)) if symbol == "when" => match items.get(index + 2) {
+                Some(Value::Symbol(kind)) if kind == "return" => {
+                    if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
+                        || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
+                    {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                    final_return = Some(
+                        items
+                            .get(index + 6)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    );
+                    LoopAction::WhenReturn {
+                        condition: items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        expr: items
+                            .get(index + 3)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    }
                 }
-                if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
-                    || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
-                {
-                    return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                Some(Value::Symbol(kind)) if kind == "collect" => {
+                    if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "into")
+                        || !matches!(items.get(index + 6), Some(Value::Symbol(kind)) if kind == "finally")
+                        || !matches!(items.get(index + 7), Some(Value::Symbol(kind)) if kind == "return")
+                    {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                    let name = items
+                        .get(index + 5)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .as_symbol()?
+                        .to_string();
+                    final_return = Some(
+                        items
+                            .get(index + 8)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    );
+                    LoopAction::WhenCollectInto {
+                        condition: items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        expr: items
+                            .get(index + 3)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        name,
+                    }
                 }
-                final_return = Some(
-                    items
-                        .get(index + 6)
-                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                        .clone(),
-                );
-                LoopAction::WhenReturn {
-                    condition: items
-                        .get(index + 1)
-                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                        .clone(),
-                    expr: items
-                        .get(index + 3)
-                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                        .clone(),
-                }
-            }
+                _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+            },
             Some(Value::Symbol(symbol)) if symbol == "do" => {
                 LoopAction::Do(items[index + 1..].to_vec())
             }
@@ -9039,6 +9086,10 @@ impl Interpreter {
             },
             _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
         };
+        if let LoopAction::WhenCollectInto { name, .. } = &action {
+            let frame = env.last_mut().expect("env frame just pushed");
+            Self::upsert_frame_binding(frame, name.clone(), Value::Nil);
+        }
 
         let mut result = Value::Nil;
         let mut returned_early = false;
@@ -9128,6 +9179,21 @@ impl Interpreter {
                         result = self.eval(expr, env)?;
                         returned_early = true;
                         break;
+                    }
+                }
+                LoopAction::WhenCollectInto {
+                    condition,
+                    expr,
+                    name,
+                } => {
+                    if self.eval(condition, env)?.is_truthy() {
+                        collected.push(self.eval(expr, env)?);
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(
+                            frame,
+                            name.clone(),
+                            Value::list(collected.clone()),
+                        );
                     }
                 }
                 LoopAction::UnlessCollect { condition, expr } => {
@@ -16157,6 +16223,19 @@ mod tests {
                 Value::list([Value::Symbol("a".into()), Value::Integer(1)]),
                 Value::list([Value::Symbol("b".into()), Value::Integer(2)]),
             ])
+        );
+    }
+
+    #[test]
+    fn cl_loop_supports_when_collect_into_finally_return() {
+        assert_eq!(
+            eval_str(
+                "(cl-loop for item in '((\"one\" . 1) (\"two\" . 2) (\"other\" . 3))
+                          when (string-match \"^t\" (car item))
+                          collect item into matches
+                          finally return matches)"
+            ),
+            Value::list([Value::cons(Value::String("two".into()), Value::Integer(2))])
         );
     }
 
