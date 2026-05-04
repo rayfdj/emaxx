@@ -382,6 +382,55 @@ fn current_exec_path() -> Value {
     }
 }
 
+fn tab_bar_new_tab_choice_custom_type() -> Value {
+    Value::list([
+        Value::Symbol("choice".into()),
+        Value::list([
+            Value::Symbol("const".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("Current buffer".into()),
+            Value::T,
+        ]),
+        Value::list([
+            Value::Symbol("const".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("Current window".into()),
+            Value::Symbol("window".into()),
+        ]),
+        Value::list([
+            Value::Symbol("string".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("Buffer".into()),
+            Value::String("*scratch*".into()),
+        ]),
+        Value::list([
+            Value::Symbol("directory".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("Directory".into()),
+            Value::Symbol(":value".into()),
+            Value::String("~/".into()),
+        ]),
+        Value::list([
+            Value::Symbol("file".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("File".into()),
+            Value::Symbol(":value".into()),
+            Value::String("~/.emacs".into()),
+        ]),
+        Value::list([
+            Value::Symbol("function".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("Function".into()),
+        ]),
+        Value::list([
+            Value::Symbol("const".into()),
+            Value::Symbol(":tag".into()),
+            Value::String("Duplicate tab".into()),
+            Value::Symbol("clone".into()),
+        ]),
+    ])
+}
+
 fn builtin_coding_systems() -> Vec<CodingSystemState> {
     vec![
         CodingSystemState {
@@ -607,6 +656,13 @@ fn builtin_coding_systems() -> Vec<CodingSystemState> {
             kind: "big5".into(),
             eol_type: None,
             plist: coding_plist('B', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "chinese-gb18030".into(),
+            base: "chinese-gb18030".into(),
+            kind: "raw-text".into(),
+            eol_type: None,
+            plist: coding_plist('C', std::iter::empty()),
         },
     ]
 }
@@ -877,7 +933,7 @@ impl Interpreter {
             }],
             charset_aliases: Vec::new(),
             charset_plists: Vec::new(),
-            charset_priority: vec!["unicode".into(), "ascii".into()],
+            charset_priority: vec!["unicode".into(), "ascii".into(), "eight-bit".into()],
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
             coding_aliases: builtin_coding_aliases(),
@@ -1032,15 +1088,26 @@ impl Interpreter {
         interp.mark_auto_buffer_local("font-lock-mode");
         interp.set_global_binding("font-lock-fontified", Value::Nil);
         interp.mark_auto_buffer_local("font-lock-fontified");
+        interp.set_global_binding("header-line-indent-mode", Value::Nil);
+        interp.mark_auto_buffer_local("header-line-indent-mode");
         interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
         interp.mark_auto_buffer_local("major-mode");
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
         interp.mark_auto_buffer_local("mode-name");
+        let glyphless_char_display =
+            interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
+        interp.set_global_binding("glyphless-char-display", glyphless_char_display);
         interp.set_global_binding("buffer-read-only", Value::Nil);
         interp.mark_auto_buffer_local("buffer-read-only");
         interp.set_global_binding("current-prefix-arg", Value::Nil);
         interp.set_global_binding("this-command", Value::Nil);
         interp.set_global_binding("last-command", Value::Nil);
+        interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
+        interp.put_symbol_property(
+            "tab-bar-new-tab-choice",
+            "custom-type",
+            tab_bar_new_tab_choice_custom_type(),
+        );
         interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
         interp.set_global_binding("search-spaces-regexp", Value::Nil);
         interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
@@ -3050,7 +3117,7 @@ impl Interpreter {
     }
 
     fn builtin_charset_name(name: &str) -> bool {
-        matches!(name, "ascii" | "unicode")
+        matches!(name, "ascii" | "unicode" | "eight-bit")
     }
 
     pub fn charset_canonical_name(&self, name: &str) -> Option<String> {
@@ -3077,6 +3144,7 @@ impl Interpreter {
         match self.charset_canonical_name(name)?.as_str() {
             "ascii" => Some(0),
             "unicode" => Some(1),
+            "eight-bit" => Some(8),
             _ => None,
         }
     }
@@ -3137,7 +3205,7 @@ impl Interpreter {
                 reordered.push(canonical);
             }
         }
-        for default in ["unicode", "ascii"] {
+        for default in ["unicode", "ascii", "eight-bit"] {
             if !reordered.iter().any(|existing| existing == default) {
                 reordered.push(default.to_string());
             }
@@ -20629,6 +20697,116 @@ mod tests {
                 Value::String("X".into()),
                 Value::String("b".into()),
             ])
+        );
+    }
+
+    #[test]
+    fn custom_add_choice_extends_choice_types_without_duplicates() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (defcustom sample-choice t "Sample."
+                       :type '(choice (const :tag "One" one)))
+                     (custom-add-choice 'sample-choice '(const :tag "Two" two))
+                     (custom-add-choice 'sample-choice '(const :tag "Two" duplicate))
+                     (get 'sample-choice 'custom-type))"#
+            ),
+            Value::list([
+                Value::Symbol("choice".into()),
+                Value::list([
+                    Value::Symbol("const".into()),
+                    Value::Symbol(":tag".into()),
+                    Value::String("One".into()),
+                    Value::Symbol("one".into()),
+                ]),
+                Value::list([
+                    Value::Symbol("const".into()),
+                    Value::Symbol(":tag".into()),
+                    Value::String("Two".into()),
+                    Value::Symbol("two".into()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn tab_bar_new_tab_choice_has_preloaded_custom_type() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (custom-add-choice 'tab-bar-new-tab-choice
+                                        '(const :tag "Bookmark List" bookmark-bmenu-get-buffer))
+                     (assoc 'const (cdr (get 'tab-bar-new-tab-choice 'custom-type))))"#
+            ),
+            Value::list([
+                Value::Symbol("const".into()),
+                Value::Symbol(":tag".into()),
+                Value::String("Current buffer".into()),
+                Value::T,
+            ])
+        );
+    }
+
+    #[test]
+    fn chinese_gb18030_is_accepted_for_decode_coding_string() {
+        assert_eq!(eval_str(r#"(coding-system-p 'chinese-gb18030)"#), Value::T);
+        assert_eq!(
+            eval_str(r#"(stringp (decode-coding-string "\xE3\x32\x9A\x36" 'chinese-gb18030))"#),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn decode_char_supports_eight_bit_charset() {
+        assert_eq!(
+            eval_str(
+                r#"(list (charsetp 'eight-bit)
+                        (char-charset (decode-char 'eight-bit #x81))
+                        (stringp (char-to-string (decode-char 'eight-bit #x81))))"#
+            ),
+            Value::list([Value::T, Value::Symbol("eight-bit".into()), Value::T,])
+        );
+    }
+
+    #[test]
+    fn glyphless_char_display_defaults_to_char_table() {
+        assert_eq!(
+            eval_str(
+                r#"(list (char-table-p glyphless-char-display)
+                              (char-table-subtype glyphless-char-display))"#
+            ),
+            Value::list([Value::T, Value::Symbol("glyphless-char-display".into()),])
+        );
+    }
+
+    #[test]
+    fn header_line_indent_mode_defaults_to_nil() {
+        assert_eq!(eval_str("header-line-indent-mode"), Value::Nil);
+    }
+
+    #[test]
+    fn header_line_indent_mode_sets_buffer_local_state() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (header-line-indent-mode)
+                     (list header-line-indent-mode
+                           (string= header-line-indent "")
+                           header-line-indent-width
+                           (local-variable-p 'header-line-indent-mode)))"#
+            ),
+            Value::list([Value::T, Value::T, Value::Integer(0), Value::T,])
+        );
+    }
+
+    #[test]
+    fn bidi_string_mark_left_to_right_marks_rtl_strings() {
+        assert_eq!(
+            eval_str(
+                r#"(list (bidi-string-mark-left-to-right "abc")
+                              (length (bidi-string-mark-left-to-right "א")))"#
+            ),
+            Value::list([Value::String("abc".into()), Value::Integer(2)])
         );
     }
 

@@ -488,7 +488,7 @@ mod tests {
 
     fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         thread::Builder::new()
-            .stack_size(32 * 1024 * 1024)
+            .stack_size(128 * 1024 * 1024)
             .spawn(test)
             .expect("spawn large-stack test thread")
             .join()

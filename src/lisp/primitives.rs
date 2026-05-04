@@ -451,6 +451,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "regexp-opt"
             | "rx-to-string"
             | "timerp"
+            | "header-line-indent-mode"
     )
 }
 
@@ -1258,6 +1259,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "string-version-lessp"
             | "string<"
             | "string-distance"
+            | "bidi-string-mark-left-to-right"
             | "value<"
             | "compare-strings"
             | "string-collate-equalp"
@@ -2013,6 +2015,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "send-string-to-terminal"
             | "transient-mark-mode"
             | "font-lock-mode"
+            | "header-line-indent-mode"
             | "font-lock-specified-p"
             | "font-lock-add-keywords"
             | "font-lock-remove-keywords"
@@ -2223,6 +2226,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "easy-menu-add-item"
             | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
+            | "custom-add-choice"
             | "define-widget"
             | "widget-create"
             | "define-button-type"
@@ -3046,6 +3050,18 @@ pub fn call(
                 &args[1],
                 args.get(2).is_some_and(Value::is_truthy),
             )
+        }
+        "bidi-string-mark-left-to-right" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("stringp".into(), args[0].type_name()))?;
+            if string.text.chars().any(is_rtl_char) {
+                let mut text = string.text.clone();
+                text.push('\u{200e}');
+                Ok(Value::String(text))
+            } else {
+                Ok(args[0].clone())
+            }
         }
         "string-collate-equalp" => {
             need_arg_range(name, args, 2, 4)?;
@@ -8545,6 +8561,9 @@ pub fn call(
             Ok(match interp.charset_canonical_name(charset).as_deref() {
                 Some("ascii") if (0..=0x7f).contains(&code) => Value::Integer(code),
                 Some("unicode") if code >= 0 => Value::Integer(code),
+                Some("eight-bit") if (0..=0xff).contains(&code) => {
+                    Value::Integer(RAW_BYTE_REGEX_BASE as i64 + code)
+                }
                 Some(_) | None => Value::Nil,
             })
         }
@@ -11077,6 +11096,25 @@ pub fn call(
                 Ok(Value::Nil)
             }
         }
+        "header-line-indent-mode" => {
+            let enabled = args
+                .first()
+                .map(|arg| !arg.is_nil() && !matches!(arg, Value::Integer(number) if *number <= 0))
+                .unwrap_or(true);
+            let buffer_id = interp.current_buffer_id();
+            interp.set_buffer_local_value(
+                buffer_id,
+                "header-line-indent-mode",
+                if enabled { Value::T } else { Value::Nil },
+            );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "header-line-indent",
+                Value::String(String::new()),
+            );
+            interp.set_buffer_local_value(buffer_id, "header-line-indent-width", Value::Integer(0));
+            Ok(if enabled { Value::T } else { Value::Nil })
+        }
         "font-lock-specified-p" => {
             need_arg_range(name, args, 0, 1)?;
             let mode = args.first().is_some_and(Value::is_truthy);
@@ -12920,6 +12958,30 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             Ok(args[2].clone())
+        }
+        "custom-add-choice" => {
+            need_args(name, args, 2)?;
+            let variable = args[0].as_symbol()?;
+            let choice = args[1].clone();
+            let choices = interp
+                .get_symbol_property(variable, "custom-type")
+                .unwrap_or(Value::Nil);
+            let mut entries = choices.to_vec()?;
+            if !matches!(entries.first(), Some(Value::Symbol(kind)) if kind == "choice") {
+                return Err(LispError::Signal(format!("Not a choice type: {choices}")));
+            }
+            let new_tag = custom_choice_tag(&choice);
+            let already_present = new_tag.as_ref().is_some_and(|tag| {
+                entries[1..]
+                    .iter()
+                    .filter_map(custom_choice_tag)
+                    .any(|existing| values_equal(interp, &existing, tag))
+            });
+            if !already_present {
+                entries.push(choice);
+                interp.put_symbol_property(variable, "custom-type", Value::list(entries));
+            }
+            Ok(Value::Nil)
         }
         "define-widget" => {
             if args.len() < 3 {
@@ -22522,7 +22584,13 @@ fn directory_files(
 }
 
 fn charset_for_char(code: u32) -> &'static str {
-    if code <= 0x7f { "ascii" } else { "unicode" }
+    if code <= 0x7f {
+        "ascii"
+    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&code) {
+        "eight-bit"
+    } else {
+        "unicode"
+    }
 }
 
 fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {
@@ -22534,6 +22602,10 @@ fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<Value> {
         "unicode" => Some(Value::list([
             Value::Symbol(":short-name".into()),
             Value::String("Unicode".into()),
+        ])),
+        "eight-bit" => Some(Value::list([
+            Value::Symbol(":short-name".into()),
+            Value::String("Eight-bit".into()),
         ])),
         _ => None,
     }
@@ -24626,7 +24698,10 @@ mod tests {
         assert!(interp.has_charset("latin"));
 
         interp.set_charset_priority(&["ascii".into(), "unicode".into()]);
-        assert_eq!(interp.charset_priority_list(), vec!["ascii", "unicode"]);
+        assert_eq!(
+            interp.charset_priority_list(),
+            vec!["ascii", "unicode", "eight-bit"]
+        );
         assert_eq!(
             charsets_for_text("Aあ", &interp),
             vec![
@@ -26231,6 +26306,13 @@ fn validate_collation_locale(locale: Option<&Value>) -> Result<(), LispError> {
         ));
     }
     Ok(())
+}
+
+fn is_rtl_char(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x0590..=0x08ff | 0xfb1d..=0xfdff | 0xfe70..=0xfeff | 0x10800..=0x10fff
+    )
 }
 
 fn assoc_string_text(value: &Value) -> Result<String, LispError> {
@@ -30858,6 +30940,14 @@ fn apply_format_spec_flags(mut text: String, spec: &ParsedFormatSpec) -> String 
         text = text.to_lowercase();
     }
     text
+}
+
+fn custom_choice_tag(choice: &Value) -> Option<Value> {
+    let items = choice.to_vec().ok()?;
+    let tag_index = items
+        .iter()
+        .position(|item| matches!(item, Value::Symbol(symbol) if symbol == ":tag"))?;
+    items.get(tag_index + 1).cloned()
 }
 
 fn decode_file_contents(
