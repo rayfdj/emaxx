@@ -21241,14 +21241,19 @@ fn first_valid_coding_candidate(
                 if candidate == Value::T || candidate.is_nil() {
                     continue;
                 }
-                if let Some(coding) = checked_coding_name(interp, &candidate)? {
-                    return Ok(Some(coding));
+                if checked_coding_name(interp, &candidate)?.is_some() {
+                    return Ok(Some(candidate.as_symbol()?.to_string()));
                 }
             }
             Ok(None)
         }
         Value::Nil | Value::T => Ok(None),
-        _ => checked_coding_name(interp, value),
+        _ => Ok(checked_coding_name(interp, value)?.map(|_| {
+            value
+                .as_symbol()
+                .map(str::to_string)
+                .unwrap_or_else(|_| "utf-8".into())
+        })),
     }
 }
 
@@ -21774,7 +21779,31 @@ fn decode_latin_bytes(bytes: &[u8]) -> String {
 }
 
 fn decode_utf8_bytes(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    let mut decoded = String::new();
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                decoded.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    decoded.push_str(
+                        std::str::from_utf8(&remaining[..valid_up_to])
+                            .expect("valid_up_to prefix is valid utf-8"),
+                    );
+                }
+                let invalid_len = error.error_len().unwrap_or(1);
+                for byte in &remaining[valid_up_to..valid_up_to + invalid_len] {
+                    decoded.push(raw_byte_regex_char(*byte));
+                }
+                remaining = &remaining[valid_up_to + invalid_len..];
+            }
+        }
+    }
+    decoded
 }
 
 fn encode_text_bytes(interp: &Interpreter, text: &str, coding: &str) -> Result<Vec<u8>, LispError> {
@@ -21905,6 +21934,17 @@ fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
     if normalized.contains(&0) {
         return (
             coding_variant_name(interp, "no-conversion", Some(actual_eol)),
+            normalized,
+        );
+    }
+    if let Some(tag) = coding_tag_from_bytes(&normalized)
+        && let Some(canonical) = interp.coding_system_canonical_name(&tag)
+    {
+        let base = interp
+            .coding_system_base_name(&canonical)
+            .unwrap_or(canonical);
+        return (
+            coding_variant_name(interp, &base, Some(actual_eol)),
             normalized,
         );
     }
@@ -30842,6 +30882,22 @@ fn coding_tag_from_buffer_text(text: &str) -> Option<String> {
         .take(2)
         .find_map(|line| regex.captures(line))
         .and_then(|captures| captures.get(1).map(|value| value.as_str().to_string()))
+}
+
+fn coding_tag_from_bytes(bytes: &[u8]) -> Option<String> {
+    let mut newlines = 0usize;
+    let mut end = bytes.len();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            newlines += 1;
+            if newlines == 2 {
+                end = index + 1;
+                break;
+            }
+        }
+    }
+    let prefix = String::from_utf8_lossy(&bytes[..end]);
+    coding_tag_from_buffer_text(&prefix)
 }
 
 fn current_write_coding(
