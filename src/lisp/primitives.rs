@@ -54,9 +54,11 @@ static SYSTEM_CONFIGURATION: OnceLock<String> = OnceLock::new();
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);
+static FILE_NOTIFY_DESCRIPTOR_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
+static ACTIVE_FILE_NOTIFY_DESCRIPTORS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
@@ -1833,6 +1835,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-name-unquote"
             | "file-local-name"
             | "file-remote-p"
+            | "find-file-name-handler"
             | "dired-noselect"
             | "dired-revert"
             | "dired-buffer-stale-p"
@@ -1886,6 +1889,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-binary-mode"
             | "write-region"
             | "write-file"
+            | "kqueue-add-watch"
+            | "kqueue-rm-watch"
+            | "kqueue-valid-p"
             | "file-modes"
             | "file-modes-number-to-symbolic"
             | "set-file-modes"
@@ -9241,6 +9247,12 @@ pub fn call(
                 } else {
                     let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
                 }
+                run_named_hooks(
+                    interp,
+                    "find-file-hook",
+                    env,
+                    Some(interp.current_buffer_id()),
+                )?;
                 Ok(())
             })();
             let _ = interp.switch_to_buffer_id(saved_buffer_id);
@@ -9425,6 +9437,10 @@ pub fn call(
                 _ => Value::String(remote.prefix),
             };
             Ok(result)
+        }
+        "find-file-name-handler" => {
+            need_args(name, args, 2)?;
+            Ok(Value::Nil)
         }
         "dired-noselect" => {
             need_arg_range(name, args, 1, 2)?;
@@ -9796,11 +9812,12 @@ pub fn call(
             need_args(name, args, 1)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
-            match fs::remove_file(path) {
+            match fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
+            dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
         "copy-file" => {
@@ -9822,11 +9839,12 @@ pub fn call(
             need_args(name, args, 1)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
-            match fs::remove_file(path) {
+            match fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
+            dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
         "delete-directory" => {
@@ -9923,6 +9941,34 @@ pub fn call(
             }
             write_file_value(interp, args, env)
         }
+        "kqueue-add-watch" => {
+            need_args(name, args, 3)?;
+            let descriptor =
+                FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
+            active_file_notify_descriptors()
+                .lock()
+                .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
+                .insert(descriptor);
+            Ok(Value::Integer(descriptor))
+        }
+        "kqueue-rm-watch" => {
+            need_args(name, args, 1)?;
+            let descriptor = args[0].as_integer()?;
+            active_file_notify_descriptors()
+                .lock()
+                .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
+                .remove(&descriptor);
+            Ok(Value::Nil)
+        }
+        "kqueue-valid-p" => {
+            need_args(name, args, 1)?;
+            let descriptor = args[0].as_integer()?;
+            let active = active_file_notify_descriptors()
+                .lock()
+                .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
+                .contains(&descriptor);
+            Ok(if active { Value::T } else { Value::Nil })
+        }
         "file-modes" => {
             need_arg_range(name, args, 1, 2)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -9991,6 +10037,7 @@ pub fn call(
                 Some(value) => file_modtime_from_value(interp, value)?.modified,
             };
             set_file_times_path(&path, modified, args.get(2).is_some_and(Value::is_truthy))?;
+            dispatch_file_notification(interp, env, &path, "attribute-changed")?;
             Ok(Value::T)
         }
         "insert-directory" => {
@@ -26793,6 +26840,42 @@ fn call_named_function(
     }
 }
 
+fn dispatch_file_notification(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    path: &str,
+    action: &str,
+) -> Result<(), LispError> {
+    let Ok(descriptors) = interp.symbol_value_cell("auto-revert--buffer-by-watch-descriptor")
+    else {
+        return Ok(());
+    };
+    let Ok(entries) = descriptors.to_vec() else {
+        return Ok(());
+    };
+    let saved_buffer_id = interp.current_buffer_id();
+    for entry in entries {
+        let Some((descriptor, Value::Buffer(buffer_id, _))) = entry.cons_values() else {
+            continue;
+        };
+        if !interp.has_buffer_id(buffer_id) {
+            continue;
+        }
+        let event = Value::list([
+            descriptor,
+            Value::Symbol(action.into()),
+            Value::String(path.into()),
+        ]);
+        call_named_function(interp, "auto-revert-notify-handler", &[event], env)?;
+    }
+    interp.switch_to_buffer_id(saved_buffer_id)?;
+    Ok(())
+}
+
+fn active_file_notify_descriptors() -> &'static Mutex<HashSet<i64>> {
+    ACTIVE_FILE_NOTIFY_DESCRIPTORS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 fn callable_display_action_function(
     interp: &Interpreter,
     value: &Value,
@@ -30305,6 +30388,7 @@ fn write_region_value(
         fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
     }
     set_last_coding_system_used(interp, &coding, env);
+    dispatch_file_notification(interp, env, &path, "changed")?;
     Ok(Value::String(path))
 }
 

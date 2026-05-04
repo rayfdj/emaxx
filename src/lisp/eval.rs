@@ -918,6 +918,7 @@ impl Interpreter {
             provided_features: vec![
                 "emaxx".into(),
                 "ert".into(),
+                "kqueue".into(),
                 "lcms2".into(),
                 "threads".into(),
             ],
@@ -4982,6 +4983,13 @@ impl Interpreter {
         if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
             return Ok(value);
         }
+        if matches!(
+            resolved.as_str(),
+            "buffer-file-name" | "buffer-file-truename"
+        ) && let Some(value) = self.builtin_var_value(&resolved)
+        {
+            return Ok(value);
+        }
         if let Some(value) = self.global_value(&resolved) {
             return Ok(value);
         }
@@ -5346,6 +5354,13 @@ impl Interpreter {
         let resolved = self.resolve_variable_name(name)?;
         // Search globals
         if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
+            return Ok(value);
+        }
+        if matches!(
+            resolved.as_str(),
+            "buffer-file-name" | "buffer-file-truename"
+        ) && let Some(value) = self.builtin_var_value(&resolved)
+        {
             return Ok(value);
         }
         if let Some(value) = self.global_value(&resolved) {
@@ -20455,6 +20470,78 @@ mod tests {
             Value::list([Value::T, Value::T, Value::Nil])
         );
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn file_notifications_drive_global_auto_revert_without_polling() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-notify-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(&path, "").expect("create notification test file");
+        let path_text = path.to_string_lossy();
+        let form = format!(
+            r#"(progn
+                 (require 'autorevert)
+                 (let ((auto-revert-use-notify t)
+                       (auto-revert-avoid-polling t)
+                       (auto-revert-notify-exclude-dir-regexp "nothing-to-be-excluded")
+                       (buf (find-file-noselect "{path_text}")))
+                   (unwind-protect
+                       (with-current-buffer buf
+                         (global-auto-revert-mode 1)
+                         (let ((desc auto-revert-notify-watch-descriptor))
+                           (write-region "changed" nil "{path_text}" nil 'no-message)
+                           (list (eq file-notify--library 'kqueue)
+                                 (file-notify-valid-p desc)
+                                 (buffer-local-value 'auto-revert-notify-watch-descriptor buf)
+                                 (buffer-string))))
+                     (global-auto-revert-mode 0)
+                     (kill-buffer buf))))"#
+        );
+        assert_eq!(
+            eval_str_with_upstream_load_path(&form),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::Integer(1),
+                Value::String("changed".into()),
+            ])
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn global_auto_revert_adopts_files_opened_after_enable() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-notify-late-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        fs::write(&path, "").expect("create late notification test file");
+        let path_text = path.to_string_lossy();
+        let form = format!(
+            r#"(progn
+                 (require 'autorevert)
+                 (let ((auto-revert-use-notify t)
+                       (auto-revert-avoid-polling t)
+                       (auto-revert-notify-exclude-dir-regexp "nothing-to-be-excluded"))
+                   (unwind-protect
+                       (progn
+                         (global-auto-revert-mode 1)
+                         (let ((buf (find-file-noselect "{path_text}")))
+                           (with-current-buffer buf
+                             (auto-revert-buffers)
+                             (not (null auto-revert-notify-watch-descriptor)))))
+                     (global-auto-revert-mode 0))))"#
+        );
+        assert_eq!(eval_str_with_upstream_load_path(&form), Value::T);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
