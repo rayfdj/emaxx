@@ -5562,51 +5562,97 @@ pub fn call(
             }
             let format = string_text(&args[0])?;
             let entries = args[1].to_vec()?;
+            let ignore_missing = args.get(2).unwrap_or(&Value::Nil);
+            let split = args.get(3).is_some_and(Value::is_truthy);
+            let chars: Vec<char> = format.chars().collect();
             let mut result = String::new();
-            let mut chars = format.chars();
-            while let Some(ch) = chars.next() {
+            let mut split_start = 0usize;
+            let mut split_result = Vec::new();
+            let mut i = 0usize;
+            while i < chars.len() {
+                let ch = chars[i];
                 if ch != '%' {
                     result.push(ch);
+                    i += 1;
                     continue;
                 }
-                let Some(specifier) = chars.next() else {
+                let spec_start = i;
+                i += 1;
+                if i >= chars.len() {
                     result.push('%');
                     break;
-                };
-                if specifier == '%' {
-                    result.push('%');
+                }
+                if chars[i] == '%' {
+                    if format_spec_collapses_quoted_percent(ignore_missing) {
+                        result.push('%');
+                    } else {
+                        result.push('%');
+                        result.push('%');
+                    }
+                    i += 1;
                     continue;
                 }
-                let replacement = entries.iter().find_map(|entry| {
-                    let Value::Cons(key, value) = entry else {
-                        return None;
-                    };
-                    let key_value = key.borrow().clone();
-                    let value_value = value.borrow().clone();
-                    let key_char = match &key_value {
-                        Value::Integer(code) => char::from_u32(*code as u32),
-                        Value::String(text) => text.chars().next(),
-                        Value::StringObject(state) => state.borrow().text.chars().next(),
-                        _ => None,
-                    }?;
-                    if key_char == specifier {
-                        Some(
-                            string_like(&value_value)
-                                .map(|value| value.text)
-                                .unwrap_or_else(|| value_value.to_string()),
-                        )
-                    } else {
-                        None
+
+                let Some(parsed) = parse_format_spec(&chars, i) else {
+                    if ignore_missing.is_nil() {
+                        return Err(LispError::Signal("Invalid format string".into()));
                     }
-                });
-                if let Some(replacement) = replacement {
-                    result.push_str(&replacement);
-                } else {
                     result.push('%');
-                    result.push(specifier);
+                    continue;
+                };
+                i = parsed.end;
+
+                if split && result.chars().count() > split_start {
+                    let part = result
+                        .chars()
+                        .skip(split_start)
+                        .take(result.chars().count() - split_start)
+                        .collect::<String>();
+                    split_result.push(Value::String(part));
+                }
+
+                let replacement = format_spec_replacement(interp, env, &entries, parsed.specifier)?;
+                if let Some(replacement) = replacement {
+                    let formatted = apply_format_spec_flags(replacement, &parsed);
+                    result.push_str(&formatted);
+                    if split {
+                        split_result.push(Value::String(formatted));
+                        split_start = result.chars().count();
+                    }
+                } else if matches!(ignore_missing, Value::Symbol(symbol) if symbol == "delete") {
+                    if split {
+                        split_result.push(Value::String(String::new()));
+                        split_start = result.chars().count();
+                    }
+                } else if ignore_missing.is_nil() {
+                    return Err(LispError::Signal(format!(
+                        "Invalid format character: `%{}'",
+                        parsed.specifier
+                    )));
+                } else {
+                    let original = chars[spec_start..parsed.end].iter().collect::<String>();
+                    result.push_str(&original);
+                    if split {
+                        split_result.push(Value::String(original));
+                        split_start = result.chars().count();
+                    }
                 }
             }
-            Ok(Value::String(result))
+            if split {
+                let result_len = result.chars().count();
+                if split_start < result_len {
+                    split_result.push(Value::String(
+                        result
+                            .chars()
+                            .skip(split_start)
+                            .take(result_len - split_start)
+                            .collect(),
+                    ));
+                }
+                Ok(Value::list(split_result))
+            } else {
+                Ok(Value::String(result))
+            }
         }
         "char-to-string" => {
             need_args(name, args, 1)?;
@@ -30660,6 +30706,158 @@ fn render_princ(value: &Value) -> String {
         Value::StringObject(state) => state.borrow().text.clone(),
         _ => value.to_string(),
     }
+}
+
+#[derive(Clone, Debug)]
+struct ParsedFormatSpec {
+    flags: Vec<char>,
+    width: Option<usize>,
+    precision: Option<usize>,
+    specifier: char,
+    end: usize,
+}
+
+fn parse_format_spec(chars: &[char], mut i: usize) -> Option<ParsedFormatSpec> {
+    let mut flags = Vec::new();
+    while i < chars.len() && matches!(chars[i], ' ' | '0' | '<' | '>' | '^' | '_' | '-') {
+        flags.push(chars[i]);
+        i += 1;
+    }
+
+    let mut width = None;
+    if i < chars.len() && chars[i].is_ascii_digit() {
+        let mut parsed = 0usize;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            parsed = parsed
+                .saturating_mul(10)
+                .saturating_add(chars[i] as usize - '0' as usize);
+            i += 1;
+        }
+        width = Some(parsed);
+    }
+
+    let mut precision = None;
+    if i < chars.len() && chars[i] == '.' {
+        i += 1;
+        if i >= chars.len() || !chars[i].is_ascii_digit() {
+            return None;
+        }
+        let mut parsed = 0usize;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            parsed = parsed
+                .saturating_mul(10)
+                .saturating_add(chars[i] as usize - '0' as usize);
+            i += 1;
+        }
+        precision = Some(parsed);
+    }
+
+    let specifier = *chars.get(i)?;
+    if !specifier.is_alphabetic() {
+        return None;
+    }
+    Some(ParsedFormatSpec {
+        flags,
+        width,
+        precision,
+        specifier,
+        end: i + 1,
+    })
+}
+
+fn format_spec_replacement(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    entries: &[Value],
+    specifier: char,
+) -> Result<Option<String>, LispError> {
+    for entry in entries {
+        let Value::Cons(key, value) = entry else {
+            continue;
+        };
+        let key_value = key.borrow().clone();
+        let key_char = match &key_value {
+            Value::Integer(code) => char::from_u32(*code as u32),
+            Value::String(text) => text.chars().next(),
+            Value::StringObject(state) => state.borrow().text.chars().next(),
+            _ => None,
+        };
+        if key_char != Some(specifier) {
+            continue;
+        }
+
+        let mut value_value = value.borrow().clone();
+        if value_value.is_nil() {
+            return Ok(None);
+        }
+        let callable = resolve_callable(interp, &value_value, env).unwrap_or(value_value.clone());
+        if matches!(callable, Value::BuiltinFunc(_) | Value::Lambda(_, _, _))
+            || is_lambda_expression(&callable)
+        {
+            value_value = call_function_value(interp, &callable, &[], env)?;
+        }
+        return Ok(Some(
+            string_like(&value_value)
+                .map(|value| value.text)
+                .unwrap_or_else(|| value_value.to_string()),
+        ));
+    }
+    Ok(None)
+}
+
+fn format_spec_collapses_quoted_percent(ignore_missing: &Value) -> bool {
+    match ignore_missing {
+        Value::Nil => true,
+        Value::Symbol(symbol) => symbol == "ignore" || symbol == "delete",
+        _ => false,
+    }
+}
+
+fn apply_format_spec_flags(mut text: String, spec: &ParsedFormatSpec) -> String {
+    let chop_left = spec.flags.contains(&'<');
+    let chop_right = spec.flags.contains(&'>');
+    let pad_zero = spec.flags.contains(&'0');
+    let pad_right = spec.flags.contains(&'-');
+    if let Some(precision) = spec.precision {
+        let width = text.chars().count();
+        if width > precision {
+            text = if chop_left {
+                text.chars().skip(width - precision).collect()
+            } else {
+                text.chars().take(precision).collect()
+            };
+        }
+    }
+
+    if let Some(target_width) = spec.width {
+        let width = text.chars().count();
+        if width < target_width {
+            let padding = target_width - width;
+            let pad = if pad_zero { '0' } else { ' ' };
+            let pad_text = std::iter::repeat_n(pad, padding).collect::<String>();
+            text = if pad_right {
+                format!("{text}{pad_text}")
+            } else {
+                format!("{pad_text}{text}")
+            };
+        } else if width > target_width {
+            text = if chop_left {
+                text.chars().skip(width - target_width).collect()
+            } else if chop_right {
+                text.chars().take(target_width).collect()
+            } else {
+                text
+            };
+        }
+    }
+
+    if spec.flags.contains(&'^') {
+        text = text.to_uppercase();
+    }
+    if spec.flags.contains(&'_') {
+        text = text.to_lowercase();
+    }
+    text
 }
 
 fn decode_file_contents(
