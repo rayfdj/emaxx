@@ -163,6 +163,13 @@ fn signal_condition(condition: &str) -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol(condition.into()), Value::Nil]))
 }
 
+fn scan_error() -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("scan-error".into()),
+        Value::Nil,
+    ]))
+}
+
 fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
     let saved = interp.buffer.point();
     interp.buffer.goto_char(pos);
@@ -1555,8 +1562,12 @@ pub fn is_builtin(name: &str) -> bool {
             | "search-forward-regexp"
             | "search-backward-regexp"
             | "isearch-no-upper-case-p"
+            | "forward-sexp"
+            | "backward-sexp"
             | "forward-comment"
             | "scan-lists"
+            | "scan-sexps"
+            | "syntax-ppss"
             | "parse-partial-sexp"
             | "match-string"
             | "match-string-no-properties"
@@ -1611,6 +1622,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "capitalize-word"
             | "current-column"
             | "current-indentation"
+            | "indent-relative"
+            | "indent-to-left-margin"
+            | "tab-to-tab-stop"
             | "indent-to"
             | "move-to-column"
             | "indent-rigidly"
@@ -1741,6 +1755,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "coding-system-base"
             | "coding-system-equal"
             | "check-coding-systems-region"
+            | "select-safe-coding-system"
             | "detect-coding-string"
             | "detect-coding-region"
             | "find-coding-systems-region-internal"
@@ -6310,6 +6325,23 @@ pub fn call(
             };
             Ok(Value::Integer(next.max(0)))
         }
+        "tab-to-tab-stop" => {
+            need_args(name, args, 0)?;
+            let column = call(interp, "current-column", &[], env)?.as_integer()?;
+            let next = call(
+                interp,
+                "indent-next-tab-stop",
+                &[Value::Integer(column)],
+                env,
+            )?
+            .as_integer()?;
+            call(
+                interp,
+                "indent-to",
+                &[Value::Integer(next), Value::Integer(1)],
+                env,
+            )
+        }
         "skip-chars-forward" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -6446,6 +6478,26 @@ pub fn call(
         "re-search-backward" | "search-backward-regexp" => {
             buffer_regex_search(interp, args, env, false)
         }
+        "forward-sexp" | "backward-sexp" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let mut count = args
+                .first()
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            if name == "backward-sexp" {
+                count = -count;
+            }
+            match scan_sexps_position(interp, interp.buffer.point(), count) {
+                Some(position) => {
+                    interp.buffer.goto_char(position);
+                    Ok(Value::Nil)
+                }
+                None => Err(scan_error()),
+            }
+        }
         "forward-comment" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -6453,6 +6505,35 @@ pub fn call(
             forward_comment_impl(interp, args.first(), env)
         }
         "scan-lists" => scan_lists_impl(interp, args, env),
+        "scan-sexps" => {
+            need_args(name, args, 2)?;
+            let from = position_from_value(interp, &args[0])?;
+            let count = args[1].as_integer()?;
+            Ok(scan_sexps_position(interp, from, count)
+                .map(|position| Value::Integer(position as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "syntax-ppss" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let to = match args.first() {
+                Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+                _ => interp.buffer.point(),
+            };
+            let saved = interp.buffer.point();
+            let state = parse_forward(
+                interp,
+                interp.buffer.point_min(),
+                to,
+                None,
+                None,
+                false,
+                env,
+            );
+            interp.buffer.goto_char(saved);
+            state
+        }
         "parse-partial-sexp" => {
             if args.len() < 2 || args.len() > 6 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -7092,6 +7173,75 @@ pub fn call(
             let indentation = column_at(interp, env, bol, pt) as i64;
             interp.buffer.goto_char(saved);
             Ok(Value::Integer(indentation))
+        }
+        "indent-to-left-margin" => {
+            need_args(name, args, 0)?;
+            let left_margin = interp
+                .lookup_var("left-margin", env)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0)
+                .max(0);
+            call(interp, "indent-to", &[Value::Integer(left_margin)], env)?;
+            Ok(Value::Nil)
+        }
+        "indent-relative" => {
+            need_arg_range(name, args, 0, 2)?;
+            let unindented_ok = args.get(1).is_some_and(Value::is_truthy);
+            let start_column = call(interp, "current-column", &[], env)?.as_integer()?;
+            let saved = interp.buffer.point();
+            interp.buffer.beginning_of_line();
+            let current_line_start = interp.buffer.point();
+            let mut scan = current_line_start.saturating_sub(1);
+            let mut indent = None;
+            while scan >= interp.buffer.point_min() {
+                let line_start = beginning_of_line_at(interp, scan);
+                let line_end = {
+                    let original = interp.buffer.point();
+                    interp.buffer.goto_char(line_start);
+                    let end = interp.buffer.end_of_line();
+                    interp.buffer.goto_char(original);
+                    end
+                };
+                let line_text = interp
+                    .buffer
+                    .buffer_substring(line_start, line_end)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                if line_text.chars().any(|ch| ch != ' ' && ch != '\t') {
+                    let tab_width = interp
+                        .lookup_var("tab-width", env)
+                        .and_then(|value| value.as_integer().ok())
+                        .unwrap_or(8)
+                        .max(1);
+                    let mut column = 0i64;
+                    let mut after_whitespace = true;
+                    for ch in line_text.chars() {
+                        if ch != ' ' && ch != '\t' && after_whitespace && column > start_column {
+                            indent = Some(column);
+                            break;
+                        }
+                        after_whitespace = ch == ' ' || ch == '\t';
+                        column = if ch == '\t' {
+                            ((column / tab_width) + 1) * tab_width
+                        } else {
+                            column + 1
+                        };
+                    }
+                    break;
+                }
+                if line_start <= interp.buffer.point_min() {
+                    break;
+                }
+                scan = line_start.saturating_sub(1);
+            }
+            interp.buffer.goto_char(saved);
+            match indent {
+                Some(column) => {
+                    call(interp, "indent-to", &[Value::Integer(column)], env)?;
+                    Ok(Value::Nil)
+                }
+                None if unindented_ok => Ok(Value::Nil),
+                None => call(interp, "tab-to-tab-stop", &[], env).map(|_| Value::Nil),
+            }
         }
         "indent-to" => {
             need_arg_range(name, args, 1, 2)?;
@@ -8903,6 +9053,24 @@ pub fn call(
         "check-coding-systems-region" => {
             need_args(name, args, 3)?;
             check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2])
+        }
+        "select-safe-coding-system" => {
+            need_arg_range(name, args, 2, 5)?;
+            if let Some(default) = args.get(2)
+                && let Some(coding) = first_valid_coding_candidate(interp, default)?
+            {
+                return Ok(Value::Symbol(coding));
+            }
+            if let Some(coding) = interp
+                .lookup_var("coding-system-for-write", env)
+                .and_then(|value| checked_coding_name(interp, &value).ok().flatten())
+            {
+                return Ok(Value::Symbol(coding));
+            }
+            Ok(Value::Symbol(
+                checked_coding_name(interp, &Value::Symbol("utf-8-emacs".into()))?
+                    .unwrap_or_else(|| "utf-8".into()),
+            ))
         }
         "detect-coding-string" => {
             need_args(name, args, 1)?;
@@ -19845,6 +20013,168 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     state
 }
 
+fn scan_sexps_position(interp: &Interpreter, from: usize, count: i64) -> Option<usize> {
+    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
+    let min = interp.buffer.point_min();
+    let max = interp.buffer.point_max();
+    let mut pos = from.clamp(min, max);
+    if count >= 0 {
+        for _ in 0..count {
+            pos = scan_one_sexp_forward(&chars, pos, max)?;
+        }
+    } else {
+        for _ in 0..(-count) {
+            pos = scan_one_sexp_backward(&chars, pos, min)?;
+        }
+    }
+    Some(pos)
+}
+
+fn scan_one_sexp_forward(chars: &[char], from: usize, max: usize) -> Option<usize> {
+    let mut idx = from.saturating_sub(1);
+    let end = max.saturating_sub(1).min(chars.len());
+    while idx < end && chars[idx].is_whitespace() {
+        idx += 1;
+    }
+    if idx >= end {
+        return None;
+    }
+    match chars[idx] {
+        '(' | '[' | '{' => scan_balanced_forward(chars, idx, end).map(|idx| idx + 1),
+        '"' => scan_string_forward(chars, idx, end).map(|idx| idx + 1),
+        ')' | ']' | '}' => None,
+        _ => {
+            while idx < end
+                && !chars[idx].is_whitespace()
+                && !matches!(chars[idx], '(' | ')' | '[' | ']' | '{' | '}')
+            {
+                idx += 1;
+            }
+            Some(idx + 1)
+        }
+    }
+}
+
+fn scan_balanced_forward(chars: &[char], open_idx: usize, end: usize) -> Option<usize> {
+    let mut stack = vec![matching_delimiter(chars[open_idx])?];
+    let mut idx = open_idx + 1;
+    while idx < end {
+        match chars[idx] {
+            '"' => idx = scan_string_forward(chars, idx, end)?,
+            '(' | '[' | '{' => stack.push(matching_delimiter(chars[idx])?),
+            ')' | ']' | '}' => {
+                if stack.pop()? != chars[idx] {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(idx + 1);
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<usize> {
+    let mut idx = quote_idx + 1;
+    let mut escaped = false;
+    while idx < end {
+        let ch = chars[idx];
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(idx);
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn scan_one_sexp_backward(chars: &[char], from: usize, min: usize) -> Option<usize> {
+    let mut idx = from.saturating_sub(2);
+    let min_idx = min.saturating_sub(1);
+    while idx >= min_idx && chars.get(idx).is_some_and(|ch| ch.is_whitespace()) {
+        if idx == 0 {
+            return None;
+        }
+        idx -= 1;
+    }
+    match *chars.get(idx)? {
+        ')' | ']' | '}' => scan_balanced_backward(chars, idx, min_idx).map(|idx| idx + 1),
+        '"' => scan_string_backward(chars, idx, min_idx).map(|idx| idx + 1),
+        '(' | '[' | '{' => None,
+        _ => {
+            while idx > min_idx
+                && chars.get(idx - 1).is_some_and(|ch| {
+                    !ch.is_whitespace() && !matches!(ch, '(' | ')' | '[' | ']' | '{' | '}')
+                })
+            {
+                idx -= 1;
+            }
+            Some(idx + 1)
+        }
+    }
+}
+
+fn scan_balanced_backward(chars: &[char], close_idx: usize, min_idx: usize) -> Option<usize> {
+    let mut stack = vec![matching_delimiter(chars[close_idx])?];
+    let mut idx = close_idx;
+    while idx > min_idx {
+        idx -= 1;
+        match chars[idx] {
+            '"' => idx = scan_string_backward(chars, idx, min_idx)?,
+            ')' | ']' | '}' => stack.push(matching_delimiter(chars[idx])?),
+            '(' | '[' | '{' => {
+                if stack.pop()? != chars[idx] {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn scan_string_backward(chars: &[char], quote_idx: usize, min_idx: usize) -> Option<usize> {
+    let mut idx = quote_idx;
+    while idx > min_idx {
+        idx -= 1;
+        if chars[idx] == '"' && !is_escaped(chars, idx) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn matching_delimiter(ch: char) -> Option<char> {
+    match ch {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        _ => None,
+    }
+}
+
+fn is_escaped(chars: &[char], idx: usize) -> bool {
+    let mut count = 0usize;
+    let mut scan = idx;
+    while scan > 0 && chars[scan - 1] == '\\' {
+        count += 1;
+        scan -= 1;
+    }
+    count % 2 == 1
+}
+
 fn parse_forward(
     interp: &mut Interpreter,
     from: usize,
@@ -20899,6 +21229,27 @@ fn checked_coding_name(interp: &Interpreter, value: &Value) -> Result<Option<Str
 
 fn checked_coding_symbol(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
     checked_coding_name(interp, value)?.ok_or_else(|| coding_system_error("nil"))
+}
+
+fn first_valid_coding_candidate(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Option<String>, LispError> {
+    match value {
+        Value::Cons(_, _) => {
+            for candidate in value.to_vec()? {
+                if candidate == Value::T || candidate.is_nil() {
+                    continue;
+                }
+                if let Some(coding) = checked_coding_name(interp, &candidate)? {
+                    return Ok(Some(coding));
+                }
+            }
+            Ok(None)
+        }
+        Value::Nil | Value::T => Ok(None),
+        _ => checked_coding_name(interp, value),
+    }
 }
 
 fn coding_variant_name(interp: &Interpreter, base: &str, eol_type: Option<i64>) -> String {
