@@ -2036,6 +2036,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "recenter"
             | "scroll-up"
             | "scroll-down"
+            | "quit-window"
             | "display-buffer"
             | "window-text-pixel-size"
             | "get-display-property"
@@ -11685,6 +11686,33 @@ pub fn call(
             }
             interp.set_selected_window_buffer_id(buffer_id);
             Ok(interp.selected_window_value())
+        }
+        "quit-window" => {
+            need_arg_range(name, args, 0, 2)?;
+            let kill = args.first().is_some_and(Value::is_truthy);
+            let window = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            let buffer_id = window_buffer_id(interp, &window)
+                .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?;
+            run_named_hooks(interp, "quit-window-hook", env, Some(buffer_id))?;
+            if kill {
+                interp.kill_buffer_id(buffer_id);
+                return Ok(Value::Nil);
+            }
+            if buffer_id == interp.current_buffer_id()
+                && let Some((next_id, _)) = interp
+                    .buffer_list
+                    .iter()
+                    .rev()
+                    .find(|(id, _)| *id != buffer_id)
+                    .cloned()
+            {
+                interp.switch_to_buffer_id(next_id)?;
+                interp.set_selected_window_buffer_id(next_id);
+            }
+            Ok(Value::Nil)
         }
         "active-minibuffer-window" => Ok(Value::Nil),
         "set-window-start" => {
