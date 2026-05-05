@@ -18983,14 +18983,24 @@ fn regex_posix_class_fragment(name: &str) -> Option<&'static str> {
 fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
     let mut translated = String::from("[");
     let mut saw_atom = false;
+    let mut emitted_atom = false;
+    let mut negated = false;
     if chars.peek() == Some(&'^') {
         translated.push('^');
+        negated = true;
         chars.next();
     }
 
     while let Some(ch) = chars.peek().copied() {
         if ch == ']' && saw_atom {
             chars.next();
+            if !emitted_atom {
+                return if negated {
+                    r"[\s\S]".into()
+                } else {
+                    "(?!)".into()
+                };
+            }
             translated.push(']');
             return translated;
         }
@@ -19021,10 +19031,20 @@ fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<
         {
             if let Some(range) = bracket_range_fragment(*start, *end) {
                 translated.push_str(&range);
+                emitted_atom = true;
             } else if is_empty_unicode_raw_range(*start, *end) {
-                return "(?!)".into();
+                if !negated {
+                    return "(?!)".into();
+                }
             } else {
-                return "[".into();
+                if !negated && start > end {
+                    // Emacs treats reversed ranges as empty.  Keep parsing so
+                    // other class members such as the `a' in `[az-c]' remain.
+                } else if negated && start > end {
+                    // The negation of an empty range excludes nothing.
+                } else {
+                    return "[".into();
+                }
             }
             *chars = preview;
             saw_atom = true;
@@ -19032,6 +19052,7 @@ fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<
         }
         if let Some(fragment) = regex_class_atom_fragment(&atom) {
             translated.push_str(&fragment);
+            emitted_atom = true;
         } else {
             return "[".into();
         }
