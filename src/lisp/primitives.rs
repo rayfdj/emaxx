@@ -1962,6 +1962,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "get-locale-names"
             | "shell-command"
             | "kill-buffer"
+            | "bury-buffer"
             | "lock-buffer"
             | "revert-buffer"
             | "set-mark"
@@ -10878,6 +10879,32 @@ pub fn call(
                 run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
             }
             Ok(Value::T)
+        }
+        "bury-buffer" => {
+            need_arg_range(name, args, 0, 1)?;
+            let id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            if let Some(index) = interp
+                .buffer_list
+                .iter()
+                .position(|(buffer_id, _)| *buffer_id == id)
+            {
+                let entry = interp.buffer_list.remove(index);
+                interp.buffer_list.push(entry);
+            }
+            if id == interp.current_buffer_id()
+                && let Some((next_id, _)) = interp
+                    .buffer_list
+                    .iter()
+                    .find(|(buffer_id, _)| *buffer_id != id)
+                    .cloned()
+            {
+                interp.switch_to_buffer_id(next_id)?;
+            }
+            Ok(Value::Nil)
         }
         "set-mark" => {
             need_args(name, args, 1)?;
