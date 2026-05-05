@@ -17524,6 +17524,73 @@ mod tests {
     }
 
     #[test]
+    fn decoded_time_accessors_read_list_fields() {
+        assert_eq!(
+            eval_str(
+                "(let ((time (decode-time 0 \"UTC0\" 'integer))
+                       (short '(0 0 0 1 1 1970)))
+                   (list (decoded-time-second time)
+                         (decoded-time-minute time)
+                         (decoded-time-hour time)
+                         (decoded-time-day time)
+                         (decoded-time-month time)
+                         (decoded-time-year time)
+                         (decoded-time-weekday time)
+                         (decoded-time-dst short)
+                         (decoded-time-zone time)))"
+            ),
+            Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::Integer(1970),
+                Value::Integer(4),
+                Value::Nil,
+                Value::Integer(0),
+            ])
+        );
+    }
+
+    #[test]
+    fn char_width_matches_string_width_for_single_characters() {
+        assert_eq!(
+            eval_str(
+                "(let ((tab-width 4))
+                   (list (char-width ?a)
+                         (char-width ?\t)
+                         (char-width ?界)
+                         (string-width \"界\")))"
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(8),
+                Value::Integer(2),
+                Value::Integer(2),
+            ])
+        );
+    }
+
+    #[test]
+    fn truncate_string_to_width_uses_display_columns() {
+        assert_eq!(
+            eval_str(
+                "(list (truncate-string-to-width \"abcdef\" 3)
+                       (truncate-string-to-width \"界a\" 2)
+                       (truncate-string-to-width \"a\" 3 0 ?.)
+                       (truncate-string-to-width \"abcdef\" 4 2))"
+            ),
+            Value::list([
+                Value::String("abc".into()),
+                Value::String("界".into()),
+                Value::String("a..".into()),
+                Value::String("cd".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn current_time_string_formats_known_time_with_zone() {
         run_with_large_stack(|| {
             assert_eq!(
@@ -19014,12 +19081,97 @@ mod tests {
         assert_eq!(
             eval_str(
                 r#"
-                (progn
+                  (progn
                   (set-frame-height nil 40)
                   (list (window-height) (window-height (selected-window) 'floor)))
                 "#,
             ),
             Value::list([Value::Integer(40), Value::Integer(40)])
+        );
+    }
+
+    #[test]
+    fn window_edge_aliases_report_selected_window_geometry() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (set-frame-width nil 120)
+                  (set-frame-height nil 40)
+                  (list (window-edges)
+                        (window-inside-edges)
+                        (window-body-edges)
+                        (window-inside-pixel-edges)))
+                "#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(120),
+                    Value::Integer(40),
+                ]),
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(120),
+                    Value::Integer(40),
+                ]),
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(120),
+                    Value::Integer(40),
+                ]),
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(960),
+                    Value::Integer(640),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn headless_window_is_not_splittable() {
+        assert_eq!(
+            eval_str(
+                "(list (window-splittable-p)
+                       (window-splittable-p (selected-window))
+                       (window-splittable-p (selected-window) t)
+                       (window-dedicated-p)
+                       (window-dedicated-p (selected-window))
+                       (window-combined-p)
+                       (window-combined-p (selected-window) t))"
+            ),
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn headless_window_vscroll_is_zero() {
+        assert_eq!(
+            eval_str(
+                "(list (window-vscroll)
+                       (window-vscroll (selected-window) t)
+                       (set-window-vscroll (selected-window) 3)
+                       (set-window-vscroll (selected-window) 3 t))"
+            ),
+            Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+            ])
         );
     }
 
