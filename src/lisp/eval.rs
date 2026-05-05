@@ -5834,7 +5834,7 @@ impl Interpreter {
                         "not" => return self.sf_not(&items, env),
                         "progn" => return self.sf_progn(&items[1..], env),
                         "prog1" => return self.sf_prog1(&items, env),
-                        "let" => return self.sf_let(&items, env),
+                        "let" | "dlet" => return self.sf_let(&items, env),
                         "let*" => return self.sf_letstar(&items, env),
                         "cl-progv" => return self.sf_cl_progv(&items, env),
                         "pcase-let" => return self.sf_pcase_let(&items, env, false),
@@ -15438,6 +15438,17 @@ mod tests {
         );
         assert_eq!(eval_str("(identity 'ok)"), Value::Symbol("ok".into()));
         assert_eq!(eval_str("(length '(1 2 3))"), Value::Integer(3));
+    }
+
+    #[test]
+    fn dlet_binds_values_for_evalled_body_forms() {
+        assert_eq!(
+            eval_str(
+                "(dlet ((day \"25\") (month \"10\") (year \"1917\"))
+                   (mapconcat #'eval '(year \"-\" month \"-\" day) \"\"))"
+            ),
+            Value::String("1917-10-25".into())
+        );
     }
 
     #[test]
