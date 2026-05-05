@@ -14232,6 +14232,7 @@ fn compile_rx_form(
                     };
                     Ok(format!("\\(?:{body}\\){quantifier}"))
                 }
+                "or" | "|" if items.len() == 1 => Ok("\\`a\\`".into()),
                 "or" | "|" => Ok(format!(
                     "\\(?:{}\\)",
                     items[1..]
@@ -22666,6 +22667,10 @@ IHdvcmxkIQ==")))
                      (rx-to-string `(: bos (| \, tramp-local-host-names) eos)))"#
             ),
             Value::String("\\`\\(?:foo\\|bar\\)\\'".into())
+        );
+        assert_eq!(
+            eval_str(r#"(rx-to-string '(or) t)"#),
+            Value::String("\\`a\\`".into())
         );
         assert_eq!(
             eval_str(r#"(rx bot "body" eot)"#),
