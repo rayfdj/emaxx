@@ -15378,6 +15378,28 @@ mod tests {
     }
 
     #[test]
+    fn string_match_treats_reversed_bracket_ranges_as_empty() {
+        assert_eq!(
+            eval_str(
+                r#"(list (string-match "[z-a]" "z")
+                         (string-match "[az-c]" "a")
+                         (string-match "[az-c]" "z")
+                         (string-match "[^z-a]" "z")
+                         (string-match "[^az-c]" "a")
+                         (string-match "[^az-c]" "z"))"#
+            ),
+            Value::list([
+                Value::Nil,
+                Value::Integer(0),
+                Value::Nil,
+                Value::Integer(0),
+                Value::Nil,
+                Value::Integer(0),
+            ])
+        );
+    }
+
+    #[test]
     fn re_search_failure_preserves_existing_match_data() {
         let value = eval_str(
             r#"
