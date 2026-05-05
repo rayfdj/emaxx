@@ -1287,6 +1287,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "null"
             | "not"
             | "integerp"
+            | "cl-evenp"
+            | "cl-oddp"
             | "fixnump"
             | "bignump"
             | "numberp"
@@ -3186,6 +3188,18 @@ pub fn call(
             } else {
                 Value::Nil
             })
+        }
+        "cl-evenp" | "cl-oddp" => {
+            need_args(name, args, 1)?;
+            let value = integer_like_bigint(interp, &args[0])?;
+            let is_odd = !(&value % BigInt::from(2)).is_zero();
+            Ok(
+                if (name == "cl-oddp" && is_odd) || (name == "cl-evenp" && !is_odd) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "fixnump" => {
             need_args(name, args, 1)?;
@@ -11127,33 +11141,82 @@ pub fn call(
                     args.len(),
                 ));
             }
-            let from = args[0].as_integer()?;
+            let integer_sequence = args.iter().all(Value::is_integer);
+            if integer_sequence {
+                let from = integer_like_bigint(interp, &args[0])?;
+                let to = if args.len() > 1 {
+                    integer_like_bigint(interp, &args[1])?
+                } else {
+                    from.clone()
+                };
+                let step = if args.len() > 2 {
+                    integer_like_bigint(interp, &args[2])?
+                } else {
+                    BigInt::from(1)
+                };
+                if step.is_zero() {
+                    return Err(LispError::Signal(
+                        "number-sequence: step must not be 0".into(),
+                    ));
+                }
+                let mut result = Vec::new();
+                let mut i = from;
+                if step.sign() != Sign::Minus {
+                    while i <= to {
+                        result.push(normalize_bigint_value(i.clone()));
+                        i += &step;
+                    }
+                } else {
+                    while i >= to {
+                        result.push(normalize_bigint_value(i.clone()));
+                        i += &step;
+                    }
+                }
+                return Ok(Value::list(result));
+            }
+
+            let from = numeric_to_f64(interp, &args[0])?;
             let to = if args.len() > 1 {
-                args[1].as_integer()?
+                numeric_to_f64(interp, &args[1])?
             } else {
                 from
             };
-            let step = if args.len() > 2 {
-                args[2].as_integer()?
-            } else {
-                1
-            };
-            if step == 0 {
+            let step_value = args.get(2).cloned().unwrap_or(Value::Integer(1));
+            let step = numeric_to_f64(interp, &step_value)?;
+            if step == 0.0 {
                 return Err(LispError::Signal(
                     "number-sequence: step must not be 0".into(),
                 ));
             }
             let mut result = Vec::new();
-            let mut i = from;
-            if step > 0 {
-                while i <= to {
-                    result.push(Value::Integer(i));
-                    i += step;
+            let mut current_float = from;
+            let mut current_value = args[0].clone();
+            let integer_step = step_value.is_integer();
+            if step > 0.0 {
+                while current_float <= to {
+                    result.push(current_value.clone());
+                    current_float += step;
+                    current_value = if current_value.is_integer() && integer_step {
+                        normalize_bigint_value(
+                            integer_like_bigint(interp, &current_value)?
+                                + integer_like_bigint(interp, &step_value)?,
+                        )
+                    } else {
+                        Value::Float(current_float)
+                    };
                 }
             } else {
-                while i >= to {
-                    result.push(Value::Integer(i));
-                    i += step;
+                while current_float >= to {
+                    result.push(current_value.clone());
+                    current_float += step;
+                    current_value = if current_value.is_integer() && integer_step {
+                        normalize_bigint_value(
+                            integer_like_bigint(interp, &current_value)?
+                                + integer_like_bigint(interp, &step_value)?,
+                        )
+                    } else {
+                        Value::Float(current_float)
+                    };
                 }
             }
             Ok(Value::list(result))
