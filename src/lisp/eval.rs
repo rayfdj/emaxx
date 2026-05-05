@@ -14804,6 +14804,10 @@ mod tests {
         assert_eq!(eval_str("(logior 1 2 4)"), Value::Integer(7));
         assert_eq!(eval_str("(logxor 1 2 3)"), Value::Integer(0));
         assert_eq!(eval_str("(lognot 5)"), Value::Integer(-6));
+        assert_eq!(
+            eval_str("(list (cl-evenp 4) (cl-oddp 5) (cl-evenp -2) (cl-oddp -3))"),
+            Value::list([Value::T, Value::T, Value::T, Value::T])
+        );
     }
 
     #[test]
@@ -18292,13 +18296,25 @@ mod tests {
                 (list
                  (number-sequence 1 0)
                  (number-sequence 3 1)
-                 (number-sequence 3 1 -1))
+                 (number-sequence 3 1 -1)
+                 (number-sequence 7.5 5.5 -1)
+                 (number-sequence 1 3 0.5)
+                 (number-sequence 1 3.0 1))
                 "##,
             ),
             Value::list([
                 Value::Nil,
                 Value::Nil,
                 Value::list([Value::Integer(3), Value::Integer(2), Value::Integer(1)]),
+                Value::list([Value::Float(7.5), Value::Float(6.5), Value::Float(5.5)]),
+                Value::list([
+                    Value::Integer(1),
+                    Value::Float(1.5),
+                    Value::Float(2.0),
+                    Value::Float(2.5),
+                    Value::Float(3.0),
+                ]),
+                Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)]),
             ])
         );
     }
