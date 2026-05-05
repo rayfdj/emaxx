@@ -98,6 +98,15 @@ fn is_time_builtin(name: &str) -> bool {
             | "current-time"
             | "current-time-string"
             | "decode-time"
+            | "decoded-time-day"
+            | "decoded-time-dst"
+            | "decoded-time-hour"
+            | "decoded-time-minute"
+            | "decoded-time-month"
+            | "decoded-time-second"
+            | "decoded-time-weekday"
+            | "decoded-time-year"
+            | "decoded-time-zone"
             | "encode-time"
             | "float-time"
             | "format-time-string"
@@ -1489,6 +1498,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "split-string"
             | "string-split"
             | "string-width"
+            | "truncate-string-to-width"
+            | "char-width"
             | "format"
             | "format-message"
             | "format-spec"
@@ -2031,11 +2042,19 @@ pub fn is_builtin(name: &str) -> bool {
             | "selected-window"
             | "window-buffer"
             | "walk-windows"
+            | "window-combined-p"
+            | "window-dedicated-p"
+            | "window-splittable-p"
             | "selected-frame"
             | "frame-list"
             | "windowp"
             | "window-at"
             | "window-edges"
+            | "window-body-edges"
+            | "window-inside-edges"
+            | "window-pixel-edges"
+            | "window-body-pixel-edges"
+            | "window-inside-pixel-edges"
             | "posn-at-x-y"
             | "window-display-table"
             | "terminal-live-p"
@@ -2061,6 +2080,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "window-start"
             | "window-end"
             | "window-point"
+            | "window-vscroll"
             | "pos-visible-in-window-p"
             | "window-width"
             | "window-height"
@@ -2091,6 +2111,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "active-minibuffer-window"
             | "set-window-start"
             | "set-window-point"
+            | "set-window-vscroll"
             | "read-string"
             | "format-prompt"
             | "text-mode"
@@ -5256,6 +5277,99 @@ pub fn call(
                 }
             }
             Ok(Value::Integer(width as i64))
+        }
+        "char-width" => {
+            need_args(name, args, 1)?;
+            let codepoint = args[0].as_integer()?;
+            let ch = char::from_u32(codepoint as u32)
+                .ok_or_else(|| LispError::Signal(format!("Invalid character: {codepoint}")))?;
+            let width = if ch == '\t' {
+                interp
+                    .lookup_var("tab-width", &Vec::new())
+                    .and_then(|value| value.as_integer().ok())
+                    .unwrap_or(8)
+                    .max(1) as usize
+            } else {
+                ch.width().unwrap_or(0)
+            };
+            Ok(Value::Integer(width as i64))
+        }
+        "truncate-string-to-width" => {
+            need_arg_range(name, args, 2, 5)?;
+            let text = string_text(&args[0])?;
+            let end_column = args[1].as_integer()?.max(0) as usize;
+            let start_column = args
+                .get(2)
+                .filter(|value| !matches!(value, Value::Nil))
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(0)
+                .max(0) as usize;
+            let padding = args
+                .get(3)
+                .filter(|value| !matches!(value, Value::Nil))
+                .map(|value| {
+                    if matches!(value, Value::T) {
+                        Ok(' ')
+                    } else {
+                        let codepoint = value.as_integer()?;
+                        char::from_u32(codepoint as u32).ok_or_else(|| {
+                            LispError::Signal(format!("Invalid character: {codepoint}"))
+                        })
+                    }
+                })
+                .transpose()?;
+            let ellipsis = args
+                .get(4)
+                .filter(|value| !matches!(value, Value::Nil))
+                .map(string_text)
+                .transpose()?;
+
+            let mut result = String::new();
+            let mut column = 0usize;
+            let mut result_width = 0usize;
+            for ch in text.chars() {
+                let width = if ch == '\t' {
+                    interp
+                        .lookup_var("tab-width", &Vec::new())
+                        .and_then(|value| value.as_integer().ok())
+                        .unwrap_or(8)
+                        .max(1) as usize
+                } else {
+                    ch.width().unwrap_or(0)
+                };
+                let next_column = column + width;
+                if next_column <= start_column {
+                    column = next_column;
+                    continue;
+                }
+                if next_column > end_column {
+                    if let Some(ellipsis) = &ellipsis {
+                        let ellipsis_width = ellipsis
+                            .chars()
+                            .map(|ch| ch.width().unwrap_or(0))
+                            .sum::<usize>();
+                        if result_width + ellipsis_width <= end_column.saturating_sub(start_column)
+                        {
+                            result.push_str(ellipsis);
+                            result_width += ellipsis_width;
+                        }
+                    }
+                    break;
+                }
+                result.push(ch);
+                result_width += width;
+                column = next_column;
+            }
+            if let Some(padding) = padding {
+                let target_width = end_column.saturating_sub(start_column);
+                let pad_width = padding.width().unwrap_or(1).max(1);
+                while result_width + pad_width <= target_width {
+                    result.push(padding);
+                    result_width += pad_width;
+                }
+            }
+            Ok(Value::String(result))
         }
         "string" => {
             let mut result = String::new();
@@ -11578,6 +11692,10 @@ pub fn call(
             };
             Ok(Value::Integer(point as i64))
         }
+        "window-vscroll" => {
+            need_arg_range(name, args, 0, 2)?;
+            Ok(Value::Integer(0))
+        }
         "pos-visible-in-window-p" => {
             need_arg_range(name, args, 0, 3)?;
             let window = args.get(1).filter(|value| !value.is_nil());
@@ -11856,13 +11974,34 @@ pub fn call(
             need_arg_range(name, args, 2, 3)?;
             Ok(interp.selected_window_value())
         }
-        "window-edges" => {
-            need_arg_range(name, args, 1, 2)?;
+        "window-combined-p" => {
+            need_arg_range(name, args, 0, 2)?;
+            Ok(Value::Nil)
+        }
+        "window-dedicated-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Nil)
+        }
+        "window-splittable-p" => {
+            need_arg_range(name, args, 0, 2)?;
+            Ok(Value::Nil)
+        }
+        "window-edges" | "window-body-edges" | "window-inside-edges" => {
+            need_arg_range(name, args, 0, 4)?;
             Ok(Value::list([
                 Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(interp.frame_width()),
                 Value::Integer(interp.frame_height()),
+            ]))
+        }
+        "window-pixel-edges" | "window-body-pixel-edges" | "window-inside-pixel-edges" => {
+            need_arg_range(name, args, 0, 4)?;
+            Ok(Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(interp.frame_width() * 8),
+                Value::Integer(interp.frame_height() * 16),
             ]))
         }
         "posn-at-x-y" => {
@@ -12044,6 +12183,11 @@ pub fn call(
             Ok(Value::T)
         }
         "set-window-point" => Ok(Value::T),
+        "set-window-vscroll" => {
+            need_arg_range(name, args, 2, 4)?;
+            let _ = args[1].as_integer()?;
+            Ok(Value::Integer(0))
+        }
         "facemenu-add-face" => {
             need_args(name, args, 3)?;
             let face = args[0].clone();
@@ -30507,6 +30651,12 @@ fn decode_time_value(
     ]))
 }
 
+fn decoded_time_field(args: &[Value], index: usize, name: &str) -> Result<Value, LispError> {
+    need_args(name, args, 1)?;
+    let fields = args[0].to_vec()?;
+    Ok(fields.get(index).cloned().unwrap_or(Value::Nil))
+}
+
 fn decoded_seconds_value(interp: &Interpreter, value: &Value) -> Result<ExactTimeValue, LispError> {
     exact_time_from_value(
         interp,
@@ -30639,6 +30789,15 @@ fn call_time_builtin(
             let form = args.get(2).unwrap_or(&Value::Nil);
             decode_time_value(&time, &zone, form)
         }
+        "decoded-time-second" => decoded_time_field(args, 0, name),
+        "decoded-time-minute" => decoded_time_field(args, 1, name),
+        "decoded-time-hour" => decoded_time_field(args, 2, name),
+        "decoded-time-day" => decoded_time_field(args, 3, name),
+        "decoded-time-month" => decoded_time_field(args, 4, name),
+        "decoded-time-year" => decoded_time_field(args, 5, name),
+        "decoded-time-weekday" => decoded_time_field(args, 6, name),
+        "decoded-time-dst" => decoded_time_field(args, 7, name),
+        "decoded-time-zone" => decoded_time_field(args, 8, name),
         "encode-time" => {
             need_arg_range(name, args, 1, 9)?;
             let fields = if args.len() == 1 {

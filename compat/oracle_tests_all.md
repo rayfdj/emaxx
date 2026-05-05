@@ -20,6 +20,17 @@ Counts:
 - Source-tree literal `ert-deftest` forms: 6004
 - Files with oracle load errors under the 20-second per-file timeout: 9
 
+Canonical progress denominator and order:
+
+- Use `compat/oracle_tests_all.txt` as the only ordered compatibility manifest.
+- Count test selectors with:
+
+  ```sh
+  awk 'BEGIN{count=0; files=0} /^[^ ].*: discovered=/{files++; next} /^  /{count++} END{print "files", files; print "tests", count}' compat/oracle_tests_all.txt
+  ```
+
+- The expected result is `files 510` and `tests 7080`.
+
 The harness-selected count is the compatibility ordering source. It is not the
 same thing as the literal `ert-deftest` source count because Emacs test files can
 generate tests while loading, and the harness applies ERT selection after load.
