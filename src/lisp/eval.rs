@@ -15879,6 +15879,23 @@ mod tests {
     }
 
     #[test]
+    fn bury_buffer_moves_buffer_to_end_and_selects_next_buffer() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let ((first (current-buffer))
+                         (second (get-buffer-create " *bury-second*")))
+                     (switch-to-buffer second)
+                     (bury-buffer)
+                     (list (eq (current-buffer) first)
+                           (eq (car (last (buffer-list))) second)))"#
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
     fn scroll_up_moves_point_with_window_when_point_would_scroll_off_top() {
         let mut interp = Interpreter::new();
         assert_eq!(
