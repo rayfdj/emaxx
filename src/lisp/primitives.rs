@@ -1566,6 +1566,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "beginning-of-line"
             | "end-of-line"
             | "forward-line"
+            | "vertical-motion"
             | "count-lines"
             | "search-forward"
             | "search-backward"
@@ -2060,7 +2061,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "window-start"
             | "window-end"
             | "window-point"
+            | "pos-visible-in-window-p"
             | "window-width"
+            | "window-height"
             | "move-to-window-line"
             | "recenter"
             | "scroll-up"
@@ -6436,6 +6439,12 @@ pub fn call(
                 n,
             )))
         }
+        "vertical-motion" => {
+            need_arg_range(name, args, 1, 3)?;
+            let n = integer_like_bigint(interp, &args[0])?;
+            let remaining = forward_line_bigint(&mut interp.buffer, n.clone());
+            Ok(normalize_bigint_value(n - remaining))
+        }
         "search-forward" | "search-backward" => {
             if args.is_empty() || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -9870,7 +9879,11 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let target = string_text(&args[0])?;
+            let noerror = args.get(1).is_some_and(Value::is_truthy);
             let Some(path) = resolve_load_target_in_env(interp, &target, env) else {
+                if noerror {
+                    return Ok(Value::Nil);
+                }
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("file-missing".into()),
                     Value::String("Cannot open load file".into()),
@@ -11561,7 +11574,36 @@ pub fn call(
             };
             Ok(Value::Integer(point as i64))
         }
-        "window-width" => Ok(Value::Integer(interp.frame_width())),
+        "pos-visible-in-window-p" => {
+            need_arg_range(name, args, 0, 3)?;
+            let window = args.get(1).filter(|value| !value.is_nil());
+            let buffer_id = if let Some(window) = window {
+                window_buffer_id(interp, window)
+                    .ok_or_else(|| LispError::TypeError("window".into(), window.type_name()))?
+            } else {
+                interp.selected_window_buffer_id()
+            };
+            let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
+            let pos = match args.first() {
+                None | Some(Value::Nil) => interp.buffer.point(),
+                Some(Value::T) => point_max,
+                Some(value) => position_from_value(interp, value)?,
+            };
+            let start = window_start(interp, window)?;
+            Ok(if pos >= start.max(point_min) && pos <= point_max {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "window-width" => {
+            need_arg_range(name, args, 0, 2)?;
+            Ok(Value::Integer(interp.frame_width()))
+        }
+        "window-height" => {
+            need_arg_range(name, args, 0, 2)?;
+            Ok(Value::Integer(interp.frame_height()))
+        }
         "move-to-window-line" => {
             need_arg_range(name, args, 0, 1)?;
             let line = resolve_window_line(args.first(), DEFAULT_SELECTED_WINDOW_HEIGHT / 2)?;
