@@ -1094,6 +1094,10 @@ impl Interpreter {
         interp.mark_auto_buffer_local("major-mode");
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
         interp.mark_auto_buffer_local("mode-name");
+        interp.set_global_binding(
+            "mode-line-buffer-identification",
+            Value::list([Value::String("%12b".into())]),
+        );
         let glyphless_char_display =
             interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
         interp.set_global_binding("glyphless-char-display", glyphless_char_display);
@@ -1103,6 +1107,7 @@ impl Interpreter {
         interp.set_global_binding("this-command", Value::Nil);
         interp.set_global_binding("last-command", Value::Nil);
         interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
+        interp.set_global_binding("max-lisp-eval-depth", Value::Integer(1600));
         interp.put_symbol_property(
             "tab-bar-new-tab-choice",
             "custom-type",
@@ -17352,6 +17357,29 @@ mod tests {
     }
 
     #[test]
+    fn load_noerror_suppresses_missing_file_signal() {
+        let mut interp = Interpreter::new();
+        let missing = std::env::temp_dir().join(format!(
+            "emaxx-missing-load-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let expr = format!(r#"(load "{}" t)"#, missing.display());
+        assert_eq!(eval_str_with(&mut interp, &expr), Value::Nil);
+
+        let mut env = Env::new();
+        let strict_expr = format!(r#"(load "{}")"#, missing.display());
+        let form = Reader::new(&strict_expr)
+            .read_all()
+            .expect("read load")
+            .remove(0);
+        let error = interp.eval(&form, &mut env).unwrap_err();
+        assert_eq!(error.condition_type(), "file-missing");
+    }
+
+    #[test]
     fn autoload_registers_a_lazy_function_stub() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -18905,6 +18933,35 @@ mod tests {
     }
 
     #[test]
+    fn window_height_tracks_runtime_frame_height() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (set-frame-height nil 40)
+                  (list (window-height) (window-height (selected-window) 'floor)))
+                "#,
+            ),
+            Value::list([Value::Integer(40), Value::Integer(40)])
+        );
+    }
+
+    #[test]
+    fn mode_line_buffer_identification_is_bound() {
+        assert_eq!(
+            eval_str(
+                "(and (boundp 'mode-line-buffer-identification) (listp mode-line-buffer-identification))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn max_lisp_eval_depth_matches_emacs_default() {
+        assert_eq!(eval_str("max-lisp-eval-depth"), Value::Integer(1600));
+    }
+
+    #[test]
     fn terminal_parameter_places_support_setf() {
         assert_eq!(
             eval_str(
@@ -20148,6 +20205,50 @@ mod tests {
                 "#
             ),
             Value::list([Value::Integer(3), Value::T])
+        );
+    }
+
+    #[test]
+    fn vertical_motion_moves_by_lines_and_reports_actual_motion() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (insert "a\nb\nc\n")
+                  (goto-char (point-min))
+                  (list (vertical-motion 2)
+                        (line-number-at-pos)
+                        (vertical-motion 5)
+                        (line-number-at-pos)
+                        (vertical-motion -1)
+                        (line-number-at-pos)))
+                "#
+            ),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(1),
+                Value::Integer(4),
+                Value::Integer(-1),
+                Value::Integer(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn pos_visible_in_window_p_checks_selected_window_range() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (insert "a\nb\nc\n")
+                  (set-window-start (selected-window) 3)
+                  (list (pos-visible-in-window-p 1)
+                        (pos-visible-in-window-p 3)
+                        (pos-visible-in-window-p (point-max) (selected-window))))
+                "#
+            ),
+            Value::list([Value::Nil, Value::T, Value::T])
         );
     }
 
