@@ -30074,6 +30074,25 @@ struct ExactTimeValue {
 struct ZoneSpec {
     offset_seconds: i32,
     abbreviation: String,
+    is_dst: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PosixTransitionRule {
+    month: u32,
+    week: u32,
+    weekday: u32,
+    seconds: u32,
+}
+
+#[derive(Clone, Debug)]
+struct PosixTimeZone {
+    std_abbr: String,
+    std_offset: i32,
+    dst_abbr: String,
+    dst_offset: i32,
+    start: PosixTransitionRule,
+    end: PosixTransitionRule,
 }
 
 fn exact_time_value(ticks: BigInt, hz: BigInt) -> Result<ExactTimeValue, LispError> {
@@ -30289,6 +30308,12 @@ fn exact_time_less(left: &ExactTimeValue, right: &ExactTimeValue) -> bool {
 }
 
 fn local_zone_spec(time: Option<&ExactTimeValue>) -> ZoneSpec {
+    if let Ok(tz) = std::env::var("TZ")
+        && let Some(posix) = parse_posix_tz(&tz)
+        && let Some(time) = time
+    {
+        return posix.zone_for_instant(time);
+    }
     let offset_seconds = time
         .and_then(|value| {
             let (whole_seconds, _) = time_floor_parts(value);
@@ -30300,7 +30325,24 @@ fn local_zone_spec(time: Option<&ExactTimeValue>) -> ZoneSpec {
     ZoneSpec {
         offset_seconds,
         abbreviation: format_numeric_zone_name(offset_seconds),
+        is_dst: false,
     }
+}
+
+fn local_zone_spec_for_civil(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> ZoneSpec {
+    if let Ok(tz) = std::env::var("TZ")
+        && let Some(posix) = parse_posix_tz(&tz)
+    {
+        return posix.zone_for_civil(year, month, day, hour, minute, second);
+    }
+    local_zone_spec(None)
 }
 
 fn format_numeric_zone_name(offset_seconds: i32) -> String {
@@ -30332,6 +30374,7 @@ fn parse_posix_zone_string(value: &str) -> Option<ZoneSpec> {
         return Some(ZoneSpec {
             offset_seconds: 0,
             abbreviation,
+            is_dst: false,
         });
     }
     let (sign, digits) = match rest.chars().next() {
@@ -30355,7 +30398,188 @@ fn parse_posix_zone_string(value: &str) -> Option<ZoneSpec> {
     Some(ZoneSpec {
         offset_seconds,
         abbreviation,
+        is_dst: false,
     })
+}
+
+fn parse_posix_abbr(input: &str) -> Option<(&str, &str)> {
+    let end = input
+        .char_indices()
+        .find_map(|(index, ch)| (!ch.is_ascii_alphabetic()).then_some(index))
+        .unwrap_or(input.len());
+    (end > 0).then_some((&input[..end], &input[end..]))
+}
+
+fn parse_posix_offset(input: &str) -> Option<(i32, &str)> {
+    let sign_len = usize::from(matches!(input.as_bytes().first(), Some(b'+') | Some(b'-')));
+    let digit_end = input[sign_len..]
+        .char_indices()
+        .find_map(|(index, ch)| (!ch.is_ascii_digit() && ch != ':').then_some(sign_len + index))
+        .unwrap_or(input.len());
+    if digit_end == sign_len {
+        return None;
+    }
+    let raw = &input[..digit_end];
+    let (sign, digits) = match raw.chars().next() {
+        Some('+') => (1, &raw[1..]),
+        Some('-') => (-1, &raw[1..]),
+        _ => (1, raw),
+    };
+    let mut parts = digits.split(':');
+    let hours = parts.next()?.parse::<i32>().ok()?;
+    let minutes = parts
+        .next()
+        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
+    let seconds = parts
+        .next()
+        .map_or(Some(0), |part| part.parse::<i32>().ok())?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let magnitude = hours * 3600 + minutes * 60 + seconds;
+    Some((-sign * magnitude, &input[digit_end..]))
+}
+
+fn parse_posix_rule(input: &str) -> Option<PosixTransitionRule> {
+    let input = input.strip_prefix('M')?;
+    let mut parts = input.splitn(2, '/');
+    let date = parts.next()?;
+    let seconds = parts
+        .next()
+        .and_then(parse_posix_offset)
+        .and_then(|(offset, rest)| rest.is_empty().then_some(offset.unsigned_abs()))
+        .unwrap_or(2 * 3600);
+    let mut date_parts = date.split('.');
+    let month = date_parts.next()?.parse::<u32>().ok()?;
+    let week = date_parts.next()?.parse::<u32>().ok()?;
+    let weekday = date_parts.next()?.parse::<u32>().ok()?;
+    if date_parts.next().is_some()
+        || !(1..=12).contains(&month)
+        || !(1..=5).contains(&week)
+        || weekday > 6
+        || seconds >= 24 * 3600
+    {
+        return None;
+    }
+    Some(PosixTransitionRule {
+        month,
+        week,
+        weekday,
+        seconds,
+    })
+}
+
+fn parse_posix_tz(value: &str) -> Option<PosixTimeZone> {
+    let (std_abbr, rest) = parse_posix_abbr(value)?;
+    let (std_offset, rest) = parse_posix_offset(rest)?;
+    let (dst_abbr, rest) = parse_posix_abbr(rest)?;
+    let (dst_offset, rest) = if let Some((offset, rest)) = parse_posix_offset(rest) {
+        (offset, rest)
+    } else {
+        (std_offset + 3600, rest)
+    };
+    let rest = rest.strip_prefix(',')?;
+    let (start, end) = rest.split_once(',')?;
+    Some(PosixTimeZone {
+        std_abbr: std_abbr.to_string(),
+        std_offset,
+        dst_abbr: dst_abbr.to_string(),
+        dst_offset,
+        start: parse_posix_rule(start)?,
+        end: parse_posix_rule(end)?,
+    })
+}
+
+fn transition_date(year: i32, rule: &PosixTransitionRule) -> Option<chrono::NaiveDate> {
+    let first = chrono::NaiveDate::from_ymd_opt(year, rule.month, 1)?;
+    let first_weekday = first.weekday().num_days_from_sunday();
+    let delta = (rule.weekday + 7 - first_weekday) % 7;
+    let day = if rule.week < 5 {
+        1 + delta + 7 * (rule.week - 1)
+    } else {
+        let (next_year, next_month) = if rule.month == 12 {
+            (year + 1, 1)
+        } else {
+            (year, rule.month + 1)
+        };
+        let next_month_first = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)?;
+        let last = next_month_first.pred_opt()?;
+        let last_weekday = last.weekday().num_days_from_sunday();
+        last.day() - ((last_weekday + 7 - rule.weekday) % 7)
+    };
+    chrono::NaiveDate::from_ymd_opt(year, rule.month, day)
+}
+
+fn transition_utc_timestamp(
+    year: i32,
+    rule: &PosixTransitionRule,
+    offset_before: i32,
+) -> Option<i64> {
+    let date = transition_date(year, rule)?;
+    let local = date.and_hms_opt(
+        rule.seconds / 3600,
+        (rule.seconds % 3600) / 60,
+        rule.seconds % 60,
+    )?;
+    Some(local.and_utc().timestamp() - i64::from(offset_before))
+}
+
+impl PosixTimeZone {
+    fn zone_for_instant(&self, time: &ExactTimeValue) -> ZoneSpec {
+        let (whole_seconds, _) = time_floor_parts(time);
+        let seconds = whole_seconds.to_i64().unwrap_or(0);
+        let utc = Utc
+            .timestamp_opt(seconds, 0)
+            .single()
+            .unwrap_or_else(Utc::now);
+        let year = utc.year();
+        let start = transition_utc_timestamp(year, &self.start, self.std_offset);
+        let end = transition_utc_timestamp(year, &self.end, self.dst_offset);
+        let is_dst = match (start, end) {
+            (Some(start), Some(end)) if start <= end => seconds >= start && seconds < end,
+            (Some(start), Some(end)) => seconds >= start || seconds < end,
+            _ => false,
+        };
+        self.zone(is_dst)
+    }
+
+    fn zone_for_civil(
+        &self,
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> ZoneSpec {
+        let Some(local) = chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .and_then(|date| date.and_hms_opt(hour, minute, second))
+        else {
+            return self.zone(false);
+        };
+        let std_seconds = local.and_utc().timestamp() - i64::from(self.std_offset);
+        let time = ExactTimeValue {
+            ticks: BigInt::from(std_seconds),
+            hz: BigInt::from(1u8),
+        };
+        self.zone_for_instant(&time)
+    }
+
+    fn zone(&self, is_dst: bool) -> ZoneSpec {
+        if is_dst {
+            ZoneSpec {
+                offset_seconds: self.dst_offset,
+                abbreviation: self.dst_abbr.clone(),
+                is_dst: true,
+            }
+        } else {
+            ZoneSpec {
+                offset_seconds: self.std_offset,
+                abbreviation: self.std_abbr.clone(),
+                is_dst: false,
+            }
+        }
+    }
 }
 
 fn zone_spec_from_value(
@@ -30367,10 +30591,12 @@ fn zone_spec_from_value(
         Value::T => Ok(ZoneSpec {
             offset_seconds: 0,
             abbreviation: "UTC".into(),
+            is_dst: false,
         }),
         Value::Integer(value) => Ok(ZoneSpec {
             offset_seconds: *value as i32,
             abbreviation: format_numeric_zone_name(*value as i32),
+            is_dst: false,
         }),
         Value::BigInteger(value) => {
             let offset = value
@@ -30379,12 +30605,14 @@ fn zone_spec_from_value(
             Ok(ZoneSpec {
                 offset_seconds: offset,
                 abbreviation: format_numeric_zone_name(offset),
+                is_dst: false,
             })
         }
         _ if zone.is_string() => Ok(parse_posix_zone_string(&string_text(zone)?).unwrap_or(
             ZoneSpec {
                 offset_seconds: 0,
                 abbreviation: "UTC".into(),
+                is_dst: false,
             },
         )),
         Value::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(time)),
@@ -30407,6 +30635,7 @@ fn zone_spec_from_value(
             Ok(ZoneSpec {
                 offset_seconds: offset,
                 abbreviation,
+                is_dst: false,
             })
         }
         _ => Err(LispError::TypeError("time-zone".into(), zone.type_name())),
@@ -30665,7 +30894,7 @@ fn decode_time_value(
         Value::Integer(datetime.month() as i64),
         Value::Integer(datetime.year() as i64),
         Value::Integer(datetime.weekday().num_days_from_sunday() as i64),
-        Value::Nil,
+        if zone.is_dst { Value::T } else { Value::Nil },
         Value::Integer(zone.offset_seconds as i64),
     ]))
 }
@@ -30840,17 +31069,24 @@ fn call_time_builtin(
             let day = integer_field(interp, &fields[3])?;
             let month = integer_field(interp, &fields[4])?;
             let year = integer_field(interp, &fields[5])?;
-            let zone = if value_is_unspecified(fields.get(8)) {
-                local_zone_spec(None)
-            } else {
-                zone_spec_from_value(fields.get(8).unwrap_or(&Value::Nil), None)?
-            };
-            let offset = zone_offset(&zone)?;
             let date = chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32)
                 .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
             let time = date
                 .and_hms_opt(hour as u32, minute as u32, second as u32)
                 .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+            let zone = if value_is_unspecified(fields.get(8)) {
+                local_zone_spec_for_civil(
+                    year,
+                    month as u32,
+                    day as u32,
+                    hour as u32,
+                    minute as u32,
+                    second as u32,
+                )
+            } else {
+                zone_spec_from_value(fields.get(8).unwrap_or(&Value::Nil), None)?
+            };
+            let offset = zone_offset(&zone)?;
             let local = offset
                 .from_local_datetime(&time)
                 .single()

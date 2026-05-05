@@ -17554,6 +17554,66 @@ mod tests {
     }
 
     #[test]
+    fn posix_tz_environment_drives_local_encode_and_decode_time() {
+        let previous_tz = std::env::var("TZ").ok();
+        unsafe {
+            std::env::set_var("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4");
+        }
+        let result = eval_str(
+            r#"(list (decode-time (encode-time '(0 0 10 1 1 2013 nil -1 nil)) nil 'integer)
+                     (decode-time (encode-time '(0 0 10 1 8 2013 nil -1 nil)) nil 'integer)
+                     (decode-time (encode-time '(0 0 10 1 1 2013 nil -1 t)) nil 'integer))"#,
+        );
+        if let Some(value) = previous_tz {
+            unsafe {
+                std::env::set_var("TZ", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("TZ");
+            }
+        }
+        assert_eq!(
+            result,
+            Value::list([
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(10),
+                    Value::Integer(1),
+                    Value::Integer(1),
+                    Value::Integer(2013),
+                    Value::Integer(2),
+                    Value::Nil,
+                    Value::Integer(7200),
+                ]),
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(10),
+                    Value::Integer(1),
+                    Value::Integer(8),
+                    Value::Integer(2013),
+                    Value::Integer(4),
+                    Value::T,
+                    Value::Integer(10800),
+                ]),
+                Value::list([
+                    Value::Integer(0),
+                    Value::Integer(0),
+                    Value::Integer(12),
+                    Value::Integer(1),
+                    Value::Integer(1),
+                    Value::Integer(2013),
+                    Value::Integer(2),
+                    Value::Nil,
+                    Value::Integer(7200),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
     fn char_width_matches_string_width_for_single_characters() {
         assert_eq!(
             eval_str(
