@@ -2258,6 +2258,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "global-unset-key"
             | "local-unset-key"
             | "substitute-key-definition"
+            | "easy-menu-binding"
             | "easy-menu-add-item"
             | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
@@ -13312,6 +13313,17 @@ pub fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             Ok(args[2].clone())
+        }
+        "easy-menu-binding" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let item_name = args.get(1).cloned().unwrap_or(Value::Nil);
+            Ok(Value::list([
+                Value::Symbol("menu-item".into()),
+                item_name,
+                args[0].clone(),
+            ]))
         }
         "easy-menu-add-item" => {
             if args.len() < 3 || args.len() > 4 {
