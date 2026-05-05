@@ -2284,6 +2284,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
             | "custom-add-choice"
+            | "custom-add-option"
             | "define-widget"
             | "widget-create"
             | "define-button-type"
@@ -13510,6 +13511,24 @@ pub fn call(
                 interp.put_symbol_property(variable, "custom-type", Value::list(entries));
             }
             Ok(Value::Nil)
+        }
+        "custom-add-option" => {
+            need_args(name, args, 2)?;
+            let variable = args[0].as_symbol()?;
+            let option = args[1].clone();
+            let existing = interp
+                .get_symbol_property(variable, "custom-options")
+                .unwrap_or(Value::Nil);
+            let mut options = existing.to_vec()?;
+            if !options
+                .iter()
+                .any(|existing| values_equal(interp, existing, &option))
+            {
+                options.push(option);
+            }
+            let updated = Value::list(options);
+            interp.put_symbol_property(variable, "custom-options", updated.clone());
+            Ok(updated)
         }
         "define-widget" => {
             if args.len() < 3 {
