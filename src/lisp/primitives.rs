@@ -3588,7 +3588,10 @@ pub fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(
-                if interp.lookup_function(symbol, env).is_ok() || is_builtin(symbol) {
+                if interp.lookup_function(symbol, env).is_ok()
+                    || is_builtin(symbol)
+                    || is_special_form_name(symbol)
+                {
                     Value::T
                 } else {
                     Value::Nil
@@ -13457,7 +13460,7 @@ pub fn call(
             let symbol = args[0].as_symbol()?;
             Ok(match interp.raw_function_binding(symbol, env) {
                 Some(value) => value,
-                None if matches!(symbol, "if" | "progn") => Value::BuiltinFunc(symbol.to_string()),
+                None if is_special_form_name(symbol) => Value::BuiltinFunc(symbol.to_string()),
                 None if symbol == "benchmark-run" => Value::list([
                     Value::Symbol("autoload".into()),
                     Value::String("benchmark.el".into()),
@@ -18093,7 +18096,7 @@ fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'static str, Lis
         Value::Symbol(_) => "symbol",
         Value::Cons(_, _) if is_vector_value(value) => "vector",
         Value::Cons(_, _) => "cons",
-        Value::BuiltinFunc(name) if matches!(name.as_str(), "if" | "progn") => "special-form",
+        Value::BuiltinFunc(name) if is_special_form_name(name) => "special-form",
         Value::BuiltinFunc(_) => "primitive-function",
         Value::Lambda(_, _, _) => "interpreted-function",
         Value::Buffer(_, _) => "buffer",
@@ -29332,8 +29335,162 @@ fn special_form_arity_value(name: &str) -> Option<Value> {
             Value::Integer(0),
             Value::Symbol("unevalled".into()),
         )),
+        "setq" => Some(Value::cons(
+            Value::Integer(0),
+            Value::Symbol("unevalled".into()),
+        )),
         _ => None,
     }
+}
+
+fn is_special_form_name(name: &str) -> bool {
+    matches!(
+        name,
+        "quote"
+            | "if"
+            | "static-if"
+            | "if-let"
+            | "if-let*"
+            | "when"
+            | "static-when"
+            | "when-let"
+            | "when-let*"
+            | "unless"
+            | "static-unless"
+            | "bound-and-true-p"
+            | "cond"
+            | "pcase"
+            | "pcase-defmacro"
+            | "pcase-exhaustive"
+            | "and-let*"
+            | "and"
+            | "or"
+            | "not"
+            | "progn"
+            | "prog1"
+            | "let"
+            | "let*"
+            | "cl-progv"
+            | "pcase-let"
+            | "pcase-let*"
+            | "let-alist"
+            | "setq"
+            | "setq-default"
+            | "setq-local"
+            | "setopt"
+            | "setf"
+            | "incf"
+            | "cl-incf"
+            | "decf"
+            | "cl-decf"
+            | "setcar"
+            | "defvar"
+            | "defconst"
+            | "defcustom"
+            | "defvar-local"
+            | "defgroup"
+            | "defface"
+            | "defvar-keymap"
+            | "define-short-documentation-group"
+            | "eval"
+            | "define-minor-mode"
+            | "define-globalized-minor-mode"
+            | "define-derived-mode"
+            | "defclass"
+            | "defun"
+            | "defsubst"
+            | "cl-defun"
+            | "cl-defmacro"
+            | "cl-generic-define-generalizer"
+            | "cl-defgeneric"
+            | "cl-defmethod"
+            | "cl-generic-define-context-rewriter"
+            | "oclosure-define"
+            | "oclosure-lambda"
+            | "define-inline"
+            | "defmacro"
+            | "with-memoization"
+            | "easy-menu-define"
+            | "cl-defstruct"
+            | "defalias"
+            | "backquote"
+            | "lambda"
+            | "call-interactively"
+            | "function"
+            | "function-quote"
+            | "while"
+            | "dolist"
+            | "pcase-dolist"
+            | "dotimes"
+            | "cl-loop"
+            | "unwind-protect"
+            | "ignore-error"
+            | "ignore-errors"
+            | "condition-case"
+            | "condition-case-unless-debug"
+            | "handler-bind"
+            | "cl-assert"
+            | "with-temp-buffer"
+            | "ert-with-test-buffer"
+            | "ert-with-temp-directory"
+            | "ert-with-message-capture"
+            | "with-environment-variables"
+            | "with-output-to-string"
+            | "with-mutex"
+            | "with-temp-file"
+            | "ert-with-temp-file"
+            | "with-current-buffer"
+            | "with-restriction"
+            | "without-restriction"
+            | "add-function"
+            | "with-selected-window"
+            | "save-match-data"
+            | "save-excursion"
+            | "save-window-excursion"
+            | "save-current-buffer"
+            | "save-restriction"
+            | "with-suppressed-warnings"
+            | "with-demoted-errors"
+            | "with-coding-priority"
+            | "with-silent-modifications"
+            | "combine-change-calls"
+            | "cl-destructuring-bind"
+            | "cl-letf"
+            | "aset"
+            | "cl-flet"
+            | "cl-labels"
+            | "cl-macrolet"
+            | "push"
+            | "cl-pushnew"
+            | "pop"
+            | "catch"
+            | "add-to-list"
+            | "ert-deftest"
+            | "should"
+            | "should-not"
+            | "should-error"
+            | "skip-unless"
+            | "ert--skip-unless"
+            | "skip-when"
+            | "ert--skip-when"
+            | "rx"
+            | "rx-define"
+            | "require"
+            | "provide"
+            | "with-eval-after-load"
+            | "with-no-warnings"
+            | "declare"
+            | "declare-function"
+            | "cl-declaim"
+            | "declaim"
+            | "cl-deftype"
+            | "def-edebug-elem-spec"
+            | "def-edebug-spec"
+            | "eval-and-compile"
+            | "eval-when-compile"
+            | "ert-info"
+            | "minibuffer-with-setup-hook"
+    )
 }
 
 fn lambda_arity_value(params: &[String]) -> Value {
