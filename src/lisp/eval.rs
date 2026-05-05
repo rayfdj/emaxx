@@ -19259,10 +19259,11 @@ mod tests {
                 (let ((map (make-sparse-keymap "demo")))
                   (easy-menu-define demo-menu map "Demo menu" '("Demo" ["Item" ignore t]))
                   (list (keymapp demo-menu)
-                        (fboundp 'demo-menu)))
+                        (fboundp 'demo-menu)
+                        (car (easy-menu-binding demo-menu "Demo"))))
                 "#,
             ),
-            Value::list([Value::T, Value::T])
+            Value::list([Value::T, Value::T, Value::Symbol("menu-item".into()),])
         );
     }
 
