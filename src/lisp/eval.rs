@@ -15232,6 +15232,10 @@ mod tests {
             eval_str(r#"(string-to-number "ffzz" 16)"#),
             Value::Integer(255)
         );
+        assert_eq!(
+            eval_str(r#"(int-to-string 12345)"#),
+            Value::String("12345".into())
+        );
         assert_string_value(
             eval_str(r#"(replace-regexp-in-string "\\([a-z]+\\)" "<\\1>" "abc 123")"#),
             "<abc> 123",
