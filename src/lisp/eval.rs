@@ -13450,184 +13450,226 @@ fn pcase_pattern_bindings_with_mode(
     bindings: &mut Vec<(String, Value)>,
     lenient_list_match: bool,
 ) -> Result<bool, LispError> {
-    if matches!(pattern, Value::Symbol(name) if name == "_") {
+    pcase_pattern_bindings_inner(
+        interp,
+        env,
+        pattern,
+        value,
+        bindings,
+        lenient_list_match,
+        false,
+    )
+}
+
+fn pcase_pattern_bindings_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pattern: &Value,
+    value: &Value,
+    bindings: &mut Vec<(String, Value)>,
+    lenient_list_match: bool,
+    backquoted: bool,
+) -> Result<bool, LispError> {
+    if !backquoted && matches!(pattern, Value::Symbol(name) if name == "_") {
         return Ok(true);
     }
     if let Value::Symbol(name) = pattern
         && name != "nil"
         && name != "t"
     {
+        if backquoted {
+            return Ok(pattern == value);
+        }
         bindings.push((name.clone(), value.clone()));
         return Ok(true);
     }
     if let Ok(parts) = pattern.to_vec() {
         if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
-            return pcase_pattern_bindings_with_mode(
+            return pcase_pattern_bindings_inner(
                 interp,
                 env,
                 parts.get(1).unwrap_or(&Value::Nil),
                 value,
                 bindings,
                 lenient_list_match,
+                true,
             );
         }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "or") {
-            let original = bindings.clone();
-            for candidate in &parts[1..] {
-                let mut trial = original.clone();
-                if pcase_pattern_bindings_with_mode(
-                    interp,
-                    env,
-                    candidate,
-                    value,
-                    &mut trial,
-                    lenient_list_match,
-                )? {
-                    *bindings = trial;
-                    return Ok(true);
-                }
+        if backquoted {
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
+                && let Some(Value::Symbol(name)) = parts.get(1)
+            {
+                bindings.push((name.clone(), value.clone()));
+                return Ok(true);
             }
-            *bindings = original;
-            return Ok(false);
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "and") {
-            let start = bindings.len();
-            for candidate in &parts[1..] {
-                if !pcase_pattern_bindings_with_mode(
-                    interp,
-                    env,
-                    candidate,
-                    value,
-                    bindings,
-                    lenient_list_match,
-                )? {
-                    bindings.truncate(start);
-                    return Ok(false);
-                }
-            }
-            return Ok(true);
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "let") && parts.len() >= 3 {
-            env.push(bindings.clone());
-            let evaluated = interp.eval(&parts[2], env);
-            env.pop();
-            return pcase_pattern_bindings_with_mode(
-                interp,
-                env,
-                &parts[1],
-                &evaluated?,
-                bindings,
-                lenient_list_match,
-            );
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "guard") && parts.len() >= 2
-        {
-            env.push(bindings.clone());
-            let guard = interp.eval(&parts[1], env);
-            env.pop();
-            return Ok(guard?.is_truthy());
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "pred") && parts.len() >= 2
-        {
-            let (negated, predicate_form) = if let Ok(predicate_parts) = parts[1].to_vec() {
-                if matches!(predicate_parts.first(), Some(Value::Symbol(name)) if name == "not")
-                    && predicate_parts.len() >= 2
-                {
-                    (true, predicate_parts[1].clone())
-                } else {
-                    (false, parts[1].clone())
-                }
-            } else {
-                (false, parts[1].clone())
-            };
-            let predicate = pcase_predicate_function(interp, env, &predicate_form)?;
-            let matches = crate::lisp::primitives::call_function_value(
-                interp,
-                &predicate,
-                std::slice::from_ref(value),
-                env,
-            )?
-            .is_truthy();
-            return Ok(if negated { !matches } else { matches });
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "cl-struct")
-            && parts.len() >= 2
-        {
-            let Some(type_name) = parts.get(1).and_then(|value| value.as_symbol().ok()) else {
-                return Ok(false);
-            };
-            let Value::Record(record_id) = value else {
-                return Ok(false);
-            };
-            let Some(record) = interp.find_record(*record_id) else {
-                return Ok(false);
-            };
-            if record.type_name != type_name {
-                return Ok(false);
-            }
-            let slots = record.slots.clone();
-            let slot_names = interp
-                .get_symbol_property(type_name, "emaxx-struct-slots")
-                .and_then(|value| value.to_vec().ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|value| value.as_symbol().ok().map(str::to_string))
-                .collect::<Vec<_>>();
-            let start = bindings.len();
-            for slot_pattern in &parts[2..] {
-                let (slot_name, nested_pattern) = match slot_pattern {
-                    Value::Symbol(name) => (name.clone(), slot_pattern.clone()),
-                    Value::Cons(_, _) => {
-                        let Ok(slot_parts) = slot_pattern.to_vec() else {
-                            bindings.truncate(start);
-                            return Ok(false);
-                        };
-                        let Some(slot_name) =
-                            slot_parts.first().and_then(|value| value.as_symbol().ok())
-                        else {
-                            bindings.truncate(start);
-                            return Ok(false);
-                        };
-                        (
-                            slot_name.to_string(),
-                            slot_parts
-                                .get(1)
-                                .cloned()
-                                .unwrap_or_else(|| slot_pattern.clone()),
-                        )
+        } else {
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "or") {
+                let original = bindings.clone();
+                for candidate in &parts[1..] {
+                    let mut trial = original.clone();
+                    if pcase_pattern_bindings_inner(
+                        interp,
+                        env,
+                        candidate,
+                        value,
+                        &mut trial,
+                        lenient_list_match,
+                        backquoted,
+                    )? {
+                        *bindings = trial;
+                        return Ok(true);
                     }
-                    _ => {
+                }
+                *bindings = original;
+                return Ok(false);
+            }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "and") {
+                let start = bindings.len();
+                for candidate in &parts[1..] {
+                    if !pcase_pattern_bindings_inner(
+                        interp,
+                        env,
+                        candidate,
+                        value,
+                        bindings,
+                        lenient_list_match,
+                        backquoted,
+                    )? {
                         bindings.truncate(start);
                         return Ok(false);
                     }
-                };
-                let Some(slot_index) = slot_names.iter().position(|name| name == &slot_name) else {
-                    bindings.truncate(start);
-                    return Ok(false);
-                };
-                let slot_value = slots.get(slot_index).cloned().unwrap_or(Value::Nil);
-                if !pcase_pattern_bindings_with_mode(
+                }
+                return Ok(true);
+            }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "let")
+                && parts.len() >= 3
+            {
+                env.push(bindings.clone());
+                let evaluated = interp.eval(&parts[2], env);
+                env.pop();
+                return pcase_pattern_bindings_inner(
                     interp,
                     env,
-                    &nested_pattern,
-                    &slot_value,
+                    &parts[1],
+                    &evaluated?,
                     bindings,
                     lenient_list_match,
-                )? {
-                    bindings.truncate(start);
+                    backquoted,
+                );
+            }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "guard")
+                && parts.len() >= 2
+            {
+                env.push(bindings.clone());
+                let guard = interp.eval(&parts[1], env);
+                env.pop();
+                return Ok(guard?.is_truthy());
+            }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "pred")
+                && parts.len() >= 2
+            {
+                let (negated, predicate_form) = if let Ok(predicate_parts) = parts[1].to_vec() {
+                    if matches!(predicate_parts.first(), Some(Value::Symbol(name)) if name == "not")
+                        && predicate_parts.len() >= 2
+                    {
+                        (true, predicate_parts[1].clone())
+                    } else {
+                        (false, parts[1].clone())
+                    }
+                } else {
+                    (false, parts[1].clone())
+                };
+                let predicate = pcase_predicate_function(interp, env, &predicate_form)?;
+                let matches = crate::lisp::primitives::call_function_value(
+                    interp,
+                    &predicate,
+                    std::slice::from_ref(value),
+                    env,
+                )?
+                .is_truthy();
+                return Ok(if negated { !matches } else { matches });
+            }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "cl-struct")
+                && parts.len() >= 2
+            {
+                let Some(type_name) = parts.get(1).and_then(|value| value.as_symbol().ok()) else {
+                    return Ok(false);
+                };
+                let Value::Record(record_id) = value else {
+                    return Ok(false);
+                };
+                let Some(record) = interp.find_record(*record_id) else {
+                    return Ok(false);
+                };
+                if record.type_name != type_name {
                     return Ok(false);
                 }
+                let slots = record.slots.clone();
+                let slot_names = interp
+                    .get_symbol_property(type_name, "emaxx-struct-slots")
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+                    .collect::<Vec<_>>();
+                let start = bindings.len();
+                for slot_pattern in &parts[2..] {
+                    let (slot_name, nested_pattern) = match slot_pattern {
+                        Value::Symbol(name) => (name.clone(), slot_pattern.clone()),
+                        Value::Cons(_, _) => {
+                            let Ok(slot_parts) = slot_pattern.to_vec() else {
+                                bindings.truncate(start);
+                                return Ok(false);
+                            };
+                            let Some(slot_name) =
+                                slot_parts.first().and_then(|value| value.as_symbol().ok())
+                            else {
+                                bindings.truncate(start);
+                                return Ok(false);
+                            };
+                            (
+                                slot_name.to_string(),
+                                slot_parts
+                                    .get(1)
+                                    .cloned()
+                                    .unwrap_or_else(|| slot_pattern.clone()),
+                            )
+                        }
+                        _ => {
+                            bindings.truncate(start);
+                            return Ok(false);
+                        }
+                    };
+                    let Some(slot_index) = slot_names.iter().position(|name| name == &slot_name)
+                    else {
+                        bindings.truncate(start);
+                        return Ok(false);
+                    };
+                    let slot_value = slots.get(slot_index).cloned().unwrap_or(Value::Nil);
+                    if !pcase_pattern_bindings_inner(
+                        interp,
+                        env,
+                        &nested_pattern,
+                        &slot_value,
+                        bindings,
+                        lenient_list_match,
+                        backquoted,
+                    )? {
+                        bindings.truncate(start);
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
             }
-            return Ok(true);
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
-            return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
-        }
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
-            && let Some(Value::Symbol(name)) = parts.get(1)
-        {
-            bindings.push((name.clone(), value.clone()));
-            return Ok(true);
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
+                return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
+            }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
+                && let Some(Value::Symbol(name)) = parts.get(1)
+            {
+                bindings.push((name.clone(), value.clone()));
+                return Ok(true);
+            }
         }
     }
 
@@ -13638,24 +13680,26 @@ fn pcase_pattern_bindings_with_mode(
             let pattern_cdr = pattern_cdr.borrow().clone();
             let value_car = value_car.borrow().clone();
             let value_cdr = value_cdr.borrow().clone();
-            if !pcase_pattern_bindings_with_mode(
+            if !pcase_pattern_bindings_inner(
                 interp,
                 env,
                 &pattern_car,
                 &value_car,
                 bindings,
                 lenient_list_match,
+                backquoted,
             )? {
                 bindings.truncate(start);
                 return Ok(false);
             }
-            if !pcase_pattern_bindings_with_mode(
+            if !pcase_pattern_bindings_inner(
                 interp,
                 env,
                 &pattern_cdr,
                 &value_cdr,
                 bindings,
                 lenient_list_match,
+                backquoted,
             )? {
                 bindings.truncate(start);
                 return Ok(false);
@@ -13666,24 +13710,26 @@ fn pcase_pattern_bindings_with_mode(
             let start = bindings.len();
             let pattern_car = pattern_car.borrow().clone();
             let pattern_cdr = pattern_cdr.borrow().clone();
-            if !pcase_pattern_bindings_with_mode(
+            if !pcase_pattern_bindings_inner(
                 interp,
                 env,
                 &pattern_car,
                 &Value::Nil,
                 bindings,
                 lenient_list_match,
+                backquoted,
             )? {
                 bindings.truncate(start);
                 return Ok(false);
             }
-            if !pcase_pattern_bindings_with_mode(
+            if !pcase_pattern_bindings_inner(
                 interp,
                 env,
                 &pattern_cdr,
                 &Value::Nil,
                 bindings,
                 lenient_list_match,
+                backquoted,
             )? {
                 bindings.truncate(start);
                 return Ok(false);
@@ -19884,6 +19930,30 @@ mod tests {
                        (pcase '(3 4 5 6) (`(,left ,middle ,right) 'match) (_ 'miss)))"
             ),
             Value::list([Value::Symbol("miss".into()), Value::Symbol("miss".into()),])
+        );
+    }
+
+    #[test]
+    fn pcase_backquote_treats_plain_symbols_as_literals() {
+        assert_eq!(
+            eval_str(
+                "(list
+                   (pcase '(float 141421356237 -11)
+                     (`(frac ,p ,q) 'wrong)
+                     (`(float ,m ,e) (list m e))
+                     (_ 'miss))
+                   (pcase '(frac 1 2)
+                     (`(frac ,p ,q) (/ (float p) q))
+                     (_ 'miss))
+                   (pcase '(_ value)
+                     (`(_ ,x) x)
+                     (_ 'miss)))"
+            ),
+            Value::list([
+                Value::list([Value::Integer(141421356237), Value::Integer(-11)]),
+                Value::Float(0.5),
+                Value::Symbol("value".into()),
+            ])
         );
     }
 
