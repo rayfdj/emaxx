@@ -1477,6 +1477,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "unibyte-string"
             | "string-to-number"
             | "number-to-string"
+            | "int-to-string"
             | "string-match"
             | "string-match-p"
             | "string-empty-p"
@@ -5386,7 +5387,7 @@ pub fn call(
             };
             parse_string_to_number_value(&s, base)
         }
-        "number-to-string" => {
+        "number-to-string" | "int-to-string" => {
             need_args(name, args, 1)?;
             Ok(Value::String(number_to_string(&args[0])?))
         }
