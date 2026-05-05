@@ -29339,7 +29339,7 @@ fn special_form_arity_value(name: &str) -> Option<Value> {
             Value::Integer(2),
             Value::Symbol("unevalled".into()),
         )),
-        "let" => Some(Value::cons(
+        "let" | "dlet" => Some(Value::cons(
             Value::Integer(1),
             Value::Symbol("unevalled".into()),
         )),
@@ -29381,6 +29381,7 @@ fn is_special_form_name(name: &str) -> bool {
             | "progn"
             | "prog1"
             | "let"
+            | "dlet"
             | "let*"
             | "cl-progv"
             | "pcase-let"
