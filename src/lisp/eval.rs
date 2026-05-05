@@ -21582,6 +21582,28 @@ mod tests {
     }
 
     #[test]
+    fn custom_add_option_records_unique_options() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (defcustom sample-hook nil "Sample." :type 'hook)
+                     (custom-add-option 'sample-hook 'first)
+                     (custom-add-option 'sample-hook 'first)
+                     (custom-add-option 'sample-hook 'second)
+                     (list (get 'sample-hook 'custom-options)
+                           (get 'sample-hook 'custom-type)))"#
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("first".into()),
+                    Value::Symbol("second".into())
+                ]),
+                Value::Symbol("hook".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn tab_bar_new_tab_choice_has_preloaded_custom_type() {
         assert_eq!(
             eval_str(
