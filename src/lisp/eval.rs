@@ -18403,6 +18403,25 @@ mod tests {
     }
 
     #[test]
+    fn fboundp_recognizes_special_forms() {
+        assert_eq!(
+            eval_str(
+                r##"
+                (list
+                 (fboundp 'setq)
+                 (subrp (symbol-function 'setq))
+                 (subr-arity (symbol-function 'setq)))
+                "##,
+            ),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::cons(Value::Integer(0), Value::Symbol("unevalled".into())),
+            ])
+        );
+    }
+
+    #[test]
     fn upstream_lread_circle_form_passes() {
         assert_eq!(
             eval_str(
