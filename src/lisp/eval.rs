@@ -17698,6 +17698,51 @@ mod tests {
     }
 
     #[test]
+    fn format_supports_float_precision_width_and_flags() {
+        assert_eq!(
+            eval_str(
+                r#"(list (format "%.1f" 6.4)
+                         (format "%5.1f" 6.4)
+                         (format "%05.1f" 6.4)
+                         (format "%+.2f" 1)
+                         (format "% .1f" 2))"#,
+            ),
+            Value::list([
+                Value::String("6.4".into()),
+                Value::String("  6.4".into()),
+                Value::String("006.4".into()),
+                Value::String("+1.00".into()),
+                Value::String(" 2.0".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn format_seconds_matches_fractional_upstream_cases() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"(progn
+                         (require 'time-date)
+                         (list
+                          (format-seconds "%mm %,1ss" 66.4)
+                          (format-seconds "%mm %5,1ss" 66.4)
+                          (format-seconds "%mm %.5,1ss" 66.4)
+                          (format-seconds "%hh %z%x%mm %ss" (* 60 2))
+                          (format-seconds "%Y, %D, %H, %M, %z%S" 0)))"#,
+                ),
+                Value::list([
+                    Value::String("1m 6.4s".into()),
+                    Value::String("1m   6.4s".into()),
+                    Value::String("1m 006.4s".into()),
+                    Value::String("2m".into()),
+                    Value::String("0 seconds".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn parse_time_string_matches_rfc_822_cases() {
         run_with_large_stack(|| {
             assert_eq!(
