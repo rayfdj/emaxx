@@ -1228,6 +1228,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "sin"
             | "cos"
             | "tan"
+            | "degrees-to-radians"
+            | "radians-to-degrees"
             | "asin"
             | "acos"
             | "atan"
@@ -2682,6 +2684,18 @@ pub fn call(
         "tan" => {
             need_args(name, args, 1)?;
             Ok(Value::Float(numeric_to_f64(interp, &args[0])?.tan()))
+        }
+        "degrees-to-radians" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(
+                numeric_to_f64(interp, &args[0])? * std::f64::consts::PI / 180.0,
+            ))
+        }
+        "radians-to-degrees" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Float(
+                numeric_to_f64(interp, &args[0])? * 180.0 / std::f64::consts::PI,
+            ))
         }
         "asin" => {
             need_args(name, args, 1)?;
