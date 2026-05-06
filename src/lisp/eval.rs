@@ -21293,6 +21293,38 @@ mod tests {
     }
 
     #[test]
+    fn pos_visible_in_window_p_respects_window_height() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (dotimes (_ 30)
+                    (insert "line\n"))
+                  (set-window-start (selected-window) 1)
+                  (list (pos-visible-in-window-p 1)
+                        (pos-visible-in-window-p (point-max))))
+                "#
+            ),
+            Value::list([Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn pos_visible_in_window_p_is_nil_when_noninteractive() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (setq noninteractive t)
+                  (insert "line\n")
+                  (pos-visible-in-window-p 1))
+                "#
+            ),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn display_buffer_preserves_current_buffer_and_updates_window_buffer() {
         let mut interp = Interpreter::new();
         assert_eq!(

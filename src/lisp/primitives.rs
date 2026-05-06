@@ -210,6 +210,27 @@ fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
         .count()
 }
 
+fn line_distance_in_buffer(
+    interp: &Interpreter,
+    buffer_id: u64,
+    start: usize,
+    target: usize,
+) -> usize {
+    if target <= start {
+        return 0;
+    }
+    let text = if buffer_id == interp.current_buffer_id() {
+        interp.buffer.buffer_substring(start, target)
+    } else {
+        interp
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.buffer_substring(start, target))
+            .unwrap_or_else(|| interp.buffer.buffer_substring(start, target))
+    }
+    .unwrap_or_default();
+    text.chars().filter(|ch| *ch == '\n').count()
+}
+
 fn replace_buffer_contents(
     interp: &mut Interpreter,
     buffer_id: u64,
@@ -11813,6 +11834,12 @@ pub fn call(
         }
         "pos-visible-in-window-p" => {
             need_arg_range(name, args, 0, 3)?;
+            if interp
+                .lookup_var("noninteractive", env)
+                .is_some_and(|value| !value.is_nil())
+            {
+                return Ok(Value::Nil);
+            }
             let window = args.get(1).filter(|value| !value.is_nil());
             let buffer_id = if let Some(window) = window {
                 window_buffer_id(interp, window)
@@ -11827,11 +11854,18 @@ pub fn call(
                 Some(value) => position_from_value(interp, value)?,
             };
             let start = window_start(interp, window)?;
-            Ok(if pos >= start.max(point_min) && pos <= point_max {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            let first_visible = start.max(point_min);
+            let visible_line = line_distance_in_buffer(interp, buffer_id, first_visible, pos);
+            Ok(
+                if pos >= first_visible
+                    && pos <= point_max
+                    && visible_line < DEFAULT_SELECTED_WINDOW_HEIGHT
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "window-width" => {
             need_arg_range(name, args, 0, 2)?;
