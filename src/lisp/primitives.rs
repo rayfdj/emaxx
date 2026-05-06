@@ -464,6 +464,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "url-scheme-get-property"
             | "macroexpand-1"
             | "macroexpand-all"
+            | "cl-parse-integer"
             | "read-key"
             | "regexp-opt"
             | "rx-to-string"
@@ -1244,6 +1245,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "frexp"
             | "ldexp"
             | "logb"
+            | "cl-parse-integer"
             | "ceiling"
             | "floor"
             | "round"
@@ -2768,6 +2770,7 @@ pub fn call(
             need_args(name, args, 1)?;
             Ok(Value::Float(numeric_to_f64(interp, &args[0])?))
         }
+        "cl-parse-integer" => parse_cl_integer(args),
         "frexp" => {
             need_args(name, args, 1)?;
             let (sig, exp) = frexp_parts(numeric_to_f64(interp, &args[0])?);
@@ -31382,6 +31385,127 @@ fn parse_string_to_number_value(text: &str, base: Option<i64>) -> Result<Value, 
     }
 }
 
+fn parse_cl_integer(args: &[Value]) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Err(LispError::WrongNumberOfArgs("cl-parse-integer".into(), 0));
+    }
+    let text = string_text(&args[0])?;
+    let mut start = 0usize;
+    let mut end = text.chars().count();
+    let mut radix = 10u32;
+    let mut junk_allowed = false;
+
+    let mut index = 1usize;
+    while index < args.len() {
+        let Some(keyword) = args[index].as_symbol().ok() else {
+            return Err(LispError::Signal(
+                "Unsupported cl-parse-integer syntax".into(),
+            ));
+        };
+        let Some(value) = args.get(index + 1) else {
+            return Err(LispError::Signal(
+                "Unsupported cl-parse-integer syntax".into(),
+            ));
+        };
+        match keyword {
+            ":start" => {
+                if !value.is_nil() {
+                    let parsed = value.as_integer()?;
+                    if parsed < 0 {
+                        return Err(LispError::Signal(format!(
+                            "Bad interval: [{parsed}, {end})"
+                        )));
+                    }
+                    start = parsed as usize;
+                }
+            }
+            ":end" => {
+                if !value.is_nil() {
+                    let parsed = value.as_integer()?;
+                    if parsed < 0 {
+                        return Err(LispError::Signal(format!(
+                            "Bad interval: [{start}, {parsed})"
+                        )));
+                    }
+                    end = parsed as usize;
+                }
+            }
+            ":radix" => {
+                if value.is_nil() {
+                    radix = 10;
+                    index += 2;
+                    continue;
+                }
+                let parsed = value.as_integer()?;
+                if !(2..=36).contains(&parsed) {
+                    return Err(LispError::Signal("Args out of range".into()));
+                }
+                radix = parsed as u32;
+            }
+            ":junk-allowed" => junk_allowed = value.is_truthy(),
+            _ => {
+                return Err(LispError::Signal(
+                    "Unsupported cl-parse-integer syntax".into(),
+                ));
+            }
+        }
+        index += 2;
+    }
+
+    if start > end || end > text.chars().count() {
+        return Err(LispError::Signal(format!("Bad interval: [{start}, {end})")));
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut cursor = start;
+    while cursor < end && chars[cursor].is_whitespace() {
+        cursor += 1;
+    }
+    let negative = match chars.get(cursor) {
+        Some('+') => {
+            cursor += 1;
+            false
+        }
+        Some('-') => {
+            cursor += 1;
+            true
+        }
+        _ => false,
+    };
+
+    let mut value = BigInt::zero();
+    let mut saw_digit = false;
+    while cursor < end {
+        let Some(digit) = digit_value_for_base(chars[cursor], radix) else {
+            break;
+        };
+        saw_digit = true;
+        value = value * radix + BigInt::from(digit);
+        cursor += 1;
+    }
+    while cursor < end && chars[cursor].is_whitespace() {
+        cursor += 1;
+    }
+
+    if !saw_digit {
+        if junk_allowed {
+            return Ok(Value::Nil);
+        }
+        return Err(LispError::Signal(format!(
+            "Not an integer string: `{text}'"
+        )));
+    }
+    if cursor != end && !junk_allowed {
+        return Err(LispError::Signal(format!(
+            "Not an integer string: `{text}'"
+        )));
+    }
+    if negative {
+        value = -value;
+    }
+    Ok(normalize_bigint_value(value))
+}
+
 fn parse_decimal_string_to_number(text: &str) -> Value {
     let text = text.trim_start_matches([' ', '\t']);
     let Some(prefix) = decimal_number_prefix(text) else {
@@ -31514,8 +31638,8 @@ fn parse_integer_string_with_base(text: &str, base: u32) -> Value {
 fn digit_value_for_base(ch: char, base: u32) -> Option<u32> {
     let digit = match ch {
         '0'..='9' => ch as u32 - '0' as u32,
-        'a'..='f' => 10 + (ch as u32 - 'a' as u32),
-        'A'..='F' => 10 + (ch as u32 - 'A' as u32),
+        'a'..='z' => 10 + (ch as u32 - 'a' as u32),
+        'A'..='Z' => 10 + (ch as u32 - 'A' as u32),
         _ => return None,
     };
     (digit < base).then_some(digit)

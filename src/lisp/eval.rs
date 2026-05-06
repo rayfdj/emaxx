@@ -17686,6 +17686,204 @@ mod tests {
     }
 
     #[test]
+    fn parse_time_string_matches_rfc_822_cases() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"(progn
+                         (require 'parse-time)
+                         (mapcar
+                          (lambda (string)
+                            (condition-case err
+                                (parse-time-string string)
+                              (error (list 'error (car err) (cadr err)))))
+                          '("Mon, 22 Feb 2016 19:35:42 +0100"
+                            "22 Feb 2016 19:35:42 +0100"
+                            "22 Feb 2016 +0100"
+                            "Mon, 22 Feb 16 19:35:42 +0100"
+                            "Mon, 22 February 2016 19:35:42 +0100"
+                            "Mon, 22 feb 2016 19:35:42 +0100"
+                            "Monday, 22 february 2016 19:35:42 +0100"
+                            "Monday, 22 february 2016 19:35:42 PST"
+                            "Friday, 21 Sep 2018 13:47:58 PDT")))"#,
+                ),
+                Value::list([
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Integer(1),
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Nil,
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Nil,
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Nil,
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Integer(1),
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Integer(1),
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Integer(1),
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Integer(1),
+                        Value::Integer(-1),
+                        Value::Integer(3600),
+                    ]),
+                    Value::list([
+                        Value::Integer(42),
+                        Value::Integer(35),
+                        Value::Integer(19),
+                        Value::Integer(22),
+                        Value::Integer(2),
+                        Value::Integer(2016),
+                        Value::Integer(1),
+                        Value::Nil,
+                        Value::Integer(-28800),
+                    ]),
+                    Value::list([
+                        Value::Integer(58),
+                        Value::Integer(47),
+                        Value::Integer(13),
+                        Value::Integer(21),
+                        Value::Integer(9),
+                        Value::Integer(2018),
+                        Value::Integer(5),
+                        Value::T,
+                        Value::Integer(-25200),
+                    ]),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn cl_parse_integer_handles_keyword_bounds_after_cl_lib_loads() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"(progn
+                         (require 'cl-lib)
+                         (list
+                          (cl-parse-integer "22")
+                          (cl-parse-integer "xx-2a yy" :start 2 :end 5 :radix 16)
+                          (cl-parse-integer "17" :start nil :end nil :radix nil)
+                          (cl-parse-integer "  +101  " :radix 2)
+                          (cl-parse-integer "junk" :junk-allowed t)
+                          (condition-case err
+                              (cl-parse-integer "12x")
+                            (error (car err)))))"#,
+                ),
+                Value::list([
+                    Value::Integer(22),
+                    Value::Integer(-42),
+                    Value::Integer(17),
+                    Value::Integer(5),
+                    Value::Nil,
+                    Value::Symbol("error".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn parse_iso8601_time_string_applies_zone_offsets() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"(progn
+                         (require 'parse-time)
+                         (append
+                          (mapcar
+                           (lambda (string)
+                             (condition-case err
+                                 (format-time-string
+                                  "%Y-%m-%d %H:%M:%S"
+                                  (parse-iso8601-time-string string) t)
+                               (error (list 'error (car err) (cadr err)))))
+                           '("1998-09-12T12:21:54-0200"
+                             "1998-09-12T12:21:54-0230"
+                             "1998-09-12T12:21:54-02:00"
+                             "1998-09-12T12:21:54-02"
+                             "1998-09-12T12:21:54+0230"
+                             "1998-09-12T12:21:54+02"
+                             "1998-09-12T12:21:54Z"))
+                          (list
+                           (condition-case err
+                               (equal (parse-iso8601-time-string "1998-09-12T12:21:54")
+                                      (encode-time 54 21 12 12 9 1998))
+                             (error (list 'error (car err) (cadr err)))))))"#,
+                ),
+                Value::list([
+                    Value::String("1998-09-12 14:21:54".into()),
+                    Value::String("1998-09-12 14:51:54".into()),
+                    Value::String("1998-09-12 14:21:54".into()),
+                    Value::String("1998-09-12 14:21:54".into()),
+                    Value::String("1998-09-12 09:51:54".into()),
+                    Value::String("1998-09-12 10:21:54".into()),
+                    Value::String("1998-09-12 12:21:54".into()),
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn decode_time_accepts_let_bound_string_zone() {
         run_with_large_stack(|| {
             assert_eq!(
