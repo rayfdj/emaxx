@@ -14991,6 +14991,13 @@ mod tests {
             eval_str("(list (cl-evenp 4) (cl-oddp 5) (cl-evenp -2) (cl-oddp -3))"),
             Value::list([Value::T, Value::T, Value::T, Value::T])
         );
+        assert_eq!(
+            eval_str(
+                "(and (< (abs (- (degrees-to-radians 180) float-pi)) 0.000000001)
+                      (< (abs (- (radians-to-degrees float-pi) 180.0)) 0.000000001))"
+            ),
+            Value::T
+        );
     }
 
     #[test]
