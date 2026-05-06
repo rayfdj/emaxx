@@ -14979,6 +14979,18 @@ mod tests {
         assert_eq!(eval_str("(+ 1 2)"), Value::Integer(3));
         assert_eq!(eval_str("(- 10 3)"), Value::Integer(7));
         assert_eq!(eval_str("(* 4 5)"), Value::Integer(20));
+        assert_eq!(eval_str("(/ 2)"), Value::Integer(0));
+        assert_eq!(eval_str("(/ -1)"), Value::Integer(-1));
+        assert_eq!(eval_str("(/ 2.0)"), Value::Float(0.5));
+        {
+            let mut interp = Interpreter::new();
+            let mut env = Vec::new();
+            let form = Reader::new("(/ 0)").read().unwrap().unwrap();
+            assert!(matches!(
+                interp.eval(&form, &mut env),
+                Err(LispError::Signal(message)) if message == "Division by zero"
+            ));
+        }
         assert_eq!(eval_str("(+ 1 2 3 4)"), Value::Integer(10));
         assert_eq!(eval_str("(1+ 5)"), Value::Integer(6));
         assert_eq!(eval_str("(1- 5)"), Value::Integer(4));
