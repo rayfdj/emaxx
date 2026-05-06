@@ -16029,6 +16029,34 @@ mod tests {
     }
 
     #[test]
+    fn set_window_buffer_accepts_nil_for_selected_window() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((buffer (get-buffer-create \" set-window-buffer-target\")))
+                   (set-window-buffer nil buffer)
+                   (eq (window-buffer) buffer))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn visual_line_mode_sets_buffer_local_state() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer
+                   (visual-line-mode)
+                   (list visual-line-mode
+                         (local-variable-p 'visual-line-mode)
+                         (progn (visual-line-mode 0) visual-line-mode)))"
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
     fn bury_buffer_moves_buffer_to_end_and_selects_next_buffer() {
         let mut interp = Interpreter::new();
         assert_eq!(
@@ -17738,6 +17766,33 @@ mod tests {
                     Value::String("2m".into()),
                     Value::String("0 seconds".into()),
                 ])
+            );
+        });
+    }
+
+    #[test]
+    fn vconcat_preserves_string_elements_from_runtime_vectors() {
+        assert_eq!(
+            eval_str(
+                r#"(equal (vconcat ["January"] (vector "*"))
+                          ["January" "*"])"#
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn todo_mode_loads_date_pattern_with_wildcard_months() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str_with_upstream_load_path(
+                    r#"(progn
+                         (require 'todo-mode)
+                         (and (stringp todo-date-pattern)
+                              (string-match-p "\\\\\\*" todo-date-pattern)
+                              t))"#,
+                ),
+                Value::T
             );
         });
     }

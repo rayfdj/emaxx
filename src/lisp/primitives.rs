@@ -1872,6 +1872,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-name-directory"
             | "file-name-nondirectory"
             | "file-name-sans-extension"
+            | "file-name-base"
             | "file-name-extension"
             | "file-name-as-directory"
             | "directory-file-name"
@@ -2046,6 +2047,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "frame-char-width"
             | "selected-window"
             | "window-buffer"
+            | "set-window-buffer"
             | "walk-windows"
             | "window-combined-p"
             | "window-dedicated-p"
@@ -2070,6 +2072,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "send-string-to-terminal"
             | "transient-mark-mode"
             | "font-lock-mode"
+            | "visual-line-mode"
             | "header-line-indent-mode"
             | "font-lock-specified-p"
             | "font-lock-add-keywords"
@@ -2380,6 +2383,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "make-list"
             | "looking-at"
             | "looking-at-p"
+            | "looking-back"
             | "replace-match"
             | "replace-region-contents"
             | "transpose-regions"
@@ -9824,6 +9828,11 @@ pub fn call(
                 &args[0],
             )?)))
         }
+        "file-name-base" => {
+            need_args(name, args, 1)?;
+            let nondirectory = file_name_nondirectory(&string_text(&args[0])?);
+            Ok(Value::String(file_name_sans_extension(&nondirectory)))
+        }
         "file-name-extension" => {
             need_arg_range(name, args, 1, 2)?;
             let extension = file_name_extension(
@@ -11568,6 +11577,19 @@ pub fn call(
                 Ok(Value::Nil)
             }
         }
+        "visual-line-mode" => {
+            let enabled = args
+                .first()
+                .map(|arg| !arg.is_nil() && !matches!(arg, Value::Integer(number) if *number <= 0))
+                .unwrap_or(true);
+            let buffer_id = interp.current_buffer_id();
+            interp.set_buffer_local_value(
+                buffer_id,
+                "visual-line-mode",
+                if enabled { Value::T } else { Value::Nil },
+            );
+            Ok(if enabled { Value::T } else { Value::Nil })
+        }
         "header-line-indent-mode" => {
             let enabled = args
                 .first()
@@ -12018,6 +12040,30 @@ pub fn call(
             } else {
                 Err(LispError::TypeError("window".into(), window.type_name()))
             }
+        }
+        "set-window-buffer" => {
+            need_arg_range(name, args, 2, 3)?;
+            let window = if args[0].is_nil() {
+                interp.selected_window_value()
+            } else {
+                args[0].clone()
+            };
+            let Some(window_id) = window_record_id_from_value(interp, &window) else {
+                return Err(LispError::TypeError("window".into(), window.type_name()));
+            };
+            let buffer_id = interp.resolve_buffer_id(&args[1])?;
+            if window_id == interp.selected_window_id() {
+                interp.set_selected_window_buffer_id(buffer_id);
+            } else {
+                let Some(record) = interp.find_record_mut(window_id) else {
+                    return Err(LispError::TypeError("window".into(), window.type_name()));
+                };
+                if record.slots.len() == WINDOW_BUFFER_SLOT {
+                    record.slots.resize(WINDOW_BUFFER_SLOT + 1, Value::Nil);
+                }
+                record.slots[WINDOW_BUFFER_SLOT] = Value::Integer(buffer_id as i64);
+            }
+            Ok(Value::Nil)
         }
         "walk-windows" => {
             need_arg_range(name, args, 1, 3)?;
@@ -16754,6 +16800,7 @@ pub fn call(
             interp.last_match_data_buffer_id = saved_match_data_buffer_id;
             result
         }
+        "looking-back" => looking_back_impl(interp, args, env),
 
         "replace-match" => {
             need_args(name, args, 1)?;
@@ -21300,6 +21347,71 @@ fn looking_at_impl(
             interp,
             pos,
             &tail,
+            &captures,
+            regex.capture_mapping(),
+            Some(interp.current_buffer_id()),
+        );
+        Ok(Value::T)
+    } else {
+        interp.last_match_data = None;
+        interp.last_match_data_buffer_id = None;
+        Ok(Value::Nil)
+    }
+}
+
+fn looking_back_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &Env,
+) -> Result<Value, LispError> {
+    need_arg_range("looking-back", args, 1, 3)?;
+    let pattern = string_like(&args[0])
+        .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+    let pos = interp.buffer.point();
+    let limit = args
+        .get(1)
+        .filter(|value| !value.is_nil())
+        .map(|value| position_from_value(interp, value))
+        .transpose()?
+        .unwrap_or_else(|| interp.buffer.point_min())
+        .clamp(interp.buffer.point_min(), pos);
+    let haystack = interp
+        .buffer
+        .buffer_substring(limit, pos)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let regex = compile_elisp_regex(
+        interp,
+        &pattern,
+        env,
+        "",
+        limit == interp.buffer.point_min(),
+    )?;
+    let greedy = args.get(2).is_some_and(Value::is_truthy);
+    let mut best = None;
+    let mut starts = haystack
+        .char_indices()
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    starts.push(haystack.len());
+    for start in starts {
+        if let Some(captures) = regex
+            .captures_from_pos(&haystack, start)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            && let Some(matched) = captures.get(0)
+            && matched.end() == haystack.len()
+        {
+            let absolute_start = limit + haystack[..matched.start()].chars().count();
+            best = Some((absolute_start, captures));
+            if greedy {
+                break;
+            }
+        }
+    }
+    if let Some((absolute_start, captures)) = best {
+        set_match_data(
+            interp,
+            absolute_start,
+            &haystack,
             &captures,
             regex.capture_mapping(),
             Some(interp.current_buffer_id()),
@@ -26044,6 +26156,38 @@ mod tests {
     }
 
     #[test]
+    fn looking_back_matches_text_before_point_with_limit() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "alpha beta");
+        interp.buffer.goto_char(11);
+        let mut env = Vec::new();
+
+        let result = call(
+            &mut interp,
+            "looking-back",
+            &[Value::String("b\\(eta\\)".into()), Value::Integer(7)],
+            &mut env,
+        )
+        .expect("looking-back should match text ending at point");
+
+        assert_eq!(result, Value::T);
+        assert!(matches!(
+            interp.last_match_data.as_ref(),
+            Some(data) if data.get(1).copied().flatten() == Some((8, 11))
+        ));
+        assert_eq!(
+            call(
+                &mut interp,
+                "looking-back",
+                &[Value::String("alpha".into()), Value::Integer(7)],
+                &mut env,
+            )
+            .expect("looking-back should honor limit"),
+            Value::Nil
+        );
+    }
+
+    #[test]
     fn set_text_properties_replaces_existing_properties() {
         let mut interp = Interpreter::new();
         interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc");
@@ -27094,7 +27238,8 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                 multibyte: state.multibyte,
             })
         }
-        Value::Cons(_, _) if is_vector_value(value) => {
+        Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
+        {
             let items = vector_items(value).ok()?;
             let Value::String(text) = items.first()?.clone() else {
                 return None;
@@ -31830,6 +31975,19 @@ fn file_error_with_detail_value(message: &str, detail: &str, path: &str) -> Valu
     ])
 }
 
+fn file_output_error(path: &str, error: &std::io::Error) -> LispError {
+    let rendered = error.to_string();
+    let detail = rendered
+        .split_once(" (os error")
+        .map(|(detail, _)| detail)
+        .unwrap_or(rendered.as_str());
+    LispError::SignalValue(file_error_with_detail_value(
+        "Opening output file",
+        detail,
+        path,
+    ))
+}
+
 fn file_locked_p(path: &str) -> Result<Value, LispError> {
     let lock_path = lock_path_for_file(path);
     match fs::metadata(&lock_path) {
@@ -32075,11 +32233,11 @@ fn write_region_value(
             .create(true)
             .append(true)
             .open(&path)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+            .map_err(|error| file_output_error(&path, &error))?;
         file.write_all(&bytes)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+            .map_err(|error| file_output_error(&path, &error))?;
     } else {
-        fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
+        fs::write(&path, &bytes).map_err(|error| file_output_error(&path, &error))?;
     }
     set_last_coding_system_used(interp, &coding, env);
     dispatch_file_notification(interp, env, &path, "changed")?;
@@ -42277,6 +42435,16 @@ mod compat_runtime_tests {
         assert_eq!(
             call(
                 &mut interp,
+                "file-name-base",
+                &[Value::String("/tmp/demo.tar.gz".into())],
+                &mut env,
+            )
+            .expect("base name"),
+            Value::String("demo.tar".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
                 "file-name-sans-extension",
                 &[Value::String("demo.tar.gz".into())],
                 &mut env,
@@ -42500,6 +42668,38 @@ mod compat_runtime_tests {
         );
         assert_eq!(std::fs::read(&stderr_path).expect("stderr file"), b"warn\n");
         std::fs::remove_file(stderr_path).expect("cleanup stderr file");
+    }
+
+    #[test]
+    fn write_region_reports_output_errors_as_file_error() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let directory =
+            std::env::temp_dir().join(format!("emaxx-write-region-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create temp directory");
+        let path = directory.to_string_lossy().to_string();
+        let error = call(
+            &mut interp,
+            "write-region",
+            &[
+                Value::String("content".into()),
+                Value::Nil,
+                Value::String(path.clone()),
+            ],
+            &mut env,
+        )
+        .expect_err("writing to a directory should signal file-error");
+        let LispError::SignalValue(value) = error else {
+            panic!("expected signal value");
+        };
+        let items = value.to_vec().expect("file error list");
+        assert_eq!(items.first(), Some(&Value::Symbol("file-error".into())));
+        assert_eq!(
+            items.get(1),
+            Some(&Value::String("Opening output file".into()))
+        );
+        assert_eq!(items.get(3), Some(&Value::String(path)));
+        std::fs::remove_dir_all(directory).expect("cleanup temp directory");
     }
 
     #[test]
