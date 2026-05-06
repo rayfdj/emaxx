@@ -7004,6 +7004,9 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "gethash" => {
                 self.sf_setf_gethash(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if decoded_time_accessor_index(name).is_some() => {
+                self.sf_setf_decoded_time_accessor(name, &place, &items[2], env)
+            }
             Some(Value::Symbol(name)) if name == "nth" => self.sf_setf_nth(&place, &items[2], env),
             Some(Value::Symbol(name)) if name == "aref" => {
                 self.sf_setf_aref(&place, &items[2], env)
@@ -7202,6 +7205,29 @@ impl Interpreter {
         }
         let index = self.eval(&place[1], env)?.as_integer()?.max(0) as usize;
         let mut cell = self.eval(&place[2], env)?;
+        for _ in 0..index {
+            cell = cell.cdr()?;
+        }
+        let value = self.eval(value_expr, env)?;
+        cell.set_car(value.clone())?;
+        Ok(value)
+    }
+
+    fn sf_setf_decoded_time_accessor(
+        &mut self,
+        accessor: &str,
+        place: &[Value],
+        value_expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(index) = decoded_time_accessor_index(accessor) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+        let Some(target_expr) = place.get(1) else {
+            return Err(LispError::Signal("Unsupported setf place".into()));
+        };
+
+        let mut cell = self.eval(target_expr, env)?;
         for _ in 0..index {
             cell = cell.cdr()?;
         }
@@ -7432,6 +7458,14 @@ impl Interpreter {
                 {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_plist_get(&items, &value_expr, env).map(|_| ())
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if decoded_time_accessor_index(name).is_some()
+                ) {
+                    let accessor = items[0].as_symbol().expect("checked symbol").to_string();
+                    let value_expr = quoted_literal(&value);
+                    self.sf_setf_decoded_time_accessor(&accessor, &items, &value_expr, env)
+                        .map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "nth") {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_nth(&items, &value_expr, env).map(|_| ())
@@ -9419,6 +9453,7 @@ impl Interpreter {
             }
             Some(Value::Symbol(name))
                 if matches!(name.as_str(), "car" | "cdr")
+                    || decoded_time_accessor_index(name).is_some()
                     || self
                         .get_symbol_property(name, "emaxx-struct-slot")
                         .is_some()
@@ -12159,6 +12194,21 @@ fn unquote(value: &Value) -> Value {
 
 fn quoted_literal(value: &Value) -> Value {
     Value::list([Value::Symbol("quote".into()), value.clone()])
+}
+
+fn decoded_time_accessor_index(name: &str) -> Option<usize> {
+    match name {
+        "decoded-time-second" => Some(0),
+        "decoded-time-minute" => Some(1),
+        "decoded-time-hour" => Some(2),
+        "decoded-time-day" => Some(3),
+        "decoded-time-month" => Some(4),
+        "decoded-time-year" => Some(5),
+        "decoded-time-weekday" => Some(6),
+        "decoded-time-dst" => Some(7),
+        "decoded-time-zone" => Some(8),
+        _ => None,
+    }
 }
 
 fn forms_to_progn(forms: &[Value]) -> Value {
@@ -17590,6 +17640,37 @@ mod tests {
                 Value::Integer(0),
             ])
         );
+    }
+
+    #[test]
+    fn setf_decoded_time_accessors_mutate_time_lists() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    "(let ((time (decode-time 0 \"UTC0\" 'integer)))
+                       (setf (decoded-time-hour time) 23)
+                       (setf (decoded-time-zone time) -3600)
+                       (list (decoded-time-hour time)
+                             (decoded-time-zone time)
+                             time))"
+                ),
+                Value::list([
+                    Value::Integer(23),
+                    Value::Integer(-3600),
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(23),
+                        Value::Integer(1),
+                        Value::Integer(1),
+                        Value::Integer(1970),
+                        Value::Integer(4),
+                        Value::Nil,
+                        Value::Integer(-3600),
+                    ]),
+                ])
+            );
+        });
     }
 
     #[test]

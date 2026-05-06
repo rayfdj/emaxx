@@ -17,7 +17,9 @@ Oracle pin:
 Counts:
 
 - Harness-selected oracle tests: 7080
-- Source-tree literal `ert-deftest` forms: 6004
+- Source-tree literal `ert-deftest` forms are not the compatibility count.
+  Static grep-style counts vary with the pattern used and miss tests generated
+  while files load.
 - Files with oracle load errors under the 20-second per-file timeout: 9
 
 Canonical progress denominator and order:
@@ -32,8 +34,9 @@ Canonical progress denominator and order:
 - The expected result is `files 510` and `tests 7080`.
 
 The harness-selected count is the compatibility ordering source. It is not the
-same thing as the literal `ert-deftest` source count because Emacs test files can
-generate tests while loading, and the harness applies ERT selection after load.
+same thing as any count inferred directly from the Emacs source tree because
+Emacs test files can generate tests while loading, and the harness applies ERT
+selection after load.
 
 Load-error files:
 
