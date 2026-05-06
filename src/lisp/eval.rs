@@ -17690,6 +17690,18 @@ mod tests {
     }
 
     #[test]
+    fn format_time_string_supports_date_and_time_aliases() {
+        run_with_large_stack(|| {
+            assert_string_value(
+                eval_str(
+                    r#"(format-time-string "%FT%T%z" (encode-time 10 9 5 17 9 2004 nil nil 0) 0)"#,
+                ),
+                "2004-09-17T05:09:10+0000",
+            );
+        });
+    }
+
+    #[test]
     fn posix_tz_environment_drives_local_encode_and_decode_time() {
         let previous_tz = std::env::var("TZ").ok();
         unsafe {

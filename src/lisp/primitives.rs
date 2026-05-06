@@ -30909,6 +30909,12 @@ fn format_time_string_value(
         let (minimal, pad, colons, width, conv) = parse_time_format_spec(&chars, &mut index);
         let field = match conv {
             'Y' => datetime.year().to_string(),
+            'F' => format!(
+                "{:04}-{:02}-{:02}",
+                datetime.year(),
+                datetime.month(),
+                datetime.day()
+            ),
             'm' => {
                 let width = width.unwrap_or(2);
                 let digits = datetime.month().to_string();
@@ -30929,6 +30935,12 @@ fn format_time_string_value(
             'H' => format!("{:02}", datetime.hour()),
             'M' => format!("{:02}", datetime.minute()),
             'S' => format!("{:02}", datetime.second()),
+            'T' => format!(
+                "{:02}:{:02}:{:02}",
+                datetime.hour(),
+                datetime.minute(),
+                datetime.second()
+            ),
             'Z' => zone.abbreviation.clone(),
             'z' => format_zone_offset(zone.offset_seconds, colons, minimal, pad, width),
             'N' => {
