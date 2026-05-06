@@ -22096,6 +22096,30 @@ mod tests {
     }
 
     #[test]
+    fn call_interactively_handles_prefix_argument_specs() {
+        assert_eq!(
+            eval_str(
+                "(let ((current-prefix-arg nil)) \
+                   (list (call-interactively \
+                           (lambda (arg) (interactive \"p\") arg)) \
+                         (call-interactively \
+                           (lambda (arg) (interactive \"P\") arg))))"
+            ),
+            Value::list([Value::Integer(1), Value::Nil])
+        );
+        assert_eq!(
+            eval_str(
+                "(let ((current-prefix-arg '(4))) \
+                   (list (call-interactively \
+                           (lambda (arg) (interactive \"p\") arg)) \
+                         (call-interactively \
+                           (lambda (arg) (interactive \"P\") arg))))"
+            ),
+            Value::list([Value::Integer(4), Value::list([Value::Integer(4)]),])
+        );
+    }
+
+    #[test]
     fn call_interactively_autoloads_commands_before_collecting_args() {
         let root = std::env::temp_dir().join(format!(
             "emaxx-callint-autoload-{}",
