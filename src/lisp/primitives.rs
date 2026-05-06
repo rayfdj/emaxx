@@ -30393,6 +30393,41 @@ fn local_zone_spec_for_civil(
     local_zone_spec(None)
 }
 
+fn normalize_decoded_civil_time(
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i64,
+) -> Result<chrono::NaiveDateTime, LispError> {
+    let total_months = i64::from(year)
+        .checked_mul(12)
+        .and_then(|value| value.checked_add(i64::from(month) - 1))
+        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+    let normalized_year = total_months.div_euclid(12);
+    let normalized_month = total_months.rem_euclid(12) + 1;
+    let normalized_year = i32::try_from(normalized_year)
+        .map_err(|_| LispError::Signal("Invalid decoded time".into()))?;
+    let base_date = chrono::NaiveDate::from_ymd_opt(normalized_year, normalized_month as u32, 1)
+        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+    let base_time = base_date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+    let day_offset = chrono::Duration::days(i64::from(day) - 1);
+    let second_offset = chrono::Duration::seconds(
+        i64::from(hour)
+            .checked_mul(3600)
+            .and_then(|value| value.checked_add(i64::from(minute) * 60))
+            .and_then(|value| value.checked_add(second))
+            .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?,
+    );
+    base_time
+        .checked_add_signed(day_offset)
+        .and_then(|value| value.checked_add_signed(second_offset))
+        .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))
+}
+
 fn format_numeric_zone_name(offset_seconds: i32) -> String {
     let sign = if offset_seconds < 0 { '-' } else { '+' };
     let abs = offset_seconds.abs();
@@ -31117,19 +31152,15 @@ fn call_time_builtin(
             let day = integer_field(interp, &fields[3])?;
             let month = integer_field(interp, &fields[4])?;
             let year = integer_field(interp, &fields[5])?;
-            let date = chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32)
-                .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
-            let time = date
-                .and_hms_opt(hour as u32, minute as u32, second as u32)
-                .ok_or_else(|| LispError::Signal("Invalid decoded time".into()))?;
+            let time = normalize_decoded_civil_time(year, month, day, hour, minute, second)?;
             let zone = if value_is_unspecified(fields.get(8)) {
                 local_zone_spec_for_civil(
-                    year,
-                    month as u32,
-                    day as u32,
-                    hour as u32,
-                    minute as u32,
-                    second as u32,
+                    time.year(),
+                    time.month(),
+                    time.day(),
+                    time.hour(),
+                    time.minute(),
+                    time.second(),
                 )
             } else {
                 zone_spec_from_value(fields.get(8).unwrap_or(&Value::Nil), None)?

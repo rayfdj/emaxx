@@ -17593,6 +17593,54 @@ mod tests {
     }
 
     #[test]
+    fn encode_time_normalizes_overflowing_decoded_fields() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"(list (decode-time (encode-time 0 0 0 32 9 2003 nil nil 0) 0 'integer)
+                             (decode-time (encode-time 0 0 0 19 13 2003 nil nil 0) 0 'integer)
+                             (decode-time (encode-time 0 90 25 1 1 2003 nil nil 0) 0 'integer))"#,
+                ),
+                Value::list([
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(2),
+                        Value::Integer(10),
+                        Value::Integer(2003),
+                        Value::Integer(4),
+                        Value::Nil,
+                        Value::Integer(0),
+                    ]),
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(19),
+                        Value::Integer(1),
+                        Value::Integer(2004),
+                        Value::Integer(1),
+                        Value::Nil,
+                        Value::Integer(0),
+                    ]),
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(30),
+                        Value::Integer(2),
+                        Value::Integer(2),
+                        Value::Integer(1),
+                        Value::Integer(2003),
+                        Value::Integer(4),
+                        Value::Nil,
+                        Value::Integer(0),
+                    ]),
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn posix_tz_environment_drives_local_encode_and_decode_time() {
         let previous_tz = std::env::var("TZ").ok();
         unsafe {
