@@ -17641,6 +17641,55 @@ mod tests {
     }
 
     #[test]
+    fn posix_tz_string_zones_drive_encode_and_decode_time() {
+        run_with_large_stack(|| {
+            assert_eq!(
+                eval_str(
+                    r#"(let ((zone "STD+02DST-02,M11.1.0/0,M1.1.0/0"))
+                         (list (decode-time (encode-time 0 0 12 15 1 2012 nil nil zone) t 'integer)
+                               (decode-time (encode-time 0 0 12 15 12 2012 nil nil zone) t 'integer)
+                               (decode-time (encode-time 0 0 12 15 12 2012 nil nil zone) zone 'integer)))"#,
+                ),
+                Value::list([
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(14),
+                        Value::Integer(15),
+                        Value::Integer(1),
+                        Value::Integer(2012),
+                        Value::Integer(0),
+                        Value::Nil,
+                        Value::Integer(0),
+                    ]),
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(10),
+                        Value::Integer(15),
+                        Value::Integer(12),
+                        Value::Integer(2012),
+                        Value::Integer(6),
+                        Value::Nil,
+                        Value::Integer(0),
+                    ]),
+                    Value::list([
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(12),
+                        Value::Integer(15),
+                        Value::Integer(12),
+                        Value::Integer(2012),
+                        Value::Integer(6),
+                        Value::T,
+                        Value::Integer(7200),
+                    ]),
+                ])
+            );
+        });
+    }
+
+    #[test]
     fn posix_tz_environment_drives_local_encode_and_decode_time() {
         let previous_tz = std::env::var("TZ").ok();
         unsafe {

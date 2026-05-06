@@ -30691,13 +30691,19 @@ fn zone_spec_from_value(
                 is_dst: false,
             })
         }
-        _ if zone.is_string() => Ok(parse_posix_zone_string(&string_text(zone)?).unwrap_or(
-            ZoneSpec {
+        _ if zone.is_string() => {
+            let text = string_text(zone)?;
+            if let Some(posix) = parse_posix_tz(&text)
+                && let Some(time) = time
+            {
+                return Ok(posix.zone_for_instant(time));
+            }
+            Ok(parse_posix_zone_string(&text).unwrap_or(ZoneSpec {
                 offset_seconds: 0,
                 abbreviation: "UTC".into(),
                 is_dst: false,
-            },
-        )),
+            }))
+        }
         Value::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(time)),
         Value::Cons(_, _) => {
             let items = zone.to_vec()?;
@@ -31162,6 +31168,20 @@ fn call_time_builtin(
                     time.minute(),
                     time.second(),
                 )
+            } else if let Some(zone_text) = fields.get(8).filter(|value| value.is_string()) {
+                let text = string_text(zone_text)?;
+                if let Some(posix) = parse_posix_tz(&text) {
+                    posix.zone_for_civil(
+                        time.year(),
+                        time.month(),
+                        time.day(),
+                        time.hour(),
+                        time.minute(),
+                        time.second(),
+                    )
+                } else {
+                    zone_spec_from_value(zone_text, None)?
+                }
             } else {
                 zone_spec_from_value(fields.get(8).unwrap_or(&Value::Nil), None)?
             };
