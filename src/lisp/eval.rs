@@ -17702,6 +17702,23 @@ mod tests {
     }
 
     #[test]
+    fn format_time_string_supports_colonized_zone_offsets() {
+        run_with_large_stack(|| {
+            assert_string_value(
+                eval_str(
+                    r#"(mapconcat
+                        #'identity
+                        (list (format-time-string "%z|%:z|%:::z" 0 19800)
+                              (format-time-string "%z|%:z|%:::z" 0 -18000)
+                              (format-time-string "%z|%:z|%:::z" 0 0))
+                        "\n")"#,
+                ),
+                "+0530|+05:30|+05:30\n-0500|-05:00|-05\n+0000|+00:00|+00",
+            );
+        });
+    }
+
+    #[test]
     fn posix_tz_environment_drives_local_encode_and_decode_time() {
         let previous_tz = std::env::var("TZ").ok();
         unsafe {

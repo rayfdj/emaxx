@@ -30843,13 +30843,17 @@ fn format_zone_offset(
         format!("{hours:02}{minutes:02}")
     };
     let minimal_digits = strip_leading_zeros(&canonical_digits);
-    let mut rendered = if colons == 3 {
+    let mut rendered = if colons == 1 {
+        format!("{sign}{hours:02}:{minutes:02}")
+    } else if colons == 2 {
+        format!("{sign}{hours:02}:{minutes:02}:{seconds:02}")
+    } else if colons == 3 {
         let body = if seconds != 0 {
-            format!("{hours}:{minutes:02}:{seconds:02}")
+            format!("{hours:02}:{minutes:02}:{seconds:02}")
         } else if minutes != 0 {
-            format!("{hours}:{minutes:02}")
+            format!("{hours:02}:{minutes:02}")
         } else {
-            hours.to_string()
+            format!("{hours:02}")
         };
         format!("{sign}{body}")
     } else {
