@@ -477,6 +477,10 @@ impl Buffer {
         self.text.slice(start..end).to_string()
     }
 
+    pub fn full_buffer_string(&self) -> String {
+        self.text.to_string()
+    }
+
     pub fn position_bytes(&self, pos: usize) -> Option<usize> {
         let char_len = self.text.len_chars();
         if pos == 0 || pos > char_len + 1 {
@@ -543,6 +547,10 @@ impl Buffer {
             }
         }
         merge_adjacent_spans(spans)
+    }
+
+    pub fn full_property_spans(&self) -> Vec<TextPropertySpan> {
+        self.text_properties.clone()
     }
 
     pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {

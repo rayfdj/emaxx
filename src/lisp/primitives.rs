@@ -1980,6 +1980,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "copy-marker"
             | "point-marker"
             | "mark-marker"
+            | "deactivate-mark"
             | "point-min-marker"
             | "point-max-marker"
             | "marker-buffer"
@@ -1992,6 +1993,7 @@ pub fn is_builtin(name: &str) -> bool {
             // Output
             | "message"
             | "warn"
+            | "display-warning"
             | "current-message"
             | "error-message-string"
             | "ding"
@@ -2165,6 +2167,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "run-hook-with-args-until-success"
             | "run-mode-hooks"
             | "run-hook-wrapped"
+            | "ert-simulate-command"
             | "mapatoms"
             | "eval-after-load"
             | "define-error"
@@ -6952,7 +6955,7 @@ pub fn call(
                 )),
             }
         }
-        "buffer-size" => Ok(Value::Integer(interp.buffer.buffer_size() as i64)),
+        "buffer-size" => Ok(Value::Integer(interp.buffer.size_total() as i64)),
         "buffer-enable-undo" => {
             interp.buffer.enable_undo();
             Ok(Value::Nil)
@@ -8503,17 +8506,19 @@ pub fn call(
             let clone = args.get(2).is_some_and(|value| value.is_truthy());
             let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
             let (new_id, _) = interp.create_buffer(&new_name);
-            let (text, props, point, mark, file, base_overlays) = {
+            let (text, props, point, mark, file, base_overlays, restriction, multibyte) = {
                 let base = interp
                     .get_buffer_by_id(base_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", base_id)))?;
                 (
-                    base.buffer_string(),
-                    base.substring_property_spans(base.point_min(), base.point_max()),
+                    base.full_buffer_string(),
+                    base.full_property_spans(),
                     base.point(),
                     base.mark(),
                     base.file.clone(),
                     base.overlays.clone(),
+                    base.restriction(),
+                    base.is_multibyte(),
                 )
             };
             let overlays = if clone {
@@ -8532,6 +8537,8 @@ pub fn call(
                 *buffer = crate::buffer::Buffer::from_text(&new_name, &text);
                 buffer.file = file;
                 buffer.inhibit_hooks = inhibit_hooks;
+                buffer.set_multibyte(multibyte);
+                buffer.restore_restriction(restriction.0, restriction.1);
                 buffer.goto_char(point);
                 if let Some(mark) = mark {
                     buffer.set_mark(mark);
@@ -11062,6 +11069,11 @@ pub fn call(
             Some((_, end)) => Ok(Value::Integer(end as i64)),
             None => Err(LispError::Signal("The mark is not set now".into())),
         },
+        "deactivate-mark" => {
+            interp.buffer.deactivate_mark();
+            interp.set_variable("deactivate-mark", Value::Nil, env);
+            Ok(Value::Nil)
+        }
         "region-active-p" => Ok(
             if interp.buffer.mark_active()
                 && interp
@@ -11123,6 +11135,18 @@ pub fn call(
                 "Warning".to_string()
             } else {
                 format!("Warning: {text}")
+            };
+            let _ = call(interp, "message", &[Value::String(warning)], env)?;
+            Ok(Value::Nil)
+        }
+        "display-warning" => {
+            need_arg_range(name, args, 2, 4)?;
+            let warning_type = args[0].to_string();
+            let message = string_text(&args[1])?;
+            let warning = if warning_type == "nil" {
+                format!("Warning: {message}")
+            } else {
+                format!("Warning ({warning_type}): {message}")
             };
             let _ = call(interp, "message", &[Value::String(warning)], env)?;
             Ok(Value::Nil)
@@ -13285,6 +13309,7 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "ert-simulate-command" => ert_simulate_command(interp, args, env),
         "mapatoms" => {
             need_arg_range(name, args, 1, 2)?;
             let callback = resolve_callable(interp, &args[0], env)?;
@@ -28027,6 +28052,58 @@ fn run_named_hooks(
         call_function_value(interp, &hook, &[], env)?;
     }
     Ok(())
+}
+
+fn ert_simulate_command(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_args("ert-simulate-command", args, 1)?;
+    let command = args[0].to_vec()?;
+    let Some(original_command) = command.first().cloned() else {
+        return Err(LispError::TypeError("command".into(), args[0].type_name()));
+    };
+    if interp
+        .lookup_var("unread-command-events", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Err(LispError::Signal(
+            "Assertion failed: (not unread-command-events)".into(),
+        ));
+    }
+
+    let remapped = command_remapping(interp, &original_command, None, env)?;
+    let this_command = if remapped.is_nil() {
+        original_command.clone()
+    } else {
+        remapped
+    };
+    interp.set_variable("deactivate-mark", Value::Nil, env);
+    interp.set_variable("this-original-command", original_command.clone(), env);
+    interp.set_variable("this-command", this_command.clone(), env);
+    run_named_hooks(
+        interp,
+        "pre-command-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    let return_value = call_function_value(interp, &original_command, &command[1..], env)?;
+    run_named_hooks(
+        interp,
+        "post-command-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    interp.set_variable("real-last-command", original_command, env);
+    interp.set_variable("last-command", this_command, env);
+    if interp.lookup_var("last-repeatable-command", env).is_some() {
+        let real_last_command = interp
+            .lookup_var("real-last-command", env)
+            .unwrap_or(Value::Nil);
+        interp.set_variable("last-repeatable-command", real_last_command, env);
+    }
+    Ok(return_value)
 }
 
 fn run_write_buffer_hooks_until_success(

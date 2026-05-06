@@ -5381,6 +5381,11 @@ impl Interpreter {
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
             "last-command" => Some(Value::Nil),
+            "real-last-command" => Some(Value::Nil),
+            "this-command" => Some(Value::Nil),
+            "this-original-command" => Some(Value::Nil),
+            "unread-command-events" => Some(Value::Nil),
+            "deactivate-mark" => Some(Value::Nil),
             "line-spacing" => Some(Value::Nil),
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
@@ -16057,6 +16062,76 @@ mod tests {
     }
 
     #[test]
+    fn ert_simulate_command_runs_hooks_and_tracks_commands() {
+        assert_eq!(
+            eval_str(
+                "(let (events)
+                   (fset 'emaxx-test-command
+                         (lambda (arg)
+                           (interactive)
+                           (push (list 'command arg this-command) events)
+                           'done))
+                   (add-hook 'pre-command-hook
+                             (lambda () (push (list 'pre this-command) events)))
+                   (add-hook 'post-command-hook
+                             (lambda () (push (list 'post this-command) events)))
+                   (list (ert-simulate-command '(emaxx-test-command 7))
+                         last-command
+                         real-last-command
+                         (nreverse events)))"
+            ),
+            Value::list([
+                Value::Symbol("done".into()),
+                Value::Symbol("emaxx-test-command".into()),
+                Value::Symbol("emaxx-test-command".into()),
+                Value::list([
+                    Value::list([
+                        Value::Symbol("pre".into()),
+                        Value::Symbol("emaxx-test-command".into()),
+                    ]),
+                    Value::list([
+                        Value::Symbol("command".into()),
+                        Value::Integer(7),
+                        Value::Symbol("emaxx-test-command".into()),
+                    ]),
+                    Value::list([
+                        Value::Symbol("post".into()),
+                        Value::Symbol("emaxx-test-command".into()),
+                    ]),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn display_warning_records_message_and_returns_nil() {
+        assert_eq!(
+            eval_str(
+                r#"(progn
+                     (display-warning 'todo "check this" :warning)
+                     (current-message))"#
+            ),
+            Value::String("Warning (todo): check this".into())
+        );
+    }
+
+    #[test]
+    fn deactivate_mark_clears_active_region() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (insert "abc")
+                     (set-mark 1)
+                     (goto-char 3)
+                     (list (region-active-p)
+                           (deactivate-mark)
+                           (region-active-p)))"#
+            ),
+            Value::list([Value::T, Value::Nil, Value::Nil])
+        );
+    }
+
+    #[test]
     fn bury_buffer_moves_buffer_to_end_and_selects_next_buffer() {
         let mut interp = Interpreter::new();
         assert_eq!(
@@ -22225,6 +22300,48 @@ mod tests {
                            (kill-buffer base)))))"#
             ),
             Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn make_indirect_buffer_preserves_text_point_and_restriction() {
+        assert_eq!(
+            eval_str(
+                r#"(let ((base (get-buffer-create " indirect-restriction-base")))
+                     (with-current-buffer base
+                       (erase-buffer)
+                       (insert "header\nfirst\nsecond\n")
+                       (goto-char 8)
+                       (narrow-to-region 8 20)
+                       (let ((clone (make-indirect-buffer base " indirect-restriction-clone")))
+                         (unwind-protect
+                             (with-current-buffer clone
+                               (list (buffer-string)
+                                     (point)
+                                     (point-min)
+                                     (point-max)))
+                           (kill-buffer clone)
+                           (kill-buffer base)))))"#
+            ),
+            Value::list([
+                Value::String("first\nsecond".into()),
+                Value::Integer(8),
+                Value::Integer(8),
+                Value::Integer(20),
+            ])
+        );
+    }
+
+    #[test]
+    fn buffer_size_ignores_narrowing_like_emacs() {
+        assert_eq!(
+            eval_str(
+                r#"(with-temp-buffer
+                     (insert "abcdef")
+                     (narrow-to-region 2 4)
+                     (list (buffer-size) (point-min) (point-max)))"#
+            ),
+            Value::list([Value::Integer(6), Value::Integer(2), Value::Integer(4)])
         );
     }
 
