@@ -5716,6 +5716,10 @@ pub fn call(
                         )?,
                         Vec::new(),
                     ),
+                    'f' => (
+                        format_float_conversion(interp, arg, flag_plus, flag_space, precision)?,
+                        Vec::new(),
+                    ),
                     'c' => (format_char_conversion(arg)?, Vec::new()),
                     _ => {
                         // Unknown conversion, pass through
@@ -35203,6 +35207,26 @@ fn format_numeric_conversion(
             conv
         ))),
     }
+}
+
+fn format_float_conversion(
+    interp: &Interpreter,
+    arg: &Value,
+    flag_plus: bool,
+    flag_space: bool,
+    precision: Option<usize>,
+) -> Result<String, LispError> {
+    let value = numeric_to_f64(interp, arg)?;
+    let precision = precision.unwrap_or(6);
+    let mut text = format!("{value:.precision$}");
+    if !text.starts_with('-') {
+        if flag_plus {
+            text.insert(0, '+');
+        } else if flag_space {
+            text.insert(0, ' ');
+        }
+    }
+    Ok(text)
 }
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
