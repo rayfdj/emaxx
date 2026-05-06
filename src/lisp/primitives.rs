@@ -39928,6 +39928,19 @@ fn parse_interactive_string(
                 let ch = unread_command_event_char(&pop_unread_command_event_value(interp, env)?)?;
                 values.push(Value::String(ch.to_string()));
             }
+            'p' => {
+                let prefix = interp
+                    .lookup_var("current-prefix-arg", env)
+                    .unwrap_or(Value::Nil);
+                values.push(prefix_numeric_value(&prefix)?);
+            }
+            'P' => {
+                values.push(
+                    interp
+                        .lookup_var("current-prefix-arg", env)
+                        .unwrap_or(Value::Nil),
+                );
+            }
             _ => return Err(invalid_interactive_control_letter(code)),
         }
     }
