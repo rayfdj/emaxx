@@ -2554,17 +2554,29 @@ pub fn call(
             }
         }
         "/" => {
-            if args.len() < 2 {
+            if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("/".into(), args.len()));
             }
             if has_float(args) {
-                let mut result = numeric_to_f64(interp, &args[0])?;
+                let mut result = if args.len() == 1 {
+                    1.0 / numeric_to_f64(interp, &args[0])?
+                } else {
+                    numeric_to_f64(interp, &args[0])?
+                };
                 for a in &args[1..] {
                     result /= numeric_to_f64(interp, a)?;
                 }
                 Ok(Value::Float(result))
             } else if has_big_integer(args) {
-                let mut result = integer_like_bigint(interp, &args[0])?;
+                let mut result = if args.len() == 1 {
+                    let divisor = integer_like_bigint(interp, &args[0])?;
+                    if divisor.is_zero() {
+                        return Err(LispError::Signal("Division by zero".into()));
+                    }
+                    BigInt::from(1u8) / divisor
+                } else {
+                    integer_like_bigint(interp, &args[0])?
+                };
                 for a in &args[1..] {
                     let divisor = integer_like_bigint(interp, a)?;
                     if divisor.is_zero() {
@@ -2574,7 +2586,15 @@ pub fn call(
                 }
                 Ok(normalize_bigint_value(result))
             } else {
-                let mut result = integer_like_i64(interp, &args[0])?;
+                let mut result = if args.len() == 1 {
+                    let divisor = integer_like_i64(interp, &args[0])?;
+                    if divisor == 0 {
+                        return Err(LispError::Signal("Division by zero".into()));
+                    }
+                    1 / divisor
+                } else {
+                    integer_like_i64(interp, &args[0])?
+                };
                 for a in &args[1..] {
                     let divisor = integer_like_i64(interp, a)?;
                     if divisor == 0 {
