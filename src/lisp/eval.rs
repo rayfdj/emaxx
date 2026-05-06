@@ -6943,11 +6943,25 @@ impl Interpreter {
     }
 
     fn sf_setf(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() != 3 {
+        if items.len() < 3 || items.len().is_multiple_of(2) {
             return Err(LispError::WrongNumberOfArgs(
                 "setf".into(),
                 items.len().saturating_sub(1),
             ));
+        }
+        if items.len() > 3 {
+            let mut result = Value::Nil;
+            let mut index = 1;
+            while index + 1 < items.len() {
+                let pair = [
+                    Value::Symbol("setf".into()),
+                    items[index].clone(),
+                    items[index + 1].clone(),
+                ];
+                result = self.sf_setf(&pair, env)?;
+                index += 2;
+            }
+            return Ok(result);
         }
         if matches!(items.get(1), Some(Value::Symbol(_) | Value::Nil | Value::T)) {
             let setq_items = [
@@ -7228,11 +7242,8 @@ impl Interpreter {
         };
 
         let mut cell = self.eval(target_expr, env)?;
-        for _ in 0..index {
-            cell = cell.cdr()?;
-        }
         let value = self.eval(value_expr, env)?;
-        cell.set_car(value.clone())?;
+        set_decoded_time_accessor_value(index, &mut cell, value.clone())?;
         Ok(value)
     }
 
@@ -7367,6 +7378,22 @@ impl Interpreter {
                         target.set_cdr(value)?;
                     }
                     Ok(())
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if name == "--emaxx-setf-decoded-time-place"
+                ) {
+                    let Some(accessor) = items.get(1).and_then(|value| value.as_symbol().ok())
+                    else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(index) = decoded_time_accessor_index(accessor) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(target) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let mut cell = target.clone();
+                    set_decoded_time_accessor_value(index, &mut cell, value)
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "symbol-value")
                 {
                     let Some(symbol_form) = items.get(1) else {
@@ -8167,20 +8194,33 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let name = items[1].as_symbol()?.to_string();
         let delta = if let Some(amount) = items.get(2) {
             self.eval(amount, env)?
         } else {
             Value::Integer(1)
         };
-        let current = self.lookup(&name, env)?;
+        if let Ok(name) = items[1].as_symbol() {
+            let name = name.to_string();
+            let current = self.lookup(&name, env)?;
+            let updated = primitives::call(
+                self,
+                if sign >= 0 { "+" } else { "-" },
+                &[current, delta],
+                env,
+            )?;
+            self.set_variable(&name, updated.clone(), env);
+            return Ok(updated);
+        }
+
+        let place = self.resolve_setf_place(&items[1], env)?;
+        let current = self.eval_resolved_setf_place_current_value(&place, env)?;
         let updated = primitives::call(
             self,
             if sign >= 0 { "+" } else { "-" },
             &[current, delta],
             env,
         )?;
-        self.set_variable(&name, updated.clone(), env);
+        self.set_resolved_setf_place_value(&place, updated.clone(), env)?;
         Ok(updated)
     }
 
@@ -9396,6 +9436,21 @@ impl Interpreter {
                     } else {
                         target.cdr()
                     }
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if name == "--emaxx-setf-decoded-time-place"
+                ) {
+                    let Some(accessor) = items.get(1).and_then(|value| value.as_symbol().ok())
+                    else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(index) = decoded_time_accessor_index(accessor) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(target) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    decoded_time_accessor_value(index, target)
                 } else {
                     self.eval(place, env)
                 }
@@ -9466,6 +9521,13 @@ impl Interpreter {
                 if matches!(name.as_str(), "car" | "cdr") {
                     return Ok(Value::list([
                         Value::Symbol(format!("--emaxx-setf-{name}-place")),
+                        target,
+                    ]));
+                }
+                if decoded_time_accessor_index(name).is_some() {
+                    return Ok(Value::list([
+                        Value::Symbol("--emaxx-setf-decoded-time-place".into()),
+                        Value::Symbol(name.clone()),
                         target,
                     ]));
                 }
@@ -12209,6 +12271,25 @@ fn decoded_time_accessor_index(name: &str) -> Option<usize> {
         "decoded-time-zone" => Some(8),
         _ => None,
     }
+}
+
+fn decoded_time_accessor_value(index: usize, target: &Value) -> Result<Value, LispError> {
+    let mut cell = target.clone();
+    for _ in 0..index {
+        cell = cell.cdr()?;
+    }
+    cell.car()
+}
+
+fn set_decoded_time_accessor_value(
+    index: usize,
+    target: &mut Value,
+    value: Value,
+) -> Result<(), LispError> {
+    for _ in 0..index {
+        *target = target.cdr()?;
+    }
+    target.set_car(value)
 }
 
 fn forms_to_progn(forms: &[Value]) -> Value {
@@ -17650,17 +17731,24 @@ mod tests {
                     "(let ((time (decode-time 0 \"UTC0\" 'integer)))
                        (setf (decoded-time-hour time) 23)
                        (setf (decoded-time-zone time) -3600)
+                       (cl-incf (decoded-time-hour time) 2)
+                       (setf (decoded-time-minute time) 45
+                             (decoded-time-second time) 30)
                        (list (decoded-time-hour time)
+                             (decoded-time-minute time)
+                             (decoded-time-second time)
                              (decoded-time-zone time)
                              time))"
                 ),
                 Value::list([
-                    Value::Integer(23),
+                    Value::Integer(25),
+                    Value::Integer(45),
+                    Value::Integer(30),
                     Value::Integer(-3600),
                     Value::list([
-                        Value::Integer(0),
-                        Value::Integer(0),
-                        Value::Integer(23),
+                        Value::Integer(30),
+                        Value::Integer(45),
+                        Value::Integer(25),
                         Value::Integer(1),
                         Value::Integer(1),
                         Value::Integer(1970),
