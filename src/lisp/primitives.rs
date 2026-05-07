@@ -1402,6 +1402,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "length="
             | "reverse"
             | "copy-tree"
+            | "flatten-tree"
+            | "flatten-list"
             | "copy-alist"
             | "delete-dups"
             | "remove"
@@ -4132,6 +4134,12 @@ pub fn call(
             need_arg_range(name, args, 1, 2)?;
             let vectors_and_records = args.get(1).is_some_and(Value::is_truthy);
             copy_tree_value(interp, &args[0], vectors_and_records)
+        }
+        "flatten-tree" | "flatten-list" => {
+            need_args(name, args, 1)?;
+            let mut leaves = Vec::new();
+            flatten_tree_value(&args[0], &mut leaves);
+            Ok(Value::list(leaves))
         }
         "copy-alist" => {
             need_args(name, args, 1)?;
@@ -19633,9 +19641,7 @@ fn match_data_from_captures(
         if match_data.len() <= target_index {
             match_data.resize(target_index + 1, None);
         }
-        if match_data[target_index].is_none() {
-            match_data[target_index] = Some((start, end));
-        }
+        match_data[target_index] = Some((start, end));
     }
     match_data
 }
@@ -21708,9 +21714,7 @@ fn set_backward_match_data(
         if match_data.len() <= target_index {
             match_data.resize(target_index + 1, None);
         }
-        if match_data[target_index].is_none() {
-            match_data[target_index] = Some((start, end));
-        }
+        match_data[target_index] = Some((start, end));
     }
     interp.last_match_data = Some(match_data);
     interp.last_match_data_buffer_id = source_buffer_id;
@@ -36640,6 +36644,17 @@ fn copy_tree_value(
             Ok(interp.create_record(&record.type_name, slots))
         }
         _ => Ok(value.clone()),
+    }
+}
+
+fn flatten_tree_value(value: &Value, leaves: &mut Vec<Value>) {
+    match value {
+        Value::Nil => {}
+        Value::Cons(car, cdr) => {
+            flatten_tree_value(&car.borrow(), leaves);
+            flatten_tree_value(&cdr.borrow(), leaves);
+        }
+        leaf => leaves.push(leaf.clone()),
     }
 }
 
