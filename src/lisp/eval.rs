@@ -17542,6 +17542,66 @@ mod tests {
     }
 
     #[test]
+    fn explicitly_numbered_capture_overrides_earlier_capture() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (string-match "\\(?1:a\\)\\(?1:b\\)" "ab")
+                  (list (equal (match-string 1 "ab") "b")
+                        (match-beginning 1)
+                        (match-end 1)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(1), Value::Integer(2),])
+        );
+    }
+
+    #[test]
+    fn unmatched_explicit_duplicate_capture_keeps_prior_match() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (progn
+                  (string-match "\\(?1:a\\)\\(?1:b\\)?" "a")
+                  (list (equal (match-string 1 "a") "a")
+                        (match-beginning 1)
+                        (match-end 1)))
+                "#
+            ),
+            Value::list([Value::T, Value::Integer(0), Value::Integer(1),])
+        );
+    }
+
+    #[test]
+    fn flatten_tree_returns_non_nil_leaves_in_order() {
+        assert_eq!(
+            eval_str("(flatten-tree '(1 (2 . 3) nil (4 5 (6)) 7))"),
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5),
+                Value::Integer(6),
+                Value::Integer(7),
+            ])
+        );
+    }
+
+    #[test]
+    fn flatten_list_alias_matches_flatten_tree() {
+        assert_eq!(
+            eval_str("(flatten-list '(nil (a . b) (c nil)))"),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn forward_comment_finds_local_nested_comment_despite_earlier_unterminated_one() {
         assert_eq!(
             eval_str(
