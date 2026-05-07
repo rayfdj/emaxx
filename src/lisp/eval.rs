@@ -17483,6 +17483,65 @@ mod tests {
     }
 
     #[test]
+    fn re_search_backward_empty_line_with_bound_returns_line_start() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "a\n\nb\n")
+                  (goto-char 4)
+                  (let ((bound (save-excursion
+                                 (goto-char 1)
+                                 (line-end-position))))
+                    (list bound
+                          (re-search-backward "^$" bound t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0))))
+                "#
+            ),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+            ])
+        );
+    }
+
+    #[test]
+    fn re_search_backward_empty_line_before_separator_respects_bound() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "item\n\n==--== DONE \n[DONE x]\n")
+                  (goto-char (point-max))
+                  (search-backward "[DONE")
+                  (let ((bound (save-excursion
+                                 (goto-char 1)
+                                 (line-end-position))))
+                    (list bound
+                          (point)
+                          (re-search-backward "^$" bound t)
+                          (point)
+                          (match-beginning 0)
+                          (match-end 0))))
+                "#
+            ),
+            Value::list([
+                Value::Integer(5),
+                Value::Integer(20),
+                Value::Integer(6),
+                Value::Integer(6),
+                Value::Integer(6),
+                Value::Integer(6),
+            ])
+        );
+    }
+
+    #[test]
     fn forward_comment_finds_local_nested_comment_despite_earlier_unterminated_one() {
         assert_eq!(
             eval_str(

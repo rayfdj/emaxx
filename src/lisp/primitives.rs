@@ -21567,10 +21567,20 @@ fn buffer_regex_search(
                 ])))
             };
         }
+        let absolute_start = interp.buffer.point_min();
         let prefix = interp
             .buffer
-            .buffer_substring(limit, interp.buffer.point())
+            .buffer_substring(absolute_start, interp.buffer.point())
             .map_err(|error| LispError::Signal(error.to_string()))?;
+        let empty_line_pattern = pattern.text == "^$";
+        if empty_line_pattern
+            && let Some(pos) = last_empty_line_match_position(absolute_start, &prefix, limit)
+        {
+            interp.last_match_data = Some(vec![Some((pos, pos))]);
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+            interp.buffer.goto_char(pos);
+            return Ok(Value::Integer(pos as i64));
+        }
         let mut best_match: Option<(usize, usize, usize)> = None;
         for start_byte in prefix
             .char_indices()
@@ -21586,15 +21596,26 @@ fn buffer_regex_search(
             let Some(matched) = captures.get(0) else {
                 continue;
             };
-            if matched.start() != start_byte {
+            let Some(match_start) = backward_match_position(
+                absolute_start,
+                &prefix,
+                matched.start(),
+                empty_line_pattern,
+            ) else {
+                continue;
+            };
+            if match_start < limit {
                 continue;
             }
-            let match_start = limit + prefix[..matched.start()].chars().count();
-            let match_end = limit + prefix[..matched.end()].chars().count();
+            let Some(match_end) =
+                backward_match_position(absolute_start, &prefix, matched.end(), empty_line_pattern)
+            else {
+                continue;
+            };
             if best_match.is_none_or(|(best_start, best_end, _)| {
                 match_start > best_start || (match_start == best_start && match_end > best_end)
             }) {
-                best_match = Some((match_start, match_end, start_byte));
+                best_match = Some((match_start, match_end, matched.start()));
             }
         }
         if let Some((match_start, _, start_byte)) = best_match
@@ -21605,13 +21626,14 @@ fn buffer_regex_search(
                 .get(0)
                 .is_some_and(|matched| matched.start() == start_byte)
         {
-            set_match_data(
+            set_backward_match_data(
                 interp,
-                limit,
+                absolute_start,
                 &prefix,
                 &captures,
                 regex.capture_mapping(),
                 Some(interp.current_buffer_id()),
+                empty_line_pattern,
             );
             interp.buffer.goto_char(match_start);
             return Ok(Value::Integer(match_start as i64));
@@ -21626,6 +21648,88 @@ fn buffer_regex_search(
             Value::String(pattern.text),
         ])))
     }
+}
+
+fn last_empty_line_match_position(
+    absolute_start: usize,
+    haystack: &str,
+    limit: usize,
+) -> Option<usize> {
+    if haystack.is_empty() && absolute_start >= limit {
+        return Some(absolute_start);
+    }
+
+    let mut previous_was_newline = true;
+    let mut best = None;
+    for (char_offset, ch) in haystack.chars().enumerate() {
+        if ch == '\n' && previous_was_newline {
+            let pos = absolute_start + char_offset;
+            if pos >= limit {
+                best = Some(pos);
+            }
+        }
+        previous_was_newline = ch == '\n';
+    }
+    best
+}
+
+fn set_backward_match_data(
+    interp: &mut Interpreter,
+    absolute_start: usize,
+    haystack: &str,
+    captures: &fancy_regex::Captures<'_>,
+    capture_mapping: &[usize],
+    source_buffer_id: Option<u64>,
+    empty_line_pattern: bool,
+) {
+    let mut match_data = vec![None; capture_mapping.iter().copied().max().unwrap_or(0) + 1];
+    for index in 0..captures.len() {
+        let Some(matched) = captures.get(index) else {
+            continue;
+        };
+        let Some(start) = backward_match_position(
+            absolute_start,
+            haystack,
+            matched.start(),
+            empty_line_pattern,
+        ) else {
+            continue;
+        };
+        let Some(end) =
+            backward_match_position(absolute_start, haystack, matched.end(), empty_line_pattern)
+        else {
+            continue;
+        };
+        let target_index = if index == 0 {
+            0
+        } else {
+            capture_mapping.get(index - 1).copied().unwrap_or(index)
+        };
+        if match_data.len() <= target_index {
+            match_data.resize(target_index + 1, None);
+        }
+        if match_data[target_index].is_none() {
+            match_data[target_index] = Some((start, end));
+        }
+    }
+    interp.last_match_data = Some(match_data);
+    interp.last_match_data_buffer_id = source_buffer_id;
+}
+
+fn backward_match_position(
+    absolute_start: usize,
+    haystack: &str,
+    byte_index: usize,
+    empty_line_pattern: bool,
+) -> Option<usize> {
+    if empty_line_pattern && byte_index > 0 && haystack[..byte_index].ends_with('\n') {
+        let newline_byte = haystack[..byte_index].rfind('\n')?;
+        if newline_byte == 0 || haystack[..newline_byte].ends_with('\n') {
+            return Some(absolute_start + haystack[..newline_byte].chars().count());
+        }
+        return None;
+    }
+    Some(absolute_start + haystack[..byte_index].chars().count())
 }
 
 fn expand_replace_match(
