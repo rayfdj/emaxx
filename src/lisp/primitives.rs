@@ -14019,8 +14019,7 @@ pub fn call(
             })
         }
         "revert-buffer" => {
-            if let Some(revert_function) =
-                interp.buffer_local_value(interp.current_buffer_id(), "revert-buffer-function")
+            if let Some(revert_function) = interp.lookup_var("revert-buffer-function", env)
                 && revert_function.is_truthy()
             {
                 let mut revert_args = Vec::with_capacity(args.len() + 1);
@@ -43028,6 +43027,50 @@ mod compat_runtime_tests {
             assert_eq!(interp.buffer.buffer_string(), "fresh");
 
             std::fs::remove_file(path).expect("cleanup wrapper file");
+        });
+    }
+
+    #[test]
+    fn revert_buffer_dynamic_nil_suppresses_buffer_local_revert_function() {
+        run_with_large_stack(|| {
+            let mut interp = Interpreter::new();
+            let mut env = Vec::new();
+            let path = call(
+                &mut interp,
+                "make-temp-file",
+                &[Value::String("emaxx-revert-buffer-dynamic-".into())],
+                &mut env,
+            )
+            .expect("create source file")
+            .as_string()
+            .expect("temp file path")
+            .to_string();
+            std::fs::write(&path, "fresh").expect("write file contents");
+
+            interp.buffer = crate::buffer::Buffer::from_text("*revert*", "stale");
+            interp.buffer.file = Some(path.clone());
+            interp.buffer.file_truename = Some(path.clone());
+
+            let forms = Reader::new(
+                r#"
+                (progn
+                  (defun sample-revert-wrapper (_orig-fun &rest _args)
+                    (error "wrapper should be dynamically suppressed"))
+                  (setq-local revert-buffer-function 'sample-revert-wrapper)
+                  (let ((revert-buffer-function nil))
+                    (revert-buffer))
+                  (buffer-string))
+                "#,
+            )
+            .read_all()
+            .expect("parse dynamic suppression forms");
+            let mut result = Value::Nil;
+            for form in forms {
+                result = interp.eval(&form, &mut env).expect("evaluate revert form");
+            }
+
+            assert_eq!(result, Value::String("fresh".into()));
+            std::fs::remove_file(path).expect("cleanup dynamic revert file");
         });
     }
 
