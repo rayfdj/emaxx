@@ -2076,6 +2076,11 @@ pub fn is_builtin(name: &str) -> bool {
             | "window-buffer"
             | "set-window-buffer"
             | "walk-windows"
+            | "split-window"
+            | "split-window-below"
+            | "split-window-vertically"
+            | "split-window-right"
+            | "split-window-horizontally"
             | "window-combined-p"
             | "window-dedicated-p"
             | "window-splittable-p"
@@ -9541,12 +9546,19 @@ pub fn call(
             let (id, _) = interp.create_buffer(&buf_name);
             Ok(Value::Buffer(id, buf_name))
         }
-        "buffer-file-name" => Ok(interp
-            .buffer
-            .file
-            .clone()
-            .map(Value::String)
-            .unwrap_or(Value::Nil)),
+        "buffer-file-name" => {
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = if let Some(buffer) = args.first().filter(|value| !value.is_nil()) {
+                interp.resolve_buffer_id(buffer)?
+            } else {
+                interp.current_buffer_id()
+            };
+            Ok(interp
+                .get_buffer_by_id(buffer_id)
+                .and_then(|buffer| buffer.file.clone())
+                .map(Value::String)
+                .unwrap_or(Value::Nil))
+        }
         "visited-file-modtime" => Ok(interp
             .buffer
             .visited_file_modtime()
@@ -12211,6 +12223,14 @@ pub fn call(
         }
         "window-at" => {
             need_arg_range(name, args, 2, 3)?;
+            Ok(interp.selected_window_value())
+        }
+        "split-window"
+        | "split-window-below"
+        | "split-window-vertically"
+        | "split-window-right"
+        | "split-window-horizontally" => {
+            need_arg_range(name, args, 0, 4)?;
             Ok(interp.selected_window_value())
         }
         "window-combined-p" => {
