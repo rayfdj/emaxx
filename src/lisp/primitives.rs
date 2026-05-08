@@ -1529,6 +1529,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "char-width"
             | "format"
             | "format-message"
+            | "ngettext"
             | "format-spec"
             | "char-to-string"
             | "string-to-char"
@@ -5827,6 +5828,13 @@ pub fn call(
                 ));
             }
             Ok(string_like_value(result, merge_string_props(result_props)))
+        }
+        "ngettext" => {
+            need_args(name, args, 3)?;
+            let singular = string_text(&args[0])?;
+            let plural = string_text(&args[1])?;
+            let count = args[2].as_integer()?;
+            Ok(Value::String(if count == 1 { singular } else { plural }))
         }
         "format-spec" => {
             if args.len() < 2 || args.len() > 4 {
@@ -21578,13 +21586,33 @@ fn buffer_regex_search(
     if forward {
         let start = interp.buffer.point();
         let limit = limit.min(interp.buffer.point_max());
+        let count = args
+            .get(3)
+            .filter(|value| !value.is_nil())
+            .map(Value::as_integer)
+            .transpose()?
+            .unwrap_or(1);
+        if count == 0 {
+            let point = interp.buffer.point();
+            interp.last_match_data = Some(vec![Some((point, point))]);
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+            return Ok(Value::Integer(point as i64));
+        }
+        if count < 0 {
+            let mut backward_args = args.to_vec();
+            if backward_args.len() < 4 {
+                backward_args.resize(4, Value::Nil);
+            }
+            backward_args[3] = Value::Integer(-count);
+            return buffer_regex_search(interp, &backward_args, env, false);
+        }
         if limit < start {
             return if noerror {
                 Ok(Value::Nil)
             } else {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text),
+                    Value::String(pattern.text.clone()),
                 ])))
             };
         }
@@ -21592,12 +21620,24 @@ fn buffer_regex_search(
             .buffer
             .buffer_substring(interp.buffer.point_min(), limit)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let start_offset = start.saturating_sub(interp.buffer.point_min());
-        if let Some(captures) = regex
-            .captures_from_pos(&haystack, start_offset)
-            .map_err(|error| LispError::Signal(error.to_string()))?
-            && let Some(matched) = captures.get(0)
-        {
+        let mut search_offset = start.saturating_sub(interp.buffer.point_min());
+        for _ in 0..count {
+            let Some(captures) = regex
+                .captures_from_pos(&haystack, search_offset)
+                .map_err(|error| LispError::Signal(error.to_string()))?
+            else {
+                return if noerror {
+                    Ok(Value::Nil)
+                } else {
+                    Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("search-failed".into()),
+                        Value::String(pattern.text.clone()),
+                    ])))
+                };
+            };
+            let Some(matched) = captures.get(0) else {
+                break;
+            };
             let pos = interp.buffer.point_min() + haystack[..matched.end()].chars().count();
             set_match_data(
                 interp,
@@ -21608,9 +21648,38 @@ fn buffer_regex_search(
                 Some(interp.current_buffer_id()),
             );
             interp.buffer.goto_char(pos);
-            return Ok(Value::Integer(pos as i64));
+            search_offset = if matched.end() > search_offset {
+                matched.end()
+            } else {
+                haystack[search_offset..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(offset, _)| search_offset + offset)
+                    .unwrap_or(haystack.len())
+            };
         }
+        Ok(Value::Integer(interp.buffer.point() as i64))
     } else {
+        let count = args
+            .get(3)
+            .filter(|value| !value.is_nil())
+            .map(Value::as_integer)
+            .transpose()?
+            .unwrap_or(1);
+        if count == 0 {
+            let point = interp.buffer.point();
+            interp.last_match_data = Some(vec![Some((point, point))]);
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+            return Ok(Value::Integer(point as i64));
+        }
+        if count < 0 {
+            let mut forward_args = args.to_vec();
+            if forward_args.len() < 4 {
+                forward_args.resize(4, Value::Nil);
+            }
+            forward_args[3] = Value::Integer(-count);
+            return buffer_regex_search(interp, &forward_args, env, true);
+        }
         let limit = limit.max(interp.buffer.point_min());
         if limit > interp.buffer.point() {
             return if noerror {
@@ -21618,90 +21687,95 @@ fn buffer_regex_search(
             } else {
                 Err(LispError::SignalValue(Value::list([
                     Value::Symbol("search-failed".into()),
-                    Value::String(pattern.text),
+                    Value::String(pattern.text.clone()),
                 ])))
             };
         }
-        let absolute_start = interp.buffer.point_min();
-        let prefix = interp
-            .buffer
-            .buffer_substring(absolute_start, interp.buffer.point())
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        let empty_line_pattern = pattern.text == "^$";
-        if empty_line_pattern
-            && let Some(pos) = last_empty_line_match_position(absolute_start, &prefix, limit)
-        {
-            interp.last_match_data = Some(vec![Some((pos, pos))]);
-            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-            interp.buffer.goto_char(pos);
-            return Ok(Value::Integer(pos as i64));
-        }
-        let mut best_match: Option<(usize, usize, usize)> = None;
-        for start_byte in prefix
-            .char_indices()
-            .map(|(index, _)| index)
-            .chain(std::iter::once(prefix.len()))
-        {
-            let Some(captures) = regex
-                .captures_from_pos(&prefix, start_byte)
-                .map_err(|error| LispError::Signal(error.to_string()))?
-            else {
-                continue;
-            };
-            let Some(matched) = captures.get(0) else {
-                continue;
-            };
-            let Some(match_start) = backward_match_position(
-                absolute_start,
-                &prefix,
-                matched.start(),
-                empty_line_pattern,
-            ) else {
-                continue;
-            };
-            if match_start < limit {
+        for _ in 0..count {
+            let absolute_start = interp.buffer.point_min();
+            let prefix = interp
+                .buffer
+                .buffer_substring(absolute_start, interp.buffer.point())
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let empty_line_pattern = pattern.text == "^$";
+            if empty_line_pattern
+                && let Some(pos) = last_empty_line_match_position(absolute_start, &prefix, limit)
+            {
+                interp.last_match_data = Some(vec![Some((pos, pos))]);
+                interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+                interp.buffer.goto_char(pos);
                 continue;
             }
-            let Some(match_end) =
-                backward_match_position(absolute_start, &prefix, matched.end(), empty_line_pattern)
-            else {
-                continue;
-            };
-            if best_match.is_none_or(|(best_start, best_end, _)| {
-                match_start > best_start || (match_start == best_start && match_end > best_end)
-            }) {
-                best_match = Some((match_start, match_end, matched.start()));
+            let mut best_match: Option<(usize, usize, usize)> = None;
+            for start_byte in prefix
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain(std::iter::once(prefix.len()))
+            {
+                let Some(captures) = regex
+                    .captures_from_pos(&prefix, start_byte)
+                    .map_err(|error| LispError::Signal(error.to_string()))?
+                else {
+                    continue;
+                };
+                let Some(matched) = captures.get(0) else {
+                    continue;
+                };
+                let Some(match_start) = backward_match_position(
+                    absolute_start,
+                    &prefix,
+                    matched.start(),
+                    empty_line_pattern,
+                ) else {
+                    continue;
+                };
+                if match_start < limit {
+                    continue;
+                }
+                let Some(match_end) = backward_match_position(
+                    absolute_start,
+                    &prefix,
+                    matched.end(),
+                    empty_line_pattern,
+                ) else {
+                    continue;
+                };
+                if best_match.is_none_or(|(best_start, best_end, _)| {
+                    match_start > best_start || (match_start == best_start && match_end > best_end)
+                }) {
+                    best_match = Some((match_start, match_end, matched.start()));
+                }
             }
+            if let Some((match_start, _, start_byte)) = best_match
+                && let Some(captures) = regex
+                    .captures_from_pos(&prefix, start_byte)
+                    .map_err(|error| LispError::Signal(error.to_string()))?
+                && captures
+                    .get(0)
+                    .is_some_and(|matched| matched.start() == start_byte)
+            {
+                set_backward_match_data(
+                    interp,
+                    absolute_start,
+                    &prefix,
+                    &captures,
+                    regex.capture_mapping(),
+                    Some(interp.current_buffer_id()),
+                    empty_line_pattern,
+                );
+                interp.buffer.goto_char(match_start);
+                continue;
+            }
+            return if noerror {
+                Ok(Value::Nil)
+            } else {
+                Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("search-failed".into()),
+                    Value::String(pattern.text.clone()),
+                ])))
+            };
         }
-        if let Some((match_start, _, start_byte)) = best_match
-            && let Some(captures) = regex
-                .captures_from_pos(&prefix, start_byte)
-                .map_err(|error| LispError::Signal(error.to_string()))?
-            && captures
-                .get(0)
-                .is_some_and(|matched| matched.start() == start_byte)
-        {
-            set_backward_match_data(
-                interp,
-                absolute_start,
-                &prefix,
-                &captures,
-                regex.capture_mapping(),
-                Some(interp.current_buffer_id()),
-                empty_line_pattern,
-            );
-            interp.buffer.goto_char(match_start);
-            return Ok(Value::Integer(match_start as i64));
-        }
-    }
-
-    if noerror {
-        Ok(Value::Nil)
-    } else {
-        Err(LispError::SignalValue(Value::list([
-            Value::Symbol("search-failed".into()),
-            Value::String(pattern.text),
-        ])))
+        Ok(Value::Integer(interp.buffer.point() as i64))
     }
 }
 

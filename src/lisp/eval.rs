@@ -15259,6 +15259,22 @@ mod tests {
     }
 
     #[test]
+    fn ngettext_selects_singular_only_for_one() {
+        assert_eq!(
+            eval_str(
+                r#"(list (ngettext "item" "items" 1)
+                         (ngettext "item" "items" 0)
+                         (ngettext "item" "items" 2))"#
+            ),
+            Value::list([
+                Value::String("item".into()),
+                Value::String("items".into()),
+                Value::String("items".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn assoc_string_matches_symbols_single_strings_and_case_fold() {
         assert_eq!(
             eval_str(
@@ -15588,6 +15604,92 @@ mod tests {
         let items = value.to_vec().unwrap();
         assert_eq!(items[0], Value::Nil);
         assert_eq!(primitives::string_text(&items[1]).unwrap(), "b");
+    }
+
+    #[test]
+    fn re_search_forward_respects_positive_count_argument() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "a\nb\nc\n")
+                  (goto-char (point-min))
+                  (list (re-search-forward "^[abc]" nil t 2)
+                        (match-beginning 0)
+                        (point)))
+                "#
+            ),
+            Value::list([Value::Integer(4), Value::Integer(3), Value::Integer(4),])
+        );
+    }
+
+    #[test]
+    fn re_search_forward_count_zero_sets_empty_match_at_point() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "a\nb\n")
+                  (goto-char (point-min))
+                  (list (re-search-forward "^[ab]" nil t 0)
+                        (point)
+                        (match-beginning 0)
+                        (match-end 0)))
+                "#
+            ),
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::Integer(1),
+                Value::Integer(1),
+            ])
+        );
+    }
+
+    #[test]
+    fn re_search_forward_negative_count_searches_backward() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "a\nb\n")
+                  (goto-char (point-max))
+                  (list (re-search-forward "^[ab]" nil t -1)
+                        (point)
+                        (match-beginning 0)
+                        (match-end 0)))
+                "#
+            ),
+            Value::list([
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(3),
+                Value::Integer(4),
+            ])
+        );
+    }
+
+    #[test]
+    fn re_search_backward_negative_count_searches_forward() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "a\nb\n")
+                  (goto-char (point-min))
+                  (list (re-search-backward "^[ab]" nil t -1)
+                        (point)
+                        (match-beginning 0)
+                        (match-end 0)))
+                "#
+            ),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(2),
+                Value::Integer(1),
+                Value::Integer(2),
+            ])
+        );
     }
 
     #[test]
