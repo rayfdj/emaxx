@@ -1082,6 +1082,9 @@ impl Interpreter {
         let minibuffer_local_map =
             primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
         interp.set_global_binding("minibuffer-local-map", minibuffer_local_map);
+        let query_replace_map =
+            primitives::make_runtime_keymap(&mut interp, Some("query-replace-map"));
+        interp.set_global_binding("query-replace-map", query_replace_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         interp.set_global_binding("minor-mode-map-alist", Value::Nil);
         interp.set_global_binding("font-lock-mode", Value::Nil);
@@ -20286,6 +20289,54 @@ mod tests {
                 Value::Nil,
                 Value::Nil,
                 Value::Nil,
+            ])
+        );
+    }
+
+    #[test]
+    fn split_window_returns_selected_window_in_headless_runtime() {
+        assert_eq!(
+            eval_str(
+                "(let ((window (selected-window))
+                       (target (get-buffer-create \"*split-target*\")))
+                   (list (eq (split-window-below) window)
+                         (eq (split-window-right) window)
+                         (progn
+                           (set-window-buffer (split-window) target)
+                           (eq (window-buffer window) target))))"
+            ),
+            Value::list([Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn query_replace_map_is_preloaded_for_prompt_helpers() {
+        assert_eq!(
+            eval_str(
+                "(list (keymapp query-replace-map)
+                       (define-key query-replace-map \" \" 'ignore))"
+            ),
+            Value::list([Value::T, Value::Symbol("ignore".into())])
+        );
+    }
+
+    #[test]
+    fn buffer_file_name_accepts_explicit_buffer_argument() {
+        assert_eq!(
+            eval_str(
+                "(let ((first (get-buffer-create \"*first-file-buffer*\"))
+                       (second (get-buffer-create \"*second-file-buffer*\")))
+                   (with-current-buffer first
+                     (setq buffer-file-name \"/tmp/first-file\"))
+                   (with-current-buffer second
+                     (setq buffer-file-name \"/tmp/second-file\"))
+                   (switch-to-buffer first)
+                   (list (buffer-file-name)
+                         (buffer-file-name second)))"
+            ),
+            Value::list([
+                Value::String("/tmp/first-file".into()),
+                Value::String("/tmp/second-file".into()),
             ])
         );
     }
