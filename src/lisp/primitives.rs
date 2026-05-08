@@ -1538,6 +1538,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "syntax-class-to-char"
             | "string-to-list"
             | "string-replace"
+            | "subst-char-in-string"
             | "string-equal-ignore-case"
             | "replace-regexp-in-string"
             | "rx-to-string"
@@ -5953,6 +5954,30 @@ pub fn call(
             let to = string_text(&args[1])?;
             let input = string_text(&args[2])?;
             Ok(Value::String(input.replace(&from, &to)))
+        }
+        "subst-char-in-string" => {
+            need_arg_range(name, args, 3, 4)?;
+            let from = char_from_integer(args[0].as_integer()?)?;
+            let to = char_from_integer(args[1].as_integer()?)?;
+            let mut string = string_like(&args[2])
+                .ok_or_else(|| LispError::TypeError("string".into(), args[2].type_name()))?;
+            string.text = string
+                .text
+                .chars()
+                .map(|ch| if ch == from { to } else { ch })
+                .collect();
+            if args.get(3).is_some_and(Value::is_truthy) {
+                if let Value::StringObject(state) = &args[2] {
+                    state.borrow_mut().text = string.text.clone();
+                }
+                Ok(args[2].clone())
+            } else {
+                Ok(string_like_value_with_multibyte(
+                    string.text,
+                    string.props,
+                    string.multibyte,
+                ))
+            }
         }
         "replace-regexp-in-string" => {
             if args.len() < 3 || args.len() > 7 {
@@ -27689,6 +27714,13 @@ pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
     string_like(value)
         .map(|string| string.text)
         .ok_or_else(|| LispError::TypeError("string".into(), value.type_name()))
+}
+
+fn char_from_integer(code: i64) -> Result<char, LispError> {
+    if code < 0 {
+        return Err(LispError::Signal("Invalid character".into()));
+    }
+    char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))
 }
 
 fn string_comparison_text(value: &Value) -> Result<String, LispError> {
