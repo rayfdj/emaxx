@@ -12395,6 +12395,14 @@ pub fn call(
                 return Ok(Value::Nil);
             }
             if buffer_id == interp.current_buffer_id() {
+                if let Some(index) = interp
+                    .buffer_list
+                    .iter()
+                    .position(|(id, _)| *id == buffer_id)
+                {
+                    let entry = interp.buffer_list.remove(index);
+                    interp.buffer_list.push(entry);
+                }
                 let next = interp
                     .selected_window_previous_buffer_id()
                     .filter(|id| *id != buffer_id)
@@ -12402,13 +12410,11 @@ pub fn call(
                         interp
                             .buffer_list
                             .iter()
-                            .rev()
                             .find(|(id, _)| *id != buffer_id)
                             .map(|(id, _)| *id)
                     });
                 if let Some(next_id) = next {
-                    interp.switch_to_buffer_id(next_id)?;
-                    interp.set_selected_window_buffer_id(next_id);
+                    interp.switch_to_buffer_id_preserving_window_history(next_id)?;
                 }
             }
             Ok(Value::Nil)
