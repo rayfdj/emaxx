@@ -13988,12 +13988,21 @@ pub fn call(
             let Some(path) = interp.buffer.file.clone() else {
                 return Ok(Value::Nil);
             };
+            if !interp.buffer.is_modified() {
+                return Ok(Value::Nil);
+            }
+            let buffer_text = interp.buffer.full_buffer_string();
+            if std::fs::read_to_string(&path).is_ok_and(|contents| contents == buffer_text) {
+                interp.buffer.set_unmodified();
+                interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+                unlock_current_buffer(interp, env)?;
+                return Ok(Value::Nil);
+            }
             ensure_no_supersession_threat(interp, env)?;
             if run_write_buffer_hooks_until_success(interp, env)? {
                 return Ok(Value::Nil);
             }
-            std::fs::write(&path, interp.buffer.buffer_string())
-                .map_err(|e| LispError::Signal(e.to_string()))?;
+            std::fs::write(&path, &buffer_text).map_err(|e| LispError::Signal(e.to_string()))?;
             interp.buffer.set_unmodified();
             interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
             unlock_current_buffer(interp, env)?;
@@ -42929,6 +42938,41 @@ mod compat_runtime_tests {
         assert!(!interp.buffer.is_multibyte());
 
         std::fs::remove_file(path).expect("cleanup raw file");
+    }
+
+    #[test]
+    fn save_buffer_skips_unmodified_and_unchanged_files() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let path = call(
+            &mut interp,
+            "make-temp-file",
+            &[Value::String("emaxx-save-unmodified-".into())],
+            &mut env,
+        )
+        .expect("create source file")
+        .as_string()
+        .expect("temp file path")
+        .to_string();
+        std::fs::write(&path, "fresh").expect("write source file");
+
+        interp.buffer = crate::buffer::Buffer::from_text("*save*", "fresh");
+        interp.buffer.file = Some(path.clone());
+        interp.buffer.file_truename = Some(path.clone());
+        interp.buffer.set_unmodified();
+
+        let original_permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).expect("make file read-only");
+
+        call(&mut interp, "save-buffer", &[], &mut env).expect("unmodified save is a no-op");
+        interp.buffer.set_modified();
+        call(&mut interp, "save-buffer", &[], &mut env)
+            .expect("unchanged text does not need a write");
+
+        std::fs::set_permissions(&path, original_permissions).expect("restore writable file");
+        std::fs::remove_file(path).expect("cleanup unmodified save file");
     }
 
     #[test]
