@@ -17602,6 +17602,23 @@ mod tests {
     }
 
     #[test]
+    fn next_single_char_property_change_observes_overlay_properties() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "abcd")
+                  (let ((overlay (make-overlay 2 4)))
+                    (overlay-put overlay 'face 'hl-line)
+                    (list (next-single-char-property-change 2 'face nil 5)
+                          (next-single-char-property-change 4 'face nil 5))))
+                "#
+            ),
+            Value::list([Value::Integer(4), Value::Integer(5)])
+        );
+    }
+
+    #[test]
     fn forward_comment_finds_local_nested_comment_despite_earlier_unterminated_one() {
         assert_eq!(
             eval_str(
