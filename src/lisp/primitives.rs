@@ -2153,6 +2153,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "skeleton-insert"
             // Overlay operations
             | "make-overlay"
+            | "copy-overlay"
             | "overlayp"
             | "overlay-buffer"
             | "overlay-start"
@@ -15298,6 +15299,29 @@ pub fn call(
             })
         }
 
+        "copy-overlay" => {
+            need_args(name, args, 1)?;
+            let ov_id = match &args[0] {
+                Value::Overlay(id) => *id,
+                _ => return Err(LispError::TypeError("overlay".into(), args[0].type_name())),
+            };
+            let mut copy = interp
+                .find_overlay(ov_id)
+                .cloned()
+                .ok_or_else(|| LispError::Signal("No such overlay".into()))?;
+            copy.id = interp.alloc_overlay_id();
+            let copy_id = copy.id;
+            let target_buffer_id = copy.buffer_id.unwrap_or_else(|| interp.current_buffer_id());
+            interp
+                .get_buffer_by_id_mut(target_buffer_id)
+                .ok_or_else(|| {
+                    LispError::Signal(format!("No buffer with id {}", target_buffer_id))
+                })?
+                .overlays
+                .push(copy);
+            Ok(Value::Overlay(copy_id))
+        }
+
         "overlay-buffer" => {
             need_args(name, args, 1)?;
             let ov_id = match &args[0] {
@@ -26816,6 +26840,72 @@ mod tests {
             )
             .expect("overlay-get should inherit button properties"),
             Value::Symbol("sample-button-type".into())
+        );
+    }
+
+    #[test]
+    fn copy_overlay_clones_region_and_properties_with_new_identity() {
+        let mut interp = Interpreter::new();
+        interp.buffer = crate::buffer::Buffer::from_text("*test*", "abcdef");
+        let mut env = Vec::new();
+
+        let overlay = call(
+            &mut interp,
+            "make-overlay",
+            &[Value::Integer(2), Value::Integer(5)],
+            &mut env,
+        )
+        .expect("make-overlay should create an overlay");
+        call(
+            &mut interp,
+            "overlay-put",
+            &[
+                overlay.clone(),
+                Value::Symbol("display".into()),
+                Value::String("".into()),
+            ],
+            &mut env,
+        )
+        .expect("overlay-put should assign a display property");
+
+        let copy = call(
+            &mut interp,
+            "copy-overlay",
+            std::slice::from_ref(&overlay),
+            &mut env,
+        )
+        .expect("copy-overlay should clone a live overlay");
+
+        assert_ne!(copy, overlay);
+        assert_eq!(
+            call(
+                &mut interp,
+                "overlay-start",
+                std::slice::from_ref(&copy),
+                &mut env
+            )
+            .expect("copy should have a start"),
+            Value::Integer(2)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "overlay-end",
+                std::slice::from_ref(&copy),
+                &mut env
+            )
+            .expect("copy should have an end"),
+            Value::Integer(5)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "overlay-get",
+                &[copy, Value::Symbol("display".into())],
+                &mut env,
+            )
+            .expect("copy should keep properties"),
+            Value::String("".into())
         );
     }
 
