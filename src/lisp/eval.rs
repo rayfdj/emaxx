@@ -1304,6 +1304,21 @@ impl Interpreter {
 
     /// Switch the current buffer to a different live buffer ID.
     pub fn switch_to_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
+        self.switch_to_buffer_id_with_window_history(id, true)
+    }
+
+    pub fn switch_to_buffer_id_preserving_window_history(
+        &mut self,
+        id: u64,
+    ) -> Result<(), LispError> {
+        self.switch_to_buffer_id_with_window_history(id, false)
+    }
+
+    fn switch_to_buffer_id_with_window_history(
+        &mut self,
+        id: u64,
+        record_previous_window_buffer: bool,
+    ) -> Result<(), LispError> {
         if id == self.current_buffer_id {
             return Ok(());
         }
@@ -1330,7 +1345,7 @@ impl Interpreter {
             } else {
                 window.slots[1] = Value::Integer(point_min);
             }
-            if previous != id as i64 {
+            if record_previous_window_buffer && previous != id as i64 {
                 if window.slots.len() < 3 {
                     window.slots.resize(3, Value::Nil);
                 }
@@ -21732,6 +21747,29 @@ mod tests {
                         (buffer-live-p second)))"#
             ),
             Value::list([Value::T, Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn quit_window_does_not_reselect_buffer_that_quit_to_restored_buffer() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                (let ((todo (get-buffer-create "*quit-todo*"))
+                      (dir (get-buffer-create "*quit-dir*")))
+                  (switch-to-buffer dir)
+                  (switch-to-buffer todo)
+                  (quit-window)
+                  (let ((first-quit-buffer (current-buffer)))
+                    (quit-window)
+                    (list (eq first-quit-buffer dir)
+                          (not (eq (current-buffer) todo))
+                          (buffer-live-p todo)
+                          (buffer-live-p dir))))"#
+            ),
+            Value::list([Value::T, Value::T, Value::T, Value::T])
         );
     }
 
