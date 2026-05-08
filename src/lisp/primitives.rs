@@ -1704,6 +1704,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "text-property-any"
             | "text-property-not-all"
             | "next-single-property-change"
+            | "next-single-char-property-change"
             | "previous-single-property-change"
             | "text-properties-at"
             | "object-intervals"
@@ -7924,6 +7925,54 @@ pub fn call(
                     })?;
                     buffer.text_property_at(cursor, &prop).unwrap_or(Value::Nil)
                 };
+                if current != initial {
+                    return Ok(Value::Integer(cursor as i64));
+                }
+            }
+            Ok(limit
+                .map(|value| Value::Integer(value as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "next-single-char-property-change" => {
+            if args.len() < 2 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let prop = args[1].as_symbol()?.to_string();
+            let object = args.get(2).unwrap_or(&Value::Nil);
+            let limit = args
+                .get(3)
+                .filter(|value| !value.is_nil())
+                .map(|value| value.as_integer().map(|value| value.max(0) as usize))
+                .transpose()?;
+            if string_like(object).is_some() {
+                let pos = args[0].as_integer()?.max(0) as usize;
+                let text = string_text(object)?;
+                let max_pos = limit.unwrap_or(text.chars().count());
+                let initial = string_property_at(object, pos, &prop).unwrap_or(Value::Nil);
+                for cursor in pos.saturating_add(1)..max_pos {
+                    let current = string_property_at(object, cursor, &prop).unwrap_or(Value::Nil);
+                    if current != initial {
+                        return Ok(Value::Integer(cursor as i64));
+                    }
+                }
+                return Ok(limit
+                    .map(|value| Value::Integer(value as i64))
+                    .unwrap_or(Value::Nil));
+            }
+
+            let pos = position_from_value(interp, &args[0])?.max(1);
+            let buffer_id = if object.is_nil() {
+                interp.current_buffer_id()
+            } else {
+                interp.resolve_buffer_id(object)?
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+            let max_pos = limit.unwrap_or(buffer.point_max());
+            let initial = buffer_char_property_at(interp, buffer, pos, &prop);
+            for cursor in pos.saturating_add(1)..max_pos {
+                let current = buffer_char_property_at(interp, buffer, cursor, &prop);
                 if current != initial {
                     return Ok(Value::Integer(cursor as i64));
                 }
@@ -27923,6 +27972,17 @@ fn buffer_property_at_with_category(
     }
     let props = buffer.text_properties_at(pos);
     property_from_props_with_category(interp, &props, prop)
+}
+
+fn buffer_char_property_at(
+    interp: &Interpreter,
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    prop: &str,
+) -> Value {
+    highest_priority_overlay_property(interp, buffer, pos, prop, false)
+        .or_else(|| buffer_property_at_with_category(interp, buffer, pos, prop))
+        .unwrap_or(Value::Nil)
 }
 
 fn overlay_property_with_category(
