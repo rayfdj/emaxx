@@ -15555,6 +15555,18 @@ mod tests {
             "axbx",
         );
         assert_string_value(
+            eval_str(r#"(subst-char-in-string ?/ ?! "/home/me/src")"#),
+            "!home!me!src",
+        );
+        assert_eq!(
+            eval_str(
+                r#"(let ((s (copy-sequence "a/b/c")))
+                     (and (eq (subst-char-in-string ?/ ?! s t) s)
+                          (string= s "a!b!c")))"#
+            ),
+            Value::T
+        );
+        assert_string_value(
             eval_str(
                 r#"(replace-regexp-in-string "%[[:xdigit:]][[:xdigit:]]"
                                               (lambda (_match) "/")
