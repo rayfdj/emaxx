@@ -19313,6 +19313,35 @@ mod tests {
     }
 
     #[test]
+    fn prin1_to_string_prints_vector_dotted_pair_tails() {
+        assert_string_value(
+            eval_str(r#"(prin1-to-string '(("testcat1" . [3 0 2 1])))"#),
+            "((\"testcat1\" . [3 0 2 1]))",
+        );
+    }
+
+    #[test]
+    fn prin1_to_current_buffer_keeps_saved_restriction_markers_current() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "header\nbody\n")
+                  (goto-char 8)
+                  (narrow-to-region (point) (point-max))
+                  (save-restriction
+                    (widen)
+                    (goto-char (point-min))
+                    (delete-region (line-beginning-position) (line-end-position))
+                    (prin1 '(("testcat1" . [3 0 2 1])) (current-buffer)))
+                  (buffer-substring (point-min) (point-max)))
+                "#
+            ),
+            Value::String("body\n".into())
+        );
+    }
+
+    #[test]
     fn read_from_string_roundtrips_lread_circle_cases() {
         for case in [
             "#1=(#1# . #1#)",

@@ -32606,10 +32606,22 @@ fn write_printer_output(
         }
         Some(Value::Buffer(_, _)) => {
             let buffer_id = interp.resolve_buffer_id(stream.expect("matched Some"))?;
-            let buffer = interp
-                .get_buffer_by_id_mut(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            buffer.insert(text);
+            if buffer_id == interp.current_buffer_id() {
+                interp.insert_current_buffer(text);
+            } else {
+                let pos = {
+                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {buffer_id}"))
+                    })?;
+                    buffer.point()
+                };
+                let nchars = text.chars().count();
+                let buffer = interp
+                    .get_buffer_by_id_mut(buffer_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+                buffer.insert(text);
+                interp.adjust_markers_for_insert(buffer_id, pos, nchars, false);
+            }
             Ok(())
         }
         Some(Value::Marker(id)) => {
@@ -34481,6 +34493,10 @@ fn render_prin1_list(
     }
     let mut tail = cdr;
     loop {
+        if is_vector_value(&tail) {
+            let tail_rendered = render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
+            return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+        }
         match tail {
             Value::Nil => return Ok(format!("({})", rendered.join(" "))),
             Value::Cons(_, _) => {
