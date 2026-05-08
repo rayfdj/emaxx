@@ -834,12 +834,12 @@ impl Buffer {
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
-        self.forced_modified || self.buffer_string() != self.saved_text
+        self.forced_modified || self.full_buffer_string() != self.saved_text
     }
 
     pub fn set_unmodified(&mut self) {
         self.save_modiff = self.modiff;
-        self.saved_text = self.buffer_string();
+        self.saved_text = self.full_buffer_string();
         self.forced_modified = false;
         self.autosaved = false;
     }
@@ -1675,6 +1675,17 @@ mod tests {
         assert!(buf.is_modified());
         buf.set_unmodified();
         assert!(!buf.is_modified());
+    }
+
+    #[test]
+    fn modification_tracking_ignores_narrowing() {
+        let mut buf = Buffer::from_text("test", "abcdef");
+        buf.set_unmodified();
+        buf.narrow_to_region(2, 5);
+
+        assert!(!buf.is_modified());
+        assert_eq!(buf.buffer_string(), "bcd");
+        assert_eq!(buf.full_buffer_string(), "abcdef");
     }
 
     #[test]
