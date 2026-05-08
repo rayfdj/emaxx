@@ -5839,6 +5839,7 @@ impl Interpreter {
                         "not" => return self.sf_not(&items, env),
                         "progn" => return self.sf_progn(&items[1..], env),
                         "prog1" => return self.sf_prog1(&items, env),
+                        "prog2" => return self.sf_prog2(&items, env),
                         "let" | "dlet" => return self.sf_let(&items, env),
                         "let*" => return self.sf_letstar(&items, env),
                         "cl-progv" => return self.sf_cl_progv(&items, env),
@@ -6652,6 +6653,29 @@ impl Interpreter {
         let result = self.eval(&items[1], env)?;
         let tracked_symbol = items[1].as_symbol().ok().map(str::to_string);
         for expr in &items[2..] {
+            self.eval(expr, env)?;
+        }
+        if let Some(symbol) = tracked_symbol
+            && crate::lisp::primitives::is_vector_like_value(self, &result)
+            && let Ok(current) = self.lookup(&symbol, env)
+            && crate::lisp::primitives::is_vector_like_value(self, &current)
+        {
+            return Ok(current);
+        }
+        Ok(result)
+    }
+
+    fn sf_prog2(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "prog2".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        self.eval(&items[1], env)?;
+        let result = self.eval(&items[2], env)?;
+        let tracked_symbol = items[2].as_symbol().ok().map(str::to_string);
+        for expr in &items[3..] {
             self.eval(expr, env)?;
         }
         if let Some(symbol) = tracked_symbol
@@ -15087,6 +15111,47 @@ mod tests {
     fn prog1_returns_vectors_after_in_place_mutation() {
         assert_eq!(
             eval_str("(let ((stats (make-vector 2 nil))) (prog1 stats (aset stats 1 'ok)))"),
+            Value::list([
+                Value::Symbol("vector".into()),
+                Value::Nil,
+                Value::Symbol("ok".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn prog2_returns_second_form_after_evaluating_remaining_body() {
+        assert_eq!(
+            eval_str(
+                "(let ((events nil))
+                   (list
+                    (prog2
+                        (push 'first events)
+                        (push 'second events)
+                      (push 'third events))
+                    events))"
+            ),
+            Value::list([
+                Value::list([
+                    Value::Symbol("second".into()),
+                    Value::Symbol("first".into())
+                ]),
+                Value::list([
+                    Value::Symbol("third".into()),
+                    Value::Symbol("second".into()),
+                    Value::Symbol("first".into()),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn prog2_returns_vectors_after_in_place_mutation() {
+        assert_eq!(
+            eval_str(
+                "(let ((stats (make-vector 2 nil)))
+                   (prog2 'ignored stats (aset stats 1 'ok)))"
+            ),
             Value::list([
                 Value::Symbol("vector".into()),
                 Value::Nil,
