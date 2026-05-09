@@ -5326,6 +5326,17 @@ impl Interpreter {
             "auto-compression-mode" => Some(Value::T),
             "command-switch-alist" => Some(Value::Nil),
             "command-line-args-left" => Some(Value::Nil),
+            "purify-flag" => Some(Value::Nil),
+            "require-final-newline" => Some(Value::T),
+            "sentence-end" => Some(Value::Nil),
+            "null-device" => Some(Value::String("/dev/null".into())),
+            "exec-suffixes" => Some(Value::list([Value::String(String::new())])),
+            "debug-on-error" => Some(Value::Nil),
+            "load-in-progress" => Some(if self.current_load_file.is_some() {
+                Value::T
+            } else {
+                Value::Nil
+            }),
             "selection-converter-alist" => Some(Value::Nil),
             "early-init-file" => Some(Value::Nil),
             "init-file-user" => Some(Value::Nil),
@@ -6004,6 +6015,12 @@ impl Interpreter {
                         "cl-defstruct" => return self.sf_cl_defstruct(&items),
                         "defalias" => return self.sf_defalias(&items, env),
                         "backquote" => return self.eval_backquote(&items[1], env),
+                        "comma" => {
+                            if let Some(value) = items.get(1) {
+                                return self.eval(value, env);
+                            }
+                            return Ok(Value::Nil);
+                        }
                         "lambda" => return self.sf_lambda(&items, env),
                         "call-interactively" => {
                             return self.sf_call_interactively(&items, env);
@@ -6058,6 +6075,7 @@ impl Interpreter {
                         "without-restriction" => return self.sf_without_restriction(&items, env),
                         "add-function" => return self.sf_add_function(&items, env),
                         "with-selected-window" => return self.sf_progn(&items[2..], env),
+                        "with-syntax-table" => return self.sf_with_syntax_table(&items, env),
                         "save-match-data" => return self.sf_save_match_data(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),
                         "save-window-excursion" => {
@@ -6129,7 +6147,9 @@ impl Interpreter {
                         "rx" => return self.sf_rx(&items, env),
                         "rx-define" => return self.sf_rx_define(&items),
                         "require" => {
-                            if let Some(feature) = items.get(1).and_then(feature_name) {
+                            if let Some(feature_expr) = items.get(1) {
+                                let feature_value = self.eval(feature_expr, env)?;
+                                let feature = feature_value.as_symbol()?.to_string();
                                 let target = match items.get(2) {
                                     Some(expr) => {
                                         let value = self.eval(expr, env)?;
@@ -6147,7 +6167,9 @@ impl Interpreter {
                             return Ok(Value::Nil);
                         }
                         "provide" => {
-                            if let Some(feature) = items.get(1).and_then(feature_name) {
+                            if let Some(feature_expr) = items.get(1) {
+                                let feature_value = self.eval(feature_expr, env)?;
+                                let feature = feature_value.as_symbol()?.to_string();
                                 return self.provide_feature_with_after_load(&feature);
                             }
                             return Ok(Value::Nil);
@@ -7177,6 +7199,30 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "gethash" => {
                 self.sf_setf_gethash(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "slot-value" => {
+                let Some(object_expr) = place.get(1) else {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported setf place: {}",
+                        items[1]
+                    )));
+                };
+                let Some(slot_expr) = place.get(2) else {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported setf place: {}",
+                        items[1]
+                    )));
+                };
+                let object = self.eval(object_expr, env)?;
+                let slot = self.eval(slot_expr, env)?;
+                let value = self.eval(&items[2], env)?;
+                self.call_function_value(
+                    Value::Symbol("eieio-oset".into()),
+                    Some("eieio-oset"),
+                    &[object, slot, value.clone()],
+                    env,
+                )?;
+                Ok(value)
+            }
             Some(Value::Symbol(name)) if decoded_time_accessor_index(name).is_some() => {
                 self.sf_setf_decoded_time_accessor(name, &place, &items[2], env)
             }
@@ -7759,7 +7805,12 @@ impl Interpreter {
             3
         };
         while index + 1 < items.len() {
-            let keyword = items[index].as_symbol()?;
+            let Some(keyword) = items[index].as_symbol().ok() else {
+                break;
+            };
+            if !keyword.starts_with(':') {
+                break;
+            }
             match keyword {
                 ":set" => {
                     let setter = self.eval(&items[index + 1], env)?;
@@ -8513,7 +8564,7 @@ impl Interpreter {
     }
 
     fn sf_defun(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() < 4 {
+        if items.len() < 3 {
             return Err(LispError::Signal("defun needs name, params, body".into()));
         }
         let name = items[1].as_symbol()?.to_string();
@@ -8801,8 +8852,48 @@ impl Interpreter {
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
         lowered.push(Value::Symbol(name));
-        lowered.push(lower_cl_defmethod_lambda_list(&items[lambda_list_index])?);
+        let lowered_lambda_list = lower_cl_defmethod_lambda_list(&items[lambda_list_index])?;
+        lowered.push(lowered_lambda_list.clone());
         lowered.extend(items[lambda_list_index + 1..].iter().cloned());
+        if let Some((variable, class_name)) =
+            first_cl_defmethod_specializer(&items[lambda_list_index])?
+            && let Ok(previous) =
+                self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
+            && previous != Value::BuiltinFunc("ignore".into())
+        {
+            let params = self.parse_params(&lowered_lambda_list)?;
+            let call_args = params
+                .iter()
+                .filter(|param| !is_lambda_list_keyword(param))
+                .map(|param| Value::Symbol(param.clone()))
+                .collect::<Vec<_>>();
+            let mut method_body = Vec::with_capacity(items.len() - lambda_list_index);
+            method_body.push(Value::Symbol("progn".into()));
+            method_body.extend(items[lambda_list_index + 1..].iter().cloned());
+            let mut fallback = Vec::with_capacity(call_args.len() + 2);
+            fallback.push(Value::Symbol("funcall".into()));
+            fallback.push(Value::Symbol("__emaxx_previous_method".into()));
+            fallback.extend(call_args);
+            let dispatch_body = vec![Value::list([
+                Value::Symbol("if".into()),
+                Value::list([
+                    Value::Symbol("cl-typep".into()),
+                    Value::Symbol(variable),
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol(class_name)]),
+                ]),
+                Value::list(method_body),
+                Value::list(fallback),
+            ])];
+            let closure = shared_env(vec![vec![(
+                "__emaxx_previous_method".into(),
+                Self::stored_value(previous),
+            )]]);
+            self.set_function_binding(
+                &function_name_from_binding_form(&items[1])?,
+                Some(Value::Lambda(params, dispatch_body, closure)),
+            );
+            return Ok(items[1].clone());
+        }
         self.sf_cl_defun(&lowered, env)
     }
 
@@ -10568,6 +10659,21 @@ impl Interpreter {
         result
     }
 
+    fn sf_with_syntax_table(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let table = self.eval(&items[1], env)?;
+        let Value::CharTable(table_id) = table else {
+            return Err(LispError::TypeError("char-table".into(), table.type_name()));
+        };
+        let saved_table_id = self.current_syntax_table_id();
+        self.set_current_syntax_table(table_id);
+        let result = self.sf_progn(&items[2..], env);
+        self.set_current_syntax_table(saved_table_id);
+        result
+    }
+
     fn sf_add_function(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 4 || items.len() > 5 {
             return Err(LispError::WrongNumberOfArgs(
@@ -11266,7 +11372,7 @@ impl Interpreter {
     // ── Macros ──
 
     fn sf_defmacro(&mut self, items: &[Value]) -> Result<Value, LispError> {
-        if items.len() < 4 {
+        if items.len() < 3 {
             return Err(LispError::WrongNumberOfArgs("defmacro".into(), items.len()));
         }
         let name = items[1].as_symbol()?.to_string();
@@ -12630,6 +12736,16 @@ fn builtin_auto_mode_alist() -> Value {
             Value::String("\\.zip\\'".into()),
             Value::Symbol("archive-mode".into()),
         ),
+        Value::cons(
+            Value::String(
+                "\\.\\(?:C\\|cc\\|cpp\\|cxx\\|c\\+\\+\\|hh\\|hpp\\|hxx\\|h\\+\\+\\)\\'".into(),
+            ),
+            Value::Symbol("c++-mode".into()),
+        ),
+        Value::cons(
+            Value::String("\\.c\\'".into()),
+            Value::Symbol("c-mode".into()),
+        ),
     ])
 }
 
@@ -13533,6 +13649,23 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
     Ok(Value::list(lowered))
 }
 
+fn first_cl_defmethod_specializer(spec: &Value) -> Result<Option<(String, String)>, LispError> {
+    for item in spec.to_vec()? {
+        let Value::Cons(_, _) = item else {
+            continue;
+        };
+        let parts = item.to_vec()?;
+        let Some(Value::Symbol(variable)) = parts.first() else {
+            continue;
+        };
+        let Some(Value::Symbol(class_name)) = parts.get(1) else {
+            continue;
+        };
+        return Ok(Some((variable.clone(), class_name.clone())));
+    }
+    Ok(None)
+}
+
 fn lower_define_inline_form(value: &Value) -> Value {
     let Ok(items) = value.to_vec() else {
         return value.clone();
@@ -14043,22 +14176,6 @@ fn pcase_predicate_function(
             Ok(predicate_form.clone())
         }
         Err(error) => Err(error),
-    }
-}
-
-fn feature_name(value: &Value) -> Option<String> {
-    match value {
-        Value::Symbol(symbol) => Some(symbol.clone()),
-        Value::Cons(_, _) => value
-            .to_vec()
-            .ok()
-            .and_then(|items| match items.as_slice() {
-                [Value::Symbol(name), Value::Symbol(symbol)] if name == "quote" => {
-                    Some(symbol.clone())
-                }
-                _ => None,
-            }),
-        _ => None,
     }
 }
 
@@ -15439,6 +15556,33 @@ mod tests {
     }
 
     #[test]
+    fn run_hook_with_args_until_failure_stops_at_first_nil_result() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar sample-failure-hook nil)
+                   (setq sample-failure-hook
+                         (list
+                          (lambda (value) t)
+                          (lambda (value) nil)
+                          (lambda (value) (error \"must not run\"))))
+                   (run-hook-with-args-until-failure 'sample-failure-hook 7))"
+            ),
+            Value::Nil
+        );
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defvar sample-no-failure-hook nil)
+                   (setq sample-no-failure-hook
+                         (list (lambda () t) (lambda () 'ok)))
+                   (run-hook-with-args-until-failure 'sample-no-failure-hook))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
     fn advice_member_p_defaults_to_nil_for_untracked_advice() {
         assert_eq!(
             eval_str("(advice-member-p 'sample-advice 'sample-function)"),
@@ -15614,6 +15758,22 @@ mod tests {
         assert_eq!(
             eval_str_with(&mut interp, "(double 21)"),
             Value::Integer(42)
+        );
+    }
+
+    #[test]
+    fn defun_without_body_returns_nil() {
+        assert_eq!(
+            eval_str("(progn (defun sample-empty-function (arg)) (sample-empty-function 1))"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn defmacro_without_body_expands_to_nil() {
+        assert_eq!(
+            eval_str("(progn (defmacro sample-empty-macro (arg)) (sample-empty-macro value))"),
+            Value::Nil
         );
     }
 
@@ -16693,6 +16853,70 @@ mod tests {
     }
 
     #[test]
+    fn face_list_includes_defined_faces() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defface sample-listed-face '((t (:foreground \"red\"))) \"doc\")
+                   (and (memq 'default (face-list))
+                        (memq 'sample-listed-face (face-list))
+                        t))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn cl_typep_recognizes_nil_and_cons_as_lists() {
+        assert_eq!(
+            eval_str("(list (cl-typep nil 'list) (cl-typep '(a b) 'list) (cl-typep 'a 'list))"),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
+    fn cl_typep_recognizes_eieio_records_as_eieio_objects() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-eieio-root nil nil)
+                   (cl-typep (make-instance 'sample-eieio-root) 'eieio-object))"
+            ),
+            Value::T
+        );
+    }
+
+    #[test]
+    fn eieio_internal_object_class_reports_record_class_name() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-eieio-class-name nil nil)
+                   (eieio--class-name
+                    (eieio--object-class
+                     (make-instance 'sample-eieio-class-name))))"
+            ),
+            Value::Symbol("sample-eieio-class-name".into())
+        );
+    }
+
+    #[test]
+    fn eieio_object_p_and_slot_boundp_accept_record_backed_instances() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-eieio-slot-bound nil
+                     ((known :initform nil)))
+                   (let ((object (make-instance 'sample-eieio-slot-bound)))
+                     (list (eieio-object-p object)
+                           (slot-boundp object 'known)
+                           (slot-boundp object 'missing))))"
+            ),
+            Value::list([Value::T, Value::T, Value::Nil])
+        );
+    }
+
+    #[test]
     fn set_face_attribute_rejects_unknown_faces() {
         assert_eq!(
             eval_str(
@@ -17349,6 +17573,70 @@ mod tests {
     }
 
     #[test]
+    fn derived_mode_all_parents_reports_parent_alias_and_extra_modes() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (define-derived-mode sample-parent fundamental-mode \"Parent\")
+                   (define-derived-mode sample-child sample-parent \"Child\")
+                   (defalias 'sample-alias #'sample-child)
+                   (derived-mode-add-parents 'sample-parent '(sample-alias))
+                   (derived-mode-all-parents 'sample-child))"
+            ),
+            Value::list([
+                Value::Symbol("sample-child".into()),
+                Value::Symbol("sample-parent".into()),
+                Value::Symbol("fundamental-mode".into()),
+                Value::Symbol("sample-alias".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn defun_navigation_delegates_to_bound_mode_functions() {
+        assert_eq!(
+            eval_str(
+                "(let (bod-param eod-param
+                       (beginning-of-defun-function
+                        (lambda (arg) (setq bod-param arg) 'bod-result))
+                       (end-of-defun-function
+                        (lambda (arg) (setq eod-param arg) 'eod-result)))
+                   (list (beginning-of-defun 3)
+                         bod-param
+                         (end-of-defun 4)
+                         eod-param))"
+            ),
+            Value::list([
+                Value::Symbol("bod-result".into()),
+                Value::Integer(3),
+                Value::Symbol("eod-result".into()),
+                Value::Integer(4),
+            ])
+        );
+    }
+
+    #[test]
+    fn forward_sexp_honors_syntax_table_category_properties() {
+        assert_eq!(
+            eval_str(
+                "(with-temp-buffer
+                   (set-syntax-table (make-syntax-table))
+                   (modify-syntax-entry ?< \".\")
+                   (modify-syntax-entry ?> \".\")
+                   (put 'open-angle 'syntax-table '(4 . ?>))
+                   (put 'close-angle 'syntax-table '(5 . ?<))
+                   (insert \"<()>\")
+                   (put-text-property 1 2 'category 'open-angle)
+                   (put-text-property 4 5 'category 'close-angle)
+                   (goto-char (point-min))
+                   (forward-sexp)
+                   (point))"
+            ),
+            Value::Integer(5)
+        );
+    }
+
+    #[test]
     fn define_derived_mode_installs_callable_mode_body() {
         let value = eval_str(
             "(progn
@@ -17611,6 +17899,44 @@ mod tests {
                 "#
             ),
             Value::T
+        );
+    }
+
+    #[test]
+    fn with_syntax_table_temporarily_installs_and_restores_table() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (let ((original (syntax-table))
+                        (temporary (make-syntax-table)))
+                    (list (with-syntax-table temporary
+                            (eq (syntax-table) temporary))
+                          (eq (syntax-table) original))))
+                "#
+            ),
+            Value::list([Value::T, Value::T])
+        );
+    }
+
+    #[test]
+    fn regexp_syntax_classes_match_standard_delimiters() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (list
+                 (string-match-p "\\s(" "(")
+                 (string-match-p "\\s)" ")")
+                 (string-match-p "\\s." ";")
+                 (string-match-p "\\S(" "a"))
+                "#
+            ),
+            Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+            ])
         );
     }
 
@@ -19509,6 +19835,139 @@ mod tests {
     }
 
     #[test]
+    fn load_in_progress_is_truthy_while_loading_files() {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-load-progress-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(setq sample-load-in-progress-seen load-in-progress)\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            interp.lookup_var("sample-load-in-progress-seen", &Vec::new()),
+            Some(Value::T)
+        );
+        assert_eq!(
+            interp.lookup_var("load-in-progress", &Vec::new()),
+            Some(Value::Nil)
+        );
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn batch_dump_purify_flag_defaults_to_nil() {
+        assert_eq!(eval_str("purify-flag"), Value::Nil);
+    }
+
+    #[test]
+    fn require_final_newline_matches_batch_default() {
+        assert_eq!(eval_str("require-final-newline"), Value::T);
+    }
+
+    #[test]
+    fn sentence_end_defaults_to_nil_in_batch() {
+        assert_eq!(eval_str("sentence-end"), Value::Nil);
+    }
+
+    #[test]
+    fn null_device_matches_unix_batch_default() {
+        assert_eq!(eval_str("null-device"), Value::String("/dev/null".into()));
+    }
+
+    #[test]
+    fn exec_suffixes_matches_unix_batch_default() {
+        assert_eq!(
+            eval_str("exec-suffixes"),
+            Value::list([Value::String(String::new())])
+        );
+    }
+
+    #[test]
+    fn debug_on_error_defaults_to_nil_in_batch() {
+        assert_eq!(eval_str("debug-on-error"), Value::Nil);
+    }
+
+    #[test]
+    fn locate_file_searches_directories_and_suffixes() {
+        let dir = std::env::temp_dir().join(format!(
+            "emaxx-locate-file-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let rejected = dir.join("sample.el");
+        let accepted = dir.join("sample.txt");
+        std::fs::write(&rejected, "").unwrap();
+        std::fs::write(&accepted, "").unwrap();
+        let dir_text = dir.display().to_string();
+        let found = eval_str(&format!(
+            "(locate-file \"sample\" '(\"{dir_text}\") '(\".el\" \".txt\")
+                          (lambda (path) (string-suffix-p \".txt\" path)))"
+        ));
+        assert_eq!(found, Value::String(accepted.display().to_string()));
+        std::fs::remove_file(rejected).unwrap();
+        std::fs::remove_file(accepted).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locate_file_accepts_symbolic_access_predicates() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "emaxx-locate-file-executable-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let script = dir.join("sample-tool");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let dir_text = dir.display().to_string();
+
+        assert_eq!(
+            eval_str(&format!(
+                "(locate-file \"sample-tool\" '(\"{dir_text}\") '(\"\") 'executable)"
+            )),
+            Value::String(script.display().to_string())
+        );
+
+        std::fs::remove_file(script).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn defcustom_property_scan_stops_at_non_keyword_forms() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defcustom sample-custom-value 1
+                     \"doc\"
+                     :type 'integer
+                     (message \"loaded\"))
+                   sample-custom-value)"
+            ),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
     fn load_file_strict_preserves_original_load_errors() {
         let path = std::env::temp_dir().join(format!(
             "emaxx-load-error-{}.el",
@@ -20845,6 +21304,83 @@ mod tests {
     }
 
     #[test]
+    fn cl_defmethod_dispatches_eieio_specializers_without_clobbering_previous_methods() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-method-parent nil nil)
+                   (defclass sample-method-child (sample-method-parent) nil)
+                   (cl-defgeneric sample-method-name (object))
+                   (cl-defmethod sample-method-name ((object sample-method-parent))
+                     'parent)
+                   (cl-defmethod sample-method-name ((object sample-method-child))
+                     'child)
+                   (list (sample-method-name (make-instance 'sample-method-parent))
+                         (sample-method-name (make-instance 'sample-method-child))))"
+            ),
+            Value::list([
+                Value::Symbol("parent".into()),
+                Value::Symbol("child".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_defmethod_dispatches_over_unspecialized_and_parent_eieio_methods() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-method-abstract nil
+                     ((file :initarg :file)))
+                   (defclass sample-method-table (sample-method-abstract) nil)
+                   (cl-defmethod sample-method-file (object) nil)
+                   (cl-defmethod sample-method-file ((_object sample-method-abstract)) 'abstract)
+                   (cl-defmethod sample-method-file ((object sample-method-table))
+                     (slot-value object 'file))
+                   (sample-method-file
+                    (make-instance 'sample-method-table :file \"a.c\")))"
+            ),
+            Value::String("a.c".into())
+        );
+    }
+
+    #[test]
+    fn cl_defmethod_dispatches_semanticdb_full_filename_shape() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-db-abstract-table nil
+                     ((parent-db)))
+                   (defclass sample-db-table (sample-db-abstract-table)
+                     ((file :initarg :file)))
+                   (defclass sample-db-project nil
+                     ((reference-directory :initarg :reference-directory)))
+                   (cl-defmethod sample-db-full-filename (buffer-or-string)
+                     nil)
+                   (cl-defmethod sample-db-full-filename
+                     ((_object sample-db-abstract-table))
+                     nil)
+                   (cl-defmethod sample-db-full-filename
+                     ((object sample-db-table))
+                     (expand-file-name
+                      (slot-value object 'file)
+                      (slot-value (slot-value object 'parent-db)
+                                  'reference-directory)))
+                   (cl-defmethod sample-db-full-filename
+                     ((_object sample-db-project))
+                     nil)
+                   (let ((db (make-instance 'sample-db-project
+                                            :reference-directory \"/tmp/sys/\"))
+                         (table (make-instance 'sample-db-table
+                                               :file \"cdefs.h\")))
+                     (setf (slot-value table 'parent-db) db)
+                     (sample-db-full-filename table)))"
+            ),
+            Value::String("/tmp/sys/cdefs.h".into())
+        );
+    }
+
+    #[test]
     fn defclass_returns_the_class_name() {
         assert_eq!(
             eval_str("(defclass sample-class nil nil)"),
@@ -20962,6 +21498,27 @@ mod tests {
                       (slot-value object 'beta))))"
             ),
             Value::list([Value::Integer(11), Value::Integer(5)])
+        );
+    }
+
+    #[test]
+    fn setf_slot_value_updates_eieio_instances() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-setf-slot nil
+                     ((name :initarg :name)
+                      (path :initform nil)))
+                   (let ((object (make-instance 'sample-setf-slot :name \"old\")))
+                     (setf (slot-value object 'name) \"new\"
+                           (slot-value object 'path) \"/tmp/sample\")
+                     (list (slot-value object 'name)
+                           (slot-value object 'path))))"
+            ),
+            Value::list([
+                Value::String("new".into()),
+                Value::String("/tmp/sample".into()),
+            ])
         );
     }
 
@@ -22599,6 +23156,26 @@ mod tests {
     }
 
     #[test]
+    fn require_and_provide_evaluate_feature_variables() {
+        let mut interp = Interpreter::new();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((feature-name 'cl-lib)) (require feature-name))"
+            ),
+            Value::Symbol("cl-lib".into())
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((feature-name 'sample-dynamic-feature)) (provide feature-name))"
+            ),
+            Value::Symbol("sample-dynamic-feature".into())
+        );
+        assert!(interp.has_feature("sample-dynamic-feature"));
+    }
+
+    #[test]
     fn ert_with_test_buffer_kills_buffer_after_success() {
         assert_eq!(
             eval_str(
@@ -23614,6 +24191,14 @@ IHdvcmxkIQ==")))
                      (eval '``(,,x)))"#
             ),
             expected
+        );
+    }
+
+    #[test]
+    fn residual_reader_comma_evaluates_unquote_operand() {
+        assert_eq!(
+            eval_str("(let ((mode 'c++-mode)) (comma (if (eq mode 'c++-mode) 'matched 'miss)))"),
+            Value::Symbol("matched".into())
         );
     }
 

@@ -476,6 +476,10 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
+            | "eieio--object-class"
+            | "eieio--class-name"
+            | "eieio-object-p"
+            | "slot-boundp"
             | "make-instance"
             | "eieio-oref"
             | "eieio-oset"
@@ -755,6 +759,34 @@ fn activate_c_family_mode(
         );
     }
     interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::T);
+    let Value::CharTable(syntax_table_id) =
+        interp.make_char_table(Some("syntax-table".into()), Value::Nil)
+    else {
+        unreachable!("make_char_table returns a char-table");
+    };
+    interp.set_char_table_parent(syntax_table_id, Some(interp.standard_syntax_table_id()))?;
+    interp.char_table_set(syntax_table_id, '/' as u32, Value::String(". 124b".into()))?;
+    interp.char_table_set(syntax_table_id, '*' as u32, Value::String(". 23".into()))?;
+    interp.char_table_set(syntax_table_id, '\n' as u32, Value::String("> b".into()))?;
+    interp.char_table_set(syntax_table_id, '\\' as u32, Value::String("\\".into()))?;
+    interp.set_current_syntax_table(syntax_table_id);
+    if interp
+        .lookup_var("semantic-mode", &Vec::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        interp.set_buffer_local_value(buffer_id, "semantic-new-buffer-fcn-was-run", Value::T);
+        if interp
+            .lookup_function("semantic-lex-init", &Vec::new())
+            .is_ok()
+        {
+            call_function_value(
+                interp,
+                &Value::Symbol("semantic-lex-init".into()),
+                &[],
+                &mut Vec::new(),
+            )?;
+        }
+    }
     Ok(Value::Nil)
 }
 
@@ -1345,6 +1377,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "subrp"
             | "commandp"
             | "facep"
+            | "face-list"
             | "boundp"
             | "fboundp"
             | "default-boundp"
@@ -1519,6 +1552,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "int-to-string"
             | "string-match"
             | "string-match-p"
+            | "subregexp-context-p"
             | "string-empty-p"
             | "string-prefix-p"
             | "string-suffix-p"
@@ -1607,6 +1641,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "back-to-indentation"
             | "beginning-of-line"
             | "end-of-line"
+            | "beginning-of-defun"
+            | "end-of-defun"
             | "forward-line"
             | "vertical-motion"
             | "count-lines"
@@ -1652,6 +1688,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "treesit-available-p"
             | "treesit-ready-p"
             | "derived-mode-p"
+            | "derived-mode-all-parents"
             | "display-mouse-p"
             | "derived-mode-add-parents"
             | "normal-mode"
@@ -1702,6 +1739,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "byte-to-position"
             | "max-char"
             | "c-mode"
+            | "c++-mode"
             | "get-pos-property"
             | "get-char-property"
             | "get-text-property"
@@ -1893,7 +1931,9 @@ pub fn is_builtin(name: &str) -> bool {
             | "jka-compr-get-compression-info"
             | "file-locked-p"
             | "expand-file-name"
+            | "locate-file"
             | "abbreviate-file-name"
+            | "file-relative-name"
             | "files--name-absolute-system-p"
             | "substitute-in-file-name"
             | "files--use-insert-directory-program-p"
@@ -1930,6 +1970,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "directory-files-and-attributes"
             | "file-directory-p"
             | "file-accessible-directory-p"
+            | "file-regular-p"
             | "file-readable-p"
             | "file-writable-p"
             | "file-exists-p"
@@ -2200,6 +2241,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "run-hooks"
             | "run-hook-with-args"
             | "run-hook-with-args-until-success"
+            | "run-hook-with-args-until-failure"
             | "run-mode-hooks"
             | "run-hook-wrapped"
             | "ert-simulate-command"
@@ -2274,6 +2316,10 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
+            | "eieio--object-class"
+            | "eieio--class-name"
+            | "eieio-object-p"
+            | "slot-boundp"
             | "make-instance"
             | "eieio-oref"
             | "eieio-oset"
@@ -3714,6 +3760,23 @@ pub fn call(
             } else {
                 Value::Nil
             })
+        }
+        "face-list" => {
+            need_args(name, args, 0)?;
+            let mut faces = interp
+                .known_symbol_names()
+                .into_iter()
+                .filter(|symbol| face_exists(interp, symbol))
+                .map(Value::Symbol)
+                .collect::<Vec<_>>();
+            if !faces
+                .iter()
+                .any(|face| face == &Value::Symbol("default".into()))
+            {
+                faces.push(Value::Symbol("default".into()));
+            }
+            faces.sort_by_key(|value| value.to_string());
+            Ok(Value::list(faces))
         }
         "seq-some" => {
             need_args(name, args, 2)?;
@@ -5244,6 +5307,33 @@ pub fn call(
         }
         "string-match" => string_match_impl(interp, args, env, true),
         "string-match-p" => string_match_impl(interp, args, env, false),
+        "subregexp-context-p" => {
+            need_arg_range(name, args, 2, 3)?;
+            let regexp = string_text(&args[0])?;
+            let pos = args[1].as_integer()?;
+            let start = args
+                .get(2)
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(0);
+            if start < 0 || pos < start {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("args-out-of-range".into()),
+                    Value::Nil,
+                ])));
+            }
+            let prefix: String = regexp
+                .chars()
+                .skip(start as usize)
+                .take((pos - start) as usize)
+                .collect();
+            match validate_elisp_regex(&prefix) {
+                Ok(()) => Ok(Value::T),
+                Err(error) if non_subregexp_context_error(&error) => Ok(Value::Nil),
+                Err(_) => Ok(Value::T),
+            }
+        }
         "isearch-no-upper-case-p" => {
             need_args(name, args, 2)?;
             Ok(
@@ -6264,13 +6354,7 @@ pub fn call(
             let Some(entry) = parse_syntax_spec(&spec) else {
                 return Ok(Value::Nil);
             };
-            Ok(Value::cons(
-                Value::Integer(entry.class as i64),
-                entry
-                    .matching
-                    .map(|matching| Value::Integer(matching as i64))
-                    .unwrap_or(Value::Nil),
-            ))
+            Ok(syntax_entry_value(entry))
         }
         "syntax-class-to-char" => {
             need_args(name, args, 1)?;
@@ -6681,6 +6765,28 @@ pub fn call(
             interp.buffer.end_of_line();
             Ok(Value::Nil)
         }
+        "beginning-of-defun" => {
+            let arg = args.first().cloned().unwrap_or(Value::Integer(1));
+            if let Some(function) = interp
+                .lookup_var("beginning-of-defun-function", env)
+                .filter(Value::is_truthy)
+            {
+                return call_function_value(interp, &function, &[arg], env);
+            }
+            interp.buffer.goto_char(interp.buffer.point_min());
+            Ok(Value::T)
+        }
+        "end-of-defun" => {
+            let arg = args.first().cloned().unwrap_or(Value::Integer(1));
+            if let Some(function) = interp
+                .lookup_var("end-of-defun-function", env)
+                .filter(Value::is_truthy)
+            {
+                return call_function_value(interp, &function, &[arg], env);
+            }
+            interp.buffer.goto_char(interp.buffer.point_max());
+            Ok(Value::T)
+        }
         "forward-line" => {
             let n = if args.is_empty() || args[0].is_nil() {
                 BigInt::from(1u8)
@@ -6928,6 +7034,15 @@ pub fn call(
                 },
             )
         }
+        "derived-mode-all-parents" => {
+            need_arg_range(name, args, 1, 2)?;
+            let mode = args[0].as_symbol()?;
+            Ok(Value::list(
+                derived_mode_parent_chain(interp, mode)
+                    .into_iter()
+                    .map(Value::Symbol),
+            ))
+        }
         "derived-mode-add-parents" => {
             need_args(name, args, 2)?;
             let mode = args[0].as_symbol()?;
@@ -7084,6 +7199,11 @@ pub fn call(
         "c-mode" => {
             derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
             activate_c_family_mode(interp, "c-mode", "C")
+        }
+        "c++-mode" => {
+            derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
+            derived_mode_set_parent(interp, "c++-mode", Some("c-mode"));
+            activate_c_family_mode(interp, "c++-mode", "C++")
         }
         "java-mode" => {
             derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
@@ -9942,6 +10062,50 @@ pub fn call(
                 base.as_deref(),
             )?))
         }
+        "locate-file" => {
+            need_arg_range(name, args, 2, 4)?;
+            let filename = string_text(&args[0])?;
+            let paths = args[1].to_vec()?;
+            let predicate = args.get(3).filter(|value| !value.is_nil()).cloned();
+            let suffixes = match args.get(2) {
+                Some(Value::Nil) | None => vec![String::new()],
+                Some(Value::String(_) | Value::StringObject(_)) => vec![string_text(&args[2])?],
+                Some(value) => value
+                    .to_vec()?
+                    .into_iter()
+                    .map(|item| string_text(&item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
+            for directory in paths {
+                let directory = string_text(&directory)?;
+                for suffix in &suffixes {
+                    let candidate = expand_file_name_runtime(
+                        interp,
+                        env,
+                        &format!("{filename}{suffix}"),
+                        Some(&directory),
+                    )?;
+                    if locate_file_candidate_matches(interp, predicate.as_ref(), &candidate, env)? {
+                        return Ok(Value::String(candidate));
+                    }
+                }
+            }
+            Ok(Value::Nil)
+        }
+        "file-relative-name" => {
+            need_arg_range(name, args, 1, 2)?;
+            let file = string_text(&args[0])?;
+            let directory = match args.get(1) {
+                Some(value) if !value.is_nil() => string_text(value)?,
+                _ => interp
+                    .lookup_var("default-directory", env)
+                    .and_then(|value| string_like(&value).map(|string| string.text))
+                    .unwrap_or_else(default_directory),
+            };
+            let file = expand_file_name_runtime(interp, env, &file, None)?;
+            let directory = expand_file_name_runtime(interp, env, &directory, None)?;
+            Ok(Value::String(file_relative_name(&file, &directory)))
+        }
         "jka-compr-get-compression-info" => {
             need_args(name, args, 1)?;
             let path = string_text(&args[0])?;
@@ -10306,6 +10470,20 @@ pub fn call(
             } else {
                 Value::Nil
             })
+        }
+        "file-regular-p" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            Ok(
+                if fs::metadata(&path)
+                    .map(|metadata| metadata.is_file())
+                    .unwrap_or(false)
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "file-writable-p" => {
             need_args(name, args, 1)?;
@@ -13468,6 +13646,19 @@ pub fn call(
             }
             Ok(Value::Nil)
         }
+        "run-hook-with-args-until-failure" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let hook_name = args[0].as_symbol()?;
+            for hook in hook_values(interp, hook_name, env, Some(interp.current_buffer_id())) {
+                let result = call_function_value(interp, &hook, &args[1..], env)?;
+                if result.is_nil() {
+                    return Ok(Value::Nil);
+                }
+            }
+            Ok(Value::T)
+        }
         "eval-after-load" => Ok(Value::Nil),
         "run-hook-wrapped" => {
             if args.len() < 2 {
@@ -15199,6 +15390,63 @@ pub fn call(
             };
             Ok(Value::list(interp.class_children(&symbol)))
         }
+        "eieio--object-class" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Record(id) => interp
+                    .find_record(*id)
+                    .map(|record| Value::Symbol(record.type_name.clone()))
+                    .ok_or_else(|| {
+                        LispError::TypeError("eieio-object".into(), args[0].type_name())
+                    }),
+                _ => Err(LispError::TypeError(
+                    "eieio-object".into(),
+                    args[0].type_name(),
+                )),
+            }
+        }
+        "eieio--class-name" => {
+            need_args(name, args, 1)?;
+            match &args[0] {
+                Value::Symbol(symbol) => Ok(Value::Symbol(symbol.clone())),
+                Value::Record(id) => interp
+                    .find_record(*id)
+                    .map(|record| Value::Symbol(record.type_name.clone()))
+                    .ok_or_else(|| LispError::TypeError("class".into(), args[0].type_name())),
+                _ => Err(LispError::TypeError("class".into(), args[0].type_name())),
+            }
+        }
+        "eieio-object-p" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some()) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "slot-boundp" => {
+            need_args(name, args, 2)?;
+            let slot_name = args[1].as_symbol()?;
+            match &args[0] {
+                Value::Record(id) => {
+                    let record = interp.find_record(*id).ok_or_else(|| {
+                        LispError::TypeError("eieio-object-p".into(), args[0].type_name())
+                    })?;
+                    let slots = eieio_slot_specs(interp, &record.type_name)?;
+                    Ok(if eieio_slot_index(&slots, slot_name).is_some() {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    })
+                }
+                _ => Err(LispError::TypeError(
+                    "eieio-object-p".into(),
+                    args[0].type_name(),
+                )),
+            }
+        }
         "make-instance" => {
             if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -15239,7 +15487,11 @@ pub fn call(
             let target = args[1].as_symbol()?;
             let actual = cl_type_name(interp, &args[0])?;
             let matches = target == "t"
+                || (target == "list" && args[0].is_list())
+                || (target == "eieio-object" && matches!(args[0], Value::Record(_)))
                 || target == actual
+                || (!is_builtin_class_name(target)
+                    && interp.value_is_instance_of_class(&args[0], target))
                 || (target == "function"
                     && matches!(
                         actual,
@@ -16107,7 +16359,11 @@ pub fn call(
                 }
                 Value::CharTable(id) => {
                     let key = args[1].as_integer()? as u32;
-                    Ok(interp.char_table_get(*id, key).unwrap_or(Value::Nil))
+                    Ok(char_table_public_value(
+                        interp,
+                        *id,
+                        interp.char_table_get(*id, key).unwrap_or(Value::Nil),
+                    ))
                 }
                 Value::Record(id) => {
                     let record = interp.find_record(*id).ok_or_else(|| {
@@ -16469,12 +16725,18 @@ pub fn call(
                     .find_char_table(id)
                     .map(|table| table.default.clone())
                     .unwrap_or(Value::Nil)),
-                Some((start, end)) if start == end => {
-                    Ok(interp.char_table_get(id, start).unwrap_or(Value::Nil))
-                }
-                Some((start, end)) => Ok(interp
-                    .char_table_range(id, start, end)
-                    .unwrap_or(Value::Nil)),
+                Some((start, end)) if start == end => Ok(char_table_public_value(
+                    interp,
+                    id,
+                    interp.char_table_get(id, start).unwrap_or(Value::Nil),
+                )),
+                Some((start, end)) => Ok(char_table_public_value(
+                    interp,
+                    id,
+                    interp
+                        .char_table_range(id, start, end)
+                        .unwrap_or(Value::Nil),
+                )),
             }
         }
 
@@ -18584,6 +18846,7 @@ fn is_builtin_class_name(name: &str) -> bool {
             | "integer"
             | "float"
             | "string"
+            | "list"
             | "vector"
             | "bool-vector"
             | "char-table"
@@ -19303,6 +19566,41 @@ fn regex_syntax_class(
                 REGEX_WHITESPACE_CLASS
             }
         }
+        Some('(') => {
+            if negated {
+                r"[^(\[\{]"
+            } else {
+                r"[\(\[\{]"
+            }
+        }
+        Some(')') => {
+            if negated {
+                r"[^)\]\}]"
+            } else {
+                r"[\)\]\}]"
+            }
+        }
+        Some('.') => {
+            if negated {
+                r"[^\p{Punctuation}]"
+            } else {
+                r"[\p{Punctuation}]"
+            }
+        }
+        Some('"') => {
+            if negated {
+                r#"[^"]"#
+            } else {
+                r#"["]"#
+            }
+        }
+        Some('\\') => {
+            if negated {
+                r#"[^\\]"#
+            } else {
+                r#"[\\]"#
+            }
+        }
         Some(_) | None => {
             if negated {
                 REGEX_NON_WORD_CLASS
@@ -19538,6 +19836,13 @@ fn invalid_regexp_error(message: impl Into<String>) -> LispError {
     ]))
 }
 
+fn non_subregexp_context_error(error: &LispError) -> bool {
+    let rendered = error.to_string();
+    rendered.contains("Unmatched [ or [^")
+        || rendered.contains("Unmatched \\{")
+        || rendered.contains("Trailing backslash")
+}
+
 fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
     let mut chars = pattern.chars().peekable();
     let mut max_group = 0usize;
@@ -19604,10 +19909,14 @@ fn validate_elisp_regex(pattern: &str) -> Result<(), LispError> {
                         return Err(invalid_regexp_error("Unmatched \\{"));
                     }
                 }
-                Some(_) | None => {}
+                Some(_) => {}
+                None => return Err(invalid_regexp_error("Trailing backslash")),
             },
             _ => {}
         }
+    }
+    if in_class {
+        return Err(invalid_regexp_error("Unmatched [ or [^"));
     }
     if !open_groups.is_empty() {
         return Err(invalid_regexp_error("Unmatched ("));
@@ -20354,6 +20663,47 @@ fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
     Some(entry)
 }
 
+fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
+    let mut code = entry.class as i64;
+    if entry.start_first {
+        code |= 1 << 16;
+    }
+    if entry.start_second {
+        code |= 1 << 17;
+    }
+    if entry.end_first {
+        code |= 1 << 18;
+    }
+    if entry.end_second {
+        code |= 1 << 19;
+    }
+    if entry.style_b {
+        code |= 1 << 21;
+    }
+    if entry.nested {
+        code |= 1 << 22;
+    }
+    code
+}
+
+fn syntax_entry_value(entry: SyntaxEntry) -> Value {
+    let code = Value::Integer(syntax_entry_code(entry));
+    match entry.matching {
+        Some(matching) => Value::cons(code, Value::Integer(matching as i64)),
+        None => code,
+    }
+}
+
+fn char_table_public_value(interp: &Interpreter, table_id: u64, value: Value) -> Value {
+    if interp.char_table_subtype(table_id).flatten().as_deref() == Some("syntax-table")
+        && let Some(spec) = string_like(&value)
+        && let Some(entry) = parse_syntax_spec(&spec.text)
+    {
+        return syntax_entry_value(entry);
+    }
+    value
+}
+
 fn default_syntax_entry(ch: char) -> SyntaxEntry {
     let class = match ch {
         ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}' => SyntaxClass::Whitespace,
@@ -20379,6 +20729,73 @@ fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> Synt
 
 fn syntax_entry_for_char(interp: &Interpreter, table_id: u64, ch: char) -> SyntaxEntry {
     syntax_entry_for_code(interp, table_id, ch as u32)
+}
+
+fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
+    match value {
+        Value::Integer(code) => {
+            let class = syntax_class_from_code(*code)?;
+            Some(SyntaxEntry {
+                class,
+                start_first: code & (1 << 16) != 0,
+                start_second: code & (1 << 17) != 0,
+                end_first: code & (1 << 18) != 0,
+                end_second: code & (1 << 19) != 0,
+                style_b: code & (1 << 21) != 0,
+                nested: code & (1 << 22) != 0,
+                ..SyntaxEntry::default()
+            })
+        }
+        Value::Cons(_, _) => {
+            let code = value.car().ok()?.as_integer().ok()?;
+            let matching = value
+                .cdr()
+                .ok()
+                .and_then(|cdr| cdr.as_integer().ok())
+                .and_then(|code| char::from_u32(code as u32));
+            let mut entry = syntax_entry_from_value(&Value::Integer(code))?;
+            entry.matching = matching;
+            Some(entry)
+        }
+        _ => value
+            .to_vec()
+            .ok()
+            .and_then(|items| items.first().cloned())
+            .and_then(|item| syntax_entry_from_value(&item)),
+    }
+}
+
+fn syntax_class_from_code(code: i64) -> Option<SyntaxClass> {
+    match code & 0xffff {
+        0 => Some(SyntaxClass::Whitespace),
+        1 => Some(SyntaxClass::Punctuation),
+        2 => Some(SyntaxClass::Word),
+        3 => Some(SyntaxClass::Symbol),
+        4 => Some(SyntaxClass::OpenParen),
+        5 => Some(SyntaxClass::CloseParen),
+        6 => Some(SyntaxClass::Quote),
+        7 => Some(SyntaxClass::StringQuote),
+        8 => Some(SyntaxClass::PairedDelimiter),
+        9 => Some(SyntaxClass::Escape),
+        10 => Some(SyntaxClass::CharQuote),
+        11 => Some(SyntaxClass::CommentStart),
+        12 => Some(SyntaxClass::CommentEnd),
+        13 => Some(SyntaxClass::Inherit),
+        14 => Some(SyntaxClass::GenericCommentDelimiter),
+        15 => Some(SyntaxClass::GenericStringDelimiter),
+        _ => None,
+    }
+}
+
+fn syntax_entry_at_buffer_position(
+    interp: &Interpreter,
+    table_id: u64,
+    ch: char,
+    pos: usize,
+) -> SyntaxEntry {
+    let property = buffer_char_property_at(interp, &interp.buffer, pos, "syntax-table");
+    syntax_entry_from_value(&property)
+        .unwrap_or_else(|| syntax_entry_for_char(interp, table_id, ch))
 }
 
 fn matching_close_char(ch: char, entry: SyntaxEntry) -> Option<char> {
@@ -20735,7 +21152,7 @@ fn scan_sexps_position(interp: &Interpreter, from: usize, count: i64) -> Option<
     let mut pos = from.clamp(min, max);
     if count >= 0 {
         for _ in 0..count {
-            pos = scan_one_sexp_forward(&chars, pos, max)?;
+            pos = scan_one_sexp_forward(interp, &chars, pos, max)?;
         }
     } else {
         for _ in 0..(-count) {
@@ -20745,7 +21162,12 @@ fn scan_sexps_position(interp: &Interpreter, from: usize, count: i64) -> Option<
     Some(pos)
 }
 
-fn scan_one_sexp_forward(chars: &[char], from: usize, max: usize) -> Option<usize> {
+fn scan_one_sexp_forward(
+    interp: &Interpreter,
+    chars: &[char],
+    from: usize,
+    max: usize,
+) -> Option<usize> {
     let mut idx = from.saturating_sub(1);
     let end = max.saturating_sub(1).min(chars.len());
     while idx < end && chars[idx].is_whitespace() {
@@ -20754,14 +21176,19 @@ fn scan_one_sexp_forward(chars: &[char], from: usize, max: usize) -> Option<usiz
     if idx >= end {
         return None;
     }
-    match chars[idx] {
-        '(' | '[' | '{' => scan_balanced_forward(chars, idx, end).map(|idx| idx + 1),
-        '"' => scan_string_forward(chars, idx, end).map(|idx| idx + 1),
-        ')' | ']' | '}' => None,
+    let table_id = interp.current_syntax_table_id();
+    let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+    match entry.class {
+        SyntaxClass::OpenParen => scan_balanced_forward(interp, chars, idx, end).map(|idx| idx + 1),
+        SyntaxClass::StringQuote => scan_string_forward(chars, idx, end).map(|idx| idx + 1),
+        SyntaxClass::CloseParen => None,
         _ => {
             while idx < end
                 && !chars[idx].is_whitespace()
-                && !matches!(chars[idx], '(' | ')' | '[' | ']' | '{' | '}')
+                && !matches!(
+                    syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1).class,
+                    SyntaxClass::OpenParen | SyntaxClass::CloseParen
+                )
             {
                 idx += 1;
             }
@@ -20770,15 +21197,26 @@ fn scan_one_sexp_forward(chars: &[char], from: usize, max: usize) -> Option<usiz
     }
 }
 
-fn scan_balanced_forward(chars: &[char], open_idx: usize, end: usize) -> Option<usize> {
-    let mut stack = vec![matching_delimiter(chars[open_idx])?];
+fn scan_balanced_forward(
+    interp: &Interpreter,
+    chars: &[char],
+    open_idx: usize,
+    end: usize,
+) -> Option<usize> {
+    let table_id = interp.current_syntax_table_id();
+    let open_entry =
+        syntax_entry_at_buffer_position(interp, table_id, chars[open_idx], open_idx + 1);
+    let mut stack = vec![matching_close_char(chars[open_idx], open_entry)?];
     let mut idx = open_idx + 1;
     while idx < end {
-        match chars[idx] {
-            '"' => idx = scan_string_forward(chars, idx, end)?,
-            '(' | '[' | '{' => stack.push(matching_delimiter(chars[idx])?),
-            ')' | ']' | '}' => {
-                if stack.pop()? != chars[idx] {
+        let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+        match entry.class {
+            SyntaxClass::StringQuote => idx = scan_string_forward(chars, idx, end)?,
+            SyntaxClass::OpenParen => stack.push(matching_close_char(chars[idx], entry)?),
+            SyntaxClass::CloseParen => {
+                let expected = stack.pop()?;
+                let actual = matching_open_char(chars[idx], entry).map(|_| chars[idx])?;
+                if expected != actual {
                     return None;
                 }
                 if stack.is_empty() {
@@ -23696,6 +24134,37 @@ fn file_name_directory(path: &str) -> Option<String> {
     path.rfind('/').map(|index| path[..=index].to_string())
 }
 
+fn file_relative_name(file: &str, directory: &str) -> String {
+    let file_path = normalize_path(Path::new(file));
+    let directory_path = normalize_path(Path::new(directory));
+    let file_components = file_path.components().collect::<Vec<_>>();
+    let directory_components = directory_path.components().collect::<Vec<_>>();
+    if file_components.first() != directory_components.first() {
+        return file_path.display().to_string();
+    }
+
+    let mut shared = 0usize;
+    while shared < file_components.len()
+        && shared < directory_components.len()
+        && file_components[shared] == directory_components[shared]
+    {
+        shared += 1;
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in shared..directory_components.len() {
+        relative.push("..");
+    }
+    for component in &file_components[shared..] {
+        relative.push(component.as_os_str());
+    }
+    if relative.as_os_str().is_empty() {
+        ".".into()
+    } else {
+        relative.display().to_string()
+    }
+}
+
 fn file_name_nondirectory(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
@@ -24497,9 +24966,25 @@ fn write_process_output(
             return Ok(());
         }
         append_process_bytes_to_buffer(interp, &items[0], stdout)?;
-        if !stderr.is_empty() && !items[1].is_nil() {
-            let path = string_text(&items[1])?;
-            write_process_bytes_to_file(&path, stderr, false)?;
+        if !stderr.is_empty() {
+            if items[1] == Value::T {
+                append_process_bytes_to_buffer(interp, &items[0], stderr)?;
+            } else if !items[1].is_nil() {
+                let path = string_text(&items[1])?;
+                write_process_bytes_to_file(&path, stderr, false)?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some((stdout_destination, stderr_destination)) = destination.cons_values() {
+        append_process_bytes_to_buffer(interp, &stdout_destination, stdout)?;
+        if !stderr.is_empty() {
+            if stderr_destination == Value::T {
+                append_process_bytes_to_buffer(interp, &stdout_destination, stderr)?;
+            } else if !stderr_destination.is_nil() {
+                let path = string_text(&stderr_destination)?;
+                write_process_bytes_to_file(&path, stderr, false)?;
+            }
         }
         return Ok(());
     }
@@ -25548,6 +26033,90 @@ mod tests {
                 .is_match("--tofu-policy=")
                 .expect("match result should be available"),
             "translated `{pattern}` into `{translated}`"
+        );
+    }
+
+    #[test]
+    fn subregexp_context_rejects_classes_bounds_and_trailing_escape() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "subregexp-context-p",
+                &[Value::String("a[b]".into()), Value::Integer(2)],
+                &mut env,
+            )
+            .expect("inside a character class is not a subregexp context"),
+            Value::Nil
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "subregexp-context-p",
+                &[Value::String(r"a\(".into()), Value::Integer(3)],
+                &mut env,
+            )
+            .expect("unfinished group is still a subregexp context"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "subregexp-context-p",
+                &[Value::String(r"a\".into()), Value::Integer(2)],
+                &mut env,
+            )
+            .expect("trailing escape is not a subregexp context"),
+            Value::Nil
+        );
+    }
+
+    #[test]
+    fn string_to_syntax_encodes_classes_flags_and_matching_characters() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-to-syntax",
+                &[Value::String(".".into())],
+                &mut env,
+            )
+            .expect("punctuation syntax"),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-to-syntax",
+                &[Value::String(". 1234".into())],
+                &mut env,
+            )
+            .expect("comment flag syntax"),
+            Value::Integer(983041)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-to-syntax",
+                &[Value::String(". nb".into())],
+                &mut env,
+            )
+            .expect("nested style-b syntax"),
+            Value::Integer(6291457)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-to-syntax",
+                &[Value::String("(] 1234".into())],
+                &mut env,
+            )
+            .expect("matching paren syntax"),
+            Value::cons(Value::Integer(983044), Value::Integer(']' as i64))
         );
     }
 
@@ -39194,6 +39763,65 @@ fn locate_file_internal(
     Ok(Value::Nil)
 }
 
+fn locate_file_candidate_matches(
+    interp: &mut Interpreter,
+    predicate: Option<&Value>,
+    candidate: &str,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let Some(predicate) = predicate else {
+        return Ok(fs::metadata(candidate)
+            .map(|metadata| metadata.is_file() && file_readable_p(candidate))
+            .unwrap_or(false));
+    };
+    if let Some(mask) = locate_file_access_mask(predicate) {
+        return Ok(locate_file_access_matches(mask, candidate));
+    }
+    Ok(interp
+        .call_function_value(
+            resolve_callable(interp, predicate, env)?,
+            predicate.as_symbol().ok(),
+            &[Value::String(candidate.to_string())],
+            env,
+        )?
+        .is_truthy())
+}
+
+fn locate_file_access_mask(value: &Value) -> Option<i64> {
+    if let Ok(mask) = value.as_integer() {
+        return Some(mask);
+    }
+    if let Ok(symbol) = value.as_symbol() {
+        return locate_file_access_symbol_mask(symbol);
+    }
+    let items = value.to_vec().ok()?;
+    if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "lambda") {
+        return None;
+    }
+    let mut mask = 0;
+    for item in items {
+        mask |= locate_file_access_symbol_mask(item.as_symbol().ok()?)?;
+    }
+    Some(mask)
+}
+
+fn locate_file_access_symbol_mask(symbol: &str) -> Option<i64> {
+    match symbol {
+        "executable" => Some(1),
+        "writable" => Some(2),
+        "readable" => Some(4),
+        "exists" => Some(0),
+        _ => None,
+    }
+}
+
+fn locate_file_access_matches(mask: i64, candidate: &str) -> bool {
+    fs::metadata(candidate).is_ok()
+        && (mask & 1 == 0 || file_executable_p(candidate))
+        && (mask & 2 == 0 || file_writable_p(candidate))
+        && (mask & 4 == 0 || file_readable_p(candidate))
+}
+
 fn history_args_for_call(
     interp: &mut Interpreter,
     func: &Value,
@@ -41989,7 +42617,7 @@ mod compat_runtime_tests {
                 &mut env,
             )
             .expect("range start should be set"),
-            Value::String("w".into())
+            Value::Integer(2)
         );
         assert_eq!(
             call(
@@ -41999,7 +42627,68 @@ mod compat_runtime_tests {
                 &mut env,
             )
             .expect("range middle should be set"),
-            Value::String("w".into())
+            Value::Integer(2)
+        );
+    }
+
+    #[test]
+    fn syntax_table_aref_and_range_return_encoded_entries() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let table = interp.make_char_table(Some("syntax-table".into()), Value::Nil);
+
+        call(
+            &mut interp,
+            "modify-syntax-entry",
+            &[
+                Value::Integer('a' as i64),
+                Value::String(". 1234".into()),
+                table.clone(),
+            ],
+            &mut env,
+        )
+        .expect("modify syntax entry");
+        assert_eq!(
+            call(
+                &mut interp,
+                "aref",
+                &[table.clone(), Value::Integer('a' as i64)],
+                &mut env,
+            )
+            .expect("aref should expose encoded syntax descriptor"),
+            Value::Integer(983041)
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "char-table-range",
+                &[table.clone(), Value::Integer('a' as i64)],
+                &mut env,
+            )
+            .expect("char-table-range should expose encoded syntax descriptor"),
+            Value::Integer(983041)
+        );
+
+        call(
+            &mut interp,
+            "modify-syntax-entry",
+            &[
+                Value::Integer('(' as i64),
+                Value::String("(] 1234".into()),
+                table.clone(),
+            ],
+            &mut env,
+        )
+        .expect("modify matching syntax entry");
+        assert_eq!(
+            call(
+                &mut interp,
+                "aref",
+                &[table, Value::Integer('(' as i64)],
+                &mut env,
+            )
+            .expect("matching syntax descriptor"),
+            Value::cons(Value::Integer(983044), Value::Integer(']' as i64))
         );
     }
 
@@ -42320,6 +43009,74 @@ mod compat_runtime_tests {
         assert_eq!(
             interp.lookup_var("major-mode", &env),
             Some(Value::Symbol("archive-mode".into()))
+        );
+    }
+
+    #[test]
+    fn c_plus_plus_mode_marks_semantic_buffers_active_when_global_mode_is_enabled() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        interp.set_variable("semantic-mode", Value::T, &mut env);
+        interp
+            .eval(
+                &crate::lisp::reader::Reader::new(
+                    "(defun semantic-lex-init ()
+                       (setq semantic-lex-syntax-table (copy-syntax-table (syntax-table))))",
+                )
+                .read()
+                .expect("read semantic lex init stub")
+                .expect("semantic lex init form"),
+                &mut env,
+            )
+            .expect("define semantic lex init stub");
+        interp.set_variable(
+            "buffer-file-name",
+            Value::String("/tmp/sample.cpp".into()),
+            &mut env,
+        );
+
+        assert_eq!(
+            call(&mut interp, "normal-mode", &[], &mut env).expect("dispatch c++ normal-mode"),
+            Value::Nil
+        );
+        assert_eq!(
+            interp.lookup_var("major-mode", &env),
+            Some(Value::Symbol("c++-mode".into()))
+        );
+        assert_eq!(
+            interp.lookup_var("semantic-new-buffer-fcn-was-run", &env),
+            Some(Value::T)
+        );
+        assert!(matches!(
+            interp.lookup_var("semantic-lex-syntax-table", &env),
+            Some(Value::CharTable(_))
+        ));
+        interp.insert_current_buffer("/* comment */x");
+        interp.buffer.goto_char(1);
+        assert_eq!(
+            call(
+                &mut interp,
+                "forward-comment",
+                &[Value::Integer(1)],
+                &mut env
+            )
+            .expect("c syntax table should move over block comments"),
+            Value::T
+        );
+        assert_eq!(interp.buffer.point(), 14);
+        assert_eq!(
+            call(
+                &mut interp,
+                "derived-mode-all-parents",
+                &[Value::Symbol("c++-mode".into())],
+                &mut env,
+            )
+            .expect("c++ mode parent chain should be available"),
+            Value::list([
+                Value::Symbol("c++-mode".into()),
+                Value::Symbol("c-mode".into()),
+                Value::Symbol("prog-mode".into()),
+            ])
         );
     }
 
@@ -43357,6 +44114,89 @@ mod compat_runtime_tests {
     }
 
     #[test]
+    fn write_process_output_merges_stderr_for_t_cons_destination() {
+        let mut interp = Interpreter::new();
+        let destination = Value::cons(Value::T, Value::T);
+
+        write_process_output(&mut interp, &destination, b"out\n", b"err\n")
+            .expect("write merged process output");
+        assert_eq!(interp.buffer.buffer_string(), "out\nerr\n");
+    }
+
+    #[test]
+    fn file_regular_p_distinguishes_files_from_directories() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let dir = std::env::temp_dir().join(format!(
+            "emaxx-file-regular-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).expect("create temp directory");
+        let file = dir.join("sample");
+        std::fs::write(&file, "content").expect("write temp file");
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-regular-p",
+                &[Value::String(file.display().to_string())],
+                &mut env,
+            )
+            .expect("regular file"),
+            Value::T
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-regular-p",
+                &[Value::String(dir.display().to_string())],
+                &mut env,
+            )
+            .expect("directory"),
+            Value::Nil
+        );
+
+        std::fs::remove_file(file).expect("cleanup temp file");
+        std::fs::remove_dir(dir).expect("cleanup temp directory");
+    }
+
+    #[test]
+    fn file_relative_name_returns_child_and_parent_relative_paths() {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-relative-name",
+                &[
+                    Value::String("/tmp/project/src/main.c".into()),
+                    Value::String("/tmp/project/".into()),
+                ],
+                &mut env,
+            )
+            .expect("child relative path"),
+            Value::String("src/main.c".into())
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "file-relative-name",
+                &[
+                    Value::String("/tmp/include/sys/cdefs.h".into()),
+                    Value::String("/tmp/project/src/".into()),
+                ],
+                &mut env,
+            )
+            .expect("parent relative path"),
+            Value::String("../../include/sys/cdefs.h".into())
+        );
+    }
+
+    #[test]
     fn write_region_reports_output_errors_as_file_error() {
         let mut interp = Interpreter::new();
         let mut env = Vec::new();
@@ -43786,7 +44626,6 @@ mod compat_runtime_tests {
         ];
 
         for (label, left, right) in cases {
-            eprintln!("value< case: {label}");
             let forward = call(
                 &mut interp,
                 "value<",
@@ -44064,7 +44903,6 @@ mod compat_runtime_tests {
         ];
 
         for (label, left, right) in cases {
-            eprintln!("value< unordered case: {label}");
             let forward = call(
                 &mut interp,
                 "value<",
@@ -44173,7 +45011,6 @@ mod compat_runtime_tests {
                 let (left_label, left) = &values[index];
                 let (right_label, right) = &values[other];
                 let label = format!("{left_label}_vs_{right_label}");
-                eprintln!("value< type-mismatch case: {label}");
                 let forward = call(
                     &mut interp,
                     "value<",
