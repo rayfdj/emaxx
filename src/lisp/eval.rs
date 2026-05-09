@@ -827,6 +827,7 @@ pub struct Interpreter {
     condition_variables: Vec<ConditionVariableState>,
     process_states: Vec<ProcessState>,
     class_states: Vec<ClassState>,
+    class_parent_overrides: Vec<(u64, Vec<String>)>,
     generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
     main_thread_id: u64,
@@ -1012,6 +1013,7 @@ impl Interpreter {
             condition_variables: Vec::new(),
             process_states: Vec::new(),
             class_states: Vec::new(),
+            class_parent_overrides: Vec::new(),
             generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
             main_thread_id,
@@ -1510,6 +1512,92 @@ impl Interpreter {
     pub(crate) fn class_value(&self, name: &str) -> Option<Value> {
         self.find_class_state(name)
             .map(|state| Value::Record(state.record_id))
+    }
+
+    pub(crate) fn class_parents_value(&self, class: &Value) -> Result<Value, LispError> {
+        let Value::Record(record_id) = class else {
+            return Err(LispError::TypeError("class".into(), class.type_name()));
+        };
+        if let Some(state) = self.find_class_state_by_record_id(*record_id) {
+            return Ok(Value::list(state.parents.iter().map(|parent| {
+                self.class_value(parent)
+                    .unwrap_or_else(|| Value::Symbol(parent.clone()))
+            })));
+        }
+        if let Some((_, parents)) = self
+            .class_parent_overrides
+            .iter()
+            .find(|(stored_id, _)| stored_id == record_id)
+        {
+            return Ok(Value::list(parents.iter().map(|parent| {
+                self.class_value(parent)
+                    .unwrap_or_else(|| Value::Symbol(parent.clone()))
+            })));
+        }
+        Ok(Value::Nil)
+    }
+
+    pub(crate) fn set_class_record(&mut self, name: &str, class: Value) -> Result<(), LispError> {
+        let Value::Record(record_id) = class.clone() else {
+            return Err(LispError::TypeError("class".into(), class.type_name()));
+        };
+        let parents = self
+            .class_parent_overrides
+            .iter()
+            .find(|(stored_id, _)| *stored_id == record_id)
+            .map(|(_, parents)| parents.clone())
+            .unwrap_or_default();
+        if let Some(existing) = self.find_class_state_mut(name) {
+            existing.record_id = record_id;
+            existing.parents = parents.clone();
+        } else {
+            self.class_states.push(ClassState {
+                name: name.to_string(),
+                record_id,
+                parents: parents.clone(),
+                slot_specs: Vec::new(),
+                options: Vec::new(),
+                children: Vec::new(),
+            });
+        }
+        self.put_symbol_property(name, "cl--class", Value::Record(record_id));
+        self.put_symbol_property(
+            name,
+            "emaxx-class-parents",
+            Value::list(parents.into_iter().map(Value::Symbol)),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn set_class_parents_value(
+        &mut self,
+        class: &Value,
+        parents: Value,
+    ) -> Result<(), LispError> {
+        let Value::Record(record_id) = class else {
+            return Err(LispError::TypeError("class".into(), class.type_name()));
+        };
+        let parent_names = parents
+            .to_vec()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|parent| self.class_name_from_value(&parent))
+            .collect::<Vec<_>>();
+        match self
+            .class_parent_overrides
+            .iter_mut()
+            .find(|(stored_id, _)| stored_id == record_id)
+        {
+            Some((_, stored_parents)) => *stored_parents = parent_names.clone(),
+            None => self
+                .class_parent_overrides
+                .push((*record_id, parent_names.clone())),
+        }
+        let Some(class_name) = self.class_name_from_value(class) else {
+            return Ok(());
+        };
+        self.register_class(&class_name, parent_names, Vec::new(), Vec::new());
+        Ok(())
     }
 
     fn register_class(
@@ -6220,7 +6308,7 @@ impl Interpreter {
                         continue;
                     }
                     if rest {
-                        let rest_args: Vec<Value> = args[arg_idx..].to_vec();
+                        let rest_args: Vec<Value> = args.get(arg_idx..).unwrap_or(&[]).to_vec();
                         frame.push((param.clone(), Self::stored_value(Value::list(rest_args))));
                         break;
                     }
@@ -7042,6 +7130,30 @@ impl Interpreter {
                 let resolved = self.resolve_setf_place(&items[1], env)?;
                 let value = self.eval(&items[2], env)?;
                 self.set_resolved_setf_place_value(&resolved, value.clone(), env)?;
+                Ok(value)
+            }
+            Some(Value::Symbol(name)) if name == "cl--class-parents" => {
+                let Some(target) = place.get(1) else {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported setf place: {}",
+                        items[1]
+                    )));
+                };
+                let class = self.eval(target, env)?;
+                let value = self.eval(&items[2], env)?;
+                self.set_class_parents_value(&class, value.clone())?;
+                Ok(value)
+            }
+            Some(Value::Symbol(name)) if name == "cl--find-class" => {
+                let Some(target) = place.get(1) else {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported setf place: {}",
+                        items[1]
+                    )));
+                };
+                let class_name = self.eval(target, env)?.as_symbol()?.to_string();
+                let value = self.eval(&items[2], env)?;
+                self.set_class_record(&class_name, value.clone())?;
                 Ok(value)
             }
             Some(Value::Symbol(name))
@@ -11294,7 +11406,7 @@ impl Interpreter {
                 continue;
             }
             if rest {
-                let rest_args = Value::list(args[arg_idx..].iter().cloned());
+                let rest_args = Value::list(args.get(arg_idx..).unwrap_or(&[]).iter().cloned());
                 frame.push((param.clone(), rest_args));
                 break;
             }
@@ -15505,6 +15617,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn macro_rest_after_missing_required_args_binds_nil() {
+        assert_eq!(
+            eval_str("(progn (defmacro sample-macro (required &rest rest) rest) (sample-macro))"),
+            Value::Nil
+        );
+    }
+
     fn run_large_stack_test(test_fn: fn()) {
         thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
@@ -15545,6 +15665,12 @@ mod tests {
         assert_eq!(
             eval_str(r#"(int-to-string 12345)"#),
             Value::String("12345".into())
+        );
+        assert_string_value(
+            eval_str(
+                r#"(internal--format-docstring-line "Return non-nil if %S is ready." 'object)"#,
+            ),
+            "Return non-nil if object is ready.",
         );
         assert_string_value(
             eval_str(r#"(replace-regexp-in-string "\\([a-z]+\\)" "<\\1>" "abc 123")"#),
@@ -20747,6 +20873,31 @@ mod tests {
                     Value::Symbol("t".into()),
                 ]),
                 Value::list([Value::Symbol("sample-child".into())]),
+            ])
+        );
+    }
+
+    #[test]
+    fn setf_updates_eieio_class_parent_metadata() {
+        assert_eq!(
+            eval_str(
+                "(let ((parent (record 'eieio--class))
+                       (child (record 'eieio--class)))
+                   (setf (cl--find-class 'sample-autoload-parent) parent)
+                   (setf (cl--class-parents child) (list parent))
+                   (setf (cl--find-class 'sample-autoload-child) child)
+                   (list (eq (cl-find-class 'sample-autoload-child) child)
+                         (cl--class-allparents child)
+                         (eq (car (cl--class-parents child)) parent)))"
+            ),
+            Value::list([
+                Value::T,
+                Value::list([
+                    Value::Symbol("sample-autoload-child".into()),
+                    Value::Symbol("sample-autoload-parent".into()),
+                    Value::Symbol("t".into()),
+                ]),
+                Value::T,
             ])
         );
     }

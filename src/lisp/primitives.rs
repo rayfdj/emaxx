@@ -473,6 +473,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "byte-compile-check-lambda-list"
             | "cl-type-of"
             | "cl-find-class"
+            | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
             | "make-instance"
@@ -1529,6 +1530,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "char-width"
             | "format"
             | "format-message"
+            | "internal--format-docstring-line"
             | "ngettext"
             | "format-spec"
             | "char-to-string"
@@ -2268,6 +2270,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "type-of"
             | "cl-type-of"
             | "cl-find-class"
+            | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
             | "make-instance"
@@ -5835,6 +5838,18 @@ pub fn call(
                 ));
             }
             Ok(string_like_value(result, merge_string_props(result_props)))
+        }
+        "internal--format-docstring-line" => {
+            if args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), 0));
+            }
+            let template = string_text(&args[0])?;
+            if template.contains('\n') {
+                return Err(LispError::Signal(format!(
+                    "Unable to fill string containing newline: {template:?}"
+                )));
+            }
+            call(interp, "format", args, env)
         }
         "ngettext" => {
             need_args(name, args, 3)?;
@@ -15144,6 +15159,10 @@ pub fn call(
             } else {
                 Value::Nil
             })
+        }
+        "cl--class-parents" => {
+            need_args(name, args, 1)?;
+            interp.class_parents_value(&args[0])
         }
         "cl--class-allparents" => {
             need_args(name, args, 1)?;
