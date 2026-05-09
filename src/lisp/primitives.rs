@@ -1921,6 +1921,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "locate-library"
             | "ert-resource-directory"
             | "ert-resource-file"
+            | "ert-gcc-is-clang-p"
             | "ert-fail"
             | "get-load-suffixes"
             | "load"
@@ -10167,6 +10168,20 @@ pub fn call(
                 ));
             };
             Ok(Value::String(expand_file_name(&file, Some(&directory))))
+        }
+        "ert-gcc-is-clang-p" => {
+            if !args.is_empty() {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let output = match Command::new("gcc").arg("--version").output() {
+                Ok(output) => output,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Value::Nil),
+                Err(error) => return Err(LispError::Signal(error.to_string())),
+            };
+            let text = String::from_utf8_lossy(&output.stdout);
+            Ok(apple_gcc_version_match(&text)
+                .map(|index| Value::Integer(index as i64))
+                .unwrap_or(Value::Nil))
         }
         "ert-fail" => {
             need_args(name, args, 1)?;
@@ -23896,6 +23911,14 @@ fn ert_resource_directory_for(testfile: &str) -> String {
     path_to_directory_string(&resource_dir)
 }
 
+fn apple_gcc_version_match(output: &str) -> Option<usize> {
+    output
+        .find("Apple LLVM")
+        .or_else(|| output.find("Apple Clang"))
+        .or_else(|| output.find("Apple clang"))
+        .or_else(|| output.find("Xcode.app"))
+}
+
 fn directory_files(
     interp: &Interpreter,
     directory: &str,
@@ -25985,6 +26008,22 @@ mod tests {
         assert_eq!(
             ert_resource_directory_for("/tmp/bookmark.el"),
             "/tmp/bookmark-resources/"
+        );
+    }
+
+    #[test]
+    fn ert_gcc_is_clang_matches_upstream_apple_markers() {
+        assert_eq!(
+            apple_gcc_version_match("Apple LLVM version 10.0.0 (clang-1000.10.44.4)"),
+            Some(0)
+        );
+        assert!(
+            apple_gcc_version_match("gcc wrapper\nInstalledDir: /Applications/Xcode.app/Contents")
+                .is_some()
+        );
+        assert_eq!(
+            apple_gcc_version_match("gcc (Homebrew GCC 15.2.0) 15.2.0"),
+            None
         );
     }
 
