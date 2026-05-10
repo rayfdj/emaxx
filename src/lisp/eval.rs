@@ -13,6 +13,8 @@ use super::types::{Env, LispError, Value, shared_env};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use regex::Regex;
 
+mod classes;
+
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
     pub name: String,
@@ -5316,6 +5318,12 @@ impl Interpreter {
             "inhibit-iso-escape-detection" => Some(Value::Nil),
             "create-lockfiles" => Some(Value::T),
             "display-hourglass" => Some(Value::Nil),
+            "page-delimiter" => Some(Value::String("^\u{000c}".into())),
+            "adaptive-fill-mode" => Some(Value::T),
+            "adaptive-fill-regexp" => Some(Value::String(
+                "[-–!|#%;>*·•‣⁃◦ \t]*".into(),
+            )),
+            "adaptive-fill-first-line-regexp" => Some(Value::String("\\`[ \t]*\\'".into())),
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             "auto-save-timeout" => Some(Value::Integer(30)),
             "auto-save-interval" => Some(Value::Integer(300)),
@@ -8612,6 +8620,7 @@ impl Interpreter {
             .unwrap_or_default();
         let options = items.get(4..).unwrap_or(&[]).to_vec();
         self.register_class(name, parents, slot_specs, options);
+        classes::install_eieio_slot_accessors(self, name)?;
         self.set_function_binding(
             name,
             Some(Value::Lambda(
@@ -12798,6 +12807,26 @@ fn builtin_auto_mode_alist() -> Value {
             Value::String("\\.c\\'".into()),
             Value::Symbol("c-mode".into()),
         ),
+        Value::cons(
+            Value::String("\\.java\\'".into()),
+            Value::Symbol("java-mode".into()),
+        ),
+        Value::cons(
+            Value::String("\\.mk\\'".into()),
+            Value::Symbol("makefile-bsdmake-mode".into()),
+        ),
+        Value::cons(
+            Value::String("\\.texi\\'".into()),
+            Value::Symbol("texinfo-mode".into()),
+        ),
+        Value::cons(
+            Value::String("\\.wy\\'".into()),
+            Value::Symbol("wisent-grammar-mode".into()),
+        ),
+        Value::cons(
+            Value::String("\\.srt\\'".into()),
+            Value::Symbol("srecode-template-mode".into()),
+        ),
     ])
 }
 
@@ -12835,7 +12864,9 @@ fn builtin_macro_autoload(file: &str) -> Value {
 fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
-        "cl-delete-duplicates" => Some(builtin_file_autoload("cl-seq", Value::Nil)),
+        "cl-assoc-if" | "cl-assoc-if-not" | "cl-delete-duplicates" => {
+            Some(builtin_file_autoload("cl-seq", Value::Nil))
+        }
         "connection-local-p" => Some(builtin_macro_autoload("files-x")),
         "connection-local-set-profile-variables" => {
             Some(builtin_file_autoload("files-x", Value::Nil))
@@ -18185,12 +18216,14 @@ mod tests {
                  (string-match-p "\\s(" "(")
                  (string-match-p "\\s)" ")")
                  (string-match-p "\\s." ";")
+                 (string-match-p "\\s." "=")
                  (string-match-p "\\s>" "\n")
                  (string-match-p "\\S>" "n")
                  (string-match-p "\\S(" "a"))
                 "#
             ),
             Value::list([
+                Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(0),
@@ -19614,6 +19647,10 @@ mod tests {
             builtin_file_autoload("cl-seq", Value::Nil)
         );
         assert_eq!(
+            interp.lookup_function("cl-assoc-if", &env).unwrap(),
+            builtin_file_autoload("cl-seq", Value::Nil)
+        );
+        assert_eq!(
             interp.lookup_function("dired", &env).unwrap(),
             builtin_file_autoload("dired", Value::T)
         );
@@ -20169,6 +20206,27 @@ mod tests {
     #[test]
     fn sentence_end_defaults_to_nil_in_batch() {
         assert_eq!(eval_str("sentence-end"), Value::Nil);
+    }
+
+    #[test]
+    fn page_delimiter_has_standard_default() {
+        assert_eq!(
+            eval_str("page-delimiter"),
+            Value::String("^\u{000c}".into())
+        );
+    }
+
+    #[test]
+    fn adaptive_fill_defaults_are_bound() {
+        assert_eq!(eval_str("adaptive-fill-mode"), Value::T);
+        assert_eq!(
+            eval_str("adaptive-fill-regexp"),
+            Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())
+        );
+        assert_eq!(
+            eval_str("adaptive-fill-first-line-regexp"),
+            Value::String("\\`[ \t]*\\'".into())
+        );
     }
 
     #[test]
@@ -21802,6 +21860,20 @@ mod tests {
                 Value::String(".".into()),
                 Value::String("example.org".into()),
             ])
+        );
+    }
+
+    #[test]
+    fn defclass_installs_slot_accessors() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-accessor nil
+                     ((tags :initarg :tags :accessor sample-accessor-tags)))
+                   (sample-accessor-tags
+                    (make-instance 'sample-accessor :tags '(a b))))"
+            ),
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into()),])
         );
     }
 
@@ -25682,6 +25754,22 @@ IHdvcmxkIQ==")))
                 "#
             ),
             Value::String(" ".into())
+        );
+    }
+
+    #[test]
+    fn skip_syntax_forward_uses_active_table_punctuation_class() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (insert "= a")
+                  (goto-char (point-min))
+                  (skip-syntax-forward ".")
+                  (point))
+                "#
+            ),
+            Value::Integer(2)
         );
     }
 
