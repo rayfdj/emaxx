@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -6103,6 +6103,7 @@ impl Interpreter {
                         "aset" => return self.sf_aset(&items, env),
                         "cl-flet" | "cl-labels" => return self.sf_cl_flet(&items, env),
                         "cl-macrolet" => return self.sf_cl_macrolet(&items, env),
+                        "cl-symbol-macrolet" => return self.sf_cl_symbol_macrolet(&items, env),
                         "push" => {
                             // (push NEWELT PLACE)
                             if items.len() < 3 {
@@ -8867,12 +8868,35 @@ impl Interpreter {
                 .filter(|param| !is_lambda_list_keyword(param))
                 .map(|param| Value::Symbol(param.clone()))
                 .collect::<Vec<_>>();
-            let mut method_body = Vec::with_capacity(items.len() - lambda_list_index);
-            method_body.push(Value::Symbol("progn".into()));
+            let previous_method_symbol = format!(
+                "__emaxx_previous_method_{}_{}",
+                function_name_from_binding_form(&items[1])?.replace('-', "_"),
+                class_name.replace('-', "_")
+            );
+            let mut next_default_args = Vec::with_capacity(call_args.len() + 1);
+            next_default_args.push(Value::Symbol("list".into()));
+            next_default_args.extend(call_args.iter().cloned());
+            let next_method_body = Value::list([
+                Value::Symbol("apply".into()),
+                Value::Symbol(previous_method_symbol.clone()),
+                Value::list([
+                    Value::Symbol("if".into()),
+                    Value::Symbol("args".into()),
+                    Value::Symbol("args".into()),
+                    Value::list(next_default_args),
+                ]),
+            ]);
+            let mut method_body = Vec::with_capacity(items.len() - lambda_list_index + 3);
+            method_body.push(Value::Symbol("cl-flet".into()));
+            method_body.push(Value::list([Value::list([
+                Value::Symbol("cl-call-next-method".into()),
+                Value::list([Value::Symbol("&rest".into()), Value::Symbol("args".into())]),
+                next_method_body,
+            ])]));
             method_body.extend(items[lambda_list_index + 1..].iter().cloned());
             let mut fallback = Vec::with_capacity(call_args.len() + 2);
             fallback.push(Value::Symbol("funcall".into()));
-            fallback.push(Value::Symbol("__emaxx_previous_method".into()));
+            fallback.push(Value::Symbol(previous_method_symbol.clone()));
             fallback.extend(call_args);
             let dispatch_body = vec![Value::list([
                 Value::Symbol("if".into()),
@@ -8885,7 +8909,7 @@ impl Interpreter {
                 Value::list(fallback),
             ])];
             let closure = shared_env(vec![vec![(
-                "__emaxx_previous_method".into(),
+                previous_method_symbol,
                 Self::stored_value(previous),
             )]]);
             self.set_function_binding(
@@ -11271,6 +11295,34 @@ impl Interpreter {
         let result = self.sf_progn(&items[2..], env);
         self.macros.truncate(saved_macros_len);
         result
+    }
+
+    fn sf_cl_symbol_macrolet(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-symbol-macrolet".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let mut expansions = HashMap::new();
+        for binding in items[1].to_vec()? {
+            let parts = binding.to_vec()?;
+            if parts.len() != 2 {
+                return Err(LispError::Signal(
+                    "Invalid cl-symbol-macrolet binding".into(),
+                ));
+            }
+            expansions.insert(parts[0].as_symbol()?.to_string(), parts[1].clone());
+        }
+        let body = items[2..]
+            .iter()
+            .map(|form| substitute_symbol_macros(form, &expansions))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.sf_progn(&body, env)
     }
 
     // ── Backquote ──
@@ -13664,6 +13716,178 @@ fn first_cl_defmethod_specializer(spec: &Value) -> Result<Option<(String, String
         return Ok(Some((variable.clone(), class_name.clone())));
     }
     Ok(None)
+}
+
+fn substitute_symbol_macros(
+    form: &Value,
+    expansions: &HashMap<String, Value>,
+) -> Result<Value, LispError> {
+    match form {
+        Value::Symbol(symbol) => Ok(expansions
+            .get(symbol)
+            .cloned()
+            .unwrap_or_else(|| form.clone())),
+        Value::Cons(_, _) => substitute_symbol_macros_in_list(form, expansions),
+        _ => Ok(form.clone()),
+    }
+}
+
+fn substitute_symbol_macros_in_list(
+    form: &Value,
+    expansions: &HashMap<String, Value>,
+) -> Result<Value, LispError> {
+    let items = form.to_vec()?;
+    let Some(Value::Symbol(head)) = items.first() else {
+        return items
+            .iter()
+            .map(|item| substitute_symbol_macros(item, expansions))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::list);
+    };
+    match head.as_str() {
+        "quote" | "function" => Ok(form.clone()),
+        "lambda" => substitute_symbol_macros_in_lambda(&items, expansions),
+        "let" => substitute_symbol_macros_in_let(&items, expansions, false),
+        "let*" => substitute_symbol_macros_in_let(&items, expansions, true),
+        "setq" => substitute_symbol_macros_in_setq(&items, expansions),
+        _ => items
+            .iter()
+            .map(|item| substitute_symbol_macros(item, expansions))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::list),
+    }
+}
+
+fn substitute_symbol_macros_in_lambda(
+    items: &[Value],
+    expansions: &HashMap<String, Value>,
+) -> Result<Value, LispError> {
+    let Some(params) = items.get(1) else {
+        return Ok(Value::list(items.iter().cloned()));
+    };
+    let scoped = symbol_macro_expansions_without_bindings(expansions, params)?;
+    let mut rewritten = Vec::with_capacity(items.len());
+    rewritten.extend(items[..2].iter().cloned());
+    for form in &items[2..] {
+        rewritten.push(substitute_symbol_macros(form, &scoped)?);
+    }
+    Ok(Value::list(rewritten))
+}
+
+fn substitute_symbol_macros_in_let(
+    items: &[Value],
+    expansions: &HashMap<String, Value>,
+    sequential: bool,
+) -> Result<Value, LispError> {
+    let Some(bindings_value) = items.get(1) else {
+        return Ok(Value::list(items.iter().cloned()));
+    };
+    let bindings = bindings_value.to_vec()?;
+    let mut scoped = expansions.clone();
+    let mut rewritten_bindings = Vec::with_capacity(bindings.len());
+    for binding in &bindings {
+        match binding {
+            Value::Symbol(symbol) => {
+                scoped.remove(symbol);
+                rewritten_bindings.push(Value::Symbol(symbol.clone()));
+            }
+            Value::Cons(_, _) => {
+                let parts = binding.to_vec()?;
+                let Some(Value::Symbol(symbol)) = parts.first() else {
+                    rewritten_bindings.push(substitute_symbol_macros(binding, &scoped)?);
+                    continue;
+                };
+                let init_scope = if sequential { &scoped } else { expansions };
+                let mut rewritten = Vec::with_capacity(parts.len());
+                rewritten.push(Value::Symbol(symbol.clone()));
+                for form in &parts[1..] {
+                    rewritten.push(substitute_symbol_macros(form, init_scope)?);
+                }
+                scoped.remove(symbol);
+                rewritten_bindings.push(Value::list(rewritten));
+            }
+            other => rewritten_bindings.push(substitute_symbol_macros(other, &scoped)?),
+        }
+    }
+    let body_scope = if sequential {
+        scoped
+    } else {
+        let mut body_scope = expansions.clone();
+        for binding in &bindings {
+            match binding {
+                Value::Symbol(symbol) => {
+                    body_scope.remove(symbol);
+                }
+                Value::Cons(_, _) => {
+                    if let Ok(parts) = binding.to_vec()
+                        && let Some(Value::Symbol(symbol)) = parts.first()
+                    {
+                        body_scope.remove(symbol);
+                    }
+                }
+                _ => {}
+            }
+        }
+        body_scope
+    };
+    let mut rewritten = Vec::with_capacity(items.len());
+    rewritten.push(items[0].clone());
+    rewritten.push(Value::list(rewritten_bindings));
+    for form in &items[2..] {
+        rewritten.push(substitute_symbol_macros(form, &body_scope)?);
+    }
+    Ok(Value::list(rewritten))
+}
+
+fn substitute_symbol_macros_in_setq(
+    items: &[Value],
+    expansions: &HashMap<String, Value>,
+) -> Result<Value, LispError> {
+    let mut rewritten = Vec::new();
+    let mut index = 1;
+    while index + 1 < items.len() {
+        if let Some(symbol) = items[index].as_symbol().ok()
+            && let Some(expansion) = expansions.get(symbol)
+        {
+            rewritten.push(Value::list([
+                Value::Symbol("setf".into()),
+                expansion.clone(),
+                substitute_symbol_macros(&items[index + 1], expansions)?,
+            ]));
+        } else {
+            rewritten.push(Value::list([
+                Value::Symbol("setq".into()),
+                items[index].clone(),
+                substitute_symbol_macros(&items[index + 1], expansions)?,
+            ]));
+        }
+        index += 2;
+    }
+    Ok(match rewritten.len() {
+        0 => Value::Nil,
+        1 => rewritten.pop().unwrap_or(Value::Nil),
+        _ => {
+            let mut progn = Vec::with_capacity(rewritten.len() + 1);
+            progn.push(Value::Symbol("progn".into()));
+            progn.extend(rewritten);
+            Value::list(progn)
+        }
+    })
+}
+
+fn symbol_macro_expansions_without_bindings(
+    expansions: &HashMap<String, Value>,
+    params: &Value,
+) -> Result<HashMap<String, Value>, LispError> {
+    let mut scoped = expansions.clone();
+    for item in params.to_vec()? {
+        if let Ok(symbol) = item.as_symbol()
+            && !is_lambda_list_keyword(symbol)
+        {
+            scoped.remove(symbol);
+        }
+    }
+    Ok(scoped)
 }
 
 fn lower_define_inline_form(value: &Value) -> Value {
@@ -17124,6 +17348,39 @@ mod tests {
         run_large_stack_test(assert_hash_table_iteration_and_mutation_primitives_cover_ert_cases);
     }
 
+    #[test]
+    fn hash_table_eq_test_uses_cons_identity() {
+        assert_eq!(
+            eval_str(
+                "(let ((ht (make-hash-table :test #'eq))
+                       (left (list 'a))
+                       (right (list 'a)))
+                   (puthash left 'left ht)
+                   (list (gethash left ht)
+                         (gethash right ht 'missing)
+                         (hash-table-count ht)))"
+            ),
+            Value::list([
+                Value::Symbol("left".into()),
+                Value::Symbol("missing".into()),
+                Value::Integer(1),
+            ])
+        );
+    }
+
+    #[test]
+    fn eq_distinguishes_cons_cells_that_share_car_storage() {
+        assert_eq!(
+            eval_str(
+                "(let* ((cell (list 'a))
+                        (left (cons (car cell) nil))
+                        (right (cons (car cell) nil)))
+                   (eq left right))"
+            ),
+            Value::Nil
+        );
+    }
+
     fn assert_hash_table_iteration_and_mutation_primitives_cover_ert_cases() {
         assert_eq!(
             eval_str(
@@ -17928,10 +18185,14 @@ mod tests {
                  (string-match-p "\\s(" "(")
                  (string-match-p "\\s)" ")")
                  (string-match-p "\\s." ";")
+                 (string-match-p "\\s>" "\n")
+                 (string-match-p "\\S>" "n")
                  (string-match-p "\\S(" "a"))
                 "#
             ),
             Value::list([
+                Value::Integer(0),
+                Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(0),
                 Value::Integer(0),
@@ -18011,6 +18272,25 @@ mod tests {
                 "#
             ),
             Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn forward_list_moves_over_syntax_table_brace_lists() {
+        assert_eq!(
+            eval_str(
+                r#"
+                (with-temp-buffer
+                  (set-syntax-table (make-syntax-table))
+                  (modify-syntax-entry ?\{ "(}")
+                  (modify-syntax-entry ?\} "){")
+                  (insert "{ one { two } three } tail")
+                  (goto-char (point-min))
+                  (forward-list 1)
+                  (point))
+                "#
+            ),
+            Value::Integer(22)
         );
     }
 
@@ -19543,6 +19823,19 @@ mod tests {
                 Value::Symbol("x".into()),
                 Value::Symbol("c".into()),
             ])
+        );
+    }
+
+    #[test]
+    fn memq_uses_identity_for_cons_elements() {
+        assert_eq!(
+            eval_str(
+                "(let ((left (list 'a))
+                       (right (list 'a)))
+                   (list (memq left (list right))
+                         (not (null (memq left (list left))))))"
+            ),
+            Value::list([Value::Nil, Value::T])
         );
     }
 
@@ -21381,6 +21674,34 @@ mod tests {
     }
 
     #[test]
+    fn cl_defmethod_call_next_method_dispatches_to_previous_specializer() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-next-context nil nil)
+                   (defclass sample-next-functionarg (sample-next-context) nil)
+                   (cl-defmethod sample-next-method ((context sample-next-context)
+                                                      &optional desired-type)
+                     (list 'base context desired-type))
+                   (cl-defmethod sample-next-method ((context sample-next-functionarg))
+                     (cons 'child (cl-call-next-method context 'desired)))
+                   (let ((object (make-instance 'sample-next-functionarg)))
+                     (let ((result (sample-next-method object)))
+                       (list (car result)
+                             (cadr result)
+                             (cl-typep (caddr result) 'sample-next-functionarg)
+                             (cadddr result)))))"
+            ),
+            Value::list([
+                Value::Symbol("child".into()),
+                Value::Symbol("base".into()),
+                Value::T,
+                Value::Symbol("desired".into()),
+            ])
+        );
+    }
+
+    #[test]
     fn defclass_returns_the_class_name() {
         assert_eq!(
             eval_str("(defclass sample-class nil nil)"),
@@ -21518,6 +21839,40 @@ mod tests {
             Value::list([
                 Value::String("new".into()),
                 Value::String("/tmp/sample".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn cl_symbol_macrolet_reads_and_writes_slot_backed_symbols() {
+        assert_eq!(
+            eval_str(
+                "(progn
+                   (defclass sample-symbol-macrolet-slot nil
+                     ((bounds :initarg :bounds)))
+                   (let ((object (make-instance 'sample-symbol-macrolet-slot
+                                                :bounds '(1 . 2))))
+                     (cl-symbol-macrolet ((bounds (slot-value object 'bounds)))
+                       (setq bounds '(3 . 4))
+                       bounds)))"
+            ),
+            Value::cons(Value::Integer(3), Value::Integer(4))
+        );
+    }
+
+    #[test]
+    fn cl_symbol_macrolet_respects_lexical_shadowing() {
+        assert_eq!(
+            eval_str(
+                "(cl-symbol-macrolet ((bounds 'outer))
+                   (list bounds
+                         (let ((bounds 'inner)) bounds)
+                         ((lambda (bounds) bounds) 'argument)))"
+            ),
+            Value::list([
+                Value::Symbol("outer".into()),
+                Value::Symbol("inner".into()),
+                Value::Symbol("argument".into()),
             ])
         );
     }

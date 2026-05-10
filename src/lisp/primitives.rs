@@ -1653,6 +1653,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "search-forward-regexp"
             | "search-backward-regexp"
             | "isearch-no-upper-case-p"
+            | "forward-list"
             | "forward-sexp"
             | "backward-sexp"
             | "forward-comment"
@@ -4256,7 +4257,7 @@ pub fn call(
                         let matches = match name {
                             "member" => values_equal(interp, &item, &args[0]),
                             "memql" => values_eql(&item, &args[0]),
-                            _ => item == args[0],
+                            _ => values_eq_in_env(interp, &item, &args[0], env),
                         };
                         if matches {
                             return Ok(current);
@@ -4268,7 +4269,7 @@ pub fn call(
                         let matches = match name {
                             "member" => values_equal(interp, &other, &args[0]),
                             "memql" => values_eql(&other, &args[0]),
-                            _ => other == args[0],
+                            _ => values_eq_in_env(interp, &other, &args[0], env),
                         };
                         if matches {
                             return Ok(other);
@@ -6873,6 +6874,31 @@ pub fn call(
         }
         "re-search-backward" | "search-backward-regexp" => {
             buffer_regex_search(interp, args, env, false)
+        }
+        "forward-list" => {
+            if args.len() > 1 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let count = args
+                .first()
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            let step = count.signum();
+            for _ in 0..count.unsigned_abs() {
+                let position = scan_lists_impl(
+                    interp,
+                    &[
+                        Value::Integer(interp.buffer.point() as i64),
+                        Value::Integer(step),
+                        Value::Integer(0),
+                    ],
+                    env,
+                )?
+                .as_integer()? as usize;
+                interp.buffer.goto_char(position);
+            }
+            Ok(Value::Nil)
         }
         "forward-sexp" | "backward-sexp" => {
             if args.len() > 1 {
@@ -19594,6 +19620,20 @@ fn regex_syntax_class(
                 r#"["]"#
             }
         }
+        Some('<') => {
+            if negated {
+                r#"[^/#]"#
+            } else {
+                r#"[/#]"#
+            }
+        }
+        Some('>') => {
+            if negated {
+                r#"[^\n]"#
+            } else {
+                r#"[\n]"#
+            }
+        }
         Some('\\') => {
             if negated {
                 r#"[^\\]"#
@@ -30115,7 +30155,8 @@ fn hash_table_key_matches(
 ) -> Result<bool, LispError> {
     match test {
         "equal" => Ok(values_equal(interp, left, right)),
-        "eq" | "eql" => Ok(left == right),
+        "eq" => Ok(values_eq_in_env(interp, left, right, env)),
+        "eql" => Ok(values_eql(left, right)),
         _ => {
             let Some((compare_fn, _)) = hash_table_user_test_functions(interp, test) else {
                 return Err(LispError::Signal("Invalid hash table test".into()));
@@ -36790,7 +36831,9 @@ fn values_eq_in_env(interp: &Interpreter, left: &Value, right: &Value, env: &Env
         (Value::String(_), Value::String(_))
         | (Value::String(_), Value::StringObject(_))
         | (Value::StringObject(_), Value::String(_)) => false,
-        (Value::Cons(left_car, _), Value::Cons(right_car, _)) => Rc::ptr_eq(left_car, right_car),
+        (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
+            Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
+        }
         (
             Value::Lambda(left_params, left_body, left_env),
             Value::Lambda(right_params, right_body, right_env),
