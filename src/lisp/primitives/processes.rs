@@ -1,0 +1,416 @@
+use super::*;
+
+pub(crate) fn run_external_process(
+    interp: &Interpreter,
+    program: &str,
+    argv: &[String],
+    input: Option<&[u8]>,
+    env: &Env,
+) -> Result<std::process::Output, LispError> {
+    let mut command = Command::new(program);
+    command.args(argv);
+    configure_external_command(interp, env, &mut command);
+    command.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    apply_process_environment(interp, env, &mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| LispError::SignalValue(file_error_value(&error.to_string(), program)))?;
+    if let Some(stdin_data) = input
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        stdin
+            .write_all(stdin_data)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+    }
+    child
+        .wait_with_output()
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+pub(crate) fn configure_external_command(interp: &Interpreter, env: &Env, command: &mut Command) {
+    if let Some(default_directory) = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_like(&value).map(|string| string.text))
+        .filter(|directory| !directory.is_empty())
+    {
+        command.current_dir(default_directory);
+    }
+    apply_process_environment(interp, env, command);
+}
+
+pub(crate) fn spawn_persistent_process(
+    interp: &Interpreter,
+    program: &str,
+    argv: &[String],
+    env: &Env,
+) -> Result<Child, LispError> {
+    let mut command = Command::new(program);
+    command.args(argv);
+    configure_external_command(interp, env, &mut command);
+    command.stdin(Stdio::piped());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        if let Some(stdout) = child.stdout.as_ref() {
+            set_nonblocking(stdout)?;
+        }
+        if let Some(stderr) = child.stderr.as_ref() {
+            set_nonblocking(stderr)?;
+        }
+    }
+    Ok(child)
+}
+
+#[cfg(unix)]
+pub(crate) fn set_nonblocking<T: AsRawFd>(stream: &T) -> Result<(), LispError> {
+    let fd = stream.as_raw_fd();
+    // SAFETY: `fd` is an open file descriptor we own for the lifetime of this call.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    // SAFETY: `fd` is still valid here, and we only add the O_NONBLOCK flag.
+    let result = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if result < 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn process_buffer_target(
+    interp: &mut Interpreter,
+    value: &Value,
+) -> Result<Option<u64>, LispError> {
+    if value.is_nil() {
+        return Ok(None);
+    }
+    if let Some(buffer) = string_like(value) {
+        return Ok(Some(
+            interp
+                .find_buffer(&buffer.text)
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer(&buffer.text).0),
+        ));
+    }
+    if matches!(value, Value::Buffer(_, _)) {
+        return Ok(Some(interp.resolve_buffer_id(value)?));
+    }
+    Err(LispError::TypeError(
+        "buffer-or-name".into(),
+        value.type_name(),
+    ))
+}
+
+pub(crate) fn process_command_parts(value: &Value) -> Result<(String, Vec<String>), LispError> {
+    let items = value.to_vec()?;
+    let Some((program, argv)) = items.split_first() else {
+        return Err(LispError::Signal(
+            "Process command must not be empty".into(),
+        ));
+    };
+    Ok((
+        string_text(program)?,
+        argv.iter()
+            .map(string_text)
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
+pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispError> {
+    if let Some((decoding, encoding)) = value.cons_values() {
+        return Ok((decoding, encoding));
+    }
+    let items = value.to_vec()?;
+    if items.len() == 2 {
+        return Ok((items[0].clone(), items[1].clone()));
+    }
+    Err(LispError::TypeError("cons".into(), value.type_name()))
+}
+
+type MakeProcessArgs = (
+    Option<u64>,
+    Option<String>,
+    Vec<String>,
+    Option<Value>,
+    Option<(Value, Value)>,
+);
+
+pub(crate) fn parse_make_process_args(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<MakeProcessArgs, LispError> {
+    if !args.len().is_multiple_of(2) {
+        return Err(LispError::WrongNumberOfArgs(
+            "make-process".into(),
+            args.len(),
+        ));
+    }
+    let mut buffer_id = None;
+    let mut program = None;
+    let mut argv = Vec::new();
+    let mut filter = None;
+    let mut coding = None;
+
+    for pair in args.chunks_exact(2) {
+        let key = pair[0].as_symbol()?;
+        let value = &pair[1];
+        match key {
+            ":buffer" => buffer_id = process_buffer_target(interp, value)?,
+            ":command" => {
+                let (parsed_program, parsed_argv) = process_command_parts(value)?;
+                program = Some(parsed_program);
+                argv = parsed_argv;
+            }
+            ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
+            ":coding" => coding = Some(process_coding_pair(value)?),
+            _ => {}
+        }
+    }
+
+    Ok((buffer_id, program, argv, filter, coding))
+}
+
+pub(crate) fn deliver_process_output(
+    interp: &mut Interpreter,
+    process_id: u64,
+    output: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if output.is_empty() {
+        return Ok(());
+    }
+
+    let target_buffer_id = interp.process_buffer_id(process_id);
+    if let Some(filter) = interp.process_filter(process_id) {
+        let saved_buffer_id = interp.current_buffer_id();
+        let switched = target_buffer_id.is_some_and(|buffer_id| buffer_id != saved_buffer_id);
+        if let Some(buffer_id) = target_buffer_id
+            && switched
+        {
+            interp.switch_to_buffer_id(buffer_id)?;
+        }
+        let result = call_function_value(
+            interp,
+            &filter,
+            &[Value::Record(process_id), Value::String(output.to_string())],
+            env,
+        );
+        if switched {
+            interp.switch_to_buffer_id(saved_buffer_id)?;
+        }
+        result?;
+        return Ok(());
+    }
+
+    let Some(buffer_id) = target_buffer_id else {
+        return Ok(());
+    };
+    let Some(mark_id) = interp.process_mark_id(process_id) else {
+        return Ok(());
+    };
+    let saved_buffer_id = interp.current_buffer_id();
+    let switched = buffer_id != saved_buffer_id;
+    if switched {
+        interp.switch_to_buffer_id(buffer_id)?;
+    }
+    let insert_at = interp
+        .marker_position(mark_id)
+        .unwrap_or_else(|| interp.current_buffer().point_max());
+    interp.buffer.goto_char(insert_at);
+    interp.insert_current_buffer(output);
+    let new_pos = interp.buffer.point();
+    let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
+    if switched {
+        interp.switch_to_buffer_id(saved_buffer_id)?;
+    }
+    result
+}
+
+pub(crate) fn apply_process_environment(interp: &Interpreter, env: &Env, command: &mut Command) {
+    let Some(process_environment) = interp.lookup_var("process-environment", env) else {
+        return;
+    };
+    let Ok(entries) = process_environment_entries(&process_environment) else {
+        return;
+    };
+    command.env_clear();
+    for entry in entries {
+        if let Some((name, value)) = entry.split_once('=') {
+            command.env(name, value);
+        }
+    }
+}
+
+pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, LispError> {
+    value
+        .to_vec()?
+        .into_iter()
+        .map(|item| string_text(&item))
+        .collect()
+}
+
+pub(crate) fn process_environment_from_entries(entries: &[String]) -> Value {
+    Value::list(entries.iter().cloned().map(Value::String))
+}
+
+pub(crate) fn setenv_in_environment_entries(
+    entries: &mut Vec<String>,
+    variable: &str,
+    value: Option<&str>,
+    keep_empty: bool,
+) {
+    let prefix = format!("{variable}=");
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| entry == variable || entry.starts_with(&prefix))
+    {
+        match value {
+            Some(value) => entries[index] = format!("{variable}={value}"),
+            None if keep_empty => entries[index] = variable.to_string(),
+            None => {
+                entries.remove(index);
+            }
+        }
+        return;
+    }
+
+    if let Some(value) = value {
+        entries.insert(0, format!("{variable}={value}"));
+    } else if keep_empty {
+        entries.insert(0, variable.to_string());
+    }
+}
+
+pub(crate) fn getenv_in_environment(
+    variable: &str,
+    environment: &Value,
+    negative_entry_is_truthy: bool,
+) -> Result<Option<Value>, LispError> {
+    let prefix = format!("{variable}=");
+    for entry in process_environment_entries(environment)? {
+        if let Some(value) = entry.strip_prefix(&prefix) {
+            return Ok(Some(Value::String(value.to_string())));
+        }
+        if entry == variable {
+            return Ok(Some(if negative_entry_is_truthy {
+                Value::T
+            } else {
+                Value::Nil
+            }));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn append_process_bytes_to_buffer(
+    interp: &mut Interpreter,
+    destination: &Value,
+    bytes: &[u8],
+) -> Result<(), LispError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let target_id = match destination {
+        Value::T => interp.current_buffer_id(),
+        Value::Buffer(_, _) => interp.resolve_buffer_id(destination)?,
+        Value::String(name) => interp
+            .find_buffer(name)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| interp.create_buffer(name).0),
+        _ => {
+            return Err(LispError::TypeError(
+                "buffer-or-name".into(),
+                destination.type_name(),
+            ));
+        }
+    };
+    let original_id = interp.current_buffer_id();
+    if target_id != original_id {
+        interp.switch_to_buffer_id(target_id)?;
+    }
+    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+    if target_id != original_id {
+        interp.switch_to_buffer_id(original_id)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_process_bytes_to_file(
+    path: &str,
+    bytes: &[u8],
+    append: bool,
+) -> Result<(), LispError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.truncate(true);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    file.write_all(bytes)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+pub(crate) fn write_process_output(
+    interp: &mut Interpreter,
+    destination: &Value,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<(), LispError> {
+    if destination.is_nil() {
+        return Ok(());
+    }
+    if let Ok(items) = destination.to_vec()
+        && items.len() == 2
+    {
+        if items[0] == Value::Symbol(":file".into()) {
+            let path = string_text(&items[1])?;
+            if !stdout.is_empty() {
+                write_process_bytes_to_file(&path, stdout, false)?;
+            }
+            return Ok(());
+        }
+        append_process_bytes_to_buffer(interp, &items[0], stdout)?;
+        if !stderr.is_empty() {
+            if items[1] == Value::T {
+                append_process_bytes_to_buffer(interp, &items[0], stderr)?;
+            } else if !items[1].is_nil() {
+                let path = string_text(&items[1])?;
+                write_process_bytes_to_file(&path, stderr, false)?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some((stdout_destination, stderr_destination)) = destination.cons_values() {
+        append_process_bytes_to_buffer(interp, &stdout_destination, stdout)?;
+        if !stderr.is_empty() {
+            if stderr_destination == Value::T {
+                append_process_bytes_to_buffer(interp, &stdout_destination, stderr)?;
+            } else if !stderr_destination.is_nil() {
+                let path = string_text(&stderr_destination)?;
+                write_process_bytes_to_file(&path, stderr, false)?;
+            }
+        }
+        return Ok(());
+    }
+    append_process_bytes_to_buffer(interp, destination, stdout)?;
+    append_process_bytes_to_buffer(interp, destination, stderr)?;
+    Ok(())
+}

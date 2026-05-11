@@ -1,3 +1,4 @@
+use super::regexp;
 use super::*;
 
 pub(super) fn is_major_mode_builtin(name: &str) -> bool {
@@ -104,7 +105,12 @@ fn activate_hash_comment_mode(
     mode: &str,
     mode_name: &str,
 ) -> Result<Value, LispError> {
-    derived_mode_set_parent(interp, mode, Some("prog-mode"));
+    if interp
+        .get_symbol_property(mode, "derived-mode-parent")
+        .is_none()
+    {
+        derived_mode_set_parent(interp, mode, Some("prog-mode"));
+    }
     let buffer_id = interp.current_buffer_id();
     activate_major_mode(interp, mode, mode_name);
     interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
@@ -289,8 +295,8 @@ pub(super) fn auto_mode_function_for_file_name(
             let Some(pattern) = string_like(&pattern) else {
                 continue;
             };
-            validate_elisp_regex(&pattern.text)?;
-            let regex = compile_elisp_regex(interp, &pattern, env, "", true)?;
+            regexp::validate_elisp_regex(&pattern.text)?;
+            let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
             if regex
                 .is_match(&candidate)
                 .map_err(|error| LispError::Signal(error.to_string()))?
