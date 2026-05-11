@@ -1,0 +1,672 @@
+use super::*;
+
+pub(crate) const KEY_DESCRIPTION_ALT_BIT: i64 = 0x0400000;
+pub(crate) const KEY_DESCRIPTION_SUPER_BIT: i64 = 0x0800000;
+pub(crate) const KEY_DESCRIPTION_HYPER_BIT: i64 = 0x1000000;
+pub(crate) const KEY_DESCRIPTION_SHIFT_BIT: i64 = 0x2000000;
+pub(crate) const KEY_DESCRIPTION_CTRL_BIT: i64 = 0x4000000;
+pub(crate) const KEY_DESCRIPTION_META_BIT: i64 = 0x8000000;
+pub(crate) const KEY_DESCRIPTION_MODIFIER_MASK: i64 = KEY_DESCRIPTION_ALT_BIT
+    | KEY_DESCRIPTION_SUPER_BIT
+    | KEY_DESCRIPTION_HYPER_BIT
+    | KEY_DESCRIPTION_SHIFT_BIT
+    | KEY_DESCRIPTION_CTRL_BIT
+    | KEY_DESCRIPTION_META_BIT;
+pub(crate) const KEY_DESCRIPTION_META_PREFIX: i64 = 0x1B;
+
+pub(crate) fn parse_kbd_sequence(text: &str) -> Result<Value, LispError> {
+    let mut items = vec![Value::Symbol("vector".into())];
+    for token in text.split_whitespace() {
+        items.extend(parse_kbd_token(token));
+    }
+    Ok(Value::list(items))
+}
+
+pub(crate) fn parse_kbd_token(token: &str) -> Vec<Value> {
+    if token.chars().count() == 1 {
+        return token.chars().map(|ch| Value::Integer(ch as i64)).collect();
+    }
+    let (modifiers, rest, saw_prefix) = parse_kbd_prefixes(token);
+    if saw_prefix {
+        if rest.starts_with('<') && rest.ends_with('>') && rest.len() >= 2 {
+            return vec![Value::Symbol(symbolic_kbd_event(
+                modifiers,
+                &rest[1..rest.len() - 1],
+            ))];
+        }
+        if rest == "ESC" {
+            return vec![Value::Symbol(symbolic_kbd_event(modifiers, "escape"))];
+        }
+        if let Some(code) = named_kbd_key_code(rest) {
+            return vec![Value::Integer(code | modifiers)];
+        }
+        if rest.chars().count() == 1 {
+            return rest
+                .chars()
+                .map(|ch| Value::Integer(ch as i64 | modifiers))
+                .collect();
+        }
+        return vec![Value::Symbol(symbolic_kbd_event(modifiers, rest))];
+    }
+    if token.starts_with('<') && token.ends_with('>') && token.len() >= 2 {
+        return vec![Value::Symbol(token[1..token.len() - 1].to_string())];
+    }
+    if token == "ESC" {
+        return vec![Value::Integer(KEY_DESCRIPTION_META_PREFIX)];
+    }
+    if let Some(code) = named_kbd_key_code(token) {
+        return vec![Value::Integer(code)];
+    }
+    token.chars().map(|ch| Value::Integer(ch as i64)).collect()
+}
+
+pub(crate) fn parse_kbd_prefixes(token: &str) -> (i64, &str, bool) {
+    let mut modifiers = 0;
+    let mut rest = token;
+    let mut saw_prefix = false;
+    while rest.len() >= 3 && rest.as_bytes()[1] == b'-' {
+        let prefix = rest.as_bytes()[0] as char;
+        let bit = match prefix {
+            'A' => KEY_DESCRIPTION_ALT_BIT,
+            'C' => KEY_DESCRIPTION_CTRL_BIT,
+            'H' => KEY_DESCRIPTION_HYPER_BIT,
+            'M' => KEY_DESCRIPTION_META_BIT,
+            'S' => KEY_DESCRIPTION_SHIFT_BIT,
+            's' => KEY_DESCRIPTION_SUPER_BIT,
+            _ => break,
+        };
+        modifiers |= bit;
+        rest = &rest[2..];
+        saw_prefix = true;
+    }
+    (modifiers, rest, saw_prefix)
+}
+
+pub(crate) fn named_kbd_key_code(token: &str) -> Option<i64> {
+    match token {
+        "RET" => Some('\r' as i64),
+        "LFD" => Some('\n' as i64),
+        "TAB" => Some('\t' as i64),
+        "DEL" => Some(0x7F),
+        "ESC" => Some(KEY_DESCRIPTION_META_PREFIX),
+        "SPC" => Some(0x20),
+        _ => None,
+    }
+}
+
+pub(crate) fn symbolic_kbd_event(modifiers: i64, name: &str) -> String {
+    let mut symbol = String::new();
+    if modifiers & KEY_DESCRIPTION_ALT_BIT != 0 {
+        symbol.push_str("A-");
+    }
+    if modifiers & KEY_DESCRIPTION_CTRL_BIT != 0 {
+        symbol.push_str("C-");
+    }
+    if modifiers & KEY_DESCRIPTION_HYPER_BIT != 0 {
+        symbol.push_str("H-");
+    }
+    if modifiers & KEY_DESCRIPTION_META_BIT != 0 {
+        symbol.push_str("M-");
+    }
+    if modifiers & KEY_DESCRIPTION_SHIFT_BIT != 0 {
+        symbol.push_str("S-");
+    }
+    if modifiers & KEY_DESCRIPTION_SUPER_BIT != 0 {
+        symbol.push_str("s-");
+    }
+    symbol.push_str(name);
+    symbol
+}
+
+pub(crate) fn key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
+    Ok(key_sequence_binding_parts(value)?.join(" "))
+}
+
+pub(crate) fn looks_like_textual_key_spec(text: &str) -> bool {
+    if text.contains(char::is_whitespace) || text.contains('<') || text.contains('>') {
+        return true;
+    }
+    let (_, _, saw_prefix) = parse_kbd_prefixes(text);
+    saw_prefix
+}
+
+pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
+    if let Some(string) = string_like(value) {
+        if looks_like_textual_key_spec(&string.text) {
+            let parsed = parse_kbd_sequence(&string.text)?;
+            let mut parts = Vec::new();
+            append_key_description_parts(&parsed, &mut parts)?;
+            return Ok(parts);
+        }
+        let mut parts = Vec::new();
+        append_key_description_parts(value, &mut parts)?;
+        return Ok(parts);
+    }
+    if let Ok(events) = vector_items(value)
+        && let [event] = events.as_slice()
+    {
+        match event {
+            Value::Symbol(symbol) => return Ok(vec![symbol.clone()]),
+            Value::T => return Ok(vec!["t".into()]),
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    append_key_description_parts(value, &mut parts)?;
+    Ok(parts)
+}
+
+pub(crate) fn append_key_description_parts(
+    sequence: &Value,
+    output: &mut Vec<String>,
+) -> Result<(), LispError> {
+    let events = key_description_events(sequence)?;
+    let mut add_meta = false;
+    for event in events {
+        if let Some(string) = string_like(&event)
+            && looks_like_textual_key_spec(&string.text)
+        {
+            let parsed = parse_kbd_sequence(&string.text)?;
+            append_key_description_parts(&parsed, output)?;
+            continue;
+        }
+        if add_meta {
+            match event {
+                Value::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX => {
+                    output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
+                    add_meta = true;
+                }
+                Value::Integer(code)
+                    if code != KEY_DESCRIPTION_META_PREFIX
+                        && code & KEY_DESCRIPTION_META_BIT == 0 =>
+                {
+                    output.push(describe_key_code(code | KEY_DESCRIPTION_META_BIT));
+                    add_meta = false;
+                }
+                other => {
+                    output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
+                    output.push(single_key_description_text(&other, false)?);
+                    add_meta = false;
+                }
+            }
+            continue;
+        }
+
+        if matches!(&event, Value::Integer(code) if *code == KEY_DESCRIPTION_META_PREFIX) {
+            add_meta = true;
+            continue;
+        }
+
+        output.push(single_key_description_text(&event, false)?);
+    }
+
+    if add_meta {
+        output.push(describe_key_code(KEY_DESCRIPTION_META_PREFIX));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn key_description_events(sequence: &Value) -> Result<Vec<Value>, LispError> {
+    if let Some(string) = string_like(sequence) {
+        let mut events = Vec::new();
+        for ch in string.text.chars() {
+            if !string.multibyte {
+                if let Some(byte) = raw_byte_from_regex_char(ch) {
+                    let code = if byte & 0x80 != 0 {
+                        ((byte ^ 0x80) as i64) | KEY_DESCRIPTION_META_BIT
+                    } else {
+                        byte as i64
+                    };
+                    events.push(Value::Integer(code));
+                    continue;
+                }
+                let code = ch as u32;
+                if code <= 0xFF {
+                    let byte = code as u8;
+                    let normalized = if byte & 0x80 != 0 {
+                        ((byte ^ 0x80) as i64) | KEY_DESCRIPTION_META_BIT
+                    } else {
+                        byte as i64
+                    };
+                    events.push(Value::Integer(normalized));
+                    continue;
+                }
+            }
+            events.push(Value::Integer(ch as i64));
+        }
+        return Ok(events);
+    }
+
+    match sequence {
+        Value::Nil => Ok(Vec::new()),
+        Value::Cons(_, _) => Ok(vector_items(sequence)?
+            .into_iter()
+            .map(normalize_key_description_event)
+            .collect()),
+        Value::Integer(_) | Value::Symbol(_) => {
+            Ok(vec![normalize_key_description_event(sequence.clone())])
+        }
+        _ => Err(LispError::TypeError("array".into(), sequence.type_name())),
+    }
+}
+
+pub(crate) fn normalize_key_description_event(event: Value) -> Value {
+    let Some((start, end)) = event.cons_values() else {
+        return event;
+    };
+    match (start, end) {
+        (Value::Integer(start), Value::Integer(end)) if start == end => Value::Integer(start),
+        _ => event,
+    }
+}
+
+pub(crate) fn sequence_values(
+    interp: &Interpreter,
+    sequence: &Value,
+) -> Result<Vec<Value>, LispError> {
+    if let Some(string) = sequence_string_like(sequence) {
+        Ok(string_sequence_values(&string))
+    } else if is_bool_vector_value(interp, sequence) {
+        bool_vector_values(interp, sequence)
+    } else {
+        vector_items(sequence)
+    }
+}
+
+pub(crate) fn string_sequence_values(string: &StringLike) -> Vec<Value> {
+    string
+        .text
+        .chars()
+        .map(|ch| string_sequence_value(string, ch))
+        .collect()
+}
+
+pub(crate) fn string_sequence_value(string: &StringLike, ch: char) -> Value {
+    let code = if let Some(byte) = raw_byte_from_regex_char(ch) {
+        if string.multibyte {
+            RAW_BYTE8_BASE as i64 + byte as i64
+        } else {
+            i64::from(byte)
+        }
+    } else {
+        ch as i64
+    };
+    Value::Integer(code)
+}
+
+pub(crate) fn concat_character_value(value: &Value) -> Result<(char, bool), LispError> {
+    let Value::Integer(code) = value else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("characterp".into()),
+            value.clone(),
+        ])));
+    };
+    if *code < 0 {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("characterp".into()),
+            value.clone(),
+        ])));
+    }
+    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(code) {
+        let byte = (*code - RAW_BYTE8_BASE as i64) as u8;
+        return Ok((raw_byte_regex_char(byte), false));
+    }
+    let Some(ch) = char::from_u32(*code as u32) else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("characterp".into()),
+            value.clone(),
+        ])));
+    };
+    Ok((ch, !is_raw_byte_regex_char(ch) && (*code as u32) > 0x7F))
+}
+
+pub(crate) fn concat_sequence_string(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<(String, bool), LispError> {
+    let items = sequence_values(interp, value)?;
+    let mut text = String::new();
+    let mut multibyte = false;
+    for item in items {
+        let (ch, char_multibyte) = concat_character_value(&item)?;
+        text.push(ch);
+        multibyte |= char_multibyte;
+    }
+    Ok((text, multibyte))
+}
+
+pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
+    match value {
+        Value::String(_) | Value::StringObject(_) => string_like(value),
+        Value::Cons(_, _) => {
+            let items = value.to_vec().ok()?;
+            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector")
+                && matches!(items.get(1), Some(Value::String(_)))
+            {
+                string_like(value)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn single_key_description_text(
+    key: &Value,
+    no_angles: bool,
+) -> Result<String, LispError> {
+    match key {
+        Value::Integer(code) => Ok(describe_key_code(*code)),
+        Value::Symbol(symbol) => Ok(describe_symbolic_key(symbol, no_angles)),
+        Value::T => Ok(describe_symbolic_key("t", no_angles)),
+        Value::String(text) => Ok(text.clone()),
+        Value::StringObject(state) => Ok(state.borrow().text.clone()),
+        Value::Cons(_, _) => list_event_key_description_text(key, no_angles),
+        _ => Err(LispError::TypeError(
+            "integer, symbol, or string".into(),
+            key.type_name(),
+        )),
+    }
+}
+
+pub(crate) fn list_event_key_description_text(
+    key: &Value,
+    no_angles: bool,
+) -> Result<String, LispError> {
+    let items = key.to_vec()?;
+    let Some((base, modifiers)) = items.split_last() else {
+        return Err(LispError::TypeError(
+            "integer, symbol, or string".into(),
+            key.type_name(),
+        ));
+    };
+
+    let mut bits = 0;
+    for modifier in modifiers {
+        bits |= match modifier.as_symbol()? {
+            "alt" => KEY_DESCRIPTION_ALT_BIT,
+            "control" => KEY_DESCRIPTION_CTRL_BIT,
+            "hyper" => KEY_DESCRIPTION_HYPER_BIT,
+            "meta" => KEY_DESCRIPTION_META_BIT,
+            "shift" => KEY_DESCRIPTION_SHIFT_BIT,
+            "super" => KEY_DESCRIPTION_SUPER_BIT,
+            _ => {
+                return Err(LispError::TypeError(
+                    "event modifier".into(),
+                    modifier.type_name(),
+                ));
+            }
+        };
+    }
+
+    match base {
+        Value::Integer(code) => Ok(describe_key_code(*code | bits)),
+        Value::Symbol(symbol) => {
+            if let Some(ch) = event_name_character(symbol) {
+                Ok(describe_key_code(ch as i64 | bits))
+            } else {
+                Ok(describe_symbolic_key(
+                    &symbolic_kbd_event(bits, symbol),
+                    no_angles,
+                ))
+            }
+        }
+        Value::String(text) => {
+            if let Some(ch) = event_name_character(text) {
+                Ok(describe_key_code(ch as i64 | bits))
+            } else if bits == 0 {
+                Ok(text.clone())
+            } else {
+                Ok(describe_symbolic_key(
+                    &symbolic_kbd_event(bits, text),
+                    no_angles,
+                ))
+            }
+        }
+        Value::StringObject(state) => {
+            let text = state.borrow().text.clone();
+            if let Some(ch) = event_name_character(&text) {
+                Ok(describe_key_code(ch as i64 | bits))
+            } else if bits == 0 {
+                Ok(text)
+            } else {
+                Ok(describe_symbolic_key(
+                    &symbolic_kbd_event(bits, &text),
+                    no_angles,
+                ))
+            }
+        }
+        _ => Err(LispError::TypeError(
+            "integer, symbol, or string".into(),
+            base.type_name(),
+        )),
+    }
+}
+
+pub(crate) fn event_name_character(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
+pub(crate) fn describe_symbolic_key(symbol: &str, no_angles: bool) -> String {
+    if no_angles {
+        return symbol.to_string();
+    }
+
+    let bytes = symbol.as_bytes();
+    let mut prefix_len = 0usize;
+    while prefix_len + 3 <= bytes.len()
+        && bytes[prefix_len + 1] == b'-'
+        && matches!(bytes[prefix_len], b'C' | b'M' | b'S' | b's' | b'H' | b'A')
+    {
+        prefix_len += 2;
+    }
+
+    format!("{}<{}>", &symbol[..prefix_len], &symbol[prefix_len..])
+}
+
+pub(crate) fn describe_key_code(code: i64) -> String {
+    let mut text = String::new();
+    let mut code = code & (KEY_DESCRIPTION_META_BIT | !-KEY_DESCRIPTION_META_BIT);
+    let base = code & !KEY_DESCRIPTION_MODIFIER_MASK;
+    let Some(_) = char::from_u32(base as u32) else {
+        return format!("[{code}]");
+    };
+
+    let tab_as_ci = base == '\t' as i64 && code & KEY_DESCRIPTION_META_BIT != 0;
+
+    if code & KEY_DESCRIPTION_ALT_BIT != 0 {
+        text.push_str("A-");
+        code &= !KEY_DESCRIPTION_ALT_BIT;
+    }
+    if code & KEY_DESCRIPTION_CTRL_BIT != 0
+        || (base < ' ' as i64
+            && base != KEY_DESCRIPTION_META_PREFIX
+            && base != '\t' as i64
+            && base != '\r' as i64)
+        || tab_as_ci
+    {
+        text.push_str("C-");
+        code &= !KEY_DESCRIPTION_CTRL_BIT;
+    }
+    if code & KEY_DESCRIPTION_HYPER_BIT != 0 {
+        text.push_str("H-");
+        code &= !KEY_DESCRIPTION_HYPER_BIT;
+    }
+    if code & KEY_DESCRIPTION_META_BIT != 0 {
+        text.push_str("M-");
+        code &= !KEY_DESCRIPTION_META_BIT;
+    }
+    if code & KEY_DESCRIPTION_SHIFT_BIT != 0 {
+        text.push_str("S-");
+        code &= !KEY_DESCRIPTION_SHIFT_BIT;
+    }
+    if code & KEY_DESCRIPTION_SUPER_BIT != 0 {
+        text.push_str("s-");
+        code &= !KEY_DESCRIPTION_SUPER_BIT;
+    }
+
+    match code {
+        0x00..=0x1F => {
+            if code == KEY_DESCRIPTION_META_PREFIX {
+                text.push_str("ESC");
+            } else if tab_as_ci {
+                text.push('i');
+            } else if code == '\t' as i64 {
+                text.push_str("TAB");
+            } else if code == '\r' as i64 {
+                text.push_str("RET");
+            } else if (1..=26).contains(&code) {
+                text.push((code as u8 + b'`') as char);
+            } else {
+                text.push((code as u8 + b'@') as char);
+            }
+        }
+        0x20 => text.push_str("SPC"),
+        0x7F => text.push_str("DEL"),
+        0x21..=0x7E => text.push(char::from_u32(code as u32).expect("ascii codepoint is valid")),
+        _ => {
+            if let Some(ch) = char::from_u32(code as u32) {
+                text.push(ch);
+            } else {
+                return format!("[{code}]");
+            }
+        }
+    }
+
+    text
+}
+
+pub(crate) fn text_char_description_text(code: i64) -> Result<String, LispError> {
+    if !(0..=0x3F_FFFF).contains(&code) || code & KEY_DESCRIPTION_MODIFIER_MASK != 0 {
+        return Err(LispError::Signal("Invalid character".into()));
+    }
+
+    if code > 0x7F {
+        return char::from_u32(code as u32)
+            .map(|ch| ch.to_string())
+            .ok_or_else(|| LispError::Signal("Invalid character".into()));
+    }
+
+    Ok(match code {
+        0x00..=0x1F => format!("^{}", char::from_u32((code + 64) as u32).unwrap_or('@')),
+        0x7F => "^?".into(),
+        _ => char::from_u32(code as u32)
+            .ok_or_else(|| LispError::Signal("Invalid character".into()))?
+            .to_string(),
+    })
+}
+
+pub(crate) fn seq_subseq(
+    sequence: &Value,
+    start: i64,
+    end: Option<i64>,
+) -> Result<Value, LispError> {
+    let start = start.max(0) as usize;
+    match sequence {
+        Value::String(text) => {
+            let chars = text.chars().collect::<Vec<_>>();
+            let end = end.unwrap_or(chars.len() as i64).max(start as i64) as usize;
+            let bounded_end = end.min(chars.len());
+            Ok(Value::String(
+                chars[start.min(bounded_end)..bounded_end].iter().collect(),
+            ))
+        }
+        _ => {
+            let items = sequence.to_vec()?;
+            let end = end.unwrap_or(items.len() as i64).max(start as i64) as usize;
+            let bounded_end = end.min(items.len());
+            Ok(Value::list(
+                items[start.min(bounded_end)..bounded_end].iter().cloned(),
+            ))
+        }
+    }
+}
+
+pub(crate) fn auto_save_path_for_buffer(buffer: &crate::buffer::Buffer) -> String {
+    if let Some(path) = &buffer.file {
+        format!("{path}#")
+    } else {
+        std::env::temp_dir()
+            .join(format!("{}.autosave", buffer.name.replace('/', "_")))
+            .display()
+            .to_string()
+    }
+}
+
+pub(crate) fn forward_line_bigint(buffer: &mut crate::buffer::Buffer, n: BigInt) -> BigInt {
+    if n.is_zero() {
+        let _ = buffer.forward_line(0);
+        return BigInt::zero();
+    }
+
+    let max_isize = BigInt::from(isize::MAX);
+    let min_isize = BigInt::from(isize::MIN);
+    if n >= min_isize && n <= max_isize {
+        let step = match n.to_isize() {
+            Some(value) => value,
+            None => return BigInt::zero(),
+        };
+        return BigInt::from(buffer.forward_line(step) as i64);
+    }
+
+    if n.sign() == Sign::Minus {
+        let available = count_backward_line_moves(buffer);
+        move_line_steps(buffer, available, false);
+        n + BigInt::from(available)
+    } else {
+        let available = count_forward_line_moves(buffer);
+        move_line_steps(buffer, available, true);
+        n - BigInt::from(available)
+    }
+}
+
+pub(crate) fn move_line_steps(buffer: &mut crate::buffer::Buffer, mut steps: usize, forward: bool) {
+    while steps > 0 {
+        let chunk = steps.min(isize::MAX as usize);
+        let _ = buffer.forward_line(if forward {
+            chunk as isize
+        } else {
+            -(chunk as isize)
+        });
+        steps -= chunk;
+    }
+}
+
+pub(crate) fn count_forward_line_moves(buffer: &crate::buffer::Buffer) -> usize {
+    let mut count = 0;
+    let mut pos = buffer.point();
+    while pos < buffer.point_max() {
+        if buffer.char_at(pos) == Some('\n') {
+            count += 1;
+        }
+        pos += 1;
+    }
+    count
+}
+
+pub(crate) fn count_backward_line_moves(buffer: &crate::buffer::Buffer) -> usize {
+    let mut line_start = buffer.point();
+    while line_start > buffer.point_min() {
+        if buffer.char_at(line_start - 1) == Some('\n') {
+            break;
+        }
+        line_start -= 1;
+    }
+
+    let mut count = 0;
+    let mut pos = buffer.point_min();
+    while pos < line_start {
+        if buffer.char_at(pos) == Some('\n') {
+            count += 1;
+        }
+        pos += 1;
+    }
+    count
+}
