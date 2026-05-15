@@ -2170,6 +2170,32 @@ fn load_target_prefers_files_over_same_named_directories() {
 }
 
 #[test]
+fn load_target_resolves_repeated_directory_autoload_aliases() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-load-target-alias-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("srecode")).unwrap();
+    std::fs::write(
+        root.join("srecode").join("template.el"),
+        "(provide 'srecode/template)\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![root.clone()]);
+    let resolved = interp.load_target("srecode/srecode-template").unwrap();
+    assert_eq!(resolved, root.join("srecode").join("template.el"));
+
+    std::fs::remove_file(root.join("srecode").join("template.el")).unwrap();
+    std::fs::remove_dir(root.join("srecode")).unwrap();
+    std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
 fn load_file_strict_sets_lexical_binding_from_file_cookie() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-lexical-binding-{}.el",

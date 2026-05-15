@@ -84,6 +84,25 @@ impl Interpreter {
                 }
             }
         }
+        if let Some(alias) = repeated_directory_load_alias(target) {
+            let alias_with_el = if alias.ends_with(".el") {
+                None
+            } else {
+                Some(format!("{alias}.el"))
+            };
+            for root in &self.load_path {
+                let candidate = root.join(&alias);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+                if let Some(alias_with_el) = &alias_with_el {
+                    let candidate = root.join(alias_with_el);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -1075,4 +1094,11 @@ impl Interpreter {
     pub fn has_feature(&self, feature: &str) -> bool {
         self.provided_features.iter().any(|name| name == feature)
     }
+}
+
+fn repeated_directory_load_alias(target: &str) -> Option<String> {
+    let (directory, file) = target.rsplit_once('/')?;
+    let directory_name = directory.rsplit('/').next()?;
+    let alias_file = file.strip_prefix(&format!("{directory_name}-"))?;
+    Some(format!("{directory}/{alias_file}"))
 }
