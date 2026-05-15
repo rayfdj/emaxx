@@ -19,13 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 378/7080 have been committed and pushed.
-- The latest pushed compatibility commit is
-  `578539a Advance Emacs compatibility through semantic and todo fixes`.
-- Local uncommitted work in progress has verified test 379
-  (`semantic-utest-c.el`), test 380 (`semantic-utest-ia-doublens.cpp`), and
-  test 381 (`semantic-utest-ia-javacomp.java`) individually.
-- Resume compatibility advancement at test 382/7080 after committing and
+- Tests through 381/7080 have been committed and pushed.
+- The latest pushed compatibility commit before this batch is
+  `6b430f7 Advance Semantic IA compatibility`.
+- Local uncommitted work in progress has verified test 382/7080
+  (`semantic-utest-ia-localvars.cpp`) individually.
+- Resume compatibility advancement at test 383/7080 after committing and
   pushing this batch.
 
 ## Workflow
