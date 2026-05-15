@@ -878,6 +878,7 @@ impl Interpreter {
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
                 ),
+                ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
                 ("defining-kbd-macro".into(), Value::Nil),
                 ("executing-kbd-macro".into(), Value::Nil),
