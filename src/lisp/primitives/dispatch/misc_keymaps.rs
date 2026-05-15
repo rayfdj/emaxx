@@ -3019,38 +3019,44 @@ fn semantic_c_like_assignment_expected_type(interp: &Interpreter) -> Option<Stri
 
 fn semantic_cpp_declared_type_from_segment(segment: &str, name: &str) -> Option<String> {
     let segment = segment.split("//").next().unwrap_or(segment).trim();
-    let index = segment.rfind(name)?;
-    let before = &segment[..index];
-    let after = &segment[index + name.len()..];
-    if before
-        .chars()
-        .next_back()
-        .is_some_and(|ch| is_ident_byte(ch as u8))
-        || after
+    let mut search_end = segment.len();
+    while let Some(index) = segment[..search_end].rfind(name) {
+        let before = &segment[..index];
+        let after = &segment[index + name.len()..];
+        search_end = index;
+        if before
             .chars()
-            .next()
+            .next_back()
             .is_some_and(|ch| is_ident_byte(ch as u8))
-    {
-        return None;
+            || after
+                .chars()
+                .next()
+                .is_some_and(|ch| is_ident_byte(ch as u8))
+        {
+            continue;
+        }
+        let after = after.trim_start();
+        if !after.is_empty() && !matches!(after.chars().next(), Some(';' | ',' | ')' | '=' | '[')) {
+            continue;
+        }
+        let before = before
+            .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '*' | '&'))
+            .trim();
+        let type_name = before
+            .split_whitespace()
+            .rev()
+            .find(|token| {
+                !matches!(
+                    *token,
+                    "const" | "struct" | "class" | "mutable" | "static" | "volatile"
+                )
+            })?
+            .trim_matches(|ch| matches!(ch, '*' | '&'));
+        if !type_name.is_empty() && type_name != "_type" {
+            return Some(type_name.to_string());
+        }
     }
-    let after = after.trim_start();
-    if !after.is_empty() && !matches!(after.chars().next(), Some(';' | ',' | ')' | '=' | '[')) {
-        return None;
-    }
-    let before = before
-        .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '*' | '&'))
-        .trim();
-    let type_name = before
-        .split_whitespace()
-        .rev()
-        .find(|token| {
-            !matches!(
-                *token,
-                "const" | "struct" | "class" | "mutable" | "static" | "volatile"
-            )
-        })?
-        .trim_matches(|ch| matches!(ch, '*' | '&'));
-    (!type_name.is_empty() && type_name != "_type").then(|| type_name.to_string())
+    None
 }
 
 fn semantic_type_from_name(tags: &[Value], type_name: &str) -> Option<Value> {
@@ -3678,6 +3684,7 @@ impl<'a> CppTagParser<'a> {
 
     fn parse_type_block(&mut self) -> Option<Value> {
         let start = self.pos;
+        self.consume_template_prefixes();
         while self
             .consume_one_of_words(&[
                 "public",
@@ -3736,6 +3743,25 @@ impl<'a> CppTagParser<'a> {
             self.pos = start;
             None
         })
+    }
+
+    fn consume_template_prefixes(&mut self) {
+        loop {
+            self.skip_ws();
+            let checkpoint = self.pos;
+            if self.consume_word("template").is_none() {
+                return;
+            }
+            self.skip_ws();
+            if self.consume_byte(b'<').is_none() {
+                self.pos = checkpoint;
+                return;
+            }
+            if self.skip_balanced_angle().is_none() {
+                self.pos = checkpoint;
+                return;
+            }
+        }
     }
 
     fn parse_statement(&mut self) -> Option<Value> {
@@ -3813,6 +3839,27 @@ impl<'a> CppTagParser<'a> {
                 None => break,
             }
         }
+    }
+
+    fn skip_balanced_angle(&mut self) -> Option<()> {
+        let mut depth = 1usize;
+        while self.pos < self.source.len() {
+            match self.peek_byte()? {
+                b'<' => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                b'>' => {
+                    depth = depth.saturating_sub(1);
+                    self.pos += 1;
+                    if depth == 0 {
+                        return Some(());
+                    }
+                }
+                _ => self.pos += 1,
+            }
+        }
+        None
     }
 
     fn read_trailing_decl_name(&mut self) -> Option<String> {
@@ -4000,10 +4047,19 @@ fn parse_cpp_superclasses(header: &str) -> Option<Value> {
             let name = part
                 .split_whitespace()
                 .rfind(|word| !matches!(*word, "public" | "private" | "protected" | "virtual"))?;
-            (!name.is_empty()).then(|| semantic_type_ref(name.trim_matches(['*', '&'])))
+            let name = cpp_type_base_name(name.trim_matches(['*', '&']));
+            (!name.is_empty()).then(|| semantic_type_ref(&name))
         })
         .collect::<Vec<_>>();
     (!superclasses.is_empty()).then(|| Value::list(superclasses))
+}
+
+fn cpp_type_base_name(name: &str) -> String {
+    name.split_once('<')
+        .map(|(base, _)| base)
+        .unwrap_or(name)
+        .trim()
+        .to_string()
 }
 
 fn parse_cpp_variable(statement: &str) -> Option<Value> {
