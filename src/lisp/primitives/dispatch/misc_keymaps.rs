@@ -161,6 +161,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "thread-list-pop-to-backtrace"
             | "regexp-quote"
             | "regexp-opt"
+            | "regexp-opt-depth"
             | "rx-to-string"
             | "convert-standard-filename"
             | "abbreviate-file-name"
@@ -1699,6 +1700,12 @@ pub(super) fn call(
                 format!("\\(?:{}\\)", patterns.join("\\|"))
             }))
         }
+        "regexp-opt-depth" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Integer(
+                regexp_opt_depth(&string_text(&args[0])?) as i64
+            ))
+        }
         "rx-to-string" => {
             need_arg_range(name, args, 1, 2)?;
             let no_group = args.get(1).is_some_and(Value::is_truthy);
@@ -2231,6 +2238,113 @@ fn semantic_member_expression_parts(text: &str) -> Vec<String> {
     parts
 }
 
+fn semantic_makefile_possible_completions(
+    interp: &Interpreter,
+    symbol: &SemanticCurrentSymbol,
+) -> Value {
+    let prefix = symbol.text.as_str();
+    let Ok(buffer_text) = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+    else {
+        return Value::Nil;
+    };
+    let before_point = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+        .unwrap_or_default();
+    let line_start = before_point.rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let line_before_point = &before_point[line_start..];
+
+    let matches = if symbol.start > interp.buffer.point_min()
+        && interp.buffer.char_at(symbol.start - 1) == Some('$')
+    {
+        semantic_makefile_variables(&buffer_text, prefix)
+    } else if line_before_point
+        .find('=')
+        .is_some_and(|eq| line_start + eq < symbol.start)
+    {
+        semantic_makefile_file_names(interp, prefix)
+    } else {
+        semantic_makefile_targets(&buffer_text, prefix)
+    };
+    Value::list(
+        matches
+            .into_iter()
+            .map(|name| semantic_tag(&name, "variable", Value::Nil)),
+    )
+}
+
+fn semantic_makefile_variables(text: &str, prefix: &str) -> Vec<String> {
+    let mut matches = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(eq) = line.find('=') else {
+            continue;
+        };
+        let name = line[..eq]
+            .trim_end_matches([':', '+', '?'])
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() && name.starts_with(prefix) {
+            matches.push(name.to_string());
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn semantic_makefile_targets(text: &str, prefix: &str) -> Vec<String> {
+    let mut matches = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.starts_with('#') || line.starts_with('\t') || line.contains('=') {
+            continue;
+        }
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
+        for target in line[..colon].split_whitespace() {
+            if target.starts_with(prefix) && target != prefix {
+                matches.push(target.to_string());
+            }
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn semantic_makefile_file_names(interp: &Interpreter, prefix: &str) -> Vec<String> {
+    let Some(path) = interp
+        .buffer
+        .file_truename
+        .as_deref()
+        .or(interp.buffer.file.as_deref())
+    else {
+        return Vec::new();
+    };
+    let Some(directory) = Path::new(path).parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut matches = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(prefix))
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
 fn semantic_analyze_possible_completions(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2238,6 +2352,12 @@ fn semantic_analyze_possible_completions(
     let Some(symbol) = semantic_ctxt_current_symbol(interp) else {
         return Ok(Value::Nil);
     };
+    if interp
+        .lookup_var("major-mode", env)
+        .is_some_and(|mode| mode == Value::Symbol("makefile-bsdmake-mode".into()))
+    {
+        return Ok(semantic_makefile_possible_completions(interp, &symbol));
+    }
     let parts = symbol.parts_value.to_vec()?;
     let parts = parts
         .iter()
@@ -3600,6 +3720,27 @@ fn semantic_completion_matches(tags: &[Value], prefix: &str) -> Vec<Value> {
     let mut matches = Vec::new();
     collect_semantic_completion_tags(tags, prefix, &mut matches);
     matches
+}
+
+fn regexp_opt_depth(regexp: &str) -> usize {
+    let bytes = regexp.as_bytes();
+    let mut index = 0;
+    let mut depth = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'\\' && bytes[index + 1] == b'(' {
+            let shy_group =
+                index + 3 < bytes.len() && bytes[index + 2] == b'?' && bytes[index + 3] == b':';
+            if !shy_group {
+                depth += 1;
+            }
+            index += 2;
+        } else if bytes[index] == b'\\' {
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    depth
 }
 
 fn find_semantic_type_chain(tags: &[Value], names: &[String]) -> Option<Value> {
