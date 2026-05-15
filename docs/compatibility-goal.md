@@ -19,12 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 383/7080 have been committed and pushed.
+- Tests through 384/7080 have been committed and pushed.
 - The latest pushed compatibility commit before this batch is
-  `1445cc2 Compat 383/7080: add Makefile semantic completions`.
-- Local uncommitted work in progress has verified test 384/7080
-  (`semantic-utest-ia-namespace.cpp`) individually.
-- Resume compatibility advancement at test 385/7080 after committing and
+  `bf5df72 Compat 384/7080: support namespace semantic completions`.
+- Local uncommitted work in progress has verified test 385/7080
+  (`semantic-utest-ia-nsp.cpp`) individually.
+- Resume compatibility advancement at test 386/7080 after committing and
   pushing this batch.
 
 ## Workflow
