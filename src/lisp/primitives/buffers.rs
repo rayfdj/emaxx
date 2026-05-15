@@ -1092,6 +1092,7 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
             _ => "record",
         },
         Value::Finalizer(_) => "finalizer",
+        Value::Unbound => "unbound",
     };
     Ok(name)
 }

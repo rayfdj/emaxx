@@ -31,7 +31,8 @@ fn structure_slot_eval_form(value: Value) -> Value {
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::BuiltinFunc(_)
-        | Value::Lambda(_, _, _) => value,
+        | Value::Lambda(_, _, _)
+        | Value::Unbound => value,
         Value::Symbol(symbol) => Value::list([Value::symbol("quote"), Value::Symbol(symbol)]),
         Value::Cons(_, _) => {
             if let Ok(items) = value.to_vec()

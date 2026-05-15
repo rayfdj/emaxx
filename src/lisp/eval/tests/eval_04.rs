@@ -453,6 +453,30 @@ fn auto_revert_mode_reloads_changed_file() {
 }
 
 #[test]
+fn find_file_sets_buffer_local_default_directory() {
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-default-directory-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).expect("create default-directory test directory");
+    let path = directory.join("visited.txt");
+    fs::write(&path, "visited").expect("write default-directory test file");
+    let path_text = path.to_string_lossy();
+    let expected = format!("{}/", directory.to_string_lossy());
+    let form = format!(
+        r#"(let ((buf (find-file-noselect "{path_text}")))
+              (prog1 (with-current-buffer buf default-directory)
+                (kill-buffer buf)))"#
+    );
+    assert_string_value(eval_str(&form), &expected);
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_dir(directory);
+}
+
+#[test]
 fn dired_revert_refreshes_directory_listing() {
     let directory = std::env::temp_dir().join(format!(
         "emaxx-dired-{}",

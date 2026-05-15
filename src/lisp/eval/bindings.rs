@@ -65,6 +65,8 @@ impl Interpreter {
             )),
             "case-fold-search" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
+            "fill-column" => Some(Value::Integer(70)),
+            "indent-according-to-mode" => Some(Value::Symbol("indent-according-to-mode".into())),
             "meta-prefix-char" => Some(Value::Integer(27)),
             "translation-table-vector" => Some(Value::list([Value::symbol("vector")])),
             "float-e" => Some(Value::Float(std::f64::consts::E)),

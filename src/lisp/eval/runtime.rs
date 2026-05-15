@@ -670,6 +670,7 @@ impl Interpreter {
 
     /// Kill a buffer by ID, switching away if it is current.
     pub fn kill_buffer_id(&mut self, id: u64) {
+        let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
         self.buffer_locals
             .retain(|(buffer_id, _, _)| *buffer_id != id);
@@ -688,6 +689,9 @@ impl Interpreter {
             }
         } else {
             let _ = self.remove_buffer_id(id);
+        }
+        if selected_window_showed_buffer {
+            self.set_selected_window_buffer_id(self.current_buffer_id);
         }
     }
 

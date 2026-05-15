@@ -548,6 +548,7 @@ fn translate_bracket_expression(chars: &mut std::iter::Peekable<std::str::Chars<
                 translated.push_str(&range);
                 *chars = preview;
                 saw_atom = true;
+                emitted_atom = true;
                 continue;
             }
         }
@@ -867,6 +868,7 @@ fn elisp_capture_mapping(pattern: &str) -> Result<Vec<usize>, LispError> {
     Ok(mapping)
 }
 
+#[derive(Clone)]
 pub(super) struct CompiledElispRegex {
     regex: FancyRegex,
     capture_mapping: Vec<usize>,
@@ -897,6 +899,21 @@ impl CompiledElispRegex {
     }
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct CompiledElispRegexKey {
+    pattern: String,
+    point_assertion: String,
+    at_absolute_start: bool,
+    case_fold: bool,
+}
+
+const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 256;
+
+thread_local! {
+    static COMPILED_ELISP_REGEX_CACHE: RefCell<Vec<(CompiledElispRegexKey, CompiledElispRegex)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
 pub(super) fn compile_elisp_regex(
     interp: &Interpreter,
     pattern: &StringLike,
@@ -905,24 +922,50 @@ pub(super) fn compile_elisp_regex(
     at_absolute_start: bool,
 ) -> Result<CompiledElispRegex, LispError> {
     enforce_elisp_repeat_limit(&pattern.text)?;
+    let case_fold = interp
+        .lookup_var("case-fold-search", env)
+        .is_some_and(|value| value.is_truthy());
+    let key = CompiledElispRegexKey {
+        pattern: pattern.text.clone(),
+        point_assertion: point_assertion.to_string(),
+        at_absolute_start,
+        case_fold,
+    };
+    if let Some(compiled) = COMPILED_ELISP_REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let index = cache
+            .iter()
+            .position(|(cached_key, _)| cached_key == &key)?;
+        let (cached_key, compiled) = cache.remove(index);
+        cache.push((cached_key, compiled.clone()));
+        Some(compiled)
+    }) {
+        return Ok(compiled);
+    }
+
     let translated = translate_elisp_regex_with_point(
         &pattern.text,
         point_assertion,
         if at_absolute_start { r"\A" } else { r"(?!)" },
     );
-    let case_fold = interp
-        .lookup_var("case-fold-search", env)
-        .is_some_and(|value| value.is_truthy());
     let rendered = if case_fold {
         format!("(?mi:{translated})")
     } else {
         format!("(?m:{translated})")
     };
-    Ok(CompiledElispRegex {
+    let compiled = CompiledElispRegex {
         regex: FancyRegex::new(&rendered)
             .map_err(|error| invalid_regexp_error(error.to_string()))?,
         capture_mapping: elisp_capture_mapping(&pattern.text)?,
-    })
+    };
+    COMPILED_ELISP_REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= COMPILED_ELISP_REGEX_CACHE_LIMIT {
+            cache.remove(0);
+        }
+        cache.push((key, compiled.clone()));
+    });
+    Ok(compiled)
 }
 
 fn regex_pattern_with_search_spaces(
@@ -1605,11 +1648,17 @@ pub(super) fn buffer_regex_search(
                 ])))
             };
         }
+        let point_asserted = pattern.text.starts_with(r"\=");
+        let haystack_start = if point_asserted {
+            start
+        } else {
+            interp.buffer.point_min()
+        };
         let haystack = interp
             .buffer
-            .buffer_substring(interp.buffer.point_min(), limit)
+            .buffer_substring(haystack_start, limit)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let mut search_offset = start.saturating_sub(interp.buffer.point_min());
+        let mut search_offset = start.saturating_sub(haystack_start);
         for _ in 0..count {
             let Some(captures) = regex
                 .captures_from_pos(&haystack, search_offset)
@@ -1627,10 +1676,10 @@ pub(super) fn buffer_regex_search(
             let Some(matched) = captures.get(0) else {
                 break;
             };
-            let pos = interp.buffer.point_min() + haystack[..matched.end()].chars().count();
+            let pos = haystack_start + haystack[..matched.end()].chars().count();
             set_match_data(
                 interp,
-                interp.buffer.point_min(),
+                haystack_start,
                 &haystack,
                 &captures,
                 regex.capture_mapping(),

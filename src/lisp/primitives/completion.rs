@@ -843,6 +843,59 @@ pub(crate) fn test_completion(
     )
 }
 
+pub(crate) fn completing_read(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 8 {
+        return Err(LispError::WrongNumberOfArgs(
+            "completing-read".into(),
+            args.len(),
+        ));
+    }
+    ensure_interaction_allowed(interp, env)?;
+
+    let initial_input = args.get(4).and_then(|value| {
+        let value = if matches!(value, Value::Cons(_, _)) {
+            value.car().ok()?
+        } else {
+            value.clone()
+        };
+        string_like(&value)
+            .map(|string| string.text)
+            .filter(|text| !text.is_empty())
+    });
+    if let Some(initial_input) = initial_input {
+        return Ok(Value::String(initial_input));
+    }
+
+    let default = args.get(6).and_then(|value| match value {
+        Value::Nil => None,
+        Value::Cons(_, _) => value.car().ok(),
+        other => Some(other.clone()),
+    });
+    if let Some(default) = default
+        && let Some(string) = string_like(&default)
+        && !string.text.is_empty()
+    {
+        return Ok(Value::String(string.text));
+    }
+
+    if let Some(collection) = args.get(1) {
+        let predicate = args.get(2);
+        if let Some(candidate) =
+            filtered_completion_matches(interp, "", collection, predicate, env)?
+                .into_iter()
+                .next()
+        {
+            return Ok(Value::String(candidate.name));
+        }
+    }
+
+    Ok(Value::String(String::new()))
+}
+
 pub(crate) fn list_contains_with(
     interp: &mut Interpreter,
     items: &[Value],

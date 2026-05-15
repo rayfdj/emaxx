@@ -478,6 +478,13 @@ pub(super) fn call(
                 interp.buffer.file_truename = Some(path.clone());
                 interp.buffer.set_unmodified();
                 interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
+                if let Some(parent) = Path::new(&path).parent() {
+                    interp.set_buffer_local_value(
+                        interp.current_buffer_id(),
+                        "default-directory",
+                        Value::String(file_name_as_directory(&parent.to_string_lossy())),
+                    );
+                }
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "buffer-file-coding-system",

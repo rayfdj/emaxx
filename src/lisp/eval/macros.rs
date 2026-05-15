@@ -362,6 +362,10 @@ impl Interpreter {
             "cl-case" => self.expand_cl_case(args, env).map(Some),
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
             "ert-simulate-keys" => self.expand_ert_simulate_keys(args).map(Some),
+            "c-lang-const" => self.expand_c_lang_const(args, env).map(Some),
+            "c-lang-defconst-eval-immediately" => self
+                .expand_c_lang_defconst_eval_immediately(args, env)
+                .map(Some),
             "letrec" => self.expand_letrec(args).map(Some),
             "named-let" => self.expand_named_let(args).map(Some),
             "with-wrapper-hook" => self.expand_with_wrapper_hook(args).map(Some),
@@ -386,6 +390,59 @@ impl Interpreter {
             }
             _ => Ok(None),
         }
+    }
+
+    fn expand_c_lang_defconst_eval_immediately(
+        &mut self,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if args.len() != 1 {
+            return Err(LispError::WrongNumberOfArgs(
+                "c-lang-defconst-eval-immediately".into(),
+                args.len(),
+            ));
+        }
+        self.eval(&args[0], env)
+    }
+
+    fn expand_c_lang_const(&mut self, args: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if args.is_empty() || args.len() > 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "c-lang-const".into(),
+                args.len(),
+            ));
+        }
+        let name = args[0].as_symbol()?;
+        let mode = match args.get(1) {
+            Some(Value::Nil) | None => None,
+            Some(value) => Some(format!("{}-mode", value.as_symbol()?)),
+        };
+        if self
+            .lookup_var("c-lang-const-expansion", env)
+            .is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == "immediate"))
+        {
+            let mut call = vec![
+                Value::Symbol("c-get-lang-constant".into()),
+                quoted_literal(&Value::Symbol(name.into())),
+                Value::Nil,
+            ];
+            if let Some(mode) = mode {
+                call.push(quoted_literal(&Value::Symbol(mode)));
+            }
+            let value = self.eval(&Value::list(call), env)?;
+            return Ok(quoted_literal(&value));
+        }
+
+        let mut call = vec![
+            Value::Symbol("c-get-lang-constant".into()),
+            quoted_literal(&Value::Symbol(name.into())),
+        ];
+        if let Some(mode) = mode {
+            call.push(Value::Nil);
+            call.push(quoted_literal(&Value::Symbol(mode)));
+        }
+        Ok(Value::list(call))
     }
 
     pub(super) fn expand_with_wrapper_hook(&mut self, args: &[Value]) -> Result<Value, LispError> {

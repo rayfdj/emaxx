@@ -679,10 +679,8 @@ pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String
     }
 
     let first = visible.chars().next();
-    let second = visible.chars().nth(1);
-    let mut confusing = symbol_name_looks_like_number(visible)
-        || first == Some('?')
-        || matches!(first, Some('.')) && !second.is_some_and(|ch| ch.is_ascii_alphabetic());
+    let mut confusing =
+        symbol_name_looks_like_number(visible) || first == Some('?') || first == Some('.');
 
     let mut rendered = String::new();
     if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) {

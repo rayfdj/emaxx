@@ -963,6 +963,48 @@ fn string_match_treats_reversed_bracket_ranges_as_empty() {
 }
 
 #[test]
+fn string_match_handles_leading_hyphen_bracket_ranges() {
+    assert_eq!(
+        eval_str(
+            r#"(list (string-match "[--/]" ".")
+                     (string-match "[--/]" "a")
+                     (string-match "[^---]" "-ab")
+                     (string-match "X[^---]Y" "X-YXaYXbY"))"#
+        ),
+        Value::list([
+            Value::Integer(0),
+            Value::Nil,
+            Value::Integer(1),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn newline_inserts_requested_line_breaks() {
+    assert_string_value(
+        eval_str(r#"(with-temp-buffer (insert "a") (newline 2) (insert "b") (buffer-string))"#),
+        "a\n\nb",
+    );
+}
+
+#[test]
+fn completing_read_uses_default_without_interaction() {
+    assert_eq!(
+        eval_str(r#"(completing-read "File: " '("one" "two") nil nil nil nil "two")"#),
+        Value::String("two".into())
+    );
+}
+
+#[test]
+fn completing_read_falls_back_to_first_candidate() {
+    assert_eq!(
+        eval_str(r#"(completing-read "File: " '("one" "two"))"#),
+        Value::String("one".into())
+    );
+}
+
+#[test]
 fn re_search_failure_preserves_existing_match_data() {
     let value = eval_str(
         r#"
@@ -1542,6 +1584,21 @@ fn set_window_buffer_accepts_nil_for_selected_window() {
 }
 
 #[test]
+fn killing_selected_window_buffer_moves_window_to_live_buffer() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((victim (get-buffer-create \" kill-window-buffer-victim\")))
+                   (set-window-buffer nil victim)
+                   (kill-buffer victim)
+                   (buffer-live-p (window-buffer)))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn visual_line_mode_sets_buffer_local_state() {
     assert_eq!(
         eval_str(
@@ -1924,6 +1981,49 @@ fn eieio_object_p_and_slot_boundp_accept_record_backed_instances() {
                            (slot-boundp object 'missing))))"
         ),
         Value::list([Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn eieio_slots_without_initform_start_unbound() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-eieio-unbound nil
+                     ((missing-initform)
+                      (explicit-nil :initform nil)))
+                   (let ((object (make-instance 'sample-eieio-unbound)))
+                     (list (slot-boundp object 'missing-initform)
+                           (slot-boundp object 'explicit-nil)
+                           (condition-case err
+                               (eieio-oref object 'missing-initform)
+                             (unbound-slot (car err))))))"
+        ),
+        Value::list([Value::Nil, Value::T, Value::Symbol("unbound-slot".into())])
+    );
+}
+
+#[test]
+fn eieio_clone_copies_record_backed_instances_and_applies_initargs() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-eieio-clone nil
+                     ((name :initarg :name :initform \"old\")
+                      (count :initarg :count :initform 1)))
+                   (let* ((object (make-instance 'sample-eieio-clone :name \"old\"))
+                          (copy (clone object :name \"new\")))
+                     (list (not (eq object copy))
+                           (eieio-oref object 'name)
+                           (eieio-oref copy 'name)
+                           (eieio-oref copy 'count))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::String("old".into()),
+            Value::String("new".into()),
+            Value::Integer(1),
+        ])
     );
 }
 

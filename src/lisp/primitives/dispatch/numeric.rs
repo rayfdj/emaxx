@@ -652,8 +652,10 @@ pub(super) fn call(
         }
         "equal" => {
             need_args(name, args, 2)?;
-            let equal = symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env)
-                .unwrap_or_else(|| values_equal(interp, &args[0], &args[1]));
+            let equal = match symbol_with_pos_equal_in_env(interp, &args[0], &args[1], env) {
+                Some(equal) => equal,
+                None => values_equal_checked(interp, &args[0], &args[1])?,
+            };
             Ok(if equal { Value::T } else { Value::Nil })
         }
         "equal-including-properties" => {

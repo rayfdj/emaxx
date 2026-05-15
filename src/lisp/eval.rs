@@ -1483,6 +1483,7 @@ fn render_undo_value(value: &Value) -> String {
         Value::CharTable(id) => format!("#<char-table id:{id}>"),
         Value::Record(id) => format!("#<record id:{id}>"),
         Value::Finalizer(id) => format!("#<finalizer id:{id}>"),
+        Value::Unbound => "#<unbound>".into(),
     }
 }
 
@@ -1560,7 +1561,8 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
         | Value::Record(_)
         | Value::Finalizer(_)
         | Value::BuiltinFunc(_)
-        | Value::Lambda(_, _, _) => true,
+        | Value::Lambda(_, _, _)
+        | Value::Unbound => true,
         Value::Cons(_, _) => {
             let Ok(items) = value.to_vec() else {
                 return false;
