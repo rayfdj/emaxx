@@ -2201,7 +2201,7 @@ fn semantic_ctxt_current_symbol(interp: &Interpreter) -> Option<SemanticCurrentS
 }
 
 fn is_semantic_member_expr_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-' | '>')
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-' | '>' | '[' | ']')
 }
 
 fn semantic_member_expression_parts(text: &str) -> Vec<String> {
@@ -2277,12 +2277,14 @@ fn semantic_analyze_possible_completions(
         if matches.is_empty() {
             collect_semantic_named_completion_tags(&tags, prefix, &mut matches);
         }
+        collect_semantic_local_variable_completion_tags(interp, prefix, &mut matches);
         return Ok(Value::list(unique_semantic_completion_tags(matches)));
     }
 
-    let Some(mut current_type) = semantic_cpp_root_type(interp, &tags, &parts[0])
-        .or_else(|| semantic_type_from_name(&tags, &parts[0]))
-    else {
+    let root_name = semantic_c_like_root_name(&parts[0]);
+    let root_type = semantic_cpp_root_type(interp, &tags, &root_name)
+        .or_else(|| semantic_type_from_name(&tags, &parts[0]));
+    let Some(mut current_type) = root_type else {
         return Ok(Value::Nil);
     };
     for member_name in &parts[1..parts.len() - 1] {
@@ -2538,6 +2540,38 @@ fn semantic_cpp_declared_type_before_point(interp: &Interpreter, name: &str) -> 
         .next()
 }
 
+fn collect_semantic_local_variable_completion_tags(
+    interp: &Interpreter,
+    prefix: &str,
+    matches: &mut Vec<Value>,
+) {
+    let Some(text) = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+        .ok()
+    else {
+        return;
+    };
+    for segment in text.split([';', '\n']) {
+        let Some(tag) = parse_cpp_variable(segment.split("//").next().unwrap_or(segment)) else {
+            continue;
+        };
+        if semantic_tag_name(&tag)
+            .as_deref()
+            .is_some_and(|name| name.starts_with(prefix))
+        {
+            matches.push(tag);
+        }
+    }
+}
+
+fn semantic_c_like_root_name(name: &str) -> String {
+    name.split_once('[')
+        .map(|(root, _)| root)
+        .unwrap_or(name)
+        .to_string()
+}
+
 fn semantic_c_like_assignment_expected_type(interp: &Interpreter) -> Option<String> {
     let text = interp
         .buffer
@@ -2569,7 +2603,7 @@ fn semantic_cpp_declared_type_from_segment(segment: &str, name: &str) -> Option<
         return None;
     }
     let after = after.trim_start();
-    if !after.is_empty() && !matches!(after.chars().next(), Some(';' | ',' | ')' | '=')) {
+    if !after.is_empty() && !matches!(after.chars().next(), Some(';' | ',' | ')' | '=' | '[')) {
         return None;
     }
     let before = before
@@ -3400,20 +3434,55 @@ fn parse_cpp_arguments(args: &str) -> Vec<Value> {
 }
 
 fn parse_cpp_variable(statement: &str) -> Option<Value> {
-    let statement = statement.trim();
+    let statement = statement.split('=').next().unwrap_or(statement).trim();
     let mut parts = statement.split_whitespace().collect::<Vec<_>>();
     let raw_name = parts.pop()?.trim();
-    let name = raw_name.trim_matches(['*', '&']);
+    let name = raw_name
+        .split_once('[')
+        .map(|(name, _)| name)
+        .unwrap_or(raw_name)
+        .trim_matches(['*', '&']);
     let type_text = parts.join(" ");
+    let type_text = type_text.trim();
+    if type_text.is_empty()
+        || name.is_empty()
+        || name
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && byte != b'_')
+        || semantic_c_like_statement_keyword(type_text.split_whitespace().next()?)
+    {
+        return None;
+    }
     let mut attrs = Vec::new();
     if statement.contains('*') {
         attrs.push((":pointer", Value::Integer(1)));
     }
-    attrs.push((":type", semantic_cpp_type_value(type_text.trim())));
+    attrs.push((":type", semantic_cpp_type_value(type_text)));
     if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
         attrs.push((":typemodifiers", modifiers));
     }
     Some(semantic_tag(name, "variable", semantic_plist(attrs)))
+}
+
+fn semantic_c_like_statement_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "break"
+            | "case"
+            | "continue"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "for"
+            | "goto"
+            | "if"
+            | "new"
+            | "return"
+            | "switch"
+            | "throw"
+            | "while"
+    )
 }
 
 fn semantic_c_like_typemodifiers(statement: &str) -> Option<Value> {
