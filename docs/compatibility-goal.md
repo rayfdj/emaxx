@@ -19,13 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 386/7080 have been committed and pushed.
+- Tests through 387/7080 have been committed and pushed.
 - The latest pushed compatibility commit before this batch is
-  `5625920 Compat 386/7080: support Semantic macro symrefs`.
-- Local uncommitted work in progress has verified test 387/7080
-  (`semantic-utest-ia-srecoder`) individually.
-- After the 387 loader change, selectors 386 and 387 were rerun sequentially.
-- Resume compatibility advancement at test 388/7080 after committing and
+  `79ef18b Compat 387/7080: resolve repeated load aliases`.
+- Local uncommitted work in progress has verified test 388/7080
+  (`semantic-utest-ia-struct.cpp`) individually.
+- After the 388 C++ parser/type-resolution change, Semantic IA selectors
+  380..388 were rerun sequentially.
+- Resume compatibility advancement at test 389/7080 after committing and
   pushing this batch.
 
 ## Workflow
