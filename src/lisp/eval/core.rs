@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::types::SharedEnv;
 
 impl Interpreter {
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
@@ -18,7 +19,8 @@ impl Interpreter {
             | Value::Overlay(_)
             | Value::CharTable(_)
             | Value::Record(_)
-            | Value::Finalizer(_) => Ok(expr.clone()),
+            | Value::Finalizer(_)
+            | Value::Unbound => Ok(expr.clone()),
 
             Value::Symbol(name) => self.lookup(name, env),
 
@@ -410,6 +412,9 @@ impl Interpreter {
                 self.call_function_value(inner.clone(), original_name, args, env)
             }
             Value::Lambda(ref params, ref body, ref closure_env) => {
+                if is_semantic_lambda_params(params) {
+                    return self.call_semantic_lambda(body, closure_env, args);
+                }
                 if params.len() != args.len() {
                     let min_params = params
                         .iter()
@@ -509,5 +514,305 @@ impl Interpreter {
         }
     }
 
+    fn call_semantic_lambda(
+        &mut self,
+        body: &[Value],
+        closure_env: &SharedEnv,
+        args: &[Value],
+    ) -> Result<Value, LispError> {
+        if args.len() != 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "lambda".to_string(),
+                args.len(),
+            ));
+        }
+        if let Some(value) = eval_generated_semantic_lambda_body(body, args)? {
+            return Ok(value);
+        }
+        let mut call_env = closure_env.borrow().clone();
+        call_env.push(vec![
+            ("vals".into(), Self::stored_value(args[0].clone())),
+            ("start".into(), Self::stored_value(args[1].clone())),
+            ("end".into(), Self::stored_value(args[2].clone())),
+        ]);
+        self.sf_progn(function_executable_body(body), &mut call_env)
+    }
+
     // ── Special forms ──
+}
+
+fn is_semantic_lambda_params(params: &[String]) -> bool {
+    params == ["vals", "start", "end"]
+}
+
+fn eval_generated_semantic_lambda_body(
+    body: &[Value],
+    args: &[Value],
+) -> Result<Option<Value>, LispError> {
+    let executable = function_executable_body(body);
+    if executable.len() != 2 || !is_ignore_vals_form(&executable[0]) {
+        return Ok(None);
+    }
+    match eval_semantic_action_expr(&executable[1], args) {
+        Ok(value) => Ok(Some(value)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn is_ignore_vals_form(value: &Value) -> bool {
+    value.to_vec().is_ok_and(|items| {
+        matches!(
+            items.as_slice(),
+            [Value::Symbol(head), Value::Symbol(arg)]
+                if head == "ignore" && arg == "vals"
+        )
+    })
+}
+
+fn eval_semantic_action_expr(expr: &Value, args: &[Value]) -> Result<Value, LispError> {
+    match expr {
+        Value::Symbol(symbol) if symbol == "vals" => Ok(args[0].clone()),
+        Value::Symbol(symbol) if symbol == "start" => Ok(args[1].clone()),
+        Value::Symbol(symbol) if symbol == "end" => Ok(args[2].clone()),
+        Value::Cons(_, _) => {
+            let items = expr.to_vec()?;
+            let Some(Value::Symbol(head)) = items.first() else {
+                return Err(LispError::Signal("unsupported semantic action".into()));
+            };
+            match head.as_str() {
+                "quote" if items.len() == 2 => Ok(items[1].clone()),
+                "nth" if items.len() == 3 => {
+                    let index = match eval_semantic_action_expr(&items[1], args)? {
+                        Value::Integer(index) if index >= 0 => index as usize,
+                        _ => return Err(LispError::Signal("invalid nth index".into())),
+                    };
+                    let values = eval_semantic_action_expr(&items[2], args)?;
+                    Ok(values.to_vec()?.get(index).cloned().unwrap_or(Value::Nil))
+                }
+                "car" if items.len() == 2 => Ok(eval_semantic_action_expr(&items[1], args)?
+                    .car()
+                    .unwrap_or(Value::Nil)),
+                "cdr" if items.len() == 2 => Ok(eval_semantic_action_expr(&items[1], args)?
+                    .cdr()
+                    .unwrap_or(Value::Nil)),
+                "list" => {
+                    let values = items[1..]
+                        .iter()
+                        .map(|item| eval_semantic_action_expr(item, args))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Value::list(values))
+                }
+                "append" => {
+                    let mut values = Vec::new();
+                    for item in &items[1..] {
+                        let value = eval_semantic_action_expr(item, args)?;
+                        if value.is_nil() {
+                            continue;
+                        }
+                        match value.to_vec() {
+                            Ok(list) => values.extend(list),
+                            Err(_) => values.push(value),
+                        }
+                    }
+                    Ok(Value::list(values))
+                }
+                "cons" if items.len() == 3 => Ok(Value::cons(
+                    eval_semantic_action_expr(&items[1], args)?,
+                    eval_semantic_action_expr(&items[2], args)?,
+                )),
+                "1+" if items.len() == 2 => match eval_semantic_action_expr(&items[1], args)? {
+                    Value::Integer(value) => Ok(Value::Integer(value + 1)),
+                    _ => Err(LispError::Signal("invalid 1+ argument".into())),
+                },
+                "concat" => {
+                    let mut text = String::new();
+                    for item in &items[1..] {
+                        text.push_str(&semantic_action_string(&eval_semantic_action_expr(
+                            item, args,
+                        )?)?);
+                    }
+                    Ok(Value::String(text))
+                }
+                "if" if items.len() >= 3 => {
+                    if eval_semantic_action_expr(&items[1], args)?.is_truthy() {
+                        eval_semantic_action_expr(&items[2], args)
+                    } else if let Some(else_expr) = items.get(3) {
+                        eval_semantic_action_expr(else_expr, args)
+                    } else {
+                        Ok(Value::Nil)
+                    }
+                }
+                "member" if items.len() == 3 => {
+                    let needle = eval_semantic_action_expr(&items[1], args)?;
+                    let haystack = eval_semantic_action_expr(&items[2], args)?;
+                    let found = haystack
+                        .to_vec()
+                        .ok()
+                        .is_some_and(|items| items.iter().any(|item| item == &needle));
+                    Ok(if found { Value::T } else { Value::Nil })
+                }
+                "delete" if items.len() == 3 => {
+                    let needle = eval_semantic_action_expr(&items[1], args)?;
+                    let list = eval_semantic_action_expr(&items[2], args)?;
+                    let items = list
+                        .to_vec()?
+                        .into_iter()
+                        .filter(|item| item != &needle)
+                        .collect::<Vec<_>>();
+                    Ok(Value::list(items))
+                }
+                "semantic-tag" => semantic_action_tag(&items[1..], args),
+                "semantic-tag-new-variable" => {
+                    semantic_action_typed_tag("variable", &items[1..], args)
+                }
+                "semantic-tag-new-function" => {
+                    semantic_action_typed_tag("function", &items[1..], args)
+                }
+                "semantic-tag-new-type" => semantic_action_type_tag(&items[1..], args),
+                "semantic-tag-new-include" => semantic_action_include_tag(&items[1..], args),
+                _ => Err(LispError::Signal("unsupported semantic action".into())),
+            }
+        }
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn semantic_action_string(value: &Value) -> Result<String, LispError> {
+    match value {
+        Value::String(text) | Value::Symbol(text) => Ok(text.clone()),
+        Value::Integer(value) => Ok(value.to_string()),
+        _ => Err(LispError::TypeError("string".into(), value.type_name())),
+    }
+}
+
+fn semantic_action_tag(exprs: &[Value], args: &[Value]) -> Result<Value, LispError> {
+    if exprs.len() < 2 {
+        return Err(LispError::WrongNumberOfArgs(
+            "semantic-tag".into(),
+            exprs.len(),
+        ));
+    }
+    let name = eval_semantic_action_expr(&exprs[0], args)?;
+    let class = eval_semantic_action_expr(&exprs[1], args)?;
+    let attrs = semantic_action_plist(&exprs[2..], args)?;
+    Ok(Value::list([name, class, attrs, Value::Nil, Value::Nil]))
+}
+
+fn semantic_action_typed_tag(
+    class: &str,
+    exprs: &[Value],
+    args: &[Value],
+) -> Result<Value, LispError> {
+    if exprs.len() < 3 {
+        return Err(LispError::WrongNumberOfArgs(
+            format!("semantic-tag-new-{class}"),
+            exprs.len(),
+        ));
+    }
+    let name = eval_semantic_action_expr(&exprs[0], args)?;
+    let type_value = eval_semantic_action_expr(&exprs[1], args)?;
+    let third_key = if class == "function" {
+        ":arguments"
+    } else {
+        ":default-value"
+    };
+    let third_value = eval_semantic_action_expr(&exprs[2], args)?;
+    let mut attrs = vec![
+        Value::Symbol(":type".into()),
+        type_value,
+        Value::Symbol(third_key.into()),
+        third_value,
+    ];
+    attrs.extend(semantic_action_plist_items(&exprs[3..], args)?);
+    Ok(Value::list([
+        name,
+        Value::Symbol(class.into()),
+        semantic_action_filter_plist(attrs),
+        Value::Nil,
+        Value::Nil,
+    ]))
+}
+
+fn semantic_action_type_tag(exprs: &[Value], args: &[Value]) -> Result<Value, LispError> {
+    if exprs.len() < 4 {
+        return Err(LispError::WrongNumberOfArgs(
+            "semantic-tag-new-type".into(),
+            exprs.len(),
+        ));
+    }
+    let name = eval_semantic_action_expr(&exprs[0], args)?;
+    let type_value = eval_semantic_action_expr(&exprs[1], args)?;
+    let members = eval_semantic_action_expr(&exprs[2], args)?;
+    let parents = eval_semantic_action_expr(&exprs[3], args)?;
+    let superclasses = parents.car().unwrap_or(Value::Nil);
+    let interfaces = parents.cdr().unwrap_or(Value::Nil);
+    let mut attrs = vec![
+        Value::Symbol(":type".into()),
+        type_value,
+        Value::Symbol(":members".into()),
+        members,
+        Value::Symbol(":superclasses".into()),
+        superclasses,
+        Value::Symbol(":interfaces".into()),
+        interfaces,
+    ];
+    attrs.extend(semantic_action_plist_items(&exprs[4..], args)?);
+    Ok(Value::list([
+        name,
+        Value::Symbol("type".into()),
+        semantic_action_filter_plist(attrs),
+        Value::Nil,
+        Value::Nil,
+    ]))
+}
+
+fn semantic_action_include_tag(exprs: &[Value], args: &[Value]) -> Result<Value, LispError> {
+    if exprs.len() < 2 {
+        return Err(LispError::WrongNumberOfArgs(
+            "semantic-tag-new-include".into(),
+            exprs.len(),
+        ));
+    }
+    let name = eval_semantic_action_expr(&exprs[0], args)?;
+    let system_flag = eval_semantic_action_expr(&exprs[1], args)?;
+    let mut attrs = vec![Value::Symbol(":system-flag".into()), system_flag];
+    attrs.extend(semantic_action_plist_items(&exprs[2..], args)?);
+    Ok(Value::list([
+        name,
+        Value::Symbol("include".into()),
+        semantic_action_filter_plist(attrs),
+        Value::Nil,
+        Value::Nil,
+    ]))
+}
+
+fn semantic_action_plist(exprs: &[Value], args: &[Value]) -> Result<Value, LispError> {
+    Ok(semantic_action_filter_plist(semantic_action_plist_items(
+        exprs, args,
+    )?))
+}
+
+fn semantic_action_plist_items(exprs: &[Value], args: &[Value]) -> Result<Vec<Value>, LispError> {
+    exprs
+        .iter()
+        .map(|expr| eval_semantic_action_expr(expr, args))
+        .collect()
+}
+
+fn semantic_action_filter_plist(items: Vec<Value>) -> Value {
+    let mut filtered = Vec::new();
+    let mut iter = items.into_iter();
+    while let Some(key) = iter.next() {
+        let Some(value) = iter.next() else {
+            break;
+        };
+        let skip = value.is_nil()
+            || matches!(&value, Value::String(text) if text.is_empty())
+            || matches!(value, Value::Integer(0));
+        if !skip {
+            filtered.insert(0, value);
+            filtered.insert(0, key);
+        }
+    }
+    Value::list(filtered)
 }

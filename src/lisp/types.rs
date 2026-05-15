@@ -55,6 +55,8 @@ pub enum Value {
     Record(u64),
     /// A finalizer object, identified by unique id.
     Finalizer(u64),
+    /// Internal marker for EIEIO slots that have not been bound.
+    Unbound,
 }
 
 /// An environment frame: a list of (name, value) bindings.
@@ -279,6 +281,7 @@ impl Value {
             Value::CharTable(id) => format!("char-table<{}>", id),
             Value::Record(id) => format!("record<{}>", id),
             Value::Finalizer(id) => format!("finalizer<{}>", id),
+            Value::Unbound => "unbound".into(),
         }
     }
 }
@@ -320,6 +323,9 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
         (Value::StringObject(a), Value::StringObject(b)) => Rc::ptr_eq(a, b),
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
+            if Rc::ptr_eq(a_car, b_car) && Rc::ptr_eq(a_cdr, b_cdr) {
+                return true;
+            }
             let ids = (cons_identity(a_car), cons_identity(b_car));
             if !seen.insert(ids) {
                 return true;
@@ -337,6 +343,7 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
         (Value::CharTable(a), Value::CharTable(b)) => a == b,
         (Value::Record(a), Value::Record(b)) => a == b,
         (Value::Finalizer(a), Value::Finalizer(b)) => a == b,
+        (Value::Unbound, Value::Unbound) => true,
         _ => false,
     }
 }
@@ -395,6 +402,7 @@ fn format_value(
         Value::CharTable(id) => write!(f, "#<char-table id:{}>", id),
         Value::Record(id) => write!(f, "#<record id:{}>", id),
         Value::Finalizer(id) => write!(f, "#<finalizer id:{}>", id),
+        Value::Unbound => write!(f, "#<unbound>"),
     }
 }
 

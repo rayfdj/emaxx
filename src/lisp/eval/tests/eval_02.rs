@@ -1731,6 +1731,10 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         interp.lookup_function("keymap-set", &env).unwrap(),
         builtin_file_autoload("keymap", Value::Nil)
     );
+    assert_eq!(
+        interp.lookup_function("pp", &env).unwrap(),
+        builtin_file_autoload("pp", Value::Nil)
+    );
 }
 
 #[test]

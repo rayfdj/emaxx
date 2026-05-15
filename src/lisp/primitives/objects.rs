@@ -59,7 +59,7 @@ pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
 pub(crate) struct EieioSlotSpec {
     name: String,
     initargs: Vec<String>,
-    initform: Value,
+    initform: Option<Value>,
 }
 
 pub(crate) fn eieio_slot_specs(
@@ -90,7 +90,7 @@ pub(crate) fn eieio_slot_specs(
             continue;
         };
         let mut initargs = Vec::new();
-        let mut initform = Value::Nil;
+        let mut initform = None;
         let mut index = 1usize;
         while index + 1 < parts.len() {
             let Some(keyword) = parts[index].as_symbol().ok() else {
@@ -103,7 +103,7 @@ pub(crate) fn eieio_slot_specs(
                         initargs.push(initarg.to_string());
                     }
                 }
-                ":initform" => initform = parts[index + 1].clone(),
+                ":initform" => initform = Some(parts[index + 1].clone()),
                 _ => {}
             }
             index += 2;
@@ -133,7 +133,10 @@ pub(crate) fn make_eieio_instance(
     let slots = eieio_slot_specs(interp, class_name)?;
     let mut values = Vec::with_capacity(slots.len());
     for slot in &slots {
-        values.push(interp.eval(&slot.initform, env)?);
+        values.push(match &slot.initform {
+            Some(initform) => interp.eval(initform, env)?,
+            None => Value::Unbound,
+        });
     }
 
     let mut index = 0usize;
@@ -181,7 +184,45 @@ pub(crate) fn eieio_slot_value(
     let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
         return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
     };
-    Ok(record.slots.get(slot_index).cloned().unwrap_or(Value::Nil))
+    match record.slots.get(slot_index) {
+        Some(Value::Unbound) | None => Err(LispError::SignalValue(Value::list([
+            Value::Symbol("unbound-slot".into()),
+            Value::String(format!("Unbound slot: {slot_name}")),
+            object.clone(),
+            Value::Symbol(slot_name.into()),
+        ]))),
+        Some(value) => Ok(value.clone()),
+    }
+}
+
+pub(crate) fn clone_eieio_instance(
+    interp: &mut Interpreter,
+    object: &Value,
+    params: &[Value],
+) -> Result<Value, LispError> {
+    let Value::Record(record_id) = object else {
+        return Err(LispError::TypeError(
+            "eieio-object".into(),
+            object.type_name(),
+        ));
+    };
+    let clone = interp.copy_record(*record_id)?;
+    let mut index = 0usize;
+    if matches!(
+        params.first(),
+        Some(Value::Nil | Value::String(_) | Value::StringObject(_))
+    ) {
+        index = 1;
+    }
+    while index + 1 < params.len() {
+        let initarg = params[index].as_symbol()?;
+        if !initarg.starts_with(':') {
+            return Err(LispError::Signal(format!("Invalid initarg {initarg}")));
+        }
+        set_eieio_slot_value(interp, &clone, initarg, params[index + 1].clone())?;
+        index += 2;
+    }
+    Ok(clone)
 }
 
 pub(crate) fn set_eieio_slot_value(
@@ -209,7 +250,7 @@ pub(crate) fn set_eieio_slot_value(
         .find_record_mut(*record_id)
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?;
     if record.slots.len() <= slot_index {
-        record.slots.resize(slot_index + 1, Value::Nil);
+        record.slots.resize(slot_index + 1, Value::Unbound);
     }
     record.slots[slot_index] = value.clone();
     Ok(value)

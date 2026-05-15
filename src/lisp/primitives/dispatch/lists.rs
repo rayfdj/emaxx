@@ -96,6 +96,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "read-string"
             | "read-from-minibuffer"
             | "read-no-blanks-input"
+            | "completing-read"
             | "format-prompt"
     )
 }
@@ -1270,6 +1271,7 @@ pub(super) fn call(
             ensure_interaction_allowed(interp, env)?;
             Ok(Value::String(String::new()))
         }
+        "completing-read" => completing_read(interp, args, env),
         "format-prompt" => format_prompt(interp, args, env),
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),

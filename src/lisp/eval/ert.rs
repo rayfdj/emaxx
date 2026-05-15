@@ -164,8 +164,8 @@ impl Interpreter {
             Ok(Value::Nil)
         } else {
             Err(LispError::ErtTestFailed(format!(
-                "Test failed: expected nil from {}",
-                items[1]
+                "Test failed: expected nil from {}; got {}",
+                items[1], val
             )))
         }
     }

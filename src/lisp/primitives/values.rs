@@ -41,6 +41,47 @@ pub(crate) fn values_equal(interp: &Interpreter, left: &Value, right: &Value) ->
     values_equal_recursive(interp, left, right, &mut HashSet::new())
 }
 
+pub(crate) fn values_equal_checked(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+) -> Result<bool, LispError> {
+    ensure_acyclic_cons_graph(left)?;
+    ensure_acyclic_cons_graph(right)?;
+    Ok(values_equal(interp, left, right))
+}
+
+fn ensure_acyclic_cons_graph(value: &Value) -> Result<(), LispError> {
+    fn visit(
+        value: &Value,
+        visiting: &mut HashSet<usize>,
+        visited: &mut HashSet<usize>,
+    ) -> Result<(), LispError> {
+        let Value::Cons(car_cell, cdr_cell) = value else {
+            return Ok(());
+        };
+        let ptr = Rc::as_ptr(car_cell) as usize;
+        if visited.contains(&ptr) {
+            return Ok(());
+        }
+        if !visiting.insert(ptr) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("circular-list".into()),
+                Value::String("Circular list".into()),
+            ])));
+        }
+
+        visit(&car_cell.borrow(), visiting, visited)?;
+        visit(&cdr_cell.borrow(), visiting, visited)?;
+
+        visiting.remove(&ptr);
+        visited.insert(ptr);
+        Ok(())
+    }
+
+    visit(value, &mut HashSet::new(), &mut HashSet::new())
+}
+
 pub(crate) fn keymap_records_equal(
     interp: &Interpreter,
     left_id: u64,
@@ -1357,6 +1398,9 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 13);
             hash_mix(state, *id);
         }
+        Value::Unbound => {
+            hash_mix(state, 17);
+        }
         Value::BigInteger(number) => {
             hash_mix(state, 14);
             hash_str(state, &number.to_string());
@@ -1469,6 +1513,9 @@ pub(crate) fn hash_value_equal(
         Value::Finalizer(id) => {
             hash_mix(state, 46);
             hash_mix(state, *id);
+        }
+        Value::Unbound => {
+            hash_mix(state, 47);
         }
     }
 }

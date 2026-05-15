@@ -1075,6 +1075,21 @@ pub fn is_builtin(name: &str) -> bool {
             | "eieio-object-p"
             | "slot-boundp"
             | "make-instance"
+            | "clone"
+            | "semanticdb-find-tags-by-class"
+            | "semanticdb-find-tags-by-name"
+            | "semanticdb-find-tags-for-completion"
+            | "semantic-ctxt-current-symbol"
+            | "semantic-ctxt-current-symbol-and-bounds"
+            | "semantic-analyze-possible-completions"
+            | "semantic-analyze-tag-references"
+            | "semantic-analyze-refs-impl"
+            | "semantic-analyze-refs-proto"
+            | "semantic-equivalent-tag-p"
+            | "semantic-go-to-tag"
+            | "semantic-clear-toplevel-cache"
+            | "semanticdb-typecache-find"
+            | "semanticdb-typecache-add-dependant"
             | "eieio-oref"
             | "eieio-oset"
             | "slot-value"
@@ -1277,7 +1292,20 @@ pub fn is_builtin(name: &str) -> bool {
             | "undo-boundary"
             | "undo"
             | "undo-more"
-    ) || is_composed_accessor_name(name)
+    ) || numeric::handles(name)
+        || predicates::handles(name)
+        || lists::handles(name)
+        || strings::handles(name)
+        || buffer_edit::handles(name)
+        || buffer_meta::handles(name)
+        || files_process::handles(name)
+        || display::handles(name)
+        || misc::handles(name)
+        || misc_keymaps::handles(name)
+        || overlays::handles(name)
+        || collections::handles(name)
+        || search_coding::handles(name)
+        || is_composed_accessor_name(name)
         || is_time_builtin(name)
         || is_sqlite_builtin(name)
         || is_lcms_builtin(name)

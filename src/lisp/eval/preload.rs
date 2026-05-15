@@ -229,6 +229,7 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "keymap-substitute" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "keymap-unset" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "define-keymap" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),
         "with-connection-local-application-variables" => Some(builtin_macro_autoload("files-x")),

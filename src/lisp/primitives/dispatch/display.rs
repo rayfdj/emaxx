@@ -261,9 +261,23 @@ pub(super) fn call(
             interp.drive_threads(env, true)?;
             Ok(Value::Nil)
         }
-        "sit-for" | "accept-process-output" => {
+        "sit-for" => {
             need_arg_range(name, args, 0, 2)?;
             std::thread::sleep(wait_duration(args)?);
+            interp.drive_threads(env, true)?;
+            Ok(Value::T)
+        }
+        "accept-process-output" => {
+            need_arg_range(name, args, 0, 4)?;
+            let duration_args = if args
+                .first()
+                .is_some_and(|process| interp.resolve_process_id(process).is_ok())
+            {
+                args.get(1..3).unwrap_or(&[])
+            } else {
+                args.get(0..2).unwrap_or(&[])
+            };
+            std::thread::sleep(wait_duration(duration_args)?);
             interp.drive_threads(env, true)?;
             Ok(Value::T)
         }

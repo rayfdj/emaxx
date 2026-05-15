@@ -65,6 +65,13 @@ fn prin1_to_string_matches_upstream_integer_character_cases() {
 }
 
 #[test]
+fn prin1_to_string_escapes_leading_dot_symbols() {
+    assert_string_value(eval_str(r#"(prin1-to-string '.foo)"#), r#"\.foo"#);
+    assert_string_value(eval_str(r#"(prin1-to-string '.foo.)"#), r#"\.foo."#);
+    assert_string_value(eval_str(r#"(prin1-to-string 'foo.bar)"#), "foo.bar");
+}
+
+#[test]
 fn cl_prin1_respects_charset_text_property_modes() {
     run_with_large_stack(|| {
         assert_eq!(

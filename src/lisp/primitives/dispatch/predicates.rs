@@ -326,7 +326,13 @@ pub(super) fn call(
         "compiled-function-p" | "byte-code-function-p" => {
             need_args(name, args, 1)?;
             Ok(
-                if record_type_name(interp, &args[0]) == Some("byte-code-function") {
+                if record_type_name(interp, &args[0]) == Some("byte-code-function")
+                    || matches!(
+                        &args[0],
+                        Value::Lambda(params, _, _)
+                            if params == &["vals", "start", "end"]
+                    )
+                {
                     Value::T
                 } else {
                     Value::Nil

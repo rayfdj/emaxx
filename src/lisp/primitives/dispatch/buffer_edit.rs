@@ -86,6 +86,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "delete-forward-char"
             | "kill-word"
             | "erase-buffer"
+            | "newline"
             | "upcase-region"
             | "downcase-region"
             | "capitalize-region"
@@ -95,6 +96,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "capitalize-word"
             | "current-column"
             | "current-indentation"
+            | "indent-according-to-mode"
             | "indent-to-left-margin"
             | "indent-relative"
             | "indent-to"
@@ -149,6 +151,16 @@ pub(super) fn call(
         "insert" => insert_impl(interp, args, env, false, false),
         "insert-and-inherit" => insert_impl(interp, args, env, true, false),
         "insert-char" => insert_char_impl(interp, args, env),
+        "newline" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = match args.first() {
+                Some(value) if !value.is_nil() => value.as_integer()?.max(0),
+                _ => 1,
+            };
+            let text = "\n".repeat(count as usize);
+            insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+            Ok(Value::Nil)
+        }
         "insert-byte" => {
             need_args(name, args, 2)?;
             let byte = args[0].as_integer()?;
@@ -1123,6 +1135,10 @@ pub(super) fn call(
                 bol
             };
             Ok(Value::Integer(column_at(interp, env, bol, pt) as i64))
+        }
+        "indent-according-to-mode" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Nil)
         }
         "current-indentation" => {
             let saved = interp.buffer.point();
