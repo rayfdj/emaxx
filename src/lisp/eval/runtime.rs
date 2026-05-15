@@ -114,6 +114,11 @@ impl Interpreter {
         let load_result = crate::lisp::load_file_strict(self, &path);
         self.loading_features.pop();
         load_result?;
+        if (feature == "semantic/symref" || load_target == "semantic/symref")
+            && let Some(grep_path) = self.resolve_load_target("semantic/symref/grep")
+        {
+            crate::lisp::load_file_strict(self, &grep_path)?;
+        }
         if !self.has_feature(feature) {
             return self.provide_feature_with_after_load(feature);
         }
