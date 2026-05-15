@@ -19,12 +19,15 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 384/7080 have been committed and pushed.
+- Tests through 385/7080 have been committed and pushed.
 - The latest pushed compatibility commit before this batch is
-  `bf5df72 Compat 384/7080: support namespace semantic completions`.
-- Local uncommitted work in progress has verified test 385/7080
-  (`semantic-utest-ia-nsp.cpp`) individually.
-- Resume compatibility advancement at test 386/7080 after committing and
+  `fde1210 Compat 385/7080: record Semantic NSP pass`.
+- Local uncommitted work in progress has verified test 386/7080
+  (`semantic-utest-ia-sppcomplete.c`) individually.
+- After the 386 changes, the affected Semantic batch was rerun sequentially:
+  379 (`semantic-utest-c.el` default) and 380..386
+  (`semantic-utest-ia-doublens.cpp` through `semantic-utest-ia-sppcomplete.c`).
+- Resume compatibility advancement at test 387/7080 after committing and
   pushing this batch.
 
 ## Workflow
