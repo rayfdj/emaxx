@@ -323,7 +323,7 @@ fn setf_supports_aref_places_bound_in_lexical_variables() {
     assert_eq!(
         eval_str("(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)"),
         Value::list([
-            Value::Symbol("vector".into()),
+            Value::Symbol("vector-literal".into()),
             Value::Integer(0),
             Value::Integer(7),
         ])
@@ -369,7 +369,7 @@ fn aset_mutates_vectors_bound_in_lexical_variables() {
     assert_eq!(
         eval_str("(let ((stats (make-vector 2 nil))) (aset stats 1 'ok) stats)"),
         Value::list([
-            Value::Symbol("vector".into()),
+            Value::Symbol("vector-literal".into()),
             Value::Nil,
             Value::Symbol("ok".into()),
         ])
@@ -381,7 +381,7 @@ fn prog1_returns_vectors_after_in_place_mutation() {
     assert_eq!(
         eval_str("(let ((stats (make-vector 2 nil))) (prog1 stats (aset stats 1 'ok)))"),
         Value::list([
-            Value::Symbol("vector".into()),
+            Value::Symbol("vector-literal".into()),
             Value::Nil,
             Value::Symbol("ok".into()),
         ])
@@ -422,7 +422,7 @@ fn prog2_returns_vectors_after_in_place_mutation() {
                    (prog2 'ignored stats (aset stats 1 'ok)))"
         ),
         Value::list([
-            Value::Symbol("vector".into()),
+            Value::Symbol("vector-literal".into()),
             Value::Nil,
             Value::Symbol("ok".into()),
         ])

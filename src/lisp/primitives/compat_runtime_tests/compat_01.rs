@@ -1141,7 +1141,7 @@ fn reverse_and_vconcat_support_bool_vectors() {
         )
         .expect("vconcat should accept bool-vectors"),
         Value::list([
-            Value::symbol("vector"),
+            Value::symbol("vector-literal"),
             Value::T,
             Value::T,
             Value::Nil,

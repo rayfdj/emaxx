@@ -740,7 +740,7 @@ pub(super) fn call(
             {
                 "list" => Ok(Value::list(flattened)),
                 "vector" => Ok(Value::list(
-                    std::iter::once(Value::Symbol("vector".into())).chain(flattened),
+                    std::iter::once(Value::Symbol("vector-literal".into())).chain(flattened),
                 )),
                 "string" => super::call(interp, "concat", &flattened, env),
                 other => Err(LispError::Signal(format!(
@@ -994,7 +994,7 @@ pub(super) fn call(
             match args[1].as_symbol()? {
                 "list" => Ok(Value::list(items)),
                 "vector" => {
-                    let mut vector = vec![Value::symbol("vector")];
+                    let mut vector = vec![Value::symbol("vector-literal")];
                     vector.extend(items);
                     Ok(Value::list(vector))
                 }

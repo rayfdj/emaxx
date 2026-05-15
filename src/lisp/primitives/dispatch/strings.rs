@@ -136,8 +136,7 @@ pub(super) fn call(
             }
             let init = args[1].clone();
             let items: Vec<Value> = std::iter::repeat_n(init, length as usize).collect();
-            // Represent as (vector el1 el2 ...) like the reader does for #(...)
-            let mut result = vec![Value::symbol("vector")];
+            let mut result = vec![Value::symbol("vector-literal")];
             result.extend(items);
             Ok(Value::list(result))
         }
@@ -185,7 +184,7 @@ pub(super) fn call(
             Ok(keymap_placeholder(Some("mode-line-mouse-map")))
         }
         "vconcat" => {
-            let mut items = vec![Value::symbol("vector")];
+            let mut items = vec![Value::symbol("vector-literal")];
             for value in args {
                 items.extend(sequence_values(interp, value)?);
             }
