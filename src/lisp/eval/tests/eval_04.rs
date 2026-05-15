@@ -1351,6 +1351,31 @@ fn backtick_comma_in_dotted_pair() {
 }
 
 #[test]
+fn backquote_comma_quote_embeds_evaluated_data_as_quoted_literal() {
+    assert_eq!(
+        eval_str(r#"`',(list (cons '$STARTS 231))"#),
+        Value::list([
+            Value::Symbol("quote".into()),
+            Value::list([Value::cons(
+                Value::Symbol("$STARTS".into()),
+                Value::Integer(231)
+            )])
+        ])
+    );
+}
+
+#[test]
+fn generated_forms_can_embed_runtime_vectors_as_self_evaluating_data() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((v (vector (cons '$STARTS 231))))
+                 (cdr (aref (aref (eval (list 'vector v)) 0) 0)))"#,
+        ),
+        Value::Integer(231)
+    );
+}
+
+#[test]
 fn backquote_preserves_record_literal_dotted_pair_tails() {
     let mut interp = Interpreter::new();
     let value = eval_str_with(&mut interp, r#"`(#s(a 1) . #s(b 2))"#);

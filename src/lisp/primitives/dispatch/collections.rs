@@ -339,7 +339,7 @@ pub(super) fn call(
         }
 
         "vector" => {
-            let mut items = vec![Value::symbol("vector")];
+            let mut items = vec![Value::symbol("vector-literal")];
             items.extend(args.iter().cloned());
             Ok(Value::list(items))
         }
@@ -545,7 +545,7 @@ pub(super) fn call(
             match args[1].as_symbol()? {
                 "list" => Ok(Value::list(items)),
                 "vector" => {
-                    let mut vector = vec![Value::symbol("vector")];
+                    let mut vector = vec![Value::symbol("vector-literal")];
                     vector.extend(items);
                     Ok(Value::list(vector))
                 }

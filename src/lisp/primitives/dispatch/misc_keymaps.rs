@@ -2250,12 +2250,14 @@ fn semantic_analyze_possible_completions(
     if table.is_nil() {
         return Ok(Value::Nil);
     }
-    let tags = semantic_tags_for_search(interp, &table)?;
-
+    let mut tags = semantic_tags_for_search(interp, &table)?;
+    extend_semantic_c_like_table_tags(interp, &table, &mut tags);
     if parts.len() == 1 {
         let prefix = &parts[0];
         let mut matches = Vec::new();
-        if let Some(current_type) = semantic_cpp_current_enclosing_type(interp, &tags) {
+        if let Some(current_type) = semantic_cpp_current_enclosing_type(interp, &tags)
+            .or_else(|| semantic_c_like_current_enclosing_type(interp, &tags))
+        {
             collect_semantic_member_completion_tags(
                 &current_type,
                 &tags,
@@ -2263,6 +2265,14 @@ fn semantic_analyze_possible_completions(
                 true,
                 &mut matches,
             );
+            if let Some(expected_type) = semantic_c_like_assignment_expected_type(interp) {
+                matches.retain(|tag| {
+                    semantic_tag_class(tag).as_deref() != Some("function")
+                        || semantic_tag_attr(tag, ":type")
+                            .and_then(|value| semantic_type_name_parts(&value).ok())
+                            .is_some_and(|parts| parts.iter().any(|part| part == &expected_type))
+                });
+            }
         }
         if matches.is_empty() {
             collect_semantic_named_completion_tags(&tags, prefix, &mut matches);
@@ -2443,6 +2453,80 @@ fn semantic_cpp_current_enclosing_type(interp: &Interpreter, tags: &[Value]) -> 
     None
 }
 
+fn semantic_c_like_current_enclosing_type(interp: &Interpreter, tags: &[Value]) -> Option<Value> {
+    let text = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+        .ok()?;
+    let mut stack = Vec::new();
+    let mut pending_class: Option<String> = None;
+    let mut index = 0usize;
+    let bytes = text.as_bytes();
+    while index < bytes.len() {
+        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            continue;
+        }
+        if word_at(&text, index, "class") || word_at(&text, index, "interface") {
+            index += if word_at(&text, index, "interface") {
+                "interface".len()
+            } else {
+                "class".len()
+            };
+            while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+                index += 1;
+            }
+            let start = index;
+            while bytes.get(index).is_some_and(|byte| is_ident_byte(*byte)) {
+                index += 1;
+            }
+            if index > start {
+                pending_class = Some(text[start..index].to_string());
+            }
+            continue;
+        }
+        match bytes[index] {
+            b'{' => {
+                if let Some(class_name) = pending_class.take() {
+                    stack.push(class_name);
+                } else {
+                    stack.push(String::new());
+                }
+            }
+            b'}' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    stack
+        .into_iter()
+        .rev()
+        .find(|name| !name.is_empty())
+        .and_then(|name| semantic_type_from_name(tags, &name))
+}
+
+fn word_at(text: &str, index: usize, word: &str) -> bool {
+    text[index..].starts_with(word)
+        && (index == 0 || !is_ident_byte(text.as_bytes()[index - 1]))
+        && text
+            .as_bytes()
+            .get(index + word.len())
+            .is_none_or(|byte| !is_ident_byte(*byte))
+}
+
 fn semantic_cpp_declared_type_before_point(interp: &Interpreter, name: &str) -> Option<String> {
     let text = interp
         .buffer
@@ -2452,6 +2536,20 @@ fn semantic_cpp_declared_type_before_point(interp: &Interpreter, name: &str) -> 
         .rev()
         .filter_map(|segment| semantic_cpp_declared_type_from_segment(segment, name))
         .next()
+}
+
+fn semantic_c_like_assignment_expected_type(interp: &Interpreter) -> Option<String> {
+    let text = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+        .ok()?;
+    let line = text.lines().last()?.split("//").next()?.trim_end();
+    let eq_index = line.rfind('=')?;
+    let lhs = line[..eq_index]
+        .trim_end()
+        .rsplit(|ch: char| !is_ident_byte(ch as u8))
+        .find(|part| !part.is_empty())?;
+    semantic_cpp_declared_type_before_point(interp, lhs)
 }
 
 fn semantic_cpp_declared_type_from_segment(segment: &str, name: &str) -> Option<String> {
@@ -2596,6 +2694,9 @@ fn collect_semantic_member_completion_tags(
             && semantic_tag_name(&member).as_deref() == Some("private")
         {
             break;
+        }
+        if !include_private && semantic_tag_has_typemodifier(&member, "private") {
+            continue;
         }
         if !matches!(class.as_deref(), Some("function" | "variable" | "type")) {
             continue;
@@ -2772,14 +2873,15 @@ fn semantic_type_name_parts(value: &Value) -> Result<Vec<String>, LispError> {
             .map(str::to_string)
             .collect());
     }
-    let items = value.to_vec()?;
+    let Ok(items) = value.to_vec() else {
+        return Ok(Vec::new());
+    };
     if matches!(items.get(1), Some(Value::Symbol(class)) if class == "type")
         && let Some(name) = items.first()
     {
         return semantic_type_name_parts(name);
     }
-    Ok(value
-        .to_vec()?
+    Ok(items
         .into_iter()
         .filter_map(|part| {
             part.as_symbol()
@@ -2798,7 +2900,11 @@ fn semantic_tags_for_search(
         Ok(tags) => tags,
         Err(_) => return Ok(Vec::new()),
     };
-    let mut tags = tags.to_vec()?;
+    let mut tags = match tags.to_vec() {
+        Ok(tags) => tags,
+        Err(LispError::TypeError(expected, _)) if expected == "list" => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
     let include_tags = tags
         .iter()
         .filter(|tag| semantic_tag_class(tag).as_deref() == Some("include"))
@@ -2811,6 +2917,31 @@ fn semantic_tags_for_search(
         tags.extend(cached_semantic_cpp_tags(&path));
     }
     Ok(tags)
+}
+
+fn extend_semantic_c_like_table_tags(
+    interp: &mut Interpreter,
+    table: &Value,
+    tags: &mut Vec<Value>,
+) {
+    if let Some(path) = semantic_table_file_path(interp, table)
+        && matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "java")
+        )
+    {
+        append_semantic_search_tags(tags, cached_semantic_cpp_tags(&path));
+    }
+}
+
+fn append_semantic_search_tags(tags: &mut Vec<Value>, candidates: Vec<Value>) {
+    for candidate in candidates {
+        if semantic_tag_class(&candidate).is_some() {
+            tags.push(candidate);
+        } else if let Ok(items) = candidate.to_vec() {
+            append_semantic_search_tags(tags, items);
+        }
+    }
 }
 
 fn cached_semantic_cpp_tags(path: &Path) -> Vec<Value> {
@@ -2845,10 +2976,8 @@ fn semantic_include_path(
     if include_path.is_absolute() && include_path.exists() {
         return Some(include_path.to_path_buf());
     }
-    let table_file = eieio_slot_value(interp, table, "file")
-        .ok()
-        .and_then(|value| string_text(&value).ok())?;
-    let table_path = Path::new(&table_file);
+    let table_file = semantic_table_file_path(interp, table)?;
+    let table_path = table_file.as_path();
     let base = if table_path.is_absolute() {
         table_path.parent()?.to_path_buf()
     } else {
@@ -2860,6 +2989,25 @@ fn semantic_include_path(
     };
     let candidate = base.join(include_path);
     candidate.exists().then_some(candidate)
+}
+
+fn semantic_table_file_path(interp: &mut Interpreter, table: &Value) -> Option<PathBuf> {
+    let path = eieio_slot_value(interp, table, "file")
+        .ok()
+        .and_then(|value| string_text(&value).ok())
+        .map(PathBuf::from)?;
+    if path.is_absolute() {
+        return Some(path);
+    }
+    interp
+        .lookup_var("semanticdb-current-database", &Vec::new())
+        .and_then(|database| {
+            eieio_slot_value(interp, &database, "reference-directory")
+                .ok()
+                .and_then(|value| string_text(&value).ok())
+        })
+        .map(|directory| Path::new(&directory).join(&path))
+        .or(Some(path))
 }
 
 fn parse_semantic_cpp_tags(source: &str) -> Vec<Value> {
@@ -2952,11 +3100,28 @@ impl<'a> CppTagParser<'a> {
 
     fn parse_type_block(&mut self) -> Option<Value> {
         let start = self.pos;
+        while self
+            .consume_one_of_words(&[
+                "public",
+                "private",
+                "protected",
+                "static",
+                "final",
+                "abstract",
+                "strictfp",
+            ])
+            .is_some()
+        {
+            self.skip_ws();
+        }
         let kind = if self.consume_word("class").is_some() {
             "class"
         } else if self.consume_word("struct").is_some() {
             "struct"
+        } else if self.consume_word("interface").is_some() {
+            "interface"
         } else {
+            self.pos = start;
             return None;
         };
         self.skip_ws();
@@ -2965,7 +3130,9 @@ impl<'a> CppTagParser<'a> {
         self.pos += 1;
         let members = self.parse_until(Some(b'}'));
         let variable_name = self.read_trailing_decl_name();
-        self.consume_optional_statement_tail();
+        if variable_name.is_some() {
+            self.consume_optional_statement_tail();
+        }
         let mut tags = vec![semantic_type_tag(
             &name,
             vec![
@@ -3031,16 +3198,60 @@ impl<'a> CppTagParser<'a> {
                     self.pos += 1;
                     return Some(statement);
                 }
-                b'{' | b'}' => return None,
+                b'{' => {
+                    let statement = self.source[start..self.pos].to_string();
+                    self.skip_balanced_block();
+                    return (!statement.trim().is_empty()).then_some(statement);
+                }
+                b'}' => return None,
                 _ => self.pos += 1,
             }
         }
         None
     }
 
+    fn skip_balanced_block(&mut self) {
+        if self.peek_byte() != Some(b'{') {
+            return;
+        }
+        let mut depth = 0usize;
+        while self.pos < self.source.len() {
+            match self.peek_byte() {
+                Some(b'{') => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                Some(b'}') => {
+                    depth = depth.saturating_sub(1);
+                    self.pos += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Some(_) => self.pos += 1,
+                None => break,
+            }
+        }
+    }
+
     fn read_trailing_decl_name(&mut self) -> Option<String> {
         self.skip_ws();
         let checkpoint = self.pos;
+        while self.pos < self.source.len() {
+            match self.peek_byte()? {
+                b';' => break,
+                b'{' | b'}' => {
+                    self.pos = checkpoint;
+                    return None;
+                }
+                _ => self.pos += 1,
+            }
+        }
+        if self.peek_byte() != Some(b';') {
+            self.pos = checkpoint;
+            return None;
+        }
+        self.pos = checkpoint;
         let name = self.read_ident();
         self.pos = checkpoint;
         name
@@ -3071,6 +3282,10 @@ impl<'a> CppTagParser<'a> {
         } else {
             None
         }
+    }
+
+    fn consume_one_of_words(&mut self, words: &[&str]) -> Option<()> {
+        words.iter().find_map(|word| self.consume_word(word))
     }
 
     fn read_ident(&mut self) -> Option<String> {
@@ -3137,6 +3352,9 @@ fn parse_cpp_function(statement: &str) -> Option<Value> {
     let return_type = parts.join(" ");
     let mut attrs = Vec::new();
     attrs.push((":prototype-flag", Value::T));
+    if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
+        attrs.push((":typemodifiers", modifiers));
+    }
     if raw_name != name || return_type.is_empty() || statement.contains(&format!("~{name}")) {
         if return_type.is_empty() || raw_name == name {
             attrs.push((":constructor-flag", Value::T));
@@ -3187,11 +3405,29 @@ fn parse_cpp_variable(statement: &str) -> Option<Value> {
     let raw_name = parts.pop()?.trim();
     let name = raw_name.trim_matches(['*', '&']);
     let type_text = parts.join(" ");
-    Some(semantic_variable_tag(
-        name,
-        semantic_cpp_type_value(type_text.trim()),
-        statement.contains('*'),
-    ))
+    let mut attrs = Vec::new();
+    if statement.contains('*') {
+        attrs.push((":pointer", Value::Integer(1)));
+    }
+    attrs.push((":type", semantic_cpp_type_value(type_text.trim())));
+    if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
+        attrs.push((":typemodifiers", modifiers));
+    }
+    Some(semantic_tag(name, "variable", semantic_plist(attrs)))
+}
+
+fn semantic_c_like_typemodifiers(statement: &str) -> Option<Value> {
+    let modifiers = statement
+        .split_whitespace()
+        .take_while(|word| {
+            matches!(
+                *word,
+                "public" | "private" | "protected" | "static" | "final" | "abstract" | "strictfp"
+            )
+        })
+        .map(|word| Value::String(word.into()))
+        .collect::<Vec<_>>();
+    (!modifiers.is_empty()).then(|| Value::list(modifiers))
 }
 
 fn semantic_type_tag(name: &str, attrs: Vec<(&str, Value)>) -> Option<Value> {
@@ -3239,6 +3475,13 @@ fn semantic_cpp_type_value(type_text: &str) -> Value {
         .replace("const ", "")
         .replace("mutable ", "")
         .replace("struct ", "")
+        .replace("public ", "")
+        .replace("private ", "")
+        .replace("protected ", "")
+        .replace("static ", "")
+        .replace("final ", "")
+        .replace("abstract ", "")
+        .replace("strictfp ", "")
         .replace(['*', '&'], "")
         .trim()
         .to_string();
@@ -3420,4 +3663,15 @@ fn semantic_tag_attr(tag: &Value, attr: &str) -> Option<Value> {
         index += 2;
     }
     None
+}
+
+fn semantic_tag_has_typemodifier(tag: &Value, modifier: &str) -> bool {
+    semantic_tag_attr(tag, ":typemodifiers")
+        .and_then(|value| value.to_vec().ok())
+        .is_some_and(|modifiers| {
+            modifiers.iter().any(|value| {
+                matches!(value, Value::String(text) if text == modifier)
+                    || matches!(value, Value::Symbol(symbol) if symbol == modifier)
+            })
+        })
 }
