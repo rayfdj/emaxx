@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 387/7080 have been committed and pushed.
+- Tests through 388/7080 have been committed and pushed.
 - The latest pushed compatibility commit before this batch is
-  `79ef18b Compat 387/7080: resolve repeated load aliases`.
-- Local uncommitted work in progress has verified test 388/7080
-  (`semantic-utest-ia-struct.cpp`) individually.
-- After the 388 C++ parser/type-resolution change, Semantic IA selectors
-  380..388 were rerun sequentially.
-- Resume compatibility advancement at test 389/7080 after committing and
+  `37c21e6 Compat 388/7080: parse templated C++ structs`.
+- Local uncommitted work in progress has verified test 389/7080
+  (`semantic-utest-ia-subclass.cpp`) individually.
+- After the 389 Semantic subclass/local-scope/type-resolution changes,
+  Semantic IA selectors 380..389 were rerun sequentially.
+- Resume compatibility advancement at test 390/7080 after committing and
   pushing this batch.
 
 ## Workflow
