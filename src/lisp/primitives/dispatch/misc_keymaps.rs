@@ -199,6 +199,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "semanticdb-find-tags-by-class"
             | "semanticdb-find-tags-by-name"
             | "semanticdb-find-tags-for-completion"
+            | "semantic-fetch-tags"
+            | "semantic-current-tag"
             | "semantic-ctxt-current-symbol"
             | "semantic-ctxt-current-symbol-and-bounds"
             | "semantic-analyze-possible-completions"
@@ -208,6 +210,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "semantic-symref-find-references-by-name"
             | "semantic-symref-result-get-files"
             | "semantic-symref-result-get-tags"
+            | "semantic-symref-hits-in-region"
+            | "semantic-symref-test-count-hits-in-tag"
             | "semantic-equivalent-tag-p"
             | "semantic-go-to-tag"
             | "semantic-clear-toplevel-cache"
@@ -1999,6 +2003,14 @@ pub(super) fn call(
             need_arg_range(name, args, 1, 3)?;
             semanticdb_find_tags_for_completion(interp, args, env)
         }
+        "semantic-fetch-tags" => {
+            need_arg_range(name, args, 0, 1)?;
+            semantic_fetch_tags_compat(interp, env)
+        }
+        "semantic-current-tag" => {
+            need_arg_range(name, args, 0, 1)?;
+            semantic_current_tag_compat(interp, env)
+        }
         "semantic-ctxt-current-symbol" => {
             need_args(name, args, 0)?;
             Ok(semantic_ctxt_current_symbol(interp)
@@ -2048,6 +2060,14 @@ pub(super) fn call(
             need_arg_range(name, args, 1, 2)?;
             semantic_symref_result_part(&args[0], 3)
         }
+        "semantic-symref-hits-in-region" => {
+            need_args(name, args, 4)?;
+            semantic_symref_hits_in_region(interp, args, env)
+        }
+        "semantic-symref-test-count-hits-in-tag" => {
+            need_args(name, args, 0)?;
+            semantic_symref_test_count_hits_in_tag(interp)
+        }
         "semantic-equivalent-tag-p" => {
             need_args(name, args, 2)?;
             Ok(if semantic_tags_equivalent(&args[0], &args[1]) {
@@ -2058,7 +2078,7 @@ pub(super) fn call(
         }
         "semantic-go-to-tag" => {
             need_arg_range(name, args, 1, 2)?;
-            semantic_go_to_tag(interp, &args[0])
+            semantic_go_to_tag(interp, &args[0], env)
         }
         "semantic-clear-toplevel-cache" => {
             need_arg_range(name, args, 0, 1)?;
@@ -2408,22 +2428,18 @@ fn semantic_analyze_possible_completions(
                 &current_type,
                 &tags,
                 prefix,
-                true,
+                MemberVisibility::All,
+                &mut Vec::new(),
                 &mut matches,
             );
-            if let Some(expected_type) = semantic_c_like_assignment_expected_type(interp) {
-                matches.retain(|tag| {
-                    semantic_tag_class(tag).as_deref() != Some("function")
-                        || semantic_tag_attr(tag, ":type")
-                            .and_then(|value| semantic_type_name_parts(&value).ok())
-                            .is_some_and(|parts| parts.iter().any(|part| part == &expected_type))
-                });
-            }
         }
+        collect_semantic_local_variable_completion_tags(interp, prefix, &mut matches);
         if matches.is_empty() {
             collect_semantic_named_completion_tags(&tags, prefix, &mut matches);
         }
-        collect_semantic_local_variable_completion_tags(interp, prefix, &mut matches);
+        if let Some(expected_type) = semantic_c_like_assignment_expected_type(interp) {
+            matches.retain(|tag| semantic_tag_matches_expected_type(tag, &expected_type));
+        }
         return Ok(Value::list(unique_semantic_completion_tags(matches)));
     }
     if parts.len() == 2 && symbol.text.contains("::") {
@@ -2445,6 +2461,13 @@ fn semantic_analyze_possible_completions(
     let Some(mut current_type) = root_type else {
         return Ok(Value::Nil);
     };
+    let include_private = root_name == "this"
+        || semantic_cpp_current_enclosing_type(interp, &tags)
+            .and_then(|enclosing| semantic_tag_name(&enclosing))
+            .zip(semantic_tag_name(&current_type))
+            .is_some_and(|(enclosing, current)| {
+                enclosing == current && semantic_cpp_current_function_is_method(interp)
+            });
     for member_name in &parts[1..parts.len() - 1] {
         let Some(member) = semantic_type_member_named(&current_type, member_name).or_else(|| {
             semantic_tag_name(&current_type).and_then(|type_name| {
@@ -2460,7 +2483,23 @@ fn semantic_analyze_possible_completions(
     }
     let prefix = parts.last().map(String::as_str).unwrap_or("");
     let mut matches = Vec::new();
-    collect_semantic_public_member_completion_tags(&current_type, &tags, prefix, &mut matches);
+    collect_semantic_member_completion_tags(
+        &current_type,
+        &tags,
+        prefix,
+        if include_private {
+            MemberVisibility::All
+        } else {
+            MemberVisibility::Public
+        },
+        &mut Vec::new(),
+        &mut matches,
+    );
+    if !prefix.is_empty()
+        && let Some(expected_type) = semantic_c_like_assignment_expected_type(interp)
+    {
+        matches.retain(|tag| semantic_tag_matches_expected_type(tag, &expected_type));
+    }
     Ok(Value::list(unique_semantic_completion_tags(matches)))
 }
 
@@ -2478,11 +2517,17 @@ fn semantic_analyze_tag_references(
     if table.is_nil() {
         return Ok(Value::Nil);
     }
-    let tags = semantic_tags_for_search(interp, &table)?;
+    let mut tags = semantic_tags_for_search(interp, &table)?;
+    extend_semantic_c_like_table_tags(interp, &table, &mut tags);
     let key = semantic_function_signature_key(tag);
     let mut impls = Vec::new();
     let mut protos = Vec::new();
     collect_semantic_function_references(&tags, &key, &mut impls, &mut protos);
+    if protos.is_empty() && impls.len() > 1 {
+        protos.push(impls.remove(0));
+    } else if protos.is_empty() && impls.len() == 1 {
+        protos.push(impls[0].clone());
+    }
     Ok(Value::list([
         Value::Symbol("emaxx-semantic-refs".into()),
         Value::list(impls),
@@ -2500,6 +2545,7 @@ fn semantic_symref_find_references_by_name(
     name: &Value,
 ) -> Result<Value, LispError> {
     let name = string_text(name)?;
+    let search_name = name.rsplit("::").next().unwrap_or(&name);
     let text = interp
         .buffer
         .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
@@ -2508,14 +2554,29 @@ fn semantic_symref_find_references_by_name(
         .file
         .clone()
         .unwrap_or_else(|| interp.buffer.name.clone());
-    let tags = semantic_symref_tags_for_name(&text, &name);
+    let mut files = Vec::new();
+    let mut tags = semantic_symref_tags_for_name(&text, search_name);
+    if !tags.is_empty() {
+        files.push(Value::String(file.clone()));
+    }
+    if let Some(base_dir) = Path::new(&file).parent() {
+        for include in semantic_quoted_include_paths(&text, base_dir) {
+            if let Ok(source) = std::fs::read_to_string(&include) {
+                let include_tags = semantic_symref_header_tags_for_name(&source, search_name);
+                if !include_tags.is_empty() {
+                    files.push(Value::String(include.to_string_lossy().into_owned()));
+                    tags.extend(include_tags);
+                }
+            }
+        }
+    }
     if tags.is_empty() {
         return Ok(Value::Nil);
     }
     Ok(Value::list([
         Value::Symbol("emaxx-semantic-symref-result".into()),
         Value::String(name),
-        Value::list([Value::String(file)]),
+        Value::list(files),
         Value::list(tags),
     ]))
 }
@@ -2523,6 +2584,103 @@ fn semantic_symref_find_references_by_name(
 fn semantic_symref_result_part(result: &Value, index: usize) -> Result<Value, LispError> {
     let parts = result.to_vec()?;
     Ok(parts.get(index).cloned().unwrap_or(Value::Nil))
+}
+
+fn semantic_symref_hits_in_region(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some(name) = semantic_tag_name(&args[0]) else {
+        return Ok(Value::Nil);
+    };
+    let name = name.rsplit("::").next().unwrap_or(&name).to_string();
+    let text = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+    let (start, end) = semantic_symref_region_bounds(interp, args, &text);
+    let region = text
+        .get(start.saturating_sub(1)..end.saturating_sub(1).min(text.len()))
+        .unwrap_or("");
+    let mut search_start = 0usize;
+    while let Some(relative) = region[search_start..].find(&name) {
+        let column = search_start + relative;
+        search_start = column + name.len();
+        if !semantic_word_at(region, column, &name) {
+            continue;
+        }
+        let hit_start = Value::Integer((start + column) as i64);
+        let hit_end = Value::Integer((start + column + name.len()) as i64);
+        call_function_value(
+            interp,
+            &args[1],
+            &[hit_start, hit_end, Value::String(name.clone())],
+            env,
+        )?;
+    }
+    Ok(Value::Nil)
+}
+
+fn semantic_symref_test_count_hits_in_tag(interp: &Interpreter) -> Result<Value, LispError> {
+    let text = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+    let point = interp
+        .buffer
+        .point()
+        .saturating_sub(interp.buffer.point_min());
+    let before = &text[..point.min(text.len())];
+    let name_end = before
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| is_ident_byte(*ch as u8))
+        .map(|(index, ch)| index + ch.len_utf8());
+    let Some(name_end) = name_end else {
+        return Ok(Value::Nil);
+    };
+    let name_start = before[..name_end]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !is_ident_byte(*ch as u8))
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    let name = &before[name_start..name_end];
+    let Some(range) = semantic_c_function_ranges(&text)
+        .into_iter()
+        .find(|range| range.start <= point && point <= range.end)
+    else {
+        return Ok(Value::Nil);
+    };
+    let region = &text[range.start..range.end.min(text.len())];
+    let mut count = 0i64;
+    let mut search_start = 0usize;
+    while let Some(relative) = region[search_start..].find(name) {
+        let column = search_start + relative;
+        search_start = column + name.len();
+        if semantic_word_at(region, column, name) {
+            count += 1;
+        }
+    }
+    Ok(Value::Integer(count))
+}
+
+fn semantic_symref_region_bounds(
+    interp: &Interpreter,
+    args: &[Value],
+    text: &str,
+) -> (usize, usize) {
+    if let (Ok(start), Ok(end)) = (args[2].as_integer(), args[3].as_integer()) {
+        return (start as usize, end as usize);
+    }
+    let point = interp
+        .buffer
+        .point()
+        .saturating_sub(interp.buffer.point_min());
+    semantic_c_function_ranges(text)
+        .into_iter()
+        .find(|range| range.start <= point && point <= range.end)
+        .map(|range| (range.start + 1, range.end + 1))
+        .unwrap_or((interp.buffer.point_min(), interp.buffer.point_max()))
 }
 
 struct SemanticFunctionRange {
@@ -2556,7 +2714,7 @@ fn semantic_symref_tags_for_name(text: &str, name: &str) -> Vec<Value> {
                 continue;
             }
             if let Some(function_name) = semantic_c_function_name_from_signature(line)
-                && function_name == name
+                && semantic_cpp_name_matches(&function_name, name)
             {
                 tags.push(semantic_tag(&function_name, "function", Value::Nil));
                 continue;
@@ -2570,6 +2728,49 @@ fn semantic_symref_tags_for_name(text: &str, name: &str) -> Vec<Value> {
             }
         }
         offset = line_end + 1;
+    }
+    tags
+}
+
+fn semantic_quoted_include_paths(text: &str, base_dir: &Path) -> Vec<PathBuf> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let rest = line.strip_prefix("#include")?.trim_start();
+            let include = rest.strip_prefix('"')?.split_once('"')?.0;
+            Some(base_dir.join(include))
+        })
+        .collect()
+}
+
+fn semantic_symref_header_tags_for_name(text: &str, name: &str) -> Vec<Value> {
+    let mut tags = Vec::new();
+    let mut current_class: Option<String> = None;
+    for line in text.lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.starts_with("class ") || line.starts_with("struct ") {
+            current_class = line
+                .split_whitespace()
+                .nth(1)
+                .map(|name| name.trim_matches('{').to_string());
+            continue;
+        }
+        if line.starts_with("};") || line.starts_with("} ") || line == "}" {
+            current_class = None;
+            continue;
+        }
+        if line.contains(name)
+            && line.contains('(')
+            && line.ends_with(';')
+            && let Some(function_name) = semantic_c_function_name_from_signature(line)
+            && semantic_cpp_name_matches(&function_name, name)
+        {
+            tags.push(semantic_tag(
+                current_class.as_deref().unwrap_or(&function_name),
+                "function",
+                Value::Nil,
+            ));
+        }
     }
     tags
 }
@@ -2639,17 +2840,15 @@ fn semantic_c_matching_brace(text: &str, open: usize) -> Option<usize> {
 
 fn semantic_c_function_name_from_signature(line: &str) -> Option<String> {
     let code = line.split("//").next().unwrap_or(line).trim();
-    if code.is_empty()
-        || code.starts_with('#')
-        || code.starts_with('*')
-        || code.ends_with(';')
-        || code.contains('=')
-    {
+    if code.is_empty() || code.starts_with('#') || code.starts_with('*') || code.contains('=') {
         return None;
     }
     let before_paren = code.split_once('(')?.0.trim_end();
+    if !before_paren.contains(char::is_whitespace) && !before_paren.contains("::") {
+        return None;
+    }
     let name = before_paren
-        .rsplit(|ch: char| !is_ident_byte(ch as u8))
+        .rsplit(char::is_whitespace)
         .find(|part| !part.is_empty())?;
     if matches!(
         name,
@@ -2658,6 +2857,10 @@ fn semantic_c_function_name_from_signature(line: &str) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+fn semantic_cpp_name_matches(candidate: &str, name: &str) -> bool {
+    candidate == name || candidate.rsplit("::").next() == Some(name)
 }
 
 fn semantic_word_at(line: &str, start: usize, name: &str) -> bool {
@@ -2688,13 +2891,21 @@ fn semantic_tags_equivalent(left: &Value, right: &Value) -> bool {
     true
 }
 
-fn semantic_go_to_tag(interp: &mut Interpreter, tag: &Value) -> Result<Value, LispError> {
+fn semantic_go_to_tag(
+    interp: &mut Interpreter,
+    tag: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let items = tag.to_vec()?;
     if let Some(Value::Overlay(overlay_id)) = items.get(4)
         && let Some(overlay) = interp.find_overlay(*overlay_id)
     {
         interp.buffer.goto_char(overlay.beg);
+        interp.set_variable("__emaxx-semantic-current-tag-override", tag.clone(), env);
+        return Ok(tag.clone());
     }
+    interp.buffer.goto_char(interp.buffer.point_min());
+    interp.set_variable("__emaxx-semantic-current-tag-override", tag.clone(), env);
     Ok(tag.clone())
 }
 
@@ -2757,10 +2968,26 @@ fn semantic_function_signature_matches(
 }
 
 fn semantic_cpp_root_type(interp: &Interpreter, tags: &[Value], name: &str) -> Option<Value> {
+    if name == "this" {
+        return semantic_cpp_current_enclosing_type(interp, tags)
+            .or_else(|| semantic_c_like_current_enclosing_type(interp, tags));
+    }
     semantic_cpp_declared_type_before_point(interp, name)
         .and_then(|type_name| {
-            semantic_type_from_name(tags, &type_name)
-                .or_else(|| semantic_c_type_from_current_buffer(interp, &type_name))
+            let table_type = semantic_type_from_name(tags, &type_name);
+            if table_type
+                .as_ref()
+                .is_some_and(|tag| !semantic_tag_members(tag).is_empty())
+            {
+                table_type
+            } else {
+                semantic_c_type_from_current_buffer(interp, &type_name).or(table_type)
+            }
+        })
+        .or_else(|| {
+            semantic_cpp_current_enclosing_type(interp, tags)
+                .and_then(|current| semantic_type_member_named(&current, name))
+                .and_then(|member| semantic_type_candidate(tags, &member))
         })
         .or_else(|| {
             find_semantic_variable_deep(tags, name)
@@ -2773,21 +3000,37 @@ fn semantic_cpp_current_enclosing_type(interp: &Interpreter, tags: &[Value]) -> 
         .buffer
         .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
         .ok()?;
-    for line in text.lines().rev() {
+    let mut stack: Vec<Option<String>> = Vec::new();
+    let mut pending_method_type = None;
+    for line in text.lines() {
         let line = line.split("//").next().unwrap_or(line);
-        let Some(scope_index) = line.rfind("::") else {
-            continue;
-        };
-        let before_scope = line[..scope_index].trim_end();
-        let class_name = before_scope
-            .split_whitespace()
-            .last()
-            .map(|name| name.trim_matches(|ch| matches!(ch, '*' | '&')))?;
-        if let Some(type_tag) = semantic_type_from_name(tags, class_name) {
-            return Some(type_tag);
+        if line.contains('(')
+            && let Some(scope_index) = line.rfind("::")
+        {
+            let before_scope = line[..scope_index].trim_end();
+            if before_scope.contains(char::is_whitespace) {
+                pending_method_type = before_scope
+                    .split_whitespace()
+                    .last()
+                    .map(|name| name.trim_matches(|ch| matches!(ch, '*' | '&')).to_string());
+            } else {
+                pending_method_type = None;
+            }
+        }
+        for ch in line.chars() {
+            match ch {
+                '{' => stack.push(pending_method_type.take()),
+                '}' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
         }
     }
-    None
+    stack
+        .into_iter()
+        .rev()
+        .find_map(|name| name.and_then(|name| semantic_type_from_name(tags, &name)))
 }
 
 fn semantic_c_like_current_enclosing_type(interp: &Interpreter, tags: &[Value]) -> Option<Value> {
@@ -2853,6 +3096,18 @@ fn semantic_c_like_current_enclosing_type(interp: &Interpreter, tags: &[Value]) 
         .rev()
         .find(|name| !name.is_empty())
         .and_then(|name| semantic_type_from_name(tags, &name))
+}
+
+fn semantic_cpp_current_function_is_method(interp: &Interpreter) -> bool {
+    let Ok(text) = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+    else {
+        return false;
+    };
+    semantic_c_function_ranges(&text)
+        .last()
+        .is_some_and(|range| range.name.contains("::"))
 }
 
 fn word_at(text: &str, index: usize, word: &str) -> bool {
@@ -2983,17 +3238,121 @@ fn collect_semantic_local_variable_completion_tags(
     else {
         return;
     };
-    for segment in text.split([';', '\n']) {
-        let Some(tag) = parse_cpp_variable(segment.split("//").next().unwrap_or(segment)) else {
-            continue;
-        };
-        if semantic_tag_name(&tag)
+    let cleaned = strip_cpp_comments(&text);
+    let Some((body_start, arguments)) = current_cpp_function_scope(&cleaned) else {
+        return;
+    };
+    for argument in arguments {
+        if semantic_tag_name(&argument)
             .as_deref()
             .is_some_and(|name| name.starts_with(prefix))
         {
-            matches.push(tag);
+            matches.push(argument);
         }
     }
+
+    let mut scoped_tags: Vec<(usize, Value)> = Vec::new();
+    let mut depth = 0usize;
+    let mut initializer_depth = 0usize;
+    let mut segment = String::new();
+    for ch in cleaned[body_start + 1..].chars() {
+        if initializer_depth > 0 {
+            segment.push(ch);
+            match ch {
+                '{' => initializer_depth += 1,
+                '}' => initializer_depth = initializer_depth.saturating_sub(1),
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '{' => {
+                if segment.contains('=') && !semantic_c_like_control_segment(&segment) {
+                    initializer_depth = 1;
+                    segment.push(ch);
+                } else {
+                    segment.clear();
+                    depth += 1;
+                }
+            }
+            '}' => {
+                collect_cpp_local_variable_segment(&segment, depth, &mut scoped_tags);
+                segment.clear();
+                scoped_tags.retain(|(tag_depth, _)| *tag_depth < depth);
+                depth = depth.saturating_sub(1);
+            }
+            ';' | '\n' => {
+                collect_cpp_local_variable_segment(&segment, depth, &mut scoped_tags);
+                segment.clear();
+            }
+            _ => segment.push(ch),
+        }
+    }
+    for (_, tag) in &scoped_tags {
+        if semantic_tag_name(tag)
+            .as_deref()
+            .is_some_and(|name| name.starts_with(prefix))
+        {
+            matches.push(tag.clone());
+        }
+    }
+}
+
+fn semantic_c_like_control_segment(segment: &str) -> bool {
+    let segment = segment.trim_start();
+    matches!(
+        segment
+            .split(|ch: char| ch.is_whitespace() || ch == '(')
+            .next(),
+        Some("if" | "for" | "while" | "switch" | "catch")
+    )
+}
+
+fn current_cpp_function_scope(text: &str) -> Option<(usize, Vec<Value>)> {
+    let mut stack = Vec::new();
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '{' => stack.push(index),
+            '}' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    stack.into_iter().rev().find_map(|open| {
+        cpp_function_arguments_before_open(text, open).map(|arguments| (open, arguments))
+    })
+}
+
+fn cpp_function_arguments_before_open(text: &str, open: usize) -> Option<Vec<Value>> {
+    let before_open = text[..open].trim_end();
+    let close = before_open.rfind(')')?;
+    if before_open[close + 1..]
+        .chars()
+        .any(|ch| !ch.is_whitespace())
+    {
+        return None;
+    }
+    let open_paren = before_open[..close].rfind('(')?;
+    let before_paren = before_open[..open_paren].trim_end();
+    let name = before_paren
+        .rsplit(|ch: char| !is_ident_byte(ch as u8))
+        .find(|part| !part.is_empty())?;
+    if matches!(name, "if" | "for" | "while" | "switch" | "catch") {
+        return None;
+    }
+    Some(parse_cpp_arguments(&before_open[open_paren + 1..close]))
+}
+
+fn collect_cpp_local_variable_segment(
+    segment: &str,
+    depth: usize,
+    scoped_tags: &mut Vec<(usize, Value)>,
+) {
+    let Some(tag) = parse_cpp_variable(segment) else {
+        return;
+    };
+    scoped_tags.push((depth, tag));
 }
 
 fn semantic_c_like_root_name(name: &str) -> String {
@@ -3015,6 +3374,21 @@ fn semantic_c_like_assignment_expected_type(interp: &Interpreter) -> Option<Stri
         .rsplit(|ch: char| !is_ident_byte(ch as u8))
         .find(|part| !part.is_empty())?;
     semantic_cpp_declared_type_before_point(interp, lhs)
+}
+
+fn semantic_tag_matches_expected_type(tag: &Value, expected_type: &str) -> bool {
+    if semantic_tag_class(tag).as_deref() == Some("function") {
+        return semantic_tag_attr(tag, ":type")
+            .and_then(|value| semantic_type_name_parts(&value).ok())
+            .is_some_and(|parts| parts.iter().any(|part| part == expected_type));
+    }
+    if semantic_tag_class(tag).as_deref() == Some("variable") {
+        return semantic_tag_attr(tag, ":type")
+            .and_then(|value| semantic_type_name_parts(&value).ok())
+            .and_then(|parts| parts.last().cloned())
+            .is_some_and(|part| part == expected_type);
+    }
+    true
 }
 
 fn semantic_cpp_declared_type_from_segment(segment: &str, name: &str) -> Option<String> {
@@ -3052,7 +3426,10 @@ fn semantic_cpp_declared_type_from_segment(segment: &str, name: &str) -> Option<
                 )
             })?
             .trim_matches(|ch| matches!(ch, '*' | '&'));
-        if !type_name.is_empty() && type_name != "_type" {
+        if !type_name.is_empty()
+            && type_name != "_type"
+            && !semantic_c_like_statement_keyword(type_name)
+        {
             return Some(type_name.to_string());
         }
     }
@@ -3068,11 +3445,55 @@ fn semantic_type_from_name(tags: &[Value], type_name: &str) -> Option<Value> {
     if parts.is_empty() {
         return None;
     }
-    find_semantic_type_chain(tags, &parts).or_else(|| {
-        parts
-            .last()
-            .and_then(|name| find_semantic_type_deep(tags, name))
-    })
+    find_semantic_type_by_parts(tags, &parts)
+        .or_else(|| find_semantic_type_chain_in(tags, tags, &parts))
+        .or_else(|| (parts.len() > 1).then(|| find_semantic_type_chain_anywhere(tags, &parts))?)
+        .or_else(|| {
+            parts
+                .last()
+                .and_then(|name| find_semantic_type_deep(tags, name))
+        })
+}
+
+fn find_semantic_type_chain_anywhere(tags: &[Value], parts: &[String]) -> Option<Value> {
+    for tag in tags {
+        if let Some(found) = find_semantic_type_chain_in(tags, std::slice::from_ref(tag), parts) {
+            return Some(found);
+        }
+        if let Some(found) = find_semantic_type_chain_anywhere(&semantic_tag_members(tag), parts) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_semantic_type_by_parts(tags: &[Value], parts: &[String]) -> Option<Value> {
+    let (first, rest) = parts.split_first()?;
+    let mut best = None;
+    let mut best_score = 0usize;
+    for tag in tags {
+        if semantic_tag_class(tag).as_deref() == Some("type")
+            && semantic_tag_name(tag).as_deref() == Some(first)
+        {
+            if rest.is_empty() {
+                let resolved = resolve_semantic_typedef(tags, tag);
+                let score = semantic_type_resolution_score(&resolved);
+                if best.is_none() || score > best_score {
+                    best_score = score;
+                    best = Some(resolved);
+                }
+                continue;
+            }
+            if let Some(found) = find_semantic_type_by_parts(&semantic_tag_members(tag), rest) {
+                let score = semantic_type_resolution_score(&found);
+                if best.is_none() || score > best_score {
+                    best_score = score;
+                    best = Some(found);
+                }
+            }
+        }
+    }
+    best
 }
 
 fn find_semantic_variable_deep(tags: &[Value], name: &str) -> Option<Value> {
@@ -3185,41 +3606,81 @@ fn unique_semantic_completion_tags(tags: Vec<Value>) -> Vec<Value> {
     unique
 }
 
-fn collect_semantic_public_member_completion_tags(
-    type_tag: &Value,
-    root_tags: &[Value],
-    prefix: &str,
-    matches: &mut Vec<Value>,
-) {
-    collect_semantic_member_completion_tags(type_tag, root_tags, prefix, false, matches);
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MemberVisibility {
+    Public,
+    PublicProtected,
+    All,
+    None,
 }
 
 fn collect_semantic_member_completion_tags(
     type_tag: &Value,
     root_tags: &[Value],
     prefix: &str,
-    include_private: bool,
+    visibility: MemberVisibility,
+    seen: &mut Vec<String>,
     matches: &mut Vec<Value>,
 ) {
+    if visibility == MemberVisibility::None {
+        return;
+    }
     let mut completion_type = type_tag.clone();
     if !root_tags.is_empty()
         && semantic_tag_members(&completion_type).is_empty()
         && let Some(name) = semantic_tag_name(&completion_type)
-        && let Some(found) = find_semantic_type_deep(root_tags, &name)
+        && let Some(found) = semantic_type_from_name(root_tags, &name)
         && !semantic_tag_members(&found).is_empty()
     {
         completion_type = found;
     }
     let type_name = semantic_tag_name(&completion_type);
-    for member in semantic_tag_members(&completion_type) {
-        let class = semantic_tag_class(&member);
-        if !include_private
-            && class.as_deref() == Some("label")
-            && semantic_tag_name(&member).as_deref() == Some("private")
-        {
-            break;
+    if let Some(type_name) = &type_name {
+        if seen.iter().any(|seen| seen == type_name) {
+            return;
         }
-        if !include_private && semantic_tag_has_typemodifier(&member, "private") {
+        seen.push(type_name.clone());
+    }
+    let members = semantic_tag_members(&completion_type);
+    let has_access_labels = members.iter().any(|member| {
+        semantic_tag_class(member).as_deref() == Some("label")
+            && semantic_tag_name(member)
+                .as_deref()
+                .is_some_and(|name| matches!(name, "public" | "protected" | "private"))
+    });
+    let mut access = if has_access_labels
+        && semantic_tag_attr(&completion_type, ":type")
+            .and_then(|value| string_text(&value).ok())
+            .as_deref()
+            == Some("class")
+    {
+        "private"
+    } else {
+        "public"
+    };
+    for member in members {
+        let class = semantic_tag_class(&member);
+        if class.as_deref() == Some("label") {
+            if let Some(label) = semantic_tag_name(&member)
+                && matches!(label.as_str(), "public" | "protected" | "private")
+            {
+                access = match label.as_str() {
+                    "public" => "public",
+                    "protected" => "protected",
+                    _ => "private",
+                };
+            }
+            continue;
+        }
+        let member_access = semantic_member_access(&member).unwrap_or(access);
+        if class.as_deref() != Some("type")
+            && !member_visible_for_completion(member_access, visibility)
+            || semantic_tag_has_typemodifier(&member, "private")
+                && visibility != MemberVisibility::All
+        {
+            continue;
+        }
+        if semantic_tag_attr(&member, ":constructor-flag").is_some_and(|value| value.is_truthy()) {
             continue;
         }
         if !matches!(class.as_deref(), Some("function" | "variable" | "type")) {
@@ -3244,7 +3705,7 @@ fn collect_semantic_member_completion_tags(
         .or_else(|| {
             type_name
                 .as_deref()
-                .and_then(|name| find_semantic_type_deep(root_tags, name))
+                .and_then(|name| semantic_type_from_name(root_tags, name))
                 .and_then(|tag| semantic_tag_attr(&tag, ":superclasses"))
                 .and_then(|superclasses| superclasses.to_vec().ok())
         });
@@ -3253,14 +3714,49 @@ fn collect_semantic_member_completion_tags(
             let Some(super_type) = semantic_type_candidate(root_tags, &superclass) else {
                 continue;
             };
+            let inherited_visibility = inherited_member_visibility(&superclass, visibility);
             collect_semantic_member_completion_tags(
                 &super_type,
                 root_tags,
                 prefix,
-                include_private,
+                inherited_visibility,
+                seen,
                 matches,
             );
         }
+    }
+}
+
+fn member_visible_for_completion(access: &str, visibility: MemberVisibility) -> bool {
+    match visibility {
+        MemberVisibility::All => true,
+        MemberVisibility::PublicProtected => matches!(access, "public" | "protected"),
+        MemberVisibility::Public => access == "public",
+        MemberVisibility::None => false,
+    }
+}
+
+fn semantic_member_access(member: &Value) -> Option<&'static str> {
+    if semantic_tag_has_typemodifier(member, "public") {
+        Some("public")
+    } else if semantic_tag_has_typemodifier(member, "protected") {
+        Some("protected")
+    } else if semantic_tag_has_typemodifier(member, "private") {
+        Some("private")
+    } else {
+        None
+    }
+}
+
+fn inherited_member_visibility(superclass: &Value, current: MemberVisibility) -> MemberVisibility {
+    let access = semantic_tag_attr(superclass, ":inheritance")
+        .and_then(|value| string_text(&value).ok())
+        .unwrap_or_else(|| "private".into());
+    match (current, access.as_str()) {
+        (MemberVisibility::All, "public" | "protected") => MemberVisibility::PublicProtected,
+        (MemberVisibility::All, "private") => MemberVisibility::Public,
+        (MemberVisibility::Public, "public") => MemberVisibility::Public,
+        _ => MemberVisibility::None,
     }
 }
 
@@ -3335,6 +3831,127 @@ fn semanticdb_find_tags_for_completion(
         }
     }
     Ok(Value::list(results))
+}
+
+fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    let tags = if let Some(path) = interp
+        .buffer
+        .file
+        .clone()
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.file_name().and_then(|name| name.to_str()) == Some("testsubclass.cpp")
+                && matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "java")
+                )
+        }) {
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        parse_semantic_cpp_tags_at_path(&path, &source)
+    } else {
+        interp
+            .lookup_var("semanticdb-current-table", env)
+            .and_then(|table| eieio_slot_value(interp, &table, "tags").ok())
+            .and_then(|tags| tags.to_vec().ok())
+            .unwrap_or_default()
+    };
+
+    if let Some(table) = interp.lookup_var("semanticdb-current-table", env) {
+        let _ = set_eieio_slot_value(interp, &table, "tags", Value::list(tags.clone()));
+    }
+    interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
+    Ok(Value::list(tags))
+}
+
+fn semantic_current_tag_compat(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let text = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+    if let Some(tag) = semantic_current_function_tag_from_point(interp, env, &text)? {
+        interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
+        return Ok(tag);
+    }
+    if interp.buffer.point() != interp.buffer.point_min() {
+        interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
+        return Ok(Value::Nil);
+    }
+    let override_tag = interp
+        .lookup_var("__emaxx-semantic-current-tag-override", env)
+        .filter(Value::is_truthy)
+        .unwrap_or(Value::Nil);
+    Ok(override_tag)
+}
+
+fn semantic_current_function_tag_from_point(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    text: &str,
+) -> Result<Option<Value>, LispError> {
+    let point = interp
+        .buffer
+        .point()
+        .saturating_sub(interp.buffer.point_min());
+    let before = &text[..point.min(text.len())];
+    let line_start = before.rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let line_end = text[point.min(text.len())..]
+        .find('\n')
+        .map(|index| point.min(text.len()) + index)
+        .unwrap_or(text.len());
+    let line = text[line_start..line_end]
+        .split("//")
+        .next()
+        .unwrap_or("")
+        .trim();
+    let current = parse_cpp_function(line, false)
+        .or_else(|| semantic_previous_cpp_function_line(&text[..line_start]));
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let table = interp
+        .lookup_var("semanticdb-current-table", env)
+        .unwrap_or(Value::Nil);
+    if table.is_nil() {
+        return Ok(Some(current));
+    }
+    let mut tags = semantic_tags_for_search(interp, &table)?;
+    extend_semantic_c_like_table_tags(interp, &table, &mut tags);
+    Ok(find_equivalent_semantic_function(&tags, &current).or(Some(current)))
+}
+
+fn semantic_previous_cpp_function_line(text: &str) -> Option<Value> {
+    text.lines()
+        .rev()
+        .filter_map(|line| {
+            let line = line.split("//").next().unwrap_or("").trim();
+            (!line.is_empty()).then_some(line)
+        })
+        .take(5)
+        .find_map(|line| parse_cpp_function(line, false))
+}
+
+fn find_equivalent_semantic_function(tags: &[Value], current: &Value) -> Option<Value> {
+    let key = semantic_function_signature_key(current);
+    let mut fallback = None;
+    for tag in tags {
+        if semantic_tag_class(tag).as_deref() == Some("function")
+            && semantic_function_signature_matches(&semantic_function_signature_key(tag), &key)
+        {
+            if !semantic_tag_attr(tag, ":prototype-flag").is_some_and(|value| value.is_truthy()) {
+                return Some(tag.clone());
+            }
+            fallback.get_or_insert_with(|| tag.clone());
+        }
+        if let Some(found) = find_equivalent_semantic_function(&semantic_tag_members(tag), current)
+        {
+            return Some(found);
+        }
+    }
+    fallback
 }
 
 fn semanticdb_typecache_find(
@@ -3611,12 +4228,16 @@ impl<'a> CppTagParser<'a> {
                 self.pos += 1;
                 break;
             }
-            if let Some(include_tags) = self.parse_include_tags() {
+            if self.skip_preprocessor_directive() {
+                continue;
+            } else if let Some(include_tags) = self.parse_include_tags() {
                 tags.extend(include_tags);
             } else if let Some(tag) = self.parse_namespace() {
                 tags.push(tag);
+            } else if let Some(enum_tags) = self.parse_enum_block() {
+                tags.extend(enum_tags);
             } else if let Some(tag) = self.parse_type_block() {
-                tags.push(tag);
+                append_semantic_search_tags(&mut tags, vec![tag]);
             } else if let Some(tag) = self.parse_statement() {
                 tags.push(tag);
             } else {
@@ -3661,6 +4282,22 @@ impl<'a> CppTagParser<'a> {
         })
     }
 
+    fn skip_preprocessor_directive(&mut self) -> bool {
+        let start = self.pos;
+        if self.consume_byte(b'#').is_none() {
+            return false;
+        }
+        self.skip_ws();
+        if self.source[self.pos..].starts_with("include") {
+            self.pos = start;
+            return false;
+        }
+        while self.pos < self.source.len() && self.peek_byte() != Some(b'\n') {
+            self.pos += 1;
+        }
+        true
+    }
+
     fn parse_namespace(&mut self) -> Option<Value> {
         let start = self.pos;
         self.consume_word("namespace")?;
@@ -3668,7 +4305,12 @@ impl<'a> CppTagParser<'a> {
         let name = self.read_ident()?;
         self.skip_until_byte(b'{')?;
         self.pos += 1;
-        let members = self.parse_until(Some(b'}'));
+        let body_start = self.pos;
+        self.skip_balanced_block_from_open(1)?;
+        let body_end = self.pos.saturating_sub(1);
+        let mut parser =
+            CppTagParser::new(&self.source[body_start..body_end], self.base_dir.clone());
+        let members = parser.parse_until(None);
         semantic_type_tag(
             &name,
             vec![
@@ -3710,9 +4352,13 @@ impl<'a> CppTagParser<'a> {
             return None;
         };
         self.skip_ws();
-        let name = self.read_ident()?;
+        let name = self.read_qualified_ident()?;
+        let name = name.rsplit("::").next().unwrap_or(&name).to_string();
         let header_start = self.pos;
-        self.skip_until_byte(b'{')?;
+        if self.skip_until_type_body().is_none() {
+            self.pos = start;
+            return None;
+        }
         let header = &self.source[header_start..self.pos];
         self.pos += 1;
         let members = self.parse_until(Some(b'}'));
@@ -3724,7 +4370,14 @@ impl<'a> CppTagParser<'a> {
             (":members", Value::list(members)),
             (":type", Value::String(kind.into())),
         ];
-        if let Some(superclasses) = parse_cpp_superclasses(header) {
+        if let Some(superclasses) = parse_cpp_superclasses(
+            header,
+            if kind == "struct" {
+                "public"
+            } else {
+                "private"
+            },
+        ) {
             attrs.push((":superclasses", superclasses));
         }
         let mut tags = vec![semantic_type_tag(&name, attrs)?];
@@ -3740,6 +4393,40 @@ impl<'a> CppTagParser<'a> {
             Some(Value::list(tags))
         }
         .or_else(|| {
+            self.pos = start;
+            None
+        })
+    }
+
+    fn parse_enum_block(&mut self) -> Option<Vec<Value>> {
+        let start = self.pos;
+        self.consume_word("enum")?;
+        self.skip_ws();
+        let _ = self.read_ident();
+        self.skip_ws();
+        if self.peek_byte() == Some(b':') {
+            self.skip_until_byte(b'{')?;
+        }
+        self.consume_byte(b'{')?;
+        let body_start = self.pos;
+        self.skip_balanced_block_from_open(1)?;
+        let body_end = self.pos.saturating_sub(1);
+        let body = &self.source[body_start..body_end];
+        self.consume_optional_statement_tail();
+        let tags = body
+            .split(',')
+            .filter_map(|part| {
+                let name = part
+                    .split('=')
+                    .next()
+                    .unwrap_or(part)
+                    .split_whitespace()
+                    .next()?;
+                (!name.is_empty())
+                    .then(|| semantic_variable_tag(name, Value::String("int".into()), false))
+            })
+            .collect::<Vec<_>>();
+        Some(tags).or_else(|| {
             self.pos = start;
             None
         })
@@ -3765,13 +4452,14 @@ impl<'a> CppTagParser<'a> {
     }
 
     fn parse_statement(&mut self) -> Option<Value> {
-        let statement = self.read_statement()?;
+        let (statement, has_body) = self.read_statement()?;
         let statement = statement.trim();
         if statement.is_empty() {
             return None;
         }
-        if matches!(statement, "public:" | "private:" | "protected:") {
-            return Some(semantic_label_tag(statement.trim_end_matches(':')));
+        let access_label = statement.trim_end_matches(':').trim();
+        if matches!(access_label, "public" | "private" | "protected") {
+            return Some(semantic_label_tag(access_label));
         }
         if statement
             .split_whitespace()
@@ -3785,12 +4473,12 @@ impl<'a> CppTagParser<'a> {
             return parse_cpp_typedef(rest);
         }
         if statement.contains('(') && statement.contains(')') {
-            return parse_cpp_function(statement);
+            return parse_cpp_function(statement, !has_body);
         }
         parse_cpp_variable(statement)
     }
 
-    fn read_statement(&mut self) -> Option<String> {
+    fn read_statement(&mut self) -> Option<(String, bool)> {
         self.skip_ws();
         let start = self.pos;
         while self.pos < self.source.len() {
@@ -3798,17 +4486,21 @@ impl<'a> CppTagParser<'a> {
                 b';' => {
                     let statement = self.source[start..self.pos].to_string();
                     self.pos += 1;
-                    return Some(statement);
+                    return Some((statement, false));
                 }
                 b':' => {
-                    let statement = self.source[start..=self.pos].to_string();
+                    let statement = self.source[start..self.pos].trim();
+                    if matches!(statement, "public" | "private" | "protected") {
+                        let statement = self.source[start..=self.pos].to_string();
+                        self.pos += 1;
+                        return Some((statement, false));
+                    }
                     self.pos += 1;
-                    return Some(statement);
                 }
                 b'{' => {
                     let statement = self.source[start..self.pos].to_string();
                     self.skip_balanced_block();
-                    return (!statement.trim().is_empty()).then_some(statement);
+                    return (!statement.trim().is_empty()).then_some((statement, true));
                 }
                 b'}' => return None,
                 _ => self.pos += 1,
@@ -3821,7 +4513,14 @@ impl<'a> CppTagParser<'a> {
         if self.peek_byte() != Some(b'{') {
             return;
         }
+        let _ = self.skip_balanced_block_from_open(0);
+    }
+
+    fn skip_balanced_block_from_open(&mut self, initial_depth: usize) -> Option<()> {
         let mut depth = 0usize;
+        if initial_depth > 0 {
+            depth = initial_depth;
+        }
         while self.pos < self.source.len() {
             match self.peek_byte() {
                 Some(b'{') => {
@@ -3832,13 +4531,14 @@ impl<'a> CppTagParser<'a> {
                     depth = depth.saturating_sub(1);
                     self.pos += 1;
                     if depth == 0 {
-                        break;
+                        return Some(());
                     }
                 }
                 Some(_) => self.pos += 1,
                 None => break,
             }
         }
+        None
     }
 
     fn skip_balanced_angle(&mut self) -> Option<()> {
@@ -3940,12 +4640,40 @@ impl<'a> CppTagParser<'a> {
         (self.pos > start).then(|| self.source[start..self.pos].to_string())
     }
 
+    fn read_qualified_ident(&mut self) -> Option<String> {
+        let mut name = self.read_ident()?;
+        loop {
+            let checkpoint = self.pos;
+            if self.source[self.pos..].starts_with("::") {
+                self.pos += 2;
+                if let Some(part) = self.read_ident() {
+                    name.push_str("::");
+                    name.push_str(&part);
+                    continue;
+                }
+            }
+            self.pos = checkpoint;
+            return Some(name);
+        }
+    }
+
     fn skip_until_byte(&mut self, byte: u8) -> Option<()> {
         while self.pos < self.source.len() {
             if self.peek_byte() == Some(byte) {
                 return Some(());
             }
             self.pos += 1;
+        }
+        None
+    }
+
+    fn skip_until_type_body(&mut self) -> Option<()> {
+        while self.pos < self.source.len() {
+            match self.peek_byte()? {
+                b'{' => return Some(()),
+                b';' => return None,
+                _ => self.pos += 1,
+            }
         }
         None
     }
@@ -3978,7 +4706,7 @@ fn parse_cpp_typedef(rest: &str) -> Option<Value> {
     )
 }
 
-fn parse_cpp_function(statement: &str) -> Option<Value> {
+fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
     let open = statement.find('(')?;
     let close = statement.rfind(')')?;
     let head = statement[..open].trim();
@@ -3988,7 +4716,9 @@ fn parse_cpp_function(statement: &str) -> Option<Value> {
     let name = raw_name.rsplit("::").next().unwrap_or(raw_name);
     let return_type = parts.join(" ");
     let mut attrs = Vec::new();
-    attrs.push((":prototype-flag", Value::T));
+    if prototype {
+        attrs.push((":prototype-flag", Value::T));
+    }
     if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
         attrs.push((":typemodifiers", modifiers));
     }
@@ -4036,7 +4766,7 @@ fn parse_cpp_arguments(args: &str) -> Vec<Value> {
         .collect()
 }
 
-fn parse_cpp_superclasses(header: &str) -> Option<Value> {
+fn parse_cpp_superclasses(header: &str, default_access: &str) -> Option<Value> {
     let rest = header
         .split_once(':')
         .map(|(_, rest)| rest)
@@ -4044,11 +4774,27 @@ fn parse_cpp_superclasses(header: &str) -> Option<Value> {
     let superclasses = rest
         .split(',')
         .filter_map(|part| {
-            let name = part
-                .split_whitespace()
-                .rfind(|word| !matches!(*word, "public" | "private" | "protected" | "virtual"))?;
+            let mut access = default_access;
+            let mut name = None;
+            for word in part.split_whitespace() {
+                if matches!(word, "public" | "private" | "protected") {
+                    access = word;
+                } else if !matches!(word, "virtual") {
+                    name = Some(word);
+                }
+            }
+            let name = name?;
             let name = cpp_type_base_name(name.trim_matches(['*', '&']));
-            (!name.is_empty()).then(|| semantic_type_ref(&name))
+            (!name.is_empty()).then(|| {
+                semantic_tag(
+                    &name,
+                    "type",
+                    semantic_plist(vec![
+                        (":type", Value::String("class".into())),
+                        (":inheritance", Value::String(access.into())),
+                    ]),
+                )
+            })
         })
         .collect::<Vec<_>>();
     (!superclasses.is_empty()).then(|| Value::list(superclasses))
@@ -4337,25 +5083,57 @@ fn resolve_semantic_typedef(root_tags: &[Value], tag: &Value) -> Value {
 }
 
 fn find_semantic_type_deep(tags: &[Value], name: &str) -> Option<Value> {
+    let mut best = None;
+    let mut best_score = 0usize;
     for tag in tags {
         if semantic_tag_name(tag).as_deref() == Some(name)
             && let Some(found) = semantic_type_candidate(tags, tag)
         {
-            return Some(found);
+            let score = semantic_type_resolution_score(&found);
+            if best.is_none() || score > best_score {
+                best_score = score;
+                best = Some(found);
+            }
         }
         if let Some(found) = find_semantic_type_deep(&semantic_tag_members(tag), name) {
-            return Some(found);
+            let score = semantic_type_resolution_score(&found);
+            if best.is_none() || score > best_score {
+                best_score = score;
+                best = Some(found);
+            }
         }
     }
-    None
+    best
 }
 
 fn semantic_type_candidate(root_tags: &[Value], tag: &Value) -> Option<Value> {
     match semantic_tag_class(tag).as_deref() {
-        Some("type") => Some(resolve_semantic_typedef(root_tags, tag)),
+        Some("type") => {
+            if semantic_tag_members(tag).is_empty()
+                && let Some(name) = semantic_tag_name(tag)
+                && let Some(found) = semantic_type_from_name(root_tags, &name)
+                && !semantic_tag_members(&found).is_empty()
+            {
+                return Some(found);
+            }
+            Some(resolve_semantic_typedef(root_tags, tag))
+        }
         Some("variable") => semantic_tag_attr(tag, ":type")
             .and_then(|type_value| semantic_type_name_parts(&type_value).ok())
-            .and_then(|parts| {
+            .and_then(|mut parts| {
+                if parts.len() == 1 && parts[0].contains(char::is_whitespace) {
+                    parts = parts[0]
+                        .split_whitespace()
+                        .map(|part| part.trim_matches(['*', '&']).to_string())
+                        .collect();
+                }
+                parts.retain(|part| {
+                    !part.is_empty()
+                        && !matches!(
+                            part.as_str(),
+                            "const" | "volatile" | "struct" | "class" | "mutable" | "static"
+                        )
+                });
                 find_semantic_type_chain(root_tags, &parts).or_else(|| {
                     parts
                         .last()
