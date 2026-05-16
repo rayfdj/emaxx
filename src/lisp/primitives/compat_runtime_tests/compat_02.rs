@@ -143,6 +143,35 @@ fn advice_add_supports_around_message_builtin() {
 }
 
 #[test]
+fn advice_add_accepts_forward_referenced_advice_symbol() {
+    let forms = Reader::new(
+        "(progn
+           (defun sample-forward-target () 'original)
+           (advice-add 'sample-forward-target :around #'sample-forward-advice)
+           (defun sample-forward-advice (orig &rest args)
+             (list 'wrapped (apply orig args)))
+           (sample-forward-target))",
+    )
+    .read_all()
+    .expect("forward advice test should parse");
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let mut result = Value::Nil;
+    for form in forms {
+        result = interp
+            .eval(&form, &mut env)
+            .expect("forward advice symbol should resolve when invoked");
+    }
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("wrapped".into()),
+            Value::Symbol("original".into()),
+        ])
+    );
+}
+
+#[test]
 fn funcall_message_builtin_from_lambda() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

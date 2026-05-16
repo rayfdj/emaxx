@@ -15,6 +15,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "signal"
             | "throw"
             | "define-error"
+            | "define-fringe-bitmap"
             | "intern"
             | "intern-soft"
             | "unintern"
@@ -66,6 +67,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "pcase--mutually-exclusive-p"
             | "make-obsolete"
             | "make-obsolete-variable"
+            | "define-obsolete-face-alias"
             | "define-obsolete-function-alias"
             | "macroexp-warn-and-return"
             | "describe-function"
@@ -236,6 +238,7 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(args[0].clone())
         }
+        "define-fringe-bitmap" => Ok(Value::Nil),
         "intern" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -899,9 +902,10 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
-        "make-obsolete" | "make-obsolete-variable" | "define-obsolete-function-alias" => {
-            Ok(Value::Nil)
-        }
+        "make-obsolete"
+        | "make-obsolete-variable"
+        | "define-obsolete-face-alias"
+        | "define-obsolete-function-alias" => Ok(Value::Nil),
         "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
         "describe-function" => {
             let _ = get_or_create_buffer(interp, "*Help*");

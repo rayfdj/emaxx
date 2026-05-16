@@ -232,7 +232,9 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),
-        "syntax-propertize-rules" => Some(builtin_macro_autoload("syntax")),
+        "syntax-propertize-precompile-rules" | "syntax-propertize-rules" => {
+            Some(builtin_macro_autoload("syntax"))
+        }
         "with-connection-local-application-variables" => Some(builtin_macro_autoload("files-x")),
         "with-connection-local-variables" => Some(builtin_macro_autoload("files-x")),
         "with-connection-local-variables-1" => Some(builtin_file_autoload("files-x", Value::Nil)),

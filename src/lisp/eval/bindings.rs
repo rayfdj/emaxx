@@ -220,6 +220,9 @@ impl Interpreter {
             }
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
+            "text-mode-map" => Some(primitives::keymap_placeholder(Some("text-mode-map"))),
+            "tex-mode-map" => Some(primitives::keymap_placeholder(Some("tex-mode-map"))),
+            "texinfo-mode-map" => Some(primitives::keymap_placeholder(Some("texinfo-mode-map"))),
             "special-mode-map" => Some(primitives::keymap_placeholder(Some("special-mode-map"))),
             "global-map" => Some(primitives::keymap_placeholder(Some("global-map"))),
             "frame-internal-parameters" => Some(Value::Nil),
