@@ -4628,6 +4628,8 @@ impl<'a> CppTagParser<'a> {
                 tags.extend(include_tags);
             } else if let Some(tag) = self.parse_namespace() {
                 tags.push(tag);
+            } else if let Some(tag) = self.parse_typedef_type_block() {
+                append_semantic_search_tags(&mut tags, vec![tag]);
             } else if let Some(enum_tags) = self.parse_enum_block() {
                 tags.extend(enum_tags);
             } else if let Some(tag) = self.parse_type_block() {
@@ -4792,6 +4794,91 @@ impl<'a> CppTagParser<'a> {
         } else {
             Some(Value::list(tags))
         }
+        .or_else(|| {
+            self.pos = start;
+            None
+        })
+    }
+
+    fn parse_typedef_type_block(&mut self) -> Option<Value> {
+        let start = self.pos;
+        self.consume_word("typedef")?;
+        self.skip_ws();
+        let kind = if self.consume_word("struct").is_some() {
+            "struct"
+        } else if self.consume_word("class").is_some() {
+            "class"
+        } else if self.consume_word("enum").is_some() {
+            "enum"
+        } else {
+            self.pos = start;
+            return None;
+        };
+        self.skip_ws();
+        let original_name = self.read_qualified_ident();
+        self.skip_ws();
+        if self.consume_byte(b'{').is_none() {
+            self.pos = start;
+            return None;
+        }
+        let body_start = self.pos;
+        self.skip_balanced_block_from_open(1)?;
+        let body_end = self.pos.saturating_sub(1);
+        let body = &self.source[body_start..body_end];
+        let members = if kind == "enum" {
+            body.split(',')
+                .filter_map(|part| {
+                    let name = part
+                        .split('=')
+                        .next()
+                        .unwrap_or(part)
+                        .split_whitespace()
+                        .next()?;
+                    (!name.is_empty())
+                        .then(|| semantic_variable_tag(name, Value::String("int".into()), false))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let mut parser = CppTagParser::new(body, self.base_dir.clone());
+            parser.parse_until(None)
+        };
+        let alias = self.read_trailing_decl_name()?;
+        self.consume_optional_statement_tail();
+        let mut tags = Vec::new();
+        if let Some(original_name) = original_name.filter(|name| !name.is_empty()) {
+            let original_name = original_name
+                .rsplit("::")
+                .next()
+                .unwrap_or(&original_name)
+                .to_string();
+            tags.push(semantic_type_tag(
+                &original_name,
+                vec![
+                    (":members", Value::list(members)),
+                    (":type", Value::String(kind.into())),
+                ],
+            )?);
+            tags.push(semantic_type_tag(
+                &alias,
+                vec![
+                    (":typedef", semantic_type_ref(&original_name)),
+                    (":type", Value::String("typedef".into())),
+                ],
+            )?);
+        } else {
+            tags.push(semantic_type_tag(
+                &alias,
+                vec![
+                    (":members", Value::list(members)),
+                    (":type", Value::String(kind.into())),
+                ],
+            )?);
+        }
+        Some(if tags.len() == 1 {
+            tags.pop().unwrap_or(Value::Nil)
+        } else {
+            Value::list(tags)
+        })
         .or_else(|| {
             self.pos = start;
             None
