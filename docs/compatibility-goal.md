@@ -19,16 +19,16 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 392/7080 have been committed and pushed.
+- Tests through 393/7080 have been committed and pushed.
 - The latest pushed compatibility commit is
-  `Compat 392/7080: parse Semantic typedef structs`.
+  `Compat 393/7080: resolve Semantic using aliases`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split and confirmed passing. The
   `todo-test-multiline-item-indentation-2` selector hit a filesystem sandbox
   EPERM during the replay and passed when rerun outside the sandbox.
-- After the 392 C/C++ typedef-struct parsing changes, Semantic IA selectors
-  380..392 were rerun sequentially.
-- Resume compatibility advancement at test 393/7080.
+- After the 393 C++ `using` and namespace-alias resolution changes, Semantic IA
+  selectors 380..393 were rerun sequentially.
+- Resume compatibility advancement at test 394/7080.
 
 ## Workflow
 
