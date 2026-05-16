@@ -2527,6 +2527,9 @@ fn semantic_analyze_possible_completions(
         }
         collect_semantic_local_variable_completion_tags(interp, prefix, &mut matches);
         if matches.is_empty() {
+            collect_semantic_using_namespace_completion_tags(interp, &tags, prefix, &mut matches);
+        }
+        if matches.is_empty() {
             collect_semantic_named_completion_tags(&tags, prefix, &mut matches);
         }
         if let Some(expected_type) = semantic_c_like_assignment_expected_type(interp) {
@@ -3111,7 +3114,7 @@ fn semantic_cpp_root_type_context(
     }
     semantic_cpp_declared_type_before_point(interp, name)
         .and_then(|type_name| {
-            semantic_type_context_from_name_with_buffer(tags, Some(interp), &type_name)
+            semantic_type_context_from_name_in_scope(tags, Some(interp), &type_name)
         })
         .or_else(|| {
             semantic_cpp_current_enclosing_type(interp, tags).and_then(|current| {
@@ -3210,6 +3213,31 @@ fn semantic_type_context_from_name_with_buffer(
     }
     let substitutions = semantic_template_substitutions(&tag, &args);
     Some(SemanticTypeContext { tag, substitutions })
+}
+
+fn semantic_type_context_from_name_in_scope(
+    tags: &[Value],
+    interp: Option<&Interpreter>,
+    type_name: &str,
+) -> Option<SemanticTypeContext> {
+    if type_name.contains("::") {
+        return semantic_type_context_from_name_with_buffer(tags, interp, type_name);
+    }
+    if let Some(interp) = interp {
+        for namespace in semantic_cpp_active_using_namespaces(interp, tags)
+            .into_iter()
+            .rev()
+        {
+            if let Some(context) = semantic_type_context_from_name_with_buffer(
+                tags,
+                Some(interp),
+                &format!("{namespace}::{type_name}"),
+            ) {
+                return Some(context);
+            }
+        }
+    }
+    semantic_type_context_from_name_with_buffer(tags, interp, type_name)
 }
 
 fn find_semantic_type_raw(tags: &[Value], name: &str) -> Option<Value> {
@@ -3849,6 +3877,20 @@ fn semantic_type_from_name(tags: &[Value], type_name: &str) -> Option<Value> {
         })
 }
 
+fn semantic_namespace_type_from_name(tags: &[Value], namespace: &str) -> Option<Value> {
+    let namespace = semantic_resolve_namespace_alias_name(tags, namespace);
+    semantic_type_from_name(tags, &namespace)
+}
+
+fn semantic_resolve_namespace_alias_name(tags: &[Value], namespace: &str) -> String {
+    let Some(alias) = find_semantic_type_raw(tags, namespace) else {
+        return namespace.to_string();
+    };
+    semantic_tag_attr(&alias, ":namespace-alias")
+        .and_then(|value| string_text(&value).ok())
+        .unwrap_or_else(|| namespace.to_string())
+}
+
 fn find_semantic_type_chain_anywhere(tags: &[Value], parts: &[String]) -> Option<Value> {
     for tag in tags {
         if let Some(found) = find_semantic_type_chain_in(tags, std::slice::from_ref(tag), parts) {
@@ -3947,6 +3989,16 @@ fn collect_semantic_qualified_namespace_completion_tags(
     prefix: &str,
     matches: &mut Vec<Value>,
 ) {
+    if let Some(namespace_tag) = semantic_namespace_type_from_name(tags, namespace) {
+        let mut seen = Vec::new();
+        collect_semantic_namespace_member_completion_tags(
+            tags,
+            &namespace_tag,
+            prefix,
+            &mut seen,
+            matches,
+        );
+    }
     for tag in tags {
         if semantic_tag_class(tag).as_deref() == Some("type")
             && semantic_tag_name(tag).as_deref() == Some(namespace)
@@ -3981,6 +4033,161 @@ fn collect_semantic_qualified_namespace_completion_tags(
             prefix,
             matches,
         );
+    }
+}
+
+fn collect_semantic_using_namespace_completion_tags(
+    interp: &Interpreter,
+    tags: &[Value],
+    prefix: &str,
+    matches: &mut Vec<Value>,
+) {
+    for namespace in semantic_cpp_active_using_namespaces(interp, tags)
+        .into_iter()
+        .rev()
+    {
+        let Some(namespace_tag) = semantic_namespace_type_from_name(tags, &namespace) else {
+            continue;
+        };
+        let mut seen = Vec::new();
+        collect_semantic_namespace_member_completion_tags(
+            tags,
+            &namespace_tag,
+            prefix,
+            &mut seen,
+            matches,
+        );
+    }
+}
+
+fn collect_semantic_namespace_member_completion_tags(
+    tags: &[Value],
+    namespace_tag: &Value,
+    prefix: &str,
+    seen: &mut Vec<String>,
+    matches: &mut Vec<Value>,
+) {
+    let Some(namespace_name) = semantic_tag_name(namespace_tag) else {
+        return;
+    };
+    if seen.iter().any(|seen| seen == &namespace_name) {
+        return;
+    }
+    seen.push(namespace_name.clone());
+    let members = semantic_tag_members(namespace_tag);
+    for member in &members {
+        if matches!(
+            semantic_tag_class(member).as_deref(),
+            Some("function" | "variable" | "type")
+        ) && semantic_tag_name(member)
+            .as_deref()
+            .is_some_and(|name| name.starts_with(prefix))
+        {
+            matches.push(member.clone());
+        }
+    }
+    for member in members {
+        if semantic_tag_class(&member).as_deref() != Some("using") {
+            continue;
+        }
+        let Some(namespace) =
+            semantic_tag_attr(&member, ":namespace").and_then(|value| string_text(&value).ok())
+        else {
+            continue;
+        };
+        let namespace = semantic_qualify_namespace(tags, &namespace_name, &namespace);
+        if let Some(imported) = semantic_namespace_type_from_name(tags, &namespace) {
+            collect_semantic_namespace_member_completion_tags(
+                tags, &imported, prefix, seen, matches,
+            );
+        }
+    }
+}
+
+fn semantic_cpp_active_using_namespaces(interp: &Interpreter, tags: &[Value]) -> Vec<String> {
+    let Some(text) = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
+        .ok()
+    else {
+        return Vec::new();
+    };
+    let cleaned = strip_cpp_comments(&text);
+    let mut active: Vec<(usize, String)> = Vec::new();
+    let mut depth = 0usize;
+    let mut statement = String::new();
+    for ch in cleaned.chars() {
+        match ch {
+            '{' => {
+                collect_cpp_using_namespace_segment(&statement, depth, tags, &mut active);
+                statement.clear();
+                depth += 1;
+            }
+            '}' => {
+                collect_cpp_using_namespace_segment(&statement, depth, tags, &mut active);
+                statement.clear();
+                depth = depth.saturating_sub(1);
+                active.retain(|(using_depth, _)| *using_depth <= depth);
+            }
+            ';' => {
+                collect_cpp_using_namespace_segment(&statement, depth, tags, &mut active);
+                statement.clear();
+            }
+            _ => statement.push(ch),
+        }
+    }
+    collect_cpp_using_namespace_segment(&statement, depth, tags, &mut active);
+    active.into_iter().map(|(_, namespace)| namespace).collect()
+}
+
+fn collect_cpp_using_namespace_segment(
+    statement: &str,
+    depth: usize,
+    tags: &[Value],
+    active: &mut Vec<(usize, String)>,
+) {
+    let statement = statement.trim();
+    let Some(namespace) = statement.strip_prefix("using namespace ") else {
+        return;
+    };
+    let namespace = namespace
+        .trim()
+        .trim_end_matches(';')
+        .trim_end_matches(|ch: char| !is_ident_byte(ch as u8) && ch != ':');
+    if namespace.is_empty() {
+        return;
+    }
+    let namespace = semantic_qualify_namespace_from_active(tags, namespace, active);
+    active.push((depth, namespace));
+}
+
+fn semantic_qualify_namespace_from_active(
+    tags: &[Value],
+    namespace: &str,
+    active: &[(usize, String)],
+) -> String {
+    if namespace.contains("::") || semantic_namespace_type_from_name(tags, namespace).is_some() {
+        return namespace.to_string();
+    }
+    for (_, active_namespace) in active.iter().rev() {
+        let qualified = format!("{active_namespace}::{namespace}");
+        if semantic_namespace_type_from_name(tags, &qualified).is_some() {
+            return qualified;
+        }
+    }
+    namespace.to_string()
+}
+
+fn semantic_qualify_namespace(tags: &[Value], parent: &str, namespace: &str) -> String {
+    if namespace.contains("::") || semantic_namespace_type_from_name(tags, namespace).is_some() {
+        namespace.to_string()
+    } else {
+        let qualified = format!("{parent}::{namespace}");
+        if semantic_namespace_type_from_name(tags, &qualified).is_some() {
+            qualified
+        } else {
+            namespace.to_string()
+        }
     }
 }
 
@@ -4626,6 +4833,8 @@ impl<'a> CppTagParser<'a> {
                 continue;
             } else if let Some(include_tags) = self.parse_include_tags() {
                 tags.extend(include_tags);
+            } else if let Some(tag) = self.parse_namespace_alias() {
+                tags.push(tag);
             } else if let Some(tag) = self.parse_namespace() {
                 tags.push(tag);
             } else if let Some(tag) = self.parse_typedef_type_block() {
@@ -4718,6 +4927,38 @@ impl<'a> CppTagParser<'a> {
             self.pos = start;
             None
         })
+    }
+
+    fn parse_namespace_alias(&mut self) -> Option<Value> {
+        let start = self.pos;
+        self.consume_word("namespace")?;
+        self.skip_ws();
+        let Some(alias) = self.read_ident() else {
+            self.pos = start;
+            return None;
+        };
+        self.skip_ws();
+        if self.consume_byte(b'=').is_none() {
+            self.pos = start;
+            return None;
+        }
+        self.skip_ws();
+        let Some(target) = self.read_qualified_ident() else {
+            self.pos = start;
+            return None;
+        };
+        self.skip_ws();
+        if self.consume_byte(b';').is_none() {
+            self.pos = start;
+            return None;
+        }
+        semantic_type_tag(
+            &alias,
+            vec![
+                (":namespace-alias", Value::String(target)),
+                (":type", Value::String("namespace".into())),
+            ],
+        )
     }
 
     fn parse_type_block(&mut self) -> Option<Value> {
@@ -4951,6 +5192,9 @@ impl<'a> CppTagParser<'a> {
         let access_label = statement.trim_end_matches(':').trim();
         if matches!(access_label, "public" | "private" | "protected") {
             return Some(semantic_label_tag(access_label));
+        }
+        if let Some(tag) = parse_cpp_using_statement(statement) {
+            return Some(tag);
         }
         if statement
             .split_whitespace()
@@ -5192,6 +5436,38 @@ fn parse_cpp_typedef(rest: &str) -> Option<Value> {
         name.trim(),
         vec![
             (":typedef", semantic_cpp_type_value(type_text.trim())),
+            (":type", Value::String("typedef".into())),
+        ],
+    )
+}
+
+fn parse_cpp_using_statement(statement: &str) -> Option<Value> {
+    let rest = statement.trim().strip_prefix("using ")?;
+    let rest = rest.trim();
+    if let Some(namespace) = rest.strip_prefix("namespace ") {
+        let namespace = namespace.trim().trim_end_matches(';').trim();
+        return Some(semantic_tag(
+            namespace,
+            "using",
+            semantic_plist(vec![(":namespace", Value::String(namespace.into()))]),
+        ));
+    }
+    let target = rest.trim_end_matches(';').trim();
+    if target.is_empty() {
+        return None;
+    }
+    let name = target.rsplit("::").next()?.trim();
+    if name.is_empty() || target == name {
+        return Some(semantic_tag(
+            target,
+            "using",
+            semantic_plist(vec![(":namespace", Value::String(target.into()))]),
+        ));
+    }
+    semantic_type_tag(
+        name,
+        vec![
+            (":typedef", semantic_type_ref(target)),
             (":type", Value::String("typedef".into())),
         ],
     )
@@ -5583,9 +5859,13 @@ fn resolve_semantic_typedef(root_tags: &[Value], tag: &Value) -> Value {
             return current;
         }
         seen.push(parts.clone());
-        let Some(next) = find_semantic_type_chain(root_tags, &parts)
-            .or_else(|| find_semantic_type_deep(root_tags, parts.last()?))
-        else {
+        let next = if parts.len() > 1 {
+            find_semantic_type_chain_in(root_tags, root_tags, &parts)
+        } else {
+            find_semantic_type_chain(root_tags, &parts)
+                .or_else(|| find_semantic_type_deep(root_tags, parts.last()?))
+        };
+        let Some(next) = next else {
             return current;
         };
         current = next;
