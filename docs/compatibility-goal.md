@@ -19,16 +19,16 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 391/7080 have been committed and pushed.
+- Tests through 392/7080 have been committed and pushed.
 - The latest pushed compatibility commit is
-  `Compat 391/7080: load Texinfo Semantic completions`.
+  `Compat 392/7080: parse Semantic typedef structs`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split and confirmed passing. The
   `todo-test-multiline-item-indentation-2` selector hit a filesystem sandbox
   EPERM during the replay and passed when rerun outside the sandbox.
-- After the 391 Texinfo loading/completion changes, Semantic IA selectors
-  380..391 were rerun sequentially.
-- Resume compatibility advancement at test 392/7080.
+- After the 392 C/C++ typedef-struct parsing changes, Semantic IA selectors
+  380..392 were rerun sequentially.
+- Resume compatibility advancement at test 393/7080.
 
 ## Workflow
 
