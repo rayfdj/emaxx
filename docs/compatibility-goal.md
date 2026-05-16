@@ -19,14 +19,18 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 388/7080 have been committed and pushed.
-- The latest pushed compatibility commit before this batch is
-  `37c21e6 Compat 388/7080: parse templated C++ structs`.
-- Local uncommitted work in progress has verified test 389/7080
-  (`semantic-utest-ia-subclass.cpp`) individually.
-- After the 389 Semantic subclass/local-scope/type-resolution changes,
-  Semantic IA selectors 380..389 were rerun sequentially.
-- Resume compatibility advancement at test 390/7080 after committing and
+- Tests through 389/7080 have been committed and pushed.
+- The latest pushed compatibility commit is
+  `69fed49 Compat 389/7080: improve Semantic subclass completions`.
+- Local uncommitted work in progress has verified test 390/7080
+  (`semantic-utest-ia-templates.cpp`) individually.
+- The 1..378 exact selected-test prefix was replayed after the
+  `primitives.rs`/`eval.rs` split and confirmed passing. The
+  `todo-test-multiline-item-indentation-2` selector hit a filesystem sandbox
+  EPERM during the replay and passed when rerun outside the sandbox.
+- After the 390 Semantic template-arrow/type-resolution changes, Semantic IA
+  selectors 380..390 were rerun sequentially.
+- Resume compatibility advancement at test 391/7080 after committing and
   pushing this batch.
 
 ## Workflow

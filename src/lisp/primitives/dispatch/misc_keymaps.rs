@@ -2254,34 +2254,75 @@ fn semantic_ctxt_current_symbol(interp: &Interpreter) -> Option<SemanticCurrentS
 }
 
 fn is_semantic_member_expr_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-' | '>' | '[' | ']')
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-' | '>' | '[' | ']' | '(' | ')')
 }
 
 fn semantic_member_expression_parts(text: &str) -> Vec<String> {
+    semantic_member_expression_steps(text)
+        .into_iter()
+        .map(|step| step.name)
+        .collect()
+}
+
+#[derive(Clone)]
+struct SemanticMemberStep {
+    name: String,
+    arrow_before: bool,
+}
+
+fn semantic_member_expression_steps(text: &str) -> Vec<SemanticMemberStep> {
     let mut parts = Vec::new();
     let mut current = String::new();
+    let mut arrow_before = false;
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
             '.' => {
-                parts.push(std::mem::take(&mut current));
+                parts.push(SemanticMemberStep {
+                    name: semantic_normalize_member_part(&current),
+                    arrow_before,
+                });
+                current.clear();
+                arrow_before = false;
             }
             ':' if chars.peek() == Some(&':') => {
                 chars.next();
-                parts.push(std::mem::take(&mut current));
+                parts.push(SemanticMemberStep {
+                    name: semantic_normalize_member_part(&current),
+                    arrow_before,
+                });
+                current.clear();
+                arrow_before = false;
             }
             '-' if chars.peek() == Some(&'>') => {
                 chars.next();
-                parts.push(std::mem::take(&mut current));
+                parts.push(SemanticMemberStep {
+                    name: semantic_normalize_member_part(&current),
+                    arrow_before,
+                });
+                current.clear();
+                arrow_before = true;
             }
             _ => current.push(ch),
         }
     }
-    parts.push(current);
-    while parts.first().is_some_and(|part| part.is_empty()) {
+    parts.push(SemanticMemberStep {
+        name: semantic_normalize_member_part(&current),
+        arrow_before,
+    });
+    while parts.first().is_some_and(|part| part.name.is_empty()) {
         parts.remove(0);
     }
     parts
+}
+
+fn semantic_normalize_member_part(part: &str) -> String {
+    let normalized = part.trim().trim_end_matches("()");
+    normalized
+        .split_once('[')
+        .map(|(root, _)| root)
+        .unwrap_or(normalized)
+        .to_string()
 }
 
 fn semantic_makefile_possible_completions(
@@ -2404,6 +2445,7 @@ fn semantic_analyze_possible_completions(
     {
         return Ok(semantic_makefile_possible_completions(interp, &symbol));
     }
+    let steps = semantic_member_expression_steps(&symbol.text);
     let parts = symbol.parts_value.to_vec()?;
     let parts = parts
         .iter()
@@ -2456,35 +2498,49 @@ fn semantic_analyze_possible_completions(
     }
 
     let root_name = semantic_c_like_root_name(&parts[0]);
-    let root_type = semantic_cpp_root_type(interp, &tags, &root_name)
-        .or_else(|| semantic_type_from_name(&tags, &parts[0]));
-    let Some(mut current_type) = root_type else {
+    let root_type = semantic_cpp_root_type_context(interp, &tags, &root_name)
+        .or_else(|| semantic_type_context_from_name(&tags, &parts[0]));
+    let Some(mut current_context) = root_type else {
         return Ok(Value::Nil);
     };
+    let enclosing_type = semantic_cpp_current_enclosing_type(interp, &tags);
+    let root_is_current_member = enclosing_type
+        .as_ref()
+        .is_some_and(|enclosing| semantic_type_member_named(enclosing, &root_name).is_some());
     let include_private = root_name == "this"
-        || semantic_cpp_current_enclosing_type(interp, &tags)
+        || root_is_current_member
+        || enclosing_type
             .and_then(|enclosing| semantic_tag_name(&enclosing))
-            .zip(semantic_tag_name(&current_type))
+            .zip(semantic_tag_name(&current_context.tag))
             .is_some_and(|(enclosing, current)| {
                 enclosing == current && semantic_cpp_current_function_is_method(interp)
             });
-    for member_name in &parts[1..parts.len() - 1] {
-        let Some(member) = semantic_type_member_named(&current_type, member_name).or_else(|| {
-            semantic_tag_name(&current_type).and_then(|type_name| {
-                semantic_type_member_named_in_named_types(&tags, &type_name, member_name)
+    for (index, member_name) in parts[1..parts.len() - 1].iter().enumerate() {
+        if steps.get(index + 1).is_some_and(|step| step.arrow_before) {
+            current_context = semantic_cpp_arrow_context(&tags, current_context);
+        }
+        let Some(member) =
+            semantic_type_member_named(&current_context.tag, member_name).or_else(|| {
+                semantic_tag_name(&current_context.tag).and_then(|type_name| {
+                    semantic_type_member_named_in_named_types(&tags, &type_name, member_name)
+                })
             })
-        }) else {
+        else {
             return Ok(Value::Nil);
         };
-        let Some(member_type) = semantic_type_candidate(&tags, &member) else {
+        let Some(member_type) = semantic_type_context_from_member(&tags, &member, &current_context)
+        else {
             return Ok(Value::Nil);
         };
-        current_type = member_type;
+        current_context = member_type;
+    }
+    if steps.last().is_some_and(|step| step.arrow_before) {
+        current_context = semantic_cpp_arrow_context(&tags, current_context);
     }
     let prefix = parts.last().map(String::as_str).unwrap_or("");
     let mut matches = Vec::new();
     collect_semantic_member_completion_tags(
-        &current_type,
+        &current_context.tag,
         &tags,
         prefix,
         if include_private {
@@ -2651,14 +2707,16 @@ fn semantic_symref_test_count_hits_in_tag(interp: &Interpreter) -> Result<Value,
     else {
         return Ok(Value::Nil);
     };
-    let region = &text[range.start..range.end.min(text.len())];
     let mut count = 0i64;
-    let mut search_start = 0usize;
-    while let Some(relative) = region[search_start..].find(name) {
-        let column = search_start + relative;
-        search_start = column + name.len();
-        if semantic_word_at(region, column, name) {
-            count += 1;
+    for line in text[range.start..range.end.min(text.len())].lines() {
+        let region = line.split("//").next().unwrap_or(line);
+        let mut search_start = 0usize;
+        while let Some(relative) = region[search_start..].find(name) {
+            let column = search_start + relative;
+            search_start = column + name.len();
+            if semantic_word_at(region, column, name) {
+                count += 1;
+            }
         }
     }
     Ok(Value::Integer(count))
@@ -2785,16 +2843,31 @@ fn semantic_c_function_ranges(text: &str) -> Vec<SemanticFunctionRange> {
         offset += line.len() + 1;
     }
     for (index, line) in lines.iter().enumerate() {
-        let Some(name) = semantic_c_function_name_from_signature(line) else {
-            continue;
-        };
+        let (name, range_start_index) =
+            if let Some(name) = semantic_c_function_name_from_signature(line) {
+                (name, index)
+            } else if index > 0 {
+                let Some(previous_index) = (0..index)
+                    .rev()
+                    .find(|previous| !lines[*previous].trim().is_empty())
+                else {
+                    continue;
+                };
+                let combined = format!("{} {}", lines[previous_index].trim(), line.trim());
+                let Some(name) = semantic_c_function_name_from_signature(&combined) else {
+                    continue;
+                };
+                (name, previous_index)
+            } else {
+                continue;
+            };
         let Some(brace_start) = semantic_c_next_open_brace(&lines, &line_starts, index) else {
             continue;
         };
         let end = semantic_c_matching_brace(text, brace_start).unwrap_or(text.len());
         ranges.push(SemanticFunctionRange {
             name,
-            start: line_starts[index],
+            start: line_starts[range_start_index],
             end,
         });
     }
@@ -2967,32 +3040,297 @@ fn semantic_function_signature_matches(
         && (candidate.parent == target.parent || candidate.parent.is_none())
 }
 
-fn semantic_cpp_root_type(interp: &Interpreter, tags: &[Value], name: &str) -> Option<Value> {
+#[derive(Clone)]
+struct SemanticTypeContext {
+    tag: Value,
+    substitutions: HashMap<String, String>,
+}
+
+fn semantic_cpp_root_type_context(
+    interp: &Interpreter,
+    tags: &[Value],
+    name: &str,
+) -> Option<SemanticTypeContext> {
     if name == "this" {
         return semantic_cpp_current_enclosing_type(interp, tags)
-            .or_else(|| semantic_c_like_current_enclosing_type(interp, tags));
+            .or_else(|| semantic_c_like_current_enclosing_type(interp, tags))
+            .map(|tag| SemanticTypeContext {
+                tag,
+                substitutions: HashMap::new(),
+            });
     }
     semantic_cpp_declared_type_before_point(interp, name)
         .and_then(|type_name| {
-            let table_type = semantic_type_from_name(tags, &type_name);
-            if table_type
-                .as_ref()
-                .is_some_and(|tag| !semantic_tag_members(tag).is_empty())
-            {
-                table_type
-            } else {
-                semantic_c_type_from_current_buffer(interp, &type_name).or(table_type)
+            semantic_type_context_from_name_with_buffer(tags, Some(interp), &type_name)
+        })
+        .or_else(|| {
+            semantic_cpp_current_enclosing_type(interp, tags).and_then(|current| {
+                let member = semantic_type_member_named(&current, name)?;
+                semantic_type_context_from_member(
+                    tags,
+                    &member,
+                    &SemanticTypeContext {
+                        tag: current,
+                        substitutions: HashMap::new(),
+                    },
+                )
+            })
+        })
+        .or_else(|| {
+            semantic_c_like_current_enclosing_type(interp, tags).and_then(|current| {
+                let member = semantic_type_member_named(&current, name)?;
+                semantic_type_context_from_member(
+                    tags,
+                    &member,
+                    &SemanticTypeContext {
+                        tag: current,
+                        substitutions: HashMap::new(),
+                    },
+                )
+            })
+        })
+        .or_else(|| {
+            find_semantic_variable_deep(tags, name).and_then(|tag| {
+                semantic_type_context_from_member(
+                    tags,
+                    &tag,
+                    &SemanticTypeContext {
+                        tag: Value::Nil,
+                        substitutions: HashMap::new(),
+                    },
+                )
+            })
+        })
+}
+
+fn semantic_type_context_from_member(
+    tags: &[Value],
+    member: &Value,
+    parent: &SemanticTypeContext,
+) -> Option<SemanticTypeContext> {
+    if semantic_tag_class(member).as_deref() == Some("type") {
+        return semantic_type_candidate(tags, member).map(|tag| SemanticTypeContext {
+            tag,
+            substitutions: HashMap::new(),
+        });
+    }
+    let type_text = semantic_tag_attr(member, ":type").and_then(|value| semantic_type_text(&value));
+    let type_text = semantic_substitute_type_text(&type_text?, &parent.substitutions);
+    semantic_type_context_from_name(tags, &type_text)
+}
+
+fn semantic_cpp_arrow_context(tags: &[Value], context: SemanticTypeContext) -> SemanticTypeContext {
+    let Some(operator) = semantic_type_member_named(&context.tag, "operator->") else {
+        return context;
+    };
+    semantic_type_context_from_member(tags, &operator, &context).unwrap_or(context)
+}
+
+fn semantic_type_context_from_name(tags: &[Value], type_name: &str) -> Option<SemanticTypeContext> {
+    semantic_type_context_from_name_with_buffer(tags, None, type_name)
+}
+
+fn semantic_type_context_from_name_with_buffer(
+    tags: &[Value],
+    interp: Option<&Interpreter>,
+    type_name: &str,
+) -> Option<SemanticTypeContext> {
+    let type_name = semantic_clean_cpp_type_text(type_name);
+    let (base_name, args) = semantic_cpp_template_instantiation(&type_name)
+        .unwrap_or_else(|| (type_name.clone(), Vec::new()));
+    if args.is_empty()
+        && let Some(raw) = find_semantic_type_raw(tags, &base_name)
+        && let Some(target) =
+            semantic_tag_attr(&raw, ":typedef").and_then(|value| semantic_type_text(&value))
+    {
+        return semantic_type_context_from_name(tags, &target);
+    }
+    let mut tag = semantic_type_from_name(tags, &base_name).or_else(|| {
+        base_name
+            .rsplit("::")
+            .next()
+            .and_then(|name| semantic_type_from_name(tags, name))
+    })?;
+    if semantic_tag_members(&tag).is_empty()
+        && let Some(interp) = interp
+        && let Some(name) = base_name.rsplit("::").next()
+        && let Some(buffer_type) = semantic_c_type_from_current_buffer(interp, name)
+    {
+        tag = buffer_type;
+    }
+    let substitutions = semantic_template_substitutions(&tag, &args);
+    Some(SemanticTypeContext { tag, substitutions })
+}
+
+fn find_semantic_type_raw(tags: &[Value], name: &str) -> Option<Value> {
+    let parts = name
+        .split("::")
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    find_semantic_type_raw_parts(tags, &parts).or_else(|| {
+        parts
+            .last()
+            .and_then(|last| find_semantic_type_raw_deep(tags, last))
+    })
+}
+
+fn find_semantic_type_raw_parts(tags: &[Value], parts: &[&str]) -> Option<Value> {
+    let (first, rest) = parts.split_first()?;
+    for tag in tags {
+        if semantic_tag_class(tag).as_deref() == Some("type")
+            && semantic_tag_name(tag).as_deref() == Some(first)
+        {
+            if rest.is_empty() {
+                return Some(tag.clone());
             }
-        })
-        .or_else(|| {
-            semantic_cpp_current_enclosing_type(interp, tags)
-                .and_then(|current| semantic_type_member_named(&current, name))
-                .and_then(|member| semantic_type_candidate(tags, &member))
-        })
-        .or_else(|| {
-            find_semantic_variable_deep(tags, name)
-                .and_then(|tag| semantic_type_candidate(tags, &tag))
-        })
+            if let Some(found) = find_semantic_type_raw_parts(&semantic_tag_members(tag), rest) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn find_semantic_type_raw_deep(tags: &[Value], name: &str) -> Option<Value> {
+    for tag in tags {
+        if semantic_tag_class(tag).as_deref() == Some("type")
+            && semantic_tag_name(tag).as_deref() == Some(name)
+        {
+            return Some(tag.clone());
+        }
+        if let Some(found) = find_semantic_type_raw_deep(&semantic_tag_members(tag), name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn semantic_template_substitutions(tag: &Value, args: &[String]) -> HashMap<String, String> {
+    let params = semantic_tag_attr(tag, ":template-params")
+        .and_then(|params| params.to_vec().ok())
+        .unwrap_or_default();
+    params
+        .into_iter()
+        .filter_map(|param| string_text(&param).ok())
+        .zip(args.iter().cloned())
+        .collect()
+}
+
+fn semantic_type_text(value: &Value) -> Option<String> {
+    if let Ok(symbol) = value.as_symbol() {
+        return Some(symbol.to_string());
+    }
+    if let Ok(text) = string_text(value) {
+        return Some(text);
+    }
+    let items = value.to_vec().ok()?;
+    items.first().and_then(semantic_type_text)
+}
+
+fn semantic_clean_cpp_type_text(type_name: &str) -> String {
+    type_name
+        .replace("const ", "")
+        .replace(" const", "")
+        .replace("mutable ", "")
+        .replace(" mutable", "")
+        .replace("struct ", "")
+        .replace("class ", "")
+        .replace("public ", "")
+        .replace("private ", "")
+        .replace("protected ", "")
+        .replace("static ", "")
+        .replace(" static", "")
+        .replace("volatile ", "")
+        .replace(" volatile", "")
+        .replace(['*', '&'], "")
+        .trim()
+        .to_string()
+}
+
+fn semantic_substitute_type_text(
+    type_text: &str,
+    substitutions: &HashMap<String, String>,
+) -> String {
+    if substitutions.is_empty() {
+        return type_text.to_string();
+    }
+    let mut out = String::new();
+    let mut word = String::new();
+    for ch in type_text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            word.push(ch);
+        } else {
+            if !word.is_empty() {
+                out.push_str(
+                    substitutions
+                        .get(&word)
+                        .map(String::as_str)
+                        .unwrap_or(&word),
+                );
+                word.clear();
+            }
+            out.push(ch);
+        }
+    }
+    if !word.is_empty() {
+        out.push_str(
+            substitutions
+                .get(&word)
+                .map(String::as_str)
+                .unwrap_or(&word),
+        );
+    }
+    out
+}
+
+fn semantic_cpp_template_instantiation(type_name: &str) -> Option<(String, Vec<String>)> {
+    let open = type_name.find('<')?;
+    let close = type_name.rfind('>')?;
+    if close <= open {
+        return None;
+    }
+    let base = type_name[..open].trim().to_string();
+    let args = split_cpp_top_level_commas(&type_name[open + 1..close])
+        .into_iter()
+        .map(|arg| semantic_clean_cpp_type_text(&arg))
+        .collect::<Vec<_>>();
+    Some((base, args))
+}
+
+fn split_cpp_top_level_commas(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut angle_depth = 0usize;
+    let mut paren_depth = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '<' => {
+                angle_depth += 1;
+                current.push(ch);
+            }
+            '>' => {
+                angle_depth = angle_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            '(' => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if angle_depth == 0 && paren_depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
 }
 
 fn semantic_cpp_current_enclosing_type(interp: &Interpreter, tags: &[Value]) -> Option<Value> {
@@ -3124,7 +3462,7 @@ fn semantic_cpp_declared_type_before_point(interp: &Interpreter, name: &str) -> 
         .buffer
         .buffer_substring(interp.buffer.point_min(), interp.buffer.point())
         .ok()?;
-    text.split([';', '(', ')', ',', '\n'])
+    text.split([';', '(', ')', '\n'])
         .rev()
         .filter_map(|segment| semantic_cpp_declared_type_from_segment(segment, name))
         .next()
@@ -3416,16 +3754,22 @@ fn semantic_cpp_declared_type_from_segment(segment: &str, name: &str) -> Option<
         let before = before
             .trim_end_matches(|ch: char| ch.is_whitespace() || matches!(ch, '*' | '&'))
             .trim();
-        let type_name = before
-            .split_whitespace()
-            .rev()
-            .find(|token| {
-                !matches!(
-                    *token,
-                    "const" | "struct" | "class" | "mutable" | "static" | "volatile"
-                )
-            })?
-            .trim_matches(|ch| matches!(ch, '*' | '&'));
+        let type_name_storage;
+        let type_name = if before.contains('<') && before.contains('>') {
+            type_name_storage = semantic_clean_cpp_type_text(before);
+            type_name_storage.as_str()
+        } else {
+            before
+                .split_whitespace()
+                .rev()
+                .find(|token| {
+                    !matches!(
+                        *token,
+                        "const" | "struct" | "class" | "mutable" | "static" | "volatile"
+                    )
+                })?
+                .trim_matches(|ch| matches!(ch, '*' | '&'))
+        };
         if !type_name.is_empty()
             && type_name != "_type"
             && !semantic_c_like_statement_keyword(type_name)
@@ -4326,7 +4670,7 @@ impl<'a> CppTagParser<'a> {
 
     fn parse_type_block(&mut self) -> Option<Value> {
         let start = self.pos;
-        self.consume_template_prefixes();
+        let template_params = self.consume_template_prefixes();
         while self
             .consume_one_of_words(&[
                 "public",
@@ -4370,6 +4714,12 @@ impl<'a> CppTagParser<'a> {
             (":members", Value::list(members)),
             (":type", Value::String(kind.into())),
         ];
+        if !template_params.is_empty() {
+            attrs.push((
+                ":template-params",
+                Value::list(template_params.into_iter().map(Value::String)),
+            ));
+        }
         if let Some(superclasses) = parse_cpp_superclasses(
             header,
             if kind == "struct" {
@@ -4432,22 +4782,26 @@ impl<'a> CppTagParser<'a> {
         })
     }
 
-    fn consume_template_prefixes(&mut self) {
+    fn consume_template_prefixes(&mut self) -> Vec<String> {
+        let mut params = Vec::new();
         loop {
             self.skip_ws();
             let checkpoint = self.pos;
             if self.consume_word("template").is_none() {
-                return;
+                return params;
             }
             self.skip_ws();
             if self.consume_byte(b'<').is_none() {
                 self.pos = checkpoint;
-                return;
+                return params;
             }
+            let params_start = self.pos;
             if self.skip_balanced_angle().is_none() {
                 self.pos = checkpoint;
-                return;
+                return params;
             }
+            let params_end = self.pos.saturating_sub(1);
+            params = parse_cpp_template_params(&self.source[params_start..params_end]);
         }
     }
 
@@ -4800,6 +5154,21 @@ fn parse_cpp_superclasses(header: &str, default_access: &str) -> Option<Value> {
     (!superclasses.is_empty()).then(|| Value::list(superclasses))
 }
 
+fn parse_cpp_template_params(text: &str) -> Vec<String> {
+    split_cpp_top_level_commas(text)
+        .into_iter()
+        .filter_map(|param| {
+            let param = param.split('=').next().unwrap_or(&param).trim();
+            let name = param
+                .split_whitespace()
+                .last()
+                .unwrap_or(param)
+                .trim_matches(['*', '&']);
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
 fn cpp_type_base_name(name: &str) -> String {
     name.split_once('<')
         .map(|(base, _)| base)
@@ -4917,15 +5286,19 @@ fn semantic_plist(attrs: Vec<(&str, Value)>) -> Value {
 fn semantic_cpp_type_value(type_text: &str) -> Value {
     let type_text = type_text
         .replace("const ", "")
+        .replace(" const", "")
         .replace("mutable ", "")
+        .replace(" mutable", "")
         .replace("struct ", "")
         .replace("public ", "")
         .replace("private ", "")
         .replace("protected ", "")
         .replace("static ", "")
+        .replace(" static", "")
         .replace("final ", "")
         .replace("abstract ", "")
         .replace("strictfp ", "")
+        .replace(" volatile", "")
         .replace(['*', '&'], "")
         .trim()
         .to_string();
