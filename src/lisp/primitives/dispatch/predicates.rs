@@ -47,6 +47,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "symbol-with-pos-p"
             | "fboundp"
             | "facep"
+            | "face-equal"
+            | "face-differs-from-default-p"
             | "face-list"
             | "seq-some"
             | "any"
@@ -533,6 +535,37 @@ pub(super) fn call(
                 _ => return Ok(Value::Nil),
             };
             Ok(if face_exists(interp, &face) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "face-equal" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let left = match &args[0] {
+                Value::Symbol(symbol) => symbol.clone(),
+                Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
+                _ => return Ok(Value::Nil),
+            };
+            let right = match &args[1] {
+                Value::Symbol(symbol) => symbol.clone(),
+                Value::String(_) | Value::StringObject(_) => string_text(&args[1])?,
+                _ => return Ok(Value::Nil),
+            };
+            Ok(if left == right { Value::T } else { Value::Nil })
+        }
+        "face-differs-from-default-p" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let face = match &args[0] {
+                Value::Symbol(symbol) => symbol.clone(),
+                Value::String(_) | Value::StringObject(_) => string_text(&args[0])?,
+                _ => return Ok(Value::Nil),
+            };
+            Ok(if face != "default" && face_exists(interp, &face) {
                 Value::T
             } else {
                 Value::Nil

@@ -2798,3 +2798,28 @@ fn define_derived_mode_installs_callable_mode_body() {
     assert_eq!(items[2], Value::T);
     assert_eq!(items[3], Value::T);
 }
+
+#[test]
+fn face_alias_predicates_and_fringe_bitmap_fallback_load() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defface sample-face '((t :foreground \"red\")) \"doc\")
+               (list
+                (face-equal 'sample-face 'sample-face)
+                (face-equal 'sample-face 'default)
+                (face-differs-from-default-p 'sample-face)
+                (face-differs-from-default-p 'default)
+                (define-obsolete-face-alias 'old-sample-face 'sample-face \"31.1\")
+                (define-fringe-bitmap 'sample-bitmap [0 1 2])))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}

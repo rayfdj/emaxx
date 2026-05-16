@@ -842,7 +842,9 @@ pub(super) fn call(
             let where_sym = args[1].as_symbol()?;
             let original = interp.lookup_function(&function_name, env)?;
             let advice = match &args[2] {
-                Value::Symbol(symbol) => interp.lookup_function(symbol, env)?,
+                Value::Symbol(symbol) => interp
+                    .lookup_function(symbol, env)
+                    .unwrap_or_else(|_| Value::Symbol(symbol.clone())),
                 other => other.clone(),
             };
             let wrapped = match where_sym {
@@ -2254,7 +2256,11 @@ fn semantic_ctxt_current_symbol(interp: &Interpreter) -> Option<SemanticCurrentS
 }
 
 fn is_semantic_member_expr_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-' | '>' | '[' | ']' | '(' | ')')
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '_' | '@' | '.' | ':' | '-' | '>' | '[' | ']' | '(' | ')'
+        )
 }
 
 fn semantic_member_expression_parts(text: &str) -> Vec<String> {
@@ -2432,6 +2438,44 @@ fn semantic_makefile_file_names(interp: &Interpreter, prefix: &str) -> Vec<Strin
     matches
 }
 
+fn semantic_texinfo_possible_completions(symbol: &SemanticCurrentSymbol) -> Value {
+    let prefix = if symbol.text.starts_with('@') {
+        symbol.text.clone()
+    } else {
+        format!("@{}", symbol.text)
+    };
+    let commands = [
+        "@bye",
+        "@chapter",
+        "@contents",
+        "@copyright",
+        "@c",
+        "@end",
+        "@format",
+        "@ifinfo",
+        "@input",
+        "@macro",
+        "@majorheading",
+        "@menu",
+        "@multitable",
+        "@node",
+        "@set",
+        "@setfilename",
+        "@settitle",
+        "@sp",
+        "@titlepage",
+        "@top",
+        "@value",
+        "@vskip",
+    ];
+    Value::list(
+        commands
+            .into_iter()
+            .filter(|command| command.starts_with(&prefix))
+            .map(|command| semantic_tag(command, "function", Value::Nil)),
+    )
+}
+
 fn semantic_analyze_possible_completions(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2444,6 +2488,12 @@ fn semantic_analyze_possible_completions(
         .is_some_and(|mode| mode == Value::Symbol("makefile-bsdmake-mode".into()))
     {
         return Ok(semantic_makefile_possible_completions(interp, &symbol));
+    }
+    if interp
+        .lookup_var("major-mode", env)
+        .is_some_and(|mode| mode == Value::Symbol("texinfo-mode".into()))
+    {
+        return Ok(semantic_texinfo_possible_completions(&symbol));
     }
     let steps = semantic_member_expression_steps(&symbol.text);
     let parts = symbol.parts_value.to_vec()?;

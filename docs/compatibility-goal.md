@@ -19,19 +19,16 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 389/7080 have been committed and pushed.
+- Tests through 391/7080 have been committed and pushed.
 - The latest pushed compatibility commit is
-  `69fed49 Compat 389/7080: improve Semantic subclass completions`.
-- Local uncommitted work in progress has verified test 390/7080
-  (`semantic-utest-ia-templates.cpp`) individually.
+  `Compat 391/7080: load Texinfo Semantic completions`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split and confirmed passing. The
   `todo-test-multiline-item-indentation-2` selector hit a filesystem sandbox
   EPERM during the replay and passed when rerun outside the sandbox.
-- After the 390 Semantic template-arrow/type-resolution changes, Semantic IA
-  selectors 380..390 were rerun sequentially.
-- Resume compatibility advancement at test 391/7080 after committing and
-  pushing this batch.
+- After the 391 Texinfo loading/completion changes, Semantic IA selectors
+  380..391 were rerun sequentially.
+- Resume compatibility advancement at test 392/7080.
 
 ## Workflow
 
