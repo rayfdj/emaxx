@@ -2476,6 +2476,68 @@ fn semantic_texinfo_possible_completions(symbol: &SemanticCurrentSymbol) -> Valu
     )
 }
 
+fn semantic_wisent_possible_completions(
+    interp: &Interpreter,
+    symbol: &SemanticCurrentSymbol,
+) -> Value {
+    let Ok(text) = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+    else {
+        return Value::Nil;
+    };
+    let prefix = symbol.text.as_str();
+    let mut matches = Vec::new();
+    let mut grammar_section = false;
+    for line in text.lines() {
+        let line = line.split(";;").next().unwrap_or(line);
+        let trimmed = line.trim();
+        if trimmed == "%%" {
+            grammar_section = !grammar_section;
+            continue;
+        }
+        if grammar_section {
+            if line.starts_with(char::is_whitespace) || trimmed.is_empty() {
+                continue;
+            }
+            let Some(name) = trimmed
+                .split(|ch: char| !is_ident_byte(ch as u8))
+                .find(|part| !part.is_empty())
+            else {
+                continue;
+            };
+            if name.starts_with(prefix) {
+                matches.push(name.to_string());
+            }
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let Some(directive) = parts.next() else {
+            continue;
+        };
+        if !matches!(directive, "%token" | "%keyword") {
+            continue;
+        }
+        let Some(name) = parts.find(|part| {
+            part.as_bytes()
+                .first()
+                .is_some_and(|byte| is_ident_byte(*byte))
+        }) else {
+            continue;
+        };
+        if name.starts_with(prefix) {
+            matches.push(name.to_string());
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    Value::list(
+        matches
+            .into_iter()
+            .map(|name| semantic_tag(&name, "variable", Value::Nil)),
+    )
+}
+
 fn semantic_analyze_possible_completions(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2494,6 +2556,12 @@ fn semantic_analyze_possible_completions(
         .is_some_and(|mode| mode == Value::Symbol("texinfo-mode".into()))
     {
         return Ok(semantic_texinfo_possible_completions(&symbol));
+    }
+    if interp
+        .lookup_var("major-mode", env)
+        .is_some_and(|mode| mode == Value::Symbol("wisent-grammar-mode".into()))
+    {
+        return Ok(semantic_wisent_possible_completions(interp, &symbol));
     }
     let steps = semantic_member_expression_steps(&symbol.text);
     let parts = symbol.parts_value.to_vec()?;
