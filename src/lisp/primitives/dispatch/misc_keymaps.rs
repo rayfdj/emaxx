@@ -4542,11 +4542,10 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
         .clone()
         .map(PathBuf::from)
         .filter(|path| {
-            path.file_name().and_then(|name| name.to_str()) == Some("testsubclass.cpp")
-                && matches!(
-                    path.extension().and_then(|ext| ext.to_str()),
-                    Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "java")
-                )
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "java")
+            )
         }) {
         let source = interp
             .buffer
@@ -4560,7 +4559,10 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
             .unwrap_or_default()
     };
 
-    if let Some(table) = interp.lookup_var("semanticdb-current-table", env) {
+    if let Some(table) = interp
+        .lookup_var("semanticdb-current-table", env)
+        .filter(|table| !table.is_nil())
+    {
         let _ = set_eieio_slot_value(interp, &table, "tags", Value::list(tags.clone()));
     }
     interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
@@ -4694,13 +4696,17 @@ fn semanticdb_search_tables(
         Some(Value::Nil) | None => {
             let mut tables = interp
                 .lookup_var("semanticdb-current-table", env)
+                .filter(|table| !table.is_nil())
                 .into_iter()
                 .collect::<Vec<_>>();
             if let Some(database) = interp.lookup_var("semanticdb-current-database", env)
                 && let Ok(database_tables) = eieio_slot_value(interp, &database, "tables")
                 && let Ok(database_tables) = database_tables.to_vec()
             {
-                for table in database_tables {
+                for table in database_tables
+                    .into_iter()
+                    .filter(|table| matches!(table, Value::Record(_)))
+                {
                     if !tables.contains(&table) {
                         tables.push(table);
                     }
@@ -4780,8 +4786,92 @@ fn extend_semantic_c_like_table_tags(
             Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "java")
         )
     {
-        append_semantic_search_tags(tags, cached_semantic_cpp_tags(&path));
+        let Some(base) = semantic_table_base_directory(interp, &path) else {
+            return;
+        };
+        let parse_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            base.join(&path)
+        };
+        let parsed = cached_semantic_cpp_tags(&parse_path);
+        append_semantic_search_tags(tags, parsed.clone());
+        for tag in &parsed {
+            if let Some(expanded) = expand_semantic_namespace_includes_for_search(tag, &base) {
+                tags.push(expanded);
+            }
+        }
+        for include_tag in parsed
+            .iter()
+            .filter(|tag| semantic_tag_class(tag).as_deref() == Some("include"))
+        {
+            let Some(include_path) = semantic_include_path_from_base(&base, include_tag) else {
+                continue;
+            };
+            append_semantic_search_tags(tags, cached_semantic_cpp_tags(&include_path));
+        }
     }
+}
+
+fn expand_semantic_namespace_includes_for_search(tag: &Value, base: &Path) -> Option<Value> {
+    if semantic_tag_class(tag).as_deref() != Some("type")
+        || semantic_tag_attr(tag, ":type")
+            .and_then(|value| string_text(&value).ok())
+            .as_deref()
+            != Some("namespace")
+    {
+        return None;
+    }
+    let name = semantic_tag_name(tag)?;
+    let mut members = Vec::new();
+    let mut changed = false;
+    for member in semantic_tag_members(tag) {
+        if semantic_tag_class(&member).as_deref() == Some("include") {
+            members.push(member.clone());
+            if let Some(path) = semantic_include_path_from_base(base, &member) {
+                members.extend(cached_semantic_cpp_tags(&path));
+                changed = true;
+            }
+            continue;
+        }
+        if let Some(expanded) = expand_semantic_namespace_includes_for_search(&member, base) {
+            members.push(expanded);
+            changed = true;
+        } else {
+            members.push(member);
+        }
+    }
+    changed.then(|| {
+        semantic_type_tag(
+            &name,
+            vec![
+                (":members", Value::list(members)),
+                (":type", Value::String("namespace".into())),
+            ],
+        )
+        .unwrap_or_else(|| tag.clone())
+    })
+}
+
+fn semantic_table_base_directory(interp: &mut Interpreter, table_path: &Path) -> Option<PathBuf> {
+    if table_path.is_absolute() {
+        return table_path.parent().map(Path::to_path_buf);
+    }
+    let database = interp.lookup_var("semanticdb-current-database", &Vec::new())?;
+    let directory = eieio_slot_value(interp, &database, "reference-directory")
+        .ok()
+        .and_then(|value| string_text(&value).ok())?;
+    Some(Path::new(&directory).to_path_buf())
+}
+
+fn semantic_include_path_from_base(base: &Path, include_tag: &Value) -> Option<PathBuf> {
+    let include = semantic_tag_name(include_tag)?;
+    let include_path = Path::new(&include);
+    if include_path.is_absolute() && include_path.exists() {
+        return Some(include_path.to_path_buf());
+    }
+    let candidate = base.join(include_path);
+    candidate.exists().then_some(candidate)
 }
 
 fn append_semantic_search_tags(tags: &mut Vec<Value>, candidates: Vec<Value>) {
@@ -4977,15 +5067,7 @@ impl<'a> CppTagParser<'a> {
         if self.peek_byte() == Some(closer) {
             self.pos += 1;
         }
-        let Some(base_dir) = &self.base_dir else {
-            return Some(Vec::new());
-        };
-        let path = base_dir.join(include);
-        Some(if path.exists() {
-            cached_semantic_cpp_tags(&path)
-        } else {
-            Vec::new()
-        })
+        Some(vec![semantic_include_tag(include, opener == b'<')])
     }
 
     fn skip_preprocessor_directive(&mut self) -> bool {
@@ -5638,7 +5720,7 @@ fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
     if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
         attrs.push((":typemodifiers", modifiers));
     }
-    if raw_name != name || return_type.is_empty() || statement.contains(&format!("~{name}")) {
+    if return_type.is_empty() || statement.contains(&format!("~{name}")) {
         if return_type.is_empty() || raw_name == name {
             attrs.push((":constructor-flag", Value::T));
             attrs.push((":type", semantic_type_ref(name)));
@@ -5824,6 +5906,15 @@ fn semantic_variable_tag(name: &str, type_value: Value, pointer: bool) -> Value 
 
 fn semantic_label_tag(name: &str) -> Value {
     semantic_tag(name, "label", Value::Nil)
+}
+
+fn semantic_include_tag(name: &str, system: bool) -> Value {
+    let attrs = if system {
+        semantic_plist(vec![(":system-flag", Value::T)])
+    } else {
+        Value::Nil
+    };
+    semantic_tag(name, "include", attrs)
 }
 
 fn semantic_tag(name: &str, class: &str, attrs: Value) -> Value {

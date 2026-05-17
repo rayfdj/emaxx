@@ -13,6 +13,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "verify-visited-file-modtime"
             | "set-visited-file-modtime"
             | "rename-visited-file"
+            | "read-only-mode"
             | "set-buffer-file-coding-system"
             | "after-insert-file-set-coding"
             | "local"
@@ -309,6 +310,20 @@ pub(super) fn call(
                 .set_visited_file_modtime(file_modtime(&new_location)?);
             Ok(Value::Nil)
         }
+        "read-only-mode" => {
+            need_arg_range(name, args, 0, 1)?;
+            let enabled = match args.first() {
+                Some(Value::Integer(n)) => *n > 0,
+                Some(value) => value.is_truthy(),
+                None => !interp
+                    .lookup_var("buffer-read-only", env)
+                    .is_some_and(|value| value.is_truthy()),
+            };
+            let value = if enabled { Value::T } else { Value::Nil };
+            interp.set_variable("buffer-read-only", value.clone(), env);
+            interp.set_variable("read-only-mode", value, env);
+            Ok(Value::Nil)
+        }
         "set-buffer-file-coding-system" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -453,7 +468,12 @@ pub(super) fn call(
             interp.switch_to_buffer_id(id)?;
             let result: Result<(), LispError> = (|| {
                 let mut mode = modes::auto_mode_function_for_file_name(interp, env, &path)?;
-                let mut bytes = read_insert_file_bytes(&path, None, None)?;
+                let file_exists = Path::new(&path).exists();
+                let mut bytes = if file_exists {
+                    read_insert_file_bytes(&path, None, None)?
+                } else {
+                    Vec::new()
+                };
                 if !literal && should_auto_decompress(interp, env, &path) {
                     bytes = maybe_decompress_file_bytes(&path, bytes)?;
                 }

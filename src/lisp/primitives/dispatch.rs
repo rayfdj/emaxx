@@ -674,6 +674,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-visited-file-modtime"
             | "verify-visited-file-modtime"
             | "rename-visited-file"
+            | "read-only-mode"
             | "set-buffer-file-coding-system"
             | "after-insert-file-set-coding"
             | "local"
