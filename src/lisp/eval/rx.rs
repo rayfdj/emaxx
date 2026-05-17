@@ -360,8 +360,8 @@ fn compile_rx_form(
             Ok(quote_rx_string_literal(&ch.to_string()))
         }
         Value::Symbol(symbol) => match symbol.as_str() {
-            "bol" => Ok("^".into()),
-            "eol" => Ok("$".into()),
+            "bol" | "line-start" => Ok("^".into()),
+            "eol" | "line-end" => Ok("$".into()),
             "bos" | "string-start" | "bot" | "buffer-start" => Ok("\\`".into()),
             "eos" | "string-end" | "eot" | "buffer-end" => Ok("\\'".into()),
             "bow" | "eow" => Ok("\\b".into()),
@@ -370,6 +370,7 @@ fn compile_rx_form(
             "blank" => Ok("[[:blank:]]".into()),
             "space" => Ok("[[:space:]]".into()),
             "nonl" | "not-newline" => Ok(".".into()),
+            "anychar" | "anything" => Ok("\\(?:.\\|\n\\)".into()),
             "symbol-start" => Ok("\\_<".into()),
             "symbol-end" => Ok("\\_>".into()),
             other if rx_char_class_name(other).is_some() => Ok(format!(
@@ -441,14 +442,14 @@ fn compile_rx_form(
                     "\\(?:{}\\)??",
                     compile_rx_sequence(interp, env, &items[1..])?
                 )),
-                "seq" | ":" => compile_rx_sequence(interp, env, &items[1..]),
+                "seq" | ":" | "and" => compile_rx_sequence(interp, env, &items[1..]),
                 "regexp" => compile_rx_regexp_form(interp, env, &items),
                 "literal" => compile_rx_literal_form(interp, env, &items),
-                "repeat" => {
+                "repeat" | "**" => {
                     if items.len() < 3 {
-                        return Err(LispError::Signal(
-                            "rx `repeat' needs a count and a form".into(),
-                        ));
+                        return Err(LispError::Signal(format!(
+                            "rx `{head}' needs a count and a form"
+                        )));
                     }
                     let min = items[1].as_integer()?;
                     if min < 0 {
@@ -503,10 +504,14 @@ fn compile_rx_form(
                             let Some(Value::Symbol(kind)) = charset.first() else {
                                 return Err(LispError::Signal("Unsupported rx `not' form".into()));
                             };
-                            if !matches!(kind.as_str(), "any" | "in" | "char") {
-                                return Err(LispError::Signal("Unsupported rx `not' form".into()));
+                            if matches!(kind.as_str(), "any" | "in" | "char") {
+                                compile_rx_char_class(&charset[1..], true)
+                            } else if matches!(kind.as_str(), "or" | "|") {
+                                let fragments = rx_or_char_class_fragments(interp, &charset[1..])?;
+                                compile_rx_char_class(&fragments, true)
+                            } else {
+                                Err(LispError::Signal("Unsupported rx `not' form".into()))
                             }
-                            compile_rx_char_class(&charset[1..], true)
                         }
                         other => compile_rx_char_class(std::slice::from_ref(other), true),
                     }
@@ -553,6 +558,39 @@ fn compile_rx_form(
             other.type_name()
         ))),
     }
+}
+
+fn rx_or_char_class_fragments(
+    interp: &mut Interpreter,
+    items: &[Value],
+) -> Result<Vec<Value>, LispError> {
+    let mut fragments = Vec::new();
+    for item in items {
+        match item {
+            Value::Cons(_, _) => {
+                let parts = item.to_vec()?;
+                let Some(Value::Symbol(head)) = parts.first() else {
+                    return Err(LispError::Signal("Unsupported rx `not' form".into()));
+                };
+                match head.as_str() {
+                    "any" | "in" | "char" => fragments.extend(parts[1..].iter().cloned()),
+                    "or" | "|" => {
+                        fragments.extend(rx_or_char_class_fragments(interp, &parts[1..])?)
+                    }
+                    _ => return Err(LispError::Signal("Unsupported rx `not' form".into())),
+                }
+            }
+            Value::Symbol(symbol) => {
+                if let Some(expanded) = expand_rx_definition(interp, symbol, &[])? {
+                    fragments.extend(rx_or_char_class_fragments(interp, &[expanded])?);
+                } else {
+                    fragments.push(item.clone());
+                }
+            }
+            other => fragments.push(other.clone()),
+        }
+    }
+    Ok(fragments)
 }
 
 fn rx_syntax_code_from_name(name: &str) -> Option<char> {

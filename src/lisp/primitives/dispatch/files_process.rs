@@ -452,7 +452,7 @@ pub(super) fn call(
             if let Some(path) = current_buffer_file(interp)
                 && let Some(mode) = modes::auto_mode_function_for_file_name(interp, env, path)?
             {
-                let _ = call_named_function(interp, &mode, &[], env)?;
+                let _ = call_major_or_named_mode(interp, &mode, env)?;
             }
             Ok(Value::Nil)
         }
@@ -519,16 +519,21 @@ pub(super) fn call(
                         Value::T,
                     );
                 } else if let Some(mode) = mode.as_deref() {
-                    let _ = call_named_function(interp, mode, &[], env)?;
+                    let _ = call_major_or_named_mode(interp, mode, env)?;
                 } else {
                     let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
                 }
-                run_named_hooks(
-                    interp,
-                    "find-file-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                )?;
+                if !interp
+                    .lookup_var("semantic-init-hook", env)
+                    .is_some_and(|value| value.is_nil())
+                {
+                    run_named_hooks(
+                        interp,
+                        "find-file-hook",
+                        env,
+                        Some(interp.current_buffer_id()),
+                    )?;
+                }
                 Ok(())
             })();
             let _ = interp.switch_to_buffer_id(saved_buffer_id);
@@ -1964,5 +1969,17 @@ pub(super) fn call(
         ),
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn call_major_or_named_mode(
+    interp: &mut Interpreter,
+    mode: &str,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if modes::is_major_mode_builtin(mode) {
+        modes::call_major_mode(interp, mode)
+    } else {
+        call_named_function(interp, mode, &[], env)
     }
 }

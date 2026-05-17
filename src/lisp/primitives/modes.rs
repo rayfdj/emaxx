@@ -114,11 +114,11 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
         }
         "python-base-mode" => {
             derived_mode_set_parent(interp, "python-base-mode", Some("prog-mode"));
-            activate_hash_comment_mode(interp, "python-base-mode", "Python")
+            activate_hash_comment_mode_with_semantic(interp, "python-base-mode", "Python", false)
         }
         "python-mode" => {
             derived_mode_set_parent(interp, "python-mode", Some("python-base-mode"));
-            activate_hash_comment_mode(interp, "python-mode", "Python")
+            activate_hash_comment_mode_with_semantic(interp, "python-mode", "Python", false)
         }
         "conf-toml-mode" => {
             derived_mode_set_parent(interp, "conf-toml-mode", Some("conf-mode"));
@@ -141,6 +141,15 @@ fn activate_hash_comment_mode(
     mode: &str,
     mode_name: &str,
 ) -> Result<Value, LispError> {
+    activate_hash_comment_mode_with_semantic(interp, mode, mode_name, true)
+}
+
+fn activate_hash_comment_mode_with_semantic(
+    interp: &mut Interpreter,
+    mode: &str,
+    mode_name: &str,
+    call_semantic_setup: bool,
+) -> Result<Value, LispError> {
     if interp
         .get_symbol_property(mode, "derived-mode-parent")
         .is_none()
@@ -156,7 +165,11 @@ fn activate_hash_comment_mode(
         "comment-start-skip",
         Value::String("#+\\s-*".into()),
     );
-    activate_semantic_buffer_if_enabled(interp, buffer_id)?;
+    if call_semantic_setup {
+        activate_semantic_buffer_if_enabled(interp, buffer_id)?;
+    } else {
+        mark_semantic_buffer_active_if_enabled(interp, buffer_id)?;
+    }
     Ok(Value::Nil)
 }
 
@@ -321,17 +334,6 @@ fn mark_semantic_buffer_active_if_enabled(
         return Ok(());
     }
     interp.set_buffer_local_value(buffer_id, "semantic-new-buffer-fcn-was-run", Value::T);
-    if interp
-        .lookup_function("semantic-lex-init", &Vec::new())
-        .is_ok()
-    {
-        call_function_value(
-            interp,
-            &Value::Symbol("semantic-lex-init".into()),
-            &[],
-            &mut Vec::new(),
-        )?;
-    }
     Ok(())
 }
 
