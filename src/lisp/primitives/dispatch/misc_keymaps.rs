@@ -2525,7 +2525,12 @@ fn semantic_analyze_possible_completions(
                 &mut matches,
             );
         }
+        let before_locals = matches.len();
         collect_semantic_local_variable_completion_tags(interp, prefix, &mut matches);
+        let local_matches_added = matches.len() > before_locals;
+        if local_matches_added {
+            collect_semantic_external_variable_completion_tags(&tags, prefix, &mut matches);
+        }
         if matches.is_empty() {
             collect_semantic_using_namespace_completion_tags(interp, &tags, prefix, &mut matches);
         }
@@ -3983,6 +3988,34 @@ fn collect_semantic_named_completion_tags(tags: &[Value], prefix: &str, matches:
     }
 }
 
+fn collect_semantic_external_variable_completion_tags(
+    tags: &[Value],
+    prefix: &str,
+    matches: &mut Vec<Value>,
+) {
+    for tag in tags {
+        if semantic_tag_class(tag).as_deref() == Some("variable")
+            && semantic_tag_name(tag)
+                .as_deref()
+                .is_some_and(|name| name.starts_with(prefix))
+        {
+            matches.push(tag.clone());
+        }
+        if semantic_tag_class(tag).as_deref() == Some("type")
+            && semantic_tag_attr(tag, ":type")
+                .and_then(|value| string_text(&value).ok())
+                .as_deref()
+                == Some("namespace")
+        {
+            collect_semantic_external_variable_completion_tags(
+                &semantic_tag_members(tag),
+                prefix,
+                matches,
+            );
+        }
+    }
+}
+
 fn collect_semantic_qualified_namespace_completion_tags(
     tags: &[Value],
     namespace: &str,
@@ -4989,8 +5022,9 @@ impl<'a> CppTagParser<'a> {
             return None;
         };
         self.skip_ws();
-        let name = self.read_qualified_ident()?;
-        let name = name.rsplit("::").next().unwrap_or(&name).to_string();
+        let name = self
+            .read_qualified_ident()
+            .map(|name| name.rsplit("::").next().unwrap_or(&name).to_string());
         let header_start = self.pos;
         if self.skip_until_type_body().is_none() {
             self.pos = start;
@@ -4999,10 +5033,17 @@ impl<'a> CppTagParser<'a> {
         let header = &self.source[header_start..self.pos];
         self.pos += 1;
         let members = self.parse_until(Some(b'}'));
-        let variable_name = self.read_trailing_decl_name();
-        if variable_name.is_some() {
+        let variable_names = self.read_trailing_decl_names();
+        if !variable_names.is_empty() {
             self.consume_optional_statement_tail();
         }
+        let type_name = name
+            .or_else(|| {
+                variable_names
+                    .first()
+                    .map(|variable| format!("__anon_{kind}_{variable}"))
+            })
+            .unwrap_or_else(|| format!("__anon_{kind}_{}", self.pos));
         let mut attrs = vec![
             (":members", Value::list(members)),
             (":type", Value::String(kind.into())),
@@ -5023,11 +5064,11 @@ impl<'a> CppTagParser<'a> {
         ) {
             attrs.push((":superclasses", superclasses));
         }
-        let mut tags = vec![semantic_type_tag(&name, attrs)?];
-        if let Some(variable_name) = variable_name {
+        let mut tags = vec![semantic_type_tag(&type_name, attrs)?];
+        for variable_name in variable_names.into_iter().rev() {
             tags.insert(
                 0,
-                semantic_variable_tag(&variable_name, semantic_type_ref(&name), false),
+                semantic_variable_tag(&variable_name, semantic_type_ref(&type_name), false),
             );
         }
         if tags.len() == 1 {
@@ -5320,6 +5361,30 @@ impl<'a> CppTagParser<'a> {
         name
     }
 
+    fn read_trailing_decl_names(&mut self) -> Vec<String> {
+        self.skip_ws();
+        let checkpoint = self.pos;
+        while self.pos < self.source.len() {
+            match self.peek_byte() {
+                Some(b';') => break,
+                Some(b'{') | Some(b'}') | None => {
+                    self.pos = checkpoint;
+                    return Vec::new();
+                }
+                _ => self.pos += 1,
+            }
+        }
+        if self.peek_byte() != Some(b';') {
+            self.pos = checkpoint;
+            return Vec::new();
+        }
+        let text = &self.source[checkpoint..self.pos];
+        self.pos = checkpoint;
+        text.split(',')
+            .filter_map(cpp_trailing_decl_name)
+            .collect::<Vec<_>>()
+    }
+
     fn consume_optional_statement_tail(&mut self) {
         while self.pos < self.source.len() && self.peek_byte() != Some(b';') {
             if self.peek_byte() == Some(b'{') || self.peek_byte() == Some(b'}') {
@@ -5471,6 +5536,22 @@ fn parse_cpp_using_statement(statement: &str) -> Option<Value> {
             (":type", Value::String("typedef".into())),
         ],
     )
+}
+
+fn cpp_trailing_decl_name(decl: &str) -> Option<String> {
+    let decl = decl
+        .split('=')
+        .next()
+        .unwrap_or(decl)
+        .split('[')
+        .next()
+        .unwrap_or(decl)
+        .trim()
+        .trim_matches(|ch| matches!(ch, '*' | '&'));
+    let name = decl
+        .rsplit(|ch: char| !is_ident_byte(ch as u8))
+        .find(|part| !part.is_empty())?;
+    Some(name.to_string())
 }
 
 fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
