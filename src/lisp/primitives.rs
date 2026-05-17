@@ -518,6 +518,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
     matches!(
         name,
         "user-error"
+            | "read-only-mode"
             | "byte-compile"
             | "byte-compile-check-lambda-list"
             | "cl-type-of"

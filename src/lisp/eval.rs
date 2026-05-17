@@ -1131,6 +1131,8 @@ impl Interpreter {
         interp.set_global_binding("glyphless-char-display", glyphless_char_display);
         interp.set_global_binding("buffer-read-only", Value::Nil);
         interp.mark_auto_buffer_local("buffer-read-only");
+        interp.set_global_binding("read-only-mode", Value::Nil);
+        interp.mark_auto_buffer_local("read-only-mode");
         interp.set_global_binding("current-prefix-arg", Value::Nil);
         interp.set_global_binding("this-command", Value::Nil);
         interp.set_global_binding("last-command", Value::Nil);
