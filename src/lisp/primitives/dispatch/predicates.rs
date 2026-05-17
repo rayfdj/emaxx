@@ -517,8 +517,8 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(
-                if interp.lookup_function(symbol, env).is_ok()
-                    || is_builtin(symbol)
+                if is_builtin(symbol)
+                    || interp.lookup_function(symbol, env).is_ok()
                     || is_special_form_name(symbol)
                 {
                     Value::T

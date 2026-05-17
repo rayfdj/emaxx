@@ -997,4 +997,44 @@ impl Interpreter {
         self.put_symbol_property(&name, "rx-definition", binding);
         Ok(Value::Symbol(name))
     }
+
+    pub(super) fn sf_rx_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::Signal("rx-let needs bindings and a body".into()));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut saved = Vec::new();
+        for binding in bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                return Err(LispError::Signal("Bad `rx-let' binding".into()));
+            }
+            let name = parts[0].as_symbol()?.to_string();
+            let value = match &parts[1..] {
+                [definition] => Value::list([definition.clone()]),
+                [params, definition] => Value::list([params.clone(), definition.clone()]),
+                _ => {
+                    return Err(LispError::Signal(format!(
+                        "Bad `rx-let' definition of {name}: {}",
+                        Value::list(parts[1..].iter().cloned())
+                    )));
+                }
+            };
+            saved.push((
+                name.clone(),
+                self.get_symbol_property(&name, "rx-definition"),
+            ));
+            self.put_symbol_property(&name, "rx-definition", value);
+        }
+
+        let result = self.sf_progn(&items[2..], env);
+        for (name, previous) in saved.into_iter().rev() {
+            if let Some(previous) = previous {
+                self.put_symbol_property(&name, "rx-definition", previous);
+            } else {
+                self.remove_symbol_property(&name, "rx-definition");
+            }
+        }
+        result
+    }
 }

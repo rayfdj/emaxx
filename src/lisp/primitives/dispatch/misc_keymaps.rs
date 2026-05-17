@@ -4563,6 +4563,25 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
             .buffer
             .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
         parse_semantic_javascript_tags(&source)
+    } else if interp.buffer.file.as_deref().is_some_and(|path| {
+        Path::new(path).file_name().and_then(|name| name.to_str()) == Some("Makefile")
+    }) {
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        parse_semantic_makefile_tags(&source)
+    } else if interp
+        .buffer
+        .file
+        .as_deref()
+        .and_then(|path| Path::new(path).extension())
+        .and_then(|ext| ext.to_str())
+        == Some("py")
+    {
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        parse_semantic_python_tags(&source)
     } else if interp
         .buffer
         .file
@@ -4628,6 +4647,67 @@ fn parse_semantic_javascript_tags(source: &str) -> Vec<Value> {
             let rest = line.strip_prefix("function ")?;
             let open = rest.find('(')?;
             let close = rest[open + 1..].find(')')? + open + 1;
+            let name = rest[..open].trim();
+            if name.is_empty() {
+                return None;
+            }
+            let arguments = rest[open + 1..close]
+                .split(',')
+                .filter_map(|arg| {
+                    let arg = arg.trim();
+                    (!arg.is_empty()).then(|| semantic_tag(arg, "variable", Value::Nil))
+                })
+                .collect::<Vec<_>>();
+            let mut attrs = Vec::new();
+            if !arguments.is_empty() {
+                attrs.push((":arguments", Value::list(arguments)));
+            }
+            semantic_function_tag(name, attrs)
+        })
+        .collect()
+}
+
+fn parse_semantic_makefile_tags(source: &str) -> Vec<Value> {
+    source
+        .lines()
+        .filter_map(|line| {
+            if line.starts_with(['\t', ' ']) {
+                return None;
+            }
+            let line = line.split('#').next().unwrap_or(line).trim();
+            if line.is_empty() || line.contains('=') {
+                return None;
+            }
+            let (target, dependencies) = line.split_once(':')?;
+            let target = target.trim();
+            if target.is_empty() {
+                return None;
+            }
+            let arguments = dependencies
+                .split_whitespace()
+                .filter(|dependency| !dependency.is_empty())
+                .map(|dependency| Value::String(dependency.into()))
+                .collect::<Vec<_>>();
+            let mut attrs = Vec::new();
+            if !arguments.is_empty() {
+                attrs.push((":arguments", Value::list(arguments)));
+            }
+            semantic_function_tag(target, attrs)
+        })
+        .collect()
+}
+
+fn parse_semantic_python_tags(source: &str) -> Vec<Value> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let line = line.split('#').next().unwrap_or(line).trim();
+            let rest = line.strip_prefix("def ")?;
+            let open = rest.find('(')?;
+            let close = rest[open + 1..].find(')')? + open + 1;
+            if rest[close + 1..].trim() != ":" {
+                return None;
+            }
             let name = rest[..open].trim();
             if name.is_empty() {
                 return None;

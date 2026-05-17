@@ -2756,6 +2756,7 @@ fn is_compat_preloaded_feature(feature: &str) -> bool {
             | "edmacro"
             | "ert-x"
             | "map"
+            | "python"
             | "seq"
             | "subr-x"
             | "thread"
