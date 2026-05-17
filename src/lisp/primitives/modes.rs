@@ -58,7 +58,23 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
             activate_semantic_buffer_if_enabled(interp, buffer_id)?;
             Ok(Value::Nil)
         }
-        "wisent-grammar-mode" => activate_semicolon_comment_mode(interp, name, "Wisent"),
+        "wisent-grammar-mode" => {
+            let buffer_id = interp.current_buffer_id();
+            let result = activate_semicolon_comment_mode(interp, name, "Wisent")?;
+            interp.set_buffer_local_value(buffer_id, "semantic-new-buffer-fcn-was-run", Value::T);
+            if interp
+                .lookup_function("semantic-lex-init", &Vec::new())
+                .is_ok()
+            {
+                call_function_value(
+                    interp,
+                    &Value::Symbol("semantic-lex-init".into()),
+                    &[],
+                    &mut Vec::new(),
+                )?;
+            }
+            Ok(result)
+        }
         "css-base-mode" => {
             derived_mode_set_parent(interp, "css-base-mode", Some("prog-mode"));
             activate_c_block_comment_mode(interp, "css-base-mode", "CSS")
