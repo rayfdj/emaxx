@@ -15,6 +15,7 @@ pub(super) fn is_major_mode_builtin(name: &str) -> bool {
             | "css-base-mode"
             | "css-mode"
             | "latex-mode"
+            | "html-mode"
             | "python-base-mode"
             | "python-mode"
             | "conf-toml-mode"
@@ -90,6 +91,20 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
             interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::Nil);
             interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("%".into()));
             interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            Ok(Value::Nil)
+        }
+        "html-mode" => {
+            derived_mode_set_parent(interp, "html-mode", Some("text-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "html-mode", "HTML");
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("<!--".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String("-->".into()));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String("<!--+\\s-*".into()),
+            );
+            activate_semantic_buffer_if_enabled(interp, buffer_id)?;
             Ok(Value::Nil)
         }
         "python-base-mode" => {

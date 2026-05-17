@@ -144,6 +144,10 @@ pub(crate) fn builtin_auto_mode_alist() -> Value {
             Value::Symbol("java-mode".into()),
         ),
         Value::cons(
+            Value::String("\\.html?\\'".into()),
+            Value::Symbol("html-mode".into()),
+        ),
+        Value::cons(
             Value::String("\\.mk\\'".into()),
             Value::Symbol("makefile-bsdmake-mode".into()),
         ),

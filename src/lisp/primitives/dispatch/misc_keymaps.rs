@@ -4551,6 +4551,18 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
             .buffer
             .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
         parse_semantic_cpp_tags_at_path(&path, &source)
+    } else if interp
+        .buffer
+        .file
+        .as_deref()
+        .and_then(|path| Path::new(path).extension())
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "html" | "htm"))
+    {
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        parse_semantic_html_tags(&source)
     } else {
         interp
             .lookup_var("semanticdb-current-table", env)
@@ -4567,6 +4579,57 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
     }
     interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
     Ok(Value::list(tags))
+}
+
+fn parse_semantic_html_tags(source: &str) -> Vec<Value> {
+    let mut tags = Vec::new();
+    let mut rest = source;
+    while let Some(open_index) = rest.find("<h") {
+        rest = &rest[open_index + 2..];
+        let Some(level_end) = rest.find('>') else {
+            break;
+        };
+        if !rest[..level_end].chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        rest = &rest[level_end + 1..];
+        let Some(close_index) = rest.find("</h") else {
+            break;
+        };
+        let title = strip_html_tags(&rest[..close_index]).trim().to_string();
+        if !title.is_empty() {
+            let child = semantic_tag(&title, "section", Value::Nil);
+            if let Some(tag) = semantic_type_tag(&title, vec![(":members", Value::list([child]))]) {
+                tags.push(reclass_semantic_tag(tag, "section"));
+            }
+        }
+        rest = &rest[close_index + 3..];
+    }
+    tags
+}
+
+fn strip_html_tags(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn reclass_semantic_tag(tag: Value, class: &str) -> Value {
+    let Ok(mut items) = tag.to_vec() else {
+        return tag;
+    };
+    if items.len() > 1 {
+        items[1] = Value::Symbol(class.into());
+    }
+    Value::list(items)
 }
 
 fn semantic_current_tag_compat(

@@ -78,6 +78,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "copy-abbrev-table"
             | "abbrev-table-name"
             | "byte-to-string"
+            | "make-char"
             | "string-to-char"
             | "char-syntax"
             | "string-to-syntax"
@@ -89,6 +90,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "downcase"
             | "capitalize"
             | "upcase-initials"
+            | "unicode-property-table-internal"
             | "get-char-code-property"
             | "char-code-property-description"
             | "char-resolve-modifiers"
@@ -1299,6 +1301,12 @@ pub(super) fn call(
                 .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", n)))?;
             Ok(Value::String(c.to_string()))
         }
+        "make-char" => {
+            need_arg_range(name, args, 1, 2)?;
+            let _charset = args[0].as_symbol()?;
+            let code = args.get(1).map(Value::as_integer).transpose()?.unwrap_or(0);
+            Ok(Value::Integer(code))
+        }
         "string-to-char" => {
             need_args(name, args, 1)?;
             let string = string_like(&args[0])
@@ -1403,6 +1411,11 @@ pub(super) fn call(
         "upcase-initials" => {
             need_args(name, args, 1)?;
             casify_value(interp, &args[0], CaseAction::UpcaseInitials, env)
+        }
+        "unicode-property-table-internal" => {
+            need_args(name, args, 1)?;
+            let property = args[0].as_symbol()?;
+            Ok(interp.make_char_table(Some(property.into()), Value::Nil))
         }
         "get-char-code-property" => {
             need_args(name, args, 2)?;
