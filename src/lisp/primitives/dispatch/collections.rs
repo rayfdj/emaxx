@@ -39,6 +39,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-char-table-extra-slot"
             | "char-table-range"
             | "set-char-table-range"
+            | "map-char-table"
             | "current-case-table"
             | "standard-case-table"
             | "set-case-table"
@@ -832,6 +833,36 @@ pub(super) fn call(
                 }
             }
             Ok(args[2].clone())
+        }
+
+        "map-char-table" => {
+            need_args(name, args, 2)?;
+            let Value::CharTable(id) = args[1] else {
+                return Err(LispError::TypeError(
+                    "char-table".into(),
+                    args[1].type_name(),
+                ));
+            };
+            let entries = interp
+                .find_char_table(id)
+                .ok_or_else(|| LispError::TypeError("char-table".into(), args[1].type_name()))?
+                .entries
+                .clone();
+            for entry in entries {
+                if entry.value.is_nil() {
+                    continue;
+                }
+                let key = if entry.start == entry.end {
+                    Value::Integer(entry.start as i64)
+                } else {
+                    Value::cons(
+                        Value::Integer(entry.start as i64),
+                        Value::Integer(entry.end as i64),
+                    )
+                };
+                call_function_value(interp, &args[0], &[key, entry.value], env)?;
+            }
+            Ok(Value::Nil)
         }
 
         "current-case-table" => Ok(Value::CharTable(interp.current_case_table_id())),

@@ -19,16 +19,16 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 397/7080 have been committed and pushed.
+- Tests through 399/7080 have been committed and pushed.
 - The latest pushed compatibility commit is
-  `Compat 397/7080: parse Semantic temp C buffers`.
+  `Compat 399/7080: parse Semantic HTML sections`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split and confirmed passing. The
   `todo-test-multiline-item-indentation-2` selector hit a filesystem sandbox
   EPERM during the replay and passed when rerun outside the sandbox.
-- After the 397 C parser/fresh file-buffer changes, Semantic IA selectors
-  380..396 plus `semantic-utest-C` were rerun sequentially.
-- Resume compatibility advancement at test 398/7080.
+- After the 399 HTML mode/parser changes, Semantic parser selectors 397..399
+  were rerun sequentially.
+- Resume compatibility advancement at test 400/7080.
 
 ## Workflow
 
