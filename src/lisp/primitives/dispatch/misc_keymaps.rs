@@ -4557,6 +4557,18 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
         .as_deref()
         .and_then(|path| Path::new(path).extension())
         .and_then(|ext| ext.to_str())
+        == Some("js")
+    {
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        parse_semantic_javascript_tags(&source)
+    } else if interp
+        .buffer
+        .file
+        .as_deref()
+        .and_then(|path| Path::new(path).extension())
+        .and_then(|ext| ext.to_str())
         .is_some_and(|ext| matches!(ext, "html" | "htm"))
     {
         let source = interp
@@ -4606,6 +4618,34 @@ fn parse_semantic_html_tags(source: &str) -> Vec<Value> {
         rest = &rest[close_index + 3..];
     }
     tags
+}
+
+fn parse_semantic_javascript_tags(source: &str) -> Vec<Value> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let line = line.split("//").next().unwrap_or(line).trim();
+            let rest = line.strip_prefix("function ")?;
+            let open = rest.find('(')?;
+            let close = rest[open + 1..].find(')')? + open + 1;
+            let name = rest[..open].trim();
+            if name.is_empty() {
+                return None;
+            }
+            let arguments = rest[open + 1..close]
+                .split(',')
+                .filter_map(|arg| {
+                    let arg = arg.trim();
+                    (!arg.is_empty()).then(|| semantic_tag(arg, "variable", Value::Nil))
+                })
+                .collect::<Vec<_>>();
+            let mut attrs = Vec::new();
+            if !arguments.is_empty() {
+                attrs.push((":arguments", Value::list(arguments)));
+            }
+            semantic_function_tag(name, attrs)
+        })
+        .collect()
 }
 
 fn strip_html_tags(text: &str) -> String {

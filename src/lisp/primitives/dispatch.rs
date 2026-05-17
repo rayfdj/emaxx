@@ -390,6 +390,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "backward-word"
             | "indent-next-tab-stop"
             | "java-mode"
+            | "javascript-mode"
             | "latex-mode"
             | "html-mode"
             | "skip-chars-forward"

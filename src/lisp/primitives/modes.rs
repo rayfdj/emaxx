@@ -8,6 +8,7 @@ pub(super) fn is_major_mode_builtin(name: &str) -> bool {
             | "c-mode"
             | "c++-mode"
             | "java-mode"
+            | "javascript-mode"
             | "makefile-bsdmake-mode"
             | "srecode-template-mode"
             | "texinfo-mode"
@@ -41,6 +42,10 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
         "java-mode" => {
             derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
             activate_c_family_mode(interp, "java-mode", "Java")
+        }
+        "javascript-mode" => {
+            derived_mode_set_parent(interp, "javascript-mode", Some("prog-mode"));
+            activate_c_family_mode_with_semantic(interp, "javascript-mode", "JavaScript", false)
         }
         "makefile-bsdmake-mode" => {
             activate_hash_comment_mode(interp, "makefile-bsdmake-mode", "BSDmakefile")
@@ -243,6 +248,15 @@ fn activate_c_family_mode(
     mode: &str,
     mode_name: &str,
 ) -> Result<Value, LispError> {
+    activate_c_family_mode_with_semantic(interp, mode, mode_name, true)
+}
+
+fn activate_c_family_mode_with_semantic(
+    interp: &mut Interpreter,
+    mode: &str,
+    mode_name: &str,
+    call_semantic_setup: bool,
+) -> Result<Value, LispError> {
     if !interp.has_feature("newcomment") && interp.resolve_load_target("newcomment").is_some() {
         interp.load_target("newcomment")?;
     }
@@ -288,8 +302,37 @@ fn activate_c_family_mode(
     interp.char_table_set(syntax_table_id, '\n' as u32, Value::String("> b".into()))?;
     interp.char_table_set(syntax_table_id, '\\' as u32, Value::String("\\".into()))?;
     interp.set_current_syntax_table(syntax_table_id);
-    activate_semantic_buffer_if_enabled(interp, buffer_id)?;
+    if call_semantic_setup {
+        activate_semantic_buffer_if_enabled(interp, buffer_id)?;
+    } else {
+        mark_semantic_buffer_active_if_enabled(interp, buffer_id)?;
+    }
     Ok(Value::Nil)
+}
+
+fn mark_semantic_buffer_active_if_enabled(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+) -> Result<(), LispError> {
+    if !interp
+        .lookup_var("semantic-mode", &Vec::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    interp.set_buffer_local_value(buffer_id, "semantic-new-buffer-fcn-was-run", Value::T);
+    if interp
+        .lookup_function("semantic-lex-init", &Vec::new())
+        .is_ok()
+    {
+        call_function_value(
+            interp,
+            &Value::Symbol("semantic-lex-init".into()),
+            &[],
+            &mut Vec::new(),
+        )?;
+    }
+    Ok(())
 }
 
 fn auto_mode_symbol_from_value(value: &Value) -> Option<String> {
