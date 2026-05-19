@@ -164,6 +164,7 @@ fn is_time_builtin(name: &str) -> bool {
             | "time-equal-p"
             | "time-less-p"
             | "time-since"
+            | "time-to-seconds"
             | "time-subtract"
     )
 }

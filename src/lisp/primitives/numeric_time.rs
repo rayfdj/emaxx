@@ -1814,7 +1814,7 @@ pub(crate) fn call_time_builtin(
                 Value::Nil
             })
         }
-        "float-time" => {
+        "float-time" | "time-to-seconds" => {
             need_arg_range(name, args, 0, 1)?;
             let value = args.first().unwrap_or(&Value::Nil);
             Ok(Value::Float(exact_time_to_f64(&exact_time_from_value(
