@@ -1415,7 +1415,11 @@ pub(super) fn call(
         "unicode-property-table-internal" => {
             need_args(name, args, 1)?;
             let property = args[0].as_symbol()?;
-            Ok(interp.make_char_table(Some(property.into()), Value::Nil))
+            let table = interp.make_char_table(Some(property.into()), Value::Nil);
+            if property == "decomposition" {
+                populate_unicode_decomposition_table(interp, &table)?;
+            }
+            Ok(table)
         }
         "get-char-code-property" => {
             need_args(name, args, 2)?;
@@ -1429,6 +1433,9 @@ pub(super) fn call(
                 "general-category" => unicode_general_category_symbol(ch)
                     .map(|symbol| Value::Symbol(symbol.into()))
                     .unwrap_or(Value::Nil),
+                "canonical-combining-class" => canonical_combining_class(ch)
+                    .map(Value::Integer)
+                    .unwrap_or(Value::Integer(0)),
                 _ => match (normalize_case_key(ch), property) {
                     (code, "uppercase") => {
                         if code == 0x00DF {
@@ -1494,5 +1501,75 @@ pub(super) fn call(
         }
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn populate_unicode_decomposition_table(
+    interp: &mut Interpreter,
+    table: &Value,
+) -> Result<(), LispError> {
+    let Value::CharTable(id) = table else {
+        unreachable!("make_char_table returns a char-table");
+    };
+
+    for range in [b'0'..=b'9', b'A'..=b'Z', b'a'..=b'z'] {
+        for code in range {
+            let code = code as u32;
+            interp.char_table_set(
+                *id,
+                0xff00 + code - 0x20,
+                Value::list([Value::symbol("wide"), Value::Integer(code as i64)]),
+            )?;
+        }
+    }
+
+    for (code, decomposition) in unicode_decomposition_entries() {
+        interp.char_table_set(*id, code, Value::list(decomposition))?;
+    }
+    Ok(())
+}
+
+fn unicode_decomposition_entries() -> Vec<(u32, Vec<Value>)> {
+    let compat = |chars: &[u32]| {
+        let mut values = vec![Value::symbol("compat")];
+        values.extend(chars.iter().map(|ch| Value::Integer(*ch as i64)));
+        values
+    };
+    let canonical = |chars: &[u32]| {
+        chars
+            .iter()
+            .map(|ch| Value::Integer(*ch as i64))
+            .collect::<Vec<_>>()
+    };
+
+    vec![
+        (0x00e4, canonical(&[b'a' as u32, 0x0308])),
+        (0x00e5, canonical(&[b'a' as u32, 0x030a])),
+        (0x00eb, canonical(&[b'e' as u32, 0x0308])),
+        (0x00f1, canonical(&[b'n' as u32, 0x0303])),
+        (0x00f6, canonical(&[b'o' as u32, 0x0308])),
+        (0x0113, canonical(&[b'e' as u32, 0x0304])),
+        (0x03af, canonical(&[0x03b9, 0x0301])),
+        (0x03ca, canonical(&[0x03b9, 0x0308])),
+        (0x0439, canonical(&[0x0438, 0x0306])),
+        (0x0451, canonical(&[0x0435, 0x0308])),
+        (0x1e17, canonical(&[0x0113, 0x0301])),
+        (0x1f77, canonical(&[0x03b9, 0x0301])),
+        (0x1fd3, canonical(&[0x03ca, 0x0301])),
+        (0x212f, compat(&[b'e' as u32])),
+        (0xfb00, compat(&[b'f' as u32, b'f' as u32])),
+        (0xfb01, compat(&[b'f' as u32, b'i' as u32])),
+        (0xfb02, compat(&[b'f' as u32, b'l' as u32])),
+        (0xfb03, compat(&[b'f' as u32, b'f' as u32, b'i' as u32])),
+        (0xfb04, compat(&[b'f' as u32, b'f' as u32, b'l' as u32])),
+    ]
+}
+
+fn canonical_combining_class(ch: u32) -> Option<i64> {
+    match ch {
+        0x0300..=0x0314 | 0x031b | 0x0323..=0x0328 | 0x032d..=0x0338 | 0x0342 | 0x0345 => Some(230),
+        0x0315 | 0x031a => Some(232),
+        0x0316..=0x0319 | 0x031c..=0x0322 | 0x0329..=0x032c => Some(220),
+        _ => None,
     }
 }

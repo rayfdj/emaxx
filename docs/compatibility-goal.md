@@ -19,20 +19,24 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 407/7080 are verified locally and ready to commit/push.
-- The latest pushed compatibility commit is still
-  `Compat 405/7080: parse Semantic Makefile and Python tags` until the 407
-  batch is committed.
+- Tests through 415/7080 are verified locally.
+- The latest compatibility batch is
+  `Compat 415/7080: support char-fold decomposition`.
 - The 1..378 exact selected-test prefix was replayed after the
-  `primitives.rs`/`eval.rs` split and replayed again after the SRecode/Semantic
-  fixes; all 378 passed.
-- Selectors 379..396 passed as a grouped Semantic IA replay. Selectors 397..407
-  passed as individual literal manifest selectors because
-  `test/lisp/cedet/semantic-utest.el` is order-sensitive as a grouped run.
-- The next selector to advance after the 407 batch is `char-fold--speed-test`
-  in `test/lisp/char-fold-tests.el` at 408/7080.
-- Resume compatibility advancement at test 408/7080 after committing and
-  pushing the 407 batch.
+  `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
+  after the char-fold/regexp changes; all 378 passed.
+- Selectors 379..396 passed as a grouped Semantic IA replay after the
+  char-fold/regexp changes. Selectors 397..407 passed as individual literal
+  manifest selectors because `test/lisp/cedet/semantic-utest.el` is
+  order-sensitive as a grouped run.
+- Selectors 408..414 in `test/lisp/char-fold-tests.el` and selector 415
+  `color-tests-cie-de2000` passed individually after adding Unicode
+  decomposition support for char folding and the `time-to-seconds` time
+  primitive.
+- The next selector to advance after the 415 batch is
+  `color-tests-cie-lab->srgb` in `test/lisp/color-tests.el` at 416/7080.
+- Resume compatibility advancement at test 416/7080 after pushing the 415
+  batch.
 
 ## Workflow
 
