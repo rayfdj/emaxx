@@ -305,6 +305,11 @@ impl Interpreter {
                     .or_else(primitives::current_user_login_name)
                     .unwrap_or_else(|| "user".into()),
             )),
+            "user-mail-address" => Some(Value::String(format!(
+                "{}@{}",
+                primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
+                primitives::system_name_value()
+            ))),
             "default-directory" => Some(Value::String(primitives::default_directory())),
             "current-language-environment" => Some(Value::String("English".into())),
             "window-system" => Some(Value::Nil),

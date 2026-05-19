@@ -233,6 +233,24 @@ fn lexical_closures_preserve_mutated_bindings_across_funcalls() {
 }
 
 #[test]
+fn lexical_closures_do_not_capture_same_shaped_record_frames() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                 (defclass sample-closure-record nil ((name :initarg :name)))
+                 (let* ((first (make-instance 'sample-closure-record :name 'first))
+                        (second (make-instance 'sample-closure-record :name 'second))
+                        (make-callback
+                         (lambda (sti dictionary)
+                           (lambda () (slot-value sti 'name))))
+                        (callback (funcall make-callback first nil)))
+                   ((lambda (sti dictionary) (funcall callback)) second nil)))"
+        ),
+        Value::Symbol("first".into())
+    );
+}
+
+#[test]
 fn insert_file_contents_leaves_point_at_insert_start() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-insert-file-contents-{}.txt",
@@ -1031,6 +1049,37 @@ fn cl_defmethod_dispatches_over_unspecialized_and_parent_eieio_methods() {
                     (make-instance 'sample-method-table :file \"a.c\")))"
         ),
         Value::String("a.c".into())
+    );
+}
+
+#[test]
+fn cl_defmethod_keeps_sibling_eieio_methods_separate() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-method-root nil nil)
+                   (defclass sample-method-left (sample-method-root) nil)
+                   (defclass sample-method-right (sample-method-root) nil)
+                   (cl-defmethod sample-method-sibling ((object sample-method-left)) 'left)
+                   (cl-defmethod sample-method-sibling ((object sample-method-right)) 'right)
+                   (sample-method-sibling (make-instance 'sample-method-left)))"
+        ),
+        Value::Symbol("left".into())
+    );
+}
+
+#[test]
+fn cl_defmethod_prefers_child_over_later_parent_method() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-method-root nil nil)
+                   (defclass sample-method-child (sample-method-root) nil)
+                   (cl-defmethod sample-method-late-parent ((object sample-method-child)) 'child)
+                   (cl-defmethod sample-method-late-parent ((object sample-method-root)) 'root)
+                   (sample-method-late-parent (make-instance 'sample-method-child)))"
+        ),
+        Value::Symbol("child".into())
     );
 }
 

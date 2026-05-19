@@ -695,8 +695,8 @@ pub(super) fn regexp_quote_elisp(pattern: &str) -> String {
             ')' => quoted.push_str("[)]"),
             '[' => quoted.push_str("\\["),
             ']' => quoted.push_str("\\]"),
-            '{' => quoted.push_str("\\{"),
-            '}' => quoted.push_str("\\}"),
+            '{' => quoted.push_str("[{]"),
+            '}' => quoted.push_str("[}]"),
             '\\' => quoted.push_str("[\\\\]"),
             '.' | '*' | '+' | '?' | '^' | '$' | '|' => {
                 quoted.push('\\');
