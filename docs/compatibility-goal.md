@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 415/7080 are verified locally.
+- Tests through 446/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 415/7080: support char-fold decomposition`.
+  `Compat 446/7080: resolve color values`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed.
@@ -33,9 +33,11 @@ counts as the progress denominator.
   `color-tests-cie-de2000` passed individually after adding Unicode
   decomposition support for char folding and the `time-to-seconds` time
   primitive.
-- The next selector to advance after the 415 batch is
-  `color-tests-cie-lab->srgb` in `test/lisp/color-tests.el` at 416/7080.
-- Resume compatibility advancement at test 416/7080 after pushing the 415
+- Selectors 416..446 passed individually after adding `color-values` and named
+  color parsing for the existing color conversion path.
+- Selector 447, `completion-preview` in
+  `test/lisp/completion-preview-tests.el`, is the next known failure.
+- Resume compatibility advancement at test 447/7080 after pushing the 446
   batch.
 
 ## Workflow

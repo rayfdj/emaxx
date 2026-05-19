@@ -89,6 +89,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "face-background"
             | "set-face-attribute"
             | "color-distance"
+            | "color-values"
             | "color-values-from-color-spec"
             | "selected-window"
             | "window-buffer"
@@ -1111,6 +1112,23 @@ pub(super) fn call(
         }
         "color-values-from-color-spec" => {
             need_args(name, args, 1)?;
+            Ok(parse_color_spec(&string_text(&args[0])?)
+                .map(|[r, g, b]| {
+                    Value::list([
+                        Value::Integer(i64::from(r)),
+                        Value::Integer(i64::from(g)),
+                        Value::Integer(i64::from(b)),
+                    ])
+                })
+                .unwrap_or(Value::Nil))
+        }
+        "color-values" => {
+            need_arg_range(name, args, 1, 2)?;
+            if matches!(&args[0], Value::Symbol(symbol) if symbol == "unspecified")
+                || matches!(&args[0], Value::String(text) if matches!(text.as_str(), "unspecified-fg" | "unspecified-bg"))
+            {
+                return Ok(Value::Nil);
+            }
             Ok(parse_color_spec(&string_text(&args[0])?)
                 .map(|[r, g, b]| {
                     Value::list([
