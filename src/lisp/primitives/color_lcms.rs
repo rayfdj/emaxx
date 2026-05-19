@@ -1,6 +1,10 @@
 use super::*;
 
 pub(crate) fn parse_color_spec(spec: &str) -> Option<[u16; 3]> {
+    if let Some(values) = named_color_spec(spec) {
+        return Some(values);
+    }
+
     if let Some(rest) = spec.strip_prefix('#') {
         if rest.is_empty() || rest.len() % 3 != 0 {
             return None;
@@ -55,6 +59,17 @@ pub(crate) fn parse_color_spec(spec: &str) -> Option<[u16; 3]> {
     }
 
     None
+}
+
+fn named_color_spec(spec: &str) -> Option<[u16; 3]> {
+    match spec.to_ascii_lowercase().as_str() {
+        "black" => Some([0, 0, 0]),
+        "white" => Some([0xffff, 0xffff, 0xffff]),
+        "red" => Some([0xffff, 0, 0]),
+        "green" => Some([0, 0xffff, 0]),
+        "blue" => Some([0, 0, 0xffff]),
+        _ => None,
+    }
 }
 
 pub(crate) fn expand_hex_component(component: &str) -> Option<u16> {

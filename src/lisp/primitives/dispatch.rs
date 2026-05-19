@@ -953,6 +953,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "face-background"
             | "set-face-attribute"
             | "color-distance"
+            | "color-values"
             | "color-values-from-color-spec"
             | "facemenu-add-face"
             | "get-buffer-window"
