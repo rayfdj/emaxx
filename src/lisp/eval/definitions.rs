@@ -1884,6 +1884,23 @@ impl Interpreter {
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
             && previous != Value::BuiltinFunc("ignore".into())
         {
+            let method_name = function_name_from_binding_form(&items[1])?;
+            let previous_specializers = self
+                .get_symbol_property(&method_name, "emaxx-cl-defmethod-specializers")
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default();
+            let more_specific_previous = previous_specializers
+                .iter()
+                .filter_map(|value| value.as_symbol().ok())
+                .filter(|previous_class| {
+                    previous_class != &class_name
+                        && self
+                            .class_allparents(previous_class)
+                            .iter()
+                            .any(|parent| matches!(parent, Value::Symbol(parent) if parent == &class_name))
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             let params = self.parse_params(&lowered_lambda_list)?;
             let call_args = params
                 .iter()
@@ -1920,13 +1937,34 @@ impl Interpreter {
             fallback.push(Value::Symbol("funcall".into()));
             fallback.push(Value::Symbol(previous_method_symbol.clone()));
             fallback.extend(call_args);
+            let mut condition = Value::list([
+                Value::Symbol("cl-typep".into()),
+                Value::Symbol(variable.clone()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol(class_name.clone()),
+                ]),
+            ]);
+            for previous_class in more_specific_previous {
+                condition = Value::list([
+                    Value::Symbol("and".into()),
+                    condition,
+                    Value::list([
+                        Value::Symbol("not".into()),
+                        Value::list([
+                            Value::Symbol("cl-typep".into()),
+                            Value::Symbol(variable.clone()),
+                            Value::list([
+                                Value::Symbol("quote".into()),
+                                Value::Symbol(previous_class),
+                            ]),
+                        ]),
+                    ]),
+                ]);
+            }
             let dispatch_body = vec![Value::list([
                 Value::Symbol("if".into()),
-                Value::list([
-                    Value::Symbol("cl-typep".into()),
-                    Value::Symbol(variable),
-                    Value::list([Value::Symbol("quote".into()), Value::Symbol(class_name)]),
-                ]),
+                condition,
                 Value::list(method_body),
                 Value::list(fallback),
             ])];
@@ -1935,12 +1973,38 @@ impl Interpreter {
                 Self::stored_value(previous),
             )]]);
             self.set_function_binding(
-                &function_name_from_binding_form(&items[1])?,
+                &method_name,
                 Some(Value::Lambda(params, dispatch_body, closure)),
             );
+            self.add_cl_defmethod_specializer(&method_name, &class_name);
             return Ok(items[1].clone());
         }
-        self.sf_cl_defun(&lowered, env)
+        let result = self.sf_cl_defun(&lowered, env);
+        if let Some((_, class_name)) = first_cl_defmethod_specializer(&items[lambda_list_index])? {
+            self.add_cl_defmethod_specializer(
+                &function_name_from_binding_form(&items[1])?,
+                &class_name,
+            );
+        }
+        result
+    }
+
+    fn add_cl_defmethod_specializer(&mut self, method_name: &str, class_name: &str) {
+        let mut specializers = self
+            .get_symbol_property(method_name, "emaxx-cl-defmethod-specializers")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        if !specializers
+            .iter()
+            .any(|value| matches!(value, Value::Symbol(symbol) if symbol == class_name))
+        {
+            specializers.push(Value::Symbol(class_name.to_string()));
+            self.put_symbol_property(
+                method_name,
+                "emaxx-cl-defmethod-specializers",
+                Value::list(specializers),
+            );
+        }
     }
 
     pub(super) fn sf_oclosure_define(&mut self, items: &[Value]) -> Result<Value, LispError> {

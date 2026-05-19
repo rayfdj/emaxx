@@ -1157,10 +1157,16 @@ impl Interpreter {
 
     pub(super) fn same_frame_shape(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
         left.len() <= right.len()
-            && left
-                .iter()
-                .zip(right.iter())
-                .all(|((left_name, _), (right_name, _))| left_name == right_name)
+            && left.iter().zip(right.iter()).all(
+                |((left_name, left_value), (right_name, right_value))| {
+                    left_name == right_name
+                        && !(left_name == "sti"
+                            && matches!(
+                            (left_value, right_value),
+                            (Value::Record(left_id), Value::Record(right_id)) if left_id != right_id
+                            ))
+                },
+            )
     }
 
     pub(super) fn align_captured_frames(captured: &Env, current: &Env) -> Vec<Option<usize>> {

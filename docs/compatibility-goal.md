@@ -19,18 +19,20 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 405/7080 have been committed and pushed.
-- The latest pushed compatibility commit is
-  `Compat 405/7080: parse Semantic Makefile and Python tags`.
+- Tests through 407/7080 are verified locally and ready to commit/push.
+- The latest pushed compatibility commit is still
+  `Compat 405/7080: parse Semantic Makefile and Python tags` until the 407
+  batch is committed.
 - The 1..378 exact selected-test prefix was replayed after the
-  `primitives.rs`/`eval.rs` split and confirmed passing. The
-  `todo-test-multiline-item-indentation-2` selector hit a filesystem sandbox
-  EPERM during the replay and passed when rerun outside the sandbox.
-- After the Makefile and Python mode/parser changes, Semantic parser selectors
-  400..405 were rerun sequentially.
-- The next failing selector is `srecode-utest-project` in
-  `test/lisp/cedet/srecode-utest-template.el`.
-- Resume compatibility advancement at test 406/7080.
+  `primitives.rs`/`eval.rs` split and replayed again after the SRecode/Semantic
+  fixes; all 378 passed.
+- Selectors 379..396 passed as a grouped Semantic IA replay. Selectors 397..407
+  passed as individual literal manifest selectors because
+  `test/lisp/cedet/semantic-utest.el` is order-sensitive as a grouped run.
+- The next selector to advance after the 407 batch is `char-fold--speed-test`
+  in `test/lisp/char-fold-tests.el` at 408/7080.
+- Resume compatibility advancement at test 408/7080 after committing and
+  pushing the 407 batch.
 
 ## Workflow
 

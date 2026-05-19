@@ -57,9 +57,10 @@ pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
 
 #[derive(Clone)]
 pub(crate) struct EieioSlotSpec {
-    name: String,
-    initargs: Vec<String>,
-    initform: Option<Value>,
+    pub(crate) name: String,
+    pub(crate) initargs: Vec<String>,
+    pub(crate) initform: Option<Value>,
+    pub(crate) class_allocated: bool,
 }
 
 pub(crate) fn eieio_slot_specs(
@@ -91,6 +92,7 @@ pub(crate) fn eieio_slot_specs(
         };
         let mut initargs = Vec::new();
         let mut initform = None;
+        let mut class_allocated = false;
         let mut index = 1usize;
         while index + 1 < parts.len() {
             let Some(keyword) = parts[index].as_symbol().ok() else {
@@ -104,6 +106,9 @@ pub(crate) fn eieio_slot_specs(
                     }
                 }
                 ":initform" => initform = Some(parts[index + 1].clone()),
+                ":allocation" => {
+                    class_allocated = matches!(&parts[index + 1], Value::Symbol(value) if value == ":class" || value == "class");
+                }
                 _ => {}
             }
             index += 2;
@@ -112,15 +117,20 @@ pub(crate) fn eieio_slot_specs(
             name: slot_name,
             initargs,
             initform,
+            class_allocated,
         });
     }
     Ok(slots)
 }
 
 pub(crate) fn eieio_slot_index(slots: &[EieioSlotSpec], slot_name: &str) -> Option<usize> {
-    slots.iter().position(|slot| {
+    slots.iter().rposition(|slot| {
         slot.name == slot_name || slot.initargs.iter().any(|initarg| initarg == slot_name)
     })
+}
+
+fn eieio_class_default_property(slot_name: &str) -> String {
+    format!("emaxx-class-default:{slot_name}")
 }
 
 pub(crate) fn make_eieio_instance(
@@ -146,6 +156,11 @@ pub(crate) fn make_eieio_instance(
             Some(Value::Nil | Value::String(_) | Value::StringObject(_))
         )
     {
+        if let Some(name) = initargs.first()
+            && let Some(slot_index) = slots.iter().rposition(|slot| slot.name == "object-name")
+        {
+            values[slot_index] = name.clone();
+        }
         index = 1;
     }
 
@@ -156,14 +171,28 @@ pub(crate) fn make_eieio_instance(
         }
         if let Some(slot_index) = slots
             .iter()
-            .position(|slot| slot.initargs.iter().any(|candidate| candidate == initarg))
+            .rposition(|slot| slot.initargs.iter().any(|candidate| candidate == initarg))
         {
             values[slot_index] = initargs[index + 1].clone();
         }
         index += 2;
     }
 
-    Ok(interp.create_record(class_name, values))
+    let record = interp.create_record(class_name, values.clone());
+    if let Some(index) = slots
+        .iter()
+        .rposition(|slot| slot.name == "tracking-symbol")
+        && let Some(Value::Symbol(symbol)) = values.get(index)
+    {
+        let current = interp.lookup_var(symbol, env).unwrap_or(Value::Nil);
+        let already_tracked = current
+            .to_vec()
+            .is_ok_and(|items| items.iter().any(|item| item == &record));
+        if !already_tracked {
+            interp.set_global_binding(symbol, Value::cons(record.clone(), current));
+        }
+    }
+    Ok(record)
 }
 
 pub(crate) fn eieio_slot_value(
@@ -184,6 +213,12 @@ pub(crate) fn eieio_slot_value(
     let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
         return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
     };
+    if slots[slot_index].class_allocated
+        && let Some(value) =
+            interp.get_symbol_property(&record.type_name, &eieio_class_default_property(slot_name))
+    {
+        return Ok(value);
+    }
     match record.slots.get(slot_index) {
         Some(Value::Unbound) | None => Err(LispError::SignalValue(Value::list([
             Value::Symbol("unbound-slot".into()),
@@ -246,6 +281,14 @@ pub(crate) fn set_eieio_slot_value(
     let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
         return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
     };
+    if slots[slot_index].class_allocated {
+        interp.put_symbol_property(
+            &type_name,
+            &eieio_class_default_property(slot_name),
+            value.clone(),
+        );
+        return Ok(value);
+    }
     let record = interp
         .find_record_mut(*record_id)
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?;

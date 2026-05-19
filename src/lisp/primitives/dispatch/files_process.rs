@@ -9,6 +9,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "pop-to-buffer-same-window"
             | "create-file-buffer"
             | "buffer-file-name"
+            | "backup-file-name-p"
+            | "auto-save-file-name-p"
             | "visited-file-modtime"
             | "verify-visited-file-modtime"
             | "set-visited-file-modtime"
@@ -237,6 +239,25 @@ pub(super) fn call(
                 .and_then(|buffer| buffer.file.clone())
                 .map(Value::String)
                 .unwrap_or(Value::Nil))
+        }
+        "backup-file-name-p" => {
+            need_args(name, args, 1)?;
+            Ok(if string_text(&args[0])?.ends_with('~') {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "auto-save-file-name-p" => {
+            need_args(name, args, 1)?;
+            let filename = string_text(&args[0])?;
+            Ok(
+                if filename.starts_with('#') && filename.ends_with('#') && filename.len() >= 2 {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "visited-file-modtime" => Ok(interp
             .buffer

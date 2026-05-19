@@ -50,6 +50,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "add-to-invisibility-spec"
             | "invisible-p"
             | "derived-mode-p"
+            | "provided-mode-derived-p"
             | "derived-mode-all-parents"
             | "derived-mode-add-parents"
             | "emaxx-struct-make"
@@ -706,11 +707,35 @@ pub(super) fn call(
                 },
             )
         }
+        "provided-mode-derived-p" => {
+            need_arg_range(name, args, 2, usize::MAX)?;
+            let mode = symbol_name_or_string(&args[0])?;
+            let mut candidates = Vec::new();
+            for value in &args[1..] {
+                if let Ok(symbol) = symbol_name_or_string(value) {
+                    candidates.push(symbol);
+                    continue;
+                }
+                if let Ok(items) = value.to_vec() {
+                    for item in items {
+                        if let Ok(symbol) = symbol_name_or_string(&item) {
+                            candidates.push(symbol);
+                        }
+                    }
+                }
+            }
+            let parents = derived_mode_parent_chain(interp, &mode);
+            Ok(candidates
+                .into_iter()
+                .find(|candidate| parents.iter().any(|parent| parent == candidate))
+                .map(Value::Symbol)
+                .unwrap_or(Value::Nil))
+        }
         "derived-mode-all-parents" => {
             need_arg_range(name, args, 1, 2)?;
-            let mode = args[0].as_symbol()?;
+            let mode = symbol_name_or_string(&args[0])?;
             Ok(Value::list(
-                derived_mode_parent_chain(interp, mode)
+                derived_mode_parent_chain(interp, &mode)
                     .into_iter()
                     .map(Value::Symbol),
             ))
@@ -2101,5 +2126,13 @@ pub(super) fn call(
             Ok(args[2].clone())
         }
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn symbol_name_or_string(value: &Value) -> Result<String, LispError> {
+    if let Ok(symbol) = value.as_symbol() {
+        Ok(symbol.to_string())
+    } else {
+        string_text(value)
     }
 }

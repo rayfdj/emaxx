@@ -67,6 +67,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "seq-subseq"
             | "text-quoting-style"
             | "file-truename"
+            | "user-uid"
             | "group-gid"
             | "group-name"
             | "save-buffer"
@@ -189,6 +190,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
+            | "eieio-class-children"
+            | "class-abstract-p"
+            | "eieio-oref-default"
+            | "eieio-oset-default"
             | "eieio--object-class"
             | "eieio--class-name"
             | "eieio-object-p"
@@ -217,6 +222,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "semantic-clear-toplevel-cache"
             | "semanticdb-typecache-find"
             | "semanticdb-typecache-add-dependant"
+            | "srecode-template-get-table"
             | "eieio-oref"
             | "slot-value"
             | "eieio-oset"
@@ -758,6 +764,7 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?))
         }
+        "user-uid" => Ok(Value::Integer(current_user_id()? as i64)),
         "group-gid" => Ok(Value::Integer(current_group_id()? as i64)),
         "group-name" => {
             need_args(name, args, 1)?;
@@ -1915,12 +1922,60 @@ pub(super) fn call(
                 Value::list([Value::Symbol(symbol), Value::Symbol("t".into())])
             })
         }
-        "cl--class-children" => {
+        "cl--class-children" | "eieio-class-children" => {
             need_args(name, args, 1)?;
             let Some(symbol) = interp.class_name_from_value(&args[0]) else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
             Ok(Value::list(interp.class_children(&symbol)))
+        }
+        "class-abstract-p" => {
+            need_args(name, args, 1)?;
+            let Some(symbol) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            let abstractp = interp
+                .get_symbol_property(&symbol, "emaxx-class-options")
+                .and_then(|options| options.to_vec().ok())
+                .is_some_and(|options| {
+                    options.windows(2).any(|pair| {
+                        matches!(&pair[0], Value::Symbol(option) if option == ":abstract")
+                            && pair[1].is_truthy()
+                    })
+                });
+            Ok(if abstractp { Value::T } else { Value::Nil })
+        }
+        "eieio-oref-default" => {
+            need_args(name, args, 2)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            let slot_name = args[1].as_symbol()?;
+            if let Some(value) =
+                interp.get_symbol_property(&class_name, &eieio_class_default_property(slot_name))
+            {
+                return Ok(value);
+            }
+            let slots = eieio_slot_specs(interp, &class_name)?;
+            if let Some(slot_index) = eieio_slot_index(&slots, slot_name)
+                && let Some(initform) = &slots[slot_index].initform
+            {
+                return interp.eval(initform, env);
+            }
+            Ok(Value::Nil)
+        }
+        "eieio-oset-default" => {
+            need_args(name, args, 3)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            let slot_name = args[1].as_symbol()?;
+            interp.put_symbol_property(
+                &class_name,
+                &eieio_class_default_property(slot_name),
+                args[2].clone(),
+            );
+            Ok(args[2].clone())
         }
         "eieio--object-class" => {
             need_args(name, args, 1)?;
@@ -1985,7 +2040,7 @@ pub(super) fn call(
             let Some(class_name) = interp.class_name_from_value(&args[0]) else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
-            make_eieio_instance(interp, &class_name, &args[1..], false, env)
+            make_eieio_instance(interp, &class_name, &args[1..], true, env)
         }
         "clone" => {
             if args.is_empty() {
@@ -2094,6 +2149,10 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(Value::Nil)
         }
+        "srecode-template-get-table" => {
+            need_arg_range(name, args, 2, 4)?;
+            srecode_template_get_table(interp, args, env)
+        }
         "emaxx-class-make" => {
             need_args(name, args, 2)?;
             let class_name = args[0].as_symbol()?;
@@ -2122,22 +2181,7 @@ pub(super) fn call(
         }
         "cl-typep" => {
             need_args(name, args, 2)?;
-            let target = args[1].as_symbol()?;
-            let actual = cl_type_name(interp, &args[0])?;
-            let matches = target == "t"
-                || (target == "list" && args[0].is_list())
-                || (target == "eieio-object" && matches!(args[0], Value::Record(_)))
-                || target == actual
-                || (!is_builtin_class_name(target)
-                    && interp.value_is_instance_of_class(&args[0], target))
-                || (target == "function"
-                    && matches!(
-                        actual,
-                        "primitive-function"
-                            | "special-form"
-                            | "interpreted-function"
-                            | "byte-code-function"
-                    ));
+            let matches = cl_typep_matches(interp, &args[0], &args[1])?;
             Ok(if matches { Value::T } else { Value::Nil })
         }
         "cl-functionp" => {
@@ -4588,6 +4632,21 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
         .as_deref()
         .and_then(|path| Path::new(path).extension())
         .and_then(|ext| ext.to_str())
+        == Some("srt")
+        || interp
+            .lookup_var("major-mode", env)
+            .is_some_and(|mode| mode == Value::Symbol("srecode-template-mode".into()))
+    {
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        parse_semantic_srecode_template_tags(&source)
+    } else if interp
+        .buffer
+        .file
+        .as_deref()
+        .and_then(|path| Path::new(path).extension())
+        .and_then(|ext| ext.to_str())
         .is_some_and(|ext| matches!(ext, "html" | "htm"))
     {
         let source = interp
@@ -4726,6 +4785,492 @@ fn parse_semantic_python_tags(source: &str) -> Vec<Value> {
             semantic_function_tag(name, attrs)
         })
         .collect()
+}
+
+fn parse_semantic_srecode_template_tags(source: &str) -> Vec<Value> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut tags = Vec::new();
+    let mut pending_dictionaries = Vec::new();
+    let mut variables = std::collections::HashMap::new();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = lines[index].trim();
+        if line.is_empty() || line.starts_with(';') {
+            index += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("set ") {
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            if let (Some(name), Some(value)) = (parts.next(), parts.next())
+                && let Some(value) = parse_srecode_value_resolving(value.trim(), &variables)
+            {
+                remember_srecode_string_value(&mut variables, name, &value);
+                tags.push(semantic_srecode_variable_tag(name, value));
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("sectiondictionary ") {
+            let name = parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
+            let mut entries = vec![Value::String(name)];
+            let mut dictionary_vars = std::collections::HashMap::new();
+            index += 1;
+            while index < lines.len() {
+                let entry_line = lines[index].trim();
+                if entry_line.is_empty() || entry_line.starts_with(';') {
+                    index += 1;
+                    continue;
+                }
+                if entry_line.starts_with("sectiondictionary ")
+                    || entry_line.starts_with("template ")
+                    || entry_line.starts_with("context ")
+                {
+                    break;
+                }
+                if let Some(rest) = entry_line.strip_prefix("set ") {
+                    let mut parts = rest.splitn(2, char::is_whitespace);
+                    if let (Some(name), Some(value)) = (parts.next(), parts.next())
+                        && let Some(value) =
+                            parse_srecode_value_resolving(value.trim(), &dictionary_vars)
+                    {
+                        remember_srecode_string_value(&mut dictionary_vars, name, &value);
+                        entries.push(semantic_srecode_variable_tag(name, value));
+                    }
+                }
+                index += 1;
+            }
+            pending_dictionaries.push(Value::list(entries));
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("context ").map(str::trim)
+            && !name.is_empty()
+        {
+            tags.push(semantic_tag(name, "context", Value::Nil));
+            index += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("template ") {
+            let parts = rest.split_whitespace().collect::<Vec<_>>();
+            if let Some(name) = parts.first() {
+                let args = parts[1..]
+                    .iter()
+                    .map(|arg| Value::String((*arg).into()))
+                    .collect::<Vec<_>>();
+                let mut code = String::new();
+                let mut scan = index + 1;
+                let mut template_dictionaries = std::mem::take(&mut pending_dictionaries);
+                while scan < lines.len() && lines[scan].trim() != "----" {
+                    let header_line = lines[scan].trim();
+                    if let Some(rest) = header_line.strip_prefix("sectiondictionary ") {
+                        let dict_name =
+                            parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
+                        let mut entries = vec![Value::String(dict_name)];
+                        let mut dictionary_vars = std::collections::HashMap::new();
+                        scan += 1;
+                        while scan < lines.len() {
+                            let entry_line = lines[scan].trim();
+                            if entry_line.is_empty() || entry_line.starts_with(';') {
+                                scan += 1;
+                                continue;
+                            }
+                            if entry_line == "----"
+                                || entry_line.starts_with("sectiondictionary ")
+                                || entry_line.starts_with("template ")
+                                || entry_line.starts_with("context ")
+                            {
+                                break;
+                            }
+                            if let Some(rest) = entry_line.strip_prefix("set ") {
+                                let mut parts = rest.splitn(2, char::is_whitespace);
+                                if let (Some(name), Some(value)) = (parts.next(), parts.next())
+                                    && let Some(value) = parse_srecode_value_resolving(
+                                        value.trim(),
+                                        &dictionary_vars,
+                                    )
+                                {
+                                    remember_srecode_string_value(
+                                        &mut dictionary_vars,
+                                        name,
+                                        &value,
+                                    );
+                                    entries.push(semantic_srecode_variable_tag(name, value));
+                                }
+                            }
+                            scan += 1;
+                        }
+                        template_dictionaries.push(Value::list(entries));
+                        continue;
+                    }
+                    if let Some(rest) = header_line.strip_prefix("section ") {
+                        let section_name =
+                            parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
+                        scan += 1;
+                        template_dictionaries.push(parse_srecode_section_dictionary(
+                            &lines,
+                            &mut scan,
+                            section_name,
+                        ));
+                        continue;
+                    }
+                    scan += 1;
+                }
+                if scan < lines.len() {
+                    scan += 1;
+                    let start = scan;
+                    while scan < lines.len() && lines[scan].trim() != "----" {
+                        scan += 1;
+                    }
+                    code = lines[start..scan].join("\n");
+                    if !code.is_empty() {
+                        code.push('\n');
+                    }
+                }
+                let mut attrs = vec![(":code", Value::String(code))];
+                if !args.is_empty() {
+                    attrs.push((":arguments", Value::list(args)));
+                }
+                if !template_dictionaries.is_empty() {
+                    attrs.push((":dictionaries", Value::list(template_dictionaries)));
+                }
+                tags.push(semantic_tag(name, "function", semantic_plist(attrs)));
+                index = scan.saturating_add(1);
+                continue;
+            }
+        }
+        index += 1;
+    }
+    tags
+}
+
+fn parse_srecode_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        Some(value[1..value.len() - 1].to_string())
+    } else {
+        value.split_whitespace().next().map(str::to_string)
+    }
+}
+
+fn parse_srecode_value(value: &str) -> Option<Vec<Value>> {
+    let mut parts = Vec::new();
+    let mut rest = value.trim();
+    while !rest.is_empty() {
+        if let Some(after_quote) = rest.strip_prefix('"') {
+            let Some(end) = after_quote.find('"') else {
+                break;
+            };
+            parts.push(Value::String(after_quote[..end].to_string()));
+            rest = after_quote[end + 1..].trim_start();
+        } else if let Some(after_macro) = rest.strip_prefix("macro") {
+            let after_macro = after_macro.trim_start();
+            if let Some(stripped) = after_macro.strip_prefix('"')
+                && let Some(end) = stripped.find('"')
+            {
+                parts.push(Value::cons(
+                    Value::Symbol("macro".into()),
+                    Value::String(stripped[..end].to_string()),
+                ));
+                rest = stripped[end + 1..].trim_start();
+            } else {
+                let Some(name) = after_macro.split_whitespace().next() else {
+                    break;
+                };
+                parts.push(Value::cons(
+                    Value::Symbol("macro".into()),
+                    Value::String(name.to_string()),
+                ));
+                rest = after_macro
+                    .split_once(char::is_whitespace)
+                    .map(|(_, tail)| tail.trim_start())
+                    .unwrap_or("");
+            }
+        } else {
+            break;
+        }
+    }
+
+    if parts.is_empty() {
+        parse_srecode_string(value).map(|value| vec![Value::String(value)])
+    } else {
+        Some(parts)
+    }
+}
+
+fn parse_srecode_value_resolving(
+    value: &str,
+    variables: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Value>> {
+    let parts = parse_srecode_value(value)?;
+    let mut resolved = String::new();
+    for part in &parts {
+        match part {
+            Value::String(text) => resolved.push_str(text),
+            Value::Cons(_, _) => {
+                let (Value::Symbol(kind), Value::String(name)) = part.cons_values()? else {
+                    return Some(parts);
+                };
+                if kind != "macro" {
+                    return Some(parts);
+                }
+                let Some(value) = variables.get(&name) else {
+                    return Some(parts);
+                };
+                resolved.push_str(value);
+            }
+            _ => return Some(parts),
+        }
+    }
+    if parts.len() == 1 && matches!(parts.first(), Some(Value::String(_))) {
+        Some(parts)
+    } else {
+        Some(vec![Value::String(resolved)])
+    }
+}
+
+fn parse_srecode_section_dictionary(lines: &[&str], scan: &mut usize, name: String) -> Value {
+    let mut entries = vec![Value::String(name)];
+    let mut variables = std::collections::HashMap::new();
+    while *scan < lines.len() {
+        let line = lines[*scan].trim();
+        if line.is_empty() || line.starts_with(';') {
+            *scan += 1;
+            continue;
+        }
+        if line == "end" {
+            *scan += 1;
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("show ") {
+            let name = parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
+            entries.push(Value::list([Value::String(name)]));
+            *scan += 1;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("section ") {
+            let name = parse_srecode_string(rest.trim()).unwrap_or_else(|| rest.trim().into());
+            *scan += 1;
+            entries.push(parse_srecode_section_dictionary(lines, scan, name));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("set ") {
+            let mut parts = rest.splitn(2, char::is_whitespace);
+            if let (Some(name), Some(value)) = (parts.next(), parts.next())
+                && let Some(value) = parse_srecode_value_resolving(value.trim(), &variables)
+            {
+                remember_srecode_string_value(&mut variables, name, &value);
+                entries.push(semantic_srecode_variable_tag(name, value));
+            }
+        }
+        *scan += 1;
+    }
+    Value::list(entries)
+}
+
+fn remember_srecode_string_value(
+    variables: &mut std::collections::HashMap<String, String>,
+    name: &str,
+    value: &[Value],
+) {
+    if let [Value::String(text)] = value {
+        variables.insert(name.to_string(), text.clone());
+    }
+}
+
+fn semantic_srecode_variable_tag(name: &str, value: Vec<Value>) -> Value {
+    semantic_tag(
+        name,
+        "variable",
+        semantic_plist(vec![(":default-value", Value::list(value))]),
+    )
+}
+
+fn cl_typep_matches(
+    interp: &Interpreter,
+    value: &Value,
+    type_spec: &Value,
+) -> Result<bool, LispError> {
+    if let Ok(items) = type_spec.to_vec()
+        && let Some(Value::Symbol(operator)) = items.first()
+        && operator == "or"
+    {
+        for choice in &items[1..] {
+            if cl_typep_matches(interp, value, choice)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+
+    let target = type_spec.as_symbol()?;
+    let actual = cl_type_name(interp, value)?;
+    let matches = target == "t"
+        || (target == "list" && value.is_list())
+        || (target == "eieio-object" && matches!(value, Value::Record(_)))
+        || (target == "class"
+            && interp
+                .class_name_from_value(value)
+                .is_some_and(|name| interp.class_value(&name).is_some()))
+        || target == actual
+        || (!is_builtin_class_name(target) && interp.value_is_instance_of_class(value, target))
+        || (target == "function"
+            && matches!(
+                actual,
+                "primitive-function"
+                    | "special-form"
+                    | "interpreted-function"
+                    | "byte-code-function"
+            ));
+    Ok(matches)
+}
+
+fn eieio_class_default_property(slot_name: &str) -> String {
+    format!("emaxx-class-default:{slot_name}")
+}
+
+fn srecode_template_get_table(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let template_name = string_text(&args[1])?;
+    let context = args.get(2).filter(|value| value.is_truthy()).cloned();
+    let application = args.get(3).filter(|value| value.is_truthy()).cloned();
+    srecode_template_get_from_record(
+        interp,
+        &args[0],
+        &template_name,
+        context.as_ref(),
+        application.as_ref(),
+        env,
+    )
+}
+
+fn srecode_template_get_from_record(
+    interp: &mut Interpreter,
+    table: &Value,
+    template_name: &str,
+    context: Option<&Value>,
+    application: Option<&Value>,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Value::Record(record_id) = table else {
+        return Ok(Value::Nil);
+    };
+    let Some(record) = interp.find_record(*record_id) else {
+        return Ok(Value::Nil);
+    };
+    match record.type_name.as_str() {
+        "srecode-template-table" => {
+            if !srecode_template_table_in_project(interp, table, env)? {
+                return Ok(Value::Nil);
+            }
+            if let Some(context) = context {
+                let contexthash = eieio_slot_value(interp, table, "contexthash")?;
+                let ctx_table = hash_lookup(interp, &contexthash, context, env)?;
+                if ctx_table.is_truthy() {
+                    hash_lookup(
+                        interp,
+                        &ctx_table,
+                        &Value::String(template_name.into()),
+                        env,
+                    )
+                } else {
+                    Ok(Value::Nil)
+                }
+            } else {
+                let namehash = eieio_slot_value(interp, table, "namehash")?;
+                hash_lookup(interp, &namehash, &Value::String(template_name.into()), env)
+            }
+        }
+        "srecode-mode-table" => {
+            let tables = eieio_slot_value(interp, table, "tables")?.to_vec()?;
+            for candidate in &tables {
+                let app = eieio_slot_value(interp, candidate, "application")?;
+                let app_matches = match application {
+                    Some(expected) => app == *expected,
+                    None => !app.is_truthy(),
+                };
+                if app_matches {
+                    let found = srecode_template_get_from_record(
+                        interp,
+                        candidate,
+                        template_name,
+                        context,
+                        None,
+                        env,
+                    )?;
+                    if found.is_truthy() {
+                        return Ok(found);
+                    }
+                }
+            }
+            let mode = eieio_slot_value(interp, table, "major-mode")?;
+            if mode != Value::Symbol("default".into())
+                && let Some(default_table) = srecode_find_mode_table(interp, "default")?
+            {
+                return srecode_template_get_from_record(
+                    interp,
+                    &default_table,
+                    template_name,
+                    context,
+                    application,
+                    env,
+                );
+            }
+            Ok(Value::Nil)
+        }
+        _ => Ok(Value::Nil),
+    }
+}
+
+fn srecode_template_table_in_project(
+    interp: &Interpreter,
+    table: &Value,
+    env: &Env,
+) -> Result<bool, LispError> {
+    let project = eieio_slot_value(interp, table, "project")?;
+    if !project.is_truthy() {
+        return Ok(true);
+    }
+    let project = string_text(&project)?;
+    let default_directory = interp
+        .lookup("default-directory", env)
+        .ok()
+        .and_then(|value| string_text(&value).ok())
+        .unwrap_or_default();
+    let project = project.trim_end_matches('/');
+    Ok(!project.is_empty() && default_directory.starts_with(project))
+}
+
+fn srecode_find_mode_table(interp: &Interpreter, mode: &str) -> Result<Option<Value>, LispError> {
+    let tables = interp
+        .lookup("srecode-mode-table-list", &Vec::new())
+        .unwrap_or(Value::Nil)
+        .to_vec()
+        .unwrap_or_default();
+    for table in tables {
+        if eieio_slot_value(interp, &table, "major-mode")? == Value::Symbol(mode.into()) {
+            return Ok(Some(table));
+        }
+    }
+    Ok(None)
+}
+
+fn hash_lookup(
+    interp: &mut Interpreter,
+    table: &Value,
+    key: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some((test, entries)) = json::hash_table_entries(interp, table) else {
+        return Ok(Value::Nil);
+    };
+    for (existing_key, value) in entries {
+        if hash_table_key_matches(interp, table, &test, &existing_key, key, env)? {
+            return Ok(value);
+        }
+    }
+    Ok(Value::Nil)
 }
 
 fn strip_html_tags(text: &str) -> String {
@@ -5155,18 +5700,27 @@ fn strip_cpp_comments(source: &str) -> String {
     let mut chars = source.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '/' && chars.peek() == Some(&'/') {
+            out.push(' ');
+            out.push(' ');
+            chars.next();
             for next in chars.by_ref() {
                 if next == '\n' {
                     out.push('\n');
                     break;
+                } else {
+                    out.push(' ');
                 }
             }
         } else if ch == '/' && chars.peek() == Some(&'*') {
+            out.push(' ');
+            out.push(' ');
             chars.next();
             let mut previous = '\0';
             for next in chars.by_ref() {
                 if next == '\n' {
                     out.push('\n');
+                } else {
+                    out.push(' ');
                 }
                 if previous == '*' && next == '/' {
                     break;
@@ -5282,12 +5836,15 @@ impl<'a> CppTagParser<'a> {
         let mut parser =
             CppTagParser::new(&self.source[body_start..body_end], self.base_dir.clone());
         let members = parser.parse_until(None);
-        semantic_type_tag(
+        let end = self.pos;
+        semantic_type_tag_bounded(
             &name,
             vec![
                 (":members", Value::list(members)),
                 (":type", Value::String("namespace".into())),
             ],
+            start,
+            end,
         )
         .or_else(|| {
             self.pos = start;
@@ -5397,7 +5954,8 @@ impl<'a> CppTagParser<'a> {
         ) {
             attrs.push((":superclasses", superclasses));
         }
-        let mut tags = vec![semantic_type_tag(&type_name, attrs)?];
+        let end = self.pos;
+        let mut tags = vec![semantic_type_tag_bounded(&type_name, attrs, start, end)?];
         for variable_name in variable_names.into_iter().rev() {
             tags.insert(
                 0,
@@ -5466,27 +6024,33 @@ impl<'a> CppTagParser<'a> {
                 .next()
                 .unwrap_or(&original_name)
                 .to_string();
-            tags.push(semantic_type_tag(
+            tags.push(semantic_type_tag_bounded(
                 &original_name,
                 vec![
                     (":members", Value::list(members)),
                     (":type", Value::String(kind.into())),
                 ],
+                start,
+                self.pos,
             )?);
-            tags.push(semantic_type_tag(
+            tags.push(semantic_type_tag_bounded(
                 &alias,
                 vec![
                     (":typedef", semantic_type_ref(&original_name)),
                     (":type", Value::String("typedef".into())),
                 ],
+                start,
+                self.pos,
             )?);
         } else {
-            tags.push(semantic_type_tag(
+            tags.push(semantic_type_tag_bounded(
                 &alias,
                 vec![
                     (":members", Value::list(members)),
                     (":type", Value::String(kind.into())),
                 ],
+                start,
+                self.pos,
             )?);
         }
         Some(if tags.len() == 1 {
@@ -5558,17 +6122,17 @@ impl<'a> CppTagParser<'a> {
     }
 
     fn parse_statement(&mut self) -> Option<Value> {
-        let (statement, has_body) = self.read_statement()?;
+        let (statement, has_body, start, end) = self.read_statement()?;
         let statement = statement.trim();
         if statement.is_empty() {
             return None;
         }
         let access_label = statement.trim_end_matches(':').trim();
         if matches!(access_label, "public" | "private" | "protected") {
-            return Some(semantic_label_tag(access_label));
+            return Some(semantic_label_tag_bounded(access_label, start, end));
         }
         if let Some(tag) = parse_cpp_using_statement(statement) {
-            return Some(tag);
+            return Some(semantic_tag_with_bounds_from_tag(tag, start, end));
         }
         if statement
             .split_whitespace()
@@ -5579,15 +6143,16 @@ impl<'a> CppTagParser<'a> {
                 .split_once(char::is_whitespace)
                 .map(|(_, rest)| rest)
                 .unwrap_or("");
-            return parse_cpp_typedef(rest);
+            return parse_cpp_typedef(rest)
+                .map(|tag| semantic_tag_with_bounds_from_tag(tag, start, end));
         }
         if statement.contains('(') && statement.contains(')') {
-            return parse_cpp_function(statement, !has_body);
+            return parse_cpp_function_bounded(statement, !has_body, start, end);
         }
-        parse_cpp_variable(statement)
+        parse_cpp_variable_bounded(statement, start, end)
     }
 
-    fn read_statement(&mut self) -> Option<(String, bool)> {
+    fn read_statement(&mut self) -> Option<(String, bool, usize, usize)> {
         self.skip_ws();
         let start = self.pos;
         while self.pos < self.source.len() {
@@ -5595,21 +6160,22 @@ impl<'a> CppTagParser<'a> {
                 b';' => {
                     let statement = self.source[start..self.pos].to_string();
                     self.pos += 1;
-                    return Some((statement, false));
+                    return Some((statement, false, start, self.pos));
                 }
                 b':' => {
                     let statement = self.source[start..self.pos].trim();
                     if matches!(statement, "public" | "private" | "protected") {
                         let statement = self.source[start..=self.pos].to_string();
                         self.pos += 1;
-                        return Some((statement, false));
+                        return Some((statement, false, start, self.pos));
                     }
                     self.pos += 1;
                 }
                 b'{' => {
                     let statement = self.source[start..self.pos].to_string();
                     self.skip_balanced_block();
-                    return (!statement.trim().is_empty()).then_some((statement, true));
+                    return (!statement.trim().is_empty())
+                        .then_some((statement, true, start, self.pos));
                 }
                 b'}' => return None,
                 _ => self.pos += 1,
@@ -5921,6 +6487,16 @@ fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
     semantic_function_tag(name, attrs)
 }
 
+fn parse_cpp_function_bounded(
+    statement: &str,
+    prototype: bool,
+    start: usize,
+    end: usize,
+) -> Option<Value> {
+    parse_cpp_function(statement, prototype)
+        .map(|tag| semantic_tag_with_bounds_from_tag(tag, start, end))
+}
+
 fn parse_cpp_arguments(args: &str) -> Vec<Value> {
     args.split(',')
         .filter_map(|arg| {
@@ -6005,8 +6581,12 @@ fn cpp_type_base_name(name: &str) -> String {
 }
 
 fn parse_cpp_variable(statement: &str) -> Option<Value> {
-    let statement = statement.split('=').next().unwrap_or(statement).trim();
-    let mut parts = statement.split_whitespace().collect::<Vec<_>>();
+    let default_value = statement
+        .split_once('=')
+        .map(|(_, value)| value.trim().trim_end_matches(';').trim())
+        .filter(|value| !value.is_empty());
+    let declaration = statement.split('=').next().unwrap_or(statement).trim();
+    let mut parts = declaration.split_whitespace().collect::<Vec<_>>();
     let raw_name = parts.pop()?.trim();
     let name = raw_name
         .split_once('[')
@@ -6029,10 +6609,17 @@ fn parse_cpp_variable(statement: &str) -> Option<Value> {
         attrs.push((":pointer", Value::Integer(1)));
     }
     attrs.push((":type", semantic_cpp_type_value(type_text)));
+    if let Some(default_value) = default_value {
+        attrs.push((":default-value", Value::String(default_value.into())));
+    }
     if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
         attrs.push((":typemodifiers", modifiers));
     }
     Some(semantic_tag(name, "variable", semantic_plist(attrs)))
+}
+
+fn parse_cpp_variable_bounded(statement: &str, start: usize, end: usize) -> Option<Value> {
+    parse_cpp_variable(statement).map(|tag| semantic_tag_with_bounds_from_tag(tag, start, end))
 }
 
 fn semantic_c_like_statement_keyword(word: &str) -> bool {
@@ -6062,7 +6649,16 @@ fn semantic_c_like_typemodifiers(statement: &str) -> Option<Value> {
         .take_while(|word| {
             matches!(
                 *word,
-                "public" | "private" | "protected" | "static" | "final" | "abstract" | "strictfp"
+                "public"
+                    | "private"
+                    | "protected"
+                    | "static"
+                    | "const"
+                    | "mutable"
+                    | "volatile"
+                    | "final"
+                    | "abstract"
+                    | "strictfp"
             )
         })
         .map(|word| Value::String(word.into()))
@@ -6072,6 +6668,21 @@ fn semantic_c_like_typemodifiers(statement: &str) -> Option<Value> {
 
 fn semantic_type_tag(name: &str, attrs: Vec<(&str, Value)>) -> Option<Value> {
     Some(semantic_tag(name, "type", semantic_plist(attrs)))
+}
+
+fn semantic_type_tag_bounded(
+    name: &str,
+    attrs: Vec<(&str, Value)>,
+    start: usize,
+    end: usize,
+) -> Option<Value> {
+    Some(semantic_tag_with_bounds(
+        name,
+        "type",
+        semantic_plist(attrs),
+        start,
+        end,
+    ))
 }
 
 fn semantic_function_tag(name: &str, attrs: Vec<(&str, Value)>) -> Option<Value> {
@@ -6087,8 +6698,8 @@ fn semantic_variable_tag(name: &str, type_value: Value, pointer: bool) -> Value 
     semantic_tag(name, "variable", semantic_plist(attrs))
 }
 
-fn semantic_label_tag(name: &str) -> Value {
-    semantic_tag(name, "label", Value::Nil)
+fn semantic_label_tag_bounded(name: &str, start: usize, end: usize) -> Value {
+    semantic_tag_with_bounds(name, "label", Value::Nil, start, end)
 }
 
 fn semantic_include_tag(name: &str, system: bool) -> Value {
@@ -6110,6 +6721,41 @@ fn semantic_tag(name: &str, class: &str, attrs: Value) -> Value {
     ])
 }
 
+fn semantic_tag_with_bounds(
+    name: &str,
+    class: &str,
+    attrs: Value,
+    start: usize,
+    end: usize,
+) -> Value {
+    Value::list([
+        Value::String(name.into()),
+        Value::Symbol(class.into()),
+        attrs,
+        Value::Nil,
+        semantic_bounds_vector(start, end),
+    ])
+}
+
+fn semantic_tag_with_bounds_from_tag(tag: Value, start: usize, end: usize) -> Value {
+    let Ok(mut items) = tag.to_vec() else {
+        return tag;
+    };
+    if items.len() < 5 {
+        items.resize(5, Value::Nil);
+    }
+    items[4] = semantic_bounds_vector(start, end);
+    Value::list(items)
+}
+
+fn semantic_bounds_vector(start: usize, end: usize) -> Value {
+    Value::list([
+        Value::Symbol("vector-literal".into()),
+        Value::Integer(start.saturating_add(1) as i64),
+        Value::Integer(end.saturating_add(1) as i64),
+    ])
+}
+
 fn semantic_plist(attrs: Vec<(&str, Value)>) -> Value {
     Value::list(
         attrs
@@ -6120,6 +6766,10 @@ fn semantic_plist(attrs: Vec<(&str, Value)>) -> Value {
 }
 
 fn semantic_cpp_type_value(type_text: &str) -> Value {
+    let aggregate_kind = type_text
+        .split_whitespace()
+        .next()
+        .filter(|kind| matches!(*kind, "struct" | "class" | "enum" | "union"));
     let type_text = type_text
         .replace("const ", "")
         .replace(" const", "")
@@ -6143,16 +6793,22 @@ fn semantic_cpp_type_value(type_text: &str) -> Value {
         "void" | "int" | "char" | "unsigned int" | "long" | "short" | "float" | "double"
     ) {
         Value::String(type_text)
+    } else if let Some(kind) = aggregate_kind {
+        semantic_type_ref_with_kind(&type_text, kind)
     } else {
         semantic_type_ref(&type_text)
     }
 }
 
 fn semantic_type_ref(name: &str) -> Value {
+    semantic_type_ref_with_kind(name, "class")
+}
+
+fn semantic_type_ref_with_kind(name: &str, kind: &str) -> Value {
     Value::list([
         Value::String(name.into()),
         Value::Symbol("type".into()),
-        semantic_plist(vec![(":type", Value::String("class".into()))]),
+        semantic_plist(vec![(":type", Value::String(kind.into()))]),
         Value::Nil,
         Value::Nil,
     ])
