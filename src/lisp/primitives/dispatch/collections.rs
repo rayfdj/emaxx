@@ -985,7 +985,7 @@ pub(super) fn call(
         "setcdr" => {
             need_args(name, args, 2)?;
             args[0].set_cdr(args[1].clone())?;
-            Ok(args[0].clone())
+            Ok(args[1].clone())
         }
 
         "emaxx-default-region-extract-function" => {
