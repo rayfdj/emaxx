@@ -2756,3 +2756,31 @@ fn pop_supports_generalized_places() {
         ])
     );
 }
+
+#[test]
+fn pcase_seq_pattern_supports_seq_let_rest() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    let _ = interp.load_target("seq");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(seq-let (beg end table &rest plist)
+                   '(1 4 ("foobarbaz") :display-sort-function identity)
+                 (list beg end table plist))"#
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(4),
+            Value::list([Value::String("foobarbaz".into())]),
+            Value::list([
+                Value::Symbol(":display-sort-function".into()),
+                Value::Symbol("identity".into()),
+            ]),
+        ])
+    );
+}

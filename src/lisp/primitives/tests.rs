@@ -2228,3 +2228,42 @@ fn split_string_supports_multibyte_regexp_separators() {
         ])
     );
 }
+
+#[test]
+fn completion_results_accept_text_properties() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"(let* ((matches (all-completions "foo" '("foobar") nil))
+                  (candidate (car matches)))
+             (set-text-properties 0 1 '(face completion-preview) candidate)
+             (get-text-property 0 'face candidate))"#,
+    )
+    .read_all()
+    .expect("completion property test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("completion strings should accept text properties");
+    assert_eq!(result, Value::Symbol("completion-preview".into()));
+}
+
+#[test]
+fn substring_of_completion_result_accepts_text_properties() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"(let* ((matches (all-completions "foo" '("foobar") nil))
+                  (candidate (car matches))
+                  (suffix (substring candidate 3)))
+             (set-text-properties 0 1 '(face completion-preview) suffix)
+             (get-text-property 0 'face suffix))"#,
+    )
+    .read_all()
+    .expect("completion substring property test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("completion substring should accept text properties");
+    assert_eq!(result, Value::Symbol("completion-preview".into()));
+}

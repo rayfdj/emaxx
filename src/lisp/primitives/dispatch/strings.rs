@@ -538,7 +538,16 @@ pub(super) fn call(
             } else {
                 slice_string_props(&string.props, from, to)
             };
-            Ok(string_like_value(chars[from..to].iter().collect(), props))
+            let text = chars[from..to].iter().collect();
+            if matches!(args[0], Value::StringObject(_)) {
+                Ok(make_shared_string_value_with_multibyte(
+                    text,
+                    props,
+                    string.multibyte,
+                ))
+            } else {
+                Ok(string_like_value(text, props))
+            }
         }
         "string-to-unibyte" => {
             need_args(name, args, 1)?;

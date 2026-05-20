@@ -19,12 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 446/7080 are verified locally.
+- Tests through 457/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 446/7080: resolve color values`.
+  `Compat 457/7080: support completion preview`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
-  after the char-fold/regexp changes; all 378 passed.
+  after the char-fold/regexp changes; all 378 passed. The same exact 1..378
+  prefix was replayed again after the Completion Preview changes in the
+  457/7080 batch; all 378 passed.
 - Selectors 379..396 passed as a grouped Semantic IA replay after the
   char-fold/regexp changes. Selectors 397..407 passed as individual literal
   manifest selectors because `test/lisp/cedet/semantic-utest.el` is
@@ -35,9 +37,14 @@ counts as the progress denominator.
   primitive.
 - Selectors 416..446 passed individually after adding `color-values` and named
   color parsing for the existing color conversion path.
-- Selector 447, `completion-preview` in
-  `test/lisp/completion-preview-tests.el`, is the next known failure.
-- Resume compatibility advancement at test 447/7080 after pushing the 446
+- Selectors 447..457 in `test/lisp/completion-preview-tests.el` passed
+  individually after adding symbol bounds, `while-no-input`, pcase `seq`
+  matching, mutable completion strings, and the completion metadata helpers
+  needed by Completion Preview mode.
+- Selector 458, `completion-test-add-find-accept-delete` in
+  `test/lisp/completion-tests.el`, is the next known failure. The file load
+  currently fails on missing `kept-new-versions`.
+- Resume compatibility advancement at test 458/7080 after pushing the 457
   batch.
 
 ## Workflow

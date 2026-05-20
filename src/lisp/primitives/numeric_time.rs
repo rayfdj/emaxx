@@ -380,6 +380,7 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "def-edebug-spec"
             | "eval-and-compile"
             | "eval-when-compile"
+            | "while-no-input"
             | "ert-info"
             | "minibuffer-with-setup-hook"
     )
