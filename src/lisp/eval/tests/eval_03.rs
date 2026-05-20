@@ -727,6 +727,17 @@ fn setcar_supports_expression_targets() {
 }
 
 #[test]
+fn setcdr_returns_new_cdr_value() {
+    assert_eq!(
+        eval_str("(let ((cell (cons 'a 'b))) (list (setcdr cell nil) cell))"),
+        Value::list([
+            Value::Nil,
+            Value::cons(Value::Symbol("a".into()), Value::Nil)
+        ])
+    );
+}
+
+#[test]
 fn read_key_decodes_xt_mouse_translators() {
     assert_eq!(
         eval_str(

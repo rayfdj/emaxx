@@ -2291,6 +2291,23 @@ fn require_final_newline_matches_batch_default() {
 }
 
 #[test]
+fn backup_retention_variables_match_batch_defaults() {
+    assert_eq!(
+        eval_str(
+            "(list version-control dired-kept-versions delete-old-versions
+                   kept-old-versions kept-new-versions)"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Integer(2),
+            Value::Nil,
+            Value::Integer(2),
+            Value::Integer(2),
+        ])
+    );
+}
+
+#[test]
 fn sentence_end_defaults_to_nil_in_batch() {
     assert_eq!(eval_str("sentence-end"), Value::Nil);
 }

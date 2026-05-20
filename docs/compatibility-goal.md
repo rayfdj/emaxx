@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 457/7080 are verified locally.
+- Tests through 461/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 457/7080: support completion preview`.
+  `Compat 461/7080: match backup and setcdr defaults`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -41,10 +41,12 @@ counts as the progress denominator.
   individually after adding symbol bounds, `while-no-input`, pcase `seq`
   matching, mutable completion strings, and the completion metadata helpers
   needed by Completion Preview mode.
-- Selector 458, `completion-test-add-find-accept-delete` in
-  `test/lisp/completion-tests.el`, is the next known failure. The file load
-  currently fails on missing `kept-new-versions`.
-- Resume compatibility advancement at test 458/7080 after pushing the 457
+- Selectors 458..461 in `test/lisp/completion-tests.el` passed individually
+  after adding the standard backup-retention defaults needed by
+  `completion.el` and correcting `setcdr` to return the new cdr value.
+- Selector 462, `completion-test-lisp-def-regexp` in
+  `test/lisp/completion-tests.el`, is the next known failure.
+- Resume compatibility advancement at test 462/7080 after pushing the 461
   batch.
 
 ## Workflow
