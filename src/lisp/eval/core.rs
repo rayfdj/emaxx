@@ -301,6 +301,7 @@ impl Interpreter {
                         "eval-and-compile" | "eval-when-compile" => {
                             return self.sf_progn(&items[1..], env);
                         }
+                        "while-no-input" => return self.sf_progn(&items[1..], env),
                         "ert-info" => {
                             // (ert-info (msg) body...) — just run the body
                             return self.sf_progn(&items[2..], env);

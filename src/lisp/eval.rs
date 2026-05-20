@@ -2650,6 +2650,50 @@ fn pcase_pattern_bindings_inner(
                 }
                 return Ok(true);
             }
+            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "seq") {
+                let values = value.to_vec().unwrap_or_default();
+                let start = bindings.len();
+                let mut value_index = 0usize;
+                let mut pattern_index = 1usize;
+                while pattern_index < parts.len() {
+                    if matches!(&parts[pattern_index], Value::Symbol(name) if name == "&rest") {
+                        let Some(rest_pattern) = parts.get(pattern_index + 1) else {
+                            bindings.truncate(start);
+                            return Ok(false);
+                        };
+                        let rest = Value::list(values[value_index..].iter().cloned());
+                        if !pcase_pattern_bindings_inner(
+                            interp,
+                            env,
+                            rest_pattern,
+                            &rest,
+                            bindings,
+                            lenient_list_match,
+                            backquoted,
+                        )? {
+                            bindings.truncate(start);
+                            return Ok(false);
+                        }
+                        return Ok(true);
+                    }
+                    let item = values.get(value_index).cloned().unwrap_or(Value::Nil);
+                    if !pcase_pattern_bindings_inner(
+                        interp,
+                        env,
+                        &parts[pattern_index],
+                        &item,
+                        bindings,
+                        lenient_list_match,
+                        backquoted,
+                    )? {
+                        bindings.truncate(start);
+                        return Ok(false);
+                    }
+                    value_index += 1;
+                    pattern_index += 1;
+                }
+                return Ok(true);
+            }
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
                 return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
             }

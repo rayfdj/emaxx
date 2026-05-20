@@ -2626,8 +2626,8 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
         Value::String("ab".into())
     );
     assert_eq!(
-        eval_str(r#"(all-completions "a" '("abc" "abba" "def"))"#),
-        Value::list([Value::String("abc".into()), Value::String("abba".into())])
+        eval_str(r#"(equal (all-completions "a" '("abc" "abba" "def")) '("abc" "abba"))"#),
+        Value::T
     );
     assert_eq!(
         eval_str(r#"(null (cl-set-exclusive-or '("abc" "abba") '("abba" "abc") :test #'equal))"#),
@@ -2639,10 +2639,10 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
                 (let ((ob (obarray-make 7)))
                   (intern "abc" ob)
                   (intern "abba" ob)
-                  (all-completions "a" ob))
+                  (equal (all-completions "a" ob) '("abc" "abba")))
                 "#
         ),
-        Value::list([Value::String("abc".into()), Value::String("abba".into())])
+        Value::T
     );
     assert_eq!(
         eval_str(r#"(let ((completion-ignore-case t)) (try-completion "bar" '("bAr" "barfoo")))"#),

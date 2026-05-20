@@ -587,6 +587,7 @@ pub(crate) fn completion_list_candidates(
                 }
                 current = cdr.borrow().clone();
             }
+            Value::Integer(_) => return Ok(candidates),
             _ => return Err(LispError::TypeError("list".into(), current.type_name())),
         }
     }
@@ -813,7 +814,9 @@ pub(crate) fn all_completions(
     Ok(Value::list(
         filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?
             .into_iter()
-            .map(|candidate| Value::String(candidate.name)),
+            .map(|candidate| {
+                make_shared_string_value_with_multibyte(candidate.name, Vec::new(), false)
+            }),
     ))
 }
 

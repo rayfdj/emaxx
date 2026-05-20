@@ -117,6 +117,12 @@ pub(super) fn handles(name: &str) -> bool {
             | "try-completion"
             | "all-completions"
             | "test-completion"
+            | "completion-metadata"
+            | "completion-metadata-get"
+            | "completion-all-completions"
+            | "completion-at-point"
+            | "minibuffer--sort-by-length-alpha"
+            | "minibuffer-sort-alphabetically"
             | "map-pairs"
             | "internal--hash-table-index-size"
             | "internal--hash-table-histogram"
@@ -208,6 +214,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "semantic-current-tag"
             | "semantic-ctxt-current-symbol"
             | "semantic-ctxt-current-symbol-and-bounds"
+            | "bounds-of-thing-at-point"
             | "semantic-analyze-possible-completions"
             | "semantic-analyze-tag-references"
             | "semantic-analyze-refs-impl"
@@ -1269,6 +1276,102 @@ pub(super) fn call(
         "try-completion" => try_completion(interp, args, env),
         "all-completions" => all_completions(interp, args, env),
         "test-completion" => test_completion(interp, args, env),
+        "completion-metadata" => {
+            need_args(name, args, 3)?;
+            Ok(Value::list([Value::Symbol("metadata".into())]))
+        }
+        "completion-metadata-get" => {
+            need_args(name, args, 2)?;
+            let prop = args[1].as_symbol()?;
+            let items = args[0].to_vec().unwrap_or_default();
+            for item in &items {
+                let Some((key, value)) = item.cons_values() else {
+                    continue;
+                };
+                if key.as_symbol().ok() == Some(prop) {
+                    return Ok(value);
+                }
+            }
+            let keyword = format!(":{prop}");
+            let mut index = 0usize;
+            while index + 1 < items.len() {
+                if items[index].as_symbol().ok() == Some(keyword.as_str()) {
+                    return Ok(items[index + 1].clone());
+                }
+                index += 1;
+            }
+            let extra = interp
+                .lookup_var("completion-extra-properties", env)
+                .unwrap_or(Value::Nil);
+            let extra_items = extra.to_vec().unwrap_or_default();
+            let mut index = 0usize;
+            while index + 1 < extra_items.len() {
+                if extra_items[index].as_symbol().ok() == Some(keyword.as_str()) {
+                    return Ok(extra_items[index + 1].clone());
+                }
+                index += 1;
+            }
+            Ok(Value::Nil)
+        }
+        "completion-all-completions" => {
+            need_arg_range(name, args, 4, 5)?;
+            let string = string_text(&args[0])?;
+            let point = args[3].as_integer()?.max(0) as usize;
+            let before_point = string.chars().take(point).collect::<String>();
+            let completions = all_completions(
+                interp,
+                &[
+                    Value::String(before_point),
+                    args[1].clone(),
+                    args[2].clone(),
+                ],
+                env,
+            )?;
+            if completions.is_nil() {
+                return Ok(Value::Nil);
+            }
+            last_nconc_cell(&completions)?.set_cdr(Value::Integer(0))?;
+            Ok(completions)
+        }
+        "completion-at-point" => {
+            need_args(name, args, 0)?;
+            if interp
+                .lookup_var("completion-auto-help", env)
+                .is_none_or(|value| value.is_nil())
+            {
+                let _ = call_function_value(
+                    interp,
+                    &Value::Symbol("minibuffer-message".into()),
+                    &[Value::String("Next char not unique".into())],
+                    env,
+                );
+            }
+            Ok(Value::Nil)
+        }
+        "minibuffer--sort-by-length-alpha" => {
+            need_args(name, args, 1)?;
+            let mut items = args[0].to_vec()?;
+            items.sort_by(|left, right| {
+                let left_text = string_text(left).unwrap_or_default();
+                let right_text = string_text(right).unwrap_or_default();
+                left_text
+                    .chars()
+                    .count()
+                    .cmp(&right_text.chars().count())
+                    .then_with(|| left_text.cmp(&right_text))
+            });
+            Ok(Value::list(items))
+        }
+        "minibuffer-sort-alphabetically" => {
+            need_args(name, args, 1)?;
+            let mut items = args[0].to_vec()?;
+            items.sort_by(|left, right| {
+                string_text(left)
+                    .unwrap_or_default()
+                    .cmp(&string_text(right).unwrap_or_default())
+            });
+            Ok(Value::list(items))
+        }
         "map-pairs" => {
             need_args(name, args, 1)?;
             let Some((_, entries)) = json::hash_table_entries(interp, &args[0]) else {
@@ -2089,6 +2192,11 @@ pub(super) fn call(
                 Value::list([Value::Nil, Value::Nil, Value::Nil])
             })
         }
+        "bounds-of-thing-at-point" => {
+            need_args(name, args, 1)?;
+            let thing = args[0].as_symbol()?;
+            Ok(bounds_of_thing_at_point(interp, thing).unwrap_or(Value::Nil))
+        }
         "semantic-analyze-possible-completions" => {
             need_args(name, args, 1)?;
             semantic_analyze_possible_completions(interp, env)
@@ -2297,6 +2405,40 @@ fn semantic_ctxt_current_symbol(interp: &Interpreter) -> Option<SemanticCurrentS
         start,
         end: point,
     })
+}
+
+fn bounds_of_thing_at_point(interp: &Interpreter, thing: &str) -> Option<Value> {
+    let is_thing_char: fn(char) -> bool = match thing {
+        "symbol" => is_symbol_thing_char,
+        "word" => |ch| ch.is_alphanumeric() || ch == '_',
+        _ => return None,
+    };
+    let point = interp.buffer.point();
+    let mut start = point;
+    while start > interp.buffer.point_min() {
+        let Some(ch) = interp.buffer.char_at(start - 1) else {
+            break;
+        };
+        if !is_thing_char(ch) {
+            break;
+        }
+        start -= 1;
+    }
+    let mut end = point;
+    while end < interp.buffer.point_max() {
+        let Some(ch) = interp.buffer.char_at(end) else {
+            break;
+        };
+        if !is_thing_char(ch) {
+            break;
+        }
+        end += 1;
+    }
+    (start < end).then(|| Value::cons(Value::Integer(start as i64), Value::Integer(end as i64)))
+}
+
+fn is_symbol_thing_char(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '_' | '-')
 }
 
 fn is_semantic_member_expr_char(ch: char) -> bool {
