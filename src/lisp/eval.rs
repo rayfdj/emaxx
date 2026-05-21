@@ -2795,7 +2795,6 @@ fn is_compat_preloaded_feature(feature: &str) -> bool {
         "cl-extra"
             | "cl-generic"
             | "cl-lib"
-            | "cus-edit"
             | "cus-load"
             | "edmacro"
             | "ert-x"
