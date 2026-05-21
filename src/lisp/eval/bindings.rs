@@ -156,6 +156,7 @@ impl Interpreter {
             "init-file-user" => Some(Value::Nil),
             "site-run-file" => Some(Value::Nil),
             "user-init-file" => Some(Value::Nil),
+            "custom-file" => Some(Value::Nil),
             "completion-ignored-extensions" => Some(Value::Nil),
             "regexp-unmatchable" => Some(Value::String("\\`a\\`".into())),
             "ignored-local-variables" => Some(Value::list([

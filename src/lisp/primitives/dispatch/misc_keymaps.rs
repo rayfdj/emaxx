@@ -47,6 +47,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "custom-add-option"
             | "define-widget"
             | "widget-create"
+            | "widget-get"
+            | "widget-put"
+            | "widget-apply"
             | "define-button-type"
             | "display-mouse-p"
             | "make-button"
@@ -592,6 +595,25 @@ pub(super) fn call(
                 args[0].clone(),
                 Value::list(args[1..].to_vec()),
             ))
+        }
+        "widget-get" => {
+            need_args(name, args, 2)?;
+            widget_get(interp, &args[0], &args[1])
+        }
+        "widget-put" => {
+            need_args(name, args, 3)?;
+            widget_put(interp, &args[0], &args[1], args[2].clone())
+        }
+        "widget-apply" => {
+            need_arg_range(name, args, 2, usize::MAX)?;
+            let function = widget_get(interp, &args[0], &args[1])?;
+            if function.is_nil() {
+                return Ok(Value::Nil);
+            }
+            let mut call_args = Vec::with_capacity(args.len());
+            call_args.push(args[0].clone());
+            call_args.extend_from_slice(&args[2..]);
+            interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
         }
         "define-button-type" => {
             need_args(name, args, 1)?;
@@ -7164,6 +7186,119 @@ fn collect_semantic_completion_tags(tags: &[Value], prefix: &str, matches: &mut 
             matches.push(tag.clone());
         }
         collect_semantic_completion_tags(&semantic_tag_members(tag), prefix, matches);
+    }
+}
+
+fn widget_get(interp: &Interpreter, widget: &Value, property: &Value) -> Result<Value, LispError> {
+    widget_get_inner(interp, widget, property, &mut HashSet::new())
+}
+
+fn widget_get_inner(
+    interp: &Interpreter,
+    widget: &Value,
+    property: &Value,
+    seen: &mut HashSet<String>,
+) -> Result<Value, LispError> {
+    match widget {
+        Value::Cons(car, cdr) => {
+            let widget_type = car.borrow().clone();
+            if let Some(value) = plist_get_exact(&cdr.borrow().clone(), property)? {
+                return Ok(value);
+            }
+            widget_get_inner(interp, &widget_type, property, seen)
+        }
+        Value::Symbol(symbol) => {
+            if !seen.insert(symbol.clone()) {
+                return Ok(Value::Nil);
+            }
+            match interp.get_symbol_property(symbol, "widget-type") {
+                Some(parent) => widget_get_inner(interp, &parent, property, seen),
+                None => Ok(Value::Nil),
+            }
+        }
+        _ => Ok(Value::Nil),
+    }
+}
+
+fn widget_put(
+    _interp: &mut Interpreter,
+    widget: &Value,
+    property: &Value,
+    value: Value,
+) -> Result<Value, LispError> {
+    let Value::Cons(_, cdr) = widget else {
+        return Err(LispError::TypeError("widget".into(), widget.type_name()));
+    };
+    let plist = cdr.borrow().clone();
+    let updated = plist_put_exact(plist, property.clone(), value.clone())?;
+    *cdr.borrow_mut() = updated;
+    Ok(value)
+}
+
+fn plist_get_exact(plist: &Value, property: &Value) -> Result<Option<Value>, LispError> {
+    let mut current = plist.clone();
+    let mut seen = HashSet::new();
+    loop {
+        match current {
+            Value::Nil => return Ok(None),
+            Value::Cons(car, cdr) => {
+                let cell_id = Rc::as_ptr(&car) as usize;
+                if !seen.insert(cell_id) {
+                    return Ok(None);
+                }
+                if car.borrow().clone() == *property {
+                    return match cdr.borrow().clone() {
+                        Value::Cons(value, _) => Ok(Some(value.borrow().clone())),
+                        _ => Ok(Some(Value::Nil)),
+                    };
+                }
+                match cdr.borrow().clone() {
+                    Value::Cons(_, next) => current = next.borrow().clone(),
+                    _ => return Ok(None),
+                }
+            }
+            _ => return Err(plist_type_error(plist)),
+        }
+    }
+}
+
+fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value, LispError> {
+    let mut current = plist.clone();
+    let mut seen = HashSet::new();
+    loop {
+        match current {
+            Value::Nil => return Ok(Value::list([property, value])),
+            Value::Cons(car, cdr) => {
+                let cell_id = Rc::as_ptr(&car) as usize;
+                if !seen.insert(cell_id) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                if car.borrow().clone() == property {
+                    return match cdr.borrow().clone() {
+                        Value::Cons(existing, _) => {
+                            *existing.borrow_mut() = value;
+                            Ok(plist)
+                        }
+                        _ => Err(plist_type_error(&plist)),
+                    };
+                }
+                match cdr.borrow().clone() {
+                    Value::Cons(_, next) => {
+                        let next_value = next.borrow().clone();
+                        if next_value.is_nil() {
+                            *next.borrow_mut() = Value::list([property, value]);
+                            return Ok(plist);
+                        }
+                        current = next_value;
+                    }
+                    _ => return Err(plist_type_error(&plist)),
+                }
+            }
+            _ => return Err(plist_type_error(&plist)),
+        }
     }
 }
 

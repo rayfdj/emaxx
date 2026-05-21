@@ -50,6 +50,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "face-equal"
             | "face-differs-from-default-p"
             | "face-list"
+            | "face-valid-attribute-values"
             | "seq-some"
             | "any"
             | "featurep"
@@ -588,6 +589,10 @@ pub(super) fn call(
             faces.sort_by_key(|value| value.to_string());
             Ok(Value::list(faces))
         }
+        "face-valid-attribute-values" => {
+            need_arg_range(name, args, 1, 2)?;
+            Ok(face_valid_attribute_values(&args[0]))
+        }
         "seq-some" => {
             need_args(name, args, 2)?;
             let predicate = args[0].clone();
@@ -791,5 +796,36 @@ pub(super) fn call(
         }
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn face_valid_attribute_values(attribute: &Value) -> Value {
+    let Ok(attribute) = attribute.as_symbol() else {
+        return Value::Nil;
+    };
+    match attribute {
+        ":height" => Value::Symbol("integerp".into()),
+        ":inherit" => Value::cons(
+            Value::cons(Value::String("none".into()), Value::Nil),
+            Value::Nil,
+        ),
+        ":family" => Value::list([Value::cons(
+            Value::String("default".into()),
+            Value::String("default".into()),
+        )]),
+        ":foundry" => Value::list([Value::Nil]),
+        ":width" | ":weight" | ":slant" | ":inverse-video" | ":extend" | ":underline"
+        | ":overline" | ":strike-through" | ":box" | ":foreground" | ":background" => {
+            Value::list([
+                Value::cons(
+                    Value::String("unspecified".into()),
+                    Value::Symbol("unspecified".into()),
+                ),
+                Value::cons(Value::String("nil".into()), Value::Nil),
+                Value::cons(Value::String("t".into()), Value::T),
+            ])
+        }
+        ":stipple" => Value::Nil,
+        _ => Value::Nil,
     }
 }

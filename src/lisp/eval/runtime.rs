@@ -125,6 +125,13 @@ impl Interpreter {
         if is_compat_preloaded_feature(feature) {
             return self.provide_feature_with_after_load(feature);
         }
+        if feature == "cus-edit" || target == Some("cus-edit") {
+            for dependency in ["custom", "lisp-mode", "pp", "tabify"] {
+                if !self.has_feature(dependency) {
+                    self.require_feature_with_target(dependency, None)?;
+                }
+            }
+        }
         let load_target = target.unwrap_or(feature);
         let Some(path) = self.resolve_load_target(load_target) else {
             return Err(load_file_missing_error(load_target));

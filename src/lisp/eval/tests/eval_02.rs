@@ -2291,6 +2291,11 @@ fn require_final_newline_matches_batch_default() {
 }
 
 #[test]
+fn custom_file_matches_batch_default() {
+    assert_eq!(eval_str("custom-file"), Value::Nil);
+}
+
+#[test]
 fn backup_retention_variables_match_batch_defaults() {
     assert_eq!(
         eval_str(

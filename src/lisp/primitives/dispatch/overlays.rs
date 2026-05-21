@@ -38,8 +38,8 @@ pub(super) fn call(
             if !(2..=5).contains(&args.len()) {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let beg = args[0].as_integer()?;
-            let end = args[1].as_integer()?;
+            let beg = position_from_value(interp, &args[0])? as i64;
+            let end = position_from_value(interp, &args[1])? as i64;
             let buffer_id = if let Some(buffer_arg) = args.get(2) {
                 if buffer_arg.is_nil() {
                     interp.current_buffer_id()
@@ -206,8 +206,8 @@ pub(super) fn call(
             } else {
                 interp.current_buffer_id()
             };
-            let beg = args[1].as_integer()?;
-            let end = args[2].as_integer()?;
+            let beg = position_from_value(interp, &args[1])? as i64;
+            let end = position_from_value(interp, &args[2])? as i64;
             let (beg, end) = {
                 let buffer = interp.get_buffer_by_id(target_buffer_id).ok_or_else(|| {
                     LispError::Signal(format!("No buffer with id {}", target_buffer_id))
@@ -302,7 +302,7 @@ pub(super) fn call(
 
         "overlays-at" => {
             need_args(name, args, 1)?;
-            let pos = args[0].as_integer()? as usize;
+            let pos = position_from_value(interp, &args[0])?;
             let result: Vec<Value> = interp
                 .buffer
                 .overlays
@@ -315,8 +315,8 @@ pub(super) fn call(
 
         "overlays-in" => {
             need_args(name, args, 2)?;
-            let beg = args[0].as_integer()? as usize;
-            let end = args[1].as_integer()? as usize;
+            let beg = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
             // Z is the un-narrowed buffer end (1-based).
             let z = interp.buffer.size_total() + 1;
             let result: Vec<Value> = interp
@@ -345,7 +345,7 @@ pub(super) fn call(
 
         "next-overlay-change" => {
             need_args(name, args, 1)?;
-            let pos = args[0].as_integer()? as usize;
+            let pos = position_from_value(interp, &args[0])?;
             let zv = interp.buffer.point_max();
             let mut next = zv;
             for ov in &interp.buffer.overlays {
@@ -364,7 +364,7 @@ pub(super) fn call(
 
         "previous-overlay-change" => {
             need_args(name, args, 1)?;
-            let pos = args[0].as_integer()? as usize;
+            let pos = position_from_value(interp, &args[0])?;
             let begv = interp.buffer.point_min();
             let mut prev = begv;
             for ov in &interp.buffer.overlays {

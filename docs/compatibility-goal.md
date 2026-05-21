@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 463/7080 are verified locally.
+- Tests through 464/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 463/7080: match regexp syntax classes`.
+  `Compat 464/7080: load customize widgets`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -46,9 +46,12 @@ counts as the progress denominator.
   `completion.el` and correcting `setcdr` to return the new cdr value.
 - Selectors 462..463 in `test/lisp/completion-tests.el` passed individually
   after correcting regexp syntax-class translation for `\s ` and `\s_`.
-- Selector 464, `cus-edit-test-bug63290` in `test/lisp/cus-edit-tests.el`, is
-  the next known failure. It currently fails with `void-variable`.
-- Resume compatibility advancement at test 464/7080 after pushing the 463
+- Selector 464, `cus-edit-test-bug63290` in `test/lisp/cus-edit-tests.el`,
+  passed after loading real `cus-edit`, adding minimal widget accessors needed
+  by `wid-edit`, and accepting marker positions in overlay range primitives.
+- Selector 465, `cus-edit-tests-customize-apropos/hide-obsolete` in
+  `test/lisp/cus-edit-tests.el`, is the next known failure.
+- Resume compatibility advancement at test 465/7080 after pushing the 464
   batch.
 
 ## Workflow

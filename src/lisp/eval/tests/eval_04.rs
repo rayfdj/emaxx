@@ -1414,6 +1414,33 @@ fn eval_while_loop() {
     );
 }
 
+#[test]
+fn overlays_accept_marker_positions() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "abc")
+                  (let* ((overlay (make-overlay (copy-marker 2) (copy-marker 4))))
+                    (move-overlay overlay (copy-marker 1) (point-max-marker))
+                    (list (overlay-start overlay)
+                          (overlay-end overlay)
+                          (length (overlays-at (copy-marker 2)))
+                          (length (overlays-in (copy-marker 1) (copy-marker 4)))
+                          (next-overlay-change (point-min-marker))
+                          (previous-overlay-change (point-max-marker)))))"#
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(4),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(4),
+            Value::Integer(1),
+        ])
+    );
+}
+
 fn assert_overlay_modification_hooks_record_insert_inside_overlay() {
     assert_eq!(
         eval_str(
