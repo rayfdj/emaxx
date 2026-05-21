@@ -2620,6 +2620,37 @@ fn regexp_opt_builds_basic_alternations() {
     );
 }
 
+#[test]
+fn regexp_syntax_classes_match_lisp_definition_forms() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    let _ = interp.load_target("completion");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (mapcar (lambda (text)
+                          (and (string-match *lisp-def-regexp* text)
+                               (match-end 0)))
+                        '("\n(defun foo"
+                          "\n(si:def foo"
+                          "\n(def-bar foo"
+                          "\n(defun (foo"))
+                "#
+        ),
+        Value::list([
+            Value::Integer(8),
+            Value::Integer(9),
+            Value::Integer(10),
+            Value::Integer(9),
+        ])
+    );
+}
+
 fn assert_minibuffer_completion_primitives_cover_batch_cases() {
     assert_eq!(
         eval_str(r#"(try-completion "a" '("abc" "abba" "def"))"#),
