@@ -3,6 +3,7 @@ use super::*;
 const REGEX_WORD_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\x{2620}]";
 const REGEX_NON_WORD_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\x{2620}]";
 const REGEX_SYMBOL_CLASS: &str = r"[\p{Alphabetic}\p{Number}_\-\x{2620}]";
+const REGEX_NON_SYMBOL_CLASS: &str = r"[^\p{Alphabetic}\p{Number}_\-\x{2620}]";
 const REGEX_WHITESPACE_CLASS: &str = r"[\p{White_Space}]";
 const REGEX_NON_WHITESPACE_CLASS: &str = r"[^\p{White_Space}]";
 
@@ -423,11 +424,18 @@ fn regex_syntax_class(
                 REGEX_WORD_CLASS
             }
         }
-        Some('-') => {
+        Some(' ' | '-') => {
             if negated {
                 REGEX_NON_WHITESPACE_CLASS
             } else {
                 REGEX_WHITESPACE_CLASS
+            }
+        }
+        Some('_') => {
+            if negated {
+                REGEX_NON_SYMBOL_CLASS
+            } else {
+                REGEX_SYMBOL_CLASS
             }
         }
         Some('(') => {

@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 461/7080 are verified locally.
+- Tests through 463/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 461/7080: match backup and setcdr defaults`.
+  `Compat 463/7080: match regexp syntax classes`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -44,9 +44,11 @@ counts as the progress denominator.
 - Selectors 458..461 in `test/lisp/completion-tests.el` passed individually
   after adding the standard backup-retention defaults needed by
   `completion.el` and correcting `setcdr` to return the new cdr value.
-- Selector 462, `completion-test-lisp-def-regexp` in
-  `test/lisp/completion-tests.el`, is the next known failure.
-- Resume compatibility advancement at test 462/7080 after pushing the 461
+- Selectors 462..463 in `test/lisp/completion-tests.el` passed individually
+  after correcting regexp syntax-class translation for `\s ` and `\s_`.
+- Selector 464, `cus-edit-test-bug63290` in `test/lisp/cus-edit-tests.el`, is
+  the next known failure. It currently fails with `void-variable`.
+- Resume compatibility advancement at test 464/7080 after pushing the 463
   batch.
 
 ## Workflow
