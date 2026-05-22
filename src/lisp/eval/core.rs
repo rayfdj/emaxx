@@ -149,6 +149,9 @@ impl Interpreter {
                         }
                         "while" => return self.sf_while(&items, env),
                         "dolist" => return self.sf_dolist(&items, env),
+                        "dolist-with-progress-reporter" => {
+                            return self.sf_dolist_with_progress_reporter(&items, env);
+                        }
                         "pcase-dolist" => return self.sf_pcase_dolist(&items, env),
                         "dotimes" => return self.sf_dotimes(&items, env),
                         "cl-loop" => return self.sf_cl_loop(&items, env),

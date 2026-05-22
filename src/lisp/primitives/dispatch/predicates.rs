@@ -11,6 +11,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-oddp"
             | "fixnump"
             | "bignump"
+            | "booleanp"
             | "numberp"
             | "number-or-marker-p"
             | "char-or-string-p"
@@ -159,6 +160,14 @@ pub(super) fn call(
                     Value::Nil
                 },
             )
+        }
+        "booleanp" => {
+            need_args(name, args, 1)?;
+            Ok(if matches!(args[0], Value::Nil | Value::T) {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "numberp" => {
             need_args(name, args, 1)?;

@@ -69,6 +69,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "window-start"
             | "window-end"
             | "window-point"
+            | "window-hscroll"
             | "window-vscroll"
             | "pos-visible-in-window-p"
             | "window-width"
@@ -190,7 +191,8 @@ pub(super) fn call(
             } else {
                 format!("Warning: {text}")
             };
-            let _ = super::call(interp, "message", &[Value::String(warning)], env)?;
+            let _ = super::call(interp, "message", &[Value::String(warning.clone())], env)?;
+            append_to_warnings_buffer(interp, &warning);
             Ok(Value::Nil)
         }
         "display-warning" => {
@@ -202,7 +204,8 @@ pub(super) fn call(
             } else {
                 format!("Warning ({warning_type}): {message}")
             };
-            let _ = super::call(interp, "message", &[Value::String(warning)], env)?;
+            let _ = super::call(interp, "message", &[Value::String(warning.clone())], env)?;
+            append_to_warnings_buffer(interp, &warning);
             Ok(Value::Nil)
         }
         "current-message" => {
@@ -875,7 +878,7 @@ pub(super) fn call(
             };
             Ok(Value::Integer(point as i64))
         }
-        "window-vscroll" => {
+        "window-hscroll" | "window-vscroll" => {
             need_arg_range(name, args, 0, 2)?;
             Ok(Value::Integer(0))
         }
@@ -1449,5 +1452,17 @@ pub(super) fn call(
         }
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn append_to_warnings_buffer(interp: &mut Interpreter, warning: &str) {
+    let buffer_id = interp
+        .find_buffer("*Warnings*")
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| interp.create_buffer("*Warnings*").0);
+    if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        let end = buffer.point_max();
+        buffer.goto_char(end);
+        buffer.insert(&(warning.to_string() + "\n"));
     }
 }

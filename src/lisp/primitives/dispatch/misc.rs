@@ -252,7 +252,10 @@ pub(super) fn call(
                 Some(obarray) if !obarray.is_nil() => {
                     intern_in_obarray(interp, obarray, &symbol_name)
                 }
-                _ => Ok(Value::Symbol(symbol_name)),
+                _ => {
+                    interp.intern_symbol_name(&symbol_name);
+                    Ok(Value::Symbol(symbol_name))
+                }
             }
         }
         "intern-soft" => {
@@ -902,10 +905,20 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
-        "make-obsolete"
-        | "make-obsolete-variable"
-        | "define-obsolete-face-alias"
-        | "define-obsolete-function-alias" => Ok(Value::Nil),
+        "make-obsolete" | "define-obsolete-face-alias" | "define-obsolete-function-alias" => {
+            Ok(Value::Nil)
+        }
+        "make-obsolete-variable" => {
+            need_arg_range(name, args, 3, 4)?;
+            let obsolete_name = args[0].as_symbol()?;
+            let access_type = args.get(3).cloned().unwrap_or(Value::Nil);
+            interp.put_symbol_property(
+                obsolete_name,
+                "byte-obsolete-variable",
+                Value::list([args[1].clone(), access_type, args[2].clone()]),
+            );
+            Ok(Value::Symbol(obsolete_name.to_string()))
+        }
         "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
         "describe-function" => {
             let _ = get_or_create_buffer(interp, "*Help*");
@@ -1099,7 +1112,16 @@ pub(super) fn call(
             need_arg_range(name, args, 1, 2)?;
             let callback = resolve_callable(interp, &args[0], env)?;
             let obarray = args.get(1).cloned().unwrap_or(Value::Nil);
-            for symbol in obarray_symbols_or_empty(interp, &obarray)? {
+            let symbols = if obarray.is_nil() {
+                interp
+                    .known_symbol_names()
+                    .into_iter()
+                    .map(Value::Symbol)
+                    .collect()
+            } else {
+                obarray_symbols(interp, &obarray)?
+            };
+            for symbol in symbols {
                 interp.call_function_value(
                     callback.clone(),
                     args[0].as_symbol().ok(),
