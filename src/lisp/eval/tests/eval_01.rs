@@ -1289,6 +1289,14 @@ fn defconst_binds_global_like_defvar() {
 }
 
 #[test]
+fn defconst_reinitializes_existing_binding() {
+    assert_eq!(
+        eval_str("(progn (defvar sample-constant 1) (defconst sample-constant 2) sample-constant)"),
+        Value::Integer(2)
+    );
+}
+
+#[test]
 fn defvar_without_initializer_keeps_variable_void() {
     let mut interp = Interpreter::new();
     assert_eq!(

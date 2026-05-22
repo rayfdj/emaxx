@@ -100,6 +100,25 @@ impl Interpreter {
         Ok(result)
     }
 
+    pub(super) fn sf_dolist_with_progress_reporter(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "dolist-with-progress-reporter".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let _ = self.eval(&items[2], env)?;
+        let mut dolist_items = Vec::with_capacity(items.len() - 1);
+        dolist_items.push(Value::Symbol("dolist".into()));
+        dolist_items.push(items[1].clone());
+        dolist_items.extend_from_slice(&items[3..]);
+        self.sf_dolist(&dolist_items, env)
+    }
+
     pub(super) fn sf_pcase_dolist(
         &mut self,
         items: &[Value],
@@ -866,6 +885,21 @@ impl Interpreter {
                 Ok(Value::list([
                     Value::Symbol("overlay-get".into()),
                     quoted_literal(&overlay),
+                    quoted_literal(&property),
+                ]))
+            }
+            Some(Value::Symbol(name)) if name == "get" => {
+                let Some(symbol_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(prop_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let symbol = self.eval(symbol_expr, env)?;
+                let property = self.eval(prop_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("get".into()),
+                    quoted_literal(&symbol),
                     quoted_literal(&property),
                 ]))
             }

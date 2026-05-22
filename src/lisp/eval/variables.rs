@@ -203,6 +203,16 @@ impl Interpreter {
             .push((name.to_string(), vec![(property.to_string(), value)]));
     }
 
+    pub fn intern_symbol_name(&mut self, name: &str) {
+        if !self
+            .interned_symbols
+            .iter()
+            .any(|existing| existing == name)
+        {
+            self.interned_symbols.push(name.to_string());
+        }
+    }
+
     pub fn remove_symbol_property(&mut self, name: &str, property: &str) {
         let Some(index) = self.symbol_property_index(name) else {
             return;

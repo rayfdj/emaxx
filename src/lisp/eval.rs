@@ -729,6 +729,8 @@ pub struct Interpreter {
     special_variables: Vec<String>,
     /// Symbol properties keyed by symbol name.
     symbol_properties: Vec<(String, Vec<(String, Value)>)>,
+    /// Symbols explicitly interned into the standard obarray.
+    interned_symbols: Vec<String>,
     /// Variable watchers keyed by canonical variable name.
     variable_watchers: Vec<(String, Vec<Value>)>,
     /// The current buffer being operated on.
@@ -933,6 +935,7 @@ impl Interpreter {
                 "vc-directory-exclusion-list".into(),
             ],
             symbol_properties: Vec::new(),
+            interned_symbols: Vec::new(),
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,

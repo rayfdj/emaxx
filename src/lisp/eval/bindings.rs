@@ -157,6 +157,7 @@ impl Interpreter {
             "site-run-file" => Some(Value::Nil),
             "user-init-file" => Some(Value::Nil),
             "custom-file" => Some(Value::Nil),
+            "custom-versions-load-alist" => Some(Value::Nil),
             "completion-ignored-extensions" => Some(Value::Nil),
             "regexp-unmatchable" => Some(Value::String("\\`a\\`".into())),
             "ignored-local-variables" => Some(Value::list([
@@ -553,6 +554,9 @@ impl Interpreter {
             push_name(name);
         }
         for (name, _) in &self.symbol_properties {
+            push_name(name);
+        }
+        for name in &self.interned_symbols {
             push_name(name);
         }
         names

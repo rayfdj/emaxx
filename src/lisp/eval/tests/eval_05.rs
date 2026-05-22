@@ -93,6 +93,139 @@ fn defgroup_tracks_current_group_and_members() {
 }
 
 #[test]
+fn defcustom_records_version_and_group_membership() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defgroup sample-custom-parent nil \"Doc.\")
+               (defcustom sample-custom-versioned nil \"Doc.\"
+                 :type 'boolean
+                 :version \"31.1\"
+                 :group 'sample-custom-parent)
+               (list (equal (get 'sample-custom-versioned 'custom-version) \"31.1\")
+                     (get 'sample-custom-parent 'custom-group)
+                     custom-versions-load-alist))"
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::list([
+                Value::symbol("sample-custom-versioned"),
+                Value::symbol("custom-variable"),
+            ])]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn mapatoms_scans_standard_obarray_symbols() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defcustom sample-mapatoms-option nil "Doc." :type 'boolean)
+                  (intern "sample-mapatoms-interned")
+                  (let (found)
+                    (mapatoms
+                     (lambda (symbol)
+                       (when (string-prefix-p "sample-mapatoms-" (symbol-name symbol))
+                         (push symbol found))))
+                    (sort found (lambda (left right)
+                                  (string< (symbol-name left)
+                                           (symbol-name right))))))"#
+        ),
+        Value::list([
+            Value::symbol("sample-mapatoms-interned"),
+            Value::symbol("sample-mapatoms-option"),
+        ])
+    );
+}
+
+#[test]
+fn booleanp_matches_nil_and_t_only() {
+    assert_eq!(
+        eval_str("(list (booleanp nil) (booleanp t) (booleanp 0) (booleanp 'false))"),
+        Value::list([Value::T, Value::T, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn make_obsolete_variable_records_byte_obsolete_property() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (make-obsolete-variable 'sample-old-option 'sample-new-option \"31.1\" 'get)
+               (get 'sample-old-option 'byte-obsolete-variable))"
+        ),
+        Value::list([
+            Value::symbol("sample-new-option"),
+            Value::symbol("get"),
+            Value::String("31.1".into()),
+        ])
+    );
+}
+
+#[test]
+fn batch_window_hscroll_defaults_to_zero() {
+    assert_eq!(eval_str("(window-hscroll)"), Value::Integer(0));
+}
+
+#[test]
+fn dolist_with_progress_reporter_uses_dolist_semantics() {
+    assert_eq!(
+        eval_str(
+            "(let ((seen nil) (reporter nil))
+               (dolist-with-progress-reporter (item '(1 2 3) (nreverse seen))
+                   (setq reporter 'evaluated)
+                 (push (list reporter item) seen)))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("evaluated"), Value::Integer(1)]),
+            Value::list([Value::symbol("evaluated"), Value::Integer(2)]),
+            Value::list([Value::symbol("evaluated"), Value::Integer(3)]),
+        ])
+    );
+}
+
+#[test]
+fn cl_letf_rebinds_symbol_property_get_places() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (put 'sample-cl-letf-prop 'tag 'outer)
+               (list
+                (cl-letf (((get 'sample-cl-letf-prop 'tag) 'inner))
+                  (list (get 'sample-cl-letf-prop 'tag)
+                        (progn (put 'sample-cl-letf-prop 'tag 'changed)
+                               (get 'sample-cl-letf-prop 'tag))))
+                (get 'sample-cl-letf-prop 'tag)))"
+        ),
+        Value::list([
+            Value::list([Value::symbol("inner"), Value::symbol("changed")]),
+            Value::symbol("outer"),
+        ])
+    );
+}
+
+#[test]
+fn setopt_warns_when_value_does_not_match_custom_type() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defcustom sample-setopt-number 0 "Doc." :type 'number)
+                  (with-current-buffer (get-buffer-create "*Warnings*")
+                    (let ((inhibit-read-only t))
+                      (erase-buffer))
+                    (setopt sample-setopt-number :bad)
+                    (string-search "Value `:bad' does not match type number"
+                                   (buffer-string))))"#
+        ),
+        Value::Integer(9)
+    );
+}
+
+#[test]
 fn cl_with_gensyms_produces_unique_bindings() {
     assert_eq!(
         eval_str(

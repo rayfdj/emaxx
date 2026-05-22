@@ -203,17 +203,6 @@ pub(crate) fn is_obarray_like_value(interp: &Interpreter, value: &Value) -> bool
     })
 }
 
-pub(crate) fn obarray_symbols_or_empty(
-    interp: &Interpreter,
-    obarray: &Value,
-) -> Result<Vec<Value>, LispError> {
-    if obarray.is_nil() {
-        Ok(Vec::new())
-    } else {
-        obarray_symbols(interp, obarray)
-    }
-}
-
 pub(crate) fn obarray_symbols(
     interp: &Interpreter,
     obarray: &Value,

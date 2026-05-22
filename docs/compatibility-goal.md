@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 464/7080 are verified locally.
+- Tests through 470/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 464/7080: load customize widgets`.
+  `Compat 470/7080: support custom setopt warnings`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -49,9 +49,14 @@ counts as the progress denominator.
 - Selector 464, `cus-edit-test-bug63290` in `test/lisp/cus-edit-tests.el`,
   passed after loading real `cus-edit`, adding minimal widget accessors needed
   by `wid-edit`, and accepting marker positions in overlay range primitives.
-- Selector 465, `cus-edit-tests-customize-apropos/hide-obsolete` in
-  `test/lisp/cus-edit-tests.el`, is the next known failure.
-- Resume compatibility advancement at test 465/7080 after pushing the 464
+- Selectors 465..470 in `test/lisp/cus-edit-tests.el` passed after adding
+  standard obarray enumeration, `defconst` reinitialization, Custom group and
+  version metadata, obsolete-variable metadata, basic batch display/window
+  helpers, `dolist-with-progress-reporter`, `cl-letf` support for symbol
+  property places, `setopt` type warnings, and `*Warnings*` buffer recording.
+- Selector 471, `custom--test-theme-variables` in `test/lisp/custom-tests.el`,
+  is the next known failure.
+- Resume compatibility advancement at test 471/7080 after pushing the 470
   batch.
 
 ## Workflow

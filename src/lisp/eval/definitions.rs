@@ -74,6 +74,39 @@ impl Interpreter {
         while index + 1 < items.len() {
             let symbol = items[index].as_symbol()?.to_string();
             let value = self.eval(&items[index + 1], env)?;
+            if let Some(custom_type) = self.get_symbol_property(&symbol, "custom-type") {
+                let matches = if self.lookup_function("widget-convert", env).is_ok()
+                    && self.lookup_function("widget-apply", env).is_ok()
+                {
+                    let widget = self.call_function_value(
+                        Value::Symbol("widget-convert".into()),
+                        Some("widget-convert"),
+                        std::slice::from_ref(&custom_type),
+                        env,
+                    )?;
+                    self.call_function_value(
+                        Value::Symbol("widget-apply".into()),
+                        Some("widget-apply"),
+                        &[widget, Value::Symbol(":match".into()), value.clone()],
+                        env,
+                    )?
+                    .is_truthy()
+                } else {
+                    custom_type_matches_value(&custom_type, &value)
+                };
+                if !matches {
+                    self.call_function_value(
+                        Value::BuiltinFunc("warn".into()),
+                        Some("warn"),
+                        &[
+                            Value::String("Value `%S' does not match type %s".into()),
+                            value.clone(),
+                            custom_type,
+                        ],
+                        env,
+                    )?;
+                }
+            }
             result = self.set_custom_option(&symbol, value, env)?;
             index += 2;
         }
@@ -645,6 +678,17 @@ impl Interpreter {
                     };
                     existing.put_prop(&prop_name, value);
                     Ok(())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "get") {
+                    let Some(symbol_expr) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(prop_expr) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let symbol = self.eval(symbol_expr, env)?.as_symbol()?.to_string();
+                    let property = self.eval(prop_expr, env)?.as_symbol()?.to_string();
+                    self.put_symbol_property(&symbol, &property, value);
+                    Ok(())
                 } else if matches!(
                     items.first(),
                     Some(Value::Symbol(name)) if name == "terminal-parameter"
@@ -753,6 +797,13 @@ impl Interpreter {
             self.record_defcustom_properties(&resolved, items, env)?;
         }
         self.mark_special_variable(&resolved);
+        if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "defconst") {
+            if items.len() > 2 {
+                let val = self.eval(&items[2], env)?;
+                self.set_default_toplevel_value(&resolved, val);
+            }
+            return Ok(Value::Nil);
+        }
         // Bare `defvar` declarations mark a variable special without binding it.
         if self.default_toplevel_value(&resolved).is_none() && items.len() > 2 {
             let val = self.eval(&items[2], env)?;
@@ -801,6 +852,27 @@ impl Interpreter {
                 ":type" => {
                     let custom_type = self.eval(&items[index + 1], env)?;
                     self.put_symbol_property(symbol, "custom-type", custom_type);
+                }
+                ":version" => {
+                    self.put_symbol_property(symbol, "custom-version", items[index + 1].clone());
+                }
+                ":package-version" => {
+                    self.put_symbol_property(
+                        symbol,
+                        "custom-package-version",
+                        items[index + 1].clone(),
+                    );
+                }
+                ":group" => {
+                    let group = self.eval(&items[index + 1], env)?;
+                    if let Ok(group) = group.as_symbol() {
+                        crate::lisp::primitives::custom_add_to_group(
+                            self,
+                            group,
+                            Value::Symbol(symbol.to_string()),
+                            Value::Symbol("custom-variable".into()),
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -856,10 +928,33 @@ impl Interpreter {
 
         let mut index = 4usize;
         while index + 1 < items.len() {
-            if let Value::Symbol(keyword) = &items[index]
-                && keyword == ":prefix"
-            {
-                self.put_symbol_property(name, "custom-prefix", items[index + 1].clone());
+            if let Value::Symbol(keyword) = &items[index] {
+                match keyword.as_str() {
+                    ":prefix" => {
+                        self.put_symbol_property(name, "custom-prefix", items[index + 1].clone());
+                    }
+                    ":version" => {
+                        self.put_symbol_property(name, "custom-version", items[index + 1].clone());
+                    }
+                    ":package-version" => {
+                        self.put_symbol_property(
+                            name,
+                            "custom-package-version",
+                            items[index + 1].clone(),
+                        );
+                    }
+                    ":group" => {
+                        if let Some(group) = quoted_symbol_name(&items[index + 1]) {
+                            crate::lisp::primitives::custom_add_to_group(
+                                self,
+                                &group,
+                                Value::Symbol(name.clone()),
+                                Value::Symbol("custom-group".into()),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             }
             index += 2;
         }
@@ -2079,5 +2174,19 @@ impl Interpreter {
             evaluated.push(self.eval(item, env)?);
         }
         crate::lisp::primitives::eval_impl(self, &evaluated, env)
+    }
+}
+
+fn custom_type_matches_value(custom_type: &Value, value: &Value) -> bool {
+    match custom_type {
+        Value::Symbol(symbol) => match symbol.as_str() {
+            "boolean" => matches!(value, Value::Nil | Value::T),
+            "integer" => value.is_integer(),
+            "number" => value.is_integer() || matches!(value, Value::Float(_)),
+            "string" => crate::lisp::primitives::string_like(value).is_some(),
+            "symbol" => value.is_symbol(),
+            _ => true,
+        },
+        _ => true,
     }
 }
