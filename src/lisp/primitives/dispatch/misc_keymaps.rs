@@ -181,6 +181,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "files--name-absolute-system-p"
             | "files--use-insert-directory-program-p"
             | "insert-directory-wildcard-in-dir-p"
+            | "insert-directory-clean"
             | "connection-local-value"
             | "propertized-buffer-identification"
             | "called-interactively-p"
@@ -1963,7 +1964,7 @@ pub(super) fn call(
         }
         "process-file" => {
             need_arg_range(name, args, 4, usize::MAX)?;
-            process_file_compat(interp, args)
+            process_file_compat(interp, args, env)
         }
         "convert-standard-filename" => {
             need_args(name, args, 1)?;
@@ -2000,6 +2001,26 @@ pub(super) fn call(
         }
         "insert-directory-wildcard-in-dir-p" => {
             need_args(name, args, 1)?;
+            let directory = string_text(&args[0])?;
+            let Some(parent) = file_name_directory(&directory) else {
+                return Ok(Value::Nil);
+            };
+            if !parent.contains('*') || Path::new(&directory).exists() {
+                return Ok(Value::Nil);
+            }
+            let base_directory = file_name_as_directory(&dired_base_directory(&directory));
+            let wildcard = Path::new(&directory)
+                .strip_prefix(Path::new(&base_directory))
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| directory.clone());
+            Ok(Value::cons(
+                Value::String(base_directory),
+                Value::String(wildcard),
+            ))
+        }
+        "insert-directory-clean" => {
+            need_arg_range(name, args, 1, 2)?;
             Ok(Value::Nil)
         }
         "connection-local-value" => {
@@ -7140,20 +7161,28 @@ fn regexp_opt_depth(regexp: &str) -> usize {
     depth
 }
 
-fn process_file_compat(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+fn process_file_compat(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
     let program = string_text(&args[0])?;
     let command_args = args[4..]
         .iter()
         .map(string_text)
         .collect::<Result<Vec<_>, _>>()?;
-    let output = Command::new(&program)
-        .args(command_args)
+    let mut command = Command::new(&program);
+    command.args(command_args);
+    if let Some(default_directory) = interp
+        .lookup_var("default-directory", env)
+        .and_then(|value| string_text(&value).ok())
+    {
+        command.current_dir(default_directory);
+    }
+    let output = command
         .output()
         .map_err(|error| LispError::Signal(format!("process-file: {error}")))?;
-    if let Value::Buffer(buffer_id, _) = &args[2] {
-        let text = String::from_utf8_lossy(&output.stdout);
-        replace_buffer_contents(interp, *buffer_id, &text)?;
-    }
+    write_process_output(interp, &args[2], &output.stdout, &output.stderr)?;
     Ok(Value::Integer(output.status.code().unwrap_or(1) as i64))
 }
 
