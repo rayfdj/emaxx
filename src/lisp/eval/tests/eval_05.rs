@@ -360,6 +360,137 @@ fn dired_shell_command_confirms_unsafe_substitution_marks() {
 }
 
 #[test]
+fn dired_create_destination_dirs_controls_copy_and_rename() {
+    let dir = std::env::temp_dir().join(format!("emaxx-dired-dest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir_text = dir.to_string_lossy().replace('\\', "\\\\");
+    let expr = format!(
+        r#"(progn
+             (setq noninteractive t)
+             (require 'dired-aux)
+             (let (results)
+               (dolist (mode '(always nil ask-yes ask-no))
+                 (let* ((scenario-dir (expand-file-name
+                                       (symbol-name mode)
+                                       "{dir_text}"))
+                        (from (make-temp-file "emaxx-dired-from"))
+                        (dired-create-destination-dirs
+                         (cond ((eq mode 'always) 'always)
+                               ((eq mode 'nil) nil)
+                               (t 'ask)))
+                        (to-cp (expand-file-name
+                                "foo-cp"
+                                (file-name-as-directory
+                                 (expand-file-name
+                                  "bar" scenario-dir))))
+                        (to-mv (expand-file-name
+                                "foo-mv"
+                                (file-name-as-directory
+                                 (expand-file-name
+                                  "qux" scenario-dir)))))
+                   (cl-letf (((symbol-function 'yes-or-no-p)
+                              (lambda (_prompt) (eq mode 'ask-yes))))
+                     (push
+                      (list mode
+                            (condition-case nil
+                                (progn
+                                  (dired-copy-file-recursive from to-cp nil)
+                                  (file-exists-p to-cp))
+                              (error :error))
+                            (condition-case nil
+                                (progn
+                                  (dired-rename-file from to-mv nil)
+                                  (file-exists-p to-mv))
+                              (error :error)))
+                      results))))
+               (nreverse results)))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&expr),
+        Value::list([
+            Value::list([Value::symbol("always"), Value::T, Value::T]),
+            Value::list([Value::Nil, Value::symbol(":error"), Value::symbol(":error"),]),
+            Value::list([Value::symbol("ask-yes"), Value::T, Value::T]),
+            Value::list([
+                Value::symbol("ask-no"),
+                Value::symbol(":error"),
+                Value::symbol(":error"),
+            ]),
+        ])
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}
+
+#[test]
+fn dired_do_create_files_recreates_destination_directory() {
+    let result = eval_str_with_upstream_load_path(
+        r#"(progn
+                 (setq noninteractive t)
+                 (require 'dired-aux)
+                 (let* ((target-dir (make-temp-file "emaxx-dired-target" 'dir))
+                        (file1 (make-temp-file "bug30624_file1"))
+                        (file2 (make-temp-file "bug30624_file2"))
+                        (dired-create-destination-dirs 'always)
+                        (inhibit-message t)
+                        (buf (dired temporary-file-directory)))
+                   (unwind-protect
+                       (progn
+                         (delete-directory target-dir)
+                         (cl-letf (((symbol-function 'dired-mark-read-file-name)
+                                    (lambda (&rest _) target-dir)))
+                           (dired-revert)
+                           (dired-mark-files-regexp "bug30624_file")
+                           (condition-case err
+                               (dired-do-create-files 'copy 'dired-copy-file "Copy" nil)
+                             (error err))))
+                     (ignore-errors (delete-directory target-dir 'recursive))
+                     (ignore-errors (delete-file file1))
+                     (ignore-errors (delete-file file2))
+                     (ignore-errors (kill-buffer buf)))))"#,
+    );
+    assert!(result.is_truthy(), "{result:?}");
+}
+
+#[test]
+fn dired_highlights_unsubstituted_shell_metacharacters() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (setq noninteractive t)
+                 (require 'dired-aux)
+                 (let* ((command "sed -r -e 's/oo?/a/' -e 's/oo?/a/' ? `?`")
+                        (result (dired--highlight-no-subst-chars
+                                 (dired--need-confirm-positions command "?")
+                                 command
+                                 t))
+                        (lines (split-string result "\n"))
+                        (line (car lines)))
+                   (list (dired--need-confirm-positions command "?")
+                         (= (length lines) 2)
+                         (string-match-p
+                          (regexp-quote "               ^             ^")
+                          (cadr lines))
+                         (get-text-property 15 'face line)
+                         (get-text-property 29 'face line)
+                         (text-property-not-all 1 14 'face nil line)
+                         (text-property-not-all 16 28 'face nil line)
+                         (text-property-not-all 30 (length line) 'face nil line))))"#
+        ),
+        Value::list([
+            Value::list([Value::Integer(29), Value::Integer(15)]),
+            Value::T,
+            Value::Integer(0),
+            Value::symbol("warning"),
+            Value::symbol("warning"),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

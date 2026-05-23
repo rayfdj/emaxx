@@ -1216,7 +1216,20 @@ pub(super) fn split_string_impl(
     omit_nulls: Option<&Value>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let text = string_text(string)?;
+    let source = string_like(string)
+        .ok_or_else(|| LispError::TypeError("string".into(), string.type_name()))?;
+    let text = source.text.clone();
+    let props = source.props.clone();
+    let multibyte = source.multibyte;
+    let part_value = |text: String, start: usize, end: usize| {
+        let sliced_props = slice_string_props(&props, start, end);
+        if sliced_props.is_empty() {
+            Value::String(text)
+        } else {
+            string_like_value_with_multibyte(text, sliced_props, multibyte)
+        }
+    };
+    let byte_to_char = |byte: usize| text[..byte].chars().count();
     let separator = separator
         .filter(|value| !value.is_nil())
         .map(|value| {
@@ -1228,9 +1241,8 @@ pub(super) fn split_string_impl(
     let parts = if let Some(separator) = separator {
         if separator.text.is_empty() {
             text.chars()
-                .map(|ch| ch.to_string())
-                .filter(|part| !(omit_nulls && part.is_empty()))
-                .map(Value::String)
+                .enumerate()
+                .map(|(index, ch)| part_value(ch.to_string(), index, index + 1))
                 .collect::<Vec<_>>()
         } else {
             validate_elisp_regex(&separator.text)?;
@@ -1250,9 +1262,11 @@ pub(super) fn split_string_impl(
                     break;
                 };
 
+                let start = byte_to_char(last_end);
+                let end = byte_to_char(matched.start());
                 let part = &text[last_end..matched.start()];
                 if !(omit_nulls && part.is_empty()) {
-                    parts.push(Value::String(part.to_string()));
+                    parts.push(part_value(part.to_string(), start, end));
                 }
                 last_end = matched.end();
 
@@ -1266,16 +1280,34 @@ pub(super) fn split_string_impl(
                 }
             }
 
+            let start = byte_to_char(last_end);
+            let end = text.chars().count();
             let tail = &text[last_end..];
             if !(omit_nulls && tail.is_empty()) {
-                parts.push(Value::String(tail.to_string()));
+                parts.push(part_value(tail.to_string(), start, end));
             }
             parts
         }
     } else {
-        text.split_whitespace()
-            .map(|part| Value::String(part.to_string()))
-            .collect::<Vec<_>>()
+        let mut parts = Vec::new();
+        let mut part_start = None;
+        let mut last_index = 0usize;
+        for (index, ch) in text.chars().enumerate() {
+            if ch.is_whitespace() {
+                if let Some(start) = part_start.take() {
+                    let part = text.chars().skip(start).take(index - start).collect();
+                    parts.push(part_value(part, start, index));
+                }
+            } else if part_start.is_none() {
+                part_start = Some(index);
+            }
+            last_index = index + 1;
+        }
+        if let Some(start) = part_start {
+            let part = text.chars().skip(start).collect();
+            parts.push(part_value(part, start, last_index));
+        }
+        parts
     };
     Ok(Value::list(parts))
 }

@@ -97,6 +97,16 @@ pub(super) fn handles(name: &str) -> bool {
             | "selected-window"
             | "window-buffer"
             | "set-window-buffer"
+            | "window-list"
+            | "window-list-1"
+            | "next-window"
+            | "previous-window"
+            | "delete-other-windows"
+            | "frame-first-window"
+            | "window-prev-buffers"
+            | "set-window-prev-buffers"
+            | "window-next-buffers"
+            | "set-window-next-buffers"
             | "window-parameter"
             | "set-window-parameter"
             | "window-parameters"
@@ -202,6 +212,46 @@ fn set_window_parameter_value(
     }
     record.slots[WINDOW_PARAMETERS_SLOT] = Value::list(items);
     Ok(value)
+}
+
+fn window_slot_value(interp: &Interpreter, window_id: u64, slot: usize) -> Value {
+    interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(slot))
+        .cloned()
+        .unwrap_or(Value::Nil)
+}
+
+fn set_window_slot_value(
+    interp: &mut Interpreter,
+    window_id: u64,
+    slot: usize,
+    value: Value,
+) -> Result<Value, LispError> {
+    let Some(record) = interp.find_record_mut(window_id) else {
+        return Err(LispError::TypeError("window".into(), "deleted".into()));
+    };
+    if record.slots.len() <= slot {
+        record.slots.resize(slot + 1, Value::Nil);
+    }
+    record.slots[slot] = value.clone();
+    Ok(value)
+}
+
+fn window_list_value(interp: &Interpreter, env: &Env, minibuf: Option<&Value>) -> Value {
+    let selected = interp.selected_window_value();
+    let include_minibuffer = matches!(minibuf, Some(Value::T));
+    if !include_minibuffer {
+        return Value::list([selected]);
+    }
+    let minibuffer = interp
+        .lookup_var("emaxx-minibuffer-window", env)
+        .unwrap_or_else(|| selected.clone());
+    if values_equal(interp, &selected, &minibuffer) {
+        Value::list([selected])
+    } else {
+        Value::list([selected, minibuffer])
+    }
 }
 
 pub(super) fn call(
@@ -1274,6 +1324,72 @@ pub(super) fn call(
                 record.slots[WINDOW_BUFFER_SLOT] = Value::Integer(buffer_id as i64);
             }
             Ok(Value::Nil)
+        }
+        "window-list" | "window-list-1" => {
+            need_arg_range(name, args, 0, 3)?;
+            Ok(window_list_value(interp, env, args.get(1)))
+        }
+        "next-window" | "previous-window" => {
+            need_arg_range(name, args, 0, 3)?;
+            let selected = interp.selected_window_value();
+            let include_minibuffer = matches!(args.get(1), Some(Value::T));
+            if !include_minibuffer {
+                return Ok(selected);
+            }
+            let current = args.first().cloned().unwrap_or_else(|| selected.clone());
+            let minibuffer = interp
+                .lookup_var("emaxx-minibuffer-window", env)
+                .unwrap_or_else(|| selected.clone());
+            Ok(if values_equal(interp, &current, &minibuffer) {
+                selected
+            } else {
+                minibuffer
+            })
+        }
+        "delete-other-windows" => {
+            need_arg_range(name, args, 0, 2)?;
+            let window = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            let window_id = window_id_or_selected(interp, &window)?;
+            set_window_slot_value(interp, window_id, WINDOW_PREV_BUFFERS_SLOT, Value::Nil)?;
+            set_window_slot_value(interp, window_id, WINDOW_NEXT_BUFFERS_SLOT, Value::Nil)?;
+            Ok(window)
+        }
+        "frame-first-window" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(interp.selected_window_value())
+        }
+        "window-prev-buffers" => {
+            need_arg_range(name, args, 0, 1)?;
+            let window = args.first().cloned().unwrap_or(Value::Nil);
+            let window_id = window_id_or_selected(interp, &window)?;
+            Ok(window_slot_value(
+                interp,
+                window_id,
+                WINDOW_PREV_BUFFERS_SLOT,
+            ))
+        }
+        "set-window-prev-buffers" => {
+            need_args(name, args, 2)?;
+            let window_id = window_id_or_selected(interp, &args[0])?;
+            set_window_slot_value(interp, window_id, WINDOW_PREV_BUFFERS_SLOT, args[1].clone())
+        }
+        "window-next-buffers" => {
+            need_arg_range(name, args, 0, 1)?;
+            let window = args.first().cloned().unwrap_or(Value::Nil);
+            let window_id = window_id_or_selected(interp, &window)?;
+            Ok(window_slot_value(
+                interp,
+                window_id,
+                WINDOW_NEXT_BUFFERS_SLOT,
+            ))
+        }
+        "set-window-next-buffers" => {
+            need_args(name, args, 2)?;
+            let window_id = window_id_or_selected(interp, &args[0])?;
+            set_window_slot_value(interp, window_id, WINDOW_NEXT_BUFFERS_SLOT, args[1].clone())
         }
         "window-parameter" => {
             need_args(name, args, 2)?;
