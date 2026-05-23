@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 470/7080 are verified locally.
+- Tests through 473/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 470/7080: support custom setopt warnings`.
+  `Compat 473/7080: preserve custom theme locals`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -54,9 +54,13 @@ counts as the progress denominator.
   version metadata, obsolete-variable metadata, basic batch display/window
   helpers, `dolist-with-progress-reporter`, `cl-letf` support for symbol
   property places, `setopt` type warnings, and `*Warnings*` buffer recording.
-- Selector 471, `custom--test-theme-variables` in `test/lisp/custom-tests.el`,
+- Selectors 471..473 in `test/lisp/custom-tests.el` passed after restoring the
+  built-in `user`/`changed` Custom themes, adding batch-safe frame/theme helper
+  primitives, and honoring `defcustom :local` including permanent locals.
+- Selector 474, `custom-test-no-saved-value-after-customizing-option` in
+  `test/lisp/custom-tests.el`,
   is the next known failure.
-- Resume compatibility advancement at test 471/7080 after pushing the 470
+- Resume compatibility advancement at test 474/7080 after pushing the 473
   batch.
 
 ## Workflow
