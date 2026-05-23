@@ -1996,6 +1996,41 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
 }
 
 #[test]
+fn mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let keymap = make_runtime_keymap(&mut interp, Some("test-map"));
+    call(
+        &mut interp,
+        "keymap-set",
+        &[
+            keymap.clone(),
+            Value::String("C-c g".into()),
+            Value::Symbol("keymap-tests-command".into()),
+        ],
+        &mut env,
+    )
+    .expect("keymap-set should populate the runtime keymap");
+
+    let mapped = call(
+        &mut interp,
+        "mapcar",
+        &[Value::Symbol("identity".into()), keymap],
+        &mut env,
+    )
+    .expect("mapcar should see the Lisp keymap list representation");
+
+    let items = mapped.to_vec().expect("mapcar returns a list");
+    assert_eq!(items.first(), Some(&Value::Symbol("keymap".into())));
+    assert!(
+        items
+            .iter()
+            .any(|item| item.to_string().contains("keymap-tests-command")),
+        "mapped keymap items should include runtime bindings: {items:?}"
+    );
+}
+
+#[test]
 fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
     let mut interp = Interpreter::new();
     interp.set_load_path(vec![upstream_emacs_repo().join("lisp")]);

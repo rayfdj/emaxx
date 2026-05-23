@@ -471,7 +471,7 @@ impl Interpreter {
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
-        if primitives::prefer_builtin_override(name) && primitives::is_builtin(name) {
+        if primitives::prefer_builtin_override(name) {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
         for frame in env.iter().rev() {

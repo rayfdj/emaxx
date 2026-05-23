@@ -574,6 +574,8 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "rx-to-string"
             | "timerp"
             | "header-line-indent-mode"
+            | "tool-bar-local-item"
+            | "tool-bar-local-item-from-menu"
             | "face-set-after-frame-default"
     )
 }

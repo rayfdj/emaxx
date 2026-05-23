@@ -267,6 +267,8 @@ pub(crate) fn sequence_values(
 ) -> Result<Vec<Value>, LispError> {
     if let Some(string) = sequence_string_like(sequence) {
         Ok(string_sequence_values(&string))
+    } else if let Some(items) = keymap_list_items(interp, sequence)? {
+        Ok(items)
     } else if is_bool_vector_value(interp, sequence) {
         bool_vector_values(interp, sequence)
     } else {

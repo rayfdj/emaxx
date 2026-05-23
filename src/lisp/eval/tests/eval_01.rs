@@ -48,6 +48,18 @@ fn read_accepts_buffer_and_marker_streams() {
 }
 
 #[test]
+fn defun_does_not_shadow_preferred_builtin_overrides() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun tool-bar-local-item-from-menu (&rest _args) 'shadowed)
+               (tool-bar-local-item-from-menu 'command \"icon\" 'target-map))"
+        ),
+        Value::Symbol("target-map".into())
+    );
+}
+
+#[test]
 fn md5_accepts_buffer_sources_and_coding_symbols() {
     assert_eq!(
         eval_str(
