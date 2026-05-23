@@ -100,6 +100,30 @@ fn ert_with_temp_file_honors_text_keyword() {
 }
 
 #[test]
+fn with_temp_file_honors_dynamic_default_directory() {
+    let directory = std::env::temp_dir().join(format!(
+        "emaxx-with-temp-file-default-directory-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir(&directory).expect("create default-directory test directory");
+    let expected = directory.join("relative-output.txt");
+    let directory_text = format!("{}/", directory.to_string_lossy());
+    let form = format!(
+        r#"(let ((default-directory "{directory_text}"))
+             (with-temp-file "relative-output.txt"
+               (insert "written"))
+             (file-exists-p "{expected}"))"#,
+        expected = expected.to_string_lossy()
+    );
+    assert_eq!(eval_str(&form), Value::T);
+    let _ = fs::remove_file(expected);
+    let _ = fs::remove_dir(directory);
+}
+
+#[test]
 fn setf_image_property_updates_image_descriptors() {
     assert_eq!(
         eval_str(
@@ -280,6 +304,74 @@ fn require_uses_explicit_file_targets_in_file_missing_errors() {
 }
 
 #[test]
+fn require_with_explicit_target_requires_provided_feature() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-require-no-provide-{}.el",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, "(setq sample-require-side-effect t)\n").expect("write require target");
+    let path_text = path.to_string_lossy();
+    let mut interp = Interpreter::new();
+    let mut env: Env = Vec::new();
+    let form = Reader::new(&format!(
+        r#"(require 'sample-missing-feature "{path_text}")"#
+    ))
+    .read_all()
+    .expect("read require")
+    .remove(0);
+    let error = interp.eval(&form, &mut env).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failed to provide feature sample-missing-feature")
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn require_with_extensionless_target_finds_elc_file() {
+    let stem = std::env::temp_dir().join(format!(
+        "emaxx-require-elc-target-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    let elc_path = stem.with_extension("elc");
+    fs::write(&elc_path, "(provide 'sample-elc-feature)\n").expect("write elc target");
+    let stem_text = stem.to_string_lossy();
+    let form = format!(r#"(require 'sample-elc-feature "{stem_text}")"#);
+    assert_eq!(eval_str(&form), Value::Symbol("sample-elc-feature".into()));
+    let _ = fs::remove_file(elc_path);
+}
+
+#[test]
+fn require_with_extensionless_target_uses_elc_when_el_is_empty() {
+    let stem = std::env::temp_dir().join(format!(
+        "emaxx-require-empty-el-target-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    let el_path = stem.with_extension("el");
+    let elc_path = stem.with_extension("elc");
+    fs::write(&el_path, "").expect("write empty source stub");
+    fs::write(&elc_path, "(provide 'sample-empty-el-feature)\n").expect("write elc target");
+    let stem_text = stem.to_string_lossy();
+    let form = format!(r#"(require 'sample-empty-el-feature "{stem_text}")"#);
+    assert_eq!(
+        eval_str(&form),
+        Value::Symbol("sample-empty-el-feature".into())
+    );
+    let _ = fs::remove_file(el_path);
+    let _ = fs::remove_file(elc_path);
+}
+
+#[test]
 fn skip_unless_records_skip_in_summary() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -333,6 +425,18 @@ fn call_interactively_handles_prefix_argument_specs() {
                            (lambda (arg) (interactive \"P\") arg))))"
         ),
         Value::list([Value::Integer(4), Value::list([Value::Integer(4)]),])
+    );
+}
+
+#[test]
+fn call_interactively_skips_interactive_guard_prefixes() {
+    assert_eq!(
+        eval_str(
+            "(let ((current-prefix-arg nil))
+               (call-interactively
+                (lambda (arg) (interactive \"*P\") arg)))"
+        ),
+        Value::Nil
     );
 }
 

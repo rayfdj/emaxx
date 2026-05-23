@@ -345,7 +345,6 @@ impl Interpreter {
         self.switch_to_buffer_id(temp_id)?;
         let body_result = self.sf_progn(&items[2..], env);
         let write_result = if body_result.is_ok() {
-            let mut call_env = Vec::new();
             crate::lisp::primitives::call(
                 self,
                 "write-region",
@@ -356,7 +355,7 @@ impl Interpreter {
                     Value::Nil,
                     Value::Integer(0),
                 ],
-                &mut call_env,
+                env,
             )
             .map(|_| ())
         } else {

@@ -720,6 +720,32 @@ impl Interpreter {
         interp.mark_auto_buffer_local("buffer-read-only");
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");
+        interp.set_global_binding("mark-ring", Value::Nil);
+        interp.mark_auto_buffer_local("mark-ring");
+        interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
+        interp.set_global_binding("mark-ring-max", Value::Integer(16));
+        interp.put_symbol_property(
+            "mark-ring-max",
+            "standard-value",
+            Value::list([quoted_literal(&Value::Integer(16))]),
+        );
+        interp.put_symbol_property(
+            "mark-ring-max",
+            "custom-type",
+            Value::Symbol("natnum".into()),
+        );
+        interp.set_global_binding("global-mark-ring", Value::Nil);
+        interp.set_global_binding("global-mark-ring-max", Value::Integer(16));
+        interp.put_symbol_property(
+            "global-mark-ring-max",
+            "standard-value",
+            Value::list([quoted_literal(&Value::Integer(16))]),
+        );
+        interp.put_symbol_property(
+            "global-mark-ring-max",
+            "custom-type",
+            Value::Symbol("natnum".into()),
+        );
         interp.set_global_binding("current-prefix-arg", Value::Nil);
         interp.set_global_binding("this-command", Value::Nil);
         interp.set_global_binding("last-command", Value::Nil);

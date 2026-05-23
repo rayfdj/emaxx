@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 474/7080 are verified locally.
+- Tests through 481/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 474/7080: stabilize Custom buffer setup`.
+  `Compat 481/7080: cover Custom theme requires and dabbrev completion`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -66,8 +66,18 @@ counts as the progress denominator.
   passed.
 - After selector 474, the requested modularization pass moved evaluator
   bootstrap/static data into `src/lisp/eval/bootstrap.rs` and primitive
-  window/scroll helpers into `src/lisp/primitives/window.rs`; rerun the full
-  gates and 1..474 compatibility prefix before advancing to selector 475.
+  window/scroll helpers into `src/lisp/primitives/window.rs`; the full gates
+  and 1..474 compatibility prefix passed before advancing.
+- Selectors 475..479 in `test/lisp/custom-tests.el` passed after adding the
+  standard mark-ring Custom defaults, `make-empty-file`, dynamic
+  `with-temp-file` writes, explicit-target `require` provide checks, and
+  source-stub `.elc` fallback for `require-theme` support files.
+- Selectors 480..481 in `test/lisp/dabbrev-tests.el` passed after adding a
+  batch `execute-kbd-macro` path for parsed `kbd` vectors, dabbrev key
+  bindings, interactive `*P` parsing, and the `dabbrev-capf`
+  `completion-at-point` path needed by dabbrev completion.
+- Selector 482, `dabbrev-expand-after-killing-buffer`, is the next failing
+  selector.
 
 ## Workflow
 
