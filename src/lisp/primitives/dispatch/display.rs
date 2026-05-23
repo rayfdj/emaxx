@@ -97,6 +97,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "selected-window"
             | "window-buffer"
             | "set-window-buffer"
+            | "window-parameter"
+            | "set-window-parameter"
+            | "window-parameters"
             | "walk-windows"
             | "selected-frame"
             | "frame-terminal"
@@ -141,6 +144,64 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-window-vscroll"
             | "facemenu-add-face"
     )
+}
+
+fn window_id_or_selected(interp: &Interpreter, value: &Value) -> Result<u64, LispError> {
+    if value.is_nil() {
+        return Ok(interp.selected_window_id());
+    }
+    window_record_id_from_value(interp, value)
+        .ok_or_else(|| LispError::TypeError("window".into(), value.type_name()))
+}
+
+fn window_parameter_value(interp: &Interpreter, window_id: u64, parameter: &Value) -> Value {
+    let Some(params) = interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
+    else {
+        return Value::Nil;
+    };
+    let Ok(items) = params.to_vec() else {
+        return Value::Nil;
+    };
+    for item in items {
+        if let Ok(key) = item.car()
+            && values_equal(interp, &key, parameter)
+            && let Ok(value) = item.cdr()
+        {
+            return value;
+        }
+    }
+    Value::Nil
+}
+
+fn set_window_parameter_value(
+    interp: &mut Interpreter,
+    window_id: u64,
+    parameter: Value,
+    value: Value,
+) -> Result<Value, LispError> {
+    let existing = interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
+        .cloned()
+        .unwrap_or(Value::Nil);
+    let mut items: Vec<Value> = existing.to_vec().unwrap_or_default();
+    items.retain(|item| match item.car() {
+        Ok(key) => !values_equal(interp, &key, &parameter),
+        Err(_) => true,
+    });
+    if value.is_truthy() {
+        items.push(Value::cons(parameter, value.clone()));
+    }
+    let Some(record) = interp.find_record_mut(window_id) else {
+        return Err(LispError::TypeError("window".into(), "deleted".into()));
+    };
+    if record.slots.len() <= WINDOW_PARAMETERS_SLOT {
+        record.slots.resize(WINDOW_PARAMETERS_SLOT + 1, Value::Nil);
+    }
+    record.slots[WINDOW_PARAMETERS_SLOT] = Value::list(items);
+    Ok(value)
 }
 
 pub(super) fn call(
@@ -1201,6 +1262,29 @@ pub(super) fn call(
                 record.slots[WINDOW_BUFFER_SLOT] = Value::Integer(buffer_id as i64);
             }
             Ok(Value::Nil)
+        }
+        "window-parameter" => {
+            need_args(name, args, 2)?;
+            let window_id = window_id_or_selected(interp, &args[0])?;
+            Ok(window_parameter_value(interp, window_id, &args[1]))
+        }
+        "set-window-parameter" => {
+            need_args(name, args, 3)?;
+            let window_id = window_id_or_selected(interp, &args[0])?;
+            set_window_parameter_value(interp, window_id, args[1].clone(), args[2].clone())
+        }
+        "window-parameters" => {
+            need_arg_range(name, args, 0, 1)?;
+            let window = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            let window_id = window_id_or_selected(interp, &window)?;
+            Ok(interp
+                .find_record(window_id)
+                .and_then(|record| record.slots.get(WINDOW_PARAMETERS_SLOT))
+                .cloned()
+                .unwrap_or(Value::Nil))
         }
         "walk-windows" => {
             need_arg_range(name, args, 1, 3)?;

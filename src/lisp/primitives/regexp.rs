@@ -1614,6 +1614,7 @@ pub(super) fn buffer_regex_search(
         },
     )?;
     let noerror = args.get(2).is_some_and(Value::is_truthy);
+    let move_on_failure = search_noerror_moves(args.get(2));
     let limit = match args.get(1) {
         Some(value) if !value.is_nil() => position_from_value(interp, value)?,
         _ if forward => interp.buffer.point_max(),
@@ -1645,6 +1646,9 @@ pub(super) fn buffer_regex_search(
         }
         if limit < start {
             return if noerror {
+                if move_on_failure {
+                    interp.buffer.goto_char(limit);
+                }
                 Ok(Value::Nil)
             } else {
                 Err(LispError::SignalValue(Value::list([
@@ -1670,6 +1674,9 @@ pub(super) fn buffer_regex_search(
                 .map_err(|error| LispError::Signal(error.to_string()))?
             else {
                 return if noerror {
+                    if move_on_failure {
+                        interp.buffer.goto_char(limit);
+                    }
                     Ok(Value::Nil)
                 } else {
                     Err(LispError::SignalValue(Value::list([
@@ -1726,6 +1733,9 @@ pub(super) fn buffer_regex_search(
         let limit = limit.max(interp.buffer.point_min());
         if limit > interp.buffer.point() {
             return if noerror {
+                if move_on_failure {
+                    interp.buffer.goto_char(limit);
+                }
                 Ok(Value::Nil)
             } else {
                 Err(LispError::SignalValue(Value::list([
@@ -1810,6 +1820,9 @@ pub(super) fn buffer_regex_search(
                 continue;
             }
             return if noerror {
+                if move_on_failure {
+                    interp.buffer.goto_char(limit);
+                }
                 Ok(Value::Nil)
             } else {
                 Err(LispError::SignalValue(Value::list([
@@ -1820,6 +1833,10 @@ pub(super) fn buffer_regex_search(
         }
         Ok(Value::Integer(interp.buffer.point() as i64))
     }
+}
+
+fn search_noerror_moves(noerror: Option<&Value>) -> bool {
+    noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
 }
 
 fn last_empty_line_match_position(
