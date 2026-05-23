@@ -64,9 +64,10 @@ counts as the progress denominator.
   dynamic `inhibit-read-only` variable.
 - The full 1..474 selected-test prefix was replayed after the 474 fix; all 474
   passed.
-- Before advancing to selector 475, perform the requested clean modularization
-  pass for `src/lisp/primitives.rs` and `src/lisp/eval.rs`, then rerun the full
-  gates and compatibility prefix.
+- After selector 474, the requested modularization pass moved evaluator
+  bootstrap/static data into `src/lisp/eval/bootstrap.rs` and primitive
+  window/scroll helpers into `src/lisp/primitives/window.rs`; rerun the full
+  gates and 1..474 compatibility prefix before advancing to selector 475.
 
 ## Workflow
 
