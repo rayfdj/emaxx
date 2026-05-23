@@ -547,6 +547,11 @@ pub(super) fn call(
                 } else {
                     let _ = call_named_function(interp, "normal-mode", &[Value::T], env)?;
                 }
+                if file_exists && !file_writable_p(&path) {
+                    let buffer_id = interp.current_buffer_id();
+                    interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::T);
+                    interp.set_buffer_local_value(buffer_id, "read-only-mode", Value::T);
+                }
                 if !interp
                     .lookup_var("semantic-init-hook", env)
                     .is_some_and(|value| value.is_nil())

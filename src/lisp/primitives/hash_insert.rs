@@ -529,6 +529,7 @@ pub(crate) fn insert_text_with_hooks(
     if text.is_empty() {
         return Ok(());
     }
+    ensure_insert_modifiable(interp, env)?;
     ensure_no_supersession_threat(interp, env)?;
     let start = interp.buffer.point();
     let overlay_calls = overlay_insert_hook_calls(&interp.buffer, start, text.chars().count());

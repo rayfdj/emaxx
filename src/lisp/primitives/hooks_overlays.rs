@@ -452,12 +452,10 @@ pub(crate) fn ensure_region_modifiable(
     if from >= to {
         return Ok(());
     }
-    let buffer_read_only = interp
-        .lookup_var("buffer-read-only", env)
-        .is_some_and(|value| value.is_truthy());
     let inhibit_read_only = interp
         .lookup_var("inhibit-read-only", env)
         .unwrap_or(Value::Nil);
+    let buffer_read_only = buffer_read_only_active(interp, env, &inhibit_read_only);
 
     for pos in from..to {
         let read_only = interp.buffer.text_property_at(pos, "read-only");
@@ -470,14 +468,47 @@ pub(crate) fn ensure_region_modifiable(
             }
             return Err(LispError::Signal("Text is read-only".into()));
         }
-        if buffer_read_only
-            && !inhibit_read_only.is_truthy()
-            && !suppressor.is_some_and(|value| value.is_truthy())
-        {
-            return Err(LispError::Signal("Text is read-only".into()));
+        if buffer_read_only && !suppressor.is_some_and(|value| value.is_truthy()) {
+            return Err(buffer_read_only_signal(interp));
         }
     }
     Ok(())
+}
+
+pub(crate) fn ensure_insert_modifiable(
+    interp: &Interpreter,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    let inhibit_read_only = interp
+        .lookup_var("inhibit-read-only", env)
+        .unwrap_or(Value::Nil);
+    if !buffer_read_only_active(interp, env, &inhibit_read_only) {
+        return Ok(());
+    }
+    let point = interp.buffer.point();
+    let suppressor = interp.buffer.text_property_at(point, "inhibit-read-only");
+    if suppressor.is_some_and(|value| value.is_truthy()) {
+        return Ok(());
+    }
+    Err(buffer_read_only_signal(interp))
+}
+
+fn buffer_read_only_active(
+    interp: &Interpreter,
+    env: &mut crate::lisp::types::Env,
+    inhibit_read_only: &Value,
+) -> bool {
+    interp
+        .lookup_var("buffer-read-only", env)
+        .is_some_and(|value| value.is_truthy())
+        && !inhibit_read_only.is_truthy()
+}
+
+fn buffer_read_only_signal(interp: &Interpreter) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("buffer-read-only".into()),
+        Value::Buffer(interp.current_buffer_id(), interp.buffer.name.clone()),
+    ]))
 }
 
 pub(crate) fn inhibit_read_only_matches(inhibit: &Value, property: &Value) -> bool {

@@ -1540,6 +1540,39 @@ fn file_writable_p_is_true_for_creatable_missing_files() {
 }
 
 #[test]
+fn find_file_marks_unwritable_files_read_only() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let dir =
+        std::env::temp_dir().join(format!("emaxx-find-file-read-only-{}", std::process::id()));
+    let path = dir.join("readonly.txt");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    std::fs::write(&path, "contents").expect("write temp file");
+    let original_perms = std::fs::metadata(&path).expect("metadata").permissions();
+    let mut perms = original_perms.clone();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).expect("make temp file read-only");
+
+    let buffer = call(
+        &mut interp,
+        "find-file-noselect",
+        &[Value::String(path.display().to_string())],
+        &mut env,
+    )
+    .expect("find-file-noselect");
+    let buffer_id = interp.resolve_buffer_id(&buffer).expect("buffer id");
+    interp
+        .switch_to_buffer_id(buffer_id)
+        .expect("switch buffer");
+    assert_eq!(interp.lookup_var("buffer-read-only", &env), Some(Value::T));
+    assert_eq!(interp.lookup_var("read-only-mode", &env), Some(Value::T));
+
+    std::fs::set_permissions(&path, original_perms).expect("restore original permissions");
+    std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}
+
+#[test]
 fn selected_window_is_a_record_and_tracks_window_start() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
