@@ -525,6 +525,49 @@ impl Interpreter {
         result
     }
 
+    pub(super) fn sf_with_selected_window(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Ok(Value::Nil);
+        }
+        let window = self.eval(&items[1], env)?;
+        let Some(window_id) = crate::lisp::primitives::window_record_id_from_value(self, &window)
+        else {
+            return Err(LispError::TypeError("window".into(), window.type_name()));
+        };
+        let target_buffer_id = crate::lisp::primitives::window_buffer_id(self, &window)
+            .unwrap_or_else(|| self.current_buffer_id());
+        let saved_window_id = self.selected_window_id();
+        let saved_buffer_id = self.current_buffer_id();
+        let saved_minibuffer_selected = self
+            .lookup_var("emaxx-minibuffer-selected-window", env)
+            .unwrap_or(Value::Nil);
+        let minibuffer_window = self
+            .lookup_var("emaxx-minibuffer-window", env)
+            .unwrap_or(Value::Nil);
+        if minibuffer_window == window {
+            self.set_global_binding(
+                "emaxx-minibuffer-selected-window",
+                Value::Record(saved_window_id),
+            );
+        }
+        self.set_selected_window_id(window_id);
+        self.switch_to_buffer_id(target_buffer_id)?;
+        let result = self.sf_progn(&items[2..], env);
+        self.set_selected_window_id(saved_window_id);
+        if self.has_buffer_id(saved_buffer_id) {
+            let _ = self.switch_to_buffer_id(saved_buffer_id);
+        }
+        self.set_global_binding(
+            "emaxx-minibuffer-selected-window",
+            saved_minibuffer_selected,
+        );
+        result
+    }
+
     pub(super) fn sf_with_syntax_table(
         &mut self,
         items: &[Value],

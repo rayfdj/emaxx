@@ -103,6 +103,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "frame-list"
             | "face-set-after-frame-default"
             | "windowp"
+            | "window-minibuffer-p"
             | "window-at"
             | "split-window"
             | "split-window-below"
@@ -128,6 +129,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "send-string-to-terminal"
             | "get-buffer-window"
             | "minibuffer-window"
+            | "minibuffer-selected-window"
+            | "minibuffer-window-active-p"
+            | "get-mru-window"
             | "get-buffer-window-list"
             | "display-buffer"
             | "quit-window"
@@ -249,7 +253,7 @@ pub(super) fn call(
         }
         "ding" => Ok(Value::Nil),
         "make-progress-reporter" => {
-            need_arg_range(name, args, 1, 4)?;
+            need_arg_range(name, args, 1, 6)?;
             Ok(Value::list([
                 Value::Symbol("progress-reporter".into()),
                 args[0].clone(),
@@ -1226,6 +1230,23 @@ pub(super) fn call(
                 Value::Nil
             })
         }
+        "window-minibuffer-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let window = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            let Some(window_id) = window_record_id_from_value(interp, &window) else {
+                return Err(LispError::TypeError("window".into(), window.type_name()));
+            };
+            let is_minibuffer = interp
+                .find_record(window_id)
+                .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
+                .is_some_and(
+                    |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                );
+            Ok(if is_minibuffer { Value::T } else { Value::Nil })
+        }
         "window-at" => {
             need_arg_range(name, args, 2, 3)?;
             Ok(interp.selected_window_value())
@@ -1348,7 +1369,27 @@ pub(super) fn call(
                 Value::Nil
             })
         }
-        "minibuffer-window" => Ok(interp.selected_window_value()),
+        "minibuffer-window" => Ok(interp
+            .lookup_var("emaxx-minibuffer-window", env)
+            .unwrap_or_else(|| interp.selected_window_value())),
+        "minibuffer-selected-window" | "get-mru-window" => Ok(interp
+            .lookup_var("emaxx-minibuffer-selected-window", env)
+            .filter(|value| !value.is_nil())
+            .unwrap_or_else(|| interp.selected_window_value())),
+        "minibuffer-window-active-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let window = args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| interp.selected_window_value());
+            let is_minibuffer = window_record_id_from_value(interp, &window)
+                .and_then(|id| interp.find_record(id))
+                .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
+                .is_some_and(
+                    |slot| matches!(slot, Value::Symbol(kind) if kind == MINIBUFFER_WINDOW_KIND),
+                );
+            Ok(if is_minibuffer { Value::T } else { Value::Nil })
+        }
         "get-buffer-window-list" => {
             need_arg_range(name, args, 0, 4)?;
             let buffer_id = if let Some(buffer) = args.first() {

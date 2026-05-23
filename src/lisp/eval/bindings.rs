@@ -64,6 +64,7 @@ impl Interpreter {
                 "redisplay--unhighlight-overlay-function".into(),
             )),
             "case-fold-search" => Some(Value::T),
+            "case-replace" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
             "fill-column" => Some(Value::Integer(70)),
             "indent-according-to-mode" => Some(Value::Symbol("indent-according-to-mode".into())),

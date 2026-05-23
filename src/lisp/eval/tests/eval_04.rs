@@ -2864,6 +2864,12 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
     );
     assert_eq!(eval_str(r#"(active-minibuffer-window)"#), Value::Nil);
     assert_eq!(eval_str(r#"(windowp (minibuffer-window))"#), Value::T);
+    assert_eq!(
+        eval_str(r#"(window-minibuffer-p (selected-window))"#),
+        Value::Nil
+    );
+    assert_eq!(eval_str(r#"(minibuffer-prompt-end)"#), Value::Integer(1));
+    assert_eq!(eval_str(r#"case-replace"#), Value::T);
 }
 
 #[test]
@@ -2917,5 +2923,52 @@ fn nconc_replaces_dotted_tail_destructively() {
     assert_eq!(
         eval_str("(let* ((x '(a . b)) (y x)) (nconc x '(c)) y)"),
         Value::list([Value::symbol("a"), Value::symbol("c")])
+    );
+}
+
+#[test]
+fn failed_looking_at_preserves_previous_match_data() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (insert "abc")
+              (goto-char (point-min))
+              (re-search-forward "ab")
+              (let ((before (list (match-beginning 0) (match-end 0))))
+                (looking-at "z")
+                (list before (match-beginning 0) (match-end 0))))
+            "#
+        ),
+        Value::list([
+            Value::list([Value::Integer(1), Value::Integer(3)]),
+            Value::Integer(1),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn buffer_list_is_mru_ordered_after_switches() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (progn
+              (get-buffer-create "first")
+              (get-buffer-create "second")
+              (switch-to-buffer "first")
+              (switch-to-buffer "second")
+              (mapcar #'buffer-name (buffer-list)))
+            "#
+        )
+        .to_vec()
+        .unwrap()
+        .into_iter()
+        .take(2)
+        .collect::<Vec<_>>(),
+        vec![
+            Value::String("second".into()),
+            Value::String("first".into()),
+        ]
     );
 }

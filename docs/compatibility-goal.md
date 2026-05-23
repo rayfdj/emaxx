@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 481/7080 are verified locally.
+- Tests through 491/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 481/7080: cover Custom theme requires and dabbrev completion`.
+  `Compat 491/7080: advance dabbrev expansion compatibility`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -76,7 +76,14 @@ counts as the progress denominator.
   batch `execute-kbd-macro` path for parsed `kbd` vectors, dabbrev key
   bindings, interactive `*P` parsing, and the `dabbrev-capf`
   `completion-at-point` path needed by dabbrev completion.
-- Selector 482, `dabbrev-expand-after-killing-buffer`, is the next failing
+- Selectors 482..491 in `test/lisp/dabbrev-tests.el` passed after adding
+  standard minibuffer/window predicates and minibuffer contents helpers,
+  formatted `user-error`, command-loop state tracking for keyboard macros,
+  failed `looking-at` match-data preservation, lightweight minibuffer window
+  selection, multi-key keyboard macro dispatch for search/mark/narrow commands,
+  MRU `buffer-list` ordering, and `.el` auto-mode selection for dabbrev's
+  same-major-mode buffer filter.
+- Selector 492, `dabbrev-expand-test-same-buffer-1`, is the next failing
   selector.
 
 ## Workflow

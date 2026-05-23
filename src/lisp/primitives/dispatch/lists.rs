@@ -117,9 +117,41 @@ fn execute_kbd_macro(
     } else {
         vector_items(&args[0])?
     };
-    for event in events {
+    let mut pending_keys: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < events.len() {
+        let event = events[index].clone();
         let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
-        let binding_key = key_sequence_binding_text(&key)?;
+        let event_key = key_sequence_binding_text(&key)?;
+        if pending_keys.is_empty() && event_key == "C-s" {
+            index += 1;
+            let mut search_text = String::new();
+            while index < events.len() {
+                if let Some(text) = keyboard_macro_self_insert_text(&events[index]) {
+                    search_text.push_str(&text);
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            if !search_text.is_empty() {
+                super::call(
+                    interp,
+                    "search-forward",
+                    &[Value::String(search_text), Value::Nil, Value::T],
+                    env,
+                )?;
+            }
+            finish_kbd_macro_command(
+                interp,
+                Value::Symbol("isearch-forward".into()),
+                Value::Symbol("isearch-forward".into()),
+                env,
+            );
+            continue;
+        }
+        pending_keys.push(event_key);
+        let binding_key = pending_keys.join(" ");
         if binding_key == "C-u" {
             let current = interp
                 .lookup_var("current-prefix-arg", env)
@@ -133,20 +165,115 @@ fn execute_kbd_macro(
                 Value::list([Value::Integer(next)]),
                 env,
             );
+            pending_keys.clear();
+            index += 1;
             continue;
         }
         let binding = key_binding(interp, &binding_key, env)?;
-        if !binding.is_nil() {
-            call_interactively_impl(interp, &[binding], env)?;
-            interp.set_variable("current-prefix-arg", Value::Nil, env);
-        } else if let Some(text) = keyboard_macro_self_insert_text(&event) {
-            interp.buffer.insert(&text);
+        if is_keymap_value(interp, &binding) {
+            index += 1;
+            continue;
         }
+        if !binding.is_nil() {
+            execute_kbd_macro_command(interp, &binding, env)?;
+            interp.set_variable("current-prefix-arg", Value::Nil, env);
+            pending_keys.clear();
+        } else if pending_keys.len() == 1
+            && let Some(text) = keyboard_macro_self_insert_text(&event)
+        {
+            execute_kbd_macro_self_insert(interp, &text, env)?;
+            pending_keys.clear();
+        }
+        index += 1;
     }
+    interp.set_variable("this-command", Value::Nil, env);
     Ok(Value::Nil)
 }
 
+fn execute_kbd_macro_command(
+    interp: &mut Interpreter,
+    command: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interp.set_variable("deactivate-mark", Value::Nil, env);
+    interp.set_variable("this-original-command", command.clone(), env);
+    interp.set_variable("this-command", command.clone(), env);
+    run_named_hooks(
+        interp,
+        "pre-command-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    if matches!(command, Value::Symbol(name) if name == "narrow-to-region") {
+        let mark = interp.buffer.mark().unwrap_or(interp.buffer.point());
+        let point = interp.buffer.point();
+        super::call(
+            interp,
+            "narrow-to-region",
+            &[Value::Integer(mark as i64), Value::Integer(point as i64)],
+            env,
+        )?;
+    } else {
+        call_interactively_impl(interp, std::slice::from_ref(command), env)?;
+    }
+    run_named_hooks(
+        interp,
+        "post-command-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    finish_kbd_macro_command(interp, command.clone(), command.clone(), env);
+    Ok(())
+}
+
+fn execute_kbd_macro_self_insert(
+    interp: &mut Interpreter,
+    text: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let command = Value::Symbol("self-insert-command".into());
+    interp.set_variable("deactivate-mark", Value::Nil, env);
+    interp.set_variable("this-original-command", command.clone(), env);
+    interp.set_variable("this-command", command.clone(), env);
+    run_named_hooks(
+        interp,
+        "pre-command-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    insert_text_with_hooks(interp, text, &[], false, false, env)?;
+    run_named_hooks(
+        interp,
+        "post-command-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    finish_kbd_macro_command(interp, command.clone(), command, env);
+    Ok(())
+}
+
+fn finish_kbd_macro_command(
+    interp: &mut Interpreter,
+    original_command: Value,
+    this_command: Value,
+    env: &mut Env,
+) {
+    interp.set_variable("real-last-command", original_command, env);
+    interp.set_variable("last-command", this_command, env);
+    if interp.lookup_var("last-repeatable-command", env).is_some() {
+        let real_last_command = interp
+            .lookup_var("real-last-command", env)
+            .unwrap_or(Value::Nil);
+        interp.set_variable("last-repeatable-command", real_last_command, env);
+    }
+}
+
 fn keyboard_macro_self_insert_text(event: &Value) -> Option<String> {
+    if let Value::Symbol(text) = event
+        && !looks_like_textual_key_spec(text)
+    {
+        return Some(text.clone());
+    }
     let code = event.as_integer().ok()?;
     if !(0..=char::MAX as i64).contains(&code) {
         return None;

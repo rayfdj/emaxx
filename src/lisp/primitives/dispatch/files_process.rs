@@ -37,6 +37,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "substitute-in-file-name"
             | "file-name-directory"
             | "file-name-nondirectory"
+            | "file-name-split"
             | "file-name-sans-extension"
             | "file-name-base"
             | "file-name-extension"
@@ -138,6 +139,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "kill-buffer"
             | "bury-buffer"
             | "set-mark"
+            | "set-mark-command"
             | "push-mark"
             | "mark"
             | "make-marker"
@@ -703,6 +705,21 @@ pub(super) fn call(
             Ok(Value::String(file_name_nondirectory(&string_text(
                 &args[0],
             )?)))
+        }
+        "file-name-split" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            let parts = Path::new(&path)
+                .components()
+                .map(|component| match component {
+                    Component::Prefix(prefix) => prefix.as_os_str().to_string_lossy().into(),
+                    Component::RootDir => std::path::MAIN_SEPARATOR.to_string(),
+                    Component::CurDir => ".".into(),
+                    Component::ParentDir => "..".into(),
+                    Component::Normal(part) => part.to_string_lossy().into(),
+                })
+                .map(Value::String);
+            Ok(Value::list(parts))
         }
         "file-name-sans-extension" => {
             need_args(name, args, 1)?;
@@ -1896,6 +1913,11 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let pos = position_from_value(interp, &args[0])?;
             interp.buffer.set_mark(pos);
+            Ok(Value::Nil)
+        }
+        "set-mark-command" => {
+            need_arg_range(name, args, 0, 1)?;
+            interp.buffer.set_mark(interp.buffer.point());
             Ok(Value::Nil)
         }
         "push-mark" => {

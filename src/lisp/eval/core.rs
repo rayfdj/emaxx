@@ -186,7 +186,7 @@ impl Interpreter {
                         "with-restriction" => return self.sf_with_restriction(&items, env),
                         "without-restriction" => return self.sf_without_restriction(&items, env),
                         "add-function" => return self.sf_add_function(&items, env),
-                        "with-selected-window" => return self.sf_progn(&items[2..], env),
+                        "with-selected-window" => return self.sf_with_selected_window(&items, env),
                         "with-syntax-table" => return self.sf_with_syntax_table(&items, env),
                         "save-match-data" => return self.sf_save_match_data(&items, env),
                         "save-excursion" => return self.sf_save_excursion(&items, env),

@@ -12,6 +12,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "point"
             | "point-min"
             | "point-max"
+            | "minibuffer-prompt-end"
             | "goto-char"
             | "forward-char"
             | "forward-word"
@@ -28,6 +29,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "end-of-line"
             | "beginning-of-defun"
             | "end-of-defun"
+            | "backward-sentence"
+            | "forward-paragraph"
             | "forward-line"
             | "vertical-motion"
             | "search-forward"
@@ -45,6 +48,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "syntax-ppss"
             | "parse-partial-sexp"
             | "buffer-string"
+            | "minibuffer-contents"
+            | "minibuffer-contents-no-properties"
             | "buffer-substring"
             | "buffer-substring-no-properties"
             | "add-to-invisibility-spec"
@@ -82,11 +87,13 @@ pub(super) fn handles(name: &str) -> bool {
             | "delete-and-extract-region"
             | "kill-region"
             | "delete-line"
+            | "kill-whole-line"
             | "delete-horizontal-space"
             | "delete-char"
             | "delete-forward-char"
             | "kill-word"
             | "erase-buffer"
+            | "delete-minibuffer-contents"
             | "newline"
             | "upcase-region"
             | "downcase-region"
@@ -212,6 +219,7 @@ pub(super) fn call(
         "point" => Ok(Value::Integer(interp.buffer.point() as i64)),
         "point-min" => Ok(Value::Integer(interp.buffer.point_min() as i64)),
         "point-max" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
+        "minibuffer-prompt-end" => Ok(Value::Integer(interp.buffer.point_min() as i64)),
         "goto-char" => {
             need_args(name, args, 1)?;
             let pos = position_from_value(interp, &args[0])?;
@@ -435,6 +443,34 @@ pub(super) fn call(
             interp.buffer.goto_char(interp.buffer.point_max());
             Ok(Value::T)
         }
+        "backward-sentence" => {
+            need_arg_range(name, args, 0, 1)?;
+            let point = interp.buffer.point();
+            let prefix = interp
+                .buffer
+                .buffer_substring(interp.buffer.point_min(), point)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let pos = prefix
+                .rfind("\n\n")
+                .map(|byte| interp.buffer.point_min() + prefix[..byte].chars().count() + 2)
+                .unwrap_or_else(|| interp.buffer.point_min());
+            interp.buffer.goto_char(pos);
+            Ok(Value::Nil)
+        }
+        "forward-paragraph" => {
+            need_arg_range(name, args, 0, 1)?;
+            let point = interp.buffer.point();
+            let suffix = interp
+                .buffer
+                .buffer_substring(point, interp.buffer.point_max())
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let pos = suffix
+                .find("\n\n")
+                .map(|byte| point + suffix[..byte].chars().count())
+                .unwrap_or_else(|| interp.buffer.point_max());
+            interp.buffer.goto_char(pos);
+            Ok(Value::Nil)
+        }
         "forward-line" => {
             let n = if args.is_empty() || args[0].is_nil() {
                 BigInt::from(1u8)
@@ -623,6 +659,21 @@ pub(super) fn call(
                 .buffer
                 .substring_property_spans(interp.buffer.point_min(), interp.buffer.point_max()),
         )),
+        "minibuffer-contents" | "minibuffer-contents-no-properties" => {
+            need_arg_range(name, args, 0, 0)?;
+            let start = interp.buffer.point_min();
+            let end = interp.buffer.point_max();
+            let text = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let props = if name == "minibuffer-contents" {
+                interp.buffer.substring_property_spans(start, end)
+            } else {
+                Vec::new()
+            };
+            Ok(string_like_value(text, props))
+        }
         "buffer-substring" | "buffer-substring-no-properties" => {
             need_args(name, args, 2)?;
             let from = position_from_value(interp, &args[0])?;
@@ -988,7 +1039,7 @@ pub(super) fn call(
             ))
         }
         "kill-region" => super::call(interp, "delete-region", args, env),
-        "delete-line" => {
+        "delete-line" | "kill-whole-line" => {
             need_arg_range(name, args, 0, 0)?;
             let start = interp.buffer.beginning_of_line();
             let end = move_lines_from(interp, start, 1).0;
@@ -1099,6 +1150,16 @@ pub(super) fn call(
                 let max = interp.buffer.point_max();
                 delete_region_with_hooks(interp, min, max, env)?;
             }
+            Ok(Value::Nil)
+        }
+        "delete-minibuffer-contents" => {
+            need_arg_range(name, args, 0, 0)?;
+            delete_region_with_hooks(
+                interp,
+                interp.buffer.point_min(),
+                interp.buffer.point_max(),
+                env,
+            )?;
             Ok(Value::Nil)
         }
         "upcase-region" | "downcase-region" | "capitalize-region" | "upcase-initials-region" => {
