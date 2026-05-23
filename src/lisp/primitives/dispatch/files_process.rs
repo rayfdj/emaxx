@@ -91,6 +91,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "delete-directory"
             | "delete-directory-internal"
             | "make-directory"
+            | "make-empty-file"
             | "mkdir"
             | "make-directory-internal"
             | "make-temp-file"
@@ -1261,6 +1262,32 @@ pub(super) fn call(
             } else {
                 fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
             }
+            Ok(Value::Nil)
+        }
+        "make-empty-file" => {
+            need_arg_range(name, args, 1, 2)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&path)?;
+            let create_parents = args.get(1).is_some_and(Value::is_truthy);
+            if !create_parents && fs::metadata(&path).is_ok() {
+                return Err(LispError::SignalValue(file_error_with_detail_value(
+                    "File exists",
+                    "File exists",
+                    &path,
+                )));
+            }
+            if create_parents
+                && let Some(parent) = Path::new(&path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent).map_err(|error| file_output_error(&path, &error))?;
+            }
+            fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .map_err(|error| file_output_error(&path, &error))?;
             Ok(Value::Nil)
         }
         "mkdir" => super::call(interp, "make-directory", args, env),

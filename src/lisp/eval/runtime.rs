@@ -67,11 +67,38 @@ impl Interpreter {
             return Some(direct);
         }
 
-        let with_el = if target.ends_with(".el") {
+        let with_el = if target.ends_with(".el") || target.ends_with(".elc") {
             None
         } else {
             Some(format!("{target}.el"))
         };
+        if let Some(with_el) = &with_el {
+            let candidate = PathBuf::from(with_el);
+            if candidate.is_file() {
+                if load_source_stub_prefers_elc(&candidate)
+                    && let Some(with_elc) = if target.ends_with(".el") || target.ends_with(".elc") {
+                        None
+                    } else {
+                        Some(PathBuf::from(format!("{target}.elc")))
+                    }
+                    && with_elc.is_file()
+                {
+                    return Some(with_elc);
+                }
+                return Some(candidate);
+            }
+        }
+        let with_elc = if target.ends_with(".el") || target.ends_with(".elc") {
+            None
+        } else {
+            Some(format!("{target}.elc"))
+        };
+        if let Some(with_elc) = &with_elc {
+            let candidate = PathBuf::from(with_elc);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
         for root in &self.load_path {
             let candidate = root.join(target);
             if candidate.is_file() {
@@ -80,15 +107,34 @@ impl Interpreter {
             if let Some(with_el) = &with_el {
                 let candidate = root.join(with_el);
                 if candidate.is_file() {
+                    if load_source_stub_prefers_elc(&candidate)
+                        && let Some(with_elc) = &with_elc
+                    {
+                        let elc_candidate = root.join(with_elc);
+                        if elc_candidate.is_file() {
+                            return Some(elc_candidate);
+                        }
+                    }
+                    return Some(candidate);
+                }
+            }
+            if let Some(with_elc) = &with_elc {
+                let candidate = root.join(with_elc);
+                if candidate.is_file() {
                     return Some(candidate);
                 }
             }
         }
         if let Some(alias) = repeated_directory_load_alias(target) {
-            let alias_with_el = if alias.ends_with(".el") {
+            let alias_with_el = if alias.ends_with(".el") || alias.ends_with(".elc") {
                 None
             } else {
                 Some(format!("{alias}.el"))
+            };
+            let alias_with_elc = if alias.ends_with(".el") || alias.ends_with(".elc") {
+                None
+            } else {
+                Some(format!("{alias}.elc"))
             };
             for root in &self.load_path {
                 let candidate = root.join(&alias);
@@ -97,6 +143,20 @@ impl Interpreter {
                 }
                 if let Some(alias_with_el) = &alias_with_el {
                     let candidate = root.join(alias_with_el);
+                    if candidate.is_file() {
+                        if load_source_stub_prefers_elc(&candidate)
+                            && let Some(alias_with_elc) = &alias_with_elc
+                        {
+                            let elc_candidate = root.join(alias_with_elc);
+                            if elc_candidate.is_file() {
+                                return Some(elc_candidate);
+                            }
+                        }
+                        return Some(candidate);
+                    }
+                }
+                if let Some(alias_with_elc) = &alias_with_elc {
+                    let candidate = root.join(alias_with_elc);
                     if candidate.is_file() {
                         return Some(candidate);
                     }
@@ -144,6 +204,11 @@ impl Interpreter {
             && let Some(grep_path) = self.resolve_load_target("semantic/symref/grep")
         {
             crate::lisp::load_file_strict(self, &grep_path)?;
+        }
+        if !self.has_feature(feature) && target.is_some() {
+            return Err(LispError::Signal(format!(
+                "Loading file {load_target} failed to provide feature {feature}"
+            )));
         }
         if !self.has_feature(feature) {
             return self.provide_feature_with_after_load(feature);
@@ -1108,4 +1173,8 @@ fn repeated_directory_load_alias(target: &str) -> Option<String> {
     let directory_name = directory.rsplit('/').next()?;
     let alias_file = file.strip_prefix(&format!("{directory_name}-"))?;
     Some(format!("{directory}/{alias_file}"))
+}
+
+fn load_source_stub_prefers_elc(path: &std::path::Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0)
 }

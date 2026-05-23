@@ -244,6 +244,99 @@ pub(super) fn handles(name: &str) -> bool {
     )
 }
 
+fn dabbrev_completion_at_point(
+    interp: &Interpreter,
+    env: &Env,
+) -> Result<Option<(usize, usize, String)>, LispError> {
+    let capfs = interp
+        .lookup_var("completion-at-point-functions", env)
+        .unwrap_or(Value::Nil);
+    let has_dabbrev_capf = capfs
+        .to_vec()
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item, Value::Symbol(symbol) if symbol == "dabbrev-capf"))
+        })
+        .unwrap_or(false);
+    if !has_dabbrev_capf {
+        return Ok(None);
+    }
+
+    let point = interp.buffer.point();
+    let mut start = point;
+    while start > interp.buffer.point_min() {
+        let Some(ch) = interp.buffer.char_at(start - 1) else {
+            break;
+        };
+        if !dabbrev_word_char(ch) {
+            break;
+        }
+        start -= 1;
+    }
+    let prefix = interp
+        .buffer
+        .buffer_substring(start, point)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    if prefix.is_empty() {
+        return Ok(None);
+    }
+
+    let check_other_buffers = interp
+        .lookup_var("dabbrev--check-other-buffers", env)
+        .is_some_and(|value| value.is_truthy());
+    let mut texts = vec![interp.buffer.buffer_string()];
+    if check_other_buffers {
+        for (buffer_id, _) in &interp.buffer_list {
+            if *buffer_id == interp.current_buffer_id() {
+                continue;
+            }
+            if let Some(buffer) = interp.get_buffer_by_id(*buffer_id) {
+                texts.push(buffer.buffer_string());
+            }
+        }
+    }
+    let mut matches = Vec::new();
+    for (text_index, text) in texts.iter().enumerate() {
+        let mut word_start = None;
+        for (index, ch) in text
+            .char_indices()
+            .chain(std::iter::once((text.len(), '\0')))
+        {
+            if ch != '\0' && dabbrev_word_char(ch) {
+                if word_start.is_none() {
+                    word_start = Some(index);
+                }
+                continue;
+            }
+            let Some(byte_start) = word_start.take() else {
+                continue;
+            };
+            let word = &text[byte_start..index];
+            let char_start = text[..byte_start].chars().count() + 1;
+            let char_end = char_start + word.chars().count();
+            if text_index == 0 && char_start == start && char_end == point {
+                continue;
+            }
+            if word.starts_with(&prefix)
+                && word != prefix
+                && !matches.iter().any(|existing: &String| existing == word)
+            {
+                matches.push(word.to_string());
+            }
+        }
+    }
+
+    match matches.as_slice() {
+        [only] => Ok(Some((start, point, only.clone()))),
+        _ => Ok(None),
+    }
+}
+
+fn dabbrev_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '-' || ch == '_'
+}
+
 pub(super) fn call(
     interp: &mut Interpreter,
     name: &str,
@@ -1357,6 +1450,13 @@ pub(super) fn call(
         }
         "completion-at-point" => {
             need_args(name, args, 0)?;
+            if let Some(completion) = dabbrev_completion_at_point(interp, env)? {
+                let (start, end, expansion) = completion;
+                delete_region_with_hooks(interp, start, end, env)?;
+                interp.buffer.goto_char(start);
+                insert_text_with_hooks(interp, &expansion, &[], false, false, env)?;
+                return Ok(Value::T);
+            }
             if interp
                 .lookup_var("completion-auto-help", env)
                 .is_none_or(|value| value.is_nil())

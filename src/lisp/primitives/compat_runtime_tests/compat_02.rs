@@ -792,6 +792,61 @@ fn write_region_reports_output_errors_as_file_error() {
 }
 
 #[test]
+fn make_empty_file_creates_empty_file_and_optional_parents() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let directory =
+        std::env::temp_dir().join(format!("emaxx-make-empty-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    let nested = directory.join("child").join("empty.txt");
+    let nested_text = nested.to_string_lossy().to_string();
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "make-empty-file",
+            &[Value::String(nested_text.clone()), Value::T],
+            &mut env,
+        )
+        .expect("create empty file with parents"),
+        Value::Nil
+    );
+    assert_eq!(
+        std::fs::metadata(&nested)
+            .expect("empty file metadata")
+            .len(),
+        0
+    );
+    std::fs::write(&nested, "content").expect("write content");
+    assert!(
+        call(
+            &mut interp,
+            "make-empty-file",
+            &[Value::String(nested_text.clone())],
+            &mut env,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "make-empty-file",
+            &[Value::String(nested_text), Value::T],
+            &mut env,
+        )
+        .expect("truncate existing file with parents"),
+        Value::Nil
+    );
+    assert_eq!(
+        std::fs::metadata(&nested)
+            .expect("truncated file metadata")
+            .len(),
+        0
+    );
+    std::fs::remove_dir_all(directory).expect("cleanup temp directory");
+}
+
+#[test]
 fn member_ignore_case_matches_strings_case_insensitively() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

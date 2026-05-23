@@ -2858,6 +2858,8 @@ pub(crate) fn collect_where_is_matches(
 
 pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
     match key {
+        "M-/" => Some("dabbrev-expand"),
+        "C-M-/" => Some("dabbrev-completion"),
         "C-x 4 d" => Some("dired-other-window"),
         "C-x 5 d" => Some("dired-other-frame"),
         "C-x 5 C-o" => Some("display-buffer-other-frame"),

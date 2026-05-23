@@ -84,6 +84,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "keyboard-quit"
             | "start-kbd-macro"
             | "end-kbd-macro"
+            | "execute-kbd-macro"
             | "define-keymap"
             | "define-abbrev-table"
             | "read-key"
@@ -99,6 +100,62 @@ pub(super) fn handles(name: &str) -> bool {
             | "completing-read"
             | "format-prompt"
     )
+}
+
+fn execute_kbd_macro(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_arg_range("execute-kbd-macro", args, 1, 3)?;
+    let events = if let Some(string) = string_like(&args[0]) {
+        string
+            .text
+            .chars()
+            .map(|ch| Value::Integer(ch as i64))
+            .collect()
+    } else {
+        vector_items(&args[0])?
+    };
+    for event in events {
+        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let binding_key = key_sequence_binding_text(&key)?;
+        if binding_key == "C-u" {
+            let current = interp
+                .lookup_var("current-prefix-arg", env)
+                .unwrap_or(Value::Nil);
+            let next = match prefix_numeric_value(&current).and_then(|value| value.as_integer()) {
+                Ok(value) if !current.is_nil() => value.saturating_mul(4),
+                _ => 4,
+            };
+            interp.set_variable(
+                "current-prefix-arg",
+                Value::list([Value::Integer(next)]),
+                env,
+            );
+            continue;
+        }
+        let binding = key_binding(interp, &binding_key, env)?;
+        if !binding.is_nil() {
+            call_interactively_impl(interp, &[binding], env)?;
+            interp.set_variable("current-prefix-arg", Value::Nil, env);
+        } else if let Some(text) = keyboard_macro_self_insert_text(&event) {
+            interp.buffer.insert(&text);
+        }
+    }
+    Ok(Value::Nil)
+}
+
+fn keyboard_macro_self_insert_text(event: &Value) -> Option<String> {
+    let code = event.as_integer().ok()?;
+    if !(0..=char::MAX as i64).contains(&code) {
+        return None;
+    }
+    let ch = char::from_u32(code as u32)?;
+    if ch.is_control() && ch != '\n' && ch != '\t' {
+        return None;
+    }
+    Some(ch.to_string())
 }
 
 pub(super) fn call(
@@ -1127,6 +1184,7 @@ pub(super) fn call(
             interp.set_variable("defining-kbd-macro", Value::Nil, env);
             Ok(Value::Nil)
         }
+        "execute-kbd-macro" => execute_kbd_macro(interp, args, env),
         "define-keymap" => Ok(keymap_placeholder(None)),
         "define-abbrev-table" => {
             if args.len() < 2 {

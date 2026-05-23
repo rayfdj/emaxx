@@ -270,7 +270,8 @@ pub(crate) fn parse_interactive_string(
         if line.is_empty() {
             continue;
         }
-        let Some(code) = line.chars().next() else {
+        let mut chars = line.chars().skip_while(|ch| matches!(ch, '*' | '@' | '^'));
+        let Some(code) = chars.next() else {
             continue;
         };
         match code {
