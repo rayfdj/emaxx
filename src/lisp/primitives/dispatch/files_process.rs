@@ -39,6 +39,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "file-name-directory"
             | "file-name-nondirectory"
             | "file-name-split"
+            | "file-name-sans-versions"
             | "file-name-sans-extension"
             | "file-name-base"
             | "file-name-extension"
@@ -54,6 +55,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "find-file-name-handler"
             | "dired-noselect"
             | "dired-revert"
+            | "emaxx-dired-revert"
             | "dired-buffer-stale-p"
             | "shell-quote-argument"
             | "locate-user-emacs-file"
@@ -487,6 +489,9 @@ pub(super) fn call(
             need_arg_range(name, args, 1, 4)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             let literal = args.get(2).is_some_and(Value::is_truthy);
+            if !literal && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+                return super::call(interp, "dired-noselect", &[Value::String(path)], env);
+            }
             if let Some((id, name)) = interp.find_buffer(&path) {
                 return Ok(Value::Buffer(id, name));
             }
@@ -590,7 +595,26 @@ pub(super) fn call(
                 .unwrap_or(Value::Nil))
         }
         "find-file" => {
-            need_args(name, args, 1)?;
+            need_arg_range(name, args, 1, 2)?;
+            let requested = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            if args.get(1).is_some_and(Value::is_truthy)
+                && file_name_nondirectory(&requested) == "*"
+                && let Some(directory) = Path::new(&requested).parent()
+            {
+                let mut entries = fs::read_dir(directory)
+                    .map_err(|error| file_output_error(&requested, &error))?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                entries.sort();
+                let mut buffers = Vec::new();
+                for entry in entries {
+                    let buffer =
+                        super::call(interp, "find-file-noselect", &[Value::String(entry)], env)?;
+                    buffers.push(buffer);
+                }
+                return Ok(Value::list(buffers));
+            }
             let buffer = super::call(interp, "find-file-noselect", args, env)?;
             let id = interp.resolve_buffer_id(&buffer)?;
             interp.switch_to_buffer_id(id)?;
@@ -735,6 +759,20 @@ pub(super) fn call(
                 &args[0],
             )?)))
         }
+        "file-name-sans-versions" => {
+            need_arg_range(name, args, 1, 2)?;
+            let mut file = string_text(&args[0])?;
+            if !args.get(1).is_some_and(Value::is_truthy)
+                && let Some(index) = file.rfind(".~")
+                && file.ends_with('~')
+                && file[index + 2..file.len() - 1]
+                    .chars()
+                    .all(|ch| ch.is_ascii_digit())
+            {
+                file.truncate(index);
+            }
+            Ok(Value::String(file))
+        }
         "file-name-base" => {
             need_args(name, args, 1)?;
             let nondirectory = file_name_nondirectory(&string_text(&args[0])?);
@@ -832,7 +870,7 @@ pub(super) fn call(
             interp.switch_to_buffer_id(saved_buffer_id)?;
             Ok(Value::Buffer(buffer_id, buffer_name))
         }
-        "dired-revert" => {
+        "dired-revert" | "emaxx-dired-revert" => {
             need_arg_range(name, args, 0, 4)?;
             let directory = interp
                 .buffer_local_value(interp.current_buffer_id(), "dired-directory")
@@ -840,6 +878,25 @@ pub(super) fn call(
                 .ok_or_else(|| LispError::Signal("Current buffer is not a Dired buffer".into()))?;
             let buffer_name = interp.buffer.name.clone();
             initialize_dired_buffer(interp, &buffer_name, &directory)?;
+            if let Some(first_entry) = fs::read_dir(&directory)
+                .ok()
+                .and_then(|entries| {
+                    let mut names = entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    names.sort();
+                    names.into_iter().next()
+                })
+                .map(|name| file_name_concat(&[directory.clone(), name]))
+            {
+                let _ = call_named_function(
+                    interp,
+                    "dired-goto-file",
+                    &[Value::String(first_entry)],
+                    env,
+                )?;
+            }
             Ok(Value::Nil)
         }
         "dired-buffer-stale-p" => {
@@ -1313,10 +1370,12 @@ pub(super) fn call(
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             if args.get(1).is_some_and(Value::is_truthy) {
-                fs::create_dir_all(path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::create_dir_all(&path).map_err(|error| LispError::Signal(error.to_string()))?;
             } else {
-                fs::create_dir(path).map_err(|error| LispError::Signal(error.to_string()))?;
+                fs::create_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
             }
+            refresh_current_dired_buffer_for_path(interp, &path, env)?;
+            interp.buffer.goto_char(interp.buffer.point_max());
             Ok(Value::Nil)
         }
         "make-empty-file" => {

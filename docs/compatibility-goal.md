@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 520/7080 are verified locally.
+- Tests through 523/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 520/7080: fill dired file and window primitives`.
+  `Compat 523/7080: preserve native dired directory buffers`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -104,7 +104,14 @@ counts as the progress denominator.
   `read-file-name`, and page motion helpers needed by Dired buffer setup.
   These selectors were verified individually because the local grouped
   `dired-tests.el` run is order-sensitive around Dired buffer/window state.
-- Selector 521, `dired-test-bug27243-01`, is the next failing selector.
+- Selectors 521..523 in `test/lisp/dired-tests.el` passed individually
+  after routing directory visits through native Dired buffers, advertising
+  native Dired buffers in `dired-buffers`, using parseable ls-style Dired
+  listings, refreshing current Dired buffers after directory/file writes,
+  giving native Dired buffers a native revert function, adding
+  `file-name-sans-versions`, preserving `ert-with-temp-directory`'s trailing
+  slash, and supporting wildcard `find-file` over directory entries.
+- Selector 524, `dired-test-bug27631`, is the next failing selector.
 
 ## Workflow
 

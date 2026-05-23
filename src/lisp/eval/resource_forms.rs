@@ -246,7 +246,12 @@ impl Interpreter {
         let path =
             std::env::temp_dir().join(format!("emaxx-ert-dir-{}-{}", std::process::id(), stamp));
         fs::create_dir_all(&path).map_err(|error| LispError::Signal(error.to_string()))?;
-        env.push(vec![(name, Value::String(path.display().to_string()))]);
+        env.push(vec![(
+            name,
+            Value::String(crate::lisp::primitives::file_name_as_directory(
+                &path.display().to_string(),
+            )),
+        )]);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         let _ = fs::remove_dir_all(&path);

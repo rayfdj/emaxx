@@ -599,18 +599,35 @@ pub(crate) fn dired_listing_for_directory(directory: &str) -> Result<String, Lis
                         directory,
                     ))
                 })
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let metadata = entry.metadata().ok();
+                    (name, metadata)
+                })
         })
-        .collect::<Result<Vec<String>, LispError>>()?;
-    entries.sort();
+        .collect::<Result<Vec<_>, LispError>>()?;
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    fn listing_line(name: &str, metadata: Option<&fs::Metadata>) -> String {
+        let file_type = if metadata.is_some_and(|metadata| metadata.is_dir()) {
+            'd'
+        } else {
+            '-'
+        };
+        let size = metadata.map(fs::Metadata::len).unwrap_or(0);
+        format!("{file_type}rw-r--r-- 1 user group {size:>8} 2026-01-01 00:00 {name}\n")
+    }
 
     let mut listing = String::new();
     listing.push_str(&file_name_as_directory(directory));
     listing.push_str(":\n");
-    listing.push_str(".\n..\n");
-    for entry in entries {
-        listing.push_str(&entry);
-        listing.push('\n');
+    listing.push_str(&listing_line(".", fs::metadata(directory).ok().as_ref()));
+    let parent_metadata = Path::new(directory)
+        .parent()
+        .and_then(|parent| parent.metadata().ok());
+    listing.push_str(&listing_line("..", parent_metadata.as_ref()));
+    for (entry, metadata) in entries {
+        listing.push_str(&listing_line(&entry, metadata.as_ref()));
     }
     Ok(listing)
 }
@@ -622,6 +639,7 @@ pub(crate) fn initialize_dired_buffer(
 ) -> Result<(), LispError> {
     let listing = dired_listing_for_directory(directory)?;
     interp.buffer = crate::buffer::Buffer::from_text(buffer_name, &listing);
+    interp.buffer.goto_char(interp.buffer.point_max());
     interp.buffer.set_unmodified();
     interp
         .buffer
@@ -635,10 +653,24 @@ pub(crate) fn initialize_dired_buffer(
         "dired-directory",
         Value::String(file_name_as_directory(directory)),
     );
+    let expanded_directory = file_name_as_directory(&expand_file_name(directory, None));
+    interp.set_buffer_local_value(
+        buffer_id,
+        "dired-subdir-alist",
+        Value::list([Value::cons(
+            Value::String(expanded_directory.clone()),
+            Value::Integer(1),
+        )]),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "default-directory",
+        Value::String(file_name_as_directory(directory)),
+    );
     interp.set_buffer_local_value(
         buffer_id,
         "revert-buffer-function",
-        Value::Symbol("dired-revert".into()),
+        Value::Symbol("emaxx-dired-revert".into()),
     );
     interp.set_buffer_local_value(
         buffer_id,
@@ -646,6 +678,63 @@ pub(crate) fn initialize_dired_buffer(
         Value::Symbol("dired-buffer-stale-p".into()),
     );
     interp.set_buffer_local_value(buffer_id, "buffer-auto-revert-by-notification", Value::Nil);
+    let buffer_value = Value::Buffer(buffer_id, buffer_name.to_string());
+    let existing = interp
+        .lookup_var("dired-buffers", &Vec::new())
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let mut entries = Vec::new();
+    entries.push(Value::cons(
+        Value::String(expanded_directory.clone()),
+        buffer_value.clone(),
+    ));
+    for entry in existing {
+        let Some((dir, buffer)) = entry.cons_values() else {
+            continue;
+        };
+        if matches!(&dir, Value::String(existing_dir) if existing_dir == &expanded_directory)
+            || matches!(buffer, Value::Buffer(existing_id, _) if existing_id == buffer_id)
+        {
+            continue;
+        }
+        entries.push(Value::cons(dir, buffer));
+    }
+    interp.set_symbol_value_cell("dired-buffers", Value::list(entries));
+    Ok(())
+}
+
+pub(crate) fn refresh_current_dired_buffer_for_path(
+    interp: &mut Interpreter,
+    changed_path: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let buffer_id = interp.current_buffer_id();
+    let Some(directory) = interp
+        .buffer_local_value(buffer_id, "dired-directory")
+        .and_then(|value| string_like(&value).map(|string| string.text))
+    else {
+        return Ok(());
+    };
+    let directory_path = Path::new(&directory);
+    let changed = Path::new(changed_path);
+    if !changed.starts_with(directory_path) {
+        return Ok(());
+    }
+    let target = changed
+        .strip_prefix(directory_path)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .map(|component| directory_path.join(component.as_os_str()))
+        .unwrap_or_else(|| changed.to_path_buf());
+    let buffer_name = interp.buffer.name.clone();
+    initialize_dired_buffer(interp, &buffer_name, &directory)?;
+    let target_text = target.to_string_lossy().into_owned();
+    let _ = call_named_function(
+        interp,
+        "dired-goto-file",
+        &[Value::String(target_text)],
+        env,
+    )?;
     Ok(())
 }
 

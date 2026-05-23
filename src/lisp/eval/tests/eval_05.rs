@@ -491,6 +491,58 @@ fn dired_highlights_unsubstituted_shell_metacharacters() {
 }
 
 #[test]
+fn dired_reuses_directory_buffer_and_preserves_file_point() {
+    let result = eval_str_with_upstream_load_path(
+        r#"(progn
+             (setq noninteractive t)
+             (require 'dired)
+             (ert-with-temp-directory test-dir
+               (let ((dired-auto-revert-buffer t)
+                     buffers
+                     step)
+                 (condition-case err
+                     (progn
+                       (setq step 'initial)
+                       (should-not (dired-buffers-for-dir test-dir))
+                       (setq step 'find-directory)
+                       (with-current-buffer (find-file-noselect test-dir)
+                         (make-directory "test-subdir"))
+                       (setq step 'check-eob)
+                       (with-current-buffer (car (dired-buffers-for-dir test-dir))
+                         (unless (eobp) (error "not at eob")))
+                       (setq step 'dired)
+                       (push (dired test-dir) buffers)
+                       (setq step 'buffer-count)
+                       (unless (eq 1 (length (dired-buffers-for-dir test-dir)))
+                         (error "extra dired buffer"))
+                       (let ((buf (current-buffer))
+                             (pt1 (point))
+                             (test-file (concat (file-name-as-directory "test-subdir")
+                                                "test-file")))
+                         (setq step 'write-region)
+                         (write-region "Test" nil test-file nil 'silent nil 'excl)
+                         (setq step 'file-at-point)
+                         (let ((actual (dired-file-name-at-point))
+                               (expected (concat test-dir
+                                                 (file-name-as-directory "test-subdir"))))
+                           (unless (equal actual expected)
+                             (error "not on subdir: %S expected %S" actual expected)))
+                         (setq step 'find-file)
+                         (push (dired-find-file) buffers)
+                         (let ((pt2 (point)))
+                           (setq step 'pop-back)
+                           (pop-to-buffer-same-window buf)
+                           (unless (eq (point) pt1)
+                             (error "lost directory point"))
+                           (setq step 'find-again)
+                           (push (dired-find-file) buffers)
+                           (list :ok (eq (point) pt2)))))
+                   (error (list step err))))))"#,
+    );
+    assert_eq!(result, Value::list([Value::symbol(":ok"), Value::T]));
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

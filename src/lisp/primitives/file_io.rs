@@ -429,6 +429,7 @@ pub(crate) fn write_region_value(
     }
     set_last_coding_system_used(interp, &coding, env);
     dispatch_file_notification(interp, env, &path, "changed")?;
+    refresh_current_dired_buffer_for_path(interp, &path, env)?;
     Ok(Value::String(path))
 }
 
