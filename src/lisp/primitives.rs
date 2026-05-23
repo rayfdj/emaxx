@@ -574,6 +574,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "rx-to-string"
             | "timerp"
             | "header-line-indent-mode"
+            | "face-set-after-frame-default"
     )
 }
 

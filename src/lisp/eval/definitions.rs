@@ -793,7 +793,9 @@ impl Interpreter {
         }
         let name = items[1].as_symbol()?.to_string();
         let resolved = self.resolve_variable_name(&name)?;
-        if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "defcustom") {
+        let is_defcustom =
+            matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "defcustom");
+        if is_defcustom {
             self.record_defcustom_properties(&resolved, items, env)?;
         }
         self.mark_special_variable(&resolved);
@@ -806,7 +808,30 @@ impl Interpreter {
         }
         // Bare `defvar` declarations mark a variable special without binding it.
         if self.default_toplevel_value(&resolved).is_none() && items.len() > 2 {
-            let val = self.eval(&items[2], env)?;
+            let (val, used_stashed_theme_value) = if is_defcustom {
+                let standard = self.eval(&items[2], env)?;
+                if self
+                    .get_symbol_property(&resolved, "standard-value")
+                    .is_none()
+                {
+                    self.put_symbol_property(
+                        &resolved,
+                        "standard-value",
+                        Value::list([quoted_literal(&standard)]),
+                    );
+                }
+                if let Some(saved) = self
+                    .get_symbol_property(&resolved, "saved-value")
+                    .and_then(|value| value.to_vec().ok())
+                    .and_then(|items| items.first().cloned())
+                {
+                    (self.eval(&saved, env)?, true)
+                } else {
+                    (standard, false)
+                }
+            } else {
+                (self.eval(&items[2], env)?, false)
+            };
             self.set_default_toplevel_value(&resolved, val);
             if self
                 .get_symbol_property(&resolved, "standard-value")
@@ -818,6 +843,9 @@ impl Interpreter {
                     "standard-value",
                     Value::list([quoted_literal(&stored)]),
                 );
+            }
+            if used_stashed_theme_value && self.has_non_user_theme_value(&resolved) {
+                self.put_symbol_property(&resolved, "saved-value", Value::Nil);
             }
         }
         Ok(Value::Nil)
@@ -874,11 +902,38 @@ impl Interpreter {
                         );
                     }
                 }
+                ":local" => {
+                    let value = self.eval(&items[index + 1], env)?;
+                    let is_permanent =
+                        matches!(&value, Value::Symbol(local) if local == "permanent");
+                    if matches!(value, Value::T) || is_permanent {
+                        self.mark_auto_buffer_local(symbol);
+                    }
+                    if is_permanent {
+                        self.put_symbol_property(symbol, "permanent-local", Value::T);
+                    }
+                }
                 _ => {}
             }
             index += 2;
         }
         Ok(())
+    }
+
+    fn has_non_user_theme_value(&self, symbol: &str) -> bool {
+        let Some(theme_value) = self.get_symbol_property(symbol, "theme-value") else {
+            return false;
+        };
+        let Ok(entries) = theme_value.to_vec() else {
+            return false;
+        };
+        let Some(first) = entries.first() else {
+            return false;
+        };
+        let Ok(items) = first.to_vec() else {
+            return false;
+        };
+        !matches!(items.first(), Some(Value::Symbol(theme)) if theme == "user")
     }
 
     pub(super) fn sf_defvar_local(

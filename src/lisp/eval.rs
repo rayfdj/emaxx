@@ -928,6 +928,7 @@ impl Interpreter {
                 "process-connection-type".into(),
                 "process-environment".into(),
                 "selection-converter-alist".into(),
+                "window-system".into(),
                 "scroll-preserve-screen-position".into(),
                 "scroll-up-aggressively".into(),
                 "standard-output".into(),

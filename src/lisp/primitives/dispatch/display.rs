@@ -43,7 +43,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "buffer-last-name"
             | "display-graphic-p"
             | "display-images-p"
+            | "window-system"
             | "frame-parameter"
+            | "set-frame-parameter"
             | "char-displayable-p"
             | "frame-width"
             | "frame-height"
@@ -97,7 +99,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-window-buffer"
             | "walk-windows"
             | "selected-frame"
+            | "frame-terminal"
             | "frame-list"
+            | "face-set-after-frame-default"
             | "windowp"
             | "window-at"
             | "split-window"
@@ -587,7 +591,7 @@ pub(super) fn call(
         )),
 
         // ── Display stubs ──
-        "display-graphic-p" | "display-images-p" => Ok(Value::Nil),
+        "display-graphic-p" | "display-images-p" | "window-system" => Ok(Value::Nil),
         "frame-parameter" => {
             need_arg_range(name, args, 1, 2)?;
             let parameter = args
@@ -600,6 +604,10 @@ pub(super) fn call(
                 "menu-bar-lines" | "tab-bar-lines" => Value::Integer(0),
                 _ => Value::Nil,
             })
+        }
+        "set-frame-parameter" => {
+            need_args(name, args, 3)?;
+            Ok(args[2].clone())
         }
         "char-displayable-p" => {
             need_args(name, args, 1)?;
@@ -1201,7 +1209,15 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
+        "frame-terminal" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Symbol("terminal".into()))
+        }
         "frame-list" => Ok(Value::list([Value::Symbol("frame".into())])),
+        "face-set-after-frame-default" => {
+            need_arg_range(name, args, 1, 2)?;
+            Ok(Value::Nil)
+        }
         "windowp" => {
             need_args(name, args, 1)?;
             Ok(if is_window_value(interp, &args[0]) {

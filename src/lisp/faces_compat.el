@@ -10,7 +10,7 @@
 (defvar emaxx--next-face-id 1)
 (defvar custom-theme-load-path nil)
 (defvar custom-enabled-themes nil)
-(defvar custom-known-themes nil)
+(defvar custom-known-themes '(user changed))
 
 (defun emaxx--register-theme (theme)
   (unless (memq theme custom-known-themes)
@@ -180,6 +180,9 @@
   theme)
 
 (defun frame-set-background-mode (&optional _frame _keep)
+  nil)
+
+(defun face-set-after-frame-default (&optional _frame)
   nil)
 
 (defun emaxx--face-ref-list-p (value)

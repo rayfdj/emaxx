@@ -1916,16 +1916,29 @@ pub(super) fn call(
         }
         "kill-all-local-variables" => {
             need_args(name, args, 0)?;
-            for (name, _) in interp.buffer_local_variables(interp.current_buffer_id()) {
+            let buffer_id = interp.current_buffer_id();
+            let locals = interp.buffer_local_variables(buffer_id);
+            let mut permanent = Vec::new();
+            for (name, value) in &locals {
+                if interp
+                    .get_symbol_property(name, "permanent-local")
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    permanent.push((name.clone(), value.clone()));
+                    continue;
+                }
                 interp.notify_variable_watchers(
-                    &name,
+                    name,
                     Value::Nil,
                     "makunbound",
-                    Some(interp.current_buffer_id()),
+                    Some(buffer_id),
                     env,
                 )?;
             }
-            interp.clear_buffer_local_state(interp.current_buffer_id());
+            interp.clear_buffer_local_state(buffer_id);
+            for (name, value) in permanent {
+                interp.set_buffer_local_value(buffer_id, &name, value);
+            }
             Ok(Value::Nil)
         }
         "hack-local-variables-filter" => {

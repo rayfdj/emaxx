@@ -1785,6 +1785,64 @@ fn define_global_minor_mode_uses_default_value_even_if_variable_becomes_buffer_l
 }
 
 #[test]
+fn defcustom_local_options_are_buffer_local_and_permanent_when_requested() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defcustom sample-local-option 'initial \"doc\" :local t)
+                   (defcustom sample-permanent-option 'initial \"doc\" :local 'permanent)
+                   (with-temp-buffer
+                     (setq sample-local-option 'changed)
+                     (setq sample-permanent-option 'changed)
+                     (let ((before (list sample-local-option
+                                         sample-permanent-option
+                                         (default-value 'sample-local-option)
+                                         (default-value 'sample-permanent-option))))
+                       (kill-all-local-variables)
+                       (list before
+                             sample-local-option
+                             sample-permanent-option
+                             (default-value 'sample-local-option)
+                             (default-value 'sample-permanent-option)))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("changed".into()),
+                Value::Symbol("changed".into()),
+                Value::Symbol("initial".into()),
+                Value::Symbol("initial".into()),
+            ]),
+            Value::Symbol("initial".into()),
+            Value::Symbol("changed".into()),
+            Value::Symbol("initial".into()),
+            Value::Symbol("initial".into()),
+        ])
+    );
+}
+
+#[test]
+fn defcustom_uses_stashed_non_user_theme_value_once() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (put 'sample-themed-option 'theme-value
+                        '((sample-theme 'theme-value)))
+                   (put 'sample-themed-option 'saved-value
+                        '('theme-value))
+                   (defcustom sample-themed-option 'standard \"doc\")
+                   (list sample-themed-option
+                         (eval (car (get 'sample-themed-option 'standard-value)))
+                         (get 'sample-themed-option 'saved-value)))"
+        ),
+        Value::list([
+            Value::Symbol("theme-value".into()),
+            Value::Symbol("standard".into()),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn define_minor_mode_call_without_arg_enables_instead_of_toggling() {
     assert_eq!(
         eval_str(
@@ -2102,6 +2160,45 @@ fn faces_compat_provides_face_ids_and_colors_at_point() {
     assert_eq!(items[1], Value::Integer(1));
     assert_string_value(items[2].clone(), "red");
     assert_string_value(items[3].clone(), "blue");
+}
+
+#[test]
+fn faces_compat_preserves_builtin_user_themes() {
+    let mut interp = Interpreter::new();
+    load_faces_compat(&mut interp);
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(and (memq 'user custom-known-themes)
+                  (memq 'changed custom-known-themes)
+                  t)"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn set_frame_parameter_accepts_batch_theme_updates() {
+    let mut interp = Interpreter::new();
+    load_faces_compat(&mut interp);
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+              (window-system 'frame)
+              (face-set-after-frame-default 'frame)
+              (frame-terminal 'frame)
+              (set-frame-parameter 'frame 'background-color \"white\"))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Symbol("terminal".into()),
+            Value::String("white".into()),
+        ])
+    );
 }
 
 #[test]
