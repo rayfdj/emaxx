@@ -1740,6 +1740,9 @@ impl Interpreter {
             self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter));
         }
         let body: Vec<Value> = items[body_start..].to_vec();
+        if crate::lisp::primitives::prefer_builtin_override(&name) {
+            return Ok(Value::Symbol(name));
+        }
         let lambda = Value::Lambda(params, body, shared_env(env.clone()));
         self.functions.push((name.clone(), lambda));
         Ok(Value::Symbol(name))
