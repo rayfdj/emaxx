@@ -1124,6 +1124,47 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
 }
 
 #[test]
+fn failed_search_with_move_noerror_moves_to_bound() {
+    let mut interp = Interpreter::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*test*", "abc def");
+    let mut env = Vec::new();
+    interp.buffer.goto_char(1);
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "search-forward",
+            &[
+                Value::String("z".into()),
+                Value::Integer(5),
+                Value::Symbol("move".into()),
+            ],
+            &mut env,
+        )
+        .expect("search-forward should return nil when noerror is move"),
+        Value::Nil
+    );
+    assert_eq!(interp.buffer.point(), 5);
+
+    interp.buffer.goto_char(1);
+    assert_eq!(
+        call(
+            &mut interp,
+            "re-search-forward",
+            &[
+                Value::String("z+".into()),
+                Value::Integer(6),
+                Value::Symbol("move".into()),
+            ],
+            &mut env,
+        )
+        .expect("re-search-forward should return nil when noerror is move"),
+        Value::Nil
+    );
+    assert_eq!(interp.buffer.point(), 6);
+}
+
+#[test]
 fn delete_line_removes_the_current_line() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");

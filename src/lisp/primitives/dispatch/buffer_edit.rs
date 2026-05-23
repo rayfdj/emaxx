@@ -1,5 +1,9 @@
 use super::*;
 
+fn search_noerror_moves(noerror: Option<&Value>) -> bool {
+    noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -495,6 +499,7 @@ pub(super) fn call(
             let needle = string_text(&args[0])?;
             let point = interp.buffer.point();
             let noerror = args.get(2).is_some_and(Value::is_truthy);
+            let move_on_failure = search_noerror_moves(args.get(2));
             let limit = match args.get(1) {
                 Some(value) if !value.is_nil() => position_from_value(interp, value)?,
                 _ if name == "search-forward" => interp.buffer.point_max(),
@@ -545,7 +550,12 @@ pub(super) fn call(
                     interp.buffer.goto_char(point);
                     Ok(Value::Integer(point as i64))
                 }
-                None if noerror => Ok(Value::Nil),
+                None if noerror => {
+                    if move_on_failure {
+                        interp.buffer.goto_char(limit);
+                    }
+                    Ok(Value::Nil)
+                }
                 None => Err(LispError::SignalValue(Value::list([
                     Value::Symbol("search-failed".into()),
                     Value::String(needle),

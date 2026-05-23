@@ -767,6 +767,11 @@ impl Interpreter {
                 Value::list([quoted_literal(&temp_dir)]),
             );
         }
+        interp.put_symbol_property(
+            "window-parameter",
+            "emaxx-gv-setter",
+            Value::Symbol("set-window-parameter".into()),
+        );
         let selected_window = interp.create_record(
             "window",
             vec![

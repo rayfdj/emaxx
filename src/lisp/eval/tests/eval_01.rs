@@ -1604,6 +1604,29 @@ fn set_window_buffer_accepts_nil_for_selected_window() {
 }
 
 #[test]
+fn window_parameters_round_trip_and_support_setf() {
+    assert_eq!(
+        eval_str(
+            "(let ((window (selected-window)))
+                 (set-window-parameter window 'alpha 1)
+                 (setf (window-parameter nil 'beta) 2)
+                 (list (window-parameter window 'alpha)
+                       (window-parameter nil 'beta)
+                       (progn
+                         (set-window-parameter window 'alpha nil)
+                         (window-parameter window 'alpha))
+                       (assq 'beta (window-parameters window))))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Nil,
+            Value::cons(Value::Symbol("beta".into()), Value::Integer(2)),
+        ])
+    );
+}
+
+#[test]
 fn killing_selected_window_buffer_moves_window_to_live_buffer() {
     let mut interp = Interpreter::new();
     assert_eq!(

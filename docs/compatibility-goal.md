@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 495/7080 are verified locally.
+- Tests through 513/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 495/7080: honor read-only file buffers`.
+  `Compat 513/7080: align search movement and window parameters`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -86,7 +86,13 @@ counts as the progress denominator.
 - Selectors 492..495 in `test/lisp/dabbrev-tests.el` passed after marking
   unwritable visited files read-only and enforcing `buffer-read-only` during
   insertion.
-- Selector 496, `delim-col-tests-delimit-columns`, is the next failing
+- Selectors 496..504 in `test/lisp/delim-col-tests.el` passed after matching
+  GNU search `NOERROR` movement semantics and adding real window parameter
+  storage for the rectangle helpers used by `delim-col`.
+- Selectors 505..507 in `test/lisp/descr-text-tests.el`, 508..512 in
+  `test/lisp/desktop-tests.el`, and selector 513
+  `dired-guess-default` passed with the same batch.
+- Selector 514, `dired-test-bug27496`, is the next failing
   selector.
 
 ## Workflow
