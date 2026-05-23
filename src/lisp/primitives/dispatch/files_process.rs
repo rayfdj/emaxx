@@ -860,7 +860,7 @@ pub(super) fn call(
         "dired-noselect" => {
             need_arg_range(name, args, 1, 2)?;
             let directory = string_text(&args[0])?;
-            let buffer_name = format!("{}{}", directory_file_name(&directory), "/");
+            let buffer_name = dired_buffer_name(&directory);
             let (buffer_id, buffer_name) = interp
                 .find_buffer(&buffer_name)
                 .unwrap_or_else(|| interp.create_buffer(&buffer_name));
@@ -1574,10 +1574,11 @@ pub(super) fn call(
                 .map(|value| string_text(&value))
                 .transpose()?
                 .unwrap_or_else(|| "ls".into());
+            let files = expand_simple_wildcard_paths(&file)?;
             let argv = switches
                 .split_whitespace()
                 .map(str::to_string)
-                .chain(std::iter::once(file))
+                .chain(files)
                 .collect::<Vec<_>>();
             let process_output = run_external_process(interp, &program, &argv, None, env)?;
             if !process_output.status.success() {

@@ -581,7 +581,23 @@ pub(crate) fn directory_file_name(path: &str) -> String {
     path.trim_end_matches('/').to_string()
 }
 
+pub(crate) fn dired_buffer_name(directory: &str) -> String {
+    if directory.contains('*') {
+        Path::new(directory)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(directory)
+            .to_string()
+    } else {
+        format!("{}{}", directory_file_name(directory), "/")
+    }
+}
+
 pub(crate) fn dired_listing_for_directory(directory: &str) -> Result<String, LispError> {
+    if directory.contains('*') {
+        return dired_listing_for_wildcard(directory);
+    }
+
     let mut entries = fs::read_dir(directory)
         .map_err(|error| {
             LispError::SignalValue(file_error_with_detail_value(
@@ -608,28 +624,176 @@ pub(crate) fn dired_listing_for_directory(directory: &str) -> Result<String, Lis
         .collect::<Result<Vec<_>, LispError>>()?;
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
-    fn listing_line(name: &str, metadata: Option<&fs::Metadata>) -> String {
-        let file_type = if metadata.is_some_and(|metadata| metadata.is_dir()) {
-            'd'
-        } else {
-            '-'
-        };
-        let size = metadata.map(fs::Metadata::len).unwrap_or(0);
-        format!("{file_type}rw-r--r-- 1 user group {size:>8} 2026-01-01 00:00 {name}\n")
-    }
-
     let mut listing = String::new();
     listing.push_str(&file_name_as_directory(directory));
     listing.push_str(":\n");
-    listing.push_str(&listing_line(".", fs::metadata(directory).ok().as_ref()));
+    listing.push_str(&dired_listing_line(
+        ".",
+        fs::metadata(directory).ok().as_ref(),
+    ));
     let parent_metadata = Path::new(directory)
         .parent()
         .and_then(|parent| parent.metadata().ok());
-    listing.push_str(&listing_line("..", parent_metadata.as_ref()));
+    listing.push_str(&dired_listing_line("..", parent_metadata.as_ref()));
     for (entry, metadata) in entries {
-        listing.push_str(&listing_line(&entry, metadata.as_ref()));
+        listing.push_str(&dired_listing_line(&entry, metadata.as_ref()));
     }
     Ok(listing)
+}
+
+pub(crate) fn dired_base_directory(directory: &str) -> String {
+    if !directory.contains('*') {
+        return directory.to_string();
+    }
+
+    let path = Path::new(directory);
+    let mut base = if path.is_absolute() {
+        PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+    } else {
+        PathBuf::from(".")
+    };
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
+            Component::ParentDir => base.push(".."),
+            Component::Normal(segment) => {
+                if segment.to_string_lossy().contains('*') {
+                    break;
+                }
+                base.push(segment);
+            }
+        }
+    }
+    base.to_string_lossy().into_owned()
+}
+
+fn dired_listing_for_wildcard(directory: &str) -> Result<String, LispError> {
+    let base_directory = dired_base_directory(directory);
+    let matches = expand_simple_wildcard_paths(directory)?;
+    let base_path = Path::new(&base_directory);
+    let wildcard = Path::new(directory)
+        .strip_prefix(base_path)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| directory.to_string());
+
+    let mut listing = String::new();
+    listing.push_str("  ");
+    listing.push_str(&file_name_as_directory(&base_directory));
+    listing.push_str(":\n");
+    listing.push_str("  wildcard ");
+    listing.push_str(&wildcard);
+    listing.push('\n');
+    for path in matches {
+        let metadata = fs::metadata(&path).ok();
+        let display_name = Path::new(&path)
+            .strip_prefix(base_path)
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or(path);
+        listing.push_str(&dired_listing_line(&display_name, metadata.as_ref()));
+    }
+    Ok(listing)
+}
+
+fn dired_listing_line(name: &str, metadata: Option<&fs::Metadata>) -> String {
+    let file_type = if metadata.is_some_and(|metadata| metadata.is_dir()) {
+        'd'
+    } else {
+        '-'
+    };
+    let size = metadata.map(fs::Metadata::len).unwrap_or(0);
+    format!("{file_type}rw-r--r-- 1 user group {size:>8} 2026-01-01 00:00 {name}\n")
+}
+
+pub(crate) fn expand_simple_wildcard_paths(pattern: &str) -> Result<Vec<String>, LispError> {
+    if !pattern.contains('*') {
+        return Ok(vec![pattern.to_string()]);
+    }
+
+    let path = Path::new(pattern);
+    let mut roots = if path.is_absolute() {
+        vec![PathBuf::from(std::path::MAIN_SEPARATOR.to_string())]
+    } else {
+        vec![PathBuf::from(".")]
+    };
+
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::Prefix(_) | Component::CurDir => {}
+            Component::ParentDir => {
+                for root in &mut roots {
+                    root.push("..");
+                }
+            }
+            Component::Normal(segment) => {
+                let segment = segment.to_string_lossy();
+                if segment.contains('*') {
+                    let mut expanded = Vec::new();
+                    for root in &roots {
+                        let entries = fs::read_dir(root)
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                        for entry in entries {
+                            let entry =
+                                entry.map_err(|error| LispError::Signal(error.to_string()))?;
+                            let name = entry.file_name();
+                            let name = name.to_string_lossy();
+                            if wildcard_match(&segment, &name) {
+                                expanded.push(entry.path());
+                            }
+                        }
+                    }
+                    roots = expanded;
+                } else {
+                    for root in &mut roots {
+                        root.push(segment.as_ref());
+                    }
+                }
+            }
+        }
+    }
+
+    roots.sort();
+    if roots.is_empty() {
+        return Err(LispError::Signal(format!("No match: {pattern}")));
+    }
+    Ok(roots
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    let mut rest = text;
+
+    if let Some(first) = parts.first()
+        && !first.is_empty()
+    {
+        let Some(stripped) = rest.strip_prefix(first) else {
+            return false;
+        };
+        rest = stripped;
+    }
+
+    for part in parts.iter().skip(1).take(parts.len().saturating_sub(2)) {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(index) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[index + part.len()..];
+    }
+
+    if let Some(last) = parts.last()
+        && !last.is_empty()
+        && !rest.ends_with(last)
+    {
+        return false;
+    }
+
+    true
 }
 
 pub(crate) fn initialize_dired_buffer(
@@ -638,12 +802,13 @@ pub(crate) fn initialize_dired_buffer(
     directory: &str,
 ) -> Result<(), LispError> {
     let listing = dired_listing_for_directory(directory)?;
+    let base_directory = dired_base_directory(directory);
     interp.buffer = crate::buffer::Buffer::from_text(buffer_name, &listing);
     interp.buffer.goto_char(interp.buffer.point_max());
     interp.buffer.set_unmodified();
     interp
         .buffer
-        .set_visited_file_modtime(file_modtime(directory)?);
+        .set_visited_file_modtime(file_modtime(&base_directory)?);
     let buffer_id = interp.current_buffer_id();
     interp.set_buffer_local_value(buffer_id, "major-mode", Value::Symbol("dired-mode".into()));
     interp.set_buffer_local_value(buffer_id, "mode-name", Value::String("Dired".into()));
@@ -651,9 +816,13 @@ pub(crate) fn initialize_dired_buffer(
     interp.set_buffer_local_value(
         buffer_id,
         "dired-directory",
-        Value::String(file_name_as_directory(directory)),
+        Value::String(if directory.contains('*') {
+            directory.to_string()
+        } else {
+            file_name_as_directory(directory)
+        }),
     );
-    let expanded_directory = file_name_as_directory(&expand_file_name(directory, None));
+    let expanded_directory = file_name_as_directory(&expand_file_name(&base_directory, None));
     interp.set_buffer_local_value(
         buffer_id,
         "dired-subdir-alist",
@@ -665,7 +834,7 @@ pub(crate) fn initialize_dired_buffer(
     interp.set_buffer_local_value(
         buffer_id,
         "default-directory",
-        Value::String(file_name_as_directory(directory)),
+        Value::String(file_name_as_directory(&base_directory)),
     );
     interp.set_buffer_local_value(
         buffer_id,

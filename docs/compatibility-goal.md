@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 523/7080 are verified locally.
+- Tests through 524/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 523/7080: preserve native dired directory buffers`.
+  `Compat 524/7080: support wildcard dired listings`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -111,7 +111,11 @@ counts as the progress denominator.
   giving native Dired buffers a native revert function, adding
   `file-name-sans-versions`, preserving `ert-with-temp-directory`'s trailing
   slash, and supporting wildcard `find-file` over directory entries.
-- Selector 524, `dired-test-bug27631`, is the next failing selector.
+- Selector 524, `dired-test-bug27631`, passed after adding wildcard
+  directory recognition, wildcard expansion for `insert-directory`, shell
+  `process-file` execution from dynamic `default-directory`, and the minimal
+  Dired/window helpers needed by the wildcard listing path.
+- Selector 525, `dired-test-bug27940`, is the next failing selector.
 
 ## Workflow
 
