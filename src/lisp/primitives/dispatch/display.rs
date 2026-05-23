@@ -472,8 +472,20 @@ pub(super) fn call(
             print_preprocess(interp, &args[0], env)
         }
         "read-char-choice" => {
-            need_args(name, args, 2)?;
+            need_arg_range(name, args, 2, 3)?;
             ensure_interaction_allowed(interp, env)?;
+            if interp
+                .lookup_var("read-char-choice-use-read-key", env)
+                .is_none_or(|value| value.is_nil())
+                && let Ok(function) = interp.lookup_function("read-char-from-minibuffer", env)
+            {
+                return interp.call_function_value(
+                    function,
+                    Some("read-char-from-minibuffer"),
+                    &args[..2],
+                    env,
+                );
+            }
             Ok(first_choice_value(&args[1]).unwrap_or(Value::Integer('y' as i64)))
         }
         "y-or-n-p" | "yes-or-no-p" => {

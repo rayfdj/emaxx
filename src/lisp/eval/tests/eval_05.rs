@@ -286,6 +286,80 @@ fn cl_case_evaluates_expression_once() {
 }
 
 #[test]
+fn dired_shell_command_confirmation_positions_match_upstream() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (setq noninteractive t)
+                 (require 'dired-aux)
+                 (list (dired--need-confirm-positions "ls ? ./?" "?")
+                       (dired--need-confirm-positions "ls ./? ?" "?")
+                       (dired--need-confirm-positions "ls * ./*" "*")
+                       (dired--need-confirm-positions "ls * *" "*")
+                       (dired--need-confirm-positions "ls ? ?" "?")
+                       (dired--need-confirm-positions "ls ? ./`?`" "?")))"#
+        ),
+        Value::list([
+            Value::list([Value::Integer(7)]),
+            Value::list([Value::Integer(5)]),
+            Value::list([Value::Integer(7)]),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn dired_shell_command_confirms_unsafe_substitution_marks() {
+    let dir = std::env::temp_dir().join(format!("emaxx-dired-shell-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let file = dir.join("foo");
+    std::fs::write(&file, "contents").expect("write temp file");
+    let dir_text = format!("{}/", dir.to_string_lossy()).replace('\\', "\\\\");
+    let file_text = file.to_string_lossy().replace('\\', "\\\\");
+    let expr = format!(
+        r#"(progn
+             (setq noninteractive t)
+             (require 'ert-x)
+             (require 'dired-aux)
+             (let ((files (list "{file_text}"))
+                   (temporary-file-directory "{dir_text}"))
+               (cl-letf (((symbol-function 'read-char-from-minibuffer) 'error)
+                         ((symbol-function 'dired-run-shell-command)
+                          (lambda (_command) nil)))
+                 (dired temporary-file-directory)
+                 (dired-goto-file "{file_text}")
+                 (list
+                  (condition-case err (dired-do-shell-command "ls ? ./?" nil files)
+                    (error (car err)))
+                  (condition-case err (dired-do-shell-command "ls ./? ?" nil files)
+                    (error (car err)))
+                  (condition-case err (dired-do-shell-command "ls ? ?" nil files)
+                    (error (car err)))
+                  (condition-case err (dired-do-shell-command "ls * ./*" nil files)
+                    (error (car err)))
+                  (condition-case err (dired-do-shell-command "ls * *" nil files)
+                    (error (car err)))
+                  (condition-case err (dired-do-shell-command "ls ? ./`?`" nil files)
+                    (error (car err)))))))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&expr),
+        Value::list([
+            Value::Symbol("error".into()),
+            Value::Symbol("error".into()),
+            Value::Nil,
+            Value::Symbol("error".into()),
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

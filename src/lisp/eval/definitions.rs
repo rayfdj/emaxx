@@ -1579,6 +1579,32 @@ impl Interpreter {
         Ok(updated)
     }
 
+    pub(super) fn sf_cl_callf(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-callf".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let function = match &items[1] {
+            Value::Symbol(name) => self.lookup_function(name, env)?,
+            other => self.eval(other, env)?,
+        };
+        let place = self.resolve_setf_place(&items[2], env)?;
+        let mut args = Vec::with_capacity(items.len() - 2);
+        args.push(self.eval_resolved_setf_place_current_value(&place, env)?);
+        for expr in &items[3..] {
+            args.push(self.eval(expr, env)?);
+        }
+        let updated = self.call_function_value(function, items[1].as_symbol().ok(), &args, env)?;
+        self.set_resolved_setf_place_value(&place, updated.clone(), env)?;
+        Ok(updated)
+    }
+
     pub(super) fn sf_setcar(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() != 3 {
             return Err(LispError::WrongNumberOfArgs(

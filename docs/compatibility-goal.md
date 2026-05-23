@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 513/7080 are verified locally.
+- Tests through 514/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 513/7080: align search movement and window parameters`.
+  `Compat 514/7080: honor dired shell confirmation flow`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -92,7 +92,10 @@ counts as the progress denominator.
 - Selectors 505..507 in `test/lisp/descr-text-tests.el`, 508..512 in
   `test/lisp/desktop-tests.el`, and selector 513
   `dired-guess-default` passed with the same batch.
-- Selector 514, `dired-test-bug27496`, is the next failing
+- Selector 514, `dired-test-bug27496`, passed after adding `cl-callf`,
+  keyword-aware `cl-member`, and routing `read-char-choice` through
+  `read-char-from-minibuffer` when appropriate.
+- Selector 515, `dired-test-bug28834`, is the next failing
   selector.
 
 ## Workflow

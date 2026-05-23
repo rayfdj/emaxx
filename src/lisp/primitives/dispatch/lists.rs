@@ -35,6 +35,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "memq"
             | "memql"
             | "member"
+            | "cl-member"
             | "member-ignore-case"
             | "assq"
             | "rassq"
@@ -100,6 +101,21 @@ pub(super) fn handles(name: &str) -> bool {
             | "completing-read"
             | "format-prompt"
     )
+}
+
+fn apply_cl_key(
+    interp: &mut Interpreter,
+    keyfn: Option<&Value>,
+    item: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    match keyfn.filter(|value| !value.is_nil()) {
+        Some(keyfn) => {
+            let function = resolve_callable(interp, keyfn, env)?;
+            invoke_function_value(interp, &function, std::slice::from_ref(item), env)
+        }
+        None => Ok(item.clone()),
+    }
 }
 
 fn execute_kbd_macro(
@@ -585,6 +601,77 @@ pub(super) fn call(
                         if matches {
                             return Ok(other);
                         }
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("wrong-type-argument".into()),
+                            Value::Symbol("listp".into()),
+                            other,
+                        ])));
+                    }
+                }
+            }
+        }
+        "cl-member" => {
+            if args.len() < 2 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let mut testfn = None;
+            let mut test_not = None;
+            let mut keyfn = None;
+            let mut index = 2usize;
+            while index < args.len() {
+                let keyword = args[index].as_symbol()?;
+                let Some(value) = args.get(index + 1) else {
+                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+                };
+                match keyword {
+                    ":test" => testfn = Some(value.clone()),
+                    ":test-not" => test_not = Some(value.clone()),
+                    ":key" => keyfn = Some(value.clone()),
+                    _ => return Err(LispError::Signal("Unsupported cl-member keyword".into())),
+                }
+                index += 2;
+            }
+            let needle = args[0].clone();
+            let mut current = args[1].clone();
+            let mut seen = HashSet::new();
+            loop {
+                match current.clone() {
+                    Value::Cons(car, cdr) => {
+                        let cell_id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(cell_id) {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("circular-list".into()),
+                                Value::String("Circular list".into()),
+                            ])));
+                        }
+                        let item = car.borrow().clone();
+                        let keyed_item = apply_cl_key(interp, keyfn.as_ref(), &item, env)?;
+                        let matches = if let Some(predicate) = test_not.as_ref() {
+                            !value_matches_with_test(
+                                interp,
+                                &needle,
+                                &keyed_item,
+                                Some(predicate),
+                                env,
+                            )?
+                        } else if let Some(predicate) = testfn.as_ref() {
+                            value_matches_with_test(
+                                interp,
+                                &needle,
+                                &keyed_item,
+                                Some(predicate),
+                                env,
+                            )?
+                        } else {
+                            values_eql(&needle, &keyed_item)
+                        };
+                        if matches {
+                            return Ok(current);
+                        }
+                        current = cdr.borrow().clone();
+                    }
+                    Value::Nil => return Ok(Value::Nil),
+                    other => {
                         return Err(LispError::SignalValue(Value::list([
                             Value::Symbol("wrong-type-argument".into()),
                             Value::Symbol("listp".into()),
