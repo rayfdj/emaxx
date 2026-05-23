@@ -96,6 +96,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "mouse-double-click-time"
             | "context-menu-map"
             | "read-string"
+            | "read-file-name"
             | "read-from-minibuffer"
             | "read-no-blanks-input"
             | "completing-read"
@@ -1544,6 +1545,42 @@ pub(super) fn call(
             Ok(Value::String(String::new()))
         }
         "completing-read" => completing_read(interp, args, env),
+        "read-file-name" => {
+            need_arg_range(name, args, 1, 6)?;
+            let prompt = args[0].clone();
+            let dir = args.get(1).cloned().unwrap_or(Value::Nil);
+            let default = args.get(2).cloned().unwrap_or(Value::Nil);
+            let mustmatch = args.get(3).cloned().unwrap_or(Value::Nil);
+            let initial = args.get(4).cloned().unwrap_or(Value::Nil);
+            let completion = interp.call_function_value(
+                Value::Symbol("completing-read".into()),
+                Some("completing-read"),
+                &[
+                    prompt,
+                    Value::Nil,
+                    Value::Nil,
+                    mustmatch,
+                    initial,
+                    Value::Nil,
+                    default.clone(),
+                ],
+                env,
+            )?;
+            if let Some(text) = string_like(&completion)
+                && !text.text.is_empty()
+            {
+                return Ok(Value::String(text.text));
+            }
+            if let Some(text) = string_like(&default)
+                && !text.text.is_empty()
+            {
+                return Ok(Value::String(text.text));
+            }
+            if let Some(text) = string_like(&dir) {
+                return Ok(Value::String(text.text));
+            }
+            Ok(Value::String(String::new()))
+        }
         "format-prompt" => format_prompt(interp, args, env),
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),

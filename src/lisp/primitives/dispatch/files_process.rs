@@ -5,6 +5,7 @@ pub(super) fn handles(name: &str) -> bool {
         name,
         "set-buffer"
             | "switch-to-buffer"
+            | "switch-to-buffer-other-window"
             | "pop-to-buffer"
             | "pop-to-buffer-same-window"
             | "create-file-buffer"
@@ -67,6 +68,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "directory-files"
             | "directory-files-and-attributes"
             | "file-directory-p"
+            | "file-in-directory-p"
             | "file-accessible-directory-p"
             | "file-readable-p"
             | "file-regular-p"
@@ -88,6 +90,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "file-attribute-file-identifier"
             | "delete-file"
             | "copy-file"
+            | "rename-file"
             | "delete-file-internal"
             | "delete-directory"
             | "delete-directory-internal"
@@ -188,7 +191,7 @@ pub(super) fn call(
             interp.switch_to_buffer_id(id)?;
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
-        "pop-to-buffer" | "pop-to-buffer-same-window" => {
+        "pop-to-buffer" | "pop-to-buffer-same-window" | "switch-to-buffer-other-window" => {
             need_args(name, args, 1)?;
             let id = if let Some(name) = string_like(&args[0]).map(|string| string.text) {
                 interp
@@ -1055,6 +1058,17 @@ pub(super) fn call(
                 },
             )
         }
+        "file-in-directory-p" => {
+            need_args(name, args, 2)?;
+            let file = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&file)?;
+            let dir = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+            validate_file_name(&dir)?;
+            let in_dir = fs::canonicalize(&file)
+                .and_then(|file| fs::canonicalize(&dir).map(|dir| file.starts_with(dir)))
+                .unwrap_or(false);
+            Ok(if in_dir { Value::T } else { Value::Nil })
+        }
         "file-readable-p" => {
             need_args(name, args, 1)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -1239,6 +1253,25 @@ pub(super) fn call(
                 return Err(LispError::Signal(format!("File already exists: {target}")));
             }
             fs::copy(&source, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
+        "rename-file" => {
+            need_arg_range(name, args, 2, 3)?;
+            let source = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&source)?;
+            let mut target = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+            validate_file_name(&target)?;
+            if directory_name_p(&target)
+                || fs::metadata(&target).is_ok_and(|metadata| metadata.is_dir())
+            {
+                target = file_name_concat(&[target, file_name_nondirectory(&source)]);
+            }
+            if fs::metadata(&target).is_ok() && args.get(2).is_none_or(Value::is_nil) {
+                return Err(LispError::Signal(format!("File already exists: {target}")));
+            }
+            fs::rename(&source, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+            dispatch_file_notification(interp, env, &source, "deleted")?;
+            dispatch_file_notification(interp, env, &target, "created")?;
             Ok(Value::Nil)
         }
         "delete-file-internal" => {

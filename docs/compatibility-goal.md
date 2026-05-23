@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 514/7080 are verified locally.
+- Tests through 520/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 514/7080: honor dired shell confirmation flow`.
+  `Compat 520/7080: fill dired file and window primitives`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -95,8 +95,16 @@ counts as the progress denominator.
 - Selector 514, `dired-test-bug27496`, passed after adding `cl-callf`,
   keyword-aware `cl-member`, and routing `read-char-choice` through
   `read-char-from-minibuffer` when appropriate.
-- Selector 515, `dired-test-bug28834`, is the next failing
-  selector.
+- Selectors 515..517 in `test/lisp/dired-aux-tests.el` passed after adding
+  `rename-file`, dired destination directory coverage, minimal window buffer
+  history/list helpers, `file-in-directory-p`, and property-preserving
+  `split-string`.
+- Selectors 518..520 in `test/lisp/dired-tests.el` passed after adding
+  batch-compatible `delete-other-windows`, `switch-to-buffer-other-window`,
+  `read-file-name`, and page motion helpers needed by Dired buffer setup.
+  These selectors were verified individually because the local grouped
+  `dired-tests.el` run is order-sensitive around Dired buffer/window state.
+- Selector 521, `dired-test-bug27243-01`, is the next failing selector.
 
 ## Workflow
 

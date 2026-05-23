@@ -9,6 +9,8 @@ pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
 pub(crate) const WINDOW_START_SLOT: usize = 1;
 pub(crate) const WINDOW_KIND_SLOT: usize = 3;
 pub(crate) const WINDOW_PARAMETERS_SLOT: usize = 4;
+pub(crate) const WINDOW_PREV_BUFFERS_SLOT: usize = 5;
+pub(crate) const WINDOW_NEXT_BUFFERS_SLOT: usize = 6;
 pub(crate) const MINIBUFFER_WINDOW_KIND: &str = "minibuffer";
 
 pub(crate) fn current_window_start(interp: &Interpreter) -> usize {

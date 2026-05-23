@@ -35,6 +35,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "end-of-defun"
             | "backward-sentence"
             | "forward-paragraph"
+            | "backward-page"
+            | "forward-page"
             | "forward-line"
             | "vertical-motion"
             | "search-forward"
@@ -473,6 +475,52 @@ pub(super) fn call(
                 .map(|byte| point + suffix[..byte].chars().count())
                 .unwrap_or_else(|| interp.buffer.point_max());
             interp.buffer.goto_char(pos);
+            Ok(Value::Nil)
+        }
+        "backward-page" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = args
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1);
+            if count < 0 {
+                return call(interp, "forward-page", &[Value::Integer(-count)], env);
+            }
+            for _ in 0..count.max(1) {
+                let point = interp.buffer.point();
+                let prefix = interp
+                    .buffer
+                    .buffer_substring(interp.buffer.point_min(), point.saturating_sub(1))
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let pos = prefix
+                    .rfind('\x0c')
+                    .map(|byte| interp.buffer.point_min() + prefix[..byte].chars().count() + 1)
+                    .unwrap_or_else(|| interp.buffer.point_min());
+                interp.buffer.goto_char(pos);
+            }
+            Ok(Value::Nil)
+        }
+        "forward-page" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = args
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1);
+            if count < 0 {
+                return call(interp, "backward-page", &[Value::Integer(-count)], env);
+            }
+            for _ in 0..count.max(1) {
+                let point = interp.buffer.point();
+                let suffix = interp
+                    .buffer
+                    .buffer_substring(point, interp.buffer.point_max())
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let pos = suffix
+                    .find('\x0c')
+                    .map(|byte| point + suffix[..byte].chars().count() + 1)
+                    .unwrap_or_else(|| interp.buffer.point_max());
+                interp.buffer.goto_char(pos);
+            }
             Ok(Value::Nil)
         }
         "forward-line" => {
