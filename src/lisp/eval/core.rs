@@ -79,6 +79,7 @@ impl Interpreter {
                         "setf" => return self.sf_setf(&items, env),
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
+                        "cl-callf" => return self.sf_cl_callf(&items, env),
                         "setcar" => return self.sf_setcar(&items, env),
                         "defvar" | "defconst" | "defcustom" => {
                             return self.sf_defvar(&items, env);
