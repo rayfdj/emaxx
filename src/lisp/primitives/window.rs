@@ -7,6 +7,8 @@ use crate::lisp::types::{Env, LispError, Value};
 pub(crate) const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
 pub(crate) const WINDOW_BUFFER_SLOT: usize = 0;
 pub(crate) const WINDOW_START_SLOT: usize = 1;
+pub(crate) const WINDOW_KIND_SLOT: usize = 3;
+pub(crate) const MINIBUFFER_WINDOW_KIND: &str = "minibuffer";
 
 pub(crate) fn current_window_start(interp: &Interpreter) -> usize {
     interp.selected_window_start()

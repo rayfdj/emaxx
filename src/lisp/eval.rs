@@ -463,6 +463,7 @@ impl Interpreter {
                 ),
                 ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
+                ("case-replace".into(), Value::T),
                 ("defining-kbd-macro".into(), Value::Nil),
                 ("executing-kbd-macro".into(), Value::Nil),
                 ("exec-path".into(), current_exec_path()),
@@ -777,6 +778,18 @@ impl Interpreter {
             unreachable!("window records use Value::Record");
         };
         interp.selected_window_id = selected_window_id;
+        let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
+        let minibuffer_window = interp.create_record(
+            "window",
+            vec![
+                Value::Integer(minibuffer_buffer_id as i64),
+                Value::Integer(1),
+                Value::Nil,
+                Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),
+            ],
+        );
+        interp.set_global_binding("emaxx-minibuffer-window", minibuffer_window);
+        interp.set_global_binding("emaxx-minibuffer-selected-window", Value::Nil);
         interp
     }
 

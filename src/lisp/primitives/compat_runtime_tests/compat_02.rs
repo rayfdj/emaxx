@@ -243,6 +243,33 @@ fn direct_format_message_top_level() {
 }
 
 #[test]
+fn user_error_formats_message_arguments() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let error = call(
+        &mut interp,
+        "user-error",
+        &[
+            Value::String("No%s dynamic expansion for `%s' found".into()),
+            Value::String(" further".into()),
+            Value::String("ab".into()),
+        ],
+        &mut env,
+    )
+    .expect_err("user-error should signal");
+    let LispError::SignalValue(value) = error else {
+        panic!("expected signal value");
+    };
+    assert_eq!(
+        value,
+        Value::list([
+            Value::Symbol("user-error".into()),
+            Value::String("No further dynamic expansion for `ab' found".into()),
+        ])
+    );
+}
+
+#[test]
 fn advice_add_supports_around_read_event_override_without_side_effects() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

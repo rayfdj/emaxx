@@ -275,6 +275,14 @@ impl Interpreter {
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
+        if let Some(index) = self
+            .buffer_list
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == id)
+        {
+            let entry = self.buffer_list.remove(index);
+            self.buffer_list.insert(0, entry);
+        }
         let point_min = self.buffer.point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             let previous = window
@@ -304,6 +312,10 @@ impl Interpreter {
 
     pub fn selected_window_id(&self) -> u64 {
         self.selected_window_id
+    }
+
+    pub(crate) fn set_selected_window_id(&mut self, id: u64) {
+        self.selected_window_id = id;
     }
 
     pub fn selected_window_buffer_id(&self) -> u64 {

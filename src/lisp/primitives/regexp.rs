@@ -1516,8 +1516,6 @@ pub(super) fn looking_at_impl(
         );
         Ok(Value::T)
     } else {
-        interp.last_match_data = None;
-        interp.last_match_data_buffer_id = None;
         Ok(Value::Nil)
     }
 }
@@ -1581,8 +1579,6 @@ pub(super) fn looking_back_impl(
         );
         Ok(Value::T)
     } else {
-        interp.last_match_data = None;
-        interp.last_match_data_buffer_id = None;
         Ok(Value::Nil)
     }
 }

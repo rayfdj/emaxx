@@ -148,6 +148,10 @@ pub(crate) fn builtin_auto_mode_alist() -> Value {
             Value::Symbol("javascript-mode".into()),
         ),
         Value::cons(
+            Value::String("\\.el\\'".into()),
+            Value::Symbol("emacs-lisp-mode".into()),
+        ),
+        Value::cons(
             Value::String("\\.html?\\'".into()),
             Value::Symbol("html-mode".into()),
         ),

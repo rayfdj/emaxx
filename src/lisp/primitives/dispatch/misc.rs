@@ -206,7 +206,11 @@ pub(super) fn call(
             let msg = if args.is_empty() {
                 "user-error".to_string()
             } else if let Ok(fmt) = string_text(&args[0]) {
-                fmt
+                if args.len() > 1 {
+                    string_text(&super::call(interp, "format", args, env)?)?
+                } else {
+                    fmt
+                }
             } else {
                 args[0].to_string()
             };
