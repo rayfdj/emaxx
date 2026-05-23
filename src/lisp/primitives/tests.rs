@@ -1091,6 +1091,39 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
 }
 
 #[test]
+fn insert_signals_buffer_read_only_unless_inhibited() {
+    let mut interp = Interpreter::new();
+    interp.buffer = crate::buffer::Buffer::from_text("*test*", "");
+    let mut env = Vec::new();
+    interp.set_variable("buffer-read-only", Value::T, &mut env);
+
+    assert!(matches!(
+        call(&mut interp, "insert", &[Value::String("x".into())], &mut env),
+        Err(LispError::SignalValue(value))
+            if matches!(value.to_vec().ok().as_deref(), Some([
+                Value::Symbol(name),
+                Value::Buffer(_, _),
+            ]) if name == "buffer-read-only")
+    ));
+
+    interp.set_variable("inhibit-read-only", Value::T, &mut env);
+    call(
+        &mut interp,
+        "insert",
+        &[Value::String("x".into())],
+        &mut env,
+    )
+    .expect("inhibit-read-only should allow insertion");
+    assert_eq!(
+        interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .expect("buffer contents"),
+        "x"
+    );
+}
+
+#[test]
 fn delete_line_removes_the_current_line() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "one\ntwo\nthree\n");

@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 491/7080 are verified locally.
+- Tests through 495/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 491/7080: advance dabbrev expansion compatibility`.
+  `Compat 495/7080: honor read-only file buffers`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -83,7 +83,10 @@ counts as the progress denominator.
   selection, multi-key keyboard macro dispatch for search/mark/narrow commands,
   MRU `buffer-list` ordering, and `.el` auto-mode selection for dabbrev's
   same-major-mode buffer filter.
-- Selector 492, `dabbrev-expand-test-same-buffer-1`, is the next failing
+- Selectors 492..495 in `test/lisp/dabbrev-tests.el` passed after marking
+  unwritable visited files read-only and enforcing `buffer-read-only` during
+  insertion.
+- Selector 496, `delim-col-tests-delimit-columns`, is the next failing
   selector.
 
 ## Workflow
@@ -115,3 +118,6 @@ counts as the progress denominator.
   individual literal ERT selectors.
 - `test/lisp/calc/calc-tests.el` passed with a longer timeout than the default
   short sweep timeout.
+- `test/lisp/dabbrev-tests.el` is order-sensitive as a grouped full-file run;
+  verify its selected tests as individual literal selectors when replaying the
+  prefix.
