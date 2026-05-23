@@ -70,6 +70,7 @@ mod syntax;
 mod system;
 mod text;
 mod values;
+mod window;
 
 pub(crate) use accessors_random::*;
 pub(crate) use buffers::*;
@@ -93,6 +94,7 @@ pub(crate) use strings::*;
 pub(crate) use system::*;
 pub(crate) use text::*;
 pub(crate) use values::*;
+pub(crate) use window::*;
 
 const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
@@ -111,9 +113,6 @@ static ACTIVE_FILE_NOTIFY_DESCRIPTORS: OnceLock<Mutex<HashSet<i64>>> = OnceLock:
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
-const DEFAULT_SELECTED_WINDOW_HEIGHT: usize = 24;
-const WINDOW_BUFFER_SLOT: usize = 0;
-const WINDOW_START_SLOT: usize = 1;
 
 thread_local! {
     static VECTOR_SLOT_CACHE: RefCell<VectorSlotCache> = RefCell::new(HashMap::new());
@@ -361,158 +360,6 @@ fn thread_list_row(
         }
     };
     Ok(format!("{thread_name}\t{status}\t{blocker}\n"))
-}
-
-fn current_window_start(interp: &Interpreter) -> usize {
-    interp.selected_window_start()
-}
-
-fn buffer_point_bounds(interp: &Interpreter, buffer_id: u64) -> (usize, usize) {
-    interp
-        .buffer_bounds_by_id(buffer_id)
-        .unwrap_or((interp.buffer.point_min(), interp.buffer.point_max()))
-}
-
-fn buffer_line_start_at(interp: &Interpreter, buffer_id: u64, pos: usize) -> usize {
-    if buffer_id == interp.current_buffer_id() {
-        interp.buffer.line_start_at(pos)
-    } else {
-        interp
-            .get_buffer_by_id(buffer_id)
-            .map(|buffer| buffer.line_start_at(pos))
-            .unwrap_or_else(|| interp.buffer.line_start_at(pos))
-    }
-}
-
-fn set_current_window_start(interp: &mut Interpreter, start: usize) {
-    let buffer_id = interp.selected_window_buffer_id();
-    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-    let start = start.clamp(point_min, point_max);
-    let start = buffer_line_start_at(interp, buffer_id, start);
-    interp.set_selected_window_start(start);
-}
-
-fn window_record_id_from_value(interp: &Interpreter, value: &Value) -> Option<u64> {
-    match value {
-        Value::Record(id)
-            if interp
-                .find_record(*id)
-                .is_some_and(|record| record.type_name == "window") =>
-        {
-            Some(*id)
-        }
-        Value::Symbol(symbol) if symbol == "window" => Some(interp.selected_window_id()),
-        _ => None,
-    }
-}
-
-fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u64> {
-    match window_record_id_from_value(interp, value) {
-        Some(id) if id == interp.selected_window_id() => Some(interp.selected_window_buffer_id()),
-        Some(id) => interp
-            .find_record(id)
-            .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
-            .and_then(|slot| slot.as_integer().ok())
-            .map(|buffer_id| buffer_id.max(0) as u64),
-        None => None,
-    }
-}
-
-fn window_start(interp: &Interpreter, value: Option<&Value>) -> Result<usize, LispError> {
-    match value {
-        None => Ok(current_window_start(interp)),
-        Some(value) => {
-            let Some(id) = window_record_id_from_value(interp, value) else {
-                return Err(LispError::TypeError("window".into(), value.type_name()));
-            };
-            if id == interp.selected_window_id() {
-                return Ok(current_window_start(interp));
-            }
-            let buffer_id = window_buffer_id(interp, value).unwrap_or(interp.current_buffer_id());
-            let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-            Ok(interp
-                .find_record(id)
-                .and_then(|record| record.slots.get(WINDOW_START_SLOT))
-                .and_then(|slot| slot.as_integer().ok())
-                .map(|start| start.clamp(point_min as i64, point_max as i64) as usize)
-                .unwrap_or(point_min))
-        }
-    }
-}
-
-fn set_window_start_value(
-    interp: &mut Interpreter,
-    window: &Value,
-    start: usize,
-) -> Result<(), LispError> {
-    let Some(id) = window_record_id_from_value(interp, window) else {
-        return Err(LispError::TypeError("window".into(), window.type_name()));
-    };
-    let buffer_id = window_buffer_id(interp, window).unwrap_or(interp.current_buffer_id());
-    let (point_min, point_max) = buffer_point_bounds(interp, buffer_id);
-    let start = start.clamp(point_min, point_max);
-    let start = buffer_line_start_at(interp, buffer_id, start);
-    if id == interp.selected_window_id() {
-        interp.set_selected_window_start(start);
-        return Ok(());
-    }
-    let Some(record) = interp.find_record_mut(id) else {
-        return Err(LispError::TypeError("window".into(), window.type_name()));
-    };
-    if record.slots.len() <= WINDOW_START_SLOT {
-        record.slots.resize(WINDOW_START_SLOT + 1, Value::Nil);
-    }
-    record.slots[WINDOW_START_SLOT] = Value::Integer(start as i64);
-    Ok(())
-}
-
-fn scroll_preserve_screen_position(interp: &Interpreter, env: &Env) -> bool {
-    interp
-        .lookup_var("scroll-preserve-screen-position", env)
-        .is_some_and(|value| !value.is_nil())
-}
-
-fn resolve_window_line(value: Option<&Value>, default_line: usize) -> Result<isize, LispError> {
-    let line = match value {
-        None | Some(Value::Nil) => default_line as i64,
-        Some(value) => prefix_numeric_value(value)?.as_integer()?,
-    };
-    Ok(if line >= 0 {
-        line as isize
-    } else {
-        (DEFAULT_SELECTED_WINDOW_HEIGHT as isize + line as isize).max(0)
-    })
-}
-
-fn scroll_selected_window(
-    interp: &mut Interpreter,
-    count: isize,
-    env: &Env,
-) -> Result<(), LispError> {
-    let window_start = current_window_start(interp);
-    let point_line = beginning_of_line_at(interp, interp.buffer.point());
-    let point_offset = line_distance(interp, window_start, point_line);
-    let (new_start, shortage) = move_lines_from(interp, window_start, count);
-    if shortage != 0 {
-        return Err(if count >= 0 {
-            signal_condition("end-of-buffer")
-        } else {
-            signal_condition("beginning-of-buffer")
-        });
-    }
-
-    set_current_window_start(interp, new_start);
-
-    if scroll_preserve_screen_position(interp, env) || point_line < new_start {
-        let (target, target_shortage) = move_lines_from(interp, new_start, point_offset as isize);
-        if target_shortage > 0 {
-            interp.buffer.goto_char(interp.buffer.point_max());
-        } else {
-            interp.buffer.goto_char(target);
-        }
-    }
-
-    Ok(())
 }
 
 pub(crate) fn prefer_builtin_override(name: &str) -> bool {
