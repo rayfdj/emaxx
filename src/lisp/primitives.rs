@@ -424,6 +424,8 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
             | "dired-mark-pop-up"
+            | "dired-move-to-filename"
+            | "dired-restore-positions"
             | "face-set-after-frame-default"
     )
 }

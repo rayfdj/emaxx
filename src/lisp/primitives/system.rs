@@ -872,6 +872,22 @@ pub(crate) fn initialize_dired_buffer(
     Ok(())
 }
 
+pub(crate) fn goto_dired_listing_entry(interp: &mut Interpreter, name: &str) -> bool {
+    let mut pos = 1;
+    for line in interp.buffer.full_buffer_string().split_inclusive('\n') {
+        let line_without_newline = line.trim_end_matches('\n');
+        if let Some(prefix) = line_without_newline.strip_suffix(name)
+            && prefix.ends_with(' ')
+        {
+            let target = pos + line_without_newline.chars().count() - name.chars().count();
+            interp.buffer.goto_char(target);
+            return true;
+        }
+        pos += line.chars().count();
+    }
+    false
+}
+
 pub(crate) fn refresh_current_dired_buffer_for_path(
     interp: &mut Interpreter,
     changed_path: &str,

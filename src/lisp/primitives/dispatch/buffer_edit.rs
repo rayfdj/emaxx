@@ -142,6 +142,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "put-text-property"
             | "add-text-properties"
             | "set-text-properties"
+            | "dired-move-to-filename"
+            | "dired-restore-positions"
             | "remove-list-of-text-properties"
             | "remove-text-properties"
             | "add-face-text-property"
@@ -2107,6 +2109,85 @@ pub(super) fn call(
                     });
             }
             Ok(Value::T)
+        }
+        "dired-move-to-filename" => {
+            need_arg_range(name, args, 0, 2)?;
+            let raise_error = args.first().is_some_and(Value::is_truthy);
+            let saved = interp.buffer.point();
+            interp.buffer.beginning_of_line();
+            let start = interp.buffer.point();
+            let end = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| {
+                    interp.buffer.goto_char(saved);
+                    interp.buffer.end_of_line();
+                    interp.buffer.point()
+                });
+            interp.buffer.goto_char(start);
+            for pos in start..end {
+                if interp
+                    .buffer
+                    .text_property_at(pos, "dired-filename")
+                    .is_some_and(|value| value.is_truthy())
+                {
+                    interp.buffer.goto_char(pos);
+                    return Ok(Value::Integer(pos as i64));
+                }
+            }
+            let line = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let leading = line.chars().take_while(|ch| ch.is_whitespace()).count();
+            let listing = line.trim_start();
+            if matches!(listing.chars().next(), Some('d' | '-' | 'l')) {
+                let offset = listing
+                    .find(" 00:00 ")
+                    .map(|index| index + " 00:00 ".len())
+                    .or_else(|| listing.rfind(' ').map(|index| index + 1));
+                if let Some(offset) = offset {
+                    let target = start + leading + listing[..offset].chars().count();
+                    if target < end {
+                        interp.buffer.goto_char(target);
+                        return Ok(Value::Integer(target as i64));
+                    }
+                }
+            }
+            interp.buffer.goto_char(start);
+            if raise_error {
+                Err(LispError::Signal("No file on this line".into()))
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        "dired-restore-positions" => {
+            need_args(name, args, 1)?;
+            let positions = args[0].to_vec()?;
+            let buffer_position = positions
+                .first()
+                .map(Value::to_vec)
+                .transpose()?
+                .unwrap_or_default();
+            let saved_file = buffer_position.get(1).cloned().unwrap_or(Value::Nil);
+            let saved_line = buffer_position
+                .get(2)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1)
+                .max(1) as isize;
+            let moved_to_file = if saved_file.is_truthy() {
+                call_named_function(interp, "dired-goto-file", &[saved_file], env)?.is_truthy()
+            } else {
+                false
+            };
+            if !moved_to_file {
+                interp.buffer.goto_char(interp.buffer.point_min());
+                interp.buffer.forward_line(saved_line - 1);
+                let _ = call_named_function(interp, "dired-move-to-filename", &[], env)?;
+            }
+            Ok(Value::Nil)
         }
         "remove-list-of-text-properties" => {
             if args.len() < 3 || args.len() > 4 {

@@ -878,24 +878,15 @@ pub(super) fn call(
                 .ok_or_else(|| LispError::Signal("Current buffer is not a Dired buffer".into()))?;
             let buffer_name = interp.buffer.name.clone();
             initialize_dired_buffer(interp, &buffer_name, &directory)?;
-            if let Some(first_entry) = fs::read_dir(&directory)
-                .ok()
-                .and_then(|entries| {
-                    let mut names = entries
-                        .filter_map(Result::ok)
-                        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                        .collect::<Vec<_>>();
-                    names.sort();
-                    names.into_iter().next()
-                })
-                .map(|name| file_name_concat(&[directory.clone(), name]))
-            {
-                let _ = call_named_function(
-                    interp,
-                    "dired-goto-file",
-                    &[Value::String(first_entry)],
-                    env,
-                )?;
+            if let Some(first_entry) = fs::read_dir(&directory).ok().and_then(|entries| {
+                let mut names = entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                names.sort();
+                names.into_iter().next()
+            }) {
+                crate::lisp::primitives::goto_dired_listing_entry(interp, &first_entry);
             }
             Ok(Value::Nil)
         }
@@ -1374,8 +1365,13 @@ pub(super) fn call(
             } else {
                 fs::create_dir(&path).map_err(|error| LispError::Signal(error.to_string()))?;
             }
-            refresh_current_dired_buffer_for_path(interp, &path, env)?;
-            interp.buffer.goto_char(interp.buffer.point_max());
+            if interp
+                .lookup_var("dired-auto-revert-buffer", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                refresh_current_dired_buffer_for_path(interp, &path, env)?;
+                interp.buffer.goto_char(interp.buffer.point_max());
+            }
             Ok(Value::Nil)
         }
         "make-empty-file" => {

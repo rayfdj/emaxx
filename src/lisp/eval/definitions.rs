@@ -1767,6 +1767,8 @@ impl Interpreter {
         }
         let body: Vec<Value> = items[body_start..].to_vec();
         if crate::lisp::primitives::prefer_builtin_override(&name) {
+            self.functions
+                .push((name.clone(), Value::BuiltinFunc(name.clone())));
             return Ok(Value::Symbol(name));
         }
         let lambda = Value::Lambda(params, body, shared_env(env.clone()));

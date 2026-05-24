@@ -526,6 +526,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "put-text-property"
             | "add-text-properties"
             | "set-text-properties"
+            | "dired-move-to-filename"
+            | "dired-restore-positions"
             | "remove-list-of-text-properties"
             | "remove-text-properties"
             | "add-face-text-property"

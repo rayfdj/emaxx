@@ -574,6 +574,50 @@ fn dired_delete_empty_marked_directories_removes_entries() {
 }
 
 #[test]
+fn dired_revert_preserves_line_when_header_length_changes() {
+    let result = eval_str_with_upstream_load_path(
+        r#"(progn
+             (setq noninteractive t)
+             (require 'dired)
+             (ert-with-temp-directory top-dir
+               (let* ((subdir (expand-file-name "subdir" top-dir))
+                      (header-len-fn (lambda ()
+                                       (save-excursion
+                                         (goto-char 1)
+                                         (forward-line 1)
+                                         (- (pos-eol) (point)))))
+                      orig-len len diff pos line-nb)
+                 (make-directory subdir 'parents)
+                 (with-current-buffer (dired-noselect subdir)
+                   (setq orig-len (funcall header-len-fn)
+                         pos (point)
+                         line-nb (line-number-at-pos))
+                   (make-directory "subdir" t)
+                   (dired-revert)
+                   (save-excursion
+                     (goto-char 1)
+                     (forward-line 1)
+                     (let ((inhibit-read-only t)
+                           (new-header "  test-bug27968"))
+                       (delete-region (point) (pos-eol))
+                       (when (= orig-len (length new-header))
+                         (setq new-header (concat new-header " :-)")))
+                       (insert new-header)))
+                   (setq len (funcall header-len-fn)
+                         diff (- len orig-len))
+                   (list (not (zerop diff))
+                         (= line-nb
+                            (line-number-at-pos)
+                            (line-number-at-pos (+ pos diff)))
+                         (dired-get-filename 'local t))))))"#,
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::T, Value::String("subdir".into())])
+    );
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();
