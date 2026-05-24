@@ -177,6 +177,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "null-device"
             | "process-file"
             | "read-answer"
+            | "temporary-file-directory"
             | "convert-standard-filename"
             | "abbreviate-file-name"
             | "files--name-absolute-system-p"
@@ -1976,6 +1977,12 @@ pub(super) fn call(
                 .and_then(|entry| entry.to_vec().ok())
                 .and_then(|entry| entry.first().cloned())
                 .unwrap_or(Value::String(String::new())))
+        }
+        "temporary-file-directory" => {
+            need_args(name, args, 0)?;
+            Ok(interp
+                .lookup_var("temporary-file-directory", env)
+                .unwrap_or_else(|| Value::String(std::env::temp_dir().display().to_string())))
         }
         "convert-standard-filename" => {
             need_args(name, args, 1)?;

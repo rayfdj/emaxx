@@ -69,6 +69,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "locate-file-internal"
             | "directory-files"
             | "directory-files-and-attributes"
+            | "directory-empty-p"
             | "file-directory-p"
             | "file-in-directory-p"
             | "file-accessible-directory-p"
@@ -1089,6 +1090,18 @@ pub(super) fn call(
                 })
                 .collect::<Result<Vec<_>, LispError>>()?;
             Ok(Value::list(entries))
+        }
+        "directory-empty-p" => {
+            need_args(name, args, 1)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let Ok(mut entries) = fs::read_dir(path) else {
+                return Ok(Value::Nil);
+            };
+            Ok(if entries.next().is_none() {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "file-directory-p" | "file-accessible-directory-p" => {
             need_args(name, args, 1)?;
