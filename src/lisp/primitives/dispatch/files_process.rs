@@ -1603,7 +1603,11 @@ pub(super) fn call(
                     stderr
                 }));
             }
-            interp.insert_current_buffer(&String::from_utf8_lossy(&process_output.stdout));
+            let mut output = String::from_utf8_lossy(&process_output.stdout).into_owned();
+            if let Some(free_space_line) = insert_directory_free_space_line(interp, env, &file)? {
+                output.insert_str(0, &free_space_line);
+            }
+            interp.insert_current_buffer(&output);
             Ok(Value::Nil)
         }
         "insert-file-contents" => insert_file_contents(interp, env, args, false),
@@ -2151,6 +2155,74 @@ pub(super) fn call(
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
     }
+}
+
+fn insert_directory_free_space_line(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    file: &str,
+) -> Result<Option<String>, LispError> {
+    if interp
+        .lookup_var("dired-free-space", env)
+        .and_then(|value| value.as_symbol().ok().map(str::to_owned))
+        .as_deref()
+        != Some("separate")
+    {
+        return Ok(None);
+    }
+
+    let Ok(info_function) = interp.lookup_function("file-system-info", env) else {
+        return Ok(None);
+    };
+    let target = resolve_file_name_in_env(interp, env, file);
+    let info = interp.call_function_value(
+        info_function,
+        Some("file-system-info"),
+        &[Value::String(target)],
+        env,
+    )?;
+    let Some(available_bytes) = nth_list_item(&info, 2)
+        .or_else(|| nth_list_item(&info, 1))
+        .or_else(|| nth_list_item(&info, 0))
+    else {
+        return Ok(None);
+    };
+    if available_bytes.is_nil() {
+        return Ok(None);
+    }
+    let human_readable = file_size_human_readable(interp, env, &available_bytes)?;
+    Ok(Some(format!("available {human_readable}\n")))
+}
+
+fn nth_list_item(list: &Value, index: usize) -> Option<Value> {
+    let mut current = list.clone();
+    for _ in 0..index {
+        current = current.cdr().ok()?;
+    }
+    current.car().ok()
+}
+
+fn file_size_human_readable(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    size: &Value,
+) -> Result<String, LispError> {
+    if let Ok(function) = interp.lookup_function("file-size-human-readable", env) {
+        let rendered = interp.call_function_value(
+            function,
+            Some("file-size-human-readable"),
+            std::slice::from_ref(size),
+            env,
+        )?;
+        return string_text(&rendered);
+    }
+
+    let bytes = size.as_integer()?;
+    Ok(if bytes == 1 {
+        "1 B".to_string()
+    } else {
+        format!("{bytes} B")
+    })
 }
 
 fn call_major_or_named_mode(

@@ -657,6 +657,34 @@ fn directory_empty_p_and_temporary_file_directory_match_files_helpers() {
 }
 
 #[test]
+fn insert_directory_free_space_uses_target_directory() {
+    let result = eval_str(
+        r#"(let* ((target (make-temp-file "emaxx-insert-dir-target-" t))
+                  (other (make-temp-file "emaxx-insert-dir-other-" t))
+                  (default-directory other)
+                  (dired-free-space 'separate))
+             (unwind-protect
+                 (progn
+                   (make-empty-file (expand-file-name "child" target))
+                   (cl-letf (((symbol-function 'file-system-info)
+                              (lambda (path)
+                                (let ((free (if (equal (file-name-as-directory path)
+                                                       (file-name-as-directory target))
+                                                10
+                                              100)))
+                                  (list free free free)))))
+                     (with-temp-buffer
+                       (insert-directory target "-l" nil nil)
+                       (let ((output (buffer-string)))
+                         (list (string-match-p "available 10 B" output)
+                               (string-match-p "available 100 B" output))))))
+               (delete-directory target t)
+               (delete-directory other t)))"#,
+    );
+    assert_eq!(result, Value::list([Value::Integer(0), Value::Nil]));
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();
