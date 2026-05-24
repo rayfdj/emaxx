@@ -38,6 +38,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "backward-page"
             | "forward-page"
             | "forward-line"
+            | "line-move"
             | "vertical-motion"
             | "search-forward"
             | "search-backward"
@@ -535,6 +536,21 @@ pub(super) fn call(
                 &mut interp.buffer,
                 n,
             )))
+        }
+        "line-move" => {
+            need_arg_range(name, args, 1, 4)?;
+            let n = integer_like_bigint(interp, &args[0])?;
+            let noerror = args.get(1).is_some_and(Value::is_truthy);
+            let remaining = forward_line_bigint(&mut interp.buffer, n);
+            if remaining == BigInt::from(0u8) {
+                Ok(Value::T)
+            } else if noerror {
+                Ok(Value::Nil)
+            } else if remaining > BigInt::from(0u8) {
+                Err(LispError::Signal("End of buffer".into()))
+            } else {
+                Err(LispError::Signal("Beginning of buffer".into()))
+            }
         }
         "vertical-motion" => {
             need_arg_range(name, args, 1, 3)?;

@@ -193,6 +193,8 @@ impl Interpreter {
             "find-file-visit-truename" => Some(Value::Nil),
             "insert-directory-wildcard-in-dir-p" => Some(Value::Nil),
             "insert-directory-program" => Some(Value::String("ls".into())),
+            "line-move-ignore-invisible" => Some(Value::T),
+            "line-move-visual" => Some(Value::T),
             "file-name-invalid-regexp" => Some(Value::String("\0".into())),
             "directory-listing-before-filename-regexp" => Some(Value::String(
                 concat!(
