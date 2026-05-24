@@ -1003,7 +1003,11 @@ pub(super) fn call(
             if !args.is_empty()
                 && let Value::Buffer(_, name) = &args[0]
             {
-                return Ok(Value::String(name.clone()));
+                return Ok(interp
+                    .resolve_buffer_id(&args[0])
+                    .ok()
+                    .map(|_| Value::String(name.clone()))
+                    .unwrap_or(Value::Nil));
             }
             Ok(Value::String(interp.buffer.name.clone()))
         }

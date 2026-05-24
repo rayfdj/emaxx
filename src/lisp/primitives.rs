@@ -423,6 +423,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "header-line-indent-mode"
             | "tool-bar-local-item"
             | "tool-bar-local-item-from-menu"
+            | "dired-mark-pop-up"
             | "face-set-after-frame-default"
     )
 }

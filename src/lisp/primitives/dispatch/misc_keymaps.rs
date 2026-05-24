@@ -176,12 +176,14 @@ pub(super) fn handles(name: &str) -> bool {
             | "rx-to-string"
             | "null-device"
             | "process-file"
+            | "read-answer"
             | "convert-standard-filename"
             | "abbreviate-file-name"
             | "files--name-absolute-system-p"
             | "files--use-insert-directory-program-p"
             | "insert-directory-wildcard-in-dir-p"
             | "insert-directory-clean"
+            | "dired-mark-pop-up"
             | "connection-local-value"
             | "propertized-buffer-identification"
             | "called-interactively-p"
@@ -1966,6 +1968,15 @@ pub(super) fn call(
             need_arg_range(name, args, 4, usize::MAX)?;
             process_file_compat(interp, args, env)
         }
+        "read-answer" => {
+            need_args(name, args, 2)?;
+            let answers = args[1].to_vec()?;
+            Ok(answers
+                .first()
+                .and_then(|entry| entry.to_vec().ok())
+                .and_then(|entry| entry.first().cloned())
+                .unwrap_or(Value::String(String::new())))
+        }
         "convert-standard-filename" => {
             need_args(name, args, 1)?;
             Ok(args[0].clone())
@@ -2022,6 +2033,10 @@ pub(super) fn call(
         "insert-directory-clean" => {
             need_arg_range(name, args, 1, 2)?;
             Ok(Value::Nil)
+        }
+        "dired-mark-pop-up" => {
+            need_arg_range(name, args, 4, usize::MAX)?;
+            call_function_value(interp, &args[3], &args[4..], env)
         }
         "connection-local-value" => {
             need_arg_range(name, args, 1, 2)?;

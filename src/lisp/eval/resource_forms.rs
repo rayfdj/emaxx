@@ -530,6 +530,42 @@ impl Interpreter {
         result
     }
 
+    pub(super) fn sf_with_current_buffer_window(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 5 {
+            return Ok(Value::Nil);
+        }
+        let target = self.eval(&items[1], env)?;
+        let target_id = match self.resolve_buffer_id(&target) {
+            Ok(id) => id,
+            Err(_) => {
+                let name = crate::lisp::primitives::string_text(&target)?;
+                self.find_buffer(&name)
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| self.create_buffer(&name).0)
+            }
+        };
+        let saved_buffer_id = self.current_buffer_id;
+        self.switch_to_buffer_id(target_id)?;
+        let value = self.sf_progn(&items[4..], env);
+        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        let value = value?;
+        let quit_function = self.eval(&items[3], env)?;
+        if quit_function.is_truthy() {
+            self.call_function_value(
+                quit_function,
+                None,
+                &[self.selected_window_value(), value],
+                env,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
     pub(super) fn sf_with_selected_window(
         &mut self,
         items: &[Value],
