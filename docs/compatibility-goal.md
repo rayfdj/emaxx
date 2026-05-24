@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 530/7080 are verified locally.
+- Tests through 535/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 530/7080: add directory emptiness helpers`.
+  `Compat 535/7080: report dired target free space`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -127,7 +127,11 @@ counts as the progress denominator.
 - Selectors 529..530 passed after adding the callable
   `temporary-file-directory` helper and `directory-empty-p` over the native
   filesystem directory primitives.
-- Selector 531, `files-tests-bug-50630`, is the next failing selector.
+- Selectors 531..535 passed after making `insert-directory` report
+  `dired-free-space` for the target directory via the active
+  `file-system-info` binding, independent of `default-directory`.
+- Selector 536, `dnd-tests-begin-drag-files`, is the next failing selector;
+  it currently fails while loading `test/lisp/dnd-tests.el`.
 
 ## Workflow
 
