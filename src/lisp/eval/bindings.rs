@@ -402,6 +402,8 @@ impl Interpreter {
                     .unwrap_or(Value::Nil),
             ),
             "read-buffer-function" | "read-file-name-function" => Some(Value::Nil),
+            "delete-by-moving-to-trash" => Some(Value::Nil),
+            "directory-files-no-dot-files-regexp" => Some(Value::String("[^.]\\|\\.\\.\\.".into())),
             "user-emacs-directory" => Some(Value::String("/nonexistent/.emacs.d/".into())),
             "invocation-name" => Some(Value::String(
                 primitives::current_invocation_name().unwrap_or_else(|| "emaxx".into()),

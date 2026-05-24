@@ -184,6 +184,9 @@ impl Interpreter {
                         "with-temp-file" => return self.sf_with_temp_file(&items, env),
                         "ert-with-temp-file" => return self.sf_ert_with_temp_file(&items, env),
                         "with-current-buffer" => return self.sf_with_current_buffer(&items, env),
+                        "with-current-buffer-window" => {
+                            return self.sf_with_current_buffer_window(&items, env);
+                        }
                         "with-restriction" => return self.sf_with_restriction(&items, env),
                         "without-restriction" => return self.sf_without_restriction(&items, env),
                         "add-function" => return self.sf_add_function(&items, env),

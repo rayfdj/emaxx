@@ -543,6 +543,37 @@ fn dired_reuses_directory_buffer_and_preserves_file_point() {
 }
 
 #[test]
+fn dired_delete_empty_marked_directories_removes_entries() {
+    let result = eval_str_with_upstream_load_path(
+        r#"(progn
+             (setq noninteractive t)
+             (require 'dired)
+             (ert-with-temp-directory test-dir
+                 (let* ((dired-deletion-confirmer (lambda (_) "yes"))
+                      (inhibit-message t)
+                      (default-directory test-dir)
+                      (buf nil))
+                 (dotimes (i 2) (make-directory (format "empty-dir-%d" i)))
+                 (make-directory "zeta-empty-dir")
+                 (unwind-protect
+                     (progn
+                       (setq buf (dired default-directory))
+                       (dired-toggle-marks)
+                       (let ((before (dired-get-marked-files)))
+                         (dired-do-delete nil)
+                         (list (= 3 (length before))
+                               (dired-get-marked-files)
+                               (file-exists-p (expand-file-name "empty-dir-0" test-dir))
+                               (file-exists-p (expand-file-name "zeta-empty-dir" test-dir)))))
+                   (when (buffer-live-p buf) (kill-buffer buf))))))"#,
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::Nil, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

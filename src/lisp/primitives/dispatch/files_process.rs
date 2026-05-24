@@ -1286,7 +1286,7 @@ pub(super) fn call(
             ))
         }
         "delete-file" => {
-            need_args(name, args, 1)?;
+            need_arg_range(name, args, 1, 2)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             validate_file_name(&path)?;
             match fs::remove_file(&path) {
@@ -1344,7 +1344,7 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "delete-directory" => {
-            if args.is_empty() || args.len() > 2 {
+            if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -1922,7 +1922,11 @@ pub(super) fn call(
         }
         "kill-buffer" => {
             let id = if let Some(buffer) = args.first() {
-                interp.resolve_buffer_id(buffer)?
+                match interp.resolve_buffer_id(buffer) {
+                    Ok(id) => id,
+                    Err(_) if matches!(buffer, Value::Buffer(_, _)) => return Ok(Value::Nil),
+                    Err(error) => return Err(error),
+                }
             } else {
                 interp.current_buffer_id()
             };
