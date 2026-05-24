@@ -635,6 +635,28 @@ fn line_move_moves_by_logical_lines_in_batch() {
 }
 
 #[test]
+fn directory_empty_p_and_temporary_file_directory_match_files_helpers() {
+    let result = eval_str(
+        r#"(let* ((tmp (temporary-file-directory))
+                  (dir (make-temp-file "emaxx-empty-dir-" t)))
+             (unwind-protect
+                 (let ((missing (expand-file-name "missing" dir)))
+                   (list (stringp tmp)
+                         (file-name-absolute-p tmp)
+                         (directory-empty-p missing)
+                         (directory-empty-p dir)
+                         (progn
+                           (make-empty-file (expand-file-name "child" dir))
+                           (directory-empty-p dir))))
+               (delete-directory dir t)))"#,
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::T, Value::Nil, Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

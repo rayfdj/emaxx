@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 528/7080 are verified locally.
+- Tests through 530/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 528/7080: add logical line movement for dired navigation`.
+  `Compat 530/7080: add directory emptiness helpers`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -124,8 +124,10 @@ counts as the progress denominator.
 - Selectors 527..528 passed after adding standard logical `line-move`
   behavior and related line-move defaults needed by Dired navigation over
   hidden detail lines.
-- Selector 529, `dired-test-directory-files`, is the next failing selector; it
-  currently fails on missing `temporary-file-directory`.
+- Selectors 529..530 passed after adding the callable
+  `temporary-file-directory` helper and `directory-empty-p` over the native
+  filesystem directory primitives.
+- Selector 531, `files-tests-bug-50630`, is the next failing selector.
 
 ## Workflow
 
