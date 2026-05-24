@@ -618,6 +618,23 @@ fn dired_revert_preserves_line_when_header_length_changes() {
 }
 
 #[test]
+fn line_move_moves_by_logical_lines_in_batch() {
+    let result = eval_str(
+        r#"(with-temp-buffer
+             (insert "alpha\nbeta\ngamma\n")
+             (goto-char (point-min))
+             (let ((first (line-move 1 t))
+                   (second-line (line-number-at-pos))
+                   (too-far (line-move 20 t)))
+               (list first second-line too-far (line-number-at-pos))))"#,
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::Integer(2), Value::Nil, Value::Integer(4)])
+    );
+}
+
+#[test]
 fn cl_case_rejects_misplaced_otherwise() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

@@ -411,6 +411,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "backward-page"
             | "forward-page"
             | "forward-line"
+            | "line-move"
             | "vertical-motion"
             | "count-lines"
             | "search-forward"

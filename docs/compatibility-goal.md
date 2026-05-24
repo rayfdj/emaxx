@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 526/7080 are verified locally.
+- Tests through 528/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 526/7080: preserve dired revert filename positions`.
+  `Compat 528/7080: add logical line movement for dired navigation`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -121,8 +121,11 @@ counts as the progress denominator.
 - Selector 526, `dired-test-bug27968`, passed after making Dired buffer
   refresh on `make-directory` conditional on `dired-auto-revert-buffer` and
   preserving native Dired filename/position helpers across loaded Lisp.
-- Selector 527, `dired-test-bug59047`, is the next failing selector; it
-  currently fails on missing `line-move`.
+- Selectors 527..528 passed after adding standard logical `line-move`
+  behavior and related line-move defaults needed by Dired navigation over
+  hidden detail lines.
+- Selector 529, `dired-test-directory-files`, is the next failing selector; it
+  currently fails on missing `temporary-file-directory`.
 
 ## Workflow
 
