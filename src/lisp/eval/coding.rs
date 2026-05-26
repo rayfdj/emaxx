@@ -257,6 +257,29 @@ impl Interpreter {
         self.coding_priority.clone()
     }
 
+    pub fn coding_system_list(&self, base_only: bool) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut push_coding = |coding: &CodingSystemState| {
+            if (!base_only || coding.name == coding.base)
+                && !names.iter().any(|existing| existing == &coding.name)
+            {
+                names.push(coding.name.clone());
+            }
+        };
+
+        for priority in &self.coding_priority {
+            for coding in &self.coding_systems {
+                if &coding.name == priority || (!base_only && &coding.base == priority) {
+                    push_coding(coding);
+                }
+            }
+        }
+        for coding in &self.coding_systems {
+            push_coding(coding);
+        }
+        names
+    }
+
     pub fn set_coding_system_priority(&mut self, names: &[String]) -> Result<(), LispError> {
         let mut reordered = Vec::new();
         for name in names {

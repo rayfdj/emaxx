@@ -111,10 +111,41 @@ impl Interpreter {
             "locale-coding-system" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
+            "coding-system-list" => Some(Value::list(
+                self.coding_system_list(false)
+                    .into_iter()
+                    .map(Value::Symbol)
+                    .collect::<Vec<_>>(),
+            )),
             "set-auto-coding-function" => Some(Value::Nil),
             "file-coding-system-alist" => Some(Value::Nil),
             "file-name-coding-system" => Some(Value::Nil),
             "default-file-name-coding-system" => Some(Value::Nil),
+            "completion-styles" => Some(Value::list([
+                Value::symbol("basic"),
+                Value::symbol("partial-completion"),
+                Value::symbol("emacs22"),
+            ])),
+            "completion-styles-alist" => Some(Value::list([
+                Value::list([
+                    Value::symbol("basic"),
+                    Value::symbol("completion-basic-try-completion"),
+                    Value::symbol("completion-basic-all-completions"),
+                    Value::String("Basic prefix and suffix completion.".into()),
+                ]),
+                Value::list([
+                    Value::symbol("partial-completion"),
+                    Value::symbol("completion-pcm-try-completion"),
+                    Value::symbol("completion-pcm-all-completions"),
+                    Value::String("Partial completion across word components.".into()),
+                ]),
+                Value::list([
+                    Value::symbol("emacs22"),
+                    Value::symbol("completion-emacs22-try-completion"),
+                    Value::symbol("completion-emacs22-all-completions"),
+                    Value::String("Prefix completion before point.".into()),
+                ]),
+            ])),
             "version-control" => Some(Value::Nil),
             "dired-kept-versions" => Some(Value::Integer(2)),
             "delete-old-versions" => Some(Value::Nil),
@@ -136,6 +167,14 @@ impl Interpreter {
             "auto-save-interval" => Some(Value::Integer(300)),
             "temporary-file-directory" => {
                 Some(Value::String(std::env::temp_dir().display().to_string()))
+            }
+            "ert-remote-temporary-file-directory" => {
+                let temporary = std::env::temp_dir().display().to_string();
+                Some(if self.has_feature("tramp") {
+                    Value::String(format!("/mock::{temporary}"))
+                } else {
+                    Value::Nil
+                })
             }
             "auto-mode-alist" => Some(builtin_auto_mode_alist()),
             "auto-compression-mode" => Some(Value::T),

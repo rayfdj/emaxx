@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 535/7080 are verified locally.
+- Tests through 536/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 535/7080: report dired target free space`.
+  `Compat 536/7080: load ert-x for mock drag files`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -130,8 +130,9 @@ counts as the progress denominator.
 - Selectors 531..535 passed after making `insert-directory` report
   `dired-free-space` for the target directory via the active
   `file-system-info` binding, independent of `default-directory`.
-- Selector 536, `dnd-tests-begin-drag-files`, is the next failing selector;
-  it currently fails while loading `test/lisp/dnd-tests.el`.
+- Selector 536, `dnd-tests-begin-drag-files`, passed after loading real
+  `ert-x`, supporting mock TRAMP local copies, fixing plain-vector/string
+  predicates, and filling DND selection metadata helpers. Selector 537 is next.
 
 ## Workflow
 

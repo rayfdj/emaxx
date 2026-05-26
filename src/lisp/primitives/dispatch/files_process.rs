@@ -51,8 +51,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "file-name-concat"
             | "file-name-unquote"
             | "file-local-name"
+            | "file-local-copy"
             | "file-remote-p"
+            | "file-expand-wildcards"
             | "find-file-name-handler"
+            | "emaxx-mock-file-name-handler"
             | "dired-noselect"
             | "dired-revert"
             | "emaxx-dired-revert"
@@ -835,6 +838,15 @@ pub(super) fn call(
                 .map(|remote| Value::String(remote.localname))
                 .unwrap_or(Value::String(file)))
         }
+        "file-local-copy" => {
+            need_args(name, args, 1)?;
+            let file = string_text(&args[0])?;
+            if parse_remote_file_name(&file).is_some_and(|remote| remote.method == "mock") {
+                mock_file_local_copy(&file).map(Value::String)
+            } else {
+                Ok(Value::Nil)
+            }
+        }
         "file-remote-p" => {
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -854,9 +866,47 @@ pub(super) fn call(
             };
             Ok(result)
         }
+        "file-expand-wildcards" => {
+            need_arg_range(name, args, 1, 3)?;
+            let pattern = string_text(&args[0])?;
+            let full = args.get(1).is_some_and(Value::is_truthy);
+            let expanded = match expand_simple_wildcard_paths(&pattern) {
+                Ok(paths) => paths,
+                Err(_) => return Ok(Value::Nil),
+            };
+            let matches = expanded
+                .into_iter()
+                .filter(|path| Path::new(path).exists())
+                .map(|path| {
+                    if full {
+                        Value::String(resolve_file_name_in_env(interp, env, &path))
+                    } else {
+                        Value::String(path)
+                    }
+                })
+                .collect::<Vec<_>>();
+            Ok(Value::list(matches))
+        }
         "find-file-name-handler" => {
             need_args(name, args, 2)?;
-            Ok(Value::Nil)
+            let file = string_text(&args[0])?;
+            let operation = args[1].as_symbol().ok();
+            if operation == Some("file-local-copy")
+                && parse_remote_file_name(&file).is_some_and(|remote| remote.method == "mock")
+            {
+                Ok(Value::Symbol("emaxx-mock-file-name-handler".into()))
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        "emaxx-mock-file-name-handler" => {
+            need_args(name, args, 2)?;
+            let operation = args[0].as_symbol()?;
+            let file = string_text(&args[1])?;
+            match operation {
+                "file-local-copy" => mock_file_local_copy(&file).map(Value::String),
+                _ => Ok(Value::Nil),
+            }
         }
         "dired-noselect" => {
             need_arg_range(name, args, 1, 2)?;
@@ -2192,6 +2242,21 @@ fn insert_directory_free_space_line(
     }
     let human_readable = file_size_human_readable(interp, env, &available_bytes)?;
     Ok(Some(format!("available {human_readable}\n")))
+}
+
+fn mock_file_local_copy(file: &str) -> Result<String, LispError> {
+    let Some(remote) = parse_remote_file_name(file) else {
+        return Ok(file.to_string());
+    };
+    let mut prefix = std::env::temp_dir();
+    let mut name = file_name_nondirectory(&remote.localname);
+    if name.is_empty() {
+        name = "copy".into();
+    }
+    prefix.push(format!("emaxx-mock-copy-{name}-"));
+    let target = make_temp_file_internal(&prefix.display().to_string(), &Value::Nil, "", None)?;
+    fs::copy(&remote.localname, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+    Ok(target)
 }
 
 fn nth_list_item(list: &Value, index: usize) -> Option<Value> {

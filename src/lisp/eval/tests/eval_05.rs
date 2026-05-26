@@ -68,6 +68,171 @@ fn sort_coding_systems_uses_priority_order() {
 }
 
 #[test]
+fn coding_system_list_is_bound_and_callable() {
+    let result = eval_str(
+        "(list (boundp 'coding-system-list)
+               (fboundp 'coding-system-list)
+               (not (null (memq 'utf-8 coding-system-list)))
+               (not (null (memq 'utf-8 (coding-system-list))))
+               (not (memq 'utf-8-dos (coding-system-list 'base-only))))",
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn set_char_table_range_accepts_t_for_full_range() {
+    let result = eval_str(
+        "(let ((table (make-char-table nil)))
+           (set-char-table-range table t 'all)
+           (list (char-table-range table ?A)
+                 (char-table-range table #x10ffff)))",
+    );
+    assert_eq!(
+        result,
+        Value::list([Value::symbol("all"), Value::symbol("all")])
+    );
+}
+
+#[test]
+fn standard_minibuffer_completion_map_is_bound() {
+    let result = eval_str(
+        "(list (boundp 'minibuffer-local-completion-map)
+               (keymapp minibuffer-local-completion-map))",
+    );
+    assert_eq!(result, Value::list([Value::T, Value::T]));
+}
+
+#[test]
+fn completion_style_defaults_are_bound() {
+    let result = eval_str(
+        "(list (boundp 'completion-styles)
+               (not (null (memq 'basic completion-styles)))
+               (not (null (assq 'basic completion-styles-alist))))",
+    );
+    assert_eq!(result, Value::list([Value::T, Value::T, Value::T]));
+}
+
+#[test]
+fn file_expand_wildcards_returns_existing_matches() {
+    let result = eval_str(
+        r#"(let ((dir (make-temp-file "emaxx-wildcards-" t)))
+             (unwind-protect
+                 (progn
+                   (make-empty-file (expand-file-name "a.el" dir))
+                   (make-empty-file (expand-file-name "b.txt" dir))
+                   (let ((matches (file-expand-wildcards
+                                   (expand-file-name "*.el" dir)
+                                   t)))
+                     (list (= (length matches) 1)
+                           (file-name-absolute-p (car matches))
+                           (not (null (string-match-p "a\\.el\\'" (car matches)))))))
+               (delete-directory dir t)))"#,
+    );
+    assert_eq!(result, Value::list([Value::T, Value::T, Value::T]));
+}
+
+#[test]
+fn mock_tramp_file_operations_use_localname() {
+    let result = eval_str(
+        r#"(let ((dir (make-temp-file "emaxx-mock-tramp-" t)))
+             (unwind-protect
+                 (let* ((remote (concat "/mock::" dir))
+                        (remote-file (expand-file-name "sample.txt" remote)))
+                   (write-region "sample" nil remote-file)
+                   (let ((copy (file-local-copy remote-file)))
+                     (prog1
+                         (list (file-remote-p remote)
+                               (file-directory-p remote)
+                               (file-writable-p remote)
+                               (and copy
+                                    (not (file-remote-p copy))
+                                    (file-exists-p copy)))
+                       (when copy
+                         (delete-file copy)))))
+               (delete-directory dir t)))"#,
+    );
+    assert_eq!(
+        result,
+        Value::list([
+            Value::String("/mock::".into()),
+            Value::T,
+            Value::T,
+            Value::T
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_across_iterates_vectors() {
+    assert_eq!(
+        eval_str("(cl-loop for item across [a b c] collect item)"),
+        Value::list([Value::symbol("a"), Value::symbol("b"), Value::symbol("c"),])
+    );
+}
+
+#[test]
+fn plain_vector_is_not_string_like() {
+    assert_eq!(
+        eval_str(r#"(list (stringp ["a" "b"]) (length ["a" "b"]))"#),
+        Value::list([Value::Nil, Value::Integer(2)])
+    );
+}
+
+#[test]
+fn cl_loop_when_collect_filters_items() {
+    assert_eq!(
+        eval_str("(cl-loop for item in '(1 2 3 4) when (> item 2) collect item)"),
+        Value::list([Value::Integer(3), Value::Integer(4)])
+    );
+}
+
+#[test]
+fn cl_loop_while_collect_without_for_clause() {
+    assert_eq!(
+        eval_str("(let ((i 0)) (cl-loop while (< i 3) collect (setq i (1+ i))))"),
+        Value::list([Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+    );
+}
+
+#[test]
+fn cl_loop_collect_into_finally_return() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for item in '(a b c)
+                      collect (symbol-name item) into names
+                      finally return (apply #'vector names))",
+        ),
+        Value::list([
+            Value::symbol("vector-literal"),
+            Value::String("a".into()),
+            Value::String("b".into()),
+            Value::String("c".into()),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_if_do_append_runs_body_before_append() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for item in '(1 nil 3)
+                      if item
+                      do (setq item (1+ item))
+                      append (list item item))",
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(4),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
 fn defgroup_tracks_current_group_and_members() {
     let mut interp = Interpreter::new();
     interp.set_current_load_file(Some("/tmp/custom-group.el".into()));
@@ -734,5 +899,36 @@ fn backtrace_frames_from_current_thread_returns_live_frames() {
             Vec::new(),
             false,
         )]
+    );
+}
+
+#[test]
+fn ert_x_remote_temp_directory_loads_after_tramp() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+    interp.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+              (progn
+                (require 'tramp)
+                (require 'ert-x)
+                (list (featurep 'ert-x)
+                      (file-remote-p ert-remote-temporary-file-directory)
+                      (file-directory-p ert-remote-temporary-file-directory)
+                      (file-writable-p ert-remote-temporary-file-directory)))
+            "#
+        ),
+        Value::list([
+            Value::T,
+            Value::String("/mock::".into()),
+            Value::T,
+            Value::T
+        ])
     );
 }

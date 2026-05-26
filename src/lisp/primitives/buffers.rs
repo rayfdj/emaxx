@@ -1140,6 +1140,7 @@ pub(crate) fn buffer_byte_to_position_boundary(
 pub(crate) fn char_table_range_spec(value: &Value) -> Result<Option<(u32, u32)>, LispError> {
     match value {
         Value::Nil => Ok(None),
+        Value::T => Ok(Some((0, char::MAX as u32))),
         Value::Integer(codepoint) if *codepoint >= 0 => {
             Ok(Some((*codepoint as u32, *codepoint as u32)))
         }

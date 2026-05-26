@@ -695,6 +695,12 @@ impl Interpreter {
         let minibuffer_local_map =
             primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
         interp.set_global_binding("minibuffer-local-map", minibuffer_local_map);
+        let minibuffer_local_completion_map =
+            primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-completion-map"));
+        interp.set_global_binding(
+            "minibuffer-local-completion-map",
+            minibuffer_local_completion_map,
+        );
         let query_replace_map =
             primitives::make_runtime_keymap(&mut interp, Some("query-replace-map"));
         interp.set_global_binding("query-replace-map", query_replace_map);
