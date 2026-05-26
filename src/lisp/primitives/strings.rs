@@ -83,6 +83,9 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
         Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") =>
         {
             let items = vector_items(value).ok()?;
+            if items.len() < 4 {
+                return None;
+            }
             let Value::String(text) = items.first()?.clone() else {
                 return None;
             };

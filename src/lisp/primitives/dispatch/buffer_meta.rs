@@ -71,6 +71,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "sort-charsets"
             | "coding-system-p"
             | "check-coding-system"
+            | "coding-system-list"
             | "coding-system-priority-list"
             | "sort-coding-systems"
             | "coding-system-aliases"
@@ -979,6 +980,16 @@ pub(super) fn call(
                 Some(coding) => Value::Symbol(coding),
                 None => Value::Nil,
             })
+        }
+        "coding-system-list" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::list(
+                interp
+                    .coding_system_list(args.first().is_some_and(Value::is_truthy))
+                    .into_iter()
+                    .map(Value::Symbol)
+                    .collect::<Vec<_>>(),
+            ))
         }
         "coding-system-priority-list" => {
             if args.len() > 1 {

@@ -328,6 +328,9 @@ pub(crate) fn expand_file_name_runtime(
 }
 
 pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &str) -> String {
+    if let Some(remote) = parse_remote_file_name(path) {
+        return remote.localname;
+    }
     if Path::new(path).is_absolute() {
         return path.to_string();
     }
@@ -1194,6 +1197,11 @@ pub(crate) fn file_readable_p(path: &str) -> bool {
 pub(crate) fn file_writable_p(path: &str) -> bool {
     let candidate = Path::new(path);
     if candidate.exists() {
+        if let Ok(metadata) = fs::metadata(candidate)
+            && metadata.is_dir()
+        {
+            return !metadata.permissions().readonly();
+        }
         return fs::OpenOptions::new().write(true).open(candidate).is_ok();
     }
     candidate

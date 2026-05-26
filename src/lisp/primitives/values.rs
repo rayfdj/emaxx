@@ -1145,12 +1145,11 @@ pub(crate) fn parse_remote_file_name(path: &str) -> Option<RemoteFileNameParts> 
     let after_method = &rest[method_end + 1..];
     let host_end = after_method.find(':')?;
     let authority = &after_method[..host_end];
-    if authority.is_empty() {
-        return None;
-    }
     let localname = after_method[host_end + 1..].to_string();
     let (user, host) = match authority.rsplit_once('@') {
         Some((user, host)) if !host.is_empty() => (Some(user.to_string()), host.to_string()),
+        _ if authority.is_empty() && method == "mock" => (None, String::new()),
+        _ if authority.is_empty() => return None,
         _ => (None, authority.to_string()),
     };
     Some(RemoteFileNameParts {

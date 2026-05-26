@@ -61,6 +61,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "symbol-file"
             | "symbol-name"
             | "user-login-name"
+            | "user-real-login-name"
             | "system-name"
             | "user-full-name"
             | "macroexp-file-name"
@@ -820,7 +821,7 @@ pub(super) fn call(
                 crate::lisp::types::visible_symbol_name(s).to_string(),
             ))
         }
-        "user-login-name" => {
+        "user-login-name" | "user-real-login-name" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }

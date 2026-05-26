@@ -1329,6 +1329,20 @@ fn defvar_without_initializer_keeps_variable_void() {
 }
 
 #[test]
+fn defvar_nil_initializer_binds_variable() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(&mut interp, "(defvar sample-nil-bound (when nil 1))"),
+        Value::Nil
+    );
+    assert_eq!(
+        eval_str_with(&mut interp, "(boundp 'sample-nil-bound)"),
+        Value::T
+    );
+    assert_eq!(eval_str_with(&mut interp, "sample-nil-bound"), Value::Nil);
+}
+
+#[test]
 fn file_remote_p_parses_tramp_style_names() {
     assert_eq!(
         eval_str(
@@ -1337,13 +1351,17 @@ fn file_remote_p_parses_tramp_style_names() {
                      (file-remote-p "/ssh:user@host:/tmp/x" 'method)
                      (file-remote-p "/ssh:user@host:/tmp/x" 'user)
                      (file-remote-p "/ssh:user@host:/tmp/x" 'host)
-                     (file-remote-p "/ssh:user@host:/tmp/x" 'localname))"#,
+                     (file-remote-p "/ssh:user@host:/tmp/x" 'localname)
+                     (file-remote-p "/mock::/tmp/x" 'method)
+                     (file-remote-p "/mock::/tmp/x" 'localname))"#,
         ),
         Value::list([
             Value::String("/ssh:user@host:".into()),
             Value::String("ssh".into()),
             Value::String("user".into()),
             Value::String("host".into()),
+            Value::String("/tmp/x".into()),
+            Value::String("mock".into()),
             Value::String("/tmp/x".into()),
         ])
     );
