@@ -242,6 +242,10 @@ impl Interpreter {
                 condition: Value,
                 expr: Value,
             },
+            WhenAppend {
+                condition: Value,
+                expr: Value,
+            },
             WhenCollectInto {
                 condition: Value,
                 expr: Value,
@@ -258,6 +262,11 @@ impl Interpreter {
             IfDoAppend {
                 condition: Value,
                 body: Value,
+                append: Value,
+            },
+            IfCollectElseAppend {
+                condition: Value,
+                collect: Value,
                 append: Value,
             },
             UnlessDo {
@@ -599,6 +608,16 @@ impl Interpreter {
                         }
                     }
                 }
+                Some(Value::Symbol(kind)) if kind == "append" => LoopAction::WhenAppend {
+                    condition: items
+                        .get(index + 1)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                    expr: items
+                        .get(index + 3)
+                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                        .clone(),
+                },
                 _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
             },
             Some(Value::Symbol(symbol)) if symbol == "do" => {
@@ -700,6 +719,27 @@ impl Interpreter {
                 _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
             },
             Some(Value::Symbol(symbol)) if symbol == "if" => match items.get(index + 2) {
+                Some(Value::Symbol(kind)) if kind == "collect" => {
+                    if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "else")
+                        || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "append")
+                    {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                    LoopAction::IfCollectElseAppend {
+                        condition: items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        collect: items
+                            .get(index + 3)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        append: items
+                            .get(index + 6)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    }
+                }
                 Some(Value::Symbol(kind)) if kind == "do" => {
                     if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "append")
                     {
@@ -826,6 +866,11 @@ impl Interpreter {
                         collected.push(self.eval(expr, env)?);
                     }
                 }
+                LoopAction::WhenAppend { condition, expr } => {
+                    if self.eval(condition, env)?.is_truthy() {
+                        collected.extend(self.eval(expr, env)?.to_vec()?);
+                    }
+                }
                 LoopAction::CollectInto { expr, name } => {
                     collected.push(self.eval(expr, env)?);
                     let frame = env.last_mut().expect("env frame just pushed");
@@ -866,6 +911,17 @@ impl Interpreter {
                         collected.extend(self.eval(append, env)?.to_vec()?);
                     }
                 }
+                LoopAction::IfCollectElseAppend {
+                    condition,
+                    collect,
+                    append,
+                } => {
+                    if self.eval(condition, env)?.is_truthy() {
+                        collected.push(self.eval(collect, env)?);
+                    } else {
+                        collected.extend(self.eval(append, env)?.to_vec()?);
+                    }
+                }
             }
         }
 
@@ -881,8 +937,12 @@ impl Interpreter {
         }
         Ok(match action {
             LoopAction::Collect(_) | LoopAction::Append(_) => Value::list(collected),
-            LoopAction::WhenCollect { .. } => Value::list(collected),
-            LoopAction::IfDoAppend { .. } => Value::list(collected),
+            LoopAction::WhenCollect { .. } | LoopAction::WhenAppend { .. } => {
+                Value::list(collected)
+            }
+            LoopAction::IfDoAppend { .. } | LoopAction::IfCollectElseAppend { .. } => {
+                Value::list(collected)
+            }
             LoopAction::Always(_) if result.is_nil() => Value::Nil,
             LoopAction::Always(_) => Value::T,
             LoopAction::Sum(_) => Value::Integer(sum),

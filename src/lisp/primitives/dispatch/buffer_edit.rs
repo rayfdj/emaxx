@@ -13,6 +13,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "insert-byte"
             | "skeleton-insert"
             | "insert-buffer-substring"
+            | "comment-region"
             | "point"
             | "point-min"
             | "point-max"
@@ -85,6 +86,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "toggle-enable-multibyte-characters"
             | "char-after"
             | "char-before"
+            | "matching-paren"
             | "get-byte"
             | "bobp"
             | "eobp"
@@ -223,6 +225,38 @@ pub(super) fn call(
                 .map_err(|e| LispError::Signal(e.to_string()))?;
             let props = source.substring_property_spans(start, end);
             insert_text_with_hooks(interp, &text, &props, false, false, env)?;
+            Ok(Value::Nil)
+        }
+        "comment-region" => {
+            need_arg_range(name, args, 2, 3)?;
+            let start = position_from_value(interp, &args[0])?;
+            let end = position_from_value(interp, &args[1])?;
+            let (start, end) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            ensure_region_modifiable(interp, start, end, env)?;
+            let text = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            let comment_start = interp
+                .lookup_var("comment-start", env)
+                .and_then(|value| string_text(&value).ok())
+                .unwrap_or_else(|| "# ".into());
+            let comment_end = interp
+                .lookup_var("comment-end", env)
+                .and_then(|value| string_text(&value).ok())
+                .unwrap_or_default();
+            let commented = if comment_end.is_empty() {
+                text.split_inclusive('\n')
+                    .map(|line| format!("{comment_start}{line}"))
+                    .collect::<String>()
+            } else {
+                format!("{comment_start}{text}{comment_end}")
+            };
+            replace_buffer_region_with_text(interp, start, end, &commented)?;
             Ok(Value::Nil)
         }
         "point" => Ok(Value::Integer(interp.buffer.point() as i64)),
@@ -1070,6 +1104,24 @@ pub(super) fn call(
                     None => Ok(Value::Nil),
                 }
             }
+        }
+        "matching-paren" => {
+            need_args(name, args, 1)?;
+            let ch = args[0].as_integer()? as u32;
+            let matching = match char::from_u32(ch) {
+                Some('(') => Some(')'),
+                Some(')') => Some('('),
+                Some('[') => Some(']'),
+                Some(']') => Some('['),
+                Some('{') => Some('}'),
+                Some('}') => Some('{'),
+                Some('<') => Some('>'),
+                Some('>') => Some('<'),
+                _ => None,
+            };
+            Ok(matching
+                .map(|ch| Value::Integer(ch as i64))
+                .unwrap_or(Value::Nil))
         }
         "get-byte" => {
             need_args(name, args, 1)?;

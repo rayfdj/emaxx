@@ -190,6 +190,127 @@ fn cl_loop_when_collect_filters_items() {
 }
 
 #[test]
+fn cl_loop_when_append_flattens_truthy_results() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for child in '((a b) nil (c))
+                      for matches = child
+                      when matches
+                      append matches)"
+        ),
+        Value::list([
+            Value::Symbol("a".into()),
+            Value::Symbol("b".into()),
+            Value::Symbol("c".into()),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_if_collect_else_append_handles_tree_walks() {
+    assert_eq!(
+        eval_str(
+            "(equal
+              (cl-loop for child in '(\"a\" (b c) \"d\")
+                       if (stringp child)
+                       collect child
+                       else
+                       append child)
+              '(\"a\" b c \"d\"))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn cl_defmacro_keyword_default_preserves_quoted_default_form() {
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn
+                   (require 'cl-lib)
+                   (cl-defmacro sample-cl-default
+                       (&key (modes '(quote (ruby-mode js-mode python-mode c-mode))))
+                     `(quote ,(eval modes t)))
+                   (sample-cl-default))"
+            ),
+            Value::list([
+                Value::Symbol("ruby-mode".into()),
+                Value::Symbol("js-mode".into()),
+                Value::Symbol("python-mode".into()),
+                Value::Symbol("c-mode".into()),
+            ])
+        );
+    });
+}
+
+#[test]
+fn ruby_and_js_modes_are_callable_prog_modes() {
+    assert_eq!(
+        eval_str(
+            "(equal
+              (list
+               (with-temp-buffer (funcall 'ruby-mode) (list major-mode comment-start))
+               (with-temp-buffer (funcall 'js-mode) (list major-mode comment-start)))
+              '((ruby-mode \"# \") (js-mode \"/* \")))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
+    assert_eq!(
+        eval_str(
+            "(equal
+              (list
+               (with-temp-buffer
+                 (funcall 'c-mode)
+                 (insert \"z\")
+                 (comment-region (point-min) (point-max))
+                 (buffer-string))
+               (with-temp-buffer
+                 (funcall 'ruby-mode)
+                 (insert \"z\")
+                 (comment-region (point-min) (point-max))
+                 (buffer-string)))
+              '(\"/* z */\" \"# z\"))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn matching_paren_returns_counterpart_character() {
+    assert_eq!(
+        eval_str("(list (matching-paren ?\\() (matching-paren ?\\]) (matching-paren ?x))"),
+        Value::list([
+            Value::Integer(')' as i64),
+            Value::Integer('[' as i64),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn push_supports_nthcdr_setf_places() {
+    assert_eq!(
+        eval_str("(let ((items (list 'head 'body))) (push 'neck (nthcdr 1 items)) items)"),
+        Value::list([
+            Value::Symbol("head".into()),
+            Value::Symbol("neck".into()),
+            Value::Symbol("body".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_loop_while_collect_without_for_clause() {
     assert_eq!(
         eval_str("(let ((i 0)) (cl-loop while (< i 3) collect (setq i (1+ i))))"),
@@ -374,6 +495,19 @@ fn dolist_binds_original_list_element_for_delq_identity() {
                    (setq items (delq item items))))"#
         ),
         Value::Nil
+    );
+}
+
+#[test]
+fn delq_destructively_removes_non_leading_list_cells() {
+    assert_eq!(
+        eval_str(
+            "(let* ((target (list 'remove))
+                    (items (list 'keep target 'tail)))
+               (delq target items)
+               items)"
+        ),
+        Value::list([Value::Symbol("keep".into()), Value::Symbol("tail".into())])
     );
 }
 
