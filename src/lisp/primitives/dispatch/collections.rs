@@ -1264,7 +1264,35 @@ pub(super) fn call(
             }
         }
 
-        "delete" | "delq" | "remq" => {
+        "delq" => {
+            need_args(name, args, 2)?;
+            let elt = &args[0];
+            let mut head = args[1].clone();
+            while let Value::Cons(car, cdr) = head.clone() {
+                if values_eq_in_env(interp, &car.borrow(), elt, env) {
+                    head = cdr.borrow().clone();
+                } else {
+                    break;
+                }
+            }
+            let mut current = head.clone();
+            while let Value::Cons(_, cdr) = current.clone() {
+                let next = cdr.borrow().clone();
+                match next {
+                    Value::Cons(next_car, next_cdr) => {
+                        if values_eq_in_env(interp, &next_car.borrow(), elt, env) {
+                            *cdr.borrow_mut() = next_cdr.borrow().clone();
+                        } else {
+                            current = Value::Cons(next_car, next_cdr);
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            Ok(head)
+        }
+
+        "delete" | "remq" => {
             need_args(name, args, 2)?;
             let elt = &args[0];
             let items = args[1].to_vec()?;
@@ -1274,7 +1302,7 @@ pub(super) fn call(
                     if name == "delete" {
                         !values_equal(interp, item, elt)
                     } else {
-                        item != elt
+                        !values_eq_in_env(interp, item, elt, env)
                     }
                 })
                 .collect();

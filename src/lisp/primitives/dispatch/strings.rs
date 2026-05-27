@@ -61,6 +61,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "string-trim"
             | "string-clean-whitespace"
             | "url-hexify-string"
+            | "url-insert-entities-in-string"
             | "url-encode-url"
             | "base64-encode-region"
             | "base64url-encode-region"
@@ -1204,6 +1205,21 @@ pub(super) fn call(
         "url-encode-url" => {
             need_args(name, args, 1)?;
             Ok(Value::String(url_encode_url(&string_text(&args[0])?)))
+        }
+        "url-insert-entities-in-string" => {
+            need_args(name, args, 1)?;
+            let input = string_text(&args[0])?;
+            let mut output = String::new();
+            for ch in input.chars() {
+                match ch {
+                    '"' => output.push_str("&quot;"),
+                    '&' => output.push_str("&amp;"),
+                    '<' => output.push_str("&lt;"),
+                    '>' => output.push_str("&gt;"),
+                    _ => output.push(ch),
+                }
+            }
+            Ok(Value::String(output))
         }
         "base64-encode-region" => {
             need_arg_range(name, args, 2, 3)?;

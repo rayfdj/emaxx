@@ -727,6 +727,22 @@ impl Interpreter {
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "nth") {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_nth(&items, &value_expr, env).map(|_| ())
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "nthcdr") {
+                    let Some(index_expr) = items.get(1) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let Some(list_expr) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let index = self.eval(index_expr, env)?.as_integer()?;
+                    if index <= 0 {
+                        return self.set_setf_place_value(list_expr, value, env);
+                    }
+                    let mut current = self.eval(list_expr, env)?;
+                    for _ in 1..index {
+                        current = current.cdr()?;
+                    }
+                    current.set_cdr(value)
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "aref") {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_aref(&items, &value_expr, env).map(|_| ())

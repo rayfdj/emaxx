@@ -1189,6 +1189,14 @@ fn framep_accepts_selected_frame_stub() {
 }
 
 #[test]
+fn url_insert_entities_in_string_escapes_html_markup_chars() {
+    assert_eq!(
+        eval_str(r#"(url-insert-entities-in-string "<a b=\"c&d\">")"#),
+        Value::String("&lt;a b=&quot;c&amp;d&quot;&gt;".into())
+    );
+}
+
+#[test]
 fn decode_coding_region_rewrites_dos_eol_in_place() {
     assert_eq!(
         eval_str(

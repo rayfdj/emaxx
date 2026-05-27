@@ -8,8 +8,10 @@ pub(super) fn is_major_mode_builtin(name: &str) -> bool {
             | "c-mode"
             | "c++-mode"
             | "java-mode"
+            | "js-mode"
             | "javascript-mode"
             | "makefile-bsdmake-mode"
+            | "ruby-mode"
             | "srecode-template-mode"
             | "texinfo-mode"
             | "wisent-grammar-mode"
@@ -43,9 +45,17 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
             derived_mode_set_parent(interp, "java-mode", Some("prog-mode"));
             activate_c_family_mode(interp, "java-mode", "Java")
         }
+        "js-mode" => {
+            derived_mode_set_parent(interp, "js-mode", Some("prog-mode"));
+            activate_c_family_mode_with_semantic(interp, "js-mode", "Javascript", false)
+        }
         "javascript-mode" => {
             derived_mode_set_parent(interp, "javascript-mode", Some("prog-mode"));
             activate_c_family_mode_with_semantic(interp, "javascript-mode", "JavaScript", false)
+        }
+        "ruby-mode" => {
+            derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
+            activate_hash_comment_mode_with_semantic(interp, "ruby-mode", "Ruby", false)
         }
         "makefile-bsdmake-mode" => {
             activate_hash_comment_mode(interp, "makefile-bsdmake-mode", "BSDmakefile")

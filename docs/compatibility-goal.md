@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 542/7080 are verified locally.
+- Tests through 569/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 542/7080: preserve DND URL identity`.
+  `Compat 569/7080: cover DOM traversal and edmacro`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -138,7 +138,12 @@ counts as the progress denominator.
   binding frame stable across nested empty lexical frames, adding `framep`,
   adding the `ascii` coding alias, and making `encode-coding-string` return
   unibyte encoded data with GNU-compatible `ascii`/`iso-8859-1` substitution.
-  Selector 543, `dom-test-search`, is next.
+- Selectors 543..568 in `test/lisp/dom-tests.el` passed after covering
+  `cl-loop` append/collect forms used by DOM traversal, `setf` places rooted at
+  `nthcdr`, HTML entity escaping, and destructive `delq` list edits.
+- Selector 569 in `test/lisp/edmacro-tests.el` passed with the existing
+  `edmacro-parse-keys` support. Selector 570,
+  `electric-layout-control-reindentation`, is next.
 
 ## Workflow
 
