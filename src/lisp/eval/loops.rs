@@ -1,6 +1,37 @@
 use super::*;
+use std::collections::HashSet;
 
 impl Interpreter {
+    fn dolist_items(value: &Value) -> Result<Vec<Value>, LispError> {
+        let mut items = Vec::new();
+        let mut current = value.clone();
+        let mut seen = HashSet::new();
+        loop {
+            match current {
+                Value::Nil => return Ok(items),
+                Value::Cons(car, cdr) => {
+                    let cell_id = std::rc::Rc::as_ptr(&car) as usize;
+                    if !seen.insert(cell_id) {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("circular-list".into()),
+                            Value::String("Circular list".into()),
+                        ])));
+                    }
+                    let item = {
+                        let mut car_value = car.borrow_mut();
+                        if matches!(&*car_value, Value::String(_)) {
+                            *car_value = Self::stored_value(car_value.clone());
+                        }
+                        car_value.clone()
+                    };
+                    items.push(item);
+                    current = cdr.borrow().clone();
+                }
+                other => return Err(LispError::TypeError("list".into(), other.type_name())),
+            }
+        }
+    }
+
     pub(super) fn sf_insert_function(
         &mut self,
         items: &[Value],
@@ -83,12 +114,15 @@ impl Interpreter {
         let spec = items[1].to_vec()?;
         let var_name = spec[0].as_symbol()?.to_string();
         let list_val = self.eval(&spec[1], env)?;
-        let list_items = list_val.to_vec()?;
+        let list_items = Self::dolist_items(&list_val)?;
 
+        let frame_index = env.len();
         env.push(vec![(var_name.clone(), Value::Nil)]);
         for item in list_items {
-            let frame = env.last_mut().expect("env frame just pushed");
-            frame[0] = (var_name.clone(), Self::stored_value(item));
+            let frame = env
+                .get_mut(frame_index)
+                .expect("dolist binding frame remains active during loop");
+            Self::upsert_frame_binding(frame, var_name.clone(), item);
             self.sf_progn(&items[2..], env)?;
         }
         let result = if spec.len() > 2 {

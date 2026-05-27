@@ -112,6 +112,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "window-parameters"
             | "walk-windows"
             | "selected-frame"
+            | "framep"
             | "frame-terminal"
             | "frame-list"
             | "face-set-after-frame-default"
@@ -1425,6 +1426,16 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
+        "framep" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(&args[0], Value::Symbol(symbol) if symbol == "frame") {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
         "frame-terminal" => {
             need_arg_range(name, args, 0, 1)?;
             Ok(Value::Symbol("terminal".into()))

@@ -934,6 +934,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "window-dedicated-p"
             | "window-splittable-p"
             | "selected-frame"
+            | "framep"
             | "frame-terminal"
             | "frame-list"
             | "face-set-after-frame-default"
