@@ -353,6 +353,78 @@ fn dolist_with_progress_reporter_uses_dolist_semantics() {
 }
 
 #[test]
+fn dolist_reuses_own_binding_frame_after_empty_nested_frames() {
+    assert_eq!(
+        eval_str(
+            "(let ((seen nil))
+               (dolist (item '(a b) (nreverse seen))
+                 (let ()
+                   (push item seen))))"
+        ),
+        Value::list([Value::symbol("a"), Value::symbol("b")])
+    );
+}
+
+#[test]
+fn dolist_binds_original_list_element_for_delq_identity() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((items '("file:///tmp/example")))
+                 (dolist (item items items)
+                   (setq items (delq item items))))"#
+        ),
+        Value::Nil
+    );
+}
+
+#[test]
+fn dnd_multiple_url_handlers_prefer_earlier_equal_precedence_handler() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.load_target("dnd").expect("load dnd");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+            (let ((dnd-protocol-alist
+                   '(("^file:///" . dnd-test-local)
+                     ("^file:" . error)
+                     ("^unrelated-scheme:" . error)))
+                  (urls '("file:///usr/openwin/include/pixrect/pr_impl.h"
+                          "file:///usr/openwin/include/pixrect/pr_io.h")))
+              (put 'dnd-test-local 'dnd-multiple-handler t)
+              (defun dnd-test-local (received _action)
+                (unless (equal received urls)
+                  (error "wrong urls"))
+                'copy)
+              (dnd-handle-multiple-urls (selected-window) (copy-sequence urls) 'copy))
+            "#,
+        ),
+        Value::Symbol("copy".into())
+    );
+}
+
+#[test]
+fn sort_preserves_order_for_equal_elements() {
+    assert_eq!(
+        eval_str(
+            r#"(mapcar #'car
+                      (sort '((first a b) (second c d))
+                            (lambda (left right)
+                              (> (length (cdr left))
+                                 (length (cdr right))))))"#
+        ),
+        Value::list([
+            Value::Symbol("first".into()),
+            Value::Symbol("second".into())
+        ])
+    );
+}
+
+#[test]
 fn cl_letf_rebinds_symbol_property_get_places() {
     assert_eq!(
         eval_str(

@@ -644,6 +644,37 @@ pub(crate) fn encode_text_bytes(
     }
 }
 
+fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str) -> String {
+    let kind = interp
+        .coding_system_kind_name(coding)
+        .unwrap_or_else(|| coding.to_string());
+    match kind.as_str() {
+        "iso-latin-1" => text
+            .chars()
+            .map(|ch| {
+                if raw_byte_from_regex_char(ch).is_some() || (ch as u32) <= 0xFF {
+                    ch
+                } else {
+                    ' '
+                }
+            })
+            .collect(),
+        "us-ascii" => text
+            .chars()
+            .map(|ch| {
+                if raw_byte_from_regex_char(ch).is_some_and(|byte| byte <= 0x7F)
+                    || (ch as u32) <= 0x7F
+                {
+                    ch
+                } else {
+                    '?'
+                }
+            })
+            .collect(),
+        _ => text.to_string(),
+    }
+}
+
 pub(crate) fn decode_text_bytes(
     interp: &Interpreter,
     bytes: &[u8],
@@ -1049,12 +1080,24 @@ pub(crate) fn encode_coding_value(
     }
     let failures = string_unencodable_positions(&string.text, &canonical, interp)?;
     if !failures.is_empty() {
-        return Err(LispError::Signal("Character cannot be encoded".into()));
+        let substituted = encode_string_text_for_coding(interp, &string.text, &canonical);
+        if substituted == string.text {
+            return Err(LispError::Signal("Character cannot be encoded".into()));
+        }
+        return Ok(bytes_to_shared_unibyte_value(&encode_text_bytes(
+            interp,
+            &substituted,
+            &canonical,
+        )?));
     }
     if nocopy && string_identity_for_coding(&string.text, &canonical, interp, true) {
         Ok(value.clone())
     } else {
-        shared_string_copy(value)
+        Ok(bytes_to_shared_unibyte_value(&encode_text_bytes(
+            interp,
+            &string.text,
+            &canonical,
+        )?))
     }
 }
 

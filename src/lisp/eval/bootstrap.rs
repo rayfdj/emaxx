@@ -393,6 +393,7 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
 
 pub(super) fn builtin_coding_aliases() -> Vec<(String, String)> {
     vec![
+        ("ascii".into(), "us-ascii".into()),
         ("iso-8859-1".into(), "iso-latin-1".into()),
         ("iso-8859-1-unix".into(), "iso-latin-1-unix".into()),
         ("iso-8859-1-dos".into(), "iso-latin-1-dos".into()),

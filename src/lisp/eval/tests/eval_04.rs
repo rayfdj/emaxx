@@ -1147,6 +1147,48 @@ fn encode_coding_region_binary_returns_unibyte_string() {
 }
 
 #[test]
+fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
+    assert_eq!(
+        eval_str(
+            r#"(list (string-to-list (encode-coding-string "sæl ö всем" 'iso-8859-1))
+                     (string-to-list (encode-coding-string "sæl ö всем" 'ascii)))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(115),
+                Value::Integer(230),
+                Value::Integer(108),
+                Value::Integer(32),
+                Value::Integer(246),
+                Value::Integer(32),
+                Value::Integer(32),
+                Value::Integer(32),
+                Value::Integer(32),
+                Value::Integer(32),
+            ]),
+            Value::list([
+                Value::Integer(115),
+                Value::Integer(63),
+                Value::Integer(108),
+                Value::Integer(32),
+                Value::Integer(63),
+                Value::Integer(32),
+                Value::Integer(63),
+                Value::Integer(63),
+                Value::Integer(63),
+                Value::Integer(63),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn framep_accepts_selected_frame_stub() {
+    assert_eq!(eval_str("(framep (selected-frame))"), Value::T);
+    assert_eq!(eval_str("(framep nil)"), Value::Nil);
+}
+
+#[test]
 fn decode_coding_region_rewrites_dos_eol_in_place() {
     assert_eq!(
         eval_str(

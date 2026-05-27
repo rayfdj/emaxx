@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 536/7080 are verified locally.
+- Tests through 542/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 536/7080: load ert-x for mock drag files`.
+  `Compat 542/7080: preserve DND URL identity`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -133,6 +133,12 @@ counts as the progress denominator.
 - Selector 536, `dnd-tests-begin-drag-files`, passed after loading real
   `ert-x`, supporting mock TRAMP local copies, fixing plain-vector/string
   predicates, and filling DND selection metadata helpers. Selector 537 is next.
+- Selectors 537..542 in `test/lisp/dnd-tests.el` passed after preserving
+  `dolist` binding identity for string list elements, keeping the `dolist`
+  binding frame stable across nested empty lexical frames, adding `framep`,
+  adding the `ascii` coding alias, and making `encode-coding-string` return
+  unibyte encoded data with GNU-compatible `ascii`/`iso-8859-1` substitution.
+  Selector 543, `dom-test-search`, is next.
 
 ## Workflow
 
