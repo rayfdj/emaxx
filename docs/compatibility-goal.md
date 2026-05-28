@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 675/7080 are verified locally.
+- Tests through 735/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 675/7080: support mark-sexp autowrapping`.
+  `Compat 735/7080: support reversed region autowrapping`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -161,8 +161,12 @@ counts as the progress denominator.
 - Selectors 632..675 in `test/lisp/electric-tests.el` passed after adding
   `mark-sexp` and making generic sexp scanning stop at string quote
   boundaries, which lets electric-pair autowrap active regions inside strings
-  and comments. Selector 676, `electric-pair-autowrapping-2-at-point-1-in-c-mode`,
-  is next.
+  and comments.
+- Selectors 676..735 in `test/lisp/electric-tests.el` passed after making
+  hook-aware deletion accept reversed bounds and making backward generic sexp
+  scanning respect word/symbol syntax boundaries, which covers electric-pair
+  autowrapping from closing delimiters and from the end of regions. Selector
+  736, `electric-pair-autowrapping-7-at-point-1-in-tex-mode`, is next.
 
 ## Workflow
 
