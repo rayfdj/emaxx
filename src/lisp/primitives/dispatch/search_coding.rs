@@ -215,6 +215,7 @@ pub(super) fn call(
             let replacement =
                 regexp::expand_replace_match(interp, &replacement, &match_data, literal)?;
             let replacement_len = replacement.chars().count();
+            let saved_markers = interp.live_marker_positions_for_buffer(interp.current_buffer_id());
             let overlay_calls =
                 overlay_change_hook_calls(&interp.buffer, start, end, start + replacement_len);
             run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
@@ -229,6 +230,29 @@ pub(super) fn call(
                 .map_err(|e| LispError::Signal(e.to_string()))?;
             interp.buffer.goto_char(start);
             interp.insert_current_buffer(&replacement);
+            let removed_len = end.saturating_sub(start);
+            for (marker_id, original) in saved_markers {
+                let Some(original_pos) = original else {
+                    continue;
+                };
+                let insertion_type = interp.marker_insertion_type(marker_id).unwrap_or(false);
+                let new_pos = if original_pos < start {
+                    original_pos
+                } else if original_pos == start {
+                    start
+                } else if original_pos < end {
+                    if insertion_type {
+                        start + replacement_len
+                    } else {
+                        start
+                    }
+                } else {
+                    ((original_pos as isize) + replacement_len as isize - removed_len as isize)
+                        .max(start as isize) as usize
+                };
+                let _ =
+                    interp.set_marker(marker_id, Some(new_pos), Some(interp.current_buffer_id()));
+            }
             run_change_hooks(
                 interp,
                 "after-change-functions",
