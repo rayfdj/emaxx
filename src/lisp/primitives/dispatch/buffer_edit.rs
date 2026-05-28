@@ -12,6 +12,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "insert-char"
             | "insert-byte"
             | "self-insert-command"
+            | "tex-insert-quote"
             | "skeleton-insert"
             | "insert-buffer-substring"
             | "comment-region"
@@ -105,6 +106,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "kill-whole-line"
             | "delete-horizontal-space"
             | "delete-char"
+            | "backward-delete-char-untabify"
             | "delete-forward-char"
             | "kill-word"
             | "erase-buffer"
@@ -203,6 +205,41 @@ pub(super) fn call(
                 env,
                 Some(interp.current_buffer_id()),
             )?;
+            Ok(Value::Nil)
+        }
+        "tex-insert-quote" => {
+            need_arg_range(name, args, 0, 1)?;
+            let open = interp
+                .lookup_var("tex-open-quote", env)
+                .map(|value| string_text(&value))
+                .transpose()?
+                .unwrap_or_else(|| "``".into());
+            let close = interp
+                .lookup_var("tex-close-quote", env)
+                .map(|value| string_text(&value))
+                .transpose()?
+                .unwrap_or_else(|| "''".into());
+            if interp
+                .lookup_var("electric-pair-mode", env)
+                .is_some_and(|value| value.is_truthy())
+                && interp.buffer.mark_active()
+                && let Some(mark) = interp.buffer.mark()
+            {
+                let point = interp.buffer.point();
+                if point >= mark {
+                    interp.buffer.goto_char(mark);
+                    insert_text_with_hooks(interp, &open, &[], false, false, env)?;
+                    interp.buffer.goto_char(point + open.chars().count());
+                    insert_text_with_hooks(interp, &close, &[], false, false, env)?;
+                } else {
+                    interp.buffer.goto_char(mark);
+                    insert_text_with_hooks(interp, &close, &[], false, false, env)?;
+                    interp.buffer.goto_char(point);
+                    insert_text_with_hooks(interp, &open, &[], false, false, env)?;
+                }
+            } else {
+                insert_text_with_hooks(interp, &open, &[], false, false, env)?;
+            }
             Ok(Value::Nil)
         }
         "newline" => {
@@ -1354,6 +1391,16 @@ pub(super) fn call(
                     Ok(Value::Nil)
                 }
             }
+        }
+        "backward-delete-char-untabify" => {
+            need_arg_range(name, args, 0, 2)?;
+            let count = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            super::call(interp, "delete-char", &[Value::Integer(-count)], env)
         }
         "delete-forward-char" => {
             if interp.buffer.mark_active()

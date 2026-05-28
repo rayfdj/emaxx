@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 735/7080 are verified locally.
+- Tests through 762/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 735/7080: support reversed region autowrapping`.
+  `Compat 762/7080: support TeX quote wrapping and pair backspace`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -165,8 +165,12 @@ counts as the progress denominator.
 - Selectors 676..735 in `test/lisp/electric-tests.el` passed after making
   hook-aware deletion accept reversed bounds and making backward generic sexp
   scanning respect word/symbol syntax boundaries, which covers electric-pair
-  autowrapping from closing delimiters and from the end of regions. Selector
-  736, `electric-pair-autowrapping-7-at-point-1-in-tex-mode`, is next.
+  autowrapping from closing delimiters and from the end of regions.
+- Selectors 736..762 in `test/lisp/electric-tests.el` passed after adding
+  minimal `tex-mode` quote insertion for active-region wrapping, a
+  `backward-delete-char-untabify` deletion alias for electric-pair backspacing,
+  and the balanced-autoskipping cases. Selector 763,
+  `electric-pair-balanced-situation-at-point-1-in-ruby-mode`, is next.
 
 ## Workflow
 

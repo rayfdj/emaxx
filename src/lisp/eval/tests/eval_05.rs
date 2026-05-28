@@ -265,6 +265,16 @@ fn ruby_and_js_modes_are_callable_prog_modes() {
 }
 
 #[test]
+fn tex_mode_is_callable_and_available_as_mode_symbol() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (funcall tex-mode) (equal (list major-mode comment-start) '(tex-mode \"%\")))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
         eval_str(
@@ -445,6 +455,16 @@ fn delete_region_accepts_reversed_bounds() {
     assert_eq!(
         eval_str("(with-temp-buffer (insert \"foo\") (delete-region 2 1) (buffer-string))"),
         Value::String("oo".into())
+    );
+}
+
+#[test]
+fn backward_delete_char_untabify_deletes_before_point() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (insert \"foo\") (goto-char 3) (backward-delete-char-untabify 1) (buffer-string))"
+        ),
+        Value::String("fo".into())
     );
 }
 

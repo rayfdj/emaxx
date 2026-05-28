@@ -13,6 +13,7 @@ pub(super) fn is_major_mode_builtin(name: &str) -> bool {
             | "makefile-bsdmake-mode"
             | "ruby-mode"
             | "srecode-template-mode"
+            | "tex-mode"
             | "texinfo-mode"
             | "wisent-grammar-mode"
             | "css-base-mode"
@@ -66,6 +67,14 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
             activate_hash_comment_mode(interp, "makefile-bsdmake-mode", "BSDmakefile")
         }
         "srecode-template-mode" => activate_semicolon_comment_mode(interp, name, "SRecode"),
+        "tex-mode" => {
+            derived_mode_set_parent(interp, "tex-mode", Some("text-mode"));
+            let buffer_id = interp.current_buffer_id();
+            activate_major_mode(interp, "tex-mode", "TeX");
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("%".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            Ok(Value::Nil)
+        }
         "texinfo-mode" => {
             derived_mode_set_parent(interp, "texinfo-mode", Some("text-mode"));
             let buffer_id = interp.current_buffer_id();
