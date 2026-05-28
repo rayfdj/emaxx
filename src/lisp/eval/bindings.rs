@@ -212,6 +212,7 @@ impl Interpreter {
             "custom-current-group-alist" => Some(Value::Nil),
             "defun-declarations-alist" => Some(Value::Nil),
             "macro-declarations-alist" => Some(Value::Nil),
+            "post-self-insert-hook" => Some(Value::Nil),
             "macroexp--dynvars" => Some(Value::Nil),
             "macroexpand-all-environment" => Some(Value::Nil),
             "image-types" => Some(Value::list([
@@ -374,7 +375,7 @@ impl Interpreter {
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "scroll-up-aggressively" => Some(Value::Nil),
             "vertical-scroll-bar" => Some(Value::Symbol("right".into())),
-            "overwrite-mode" => Some(Value::Symbol("overwrite-mode-binary".into())),
+            "overwrite-mode" => Some(Value::Nil),
             "cursor-in-non-selected-windows" => Some(Value::Nil),
             "load-path" => Some(Value::list(
                 self.load_path

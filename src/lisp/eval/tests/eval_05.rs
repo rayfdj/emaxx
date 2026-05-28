@@ -258,7 +258,7 @@ fn ruby_and_js_modes_are_callable_prog_modes() {
               (list
                (with-temp-buffer (funcall 'ruby-mode) (list major-mode comment-start))
                (with-temp-buffer (funcall 'js-mode) (list major-mode comment-start)))
-              '((ruby-mode \"# \") (js-mode \"/* \")))"
+              '((ruby-mode \"# \") (js-mode \"// \")))"
         ),
         Value::T
     );
@@ -284,6 +284,16 @@ fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
         ),
         Value::T
     );
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+              (emacs-lisp-mode)
+              (insert \"z\")
+              (comment-region (point-min) (point-max))
+              (buffer-string))"
+        ),
+        Value::String(";; z".into())
+    );
 }
 
 #[test]
@@ -295,6 +305,106 @@ fn matching_paren_returns_counterpart_character() {
             Value::Integer('[' as i64),
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn syntax_ppss_reports_negative_depth_for_extra_closing_parens() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (funcall 'c-mode) (insert \" (())) \") (syntax-ppss (point-max)))"
+        ),
+        Value::list([
+            Value::Integer(-1),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Integer(-1),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::list([
+                Value::Nil,
+                Value::Nil,
+                Value::Integer(-1),
+                Value::Integer(-1),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn c_toggle_electric_state_updates_c_electric_flag() {
+    assert_eq!(
+        eval_str(
+            "(progn
+              (setq c-electric-flag t)
+              (c-toggle-electric-state -1)
+              (prog1 c-electric-flag
+                (c-toggle-electric-state 1)))"
+        ),
+        Value::Nil
+    );
+    assert_eq!(
+        eval_str("(progn (setq c-electric-flag nil) (c-toggle-electric-state 1) c-electric-flag)"),
+        Value::T
+    );
+}
+
+#[test]
+fn self_insert_command_uses_last_command_event_and_runs_hook() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+              (setq-local post-self-insert-hook
+                          (list (lambda () (insert \"!\"))))
+              (let ((last-command-event ?x))
+                (call-interactively 'self-insert-command))
+              (buffer-string))"
+        ),
+        Value::String("x!".into())
+    );
+}
+
+#[test]
+fn define_minor_mode_variable_option_toggles_backing_variable() {
+    assert_eq!(
+        eval_str(
+            "(progn
+              (define-minor-mode sample-global-mode \"doc\" :global t)
+              (define-minor-mode sample-local-mode \"doc\"
+                :variable (sample-global-mode . (lambda (value) (setq-local sample-global-mode value)))
+                (when sample-global-mode
+                  (setq sample-local-body-ran t)))
+              (sample-local-mode 1)
+              (list sample-global-mode (default-value 'sample-global-mode) sample-local-body-ran))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn define_global_minor_mode_init_value_runs_body() {
+    assert_eq!(
+        eval_str(
+            "(progn
+              (define-minor-mode electric-indent-mode \"doc\"
+                :global t
+                :init-value t
+                (setq sample-init-mode-body-ran t))
+              (list electric-indent-mode sample-init-mode-body-ran))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
+fn atomic_change_group_evaluates_body() {
+    assert_eq!(
+        eval_str("(let ((x 1)) (atomic-change-group (setq x 2) (+ x 3)))"),
+        Value::Integer(5)
     );
 }
 

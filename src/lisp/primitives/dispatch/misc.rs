@@ -1038,6 +1038,9 @@ pub(super) fn call(
                     hooks.insert(0, function);
                 }
             }
+            if hook_name == "post-self-insert-hook" {
+                hooks.sort_by_key(post_self_insert_hook_depth);
+            }
             if local {
                 interp.set_buffer_local_hook(interp.current_buffer_id(), &hook_name, hooks);
             } else {
@@ -1162,5 +1165,19 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn post_self_insert_hook_depth(hook: &Value) -> i32 {
+    match hook {
+        Value::Symbol(name) if name == "electric-layout-post-self-insert-function" => 40,
+        Value::Symbol(name)
+            if name == "electric-pair-post-self-insert-function"
+                || name == "electric-pair-open-newline-between-pairs-psif" =>
+        {
+            50
+        }
+        Value::Symbol(name) if name == "electric-indent-post-self-insert-function" => 60,
+        _ => 50,
     }
 }

@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 569/7080 are verified locally.
+- Tests through 570/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 569/7080: cover DOM traversal and edmacro`.
+  `Compat 570/7080: support electric layout insertion`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -142,8 +142,12 @@ counts as the progress denominator.
   `cl-loop` append/collect forms used by DOM traversal, `setf` places rooted at
   `nthcdr`, HTML entity escaping, and destructive `delq` list edits.
 - Selector 569 in `test/lisp/edmacro-tests.el` passed with the existing
-  `edmacro-parse-keys` support. Selector 570,
-  `electric-layout-control-reindentation`, is next.
+  `edmacro-parse-keys` support.
+- Selector 570, `electric-layout-control-reindentation`, passed after enabling
+  electric local mode backing variables, self insertion hooks, recursive
+  newline hooks, electric hook ordering, and the C-style indentation needed by
+  electric layout. Selector 571, `electric-layout-int-main-kernel-style`, is
+  next.
 
 ## Workflow
 
