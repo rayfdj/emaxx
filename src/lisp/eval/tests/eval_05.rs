@@ -441,6 +441,14 @@ fn mark_sexp_stops_before_closing_string_quote() {
 }
 
 #[test]
+fn delete_region_accepts_reversed_bounds() {
+    assert_eq!(
+        eval_str("(with-temp-buffer (insert \"foo\") (delete-region 2 1) (buffer-string))"),
+        Value::String("oo".into())
+    );
+}
+
+#[test]
 fn define_minor_mode_variable_option_toggles_backing_variable() {
     assert_eq!(
         eval_str(

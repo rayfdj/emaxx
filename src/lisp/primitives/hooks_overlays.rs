@@ -380,6 +380,7 @@ pub(crate) fn delete_region_with_hooks(
     to: usize,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
+    let (from, to) = if from <= to { (from, to) } else { (to, from) };
     if from >= to {
         return Ok(String::new());
     }
@@ -447,6 +448,7 @@ pub(crate) fn ensure_region_modifiable(
     to: usize,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
+    let (from, to) = if from <= to { (from, to) } else { (to, from) };
     let from = from.max(interp.buffer.point_min());
     let to = to.min(interp.buffer.point_max());
     if from >= to {

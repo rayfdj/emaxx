@@ -726,7 +726,7 @@ pub(super) fn scan_sexps_position(interp: &Interpreter, from: usize, count: i64)
         }
     } else {
         for _ in 0..(-count) {
-            pos = scan_one_sexp_backward(&chars, pos, min)?;
+            pos = scan_one_sexp_backward(interp, &chars, pos, min)?;
         }
     }
     Some(pos)
@@ -817,7 +817,12 @@ fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<u
     None
 }
 
-fn scan_one_sexp_backward(chars: &[char], from: usize, min: usize) -> Option<usize> {
+fn scan_one_sexp_backward(
+    interp: &Interpreter,
+    chars: &[char],
+    from: usize,
+    min: usize,
+) -> Option<usize> {
     let mut idx = from.saturating_sub(2);
     let min_idx = min.saturating_sub(1);
     while idx >= min_idx && chars.get(idx).is_some_and(|ch| ch.is_whitespace()) {
@@ -826,15 +831,19 @@ fn scan_one_sexp_backward(chars: &[char], from: usize, min: usize) -> Option<usi
         }
         idx -= 1;
     }
-    match *chars.get(idx)? {
-        ')' | ']' | '}' => scan_balanced_backward(chars, idx, min_idx).map(|idx| idx + 1),
-        '"' => scan_string_backward(chars, idx, min_idx).map(|idx| idx + 1),
-        '(' | '[' | '{' => None,
+    let table_id = interp.current_syntax_table_id();
+    let entry = syntax_entry_at_buffer_position(interp, table_id, *chars.get(idx)?, idx + 1);
+    match entry.class {
+        SyntaxClass::CloseParen => scan_balanced_backward(chars, idx, min_idx).map(|idx| idx + 1),
+        SyntaxClass::StringQuote => scan_string_backward(chars, idx, min_idx).map(|idx| idx + 1),
+        SyntaxClass::OpenParen => None,
         _ => {
             while idx > min_idx
-                && chars.get(idx - 1).is_some_and(|ch| {
-                    !ch.is_whitespace() && !matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '"')
-                })
+                && chars.get(idx - 1).is_some_and(|ch| !ch.is_whitespace())
+                && matches!(
+                    syntax_entry_at_buffer_position(interp, table_id, chars[idx - 1], idx).class,
+                    SyntaxClass::Word | SyntaxClass::Symbol
+                )
             {
                 idx -= 1;
             }
