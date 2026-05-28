@@ -581,7 +581,12 @@ fn encode_parse_state(state: &ParseState) -> Value {
                     .map(|string| Value::Integer(string.start_pos as i64))
             })
             .unwrap_or(Value::Nil),
-        Value::Nil,
+        Value::list(
+            state
+                .stack
+                .iter()
+                .map(|entry| Value::Integer(entry.open_pos as i64)),
+        ),
         Value::list(hidden),
     ])
 }
@@ -730,6 +735,89 @@ pub(super) fn scan_sexps_position(interp: &Interpreter, from: usize, count: i64)
         }
     }
     Some(pos)
+}
+
+pub(super) fn scan_sexps_position_for_scan_sexps(
+    interp: &Interpreter,
+    from: usize,
+    count: i64,
+) -> Result<Option<usize>, LispError> {
+    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
+    let min = interp.buffer.point_min();
+    let max = interp.buffer.point_max();
+    let mut pos = from.clamp(min, max);
+    if count >= 0 {
+        for _ in 0..count {
+            match scan_one_sexp_forward_for_scan_sexps(interp, &chars, pos, max)? {
+                Some(next) => pos = next,
+                None => return Ok(None),
+            }
+        }
+    } else {
+        for _ in 0..(-count) {
+            match scan_one_sexp_backward_for_scan_sexps(interp, &chars, pos, min)? {
+                Some(next) => pos = next,
+                None => return Ok(None),
+            }
+        }
+    }
+    Ok(Some(pos))
+}
+
+fn scan_sexps_premature_error(position: usize) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("scan-error".into()),
+        Value::String("Containing expression ends prematurely".into()),
+        Value::Nil,
+        Value::Integer(position as i64),
+    ]))
+}
+
+fn scan_one_sexp_forward_for_scan_sexps(
+    interp: &Interpreter,
+    chars: &[char],
+    from: usize,
+    max: usize,
+) -> Result<Option<usize>, LispError> {
+    let mut idx = from.saturating_sub(1);
+    let end = max.saturating_sub(1).min(chars.len());
+    while idx < end && chars[idx].is_whitespace() {
+        idx += 1;
+    }
+    if idx >= end {
+        return Ok(None);
+    }
+    let table_id = interp.current_syntax_table_id();
+    let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+    match entry.class {
+        SyntaxClass::CloseParen => Err(scan_sexps_premature_error(idx + 2)),
+        _ => Ok(scan_one_sexp_forward(interp, chars, from, max)),
+    }
+}
+
+fn scan_one_sexp_backward_for_scan_sexps(
+    interp: &Interpreter,
+    chars: &[char],
+    from: usize,
+    min: usize,
+) -> Result<Option<usize>, LispError> {
+    let mut idx = from.saturating_sub(2);
+    let min_idx = min.saturating_sub(1);
+    while idx >= min_idx && chars.get(idx).is_some_and(|ch| ch.is_whitespace()) {
+        if idx == 0 {
+            return Ok(None);
+        }
+        idx -= 1;
+    }
+    let table_id = interp.current_syntax_table_id();
+    let Some(&ch) = chars.get(idx) else {
+        return Ok(None);
+    };
+    let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+    match entry.class {
+        SyntaxClass::OpenParen => Err(scan_sexps_premature_error(idx + 1)),
+        _ => Ok(scan_one_sexp_backward(interp, chars, from, min)),
+    }
 }
 
 fn scan_one_sexp_forward(

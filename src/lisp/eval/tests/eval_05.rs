@@ -431,6 +431,31 @@ fn syntax_ppss_reports_hash_comment_start() {
 }
 
 #[test]
+fn syntax_ppss_reports_open_paren_stack() {
+    assert_eq!(
+        eval_str("(with-temp-buffer (insert \"(a (b))\") (nth 9 (syntax-ppss 6)))"),
+        Value::list([Value::Integer(1), Value::Integer(4)])
+    );
+}
+
+#[test]
+fn scan_sexps_signals_premature_close_with_position() {
+    assert_eq!(
+        eval_str(
+            "(condition-case err
+                 (with-temp-buffer
+                   (c-mode)
+                   (insert \"( ()]  \")
+                   (scan-sexps 2 (point-max)))
+               (scan-error
+                (list (if (string-match \"ends prematurely\" (nth 1 err)) t nil)
+                      (nth 3 err))))"
+        ),
+        Value::list([Value::T, Value::Integer(6)])
+    );
+}
+
+#[test]
 fn mark_sexp_activates_region_without_moving_point() {
     assert_eq!(
         eval_str(
