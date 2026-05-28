@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 818/7080 are verified locally.
+- Tests through 831/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 818/7080: preserve point across quote replacement`.
+  `Compat 831/7080: use syntax-aware quote contexts`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -180,8 +180,11 @@ counts as the progress denominator.
 - Selectors 796..818 in `test/lisp/electric-tests.el` passed after making
   `replace-match` preserve live marker positions across whole-region
   replacements, which lets `save-excursion` restore point after electric quote
-  replacement. Selector 819,
-  `electric-pair-electric-quote-replace-double-escaped-close-at-point-12-in-c-mode-in-strings`,
+  replacement.
+- Selectors 819..831 in `test/lisp/electric-tests.el` passed after making
+  C-family and Emacs Lisp modes expose syntax-aware comment/string contexts for
+  electric quote replacement. Selector 832,
+  `electric-pair-find-matching-different-paren-type-at-point-2-in-c-mode`,
   is next.
 
 ## Workflow

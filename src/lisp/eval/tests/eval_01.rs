@@ -1218,7 +1218,7 @@ fn c_mode_sets_c_comment_defaults() {
                    '(c-mode "C" "/* " " */"
                      "\\(?://+\\|/\\*+\\)\\s *"
                      "[ \t]*\\*+/"
-                     nil indent t)))
+                     t indent t)))
                 "#
         ),
         Value::T
@@ -1232,9 +1232,12 @@ fn emacs_lisp_mode_sets_minimal_font_lock_defaults() {
             r#"
                 (with-temp-buffer
                   (emacs-lisp-mode)
+                  (insert ";x\n")
                   (equal
-                   (list major-mode mode-name comment-start comment-end font-lock-defaults)
-                   '(emacs-lisp-mode "Emacs-Lisp" ";" "" t)))
+                   (list major-mode mode-name comment-start comment-end
+                         comment-use-syntax font-lock-defaults
+                         (nth 4 (syntax-ppss 3)))
+                   '(emacs-lisp-mode "Emacs-Lisp" ";" "" t t t)))
                 "#
         ),
         Value::T

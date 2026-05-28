@@ -322,7 +322,7 @@ fn activate_c_family_mode_with_semantic(
         "comment-end-skip",
         Value::String("[ \t]*\\*+/".into()),
     );
-    interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::Nil);
+    interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::T);
     interp.set_buffer_local_value(buffer_id, "comment-style", Value::Symbol("indent".into()));
     interp.set_buffer_local_value(buffer_id, "comment-multi-line", Value::T);
     interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::T);
