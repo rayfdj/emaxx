@@ -393,6 +393,14 @@ fn c_brace_newlines_reports_c_style_layout() {
 }
 
 #[test]
+fn syntax_ppss_flush_cache_is_callable() {
+    assert_eq!(
+        eval_str("(list (fboundp 'syntax-ppss-flush-cache) (syntax-ppss-flush-cache (point-min)))"),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn define_minor_mode_variable_option_toggles_backing_variable() {
     assert_eq!(
         eval_str(
