@@ -473,6 +473,16 @@ fn replace_match_preserves_save_excursion_point_after_region_replacement() {
 }
 
 #[test]
+fn char_before_and_after_nil_default_to_point() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (insert \"ab\") (goto-char 2) (list (char-before nil) (char-after nil)))"
+        ),
+        Value::list([Value::Integer('a' as i64), Value::Integer('b' as i64)])
+    );
+}
+
+#[test]
 fn mark_sexp_activates_region_without_moving_point() {
     assert_eq!(
         eval_str(
