@@ -509,6 +509,22 @@ fn atomic_change_group_evaluates_body() {
 }
 
 #[test]
+fn atomic_change_group_rolls_back_on_throw() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"foo\")
+               (catch 'done
+                 (atomic-change-group
+                   (delete-region 1 2)
+                   (throw 'done (buffer-string))))
+               (buffer-string))"
+        ),
+        Value::String("foo".into())
+    );
+}
+
+#[test]
 fn push_supports_nthcdr_setf_places() {
     assert_eq!(
         eval_str("(let ((items (list 'head 'body))) (push 'neck (nthcdr 1 items)) items)"),

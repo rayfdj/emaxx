@@ -18,6 +18,7 @@ pub struct FileModTime {
 /// Positions are 1-based to match Emacs semantics: position 1 is
 /// before the first character, position (len+1) is after the last.
 /// Internally we convert to 0-based char indices into the rope.
+#[derive(Clone)]
 pub struct Buffer {
     /// Human-visible name (e.g. "*scratch*" or "main.rs").
     pub name: String,

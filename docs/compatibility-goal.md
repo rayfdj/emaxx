@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 762/7080 are verified locally.
+- Tests through 783/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 762/7080: support TeX quote wrapping and pair backspace`.
+  `Compat 783/7080: roll back atomic change groups on throw`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -169,8 +169,12 @@ counts as the progress denominator.
 - Selectors 736..762 in `test/lisp/electric-tests.el` passed after adding
   minimal `tex-mode` quote insertion for active-region wrapping, a
   `backward-delete-char-untabify` deletion alias for electric-pair backspacing,
-  and the balanced-autoskipping cases. Selector 763,
-  `electric-pair-balanced-situation-at-point-1-in-ruby-mode`, is next.
+  and the balanced-autoskipping cases.
+- Selectors 763..783 in `test/lisp/electric-tests.el` passed after making
+  `atomic-change-group` roll back current-buffer edits on nonlocal exits, which
+  electric-pair uses while probing whether auto-pairing preserves balance.
+  Selector 784, `electric-pair-dont-autopair-to-resolve-mixed-unbalance-at-point-2-in-c-mode`,
+  is next.
 
 ## Workflow
 
