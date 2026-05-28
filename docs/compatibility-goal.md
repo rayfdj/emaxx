@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 795/7080 are verified locally.
+- Tests through 818/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 795/7080: report scan state for mixed delimiters`.
+  `Compat 818/7080: preserve point across quote replacement`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -176,9 +176,13 @@ counts as the progress denominator.
 - Selectors 784..795 in `test/lisp/electric-tests.el` passed after making
   `scan-sexps` report premature-close scan errors and exposing the open-paren
   stack in `syntax-ppss`, which lets electric-pair identify mixed-delimiter
-  unbalance without auto-pairing to hide it. Selector 796,
-  `electric-pair-electric-quote-closing-double-at-point-2-in-text-mode`, is
-  next.
+  unbalance without auto-pairing to hide it.
+- Selectors 796..818 in `test/lisp/electric-tests.el` passed after making
+  `replace-match` preserve live marker positions across whole-region
+  replacements, which lets `save-excursion` restore point after electric quote
+  replacement. Selector 819,
+  `electric-pair-electric-quote-replace-double-escaped-close-at-point-12-in-c-mode-in-strings`,
+  is next.
 
 ## Workflow
 

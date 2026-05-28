@@ -456,6 +456,23 @@ fn scan_sexps_signals_premature_close_with_position() {
 }
 
 #[test]
+fn replace_match_preserves_save_excursion_point_after_region_replacement() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"ab\")
+               (goto-char 3)
+               (search-backward \"ab\")
+               (goto-char 3)
+               (save-excursion
+                 (replace-match \"x\"))
+               (list (buffer-string) (point)))"
+        ),
+        Value::list([Value::String("x".into()), Value::Integer(2)])
+    );
+}
+
+#[test]
 fn mark_sexp_activates_region_without_moving_point() {
     assert_eq!(
         eval_str(
