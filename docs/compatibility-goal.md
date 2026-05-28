@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 580/7080 are verified locally.
+- Tests through 600/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 580/7080: support C electric brace layout`.
+  `Compat 600/7080: expose syntax ppss cache flush`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -150,9 +150,11 @@ counts as the progress denominator.
 - Selectors 571..580 in `test/lisp/electric-tests.el` passed after adding the
   standard RET binding for `newline` and minimal cc-mode brace layout helpers
   (`c-point-syntax`/`c-brace-newlines`) used by electric layout in C-derived
-  modes. Selector 581,
-  `electric-pair-angle-brackets-everywhere-2-at-point-3-in-c-mode-in-strings`,
-  is next.
+  modes.
+- Selectors 581..600 in `test/lisp/electric-tests.el` passed after exposing
+  the standard `syntax-ppss-flush-cache` helper used by `elec-pair.el` while
+  checking string/comment syntax. Selector 601,
+  `electric-pair-angle-brackets-everywhere-at-point-1-in-js-mode`, is next.
 
 ## Workflow
 

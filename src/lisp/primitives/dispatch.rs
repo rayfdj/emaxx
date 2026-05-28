@@ -435,6 +435,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "scan-lists"
             | "scan-sexps"
             | "syntax-ppss"
+            | "syntax-ppss-flush-cache"
             | "parse-partial-sexp"
             | "match-string"
             | "match-string-no-properties"

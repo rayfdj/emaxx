@@ -55,6 +55,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "scan-lists"
             | "scan-sexps"
             | "syntax-ppss"
+            | "syntax-ppss-flush-cache"
             | "parse-partial-sexp"
             | "buffer-string"
             | "minibuffer-contents"
@@ -811,6 +812,10 @@ pub(super) fn call(
             );
             interp.buffer.goto_char(saved);
             state
+        }
+        "syntax-ppss-flush-cache" => {
+            need_arg_range(name, args, 1, usize::MAX)?;
+            Ok(Value::Nil)
         }
         "parse-partial-sexp" => {
             if args.len() < 2 || args.len() > 6 {
