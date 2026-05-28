@@ -53,6 +53,21 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
             let buffer_id = interp.current_buffer_id();
             interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("// ".into()));
             interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            interp.set_buffer_local_value(buffer_id, "c-basic-offset", Value::Integer(4));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "electric-indent-chars",
+                Value::list("{}():;,\n".chars().map(|ch| Value::Integer(ch as i64))),
+            );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "electric-layout-rules",
+                Value::list([
+                    Value::cons(Value::Integer(';' as i64), Value::Symbol("after".into())),
+                    Value::cons(Value::Integer('{' as i64), Value::Symbol("after".into())),
+                    Value::cons(Value::Integer('}' as i64), Value::Symbol("before".into())),
+                ]),
+            );
             Ok(result)
         }
         "javascript-mode" => {

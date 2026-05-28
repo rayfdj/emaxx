@@ -1226,6 +1226,37 @@ fn c_mode_sets_c_comment_defaults() {
 }
 
 #[test]
+fn js_mode_sets_electric_layout_defaults() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (js-mode)
+                  (list c-basic-offset
+                        (cdr (assq ?{ electric-layout-rules))
+                        (cdr (assq ?} electric-layout-rules))
+                        (memq ?{ electric-indent-chars)))
+                "#
+        ),
+        Value::list([
+            Value::Integer(4),
+            Value::Symbol("after".into()),
+            Value::Symbol("before".into()),
+            Value::list([
+                Value::Integer('{' as i64),
+                Value::Integer('}' as i64),
+                Value::Integer('(' as i64),
+                Value::Integer(')' as i64),
+                Value::Integer(':' as i64),
+                Value::Integer(';' as i64),
+                Value::Integer(',' as i64),
+                Value::Integer('\n' as i64),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn emacs_lisp_mode_sets_minimal_font_lock_defaults() {
     assert_eq!(
         eval_str(

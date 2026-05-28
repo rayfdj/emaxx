@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 880/7080 are verified locally.
+- Tests through 954/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 880/7080: default nil char positions to point`.
+  `Compat 954/7080: add JS electric layout defaults`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -187,7 +187,10 @@ counts as the progress denominator.
 - Selectors 832..880 in `test/lisp/electric-tests.el` passed after making
   `char-after` and `char-before` treat a nil position like an omitted position,
   which upstream electric-pair uses while inspecting mixed delimiter contexts.
-  Selector 881, `electric-pair-js-mode-braces-with-layout-and-indent-at-point-1-in-js-mode`,
+- Selectors 881..954 in `test/lisp/electric-tests.el` passed after adding the
+  JS mode electric layout rules, electric indent characters, and 4-space
+  indentation used by brace layout. Selector 955,
+  `electric-pair-mixed-paren-3-at-point-2-in-c-mode`,
   is next.
 
 ## Workflow
