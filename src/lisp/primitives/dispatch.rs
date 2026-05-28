@@ -398,6 +398,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "wisent-grammar-mode"
             | "forward-word"
             | "backward-word"
+            | "mark-sexp"
             | "indent-next-tab-stop"
             | "java-mode"
             | "js-mode"

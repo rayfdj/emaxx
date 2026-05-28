@@ -421,6 +421,26 @@ fn syntax_ppss_reports_hash_comment_start() {
 }
 
 #[test]
+fn mark_sexp_activates_region_without_moving_point() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (insert \"foo\") (goto-char 1) (mark-sexp 1) (list (point) (mark) (use-region-p)))"
+        ),
+        Value::list([Value::Integer(1), Value::Integer(4), Value::T])
+    );
+}
+
+#[test]
+fn mark_sexp_stops_before_closing_string_quote() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (c-mode) (insert \"\\\"foo\\\"\") (goto-char 2) (mark-sexp 1) (list (point) (mark)))"
+        ),
+        Value::list([Value::Integer(2), Value::Integer(5)])
+    );
+}
+
+#[test]
 fn define_minor_mode_variable_option_toggles_backing_variable() {
     assert_eq!(
         eval_str(

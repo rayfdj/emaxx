@@ -757,7 +757,7 @@ fn scan_one_sexp_forward(
                 && !chars[idx].is_whitespace()
                 && !matches!(
                     syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1).class,
-                    SyntaxClass::OpenParen | SyntaxClass::CloseParen
+                    SyntaxClass::OpenParen | SyntaxClass::CloseParen | SyntaxClass::StringQuote
                 )
             {
                 idx += 1;
@@ -833,7 +833,7 @@ fn scan_one_sexp_backward(chars: &[char], from: usize, min: usize) -> Option<usi
         _ => {
             while idx > min_idx
                 && chars.get(idx - 1).is_some_and(|ch| {
-                    !ch.is_whitespace() && !matches!(ch, '(' | ')' | '[' | ']' | '{' | '}')
+                    !ch.is_whitespace() && !matches!(ch, '(' | ')' | '[' | ']' | '{' | '}' | '"')
                 })
             {
                 idx -= 1;
