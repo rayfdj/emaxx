@@ -63,7 +63,10 @@ impl Interpreter {
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
                         "not" => return self.sf_not(&items, env),
-                        "progn" | "atomic-change-group" => return self.sf_progn(&items[1..], env),
+                        "progn" => return self.sf_progn(&items[1..], env),
+                        "atomic-change-group" => {
+                            return self.sf_atomic_change_group(&items[1..], env);
+                        }
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),
                         "let" | "dlet" => return self.sf_let(&items, env),

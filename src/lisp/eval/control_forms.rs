@@ -389,6 +389,21 @@ impl Interpreter {
         Ok(result)
     }
 
+    pub(super) fn sf_atomic_change_group(
+        &mut self,
+        body: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let saved_buffer = self.buffer.clone();
+        match self.sf_progn(body, env) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.buffer = saved_buffer;
+                Err(error)
+            }
+        }
+    }
+
     pub(super) fn sf_catch(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs("catch".into(), 0));
