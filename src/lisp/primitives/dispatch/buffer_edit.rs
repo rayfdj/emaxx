@@ -1238,10 +1238,9 @@ pub(super) fn call(
             Ok(if enabled { Value::T } else { Value::Nil })
         }
         "char-after" => {
-            let pos = if args.is_empty() {
-                interp.buffer.point()
-            } else {
-                position_from_value(interp, &args[0])?
+            let pos = match args.first() {
+                None | Some(Value::Nil) => interp.buffer.point(),
+                Some(value) => position_from_value(interp, value)?,
             };
             match interp.buffer.char_at(pos) {
                 Some(c) => Ok(Value::Integer(c as i64)),
@@ -1249,10 +1248,9 @@ pub(super) fn call(
             }
         }
         "char-before" => {
-            let pos = if args.is_empty() {
-                interp.buffer.point()
-            } else {
-                position_from_value(interp, &args[0])?
+            let pos = match args.first() {
+                None | Some(Value::Nil) => interp.buffer.point(),
+                Some(value) => position_from_value(interp, value)?,
             };
             if pos <= interp.buffer.point_min() {
                 Ok(Value::Nil)
