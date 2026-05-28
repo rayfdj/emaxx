@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 631/7080 are verified locally.
+- Tests through 675/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 631/7080: track strings and hash comments in ppss`.
+  `Compat 675/7080: support mark-sexp autowrapping`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -157,8 +157,12 @@ counts as the progress denominator.
 - Selectors 601..631 in `test/lisp/electric-tests.el` passed after making
   `syntax-ppss` report string starts and installing hash-comment syntax tables
   for Python/Ruby-style modes so electric-pair can apply text syntax tables in
-  strings and comments. Selector 632,
-  `electric-pair-angle-brackets-skip-at-point-3-in-c-mode-in-strings`, is next.
+  strings and comments.
+- Selectors 632..675 in `test/lisp/electric-tests.el` passed after adding
+  `mark-sexp` and making generic sexp scanning stop at string quote
+  boundaries, which lets electric-pair autowrap active regions inside strings
+  and comments. Selector 676, `electric-pair-autowrapping-2-at-point-1-in-c-mode`,
+  is next.
 
 ## Workflow
 

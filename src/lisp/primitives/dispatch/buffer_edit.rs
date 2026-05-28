@@ -23,6 +23,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "forward-char"
             | "forward-word"
             | "backward-word"
+            | "mark-sexp"
             | "indent-next-tab-stop"
             | "tab-to-tab-stop"
             | "skip-chars-forward"
@@ -776,6 +777,20 @@ pub(super) fn call(
                 }
                 None => Err(scan_error()),
             }
+        }
+        "mark-sexp" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = args
+                .first()
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            let Some(position) = syntax::scan_sexps_position(interp, interp.buffer.point(), count)
+            else {
+                return Err(scan_error());
+            };
+            interp.buffer.set_mark(position);
+            Ok(Value::Nil)
         }
         "forward-comment" => {
             if args.len() > 1 {
