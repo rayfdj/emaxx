@@ -2925,6 +2925,15 @@ pub(crate) fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<
         }
     }
 
+    if key == "\""
+        && matches!(
+            interp.lookup_var("major-mode", env),
+            Some(Value::Symbol(mode)) if mode == "tex-mode"
+        )
+    {
+        return Ok(Value::Symbol("tex-insert-quote".into()));
+    }
+
     if let Some(global_map) = interp.lookup_var("global-map", env)
         && is_keymap_value(interp, &global_map)
     {
