@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 783/7080 are verified locally.
+- Tests through 795/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 783/7080: roll back atomic change groups on throw`.
+  `Compat 795/7080: report scan state for mixed delimiters`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -173,8 +173,12 @@ counts as the progress denominator.
 - Selectors 763..783 in `test/lisp/electric-tests.el` passed after making
   `atomic-change-group` roll back current-buffer edits on nonlocal exits, which
   electric-pair uses while probing whether auto-pairing preserves balance.
-  Selector 784, `electric-pair-dont-autopair-to-resolve-mixed-unbalance-at-point-2-in-c-mode`,
-  is next.
+- Selectors 784..795 in `test/lisp/electric-tests.el` passed after making
+  `scan-sexps` report premature-close scan errors and exposing the open-paren
+  stack in `syntax-ppss`, which lets electric-pair identify mixed-delimiter
+  unbalance without auto-pairing to hide it. Selector 796,
+  `electric-pair-electric-quote-closing-double-at-point-2-in-text-mode`, is
+  next.
 
 ## Workflow
 

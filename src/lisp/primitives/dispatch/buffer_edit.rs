@@ -840,9 +840,11 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let from = position_from_value(interp, &args[0])?;
             let count = args[1].as_integer()?;
-            Ok(syntax::scan_sexps_position(interp, from, count)
-                .map(|position| Value::Integer(position as i64))
-                .unwrap_or(Value::Nil))
+            Ok(
+                syntax::scan_sexps_position_for_scan_sexps(interp, from, count)?
+                    .map(|position| Value::Integer(position as i64))
+                    .unwrap_or(Value::Nil),
+            )
         }
         "syntax-ppss" => {
             if args.len() > 1 {
