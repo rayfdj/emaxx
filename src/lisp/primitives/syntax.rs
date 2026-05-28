@@ -80,13 +80,15 @@ struct ParseStackEntry {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ParseState {
+    base_depth: i64,
+    min_depth: i64,
     stack: Vec<ParseStackEntry>,
     comment: Option<CommentState>,
 }
 
 impl ParseState {
-    fn depth(&self) -> usize {
-        self.stack.len()
+    fn depth(&self) -> i64 {
+        self.base_depth + self.stack.len() as i64
     }
 }
 
@@ -530,7 +532,7 @@ fn encode_parse_state(state: &ParseState) -> Value {
         None => Value::Nil,
     };
     Value::list([
-        Value::Integer(state.depth() as i64),
+        Value::Integer(state.depth()),
         state
             .stack
             .last()
@@ -540,14 +542,19 @@ fn encode_parse_state(state: &ParseState) -> Value {
         Value::Nil,
         state.comment.map(comment_state_value).unwrap_or(Value::Nil),
         Value::Nil,
-        Value::Integer(0),
+        Value::Integer(state.min_depth),
         Value::Nil,
         state
             .comment
             .map(|comment| Value::Integer(comment.start_pos as i64))
             .unwrap_or(Value::Nil),
         Value::Nil,
-        Value::list([stack_value, comment_value]),
+        Value::list([
+            stack_value,
+            comment_value,
+            Value::Integer(state.base_depth),
+            Value::Integer(state.min_depth),
+        ]),
     ])
 }
 
@@ -564,7 +571,17 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     let Ok(hidden_items) = hidden.to_vec() else {
         return ParseState::default();
     };
-    let mut state = ParseState::default();
+    let mut state = ParseState {
+        base_depth: items
+            .first()
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(0),
+        min_depth: items
+            .get(6)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(0),
+        ..Default::default()
+    };
     if let Some(stack_value) = hidden_items.first()
         && let Ok(entries) = stack_value.to_vec()
     {
@@ -637,6 +654,18 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             }
             _ => None,
         };
+    }
+    if let Some(base_depth) = hidden_items
+        .get(2)
+        .and_then(|value| value.as_integer().ok())
+    {
+        state.base_depth = base_depth;
+    }
+    if let Some(min_depth) = hidden_items
+        .get(3)
+        .and_then(|value| value.as_integer().ok())
+    {
+        state.min_depth = min_depth;
     }
     state
 }
@@ -949,17 +978,23 @@ pub(super) fn parse_forward(
             }
             SyntaxClass::CloseParen => {
                 let Some(open) = state.stack.last() else {
-                    return Err(LispError::Signal("Unbalanced parentheses".into()));
+                    state.base_depth -= 1;
+                    state.min_depth = state.min_depth.min(state.depth());
+                    idx += 1;
+                    continue;
                 };
                 if open.close_char != ch
                     && matching_open_char(ch, entry)
                         .is_some_and(|open_char| open_char != chars[open.open_pos - 1])
                 {
-                    return Err(LispError::Signal("Unbalanced parentheses".into()));
+                    state.base_depth -= 1;
+                    state.min_depth = state.min_depth.min(state.depth());
+                    idx += 1;
+                    continue;
                 }
                 state.stack.pop();
                 idx += 1;
-                if target_depth.is_some_and(|depth| depth == state.depth() as i64) {
+                if target_depth.is_some_and(|depth| depth == state.depth()) {
                     interp.buffer.goto_char(idx + 1);
                     return Ok(encode_parse_state(&state));
                 }
@@ -1163,6 +1198,8 @@ pub(super) fn scan_lists_impl(
             ]))
         })?;
         let mut state = ParseState {
+            base_depth: 0,
+            min_depth: 0,
             stack: vec![ParseStackEntry {
                 open_pos: start_pos,
                 close_char,

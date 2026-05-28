@@ -2867,6 +2867,7 @@ pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> 
         "C-x 4 d" => Some("dired-other-window"),
         "C-x 5 d" => Some("dired-other-frame"),
         "C-x 5 C-o" => Some("display-buffer-other-frame"),
+        key if key.chars().count() == 1 => Some("self-insert-command"),
         _ => None,
     }
 }

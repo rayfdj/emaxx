@@ -47,7 +47,12 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
         }
         "js-mode" => {
             derived_mode_set_parent(interp, "js-mode", Some("prog-mode"));
-            activate_c_family_mode_with_semantic(interp, "js-mode", "Javascript", false)
+            let result =
+                activate_c_family_mode_with_semantic(interp, "js-mode", "Javascript", false)?;
+            let buffer_id = interp.current_buffer_id();
+            interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("// ".into()));
+            interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            Ok(result)
         }
         "javascript-mode" => {
             derived_mode_set_parent(interp, "javascript-mode", Some("prog-mode"));

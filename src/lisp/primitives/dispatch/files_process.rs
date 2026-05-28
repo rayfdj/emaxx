@@ -168,6 +168,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "region-end"
             | "deactivate-mark"
             | "region-active-p"
+            | "use-region-p"
     )
 }
 
@@ -462,6 +463,7 @@ pub(super) fn call(
             );
             interp.set_buffer_local_value(buffer_id, "comment-start", Value::String(";".into()));
             interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            interp.set_buffer_local_value(buffer_id, "comment-add", Value::Integer(1));
             interp.set_buffer_local_value(buffer_id, "font-lock-defaults", Value::T);
             Ok(Value::Nil)
         }
@@ -2190,7 +2192,7 @@ pub(super) fn call(
             interp.set_variable("deactivate-mark", Value::Nil, env);
             Ok(Value::Nil)
         }
-        "region-active-p" => Ok(
+        "region-active-p" | "use-region-p" => Ok(
             if interp.buffer.mark_active()
                 && interp
                     .lookup_var("transient-mark-mode", env)

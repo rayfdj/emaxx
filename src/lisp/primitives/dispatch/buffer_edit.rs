@@ -11,6 +11,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "insert-and-inherit"
             | "insert-char"
             | "insert-byte"
+            | "self-insert-command"
             | "skeleton-insert"
             | "insert-buffer-substring"
             | "comment-region"
@@ -66,6 +67,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "provided-mode-derived-p"
             | "derived-mode-all-parents"
             | "derived-mode-add-parents"
+            | "c-toggle-electric-state"
             | "emaxx-struct-make"
             | "emaxx-struct-p"
             | "emaxx-class-p"
@@ -170,14 +172,54 @@ pub(super) fn call(
         "insert" => insert_impl(interp, args, env, false, false),
         "insert-and-inherit" => insert_impl(interp, args, env, true, false),
         "insert-char" => insert_char_impl(interp, args, env),
-        "newline" => {
+        "self-insert-command" => {
             need_arg_range(name, args, 0, 1)?;
+            let event = interp
+                .lookup_var("last-command-event", env)
+                .unwrap_or(Value::Nil);
+            let ch = match event {
+                Value::Integer(code) => char::from_u32(code as u32),
+                Value::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
+                Value::String(text) if text.chars().count() == 1 => text.chars().next(),
+                _ => None,
+            }
+            .ok_or_else(|| LispError::Signal("No self-insert character".into()))?;
+            let count = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1)
+                .max(0) as usize;
+            let text: String = std::iter::repeat_n(ch, count).collect();
+            insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+            run_named_hooks(
+                interp,
+                "post-self-insert-hook",
+                env,
+                Some(interp.current_buffer_id()),
+            )?;
+            Ok(Value::Nil)
+        }
+        "newline" => {
+            need_arg_range(name, args, 0, 2)?;
             let count = match args.first() {
                 Some(value) if !value.is_nil() => value.as_integer()?.max(0),
                 _ => 1,
             };
             let text = "\n".repeat(count as usize);
             insert_text_with_hooks(interp, &text, &[], true, false, env)?;
+            if count > 0 {
+                env.push(vec![(
+                    "last-command-event".into(),
+                    Value::Integer('\n' as i64),
+                )]);
+                let buffer_id = interp.current_buffer_id();
+                let hook_result =
+                    run_named_hooks(interp, "post-self-insert-hook", env, Some(buffer_id));
+                env.pop();
+                hook_result?;
+            }
             Ok(Value::Nil)
         }
         "insert-byte" => {
@@ -245,6 +287,25 @@ pub(super) fn call(
                 .lookup_var("comment-start", env)
                 .and_then(|value| string_text(&value).ok())
                 .unwrap_or_else(|| "# ".into());
+            let comment_start = if comment_start.chars().count() == 1 {
+                let comment_add = interp
+                    .lookup_var("comment-add", env)
+                    .and_then(|value| value.as_integer().ok())
+                    .unwrap_or(0)
+                    .max(0) as usize;
+                if comment_add > 0 {
+                    format!("{} ", comment_start.repeat(comment_add.saturating_add(1)))
+                } else if interp.lookup_var("major-mode", env).is_some_and(
+                    |value| matches!(value, Value::Symbol(mode) if mode == "emacs-lisp-mode"),
+                ) && comment_start == ";"
+                {
+                    ";; ".into()
+                } else {
+                    comment_start
+                }
+            } else {
+                comment_start
+            };
             let comment_end = interp
                 .lookup_var("comment-end", env)
                 .and_then(|value| string_text(&value).ok())
@@ -907,6 +968,21 @@ pub(super) fn call(
             derived_mode_add_parents(interp, mode, &args[1])?;
             Ok(args[0].clone())
         }
+        "c-toggle-electric-state" => {
+            need_arg_range(name, args, 0, 1)?;
+            let enabled = match args.first() {
+                Some(Value::Nil) | None => !interp
+                    .lookup_var("c-electric-flag", env)
+                    .is_some_and(|value| value.is_truthy()),
+                Some(value) => value.as_integer()? > 0,
+            };
+            interp.set_variable(
+                "c-electric-flag",
+                if enabled { Value::T } else { Value::Nil },
+                env,
+            );
+            Ok(Value::Nil)
+        }
         "emaxx-struct-make" => {
             need_args(name, args, 5)?;
             let struct_name = args[0].as_symbol()?.to_string();
@@ -1356,6 +1432,9 @@ pub(super) fn call(
         }
         "indent-according-to-mode" => {
             need_arg_range(name, args, 0, 1)?;
+            if simple_c_family_indent_line(interp, env)? {
+                return Ok(Value::Nil);
+            }
             Ok(Value::Nil)
         }
         "current-indentation" => {
@@ -2407,4 +2486,64 @@ fn symbol_name_or_string(value: &Value) -> Result<String, LispError> {
     } else {
         string_text(value)
     }
+}
+
+fn simple_c_family_indent_line(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
+    let major_mode = interp.lookup_var("major-mode", env).unwrap_or(Value::Nil);
+    let mode = major_mode.as_symbol().unwrap_or("");
+    if !matches!(
+        mode,
+        "c-mode" | "c++-mode" | "java-mode" | "js-mode" | "javascript-mode" | "plainer-c-mode"
+    ) {
+        return Ok(false);
+    }
+
+    let saved = interp.buffer.point();
+    interp.buffer.beginning_of_line();
+    let line_start = interp.buffer.point();
+    let mut content_start = line_start;
+    while matches!(interp.buffer.char_at(content_start), Some(' ' | '\t')) {
+        content_start += 1;
+    }
+    interp.buffer.goto_char(line_start);
+    let line_end = interp.buffer.end_of_line();
+    interp.buffer.goto_char(saved);
+
+    let prefix = interp
+        .buffer
+        .buffer_substring(interp.buffer.point_min(), line_start)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let line = interp
+        .buffer
+        .buffer_substring(content_start.min(line_end), line_end)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let offset = interp
+        .lookup_var("c-basic-offset", env)
+        .and_then(|value| value.as_integer().ok())
+        .unwrap_or(2)
+        .max(0) as usize;
+    let mut depth = 0usize;
+    for ch in prefix.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let target_depth = if line.trim_start().starts_with('}') {
+        depth.saturating_sub(1)
+    } else {
+        depth
+    };
+    let indent = " ".repeat(target_depth * offset);
+    replace_buffer_region_with_text(interp, line_start, content_start, &indent)?;
+    let restored = if saved <= content_start {
+        line_start + indent.len()
+    } else {
+        saved + indent.len().saturating_sub(content_start - line_start)
+    };
+    interp
+        .buffer
+        .goto_char(restored.clamp(interp.buffer.point_min(), interp.buffer.point_max()));
+    Ok(true)
 }

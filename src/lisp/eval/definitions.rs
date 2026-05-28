@@ -1146,6 +1146,7 @@ impl Interpreter {
             if kind == "define-minor-mode" {
                 let mut init_value = Value::Nil;
                 let mut global = false;
+                let mut variable_name = name.to_string();
                 let mut index = if matches!(
                     items.get(2),
                     Some(Value::String(_) | Value::StringObject(_))
@@ -1165,18 +1166,26 @@ impl Interpreter {
                     match keyword {
                         ":init-value" => init_value = items[index + 1].clone(),
                         ":global" => global = items[index + 1].is_truthy(),
+                        ":variable" => {
+                            if let Some((variable, _setter)) = items[index + 1].cons_values()
+                                && let Ok(variable) = variable.as_symbol()
+                            {
+                                variable_name = variable.to_string();
+                            }
+                        }
                         _ => {}
                     }
                     index += 2;
                 }
 
-                self.mark_special_variable(name);
+                self.mark_special_variable(&variable_name);
+                let init_value_truthy = init_value.is_truthy();
                 if !global {
-                    self.mark_auto_buffer_local(name);
+                    self.mark_auto_buffer_local(&variable_name);
                 }
-                if self.lookup_var(name, &Vec::new()).is_none() {
+                if self.lookup_var(&variable_name, &Vec::new()).is_none() {
                     self.globals
-                        .push((name.to_string(), Self::stored_value(init_value)));
+                        .push((variable_name.clone(), Self::stored_value(init_value)));
                 }
                 if let Some(map) = self.lookup_var(&format!("{name}-map"), &Vec::new()) {
                     let entry = Value::cons(Value::Symbol(name.to_string()), map);
@@ -1203,11 +1212,11 @@ impl Interpreter {
                         Value::Symbol("default-value".into()),
                         Value::list([
                             Value::Symbol("quote".into()),
-                            Value::Symbol(name.to_string()),
+                            Value::Symbol(variable_name.clone()),
                         ]),
                     ])
                 } else {
-                    Value::Symbol(name.to_string())
+                    Value::Symbol(variable_name.clone())
                 };
                 let toggle_form = Value::list([
                     Value::Symbol("if".into()),
@@ -1242,11 +1251,11 @@ impl Interpreter {
 
                 let mut body = vec![Value::list([
                     Value::Symbol(setter_symbol.into()),
-                    Value::Symbol(name.to_string()),
+                    Value::Symbol(variable_name.clone()),
                     toggle_form,
                 ])];
                 body.extend_from_slice(&items[index..]);
-                body.push(Value::Symbol(name.to_string()));
+                body.push(Value::Symbol(variable_name));
 
                 self.set_function_binding(
                     name,
@@ -1256,6 +1265,14 @@ impl Interpreter {
                         shared_env(Vec::new()),
                     )),
                 );
+                if global && init_value_truthy && name == "electric-indent-mode" {
+                    self.call_function_value(
+                        Value::Symbol(name.to_string()),
+                        Some(name),
+                        &[Value::Integer(1)],
+                        &mut Vec::new(),
+                    )?;
+                }
                 return Ok(Value::Symbol(name.to_string()));
             }
 
