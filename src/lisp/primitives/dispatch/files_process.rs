@@ -463,8 +463,20 @@ pub(super) fn call(
             );
             interp.set_buffer_local_value(buffer_id, "comment-start", Value::String(";".into()));
             interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
+            interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::T);
             interp.set_buffer_local_value(buffer_id, "comment-add", Value::Integer(1));
             interp.set_buffer_local_value(buffer_id, "font-lock-defaults", Value::T);
+            let Value::CharTable(syntax_table_id) =
+                interp.make_char_table(Some("syntax-table".into()), Value::Nil)
+            else {
+                unreachable!("make_char_table returns a char-table");
+            };
+            interp
+                .set_char_table_parent(syntax_table_id, Some(interp.standard_syntax_table_id()))?;
+            interp.char_table_set(syntax_table_id, ';' as u32, Value::String("<".into()))?;
+            interp.char_table_set(syntax_table_id, '\n' as u32, Value::String(">".into()))?;
+            interp.char_table_set(syntax_table_id, '\\' as u32, Value::String("\\".into()))?;
+            interp.set_current_syntax_table(syntax_table_id);
             Ok(Value::Nil)
         }
         "special-mode" => {
