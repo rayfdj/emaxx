@@ -73,6 +73,12 @@ struct CommentState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StringState {
+    quote: char,
+    start_pos: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ParseStackEntry {
     open_pos: usize,
     close_char: char,
@@ -84,6 +90,7 @@ struct ParseState {
     min_depth: i64,
     stack: Vec<ParseStackEntry>,
     comment: Option<CommentState>,
+    string: Option<StringState>,
 }
 
 impl ParseState {
@@ -531,6 +538,24 @@ fn encode_parse_state(state: &ParseState) -> Value {
         ]),
         None => Value::Nil,
     };
+    let string_value = state
+        .string
+        .map(|string| {
+            Value::list([
+                Value::Integer(string.quote as i64),
+                Value::Integer(string.start_pos as i64),
+            ])
+        })
+        .unwrap_or(Value::Nil);
+    let mut hidden = vec![
+        stack_value,
+        comment_value,
+        Value::Integer(state.base_depth),
+        Value::Integer(state.min_depth),
+    ];
+    if state.string.is_some() {
+        hidden.push(string_value);
+    }
     Value::list([
         Value::Integer(state.depth()),
         state
@@ -539,7 +564,10 @@ fn encode_parse_state(state: &ParseState) -> Value {
             .map(|entry| Value::Integer(entry.open_pos as i64))
             .unwrap_or(Value::Nil),
         Value::Nil,
-        Value::Nil,
+        state
+            .string
+            .map(|string| Value::Integer(string.quote as i64))
+            .unwrap_or(Value::Nil),
         state.comment.map(comment_state_value).unwrap_or(Value::Nil),
         Value::Nil,
         Value::Integer(state.min_depth),
@@ -547,14 +575,14 @@ fn encode_parse_state(state: &ParseState) -> Value {
         state
             .comment
             .map(|comment| Value::Integer(comment.start_pos as i64))
+            .or_else(|| {
+                state
+                    .string
+                    .map(|string| Value::Integer(string.start_pos as i64))
+            })
             .unwrap_or(Value::Nil),
         Value::Nil,
-        Value::list([
-            stack_value,
-            comment_value,
-            Value::Integer(state.base_depth),
-            Value::Integer(state.min_depth),
-        ]),
+        Value::list(hidden),
     ])
 }
 
@@ -666,6 +694,23 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
         .and_then(|value| value.as_integer().ok())
     {
         state.min_depth = min_depth;
+    }
+    if let Some(string_value) = hidden_items.get(4)
+        && !string_value.is_nil()
+        && let Ok(entries) = string_value.to_vec()
+    {
+        let quote = entries
+            .first()
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| char::from_u32(value as u32));
+        let start_pos = entries
+            .get(1)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(1)
+            .max(1) as usize;
+        if let Some(quote) = quote {
+            state.string = Some(StringState { quote, start_pos });
+        }
     }
     state
 }
@@ -875,6 +920,19 @@ pub(super) fn parse_forward(
     let end = to.saturating_sub(1).min(chars.len());
 
     while idx < end {
+        if let Some(string) = state.string {
+            let ch = chars[idx];
+            let entry = syntax_entry_for_char(interp, table_id, ch);
+            if entry.class == SyntaxClass::StringQuote
+                && ch == string.quote
+                && !is_escaped(&chars, idx)
+            {
+                state.string = None;
+            }
+            idx += 1;
+            continue;
+        }
+
         if let Some(comment) = state.comment {
             match comment.kind {
                 CommentKind::Single { line } => {
@@ -967,6 +1025,13 @@ pub(super) fn parse_forward(
         let ch = chars[idx];
         let entry = syntax_entry_for_char(interp, table_id, ch);
         match entry.class {
+            SyntaxClass::StringQuote => {
+                state.string = Some(StringState {
+                    quote: ch,
+                    start_pos: idx + 1,
+                });
+                idx += 1;
+            }
             SyntaxClass::OpenParen => {
                 let close_char = matching_close_char(ch, entry)
                     .ok_or_else(|| LispError::Signal("Unbalanced parentheses".into()))?;
@@ -1205,6 +1270,7 @@ pub(super) fn scan_lists_impl(
                 close_char,
             }],
             comment: None,
+            string: None,
         };
         let mut cursor = idx + 1;
         while cursor < chars.len() {

@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 600/7080 are verified locally.
+- Tests through 631/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 600/7080: expose syntax ppss cache flush`.
+  `Compat 631/7080: track strings and hash comments in ppss`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -153,8 +153,12 @@ counts as the progress denominator.
   modes.
 - Selectors 581..600 in `test/lisp/electric-tests.el` passed after exposing
   the standard `syntax-ppss-flush-cache` helper used by `elec-pair.el` while
-  checking string/comment syntax. Selector 601,
-  `electric-pair-angle-brackets-everywhere-at-point-1-in-js-mode`, is next.
+  checking string/comment syntax.
+- Selectors 601..631 in `test/lisp/electric-tests.el` passed after making
+  `syntax-ppss` report string starts and installing hash-comment syntax tables
+  for Python/Ruby-style modes so electric-pair can apply text syntax tables in
+  strings and comments. Selector 632,
+  `electric-pair-angle-brackets-skip-at-point-3-in-c-mode-in-strings`, is next.
 
 ## Workflow
 

@@ -401,6 +401,26 @@ fn syntax_ppss_flush_cache_is_callable() {
 }
 
 #[test]
+fn syntax_ppss_reports_string_start() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (c-mode) (insert \"\\\"<>\\\"\") (list (nth 3 (syntax-ppss 3)) (nth 8 (syntax-ppss 3))))"
+        ),
+        Value::list([Value::Integer('"' as i64), Value::Integer(1)])
+    );
+}
+
+#[test]
+fn syntax_ppss_reports_hash_comment_start() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (python-mode) (insert \"# <>\\n\") (list (nth 4 (syntax-ppss 3)) (nth 8 (syntax-ppss 3))))"
+        ),
+        Value::list([Value::T, Value::Integer(1)])
+    );
+}
+
+#[test]
 fn define_minor_mode_variable_option_toggles_backing_variable() {
     assert_eq!(
         eval_str(
