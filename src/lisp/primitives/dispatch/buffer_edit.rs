@@ -68,6 +68,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "derived-mode-all-parents"
             | "derived-mode-add-parents"
             | "c-toggle-electric-state"
+            | "c-point-syntax"
+            | "c-brace-newlines"
             | "emaxx-struct-make"
             | "emaxx-struct-p"
             | "emaxx-class-p"
@@ -982,6 +984,27 @@ pub(super) fn call(
                 env,
             );
             Ok(Value::Nil)
+        }
+        "c-point-syntax" => {
+            need_arg_range(name, args, 0, 1)?;
+            let syntax = match (interp.buffer.char_after(), interp.buffer.char_before()) {
+                (Some('{'), _) | (_, Some('{')) => "brace-list-open",
+                (Some('}'), _) | (_, Some('}')) => "brace-list-close",
+                _ => "statement",
+            };
+            Ok(Value::Symbol(syntax.into()))
+        }
+        "c-brace-newlines" => {
+            need_arg_range(name, args, 1, 1)?;
+            let syntax = symbol_name_or_string(&args[0]).unwrap_or_default();
+            if matches!(syntax.as_str(), "brace-list-open" | "brace-list-close") {
+                Ok(Value::list([
+                    Value::Symbol("before".into()),
+                    Value::Symbol("after".into()),
+                ]))
+            } else {
+                Ok(Value::Nil)
+            }
         }
         "emaxx-struct-make" => {
             need_args(name, args, 5)?;

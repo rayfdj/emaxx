@@ -2858,6 +2858,7 @@ pub(crate) fn collect_where_is_matches(
 pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> {
     match key {
         "C-s" => Some("isearch-forward"),
+        "RET" => Some("newline"),
         "M-a" => Some("backward-sentence"),
         "C-SPC" => Some("set-mark-command"),
         "M-}" => Some("forward-paragraph"),

@@ -390,6 +390,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "css-base-mode"
             | "css-mode"
             | "c-toggle-electric-state"
+            | "c-point-syntax"
+            | "c-brace-newlines"
             | "makefile-bsdmake-mode"
             | "srecode-template-mode"
             | "texinfo-mode"

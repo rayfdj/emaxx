@@ -369,6 +369,30 @@ fn self_insert_command_uses_last_command_event_and_runs_hook() {
 }
 
 #[test]
+fn return_key_defaults_to_newline_command() {
+    assert_eq!(
+        eval_str("(key-binding [?\r])"),
+        Value::Symbol("newline".into())
+    );
+}
+
+#[test]
+fn c_brace_newlines_reports_c_style_layout() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+              (c-mode)
+              (insert \"int main () {\")
+              (c-brace-newlines (c-point-syntax)))"
+        ),
+        Value::list([
+            Value::Symbol("before".into()),
+            Value::Symbol("after".into()),
+        ])
+    );
+}
+
+#[test]
 fn define_minor_mode_variable_option_toggles_backing_variable() {
     assert_eq!(
         eval_str(
