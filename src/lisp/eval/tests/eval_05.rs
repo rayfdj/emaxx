@@ -456,6 +456,44 @@ fn scan_sexps_signals_premature_close_with_position() {
 }
 
 #[test]
+fn scan_sexps_signals_mixed_delimiter_premature_end() {
+    assert_eq!(
+        eval_str(
+            "(condition-case err
+                 (with-temp-buffer
+                   (c-mode)
+                   (insert \"  (])  \")
+                   (scan-sexps 2 (point-max)))
+               (scan-error
+                (list (if (string-match \"ends prematurely\" (nth 1 err)) t nil)
+                      (nth 3 err))))"
+        ),
+        Value::list([Value::T, Value::Integer(6)])
+    );
+}
+
+#[test]
+fn scan_sexps_treats_lisp_prefix_as_part_of_expression() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"`((electric-pair-text-syntax-table \\\\, prog-mode-syntax-table))\")
+               (list (scan-sexps 1 1)
+                     (scan-sexps 2 1)))"
+        ),
+        Value::list([Value::Integer(63), Value::Integer(63)])
+    );
+}
+
+#[test]
+fn syntax_ppss_drops_mismatched_opener_from_stack() {
+    assert_eq!(
+        eval_str("(with-temp-buffer (c-mode) (insert \"  (])  \") (nth 9 (syntax-ppss 5)))"),
+        Value::Nil
+    );
+}
+
+#[test]
 fn replace_match_preserves_save_excursion_point_after_region_replacement() {
     assert_eq!(
         eval_str(
