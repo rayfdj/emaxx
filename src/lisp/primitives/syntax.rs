@@ -765,10 +765,11 @@ pub(super) fn scan_sexps_position_for_scan_sexps(
 }
 
 fn scan_sexps_premature_error(position: usize) -> LispError {
+    let start = position.saturating_sub(1).max(1);
     LispError::SignalValue(Value::list([
         Value::Symbol("scan-error".into()),
         Value::String("Containing expression ends prematurely".into()),
-        Value::Nil,
+        Value::Integer(start as i64),
         Value::Integer(position as i64),
     ]))
 }
@@ -787,12 +788,72 @@ fn scan_one_sexp_forward_for_scan_sexps(
     if idx >= end {
         return Ok(None);
     }
+    if is_lisp_expression_prefix(chars[idx]) {
+        return scan_one_sexp_forward_for_scan_sexps(interp, chars, idx + 2, max);
+    }
     let table_id = interp.current_syntax_table_id();
     let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
     match entry.class {
         SyntaxClass::CloseParen => Err(scan_sexps_premature_error(idx + 2)),
+        SyntaxClass::OpenParen => scan_balanced_forward_for_scan_sexps(interp, chars, idx, end),
         _ => Ok(scan_one_sexp_forward(interp, chars, from, max)),
     }
+}
+
+fn scan_balanced_forward_for_scan_sexps(
+    interp: &Interpreter,
+    chars: &[char],
+    open_idx: usize,
+    end: usize,
+) -> Result<Option<usize>, LispError> {
+    let table_id = interp.current_syntax_table_id();
+    let open_entry =
+        syntax_entry_at_buffer_position(interp, table_id, chars[open_idx], open_idx + 1);
+    let Some(first_close) = matching_close_char(chars[open_idx], open_entry) else {
+        return Ok(None);
+    };
+    let mut stack = vec![first_close];
+    let mut saw_mismatch = false;
+    let mut idx = open_idx + 1;
+    while idx < end {
+        let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+        match entry.class {
+            SyntaxClass::StringQuote => {
+                let Some(next) = scan_string_forward(chars, idx, end) else {
+                    return Ok(None);
+                };
+                idx = next;
+            }
+            SyntaxClass::OpenParen => {
+                if let Some(close) = matching_close_char(chars[idx], entry) {
+                    stack.push(close);
+                }
+            }
+            SyntaxClass::CloseParen => {
+                let Some(expected) = stack.last().copied() else {
+                    return Err(scan_sexps_premature_error(idx + 2));
+                };
+                let Some(actual) = matching_open_char(chars[idx], entry).map(|_| chars[idx]) else {
+                    return Err(scan_sexps_premature_error(idx + 2));
+                };
+                if expected == actual {
+                    stack.pop();
+                    if stack.is_empty() {
+                        return if saw_mismatch {
+                            Err(scan_sexps_premature_error(idx + 2))
+                        } else {
+                            Ok(Some(idx + 2))
+                        };
+                    }
+                } else {
+                    saw_mismatch = true;
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    Ok(None)
 }
 
 fn scan_one_sexp_backward_for_scan_sexps(
@@ -834,6 +895,9 @@ fn scan_one_sexp_forward(
     if idx >= end {
         return None;
     }
+    if is_lisp_expression_prefix(chars[idx]) {
+        return scan_one_sexp_forward(interp, chars, idx + 2, max);
+    }
     let table_id = interp.current_syntax_table_id();
     let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
     match entry.class {
@@ -853,6 +917,10 @@ fn scan_one_sexp_forward(
             Some(idx + 1)
         }
     }
+}
+
+fn is_lisp_expression_prefix(ch: char) -> bool {
+    matches!(ch, '\'' | '`' | ',')
 }
 
 fn scan_balanced_forward(
@@ -1149,7 +1217,7 @@ pub(super) fn parse_forward(
                     && matching_open_char(ch, entry)
                         .is_some_and(|open_char| open_char != chars[open.open_pos - 1])
                 {
-                    state.base_depth -= 1;
+                    state.stack.pop();
                     state.min_depth = state.min_depth.min(state.depth());
                     idx += 1;
                     continue;

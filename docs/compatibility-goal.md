@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 954/7080 are verified locally.
+- Tests through 1100/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 954/7080: add JS electric layout defaults`.
+  `Compat 1100/7080: honor mixed delimiter scan state`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -189,8 +189,13 @@ counts as the progress denominator.
   which upstream electric-pair uses while inspecting mixed delimiter contexts.
 - Selectors 881..954 in `test/lisp/electric-tests.el` passed after adding the
   JS mode electric layout rules, electric indent characters, and 4-space
-  indentation used by brace layout. Selector 955,
-  `electric-pair-mixed-paren-3-at-point-2-in-c-mode`,
+  indentation used by brace layout.
+- Selectors 955..1100 in `test/lisp/electric-tests.el` passed after making
+  `scan-sexps` treat Lisp prefix characters as part of the following
+  expression, report GNU-compatible premature-end positions for mixed
+  delimiters, and drop mismatched openers from the active `syntax-ppss` stack.
+  Selector 1101,
+  `electric-pair-skip-single-quotes-in-ruby-mode-at-point-3-in-ruby-mode`,
   is next.
 
 ## Workflow
