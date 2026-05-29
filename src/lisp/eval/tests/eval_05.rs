@@ -265,6 +265,26 @@ fn ruby_and_js_modes_are_callable_prog_modes() {
 }
 
 #[test]
+fn ruby_mode_marks_single_quotes_as_string_delimiters() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (ruby-mode)
+               (list (char-syntax ?')
+                     (progn
+                       (insert \"'x'\")
+                       (nth 3 (syntax-ppss 3)))
+                     (nth 8 (syntax-ppss 3))))"
+        ),
+        Value::list([
+            Value::Integer('"' as i64),
+            Value::Integer('\'' as i64),
+            Value::Integer(1),
+        ])
+    );
+}
+
+#[test]
 fn tex_mode_is_callable_and_available_as_mode_symbol() {
     assert_eq!(
         eval_str(
@@ -482,6 +502,20 @@ fn scan_sexps_treats_lisp_prefix_as_part_of_expression() {
                      (scan-sexps 2 1)))"
         ),
         Value::list([Value::Integer(63), Value::Integer(63)])
+    );
+}
+
+#[test]
+fn scan_sexps_uses_current_string_quote_delimiter() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (set-syntax-table (make-syntax-table))
+               (modify-syntax-entry 39 \"\\\"\")
+               (insert (string 39 ?x 39 32 ?y))
+               (scan-sexps 1 1))"
+        ),
+        Value::Integer(4)
     );
 }
 
@@ -1111,8 +1145,13 @@ fn dired_create_destination_dirs_controls_copy_and_rename() {
 
 #[test]
 fn dired_do_create_files_recreates_destination_directory() {
-    let result = eval_str_with_upstream_load_path(
-        r#"(progn
+    let dir = std::env::temp_dir().join(format!("emaxx-dired-create-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir_text = dir.to_string_lossy().replace('\\', "\\\\");
+    let expr = format!(
+        r#"(let ((temporary-file-directory (file-name-as-directory "{dir_text}")))
+             (progn
                  (setq noninteractive t)
                  (require 'dired-aux)
                  (let* ((target-dir (make-temp-file "emaxx-dired-target" 'dir))
@@ -1134,9 +1173,11 @@ fn dired_do_create_files_recreates_destination_directory() {
                      (ignore-errors (delete-directory target-dir 'recursive))
                      (ignore-errors (delete-file file1))
                      (ignore-errors (delete-file file2))
-                     (ignore-errors (kill-buffer buf)))))"#,
+                     (ignore-errors (kill-buffer buf))))))"#,
     );
+    let result = eval_str_with_upstream_load_path(&expr);
     assert!(result.is_truthy(), "{result:?}");
+    std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
 }
 
 #[test]

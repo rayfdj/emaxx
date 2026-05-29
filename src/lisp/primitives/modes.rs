@@ -76,7 +76,7 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
         }
         "ruby-mode" => {
             derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
-            activate_hash_comment_mode_with_semantic(interp, "ruby-mode", "Ruby", false)
+            activate_ruby_mode(interp)
         }
         "makefile-bsdmake-mode" => {
             activate_hash_comment_mode(interp, "makefile-bsdmake-mode", "BSDmakefile")
@@ -218,6 +218,41 @@ fn activate_hash_comment_mode_with_semantic(
         activate_semantic_buffer_if_enabled(interp, buffer_id)?;
     } else {
         mark_semantic_buffer_active_if_enabled(interp, buffer_id)?;
+    }
+    Ok(Value::Nil)
+}
+
+fn activate_ruby_mode(interp: &mut Interpreter) -> Result<Value, LispError> {
+    activate_hash_comment_mode_with_semantic(interp, "ruby-mode", "Ruby", false)?;
+    let syntax_table_id = interp.current_syntax_table_id();
+    for quote in ['\'', '"', '`'] {
+        interp.char_table_set(syntax_table_id, quote as u32, Value::String("\"".into()))?;
+    }
+    for symbol_quote in ['$', ':', '@'] {
+        interp.char_table_set(
+            syntax_table_id,
+            symbol_quote as u32,
+            Value::String("'".into()),
+        )?;
+    }
+    for punctuation in ['<', '>', '&', '|', '%', '=', '/', '+', '*', '-', ';'] {
+        interp.char_table_set(
+            syntax_table_id,
+            punctuation as u32,
+            Value::String(".".into()),
+        )?;
+    }
+    for (open, close) in [('(', ')'), ('{', '}'), ('[', ']')] {
+        interp.char_table_set(
+            syntax_table_id,
+            open as u32,
+            Value::String(format!("({close}")),
+        )?;
+        interp.char_table_set(
+            syntax_table_id,
+            close as u32,
+            Value::String(format!("){open}")),
+        )?;
     }
     Ok(Value::Nil)
 }
