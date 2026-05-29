@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1100/7080 are verified locally.
+- Tests through 1133/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1100/7080: honor mixed delimiter scan state`.
+  `Compat 1133/7080: honor Ruby single quote syntax`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -194,8 +194,11 @@ counts as the progress denominator.
   `scan-sexps` treat Lisp prefix characters as part of the following
   expression, report GNU-compatible premature-end positions for mixed
   delimiters, and drop mismatched openers from the active `syntax-ppss` stack.
-  Selector 1101,
-  `electric-pair-skip-single-quotes-in-ruby-mode-at-point-3-in-ruby-mode`,
+- Selectors 1101..1133 in `test/lisp/electric-tests.el` passed after making
+  Ruby mode install its string quote syntax for single quotes, double quotes,
+  and backticks, and after making generic string scanning honor the current
+  delimiter instead of assuming double quotes.
+  Selector 1134, `electric-pair-too-many-closings-at-point-1-in-c-mode`,
   is next.
 
 ## Workflow

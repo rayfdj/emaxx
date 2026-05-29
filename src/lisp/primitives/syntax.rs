@@ -788,11 +788,11 @@ fn scan_one_sexp_forward_for_scan_sexps(
     if idx >= end {
         return Ok(None);
     }
-    if is_lisp_expression_prefix(chars[idx]) {
-        return scan_one_sexp_forward_for_scan_sexps(interp, chars, idx + 2, max);
-    }
     let table_id = interp.current_syntax_table_id();
     let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+    if entry.class != SyntaxClass::StringQuote && is_lisp_expression_prefix(chars[idx]) {
+        return scan_one_sexp_forward_for_scan_sexps(interp, chars, idx + 2, max);
+    }
     match entry.class {
         SyntaxClass::CloseParen => Err(scan_sexps_premature_error(idx + 2)),
         SyntaxClass::OpenParen => scan_balanced_forward_for_scan_sexps(interp, chars, idx, end),
@@ -895,14 +895,14 @@ fn scan_one_sexp_forward(
     if idx >= end {
         return None;
     }
-    if is_lisp_expression_prefix(chars[idx]) {
-        return scan_one_sexp_forward(interp, chars, idx + 2, max);
-    }
     let table_id = interp.current_syntax_table_id();
     let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
+    if entry.class != SyntaxClass::StringQuote && is_lisp_expression_prefix(chars[idx]) {
+        return scan_one_sexp_forward(interp, chars, idx + 2, max);
+    }
     match entry.class {
         SyntaxClass::OpenParen => scan_balanced_forward(interp, chars, idx, end).map(|idx| idx + 1),
-        SyntaxClass::StringQuote => scan_string_forward(chars, idx, end).map(|idx| idx + 1),
+        SyntaxClass::StringQuote => scan_string_forward(chars, idx, end).map(|idx| idx + 2),
         SyntaxClass::CloseParen => None,
         _ => {
             while idx < end
@@ -957,6 +957,7 @@ fn scan_balanced_forward(
 }
 
 fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<usize> {
+    let quote = *chars.get(quote_idx)?;
     let mut idx = quote_idx + 1;
     let mut escaped = false;
     while idx < end {
@@ -965,7 +966,7 @@ fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<u
             escaped = false;
         } else if ch == '\\' {
             escaped = true;
-        } else if ch == '"' {
+        } else if ch == quote {
             return Some(idx);
         }
         idx += 1;
@@ -1031,10 +1032,11 @@ fn scan_balanced_backward(chars: &[char], close_idx: usize, min_idx: usize) -> O
 }
 
 fn scan_string_backward(chars: &[char], quote_idx: usize, min_idx: usize) -> Option<usize> {
+    let quote = *chars.get(quote_idx)?;
     let mut idx = quote_idx;
     while idx > min_idx {
         idx -= 1;
-        if chars[idx] == '"' && !is_escaped(chars, idx) {
+        if chars[idx] == quote && !is_escaped(chars, idx) {
             return Some(idx);
         }
     }
