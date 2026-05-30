@@ -1447,6 +1447,14 @@ fn float_constants_are_available_as_builtin_variables() {
 }
 
 #[test]
+fn gc_counter_variables_are_available_for_benchmark() {
+    assert_eq!(
+        eval_str("(list gcs-done gc-elapsed)"),
+        Value::list([Value::Integer(0), Value::Float(0.0)])
+    );
+}
+
+#[test]
 fn case_fold_search_is_special_and_auto_buffer_local() {
     let mut interp = Interpreter::new();
     assert_eq!(

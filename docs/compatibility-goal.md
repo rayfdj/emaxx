@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1469/7080 are verified locally.
+- Tests through 1470/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1469/7080: complete backtrace mode tests`.
+  `Compat 1470/7080: expose benchmark GC counters`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -221,7 +221,10 @@ counts as the progress denominator.
   after making `%s` formatting honor `print-circle`/`print-gensym` for
   non-strings, supporting direct `car`/`cdr` `setf` places, and adding the
   `indent-line-to` buffer primitive used by backtrace pretty-print expansion.
-  Selector 1470, `benchmark-tests`, is next.
+- Selector 1470, `benchmark-tests` in
+  `test/lisp/emacs-lisp/benchmark-tests.el`, passed after exposing the standard
+  `gcs-done` and `gc-elapsed` benchmark variables. Selector 1471,
+  `bindat-test--pack-val`, is next.
 
 ## Workflow
 
