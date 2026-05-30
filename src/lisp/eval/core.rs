@@ -488,7 +488,12 @@ impl Interpreter {
                 let backtrace_function = original_name
                     .map(|name| Value::Symbol(name.to_string()))
                     .unwrap_or_else(|| func.clone());
-                self.push_backtrace_frame(backtrace_function, args.to_vec());
+                self.push_backtrace_frame_with_locals(
+                    backtrace_function,
+                    args.to_vec(),
+                    frame.clone(),
+                    true,
+                );
                 let captured_snapshot = closure_env.borrow().clone();
                 let result = if captured_snapshot.is_empty() {
                     let mut call_env = env.clone();

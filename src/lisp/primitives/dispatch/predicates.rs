@@ -15,6 +15,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "numberp"
             | "number-or-marker-p"
             | "char-or-string-p"
+            | "eventp"
             | "arrayp"
             | "sequencep"
             | "vectorp"
@@ -201,6 +202,10 @@ pub(super) fn call(
                     Value::Nil
                 },
             )
+        }
+        "eventp" => {
+            need_args(name, args, 1)?;
+            Ok(Value::Nil)
         }
         "arrayp" => {
             need_args(name, args, 1)?;

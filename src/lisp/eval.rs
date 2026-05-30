@@ -123,6 +123,7 @@ struct SpecialBindingRestore {
 struct BacktraceFrame {
     function: Value,
     args: Vec<Value>,
+    locals: Vec<(String, Value)>,
     evald: bool,
     debug_on_exit: bool,
 }
