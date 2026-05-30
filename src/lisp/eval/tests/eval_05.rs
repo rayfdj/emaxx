@@ -295,6 +295,22 @@ fn tex_mode_is_callable_and_available_as_mode_symbol() {
 }
 
 #[test]
+fn text_mode_marks_quotes_as_text_punctuation() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (text-mode)
+               (list (char-syntax ?\") (char-syntax ?`) (char-syntax ?')))"
+        ),
+        Value::list([
+            Value::Integer('.' as i64),
+            Value::Integer('.' as i64),
+            Value::Integer('w' as i64),
+        ])
+    );
+}
+
+#[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
         eval_str(
@@ -403,6 +419,24 @@ fn return_key_defaults_to_newline_command() {
     assert_eq!(
         eval_str("(key-binding [?\r])"),
         Value::Symbol("newline".into())
+    );
+}
+
+#[test]
+fn c_toggle_comment_style_switches_between_block_and_line_comments() {
+    assert_eq!(
+        eval_str(
+            "(equal
+              (with-temp-buffer
+               (c-mode)
+               (let ((initial (list comment-start comment-end c-block-comment-flag)))
+                 (c-toggle-comment-style -1)
+                 (let ((line (list comment-start comment-end c-block-comment-flag)))
+                   (c-toggle-comment-style 1)
+                   (list initial line (list comment-start comment-end c-block-comment-flag)))))
+              '((\"/* \" \" */\" t) (\"// \" \"\" nil) (\"/* \" \" */\" t)))"
+        ),
+        Value::T
     );
 }
 

@@ -30,8 +30,7 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
     match name {
         "text-mode" => {
             derived_mode_set_parent(interp, "text-mode", Some("fundamental-mode"));
-            activate_major_mode(interp, "text-mode", "Text");
-            Ok(Value::Nil)
+            activate_text_mode(interp)
         }
         "c-mode" => {
             derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
@@ -181,6 +180,21 @@ fn activate_hash_comment_mode(
     mode_name: &str,
 ) -> Result<Value, LispError> {
     activate_hash_comment_mode_with_semantic(interp, mode, mode_name, true)
+}
+
+fn activate_text_mode(interp: &mut Interpreter) -> Result<Value, LispError> {
+    activate_major_mode(interp, "text-mode", "Text");
+    let Value::CharTable(syntax_table_id) =
+        interp.make_char_table(Some("syntax-table".into()), Value::Nil)
+    else {
+        unreachable!("make_char_table returns a char-table");
+    };
+    interp.set_char_table_parent(syntax_table_id, Some(interp.standard_syntax_table_id()))?;
+    interp.char_table_set(syntax_table_id, '"' as u32, Value::String(".".into()))?;
+    interp.char_table_set(syntax_table_id, '`' as u32, Value::String(".".into()))?;
+    interp.char_table_set(syntax_table_id, '\'' as u32, Value::String("w".into()))?;
+    interp.set_current_syntax_table(syntax_table_id);
+    Ok(Value::Nil)
 }
 
 fn activate_hash_comment_mode_with_semantic(
@@ -360,6 +374,22 @@ fn activate_c_family_mode_with_semantic(
     let buffer_id = interp.current_buffer_id();
     activate_major_mode(interp, mode, mode_name);
     interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::T);
+    interp.set_buffer_local_value(
+        buffer_id,
+        "c-line-comment-starter",
+        Value::String("//".into()),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "c-block-comment-starter",
+        Value::String("/*".into()),
+    );
+    interp.set_buffer_local_value(
+        buffer_id,
+        "c-block-comment-ender",
+        Value::String("*/".into()),
+    );
+    interp.set_buffer_local_value(buffer_id, "c-block-comment-flag", Value::T);
     interp.set_buffer_local_value(buffer_id, "comment-start", Value::String("/* ".into()));
     interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(" */".into()));
     interp.set_buffer_local_value(

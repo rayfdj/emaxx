@@ -391,6 +391,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "css-base-mode"
             | "css-mode"
             | "c-toggle-electric-state"
+            | "c-toggle-comment-style"
             | "c-point-syntax"
             | "c-brace-newlines"
             | "makefile-bsdmake-mode"
