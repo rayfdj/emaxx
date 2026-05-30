@@ -1528,6 +1528,82 @@ fn bindat_formats_vector_ip_addresses() {
 }
 
 #[test]
+fn bindat_packet_spec_packs_to_expected_bytes() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+    )
+    .expect("load bindat tests");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (equal
+                 (append (bindat-pack packet-bindat-spec struct-bindat) nil)
+                 '(192 168 1 100 192 168 1 101 01 28 21 32 2 0 0 0
+                      2 3 5 0 ?A ?B ?C ?D ?E ?F 0 0 1 2 3 4 5 0 0 0
+                      1 4 7 0 ?B ?C ?D ?E ?F ?G 0 0 6 7 8 9 10 11 12 0))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn evaluated_lambdas_bind_uninterned_parameters() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((var (make-symbol "v"))
+                       (fun (eval `(lambda (,var) ,var) t)))
+                  (funcall fun 42))
+                "#
+        ),
+        Value::Integer(42)
+    );
+}
+
+#[test]
+fn nested_evaluated_lambdas_bind_uninterned_parameters() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((var (make-symbol "v"))
+                       (inner `(lambda (,var) ,var))
+                       (outer (eval `(lambda (arg) (funcall ,inner arg)) t)))
+                  (funcall outer 42))
+                "#
+        ),
+        Value::Integer(42)
+    );
+}
+
+#[test]
+fn dotimes_nested_lambdas_bind_uninterned_parameters() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((var (make-symbol "v"))
+                       (inner `(lambda (,var) (setq seen ,var)))
+                       (outer (eval `(lambda (seq)
+                                       (dotimes (i (length seq))
+                                         (funcall ,inner (elt seq i)))
+                                       seen)
+                                    t))
+                       seen)
+                  (funcall outer [42]))
+                "#
+        ),
+        Value::Integer(42)
+    );
+}
+
+#[test]
 fn cl_defmethod_supports_setf_function_names() {
     assert_eq!(
         eval_str(

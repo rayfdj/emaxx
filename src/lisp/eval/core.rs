@@ -64,6 +64,7 @@ impl Interpreter {
                         "or" => return self.sf_or(&items, env),
                         "not" => return self.sf_not(&items, env),
                         "progn" => return self.sf_progn(&items[1..], env),
+                        "delay-mode-hooks" => return self.sf_progn(&items[1..], env),
                         "atomic-change-group" => {
                             return self.sf_atomic_change_group(&items[1..], env);
                         }

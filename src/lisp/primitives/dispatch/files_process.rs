@@ -112,8 +112,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "kqueue-add-watch"
             | "kqueue-rm-watch"
             | "kqueue-valid-p"
+            | "default-file-modes"
             | "file-modes"
             | "file-modes-number-to-symbolic"
+            | "set-default-file-modes"
             | "set-file-modes"
             | "set-file-times"
             | "insert-directory"
@@ -497,6 +499,14 @@ pub(super) fn call(
         "normal-mode" => {
             need_arg_range(name, args, 0, 1)?;
             let _ = call_named_function(interp, "kill-all-local-variables", &[], env)?;
+            let source = interp.buffer.full_buffer_string();
+            if file_local_variable_is_truthy(&source, "no-byte-compile") {
+                interp.set_buffer_local_value(
+                    interp.current_buffer_id(),
+                    "no-byte-compile",
+                    Value::T,
+                );
+            }
             if let Some(path) = current_buffer_file(interp)
                 && let Some(mode) = modes::auto_mode_function_for_file_name(interp, env, path)?
             {
@@ -1567,6 +1577,12 @@ pub(super) fn call(
                 .contains(&descriptor);
             Ok(if active { Value::T } else { Value::Nil })
         }
+        "default-file-modes" => {
+            need_args(name, args, 0)?;
+            Ok(interp
+                .lookup_var("emaxx-default-file-modes", env)
+                .unwrap_or(Value::Integer(0o666)))
+        }
         "file-modes" => {
             need_arg_range(name, args, 1, 2)?;
             let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
@@ -1609,6 +1625,12 @@ pub(super) fn call(
                 }
             };
             Ok(Value::String(file_modes_number_to_symbolic(mode, filetype)))
+        }
+        "set-default-file-modes" => {
+            need_args(name, args, 1)?;
+            let mode = args[0].as_integer()?;
+            interp.set_global_binding("emaxx-default-file-modes", Value::Integer(mode));
+            Ok(Value::Nil)
         }
         "set-file-modes" => {
             need_args(name, args, 2)?;
@@ -2272,6 +2294,44 @@ fn mock_file_local_copy(file: &str) -> Result<String, LispError> {
     let target = make_temp_file_internal(&prefix.display().to_string(), &Value::Nil, "", None)?;
     fs::copy(&remote.localname, &target).map_err(|error| LispError::Signal(error.to_string()))?;
     Ok(target)
+}
+
+fn file_local_variable_is_truthy(source: &str, variable: &str) -> bool {
+    source.lines().take(2).any(|line| {
+        line.split("-*-")
+            .nth(1)
+            .is_some_and(|settings| file_local_settings_contain_truthy(settings, variable))
+    }) || file_local_variables_block_value(source, variable).is_some_and(|value| value == "t")
+}
+
+fn file_local_settings_contain_truthy(settings: &str, variable: &str) -> bool {
+    settings
+        .split(';')
+        .filter_map(|part| part.split_once(':'))
+        .any(|(name, value)| name.trim() == variable && value.trim() == "t")
+}
+
+fn file_local_variables_block_value(source: &str, variable: &str) -> Option<String> {
+    let mut inside_block = false;
+    for line in source.lines().rev() {
+        let trimmed = line.trim_start();
+        let comment_text = trimmed.trim_start_matches(';').trim_start();
+        if comment_text == "End:" {
+            inside_block = true;
+            continue;
+        }
+        if !inside_block {
+            continue;
+        }
+        if comment_text == "Local Variables:" {
+            break;
+        }
+        let (name, value) = comment_text.split_once(':')?;
+        if name.trim() == variable {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
 }
 
 fn nth_list_item(list: &Value, index: usize) -> Option<Value> {

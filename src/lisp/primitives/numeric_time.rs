@@ -197,7 +197,9 @@ pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
         "format" => (Value::Integer(1), Value::Symbol("many".into())),
         "directory-files" => (Value::Integer(1), Value::Integer(5)),
         "directory-files-and-attributes" => (Value::Integer(1), Value::Integer(6)),
+        "default-file-modes" => (Value::Integer(0), Value::Integer(0)),
         "file-modes" => (Value::Integer(1), Value::Integer(2)),
+        "set-default-file-modes" => (Value::Integer(1), Value::Integer(1)),
         "set-file-modes" => (Value::Integer(2), Value::Integer(3)),
         "set-file-times" => (Value::Integer(1), Value::Integer(3)),
         "version-to-list" => (Value::Integer(1), Value::Integer(1)),
@@ -258,6 +260,7 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "or"
             | "not"
             | "progn"
+            | "delay-mode-hooks"
             | "prog1"
             | "let"
             | "dlet"
