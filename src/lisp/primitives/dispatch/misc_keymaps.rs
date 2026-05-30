@@ -51,6 +51,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "widget-put"
             | "widget-apply"
             | "define-button-type"
+            | "push-button"
             | "display-mouse-p"
             | "make-button"
             | "button-at"
@@ -150,6 +151,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "backtrace-debug"
             | "backtrace-eval"
             | "backtrace--locals"
+            | "backtrace-expand-ellipses"
             | "current-thread"
             | "all-threads"
             | "make-thread"
@@ -747,6 +749,37 @@ pub(super) fn call(
                 cursor += 2;
             }
             Ok(Value::Integer(start as i64))
+        }
+        "push-button" => {
+            need_arg_range(name, args, 0, 2)?;
+            let pos = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or_else(|| interp.buffer.point());
+            interp.buffer.goto_char(pos);
+            if point_is_on_plain_backtrace_ellipsis(interp, pos) {
+                reprint_current_backtrace_frame_for_expansion(interp, env, true)?;
+                return Ok(Value::T);
+            }
+            let button = interp.call_function_value(
+                Value::Symbol("button-at".into()),
+                Some("button-at"),
+                &[Value::Integer(pos as i64)],
+                env,
+            )?;
+            if button.is_nil() {
+                return Ok(Value::Nil);
+            }
+            let use_mouse_action = args.get(1).cloned().unwrap_or(Value::Nil);
+            interp.call_function_value(
+                Value::Symbol("button-activate".into()),
+                Some("button-activate"),
+                &[button, use_mouse_action],
+                env,
+            )?;
+            Ok(Value::T)
         }
         "button-at" => {
             need_args(name, args, 1)?;
@@ -1740,29 +1773,27 @@ pub(super) fn call(
         }
         "backtrace--locals" => {
             need_args(name, args, 2)?;
-            let mut locals = Vec::new();
-            for frame in env.iter().rev() {
-                for (name, value) in frame.iter().rev() {
-                    if !locals.iter().any(|entry: &Value| {
-                        entry.to_vec().ok().and_then(|items| items.first().cloned())
-                            == Some(Value::Symbol(name.clone()))
-                    }) {
-                        locals.push(Value::cons(Value::Symbol(name.clone()), value.clone()));
-                    }
-                }
+            let raw_index = args[0].as_integer()?;
+            if raw_index < 0 {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("natnump".into()),
+                    args[0].clone(),
+                ])));
             }
-            for name in interp.special_variable_names() {
-                if locals.iter().any(|entry: &Value| {
-                    entry.to_vec().ok().and_then(|items| items.first().cloned())
-                        == Some(Value::Symbol(name.clone()))
-                }) {
-                    continue;
-                }
-                if let Some(value) = interp.lookup_var(&name, env) {
-                    locals.push(Value::cons(Value::Symbol(name), value));
-                }
-            }
+            let index = raw_index as usize;
+            let locals = interp
+                .backtrace_frame_locals_snapshot(index)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, value)| Value::cons(Value::Symbol(name), value))
+                .collect::<Vec<_>>();
             Ok(Value::list(locals))
+        }
+        "backtrace-expand-ellipses" => {
+            need_arg_range(name, args, 0, 1)?;
+            let no_limit = args.first().is_some_and(Value::is_truthy);
+            reprint_current_backtrace_frame_for_expansion(interp, env, no_limit)
         }
         "current-thread" => Ok(interp.current_thread_value()),
         "all-threads" => {
@@ -7494,6 +7525,113 @@ fn plist_put_exact(plist: Value, property: Value, value: Value) -> Result<Value,
             _ => return Err(plist_type_error(&plist)),
         }
     }
+}
+
+fn reprint_current_backtrace_frame_for_expansion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    no_limit: bool,
+) -> Result<Value, LispError> {
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let point = interp.buffer.point();
+    let probe = if point == point_max && point > point_min {
+        point - 1
+    } else {
+        point
+    };
+    let Some(index) = interp.buffer.text_property_at(probe, "backtrace-index") else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("user-error".into()),
+            Value::String("Not in a stack frame".into()),
+        ])));
+    };
+    let view = interp
+        .buffer
+        .text_property_at(probe, "backtrace-view")
+        .unwrap_or(Value::Nil);
+
+    let mut start = probe;
+    while start > point_min
+        && interp.buffer.text_property_at(start - 1, "backtrace-index") == Some(index.clone())
+    {
+        start -= 1;
+    }
+    let mut end = probe + 1;
+    while end < point_max
+        && interp.buffer.text_property_at(end, "backtrace-index") == Some(index.clone())
+    {
+        end += 1;
+    }
+
+    let current_limit = interp
+        .lookup_var("backtrace-line-length", env)
+        .and_then(|value| value.as_integer().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(300);
+    let limit = if no_limit {
+        Value::Nil
+    } else {
+        Value::Integer(current_limit.saturating_mul(3))
+    };
+    let form = Value::list([
+        Value::Symbol("let".into()),
+        Value::list([
+            Value::list([
+                Value::Symbol("inhibit-read-only".into()),
+                Value::Symbol("t".into()),
+            ]),
+            Value::list([Value::Symbol("backtrace-line-length".into()), limit]),
+        ]),
+        Value::list([
+            Value::Symbol("delete-region".into()),
+            Value::Integer(start as i64),
+            Value::Integer(end as i64),
+        ]),
+        Value::list([
+            Value::Symbol("goto-char".into()),
+            Value::Integer(start as i64),
+        ]),
+        Value::list([
+            Value::Symbol("backtrace-print-frame".into()),
+            Value::list([
+                Value::Symbol("nth".into()),
+                index.clone(),
+                Value::Symbol("backtrace-frames".into()),
+            ]),
+            Value::list([Value::Symbol("quote".into()), view.clone()]),
+        ]),
+    ]);
+    interp.eval(&form, env)?;
+    let new_end = interp.buffer.point();
+    interp
+        .buffer
+        .put_text_property(start, new_end, "backtrace-index", index);
+    interp
+        .buffer
+        .put_text_property(start, new_end, "backtrace-view", view);
+    interp.buffer.goto_char(start);
+    Ok(Value::Nil)
+}
+
+fn point_is_on_plain_backtrace_ellipsis(interp: &Interpreter, pos: usize) -> bool {
+    if interp
+        .buffer
+        .text_property_at(pos, "backtrace-index")
+        .is_none()
+    {
+        return false;
+    }
+    let mut start = pos;
+    while start > interp.buffer.point_min() && interp.buffer.char_at(start - 1) == Some('.') {
+        start -= 1;
+    }
+    let mut end = pos;
+    while end < interp.buffer.point_max() && interp.buffer.char_at(end + 1) == Some('.') {
+        end += 1;
+    }
+    end.saturating_sub(start) + 1 >= 3
+        && (start..=end).all(|cursor| interp.buffer.char_at(cursor) == Some('.'))
 }
 
 fn semantic_tag_name(tag: &Value) -> Option<String> {

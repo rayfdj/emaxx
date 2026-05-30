@@ -372,6 +372,8 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "cl-type-of"
             | "cl-prin1"
             | "cl-prin1-to-string"
+            | "backtrace-expand-ellipses"
+            | "push-button"
             | "cl-find-class"
             | "cl--class-parents"
             | "cl--class-allparents"

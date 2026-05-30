@@ -764,9 +764,20 @@ impl Interpreter {
         args: Vec<Value>,
         evald: bool,
     ) {
+        self.push_backtrace_frame_with_locals(function, args, Vec::new(), evald);
+    }
+
+    pub fn push_backtrace_frame_with_locals(
+        &mut self,
+        function: Value,
+        args: Vec<Value>,
+        locals: Vec<(String, Value)>,
+        evald: bool,
+    ) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
+            locals,
             evald,
             debug_on_exit: false,
         });
@@ -806,6 +817,14 @@ impl Interpreter {
                 )
             })
             .collect()
+    }
+
+    pub fn backtrace_frame_locals_snapshot(&self, index: usize) -> Option<Vec<(String, Value)>> {
+        self.backtrace_frames
+            .iter()
+            .rev()
+            .nth(index)
+            .map(|frame| frame.locals.clone())
     }
 
     pub fn push_handler_bindings(&mut self, bindings: &[(String, Value)]) -> usize {

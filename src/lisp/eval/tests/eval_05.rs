@@ -513,6 +513,53 @@ fn backtrace_print_includes_unevaluated_setq_frame() {
 }
 
 #[test]
+fn backtrace_locals_show_lambda_arguments_for_requested_frame() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (ert-with-test-buffer (:name \"locals\")
+                 (backtrace-tests--make-backtrace 'value)
+                 (backtrace-print)
+                 (goto-char (point-max))
+                 (forward-line -1)
+                 (backtrace-toggle-locals)
+                 (and (string-match-p
+                       \"arg = value\"
+                       (backtrace-tests--get-substring (point) (point-max)))
+                      t)))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn backtrace_expand_ellipses_reprints_current_frame_without_limit() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (ert-with-test-buffer (:name \"expand\")
+                 (let* ((print-level nil)
+                        (print-length nil)
+                        (backtrace-line-length 300)
+                        (arg (make-list 40 (make-string 10 ?a))))
+                   (backtrace-tests--make-backtrace arg)
+                   (backtrace-print)
+                   (goto-char (point-min))
+                   (search-forward \"...\")
+                   (backward-char)
+                   (push-button)
+                   (not (string-match-p
+                         \"\\\\.\\\\.\\\\.\"
+                         (backtrace-tests--get-substring
+                          (point-min) (point-max)))))))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
         eval_str(
