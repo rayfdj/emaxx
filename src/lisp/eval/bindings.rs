@@ -116,6 +116,9 @@ impl Interpreter {
             "locale-coding-system" => Some(Value::Nil),
             "coding-system-for-read" => Some(Value::Nil),
             "coding-system-for-write" => Some(Value::Nil),
+            "delay-mode-hooks" => Some(Value::Nil),
+            "delayed-mode-hooks" => Some(Value::Nil),
+            "delayed-after-hook-functions" => Some(Value::Nil),
             "coding-system-list" => Some(Value::list(
                 self.coding_system_list(false)
                     .into_iter()

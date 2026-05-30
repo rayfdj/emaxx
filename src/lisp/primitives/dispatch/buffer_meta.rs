@@ -72,6 +72,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "coding-system-p"
             | "check-coding-system"
             | "coding-system-list"
+            | "coding-system-type"
             | "coding-system-priority-list"
             | "sort-coding-systems"
             | "coding-system-aliases"
@@ -990,6 +991,16 @@ pub(super) fn call(
                     .map(Value::Symbol)
                     .collect::<Vec<_>>(),
             ))
+        }
+        "coding-system-type" => {
+            need_args(name, args, 1)?;
+            Ok(match checked_coding_name(interp, &args[0])? {
+                Some(coding) => interp
+                    .coding_system_kind_name(&coding)
+                    .map(Value::Symbol)
+                    .unwrap_or(Value::Nil),
+                None => Value::Nil,
+            })
         }
         "coding-system-priority-list" => {
             if args.len() > 1 {

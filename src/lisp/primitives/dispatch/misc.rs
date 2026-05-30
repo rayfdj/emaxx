@@ -909,12 +909,15 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
-        "make-obsolete" | "define-obsolete-face-alias" | "define-obsolete-function-alias" => {
-            Ok(Value::Nil)
+        "make-obsolete" => {
+            need_arg_range(name, args, 3, 4)?;
+            let obsolete_name = obsolete_definition_symbol(&args[0])?;
+            Ok(Value::Symbol(obsolete_name.to_string()))
         }
+        "define-obsolete-face-alias" | "define-obsolete-function-alias" => Ok(Value::Nil),
         "make-obsolete-variable" => {
             need_arg_range(name, args, 3, 4)?;
-            let obsolete_name = args[0].as_symbol()?;
+            let obsolete_name = obsolete_definition_symbol(&args[0])?;
             let access_type = args.get(3).cloned().unwrap_or(Value::Nil);
             interp.put_symbol_property(
                 obsolete_name,
@@ -1180,5 +1183,12 @@ fn post_self_insert_hook_depth(hook: &Value) -> i32 {
         }
         Value::Symbol(name) if name == "electric-indent-post-self-insert-function" => 60,
         _ => 50,
+    }
+}
+
+fn obsolete_definition_symbol(value: &Value) -> Result<&str, LispError> {
+    match value {
+        Value::Symbol(name) => Ok(name),
+        _ => Err(LispError::TypeError("symbol".into(), value.type_name())),
     }
 }

@@ -68,6 +68,79 @@ fn sort_coding_systems_uses_priority_order() {
 }
 
 #[test]
+fn coding_system_type_reports_known_coding_kind() {
+    assert_eq!(
+        eval_str(
+            "(list (coding-system-type nil) (coding-system-type 'utf-8) (coding-system-type 'raw-text))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::symbol("utf-8"),
+            Value::symbol("raw-text"),
+        ])
+    );
+}
+
+#[test]
+fn mode_hook_delay_variables_have_default_bindings() {
+    assert_eq!(
+        eval_str("(list delay-mode-hooks delayed-mode-hooks delayed-after-hook-functions)"),
+        Value::list([Value::Nil, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn delay_mode_hooks_is_dynamically_scoped() {
+    assert_eq!(
+        eval_str(
+            "(progn (defun sample-delay-mode-hooks-value () delay-mode-hooks) (let ((delay-mode-hooks t)) (sample-delay-mode-hooks-value)))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn run_mode_hooks_preserves_builtin_definition() {
+    assert_eq!(
+        eval_str(
+            "(progn (defun run-mode-hooks (&rest _) 'shadowed) (run-mode-hooks 'sample-hook))"
+        ),
+        Value::Nil
+    );
+}
+
+#[test]
+fn delay_mode_hooks_evaluates_body_as_special_form() {
+    assert_eq!(eval_str("(delay-mode-hooks (+ 1 2))"), Value::Integer(3));
+}
+
+#[test]
+fn warning_series_variables_have_default_bindings() {
+    assert_eq!(
+        eval_str(
+            "(list warning-series warning-prefix-function warning-fill-prefix warning-type-format warning-suppress-types)"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::String(" (%s)".into()),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn default_file_modes_can_be_read_and_updated() {
+    assert_eq!(
+        eval_str(
+            "(let ((original (default-file-modes))) (set-default-file-modes #o600) (prog1 (default-file-modes) (set-default-file-modes original)))"
+        ),
+        Value::Integer(0o600)
+    );
+}
+
+#[test]
 fn coding_system_list_is_bound_and_callable() {
     let result = eval_str(
         "(list (boundp 'coding-system-list)
@@ -351,6 +424,25 @@ fn normal_mode_runs_change_major_mode_hook_before_selecting_file_mode() {
             Value::Nil,
             Value::Symbol("emacs-lisp-mode".into())
         ])
+    );
+}
+
+#[test]
+fn normal_mode_applies_no_byte_compile_file_local_header() {
+    assert_eq!(
+        eval_str(
+            "(let ((file (make-temp-file \"emaxx-no-byte-compile\" nil \".el\")))
+               (unwind-protect
+                   (progn
+                     (write-region \";; -*- no-byte-compile: t; lexical-binding: t; -*-\\n\" nil file nil 'silent)
+                     (let ((buf (find-file-noselect file)))
+                       (with-current-buffer buf
+                         (normal-mode)
+                         (prog1 no-byte-compile
+                           (kill-buffer buf)))))
+                 (ignore-errors (delete-file file))))"
+        ),
+        Value::T
     );
 }
 
@@ -1114,6 +1206,36 @@ fn make_obsolete_variable_records_byte_obsolete_property() {
             Value::symbol("sample-new-option"),
             Value::symbol("get"),
             Value::String("31.1".into()),
+        ])
+    );
+}
+
+#[test]
+fn make_obsolete_rejects_nil_and_t_names() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (condition-case err (make-obsolete nil 'sample-new \"31.1\") (wrong-type-argument (car err)))
+               (condition-case err (make-obsolete t 'sample-new \"31.1\") (wrong-type-argument (car err))))"
+        ),
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("wrong-type-argument"),
+        ])
+    );
+}
+
+#[test]
+fn make_obsolete_variable_rejects_nil_and_t_names() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (condition-case err (make-obsolete-variable nil 'sample-new \"31.1\") (wrong-type-argument (car err)))
+               (condition-case err (make-obsolete-variable t 'sample-new \"31.1\") (wrong-type-argument (car err))))"
+        ),
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("wrong-type-argument"),
         ])
     );
 }

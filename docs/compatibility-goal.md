@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1493/7080 are verified locally.
+- Tests through 1505/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1493/7080: support Bindat string vectors`.
+  `Compat 1505/7080: preserve macroexpanded let bindings`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -233,7 +233,20 @@ counts as the progress denominator.
   preserving `letrec` through `macroexpand-all`, evaluating recursive lexical
   bindings with self-referential lambda captures, and allowing `logior` to
   operate on bignum integers produced by wide Bindat unsigned unpacking.
-  Selector 1474, `bindat-test--str-combined-array-unpack`, is next.
+- Selectors 1494..1502 in `test/lisp/emacs-lisp/bindat-tests.el` passed after
+  preserving `let`/`let*` binding names through `macroexpand-all`, adding
+  string-object mutation for Bindat preallocated string packing, supporting
+  vector and bool-vector `substring`, and adding the small network-address
+  formatter needed by Bindat IP checks.
+- Selectors 1503..1504 in `test/lisp/emacs-lisp/byte-run-tests.el` passed
+  after making `make-obsolete` and `make-obsolete-variable` reject nil and t
+  obsolete names.
+- Selector 1505, `byte-compile-file/no-byte-compile` in
+  `test/lisp/emacs-lisp/bytecomp-tests.el`, passed after adding the coding and
+  warning defaults used by byte compilation, preserving native mode-hook
+  dispatch, adding default file-mode helpers, and applying the
+  `no-byte-compile` file-local header in `normal-mode`.
+  Selector 1506, `bytecomp--byte-op-error-backtrace`, is next.
 
 ## Workflow
 

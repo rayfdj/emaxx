@@ -350,13 +350,16 @@ impl Interpreter {
                     };
                     return Ok(quoted_literal(&value));
                 }
+                "let" | "let*" | "letrec" => {
+                    return self.macroexpand_all_let_form_with_environment(
+                        &items,
+                        macro_environment,
+                        env,
+                    );
+                }
                 _ => {}
             }
-            if name == "letrec" {
-                // Preserve recursive lexical bindings for the evaluator.  Expanding
-                // letrec to let/setq here would make lambdas capture the initial nil
-                // placeholders instead of the finalized recursive bindings.
-            } else if let Some(expander) = macro_environment_expander(macro_environment, name) {
+            if let Some(expander) = macro_environment_expander(macro_environment, name) {
                 let expanded = self.call_function_value(expander, Some(name), &items[1..], env)?;
                 return self.macroexpand_all_form_with_environment(
                     &expanded,
@@ -408,6 +411,54 @@ impl Interpreter {
                     env,
                 )?);
             }
+        }
+        Ok(Value::list(expanded))
+    }
+
+    fn macroexpand_all_let_form_with_environment(
+        &mut self,
+        items: &[Value],
+        macro_environment: Option<&Value>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Some(bindings_value) = items.get(1) else {
+            return Ok(Value::list(items.iter().cloned()));
+        };
+        let bindings = bindings_value.to_vec()?;
+        let mut expanded_bindings = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            match binding {
+                Value::Symbol(_) => expanded_bindings.push(binding),
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    if parts.is_empty() {
+                        expanded_bindings.push(Value::Nil);
+                        continue;
+                    }
+                    let mut expanded = Vec::with_capacity(parts.len());
+                    expanded.push(parts[0].clone());
+                    for initializer in &parts[1..] {
+                        expanded.push(self.macroexpand_all_form_with_environment(
+                            initializer,
+                            macro_environment,
+                            env,
+                        )?);
+                    }
+                    expanded_bindings.push(Value::list(expanded));
+                }
+                _ => expanded_bindings.push(binding),
+            }
+        }
+
+        let mut expanded = Vec::with_capacity(items.len());
+        expanded.push(items[0].clone());
+        expanded.push(Value::list(expanded_bindings));
+        for body in &items[2..] {
+            expanded.push(self.macroexpand_all_form_with_environment(
+                body,
+                macro_environment,
+                env,
+            )?);
         }
         Ok(Value::list(expanded))
     }
