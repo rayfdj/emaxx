@@ -509,6 +509,60 @@ impl Interpreter {
         result
     }
 
+    pub(super) fn sf_letrec(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() < 2 {
+            return Err(LispError::WrongNumberOfArgs("letrec".into(), 0));
+        }
+        if is_vector_literal(&items[1]) {
+            return Err(wrong_type_argument("listp", items[1].clone()));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut names = Vec::with_capacity(bindings.len());
+        let mut initializers = Vec::with_capacity(bindings.len());
+        let mut frame = Vec::with_capacity(bindings.len());
+
+        for binding in bindings {
+            match binding {
+                Value::Symbol(name) => {
+                    frame.push((name.clone(), Value::Nil));
+                    names.push(name);
+                    initializers.push(None);
+                }
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    let Some(name_value) = parts.first() else {
+                        return Err(LispError::ReadError("bad letrec binding".into()));
+                    };
+                    let name = name_value.as_symbol()?.to_string();
+                    frame.push((name.clone(), Value::Nil));
+                    names.push(name);
+                    initializers.push(parts.get(1).cloned());
+                }
+                _ => return Err(wrong_type_argument("listp", binding)),
+            }
+        }
+
+        env.push(frame);
+        for (name, initializer) in names.iter().zip(initializers.iter()) {
+            let value = if let Some(initializer) = initializer {
+                self.eval(initializer, env)?
+            } else {
+                Value::Nil
+            };
+            let frame = env.last_mut().expect("letrec frame just pushed");
+            if let Some((_, existing)) = frame.iter_mut().rev().find(|(key, _)| key == name) {
+                *existing = Self::stored_value(value);
+            }
+        }
+        {
+            let frame = env.last().expect("letrec frame just pushed");
+            patch_letrec_lambda_captures(frame, &names);
+        }
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        result
+    }
+
     pub(super) fn sf_letstar(
         &mut self,
         items: &[Value],
@@ -679,5 +733,25 @@ impl Interpreter {
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         result
+    }
+}
+
+fn patch_letrec_lambda_captures(frame: &[(String, Value)], names: &[String]) {
+    for (_, value) in frame {
+        if let Value::Lambda(_, _, closure_env) = value {
+            let mut captured_env = closure_env.borrow_mut();
+            for captured_frame in captured_env.iter_mut() {
+                for name in names {
+                    let Some((_, replacement)) = frame.iter().find(|(key, _)| key == name) else {
+                        continue;
+                    };
+                    if let Some((_, captured_value)) =
+                        captured_frame.iter_mut().rev().find(|(key, _)| key == name)
+                    {
+                        *captured_value = replacement.clone();
+                    }
+                }
+            }
+        }
     }
 }

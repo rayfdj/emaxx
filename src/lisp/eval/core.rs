@@ -70,6 +70,7 @@ impl Interpreter {
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),
                         "let" | "dlet" => return self.sf_let(&items, env),
+                        "letrec" => return self.sf_letrec(&items, env),
                         "let*" => return self.sf_letstar(&items, env),
                         "cl-progv" => return self.sf_cl_progv(&items, env),
                         "pcase-let" => return self.sf_pcase_let(&items, env, false),
