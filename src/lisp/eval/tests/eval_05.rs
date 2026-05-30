@@ -311,6 +311,50 @@ fn text_mode_marks_quotes_as_text_punctuation() {
 }
 
 #[test]
+fn kill_all_local_variables_runs_change_major_mode_hook_before_clearing_locals() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (let (ran)
+                 (add-hook 'change-major-mode-hook
+                           (lambda () (setq ran (local-variable-p 'sample-local)))
+                           nil t)
+                 (setq-local sample-local t)
+                 (kill-all-local-variables)
+                 (list ran (local-variable-p 'sample-local))))"
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
+fn normal_mode_runs_change_major_mode_hook_before_selecting_file_mode() {
+    assert_eq!(
+        eval_str(
+            "(let ((file (make-temp-file \"emaxx-normal-mode\" nil \".el\")))
+               (unwind-protect
+                   (let ((buf (find-file-noselect file)))
+                     (with-current-buffer buf
+                       (let (ran)
+                         (add-hook 'change-major-mode-hook
+                                   (lambda () (setq ran (local-variable-p 'sample-local)))
+                                   nil t)
+                         (setq-local sample-local t)
+                         (normal-mode)
+                         (prog1
+                             (list ran (local-variable-p 'sample-local) major-mode)
+                           (kill-buffer buf)))))
+                 (ignore-errors (delete-file file))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Symbol("emacs-lisp-mode".into())
+        ])
+    );
+}
+
+#[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
         eval_str(

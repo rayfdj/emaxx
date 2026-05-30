@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1440/7080 are verified locally.
+- Tests through 1458/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1440/7080: support C comment style toggles`.
+  `Compat 1458/7080: run major mode cleanup hooks`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -201,8 +201,12 @@ counts as the progress denominator.
 - Selectors 1134..1440 in `test/lisp/electric-tests.el` passed after adding
   C-family `c-toggle-comment-style` support for line/block comments and making
   `text-mode` use GNU-compatible text syntax for quote characters.
-  Selector 1441, `elide-head--test-headers-to-hide/apache1-1` in
-  `test/lisp/elide-head-tests.el`,
+- Selectors 1441..1458 in `test/lisp/elide-head-tests.el` passed after making
+  `normal-mode` run `kill-all-local-variables` and making
+  `kill-all-local-variables` run `change-major-mode-hook` before clearing
+  buffer-local variables.
+  Selector 1459, `backquote-test-basic` in
+  `test/lisp/emacs-lisp/backquote-tests.el`,
   is next.
 
 ## Workflow

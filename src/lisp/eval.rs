@@ -727,6 +727,7 @@ impl Interpreter {
         interp.mark_auto_buffer_local("buffer-read-only");
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");
+        interp.put_symbol_property("default-directory", "permanent-local", Value::T);
         interp.set_global_binding("mark-ring", Value::Nil);
         interp.mark_auto_buffer_local("mark-ring");
         interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
