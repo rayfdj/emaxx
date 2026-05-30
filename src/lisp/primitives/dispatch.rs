@@ -508,6 +508,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "current-column"
             | "current-indentation"
             | "indent-relative"
+            | "indent-line-to"
             | "indent-to-left-margin"
             | "tab-to-tab-stop"
             | "indent-to"

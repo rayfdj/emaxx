@@ -2187,6 +2187,27 @@ fn indent_to_honors_minimum_with_spaces_only() {
 }
 
 #[test]
+fn indent_line_to_replaces_existing_indentation() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (let ((indent-tabs-mode nil))
+                    (insert "    value")
+                    (goto-char (point-min))
+                    (forward-char 6)
+                    (list (indent-line-to 2) (buffer-string) (current-column))))
+                "#
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::String("  value".into()),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
 fn default_indent_line_function_is_indent_relative() {
     assert_eq!(
         eval_str("(default-value 'indent-line-function)"),

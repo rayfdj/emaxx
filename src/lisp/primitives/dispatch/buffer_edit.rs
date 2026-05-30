@@ -125,6 +125,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "current-column"
             | "current-indentation"
             | "indent-according-to-mode"
+            | "indent-line-to"
             | "indent-to-left-margin"
             | "indent-relative"
             | "indent-to"
@@ -1630,6 +1631,34 @@ pub(super) fn call(
                 .max(0);
             super::call(interp, "indent-to", &[Value::Integer(left_margin)], env)?;
             Ok(Value::Nil)
+        }
+        "indent-line-to" => {
+            need_args(name, args, 1)?;
+            let column = args[0].as_integer()?.max(0);
+            let saved = interp.buffer.point();
+            interp.buffer.beginning_of_line();
+            let bol = interp.buffer.point();
+            while matches!(
+                interp.buffer.char_at(interp.buffer.point()),
+                Some(' ' | '\t')
+            ) {
+                let _ = interp.buffer.forward_char(1);
+            }
+            let indentation_end = interp.buffer.point();
+            if indentation_end > bol {
+                ensure_region_modifiable(interp, bol, indentation_end, env)?;
+                delete_region_with_hooks(interp, bol, indentation_end, env)?;
+            }
+            interp.buffer.goto_char(bol);
+            super::call(interp, "indent-to", &[Value::Integer(column)], env)?;
+            if saved > indentation_end {
+                let removed = indentation_end - bol;
+                let inserted = interp.buffer.point().saturating_sub(bol);
+                interp
+                    .buffer
+                    .goto_char(saved.saturating_sub(removed).saturating_add(inserted));
+            }
+            Ok(Value::Integer(column))
         }
         "indent-relative" => {
             need_arg_range(name, args, 0, 2)?;

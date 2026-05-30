@@ -259,8 +259,10 @@ pub(crate) fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
 }
 
 pub(crate) fn format_s_conversion(
+    interp: &mut Interpreter,
     arg: &Value,
     precision: Option<usize>,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<(String, Vec<TextPropertySpan>), LispError> {
     if let Some(string) = string_like(arg) {
         let end = precision
@@ -270,7 +272,15 @@ pub(crate) fn format_s_conversion(
         let props = slice_string_props(&string.props, 0, end);
         return Ok((text, props));
     }
-    let mut text = number_to_string(arg).unwrap_or_else(|_| arg.to_string());
+    let mut text = if ["print-circle", "print-gensym"].into_iter().any(|name| {
+        interp
+            .lookup_var(name, env)
+            .is_some_and(|value| value.is_truthy())
+    }) {
+        render_prin1_ephemeral(interp, arg, env)?
+    } else {
+        number_to_string(arg).unwrap_or_else(|_| arg.to_string())
+    };
     if let Some(precision) = precision {
         text = text.chars().take(precision).collect();
     }

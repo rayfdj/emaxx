@@ -241,6 +241,12 @@ impl Interpreter {
             Some(Value::Symbol(name)) if decoded_time_accessor_index(name).is_some() => {
                 self.sf_setf_decoded_time_accessor(name, &place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if matches!(name.as_str(), "car" | "cdr") => {
+                let resolved = self.resolve_setf_place(&items[1], env)?;
+                let value = self.eval(&items[2], env)?;
+                self.set_resolved_setf_place_value(&resolved, value.clone(), env)?;
+                Ok(value)
+            }
             Some(Value::Symbol(name)) if name == "nth" => self.sf_setf_nth(&place, &items[2], env),
             Some(Value::Symbol(name)) if name == "aref" => {
                 self.sf_setf_aref(&place, &items[2], env)
