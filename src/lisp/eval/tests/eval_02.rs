@@ -2013,6 +2013,22 @@ fn macroexpand_all_expands_let_when_compile_constants() {
 }
 
 #[test]
+fn macroexpand_all_uses_local_macro_environment() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((env (list (cons 'sample-env-macro
+                                       (lambda (&rest args)
+                                         (cons 'list args))))))
+                  (equal (macroexpand-all '(sample-env-macro a b) env)
+                         '(list a b)))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn define_obsolete_variable_alias_sets_up_the_alias() {
     assert_eq!(
         eval_str(

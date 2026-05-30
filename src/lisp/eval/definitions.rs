@@ -2098,8 +2098,7 @@ impl Interpreter {
         let lowered_lambda_list = lower_cl_defmethod_lambda_list(&items[lambda_list_index])?;
         lowered.push(lowered_lambda_list.clone());
         lowered.extend(items[lambda_list_index + 1..].iter().cloned());
-        if let Some((variable, class_name)) =
-            first_cl_defmethod_specializer(&items[lambda_list_index])?
+        if let Some(specializer) = first_cl_defmethod_specializer(&items[lambda_list_index])?
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
             && previous != Value::BuiltinFunc("ignore".into())
@@ -2113,28 +2112,40 @@ impl Interpreter {
                 .iter()
                 .filter_map(|value| value.as_symbol().ok())
                 .filter(|previous_class| {
-                    previous_class != &class_name
+                    Some(*previous_class) != specializer.class_name()
                         && self
                             .class_allparents(previous_class)
                             .iter()
-                            .any(|parent| matches!(parent, Value::Symbol(parent) if parent == &class_name))
+                            .any(|parent| matches!(parent, Value::Symbol(parent) if Some(parent.as_str()) == specializer.class_name()))
                 })
                 .map(str::to_string)
                 .collect::<Vec<_>>();
             let params = self.parse_params(&lowered_lambda_list)?;
-            let call_args = params
-                .iter()
-                .filter(|param| !is_lambda_list_keyword(param))
-                .map(|param| Value::Symbol(param.clone()))
-                .collect::<Vec<_>>();
             let previous_method_symbol = format!(
                 "__emaxx_previous_method_{}_{}",
                 function_name_from_binding_form(&items[1])?.replace('-', "_"),
-                class_name.replace('-', "_")
+                specializer.key().replace([':', '\'', ' ', '(', ')'], "_")
             );
-            let mut next_default_args = Vec::with_capacity(call_args.len() + 1);
+            let current_method_symbol = format!("{previous_method_symbol}_current");
+            let rest_param = lambda_list_rest_param(&lowered_lambda_list)?;
+            let fixed_call_args = params
+                .iter()
+                .filter(|param| !is_lambda_list_keyword(param))
+                .filter(|param| Some(param.as_str()) != rest_param.as_deref())
+                .map(|param| Value::Symbol(param.clone()))
+                .collect::<Vec<_>>();
+            let mut next_default_args = Vec::with_capacity(fixed_call_args.len() + 1);
             next_default_args.push(Value::Symbol("list".into()));
-            next_default_args.extend(call_args.iter().cloned());
+            next_default_args.extend(fixed_call_args.iter().cloned());
+            let next_default_form = if let Some(rest_param) = &rest_param {
+                Value::list([
+                    Value::Symbol("append".into()),
+                    Value::list(next_default_args),
+                    Value::Symbol(rest_param.clone()),
+                ])
+            } else {
+                Value::list(next_default_args)
+            };
             let next_method_body = Value::list([
                 Value::Symbol("apply".into()),
                 Value::Symbol(previous_method_symbol.clone()),
@@ -2142,7 +2153,7 @@ impl Interpreter {
                     Value::Symbol("if".into()),
                     Value::Symbol("args".into()),
                     Value::Symbol("args".into()),
-                    Value::list(next_default_args),
+                    next_default_form,
                 ]),
             ]);
             let mut method_body = Vec::with_capacity(items.len() - lambda_list_index + 3);
@@ -2153,18 +2164,26 @@ impl Interpreter {
                 next_method_body,
             ])]));
             method_body.extend(items[lambda_list_index + 1..].iter().cloned());
-            let mut fallback = Vec::with_capacity(call_args.len() + 2);
-            fallback.push(Value::Symbol("funcall".into()));
-            fallback.push(Value::Symbol(previous_method_symbol.clone()));
-            fallback.extend(call_args);
-            let mut condition = Value::list([
-                Value::Symbol("cl-typep".into()),
-                Value::Symbol(variable.clone()),
-                Value::list([
-                    Value::Symbol("quote".into()),
-                    Value::Symbol(class_name.clone()),
-                ]),
+            let wrapper_rest_param = "__emaxx-cl-defmethod-rest".to_string();
+            let wrapper_params = cl_defmethod_dispatch_wrapper_params(
+                &lowered_lambda_list,
+                &specializer.variable,
+                &wrapper_rest_param,
+            )?;
+            let wrapper_fixed_args = wrapper_params
+                .iter()
+                .take_while(|param| param.as_str() != "&rest")
+                .map(|param| Value::Symbol(param.clone()))
+                .collect::<Vec<_>>();
+            let mut wrapper_arg_list = Vec::with_capacity(wrapper_fixed_args.len() + 1);
+            wrapper_arg_list.push(Value::Symbol("list".into()));
+            wrapper_arg_list.extend(wrapper_fixed_args);
+            let forwarded_args = Value::list([
+                Value::Symbol("append".into()),
+                Value::list(wrapper_arg_list),
+                Value::Symbol(wrapper_rest_param),
             ]);
+            let mut condition = specializer.condition();
             for previous_class in more_specific_previous {
                 condition = Value::list([
                     Value::Symbol("and".into()),
@@ -2173,7 +2192,7 @@ impl Interpreter {
                         Value::Symbol("not".into()),
                         Value::list([
                             Value::Symbol("cl-typep".into()),
-                            Value::Symbol(variable.clone()),
+                            Value::Symbol(specializer.variable.clone()),
                             Value::list([
                                 Value::Symbol("quote".into()),
                                 Value::Symbol(previous_class),
@@ -2185,25 +2204,43 @@ impl Interpreter {
             let dispatch_body = vec![Value::list([
                 Value::Symbol("if".into()),
                 condition,
-                Value::list(method_body),
-                Value::list(fallback),
+                Value::list([
+                    Value::Symbol("apply".into()),
+                    Value::Symbol(current_method_symbol.clone()),
+                    forwarded_args.clone(),
+                ]),
+                Value::list([
+                    Value::Symbol("apply".into()),
+                    Value::Symbol(previous_method_symbol.clone()),
+                    forwarded_args,
+                ]),
             ])];
-            let closure = shared_env(vec![vec![(
-                previous_method_symbol,
-                Self::stored_value(previous),
+            let method_closure = shared_env(vec![vec![(
+                previous_method_symbol.clone(),
+                Self::stored_value(previous.clone()),
             )]]);
+            let current_method =
+                Value::Lambda(params, vec![Value::list(method_body)], method_closure);
+            let closure = shared_env(vec![vec![
+                (previous_method_symbol, Self::stored_value(previous)),
+                (current_method_symbol, Self::stored_value(current_method)),
+            ]]);
             self.set_function_binding(
                 &method_name,
-                Some(Value::Lambda(params, dispatch_body, closure)),
+                Some(Value::Lambda(wrapper_params, dispatch_body, closure)),
             );
-            self.add_cl_defmethod_specializer(&method_name, &class_name);
+            if let Some(class_name) = specializer.class_name() {
+                self.add_cl_defmethod_specializer(&method_name, class_name);
+            }
             return Ok(items[1].clone());
         }
         let result = self.sf_cl_defun(&lowered, env);
-        if let Some((_, class_name)) = first_cl_defmethod_specializer(&items[lambda_list_index])? {
+        if let Some(specializer) = first_cl_defmethod_specializer(&items[lambda_list_index])?
+            && let Some(class_name) = specializer.class_name()
+        {
             self.add_cl_defmethod_specializer(
                 &function_name_from_binding_form(&items[1])?,
-                &class_name,
+                class_name,
             );
         }
         result
@@ -2216,7 +2253,7 @@ impl Interpreter {
             .unwrap_or_default();
         if !specializers
             .iter()
-            .any(|value| matches!(value, Value::Symbol(symbol) if symbol == class_name))
+            .any(|value| matches!(value, Value::Symbol(name) if name == class_name))
         {
             specializers.push(Value::Symbol(class_name.to_string()));
             self.put_symbol_property(

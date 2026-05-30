@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1470/7080 are verified locally.
+- Tests through 1471/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1470/7080: expose benchmark GC counters`.
+  `Compat 1471/7080: support Bindat pack-value types`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -223,8 +223,12 @@ counts as the progress denominator.
   `indent-line-to` buffer primitive used by backtrace pretty-print expansion.
 - Selector 1470, `benchmark-tests` in
   `test/lisp/emacs-lisp/benchmark-tests.el`, passed after exposing the standard
-  `gcs-done` and `gc-elapsed` benchmark variables. Selector 1471,
-  `bindat-test--pack-val`, is next.
+  `gcs-done` and `gc-elapsed` benchmark variables.
+- Selector 1471, `bindat-test--pack-val` in
+  `test/lisp/emacs-lisp/bindat-tests.el`, passed after honoring
+  `macroexpand-all` local macro environments, adding the EQL-specializer
+  dispatch needed by Bindat type generation, and making `multibyte-string-p`
+  return nil for non-strings. Selector 1472, `bindat-test--recursive`, is next.
 
 ## Workflow
 

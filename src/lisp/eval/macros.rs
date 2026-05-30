@@ -221,6 +221,22 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
+        self.try_macroexpand_with_environment(name, args, None, env)
+    }
+
+    pub(super) fn try_macroexpand_with_environment(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        macro_environment: Option<&Value>,
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
+        if let Some(expander) = macro_environment_expander(macro_environment, name) {
+            return self
+                .call_function_value(expander, Some(name), args, env)
+                .map(Some);
+        }
+
         let mut attempted_autoload = false;
         let (params, body) = loop {
             if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
@@ -288,9 +304,10 @@ impl Interpreter {
         Ok(Some(expanded))
     }
 
-    pub(crate) fn macroexpand_1_form(
+    pub(crate) fn macroexpand_1_form_with_environment(
         &mut self,
         form: &Value,
+        macro_environment: Option<&Value>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let Ok(items) = form.to_vec() else {
@@ -300,13 +317,14 @@ impl Interpreter {
             return Ok(form.clone());
         };
         Ok(self
-            .try_macroexpand(name, &items[1..], env)?
+            .try_macroexpand_with_environment(name, &items[1..], macro_environment, env)?
             .unwrap_or_else(|| form.clone()))
     }
 
-    pub(crate) fn macroexpand_all_form(
+    pub(crate) fn macroexpand_all_form_with_environment(
         &mut self,
         form: &Value,
+        macro_environment: Option<&Value>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let Ok(items) = form.to_vec() else {
@@ -334,8 +352,22 @@ impl Interpreter {
                 }
                 _ => {}
             }
-            if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
-                return self.macroexpand_all_form(&expanded, env);
+            if let Some(expander) = macro_environment_expander(macro_environment, name) {
+                let expanded = self.call_function_value(expander, Some(name), &items[1..], env)?;
+                return self.macroexpand_all_form_with_environment(
+                    &expanded,
+                    macro_environment,
+                    env,
+                );
+            }
+            if let Some(expanded) =
+                self.try_macroexpand_with_environment(name, &items[1..], None, env)?
+            {
+                return self.macroexpand_all_form_with_environment(
+                    &expanded,
+                    macro_environment,
+                    env,
+                );
             }
         }
 
@@ -346,7 +378,11 @@ impl Interpreter {
                 expanded.push(params.clone());
             }
             for item in &items[2..] {
-                expanded.push(self.macroexpand_all_form(item, env)?);
+                expanded.push(self.macroexpand_all_form_with_environment(
+                    item,
+                    macro_environment,
+                    env,
+                )?);
             }
             return Ok(Value::list(expanded));
         }
@@ -355,11 +391,19 @@ impl Interpreter {
         if matches!(head, Value::Symbol(_)) {
             expanded.push(items[0].clone());
             for item in &items[1..] {
-                expanded.push(self.macroexpand_all_form(item, env)?);
+                expanded.push(self.macroexpand_all_form_with_environment(
+                    item,
+                    macro_environment,
+                    env,
+                )?);
             }
         } else {
             for item in &items {
-                expanded.push(self.macroexpand_all_form(item, env)?);
+                expanded.push(self.macroexpand_all_form_with_environment(
+                    item,
+                    macro_environment,
+                    env,
+                )?);
             }
         }
         Ok(Value::list(expanded))
@@ -1050,4 +1094,19 @@ impl Interpreter {
         }
         result
     }
+}
+
+fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {
+    let mut entries = macro_environment?.clone();
+    while let Value::Cons(_, _) = &entries {
+        let entry = entries.car().ok()?;
+        if let Value::Cons(_, _) = entry {
+            let symbol = entry.car().ok()?;
+            if symbol.as_symbol().ok()? == name {
+                return entry.cdr().ok();
+            }
+        }
+        entries = entries.cdr().ok()?;
+    }
+    None
 }

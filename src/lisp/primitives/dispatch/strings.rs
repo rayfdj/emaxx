@@ -1405,8 +1405,9 @@ pub(super) fn call(
         }
         "multibyte-string-p" => {
             need_args(name, args, 1)?;
-            let string = string_like(&args[0])
-                .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
+            let Some(string) = string_like(&args[0]) else {
+                return Ok(Value::Nil);
+            };
             Ok(if string.multibyte {
                 Value::T
             } else {

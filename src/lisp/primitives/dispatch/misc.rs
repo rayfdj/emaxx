@@ -958,10 +958,11 @@ pub(super) fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            let environment = args.get(1).filter(|value| value.is_truthy());
             if name == "macroexpand-all" {
-                interp.macroexpand_all_form(&args[0], env)
+                interp.macroexpand_all_form_with_environment(&args[0], environment, env)
             } else {
-                interp.macroexpand_1_form(&args[0], env)
+                interp.macroexpand_1_form_with_environment(&args[0], environment, env)
             }
         }
         "run-at-time" => {
