@@ -496,6 +496,7 @@ pub(super) fn call(
         }
         "normal-mode" => {
             need_arg_range(name, args, 0, 1)?;
+            let _ = call_named_function(interp, "kill-all-local-variables", &[], env)?;
             if let Some(path) = current_buffer_file(interp)
                 && let Some(mode) = modes::auto_mode_function_for_file_name(interp, env, path)?
             {

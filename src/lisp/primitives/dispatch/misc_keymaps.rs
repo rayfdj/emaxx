@@ -2061,6 +2061,7 @@ pub(super) fn call(
         "kill-all-local-variables" => {
             need_args(name, args, 0)?;
             let buffer_id = interp.current_buffer_id();
+            run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
             let locals = interp.buffer_local_variables(buffer_id);
             let mut permanent = Vec::new();
             for (name, value) in &locals {
