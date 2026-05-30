@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1473/7080 are verified locally.
+- Tests through 1493/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1473/7080: support recursive Bindat integers`.
+  `Compat 1493/7080: support Bindat string vectors`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

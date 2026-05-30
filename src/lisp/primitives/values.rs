@@ -210,6 +210,9 @@ pub(crate) fn values_equal_recursive(
         }
         (Value::Float(a), Value::Float(b)) => a == b || (a.is_nan() && b.is_nan()),
         (Value::String(a), Value::String(b)) => a == b,
+        (Value::StringObject(a), Value::StringObject(b)) => a.borrow().text == b.borrow().text,
+        (Value::String(a), Value::StringObject(b)) => *a == b.borrow().text,
+        (Value::StringObject(a), Value::String(b)) => a.borrow().text == *b,
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
         (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,

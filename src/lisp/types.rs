@@ -320,7 +320,9 @@ fn values_equal_recursive(left: &Value, right: &Value, seen: &mut HashSet<(usize
         }
         (Value::Float(a), Value::Float(b)) => a == b,
         (Value::String(a), Value::String(b)) => a == b,
-        (Value::StringObject(a), Value::StringObject(b)) => Rc::ptr_eq(a, b),
+        (Value::StringObject(a), Value::StringObject(b)) => a.borrow().text == b.borrow().text,
+        (Value::String(a), Value::StringObject(b)) => *a == b.borrow().text,
+        (Value::StringObject(a), Value::String(b)) => a.borrow().text == *b,
         (Value::Symbol(a), Value::Symbol(b)) => a == b,
         (Value::Cons(a_car, a_cdr), Value::Cons(b_car, b_cdr)) => {
             if Rc::ptr_eq(a_car, b_car) && Rc::ptr_eq(a_cdr, b_cdr) {

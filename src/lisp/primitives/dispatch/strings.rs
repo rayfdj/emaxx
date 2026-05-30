@@ -48,6 +48,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "int-to-string"
             | "format"
             | "format-message"
+            | "format-network-address"
             | "internal--format-docstring-line"
             | "ngettext"
             | "format-spec"
@@ -125,7 +126,14 @@ pub(super) fn call(
             let init = args[1].as_integer()?;
             let c = char::from_u32(init as u32).unwrap_or('\0');
             let s: String = std::iter::repeat_n(c, length as usize).collect();
-            Ok(Value::String(s))
+            let multibyte = s
+                .chars()
+                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+            Ok(make_shared_string_value_with_multibyte(
+                s,
+                Vec::new(),
+                multibyte,
+            ))
         }
         "make-temp-name" => {
             need_args(name, args, 1)?;
@@ -528,6 +536,26 @@ pub(super) fn call(
             if args.is_empty() || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs("substring".into(), args.len()));
             }
+            if is_vector_value(&args[0]) {
+                let items = vector_items(&args[0])?;
+                let len = items.len() as i64;
+                let from = normalize_string_index(args.get(1), 0, len)? as usize;
+                let to = normalize_string_index(args.get(2), len, len)? as usize;
+                return Ok(Value::list(
+                    std::iter::once(Value::symbol("vector-literal"))
+                        .chain(items[from..to].iter().cloned()),
+                ));
+            }
+            if is_bool_vector_value(interp, &args[0]) {
+                let items = bool_vector_values(interp, &args[0])?;
+                let len = items.len() as i64;
+                let from = normalize_string_index(args.get(1), 0, len)? as usize;
+                let to = normalize_string_index(args.get(2), len, len)? as usize;
+                return Ok(make_bool_vector_value(
+                    interp,
+                    items[from..to].iter().map(Value::is_truthy),
+                ));
+            }
             let string = string_like(&args[0])
                 .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
             let chars: Vec<char> = string.text.chars().collect();
@@ -897,6 +925,26 @@ pub(super) fn call(
                 ));
             }
             Ok(string_like_value(result, merge_string_props(result_props)))
+        }
+        "format-network-address" => {
+            need_arg_range(name, args, 1, 2)?;
+            let items = sequence_values(interp, &args[0])?;
+            if items.len() < 4 {
+                return Err(LispError::Signal("Invalid network address".into()));
+            }
+            let octets: Result<Vec<String>, LispError> = items
+                .iter()
+                .take(4)
+                .map(|item| Ok(item.as_integer()?.to_string()))
+                .collect();
+            let mut address = octets?.join(".");
+            if !args.get(1).is_some_and(Value::is_truthy)
+                && let Some(port) = items.get(4)
+            {
+                address.push(':');
+                address.push_str(&port.as_integer()?.to_string());
+            }
+            Ok(Value::String(address))
         }
         "internal--format-docstring-line" => {
             if args.is_empty() {
