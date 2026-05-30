@@ -1378,6 +1378,52 @@ fn cl_defmethod_accepts_extra_qualifiers_before_lambda_list() {
 }
 
 #[test]
+fn cl_defmethod_dispatches_eql_specializers() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (cl-defgeneric sample-eql-method (op head &rest args))
+                  (cl-defmethod sample-eql-method (op (_ (eql 'alpha)) value &rest rest)
+                    (list 'alpha value rest))
+                  (cl-defmethod sample-eql-method (op (_ (eql :beta)) value &rest rest)
+                    (list 'beta value rest))
+                  (equal (list (sample-eql-method 'op 'alpha 1 2 3)
+                               (apply #'sample-eql-method 'op '(:beta 4 5 6)))
+                         '((alpha 1 (2 3)) (beta 4 (5 6)))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn bindat_pack_val_round_trips_integer_representation() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+    )
+    .expect("load bindat tests");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (cl-loop for n in '(0 42 125 126 127 128 150 255 5000 65535 65536 8769786876)
+                         always (equal (bindat-unpack bindat-test--int-websocket-type
+                                                      (bindat-pack bindat-test--int-websocket-type n))
+                                       n))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn cl_defmethod_supports_setf_function_names() {
     assert_eq!(
         eval_str(

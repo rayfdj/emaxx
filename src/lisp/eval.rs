@@ -1683,7 +1683,79 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
     Ok(Value::list(lowered))
 }
 
-fn first_cl_defmethod_specializer(spec: &Value) -> Result<Option<(String, String)>, LispError> {
+fn lambda_list_rest_param(spec: &Value) -> Result<Option<String>, LispError> {
+    let items = spec.to_vec()?;
+    Ok(items.windows(2).find_map(|pair| match pair {
+        [Value::Symbol(keyword), Value::Symbol(name)] if keyword == "&rest" => Some(name.clone()),
+        _ => None,
+    }))
+}
+
+fn cl_defmethod_dispatch_wrapper_params(
+    spec: &Value,
+    specializer_variable: &str,
+    rest_param: &str,
+) -> Result<Vec<String>, LispError> {
+    let mut params = Vec::new();
+    for item in spec.to_vec()? {
+        let name = item.as_symbol()?.to_string();
+        params.push(name.clone());
+        if name == specializer_variable {
+            params.push("&rest".into());
+            params.push(rest_param.into());
+            return Ok(params);
+        }
+    }
+    Err(LispError::Signal(
+        "cl-defmethod dispatch lost specializer variable".into(),
+    ))
+}
+
+#[derive(Clone)]
+enum ClDefmethodSpecializerKind {
+    Class(String),
+    Eql(Value),
+}
+
+#[derive(Clone)]
+struct ClDefmethodSpecializer {
+    variable: String,
+    kind: ClDefmethodSpecializerKind,
+}
+
+impl ClDefmethodSpecializer {
+    fn key(&self) -> String {
+        match &self.kind {
+            ClDefmethodSpecializerKind::Class(class_name) => format!("class:{class_name}"),
+            ClDefmethodSpecializerKind::Eql(value) => format!("eql:{value}"),
+        }
+    }
+
+    fn condition(&self) -> Value {
+        let variable = Value::Symbol(self.variable.clone());
+        match &self.kind {
+            ClDefmethodSpecializerKind::Class(class_name) => Value::list([
+                Value::Symbol("cl-typep".into()),
+                variable,
+                quoted_literal(&Value::Symbol(class_name.clone())),
+            ]),
+            ClDefmethodSpecializerKind::Eql(value) => {
+                Value::list([Value::Symbol("eql".into()), variable, value.clone()])
+            }
+        }
+    }
+
+    fn class_name(&self) -> Option<&str> {
+        match &self.kind {
+            ClDefmethodSpecializerKind::Class(class_name) => Some(class_name),
+            ClDefmethodSpecializerKind::Eql(_) => None,
+        }
+    }
+}
+
+fn first_cl_defmethod_specializer(
+    spec: &Value,
+) -> Result<Option<ClDefmethodSpecializer>, LispError> {
     for item in spec.to_vec()? {
         let Value::Cons(_, _) = item else {
             continue;
@@ -1692,10 +1764,26 @@ fn first_cl_defmethod_specializer(spec: &Value) -> Result<Option<(String, String
         let Some(Value::Symbol(variable)) = parts.first() else {
             continue;
         };
-        let Some(Value::Symbol(class_name)) = parts.get(1) else {
-            continue;
-        };
-        return Ok(Some((variable.clone(), class_name.clone())));
+        match parts.get(1) {
+            Some(Value::Symbol(class_name)) => {
+                return Ok(Some(ClDefmethodSpecializer {
+                    variable: variable.clone(),
+                    kind: ClDefmethodSpecializerKind::Class(class_name.clone()),
+                }));
+            }
+            Some(Value::Cons(_, _)) => {
+                let specializer = parts[1].to_vec()?;
+                if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
+                    && let Some(value) = specializer.get(1)
+                {
+                    return Ok(Some(ClDefmethodSpecializer {
+                        variable: variable.clone(),
+                        kind: ClDefmethodSpecializerKind::Eql(value.clone()),
+                    }));
+                }
+            }
+            _ => {}
+        }
     }
     Ok(None)
 }
