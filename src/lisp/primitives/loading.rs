@@ -108,18 +108,35 @@ pub(crate) fn eval_impl(
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
     if let Some(lexical) = args.get(1) {
-        let lexical = lexical.is_truthy();
-        interp.push_lambda_capture_override(lexical);
-        let result = if lexical {
-            interp.eval(&args[0], env)
-        } else {
-            interp.eval(&args[0], &mut Vec::new())
+        let (capture_lexical, mut eval_env) = match lexical {
+            Value::Nil => (false, Vec::new()),
+            Value::T => (true, env.clone()),
+            Value::Cons(_, _) => {
+                let frame = lexical_alist_frame(lexical)?;
+                (true, vec![frame])
+            }
+            _ => (true, env.clone()),
         };
+        interp.push_lambda_capture_override(capture_lexical);
+        let result = interp.eval(&args[0], &mut eval_env);
         interp.pop_lambda_capture_override();
         result
     } else {
         interp.eval(&args[0], env)
     }
+}
+
+fn lexical_alist_frame(value: &Value) -> Result<Vec<(String, Value)>, LispError> {
+    let mut frame = Vec::new();
+    for entry in value.to_vec()? {
+        let Some((key, val)) = entry.cons_values() else {
+            continue;
+        };
+        if let Value::Symbol(name) = key {
+            frame.push((name, val));
+        }
+    }
+    Ok(frame)
 }
 
 pub(crate) fn eval_buffer_impl(

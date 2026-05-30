@@ -1,5 +1,16 @@
 use super::*;
 
+fn backquote_splice_elements(value: Value) -> Result<Vec<Value>, LispError> {
+    let mut items = value.to_vec()?;
+    if matches!(
+        items.first(),
+        Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+    ) {
+        items.remove(0);
+    }
+    Ok(items)
+}
+
 impl Interpreter {
     pub(super) fn eval_backquote(
         &mut self,
@@ -72,9 +83,7 @@ impl Interpreter {
                                     backquote_unquote_form(&car_value)
                             {
                                 let evaled = self.eval(&value, env)?;
-                                if let Ok(elems) = evaled.to_vec() {
-                                    result.extend(elems);
-                                }
+                                result.extend(backquote_splice_elements(evaled)?);
                                 current = cdr_value;
                                 continue;
                             }
