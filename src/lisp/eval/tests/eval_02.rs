@@ -630,10 +630,11 @@ fn next_single_char_property_change_observes_overlay_properties() {
                   (let ((overlay (make-overlay 2 4)))
                     (overlay-put overlay 'face 'hl-line)
                     (list (next-single-char-property-change 2 'face nil 5)
-                          (next-single-char-property-change 4 'face nil 5))))
+                          (next-single-char-property-change 4 'face nil 5)
+                          (next-single-char-property-change 4 'face))))
                 "#
         ),
-        Value::list([Value::Integer(4), Value::Integer(5)])
+        Value::list([Value::Integer(4), Value::Integer(5), Value::Integer(5)])
     );
 }
 

@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1460/7080 are verified locally.
+- Tests through 1461/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1460/7080: support backquote vector splices`.
+  `Compat 1461/7080: support backtrace frame navigation`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -208,9 +208,12 @@ counts as the progress denominator.
 - Selectors 1459..1460 in `test/lisp/emacs-lisp/backquote-tests.el` passed
   after making `eval` accept explicit lexical alists and making backquote
   vector splicing omit the internal vector marker.
-  Selector 1461, `backtrace-tests--backward-frame` in
-  `test/lisp/emacs-lisp/backtrace-tests.el`,
-  is next.
+- Selector 1461, `backtrace-tests--backward-frame` in
+  `test/lisp/emacs-lisp/backtrace-tests.el`, passed after adding the backtrace
+  frame primitives needed by upstream `backtrace.el`, preserving `cl-prin1`
+  builtins when `cl-print` loads, honoring `filter-buffer-substring`, and
+  recording unevaluated `setq` frames for `mapbacktrace`.
+  Selector 1462, `backtrace-tests--expand-ellipses`, is next.
 
 ## Workflow
 

@@ -75,7 +75,16 @@ impl Interpreter {
                         "pcase-let" => return self.sf_pcase_let(&items, env, false),
                         "pcase-let*" => return self.sf_pcase_let(&items, env, true),
                         "let-alist" => return self.sf_let_alist(&items, env),
-                        "setq" => return self.sf_setq(&items, env),
+                        "setq" => {
+                            self.push_backtrace_frame_with_evald(
+                                Value::Symbol("setq".into()),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_setq(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
                         "setq-default" => return self.sf_setq_default(&items, env),
                         "setq-local" => return self.sf_setq_local(&items, env),
                         "setopt" => return self.sf_setopt(&items, env),

@@ -68,6 +68,9 @@ impl Interpreter {
             "case-symbols-as-words" => Some(Value::Nil),
             "fill-column" => Some(Value::Integer(70)),
             "indent-according-to-mode" => Some(Value::Symbol("indent-according-to-mode".into())),
+            "filter-buffer-substring-function" => {
+                Some(Value::Symbol("buffer-substring--filter".into()))
+            }
             "meta-prefix-char" => Some(Value::Integer(27)),
             "translation-table-vector" => Some(Value::list([Value::symbol("vector")])),
             "float-e" => Some(Value::Float(std::f64::consts::E)),
@@ -186,6 +189,8 @@ impl Interpreter {
             "null-device" => Some(Value::String("/dev/null".into())),
             "exec-suffixes" => Some(Value::list([Value::String(String::new())])),
             "debug-on-error" => Some(Value::Nil),
+            "debugger-stack-frame-as-list" => Some(Value::Nil),
+            "eval-buffer-list" => Some(Value::Nil),
             "load-in-progress" => Some(if self.current_load_file.is_some() {
                 Value::T
             } else {

@@ -219,6 +219,7 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "cl-assoc-if" | "cl-assoc-if-not" | "cl-delete-duplicates" => {
             Some(builtin_file_autoload("cl-seq", Value::Nil))
         }
+        "cl-print-to-string-with-limit" => Some(builtin_file_autoload("cl-print", Value::Nil)),
         "connection-local-p" => Some(builtin_macro_autoload("files-x")),
         "connection-local-set-profile-variables" => {
             Some(builtin_file_autoload("files-x", Value::Nil))

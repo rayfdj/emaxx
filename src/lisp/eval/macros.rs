@@ -207,6 +207,10 @@ impl Interpreter {
             .ok_or_else(|| LispError::TypeError("symbol".into(), items[1].type_name()))?;
         let function = self.eval(&items[2], env)?;
         self.validate_function_binding(&name, &function)?;
+        if crate::lisp::primitives::prefer_builtin_override(&name) {
+            self.set_function_binding(&name, Some(Value::BuiltinFunc(name.clone())));
+            return Ok(Value::Symbol(name));
+        }
         self.set_function_binding(&name, Some(function));
         Ok(Value::Symbol(name))
     }

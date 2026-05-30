@@ -391,6 +391,128 @@ fn nested_backquote_splices_vector_result_without_internal_marker() {
 }
 
 #[test]
+fn backtrace_get_frames_reports_live_lisp_call_symbols() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'backtrace)
+               (defun emaxx-backtrace-make (arg)
+                 (emaxx-backtrace-setup))
+               (defun emaxx-backtrace-setup ()
+                 (mapcar #'backtrace-frame-fun (backtrace-get-frames)))
+               (let ((frames (emaxx-backtrace-make 'value)))
+                 (list (not (null (memq 'backtrace-get-frames frames)))
+                       (not (null (memq 'emaxx-backtrace-setup frames)))
+                       (not (null (memq 'emaxx-backtrace-make frames))))))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn backtrace_print_marks_last_frame_with_index_property() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'backtrace)
+               (defun emaxx-backtrace-print-make (arg)
+                 (emaxx-backtrace-print-setup))
+               (defun emaxx-backtrace-print-setup ()
+                 (backtrace-mode)
+                 (setq backtrace-frames (backtrace-get-frames))
+                 (let ((this-index))
+                   (dotimes (index (length backtrace-frames))
+                     (when (eq (backtrace-frame-fun (nth index backtrace-frames))
+                               'emaxx-backtrace-print-make)
+                       (setq this-index index)))
+                   (setq backtrace-frames
+                         (seq-subseq backtrace-frames 0 (1+ this-index))))
+                 (backtrace-print)
+                 (unless (string-match-p \"backtrace-get-frames\" (buffer-string))
+                   (error (buffer-string)))
+                 (goto-char (point-max))
+                 (forward-line -1)
+                 (backtrace-get-index))
+               (emaxx-backtrace-print-make 'value))"
+        ),
+        Value::Integer(3)
+    );
+}
+
+#[test]
+fn backtrace_backward_frame_signals_user_error_from_header() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'backtrace)
+               (defun emaxx-backtrace-header-make (arg)
+                 (emaxx-backtrace-header-setup))
+               (defun emaxx-backtrace-header-setup ()
+                 (backtrace-mode)
+                 (setq backtrace-frames (backtrace-get-frames))
+                 (let ((this-index))
+                   (dotimes (index (length backtrace-frames))
+                     (when (eq (backtrace-frame-fun (nth index backtrace-frames))
+                               'emaxx-backtrace-header-make)
+                       (setq this-index index)))
+                   (setq backtrace-frames
+                         (seq-subseq backtrace-frames 0 (1+ this-index))))
+                 (let ((inhibit-read-only t))
+                   (insert \"Test header\n\"))
+                 (backtrace-print)
+                 (goto-char 3)
+                 (condition-case err
+                     (progn (backtrace-backward-frame) 'no-error)
+                   (error (car err))))
+               (emaxx-backtrace-header-make 'value))"
+        ),
+        Value::Symbol("user-error".into())
+    );
+}
+
+#[test]
+fn backtrace_backward_frame_should_error_keeps_point() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (ert-with-test-buffer (:name \"backward\")
+                 (let ((results (concat backtrace-tests--header
+                                        (backtrace-tests--result nil))))
+                   (backtrace-tests--make-backtrace nil)
+                   (setq backtrace-insert-header-function
+                         #'backtrace-tests--insert-header)
+                   (backtrace-print)
+                   (goto-char (+ (point-min) (/ (length backtrace-tests--header) 2)))
+                   (let ((pos (point)))
+                     (should-error (backtrace-backward-frame))
+                     (= pos (point))))))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn backtrace_print_includes_unevaluated_setq_frame() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (load \"../emacs/test/lisp/emacs-lisp/backtrace-tests.el\")
+               (ert-with-test-buffer (:name \"backward\")
+                 (backtrace-tests--make-backtrace nil)
+                 (setq backtrace-insert-header-function
+                       #'backtrace-tests--insert-header)
+                 (backtrace-print)
+                 (and (string-match-p
+                       \"(setq backtrace-frames (backtrace-get-frames))\"
+                       (backtrace-tests--get-substring (point-min) (point-max)))
+                      t)))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
         eval_str(
@@ -1572,6 +1694,7 @@ fn backtrace_frames_from_current_thread_returns_live_frames() {
     assert_eq!(
         interp.thread_backtrace_frames_snapshot(interp.resolve_thread_id(&current_thread).unwrap()),
         vec![(
+            true,
             Value::Symbol("sample-backtrace-frame".into()),
             Vec::new(),
             false,
