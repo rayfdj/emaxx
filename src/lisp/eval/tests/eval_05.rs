@@ -944,6 +944,40 @@ fn push_supports_nthcdr_setf_places() {
 }
 
 #[test]
+fn setf_supports_nested_car_places() {
+    assert_eq!(
+        eval_str("(let ((items (list (cons 'old 'tail)))) (setf (car (car items)) 'new) items)"),
+        Value::list([Value::cons(
+            Value::Symbol("new".into()),
+            Value::Symbol("tail".into()),
+        )])
+    );
+}
+
+#[test]
+fn format_s_honors_print_circle_for_non_strings() {
+    assert_eq!(
+        eval_str(
+            r##"
+                (let* ((print-circle t)
+                       (items (make-list 2 'a)))
+                  (nconc items items)
+                  (string-match-p "#1=" (format "%s" items)))
+                "##
+        ),
+        Value::Integer(0)
+    );
+}
+
+#[test]
+fn format_s_honors_print_gensym_for_non_strings() {
+    assert_eq!(
+        eval_str(r##"(let ((print-gensym t)) (string-match-p "#:" (format "%s" (gensym "g"))))"##),
+        Value::Integer(0)
+    );
+}
+
+#[test]
 fn cl_loop_while_collect_without_for_clause() {
     assert_eq!(
         eval_str("(let ((i 0)) (cl-loop while (< i 3) collect (setq i (1+ i))))"),

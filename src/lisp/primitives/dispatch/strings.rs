@@ -815,7 +815,7 @@ pub(super) fn call(
                 let arg = &args[aidx];
 
                 let (mut formatted, mut formatted_props) = match conv {
-                    's' => format_s_conversion(arg, precision)?,
+                    's' => format_s_conversion(interp, arg, precision, env)?,
                     'S' => (render_prin1_ephemeral(interp, arg, env)?, Vec::new()),
                     'd' | 'o' | 'x' | 'X' | 'b' | 'B' => (
                         format_numeric_conversion(

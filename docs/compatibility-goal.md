@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1464/7080 are verified locally.
+- Tests through 1469/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1464/7080: support backtrace ellipsis expansion`.
+  `Compat 1469/7080: complete backtrace mode tests`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -217,7 +217,11 @@ counts as the progress denominator.
   after recording per-frame lambda locals for `backtrace--locals` and adding
   batch-safe backtrace ellipsis expansion for both direct `push-button` and
   frame-level expansion.
-  Selector 1465, `backtrace-tests--print-circle`, is next.
+- Selectors 1465..1469 in `test/lisp/emacs-lisp/backtrace-tests.el` passed
+  after making `%s` formatting honor `print-circle`/`print-gensym` for
+  non-strings, supporting direct `car`/`cdr` `setf` places, and adding the
+  `indent-line-to` buffer primitive used by backtrace pretty-print expansion.
+  Selector 1470, `benchmark-tests`, is next.
 
 ## Workflow
 
