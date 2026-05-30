@@ -1424,6 +1424,59 @@ fn bindat_pack_val_round_trips_integer_representation() {
 }
 
 #[test]
+fn bindat_recursive_leb128_round_trips_integers() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+    )
+    .expect("load bindat tests");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (cl-loop for n in '(0 1 42 127 128 255 256 16384 1048575)
+                         always (equal (bindat-unpack bindat-test--LEB128
+                                                      (bindat-pack bindat-test--LEB128 n))
+                                       n))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn bindat_signed_integer_types_round_trip_wide_values() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+    )
+    .expect("load bindat tests");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (let* ((bitlen 72)
+                       (stype (bindat-type sint bitlen nil))
+                       (values (list -1 0 42 (1- (ash 1 63)) (- (ash 1 63)))))
+                  (cl-loop for n in values
+                           always (equal (bindat-unpack stype (bindat-pack stype n)) n)))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn cl_defmethod_supports_setf_function_names() {
     assert_eq!(
         eval_str(

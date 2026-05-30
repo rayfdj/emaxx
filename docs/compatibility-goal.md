@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1471/7080 are verified locally.
+- Tests through 1473/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1471/7080: support Bindat pack-value types`.
+  `Compat 1473/7080: support recursive Bindat integers`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -228,7 +228,12 @@ counts as the progress denominator.
   `test/lisp/emacs-lisp/bindat-tests.el`, passed after honoring
   `macroexpand-all` local macro environments, adding the EQL-specializer
   dispatch needed by Bindat type generation, and making `multibyte-string-p`
-  return nil for non-strings. Selector 1472, `bindat-test--recursive`, is next.
+  return nil for non-strings.
+- Selectors 1472..1473 in `test/lisp/emacs-lisp/bindat-tests.el` passed after
+  preserving `letrec` through `macroexpand-all`, evaluating recursive lexical
+  bindings with self-referential lambda captures, and allowing `logior` to
+  operate on bignum integers produced by wide Bindat unsigned unpacking.
+  Selector 1474, `bindat-test--str-combined-array-unpack`, is next.
 
 ## Workflow
 

@@ -352,15 +352,18 @@ impl Interpreter {
                 }
                 _ => {}
             }
-            if let Some(expander) = macro_environment_expander(macro_environment, name) {
+            if name == "letrec" {
+                // Preserve recursive lexical bindings for the evaluator.  Expanding
+                // letrec to let/setq here would make lambdas capture the initial nil
+                // placeholders instead of the finalized recursive bindings.
+            } else if let Some(expander) = macro_environment_expander(macro_environment, name) {
                 let expanded = self.call_function_value(expander, Some(name), &items[1..], env)?;
                 return self.macroexpand_all_form_with_environment(
                     &expanded,
                     macro_environment,
                     env,
                 );
-            }
-            if let Some(expanded) =
+            } else if let Some(expanded) =
                 self.try_macroexpand_with_environment(name, &items[1..], None, env)?
             {
                 return self.macroexpand_all_form_with_environment(

@@ -509,11 +509,11 @@ pub(super) fn call(
             Ok(normalize_bigint_value(result))
         }
         "logior" => {
-            let mut result = 0i64;
+            let mut result = BigInt::from(0);
             for arg in args {
-                result |= arg.as_integer()?;
+                result |= integer_like_bigint(interp, arg)?;
             }
-            Ok(Value::Integer(result))
+            Ok(normalize_bigint_value(result))
         }
         "logxor" => {
             let mut result = BigInt::from(0);

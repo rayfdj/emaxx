@@ -15,6 +15,21 @@ fn letrec_binds_names_before_initializer_evaluation() {
 }
 
 #[test]
+fn letrec_preserves_recursive_lambda_bindings() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (letrec ((countdown
+                          (lambda (n)
+                            (if (zerop n) 'done (funcall countdown (1- n))))))
+                  (funcall countdown 5))
+                "#
+        ),
+        Value::Symbol("done".into())
+    );
+}
+
+#[test]
 fn named_let_expands_to_recursive_binding() {
     assert_eq!(
         eval_str(
