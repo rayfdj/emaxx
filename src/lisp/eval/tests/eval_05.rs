@@ -355,6 +355,42 @@ fn normal_mode_runs_change_major_mode_hook_before_selecting_file_mode() {
 }
 
 #[test]
+fn eval_accepts_explicit_lexical_alist() {
+    assert_eq!(
+        eval_str("(eval '(+ x y) '((x . 1) (y . 2)))"),
+        Value::Integer(3)
+    );
+}
+
+#[test]
+fn backquote_splices_vector_values_without_internal_marker() {
+    assert_eq!(
+        eval_str("(let ((vec [ba bb bc])) `(a ,@vec c))"),
+        Value::list([
+            Value::Symbol("a".into()),
+            Value::Symbol("ba".into()),
+            Value::Symbol("bb".into()),
+            Value::Symbol("bc".into()),
+            Value::Symbol("c".into())
+        ])
+    );
+}
+
+#[test]
+fn nested_backquote_splices_vector_result_without_internal_marker() {
+    assert_eq!(
+        eval_str("(let ((lst '(ba bb bc))) `(a ,@`[,@lst] c))"),
+        Value::list([
+            Value::Symbol("a".into()),
+            Value::Symbol("ba".into()),
+            Value::Symbol("bb".into()),
+            Value::Symbol("bc".into()),
+            Value::Symbol("c".into())
+        ])
+    );
+}
+
+#[test]
 fn comment_region_wraps_c_style_and_prefixes_hash_comments() {
     assert_eq!(
         eval_str(

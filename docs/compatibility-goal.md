@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1458/7080 are verified locally.
+- Tests through 1460/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1458/7080: run major mode cleanup hooks`.
+  `Compat 1460/7080: support backquote vector splices`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -205,8 +205,11 @@ counts as the progress denominator.
   `normal-mode` run `kill-all-local-variables` and making
   `kill-all-local-variables` run `change-major-mode-hook` before clearing
   buffer-local variables.
-  Selector 1459, `backquote-test-basic` in
-  `test/lisp/emacs-lisp/backquote-tests.el`,
+- Selectors 1459..1460 in `test/lisp/emacs-lisp/backquote-tests.el` passed
+  after making `eval` accept explicit lexical alists and making backquote
+  vector splicing omit the internal vector marker.
+  Selector 1461, `backtrace-tests--backward-frame` in
+  `test/lisp/emacs-lisp/backtrace-tests.el`,
   is next.
 
 ## Workflow
