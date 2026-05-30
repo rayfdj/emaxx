@@ -64,6 +64,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "minibuffer-contents-no-properties"
             | "buffer-substring"
             | "buffer-substring-no-properties"
+            | "filter-buffer-substring"
+            | "buffer-substring--filter"
             | "add-to-invisibility-spec"
             | "invisible-p"
             | "derived-mode-p"
@@ -925,6 +927,31 @@ pub(super) fn call(
                 }
                 Err(e) => Err(LispError::Signal(e.to_string())),
             }
+        }
+        "filter-buffer-substring" => {
+            need_arg_range(name, args, 2, 3)?;
+            let filter = interp
+                .lookup_var("filter-buffer-substring-function", env)
+                .unwrap_or_else(|| Value::Symbol("buffer-substring--filter".into()));
+            interp.call_function_value(filter, None, args, env)
+        }
+        "buffer-substring--filter" => {
+            need_arg_range(name, args, 2, 3)?;
+            let text = super::call(
+                interp,
+                "buffer-substring",
+                &[args[0].clone(), args[1].clone()],
+                env,
+            )?;
+            if args.get(2).is_some_and(Value::is_truthy) {
+                let _ = super::call(
+                    interp,
+                    "delete-region",
+                    &[args[0].clone(), args[1].clone()],
+                    env,
+                )?;
+            }
+            Ok(text)
         }
         "add-to-invisibility-spec" => {
             need_args(name, args, 1)?;
@@ -2161,9 +2188,7 @@ pub(super) fn call(
                     return Ok(Value::Integer(cursor as i64));
                 }
             }
-            Ok(limit
-                .map(|value| Value::Integer(value as i64))
-                .unwrap_or(Value::Nil))
+            Ok(Value::Integer(max_pos as i64))
         }
         "previous-single-property-change" => {
             if args.len() < 2 || args.len() > 4 {

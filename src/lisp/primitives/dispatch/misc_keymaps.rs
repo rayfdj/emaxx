@@ -142,8 +142,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "byte-compile-check-lambda-list"
             | "byte-compile"
             | "funcall-with-delayed-message"
+            | "advice--cd*r"
             | "handler-bind-1"
             | "debugger-trap"
+            | "mapbacktrace"
             | "backtrace-frame--internal"
             | "backtrace-debug"
             | "backtrace-eval"
@@ -1657,6 +1659,10 @@ pub(super) fn call(
             }
             Ok(result)
         }
+        "advice--cd*r" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].clone())
+        }
         "handler-bind-1" => {
             if args.len() != 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1683,10 +1689,30 @@ pub(super) fn call(
             }
         }
         "debugger-trap" => Ok(Value::Nil),
+        "mapbacktrace" => {
+            need_arg_range(name, args, 1, 2)?;
+            let callback = resolve_callable(interp, &args[0], env)?;
+            for (evald, function, frame_args, debug_on_exit) in interp.backtrace_frames_snapshot() {
+                let flags = if debug_on_exit {
+                    Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
+                } else {
+                    Value::Nil
+                };
+                let evald = if evald { Value::T } else { Value::Nil };
+                interp.call_function_value(
+                    callback.clone(),
+                    None,
+                    &[evald, function, Value::list(frame_args), flags],
+                    env,
+                )?;
+            }
+            Ok(Value::Nil)
+        }
         "backtrace-frame--internal" => {
             need_args(name, args, 3)?;
             let callback = resolve_callable(interp, &args[0], env)?;
-            let Some((function, frame_args, debug_on_exit)) = interp.current_backtrace_frame()
+            let Some((evald, function, frame_args, debug_on_exit)) =
+                interp.current_backtrace_frame()
             else {
                 return Ok(Value::Nil);
             };
@@ -1695,10 +1721,11 @@ pub(super) fn call(
             } else {
                 Value::Nil
             };
+            let evald = if evald { Value::T } else { Value::Nil };
             interp.call_function_value(
                 callback,
                 None,
-                &[Value::T, function, Value::list(frame_args), flags],
+                &[evald, function, Value::list(frame_args), flags],
                 env,
             )
         }
@@ -1874,8 +1901,9 @@ pub(super) fn call(
             let frames = interp
                 .thread_backtrace_frames_snapshot(interp.resolve_thread_id(&args[0])?)
                 .into_iter()
-                .map(|(function, frame_args, _debug_on_exit)| {
-                    let mut items = vec![Value::T, function];
+                .map(|(evald, function, frame_args, _debug_on_exit)| {
+                    let evald = if evald { Value::T } else { Value::Nil };
+                    let mut items = vec![evald, function];
                     items.extend(frame_args);
                     Value::list(items)
                 })
@@ -1913,7 +1941,7 @@ pub(super) fn call(
                 .map(|(id, _)| id)
                 .unwrap_or_else(|| interp.create_buffer("*Thread Backtrace*").0);
             let mut text = format!("Backtrace for thread `{thread_name}':\n");
-            for (function, frame_args, _) in interp.thread_backtrace_frames_snapshot(thread_id) {
+            for (_, function, frame_args, _) in interp.thread_backtrace_frames_snapshot(thread_id) {
                 text.push_str(&render_prin1_ephemeral(interp, &function, env)?);
                 for arg in frame_args {
                     text.push(' ');

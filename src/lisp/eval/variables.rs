@@ -755,9 +755,19 @@ impl Interpreter {
     }
 
     pub fn push_backtrace_frame(&mut self, function: Value, args: Vec<Value>) {
+        self.push_backtrace_frame_with_evald(function, args, true);
+    }
+
+    pub fn push_backtrace_frame_with_evald(
+        &mut self,
+        function: Value,
+        args: Vec<Value>,
+        evald: bool,
+    ) {
         self.backtrace_frames.push(BacktraceFrame {
             function,
             args,
+            evald,
             debug_on_exit: false,
         });
     }
@@ -772,9 +782,10 @@ impl Interpreter {
         }
     }
 
-    pub fn current_backtrace_frame(&self) -> Option<(Value, Vec<Value>, bool)> {
+    pub fn current_backtrace_frame(&self) -> Option<(bool, Value, Vec<Value>, bool)> {
         self.backtrace_frames.last().map(|frame| {
             (
+                frame.evald,
                 frame.function.clone(),
                 frame.args.clone(),
                 frame.debug_on_exit,
@@ -782,12 +793,13 @@ impl Interpreter {
         })
     }
 
-    pub fn backtrace_frames_snapshot(&self) -> Vec<(Value, Vec<Value>, bool)> {
+    pub fn backtrace_frames_snapshot(&self) -> Vec<(bool, Value, Vec<Value>, bool)> {
         self.backtrace_frames
             .iter()
             .rev()
             .map(|frame| {
                 (
+                    frame.evald,
                     frame.function.clone(),
                     frame.args.clone(),
                     frame.debug_on_exit,

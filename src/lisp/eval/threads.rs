@@ -478,7 +478,7 @@ impl Interpreter {
     pub fn thread_backtrace_frames_snapshot(
         &self,
         record_id: u64,
-    ) -> Vec<(Value, Vec<Value>, bool)> {
+    ) -> Vec<(bool, Value, Vec<Value>, bool)> {
         if record_id == self.active_thread_id {
             return self.backtrace_frames_snapshot();
         }
@@ -491,11 +491,13 @@ impl Interpreter {
                 ThreadStatus::Blocked(ThreadBlocker::Mutex(mutex_id)),
             ) => vec![
                 (
+                    true,
                     Value::Symbol("mutex-lock".into()),
                     vec![Value::Record(*mutex_id)],
                     false,
                 ),
                 (
+                    true,
                     Value::Symbol("thread-tests--thread-function".into()),
                     Vec::new(),
                     false,

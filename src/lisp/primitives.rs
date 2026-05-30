@@ -370,6 +370,8 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "byte-compile"
             | "byte-compile-check-lambda-list"
             | "cl-type-of"
+            | "cl-prin1"
+            | "cl-prin1-to-string"
             | "cl-find-class"
             | "cl--class-parents"
             | "cl--class-allparents"

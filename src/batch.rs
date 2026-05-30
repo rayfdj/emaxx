@@ -196,7 +196,7 @@ fn format_backtrace_summary(interpreter: &Interpreter) -> String {
         .backtrace_frames_snapshot()
         .into_iter()
         .take(8)
-        .map(|(function, args, _)| {
+        .map(|(_, function, args, _)| {
             let name = match function {
                 Value::Nil => "<anonymous>".into(),
                 other => other.to_string(),
