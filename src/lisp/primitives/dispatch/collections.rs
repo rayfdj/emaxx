@@ -515,6 +515,10 @@ pub(super) fn call(
                     )?;
                     Ok(args[2].clone())
                 }
+                Value::String(_) | Value::StringObject(_) => {
+                    aset_string_value(&args[0], args[1].as_integer()? as usize, &args[2])?;
+                    Ok(args[2].clone())
+                }
                 _ => Err(LispError::TypeError("array".into(), args[0].type_name())),
             }
         }

@@ -331,6 +331,14 @@ fn aref_reads_strings_bound_in_lexical_variables() {
 }
 
 #[test]
+fn aset_mutates_make_string_storage() {
+    assert_eq!(
+        eval_str("(let ((buf (make-string 2 ?x))) (aset buf 0 ?a) (equal buf \"ax\"))"),
+        Value::T
+    );
+}
+
+#[test]
 fn setf_supports_aref_places_bound_in_lexical_variables() {
     assert_eq!(
         eval_str("(let ((stats (vector 0 0)) (i 1)) (setf (aref stats (mod i 2)) 7) stats)"),
@@ -834,6 +842,15 @@ fn assert_eval_string_ops() {
     assert_string_value(eval_str(r#"(nreverse "drawer")"#), "reward");
     assert_string_value(eval_str(r#"(substring-no-properties "hello" 1 4)"#), "ell");
     assert_string_value(eval_str(r#"(substring "hello" 0 -1)"#), "hell");
+    assert_eq!(
+        eval_str(r#"(substring [255 99 98 97] 1 4)"#),
+        Value::list([
+            Value::Symbol("vector-literal".into()),
+            Value::Integer(99),
+            Value::Integer(98),
+            Value::Integer(97),
+        ])
+    );
     assert_eq!(eval_str(r#"(string-to-number "1e-1")"#), Value::Float(0.1));
     assert_eq!(
         eval_str(r#"(string-to-number ".1..e1")"#),

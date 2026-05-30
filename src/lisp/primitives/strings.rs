@@ -330,6 +330,13 @@ pub(crate) fn aset_string_value(
     };
     chars[index] = ch;
     string.text = chars.into_iter().collect();
+    if let Value::StringObject(state) = target {
+        let mut state = state.borrow_mut();
+        state.text = string.text;
+        state.props = shared_string_props(&string.props);
+        state.multibyte = string.multibyte;
+        return Ok(target.clone());
+    }
     Ok(make_shared_string_value_with_multibyte(
         string.text,
         string.props,

@@ -1477,6 +1477,57 @@ fn bindat_signed_integer_types_round_trip_wide_values() {
 }
 
 #[test]
+fn bindat_str_fields_unpack_from_vector_bytes() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+    )
+    .expect("load bindat tests");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (let* ((spec (bindat-type
+                               (first u8)
+                               (string str 3)
+                               (last uint 16)))
+                       (unpacked (bindat-unpack spec [#xff #x63 #x62 #x61 #xff #xff])))
+                  (and (equal (bindat-get-field unpacked 'string) "cba")
+                       (equal (bindat-get-field unpacked 'first) 255)
+                       (equal (bindat-get-field unpacked 'last) 65535)))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn bindat_formats_vector_ip_addresses() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+    )
+    .expect("load bindat tests");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(equal (bindat-ip-to-string [192 168 0 1]) "192.168.0.1")"#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn cl_defmethod_supports_setf_function_names() {
     assert_eq!(
         eval_str(
