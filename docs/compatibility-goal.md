@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1133/7080 are verified locally.
+- Tests through 1440/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1133/7080: honor Ruby single quote syntax`.
+  `Compat 1440/7080: support C comment style toggles`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -198,7 +198,11 @@ counts as the progress denominator.
   Ruby mode install its string quote syntax for single quotes, double quotes,
   and backticks, and after making generic string scanning honor the current
   delimiter instead of assuming double quotes.
-  Selector 1134, `electric-pair-too-many-closings-at-point-1-in-c-mode`,
+- Selectors 1134..1440 in `test/lisp/electric-tests.el` passed after adding
+  C-family `c-toggle-comment-style` support for line/block comments and making
+  `text-mode` use GNU-compatible text syntax for quote characters.
+  Selector 1441, `elide-head--test-headers-to-hide/apache1-1` in
+  `test/lisp/elide-head-tests.el`,
   is next.
 
 ## Workflow

@@ -71,6 +71,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "derived-mode-all-parents"
             | "derived-mode-add-parents"
             | "c-toggle-electric-state"
+            | "c-toggle-comment-style"
             | "c-point-syntax"
             | "c-brace-newlines"
             | "emaxx-struct-make"
@@ -1042,6 +1043,51 @@ pub(super) fn call(
                 if enabled { Value::T } else { Value::Nil },
                 env,
             );
+            Ok(Value::Nil)
+        }
+        "c-toggle-comment-style" => {
+            need_arg_range(name, args, 0, 1)?;
+            let has_line = interp
+                .lookup_var("c-line-comment-starter", env)
+                .is_some_and(|value| value.is_truthy());
+            let has_block = interp
+                .lookup_var("c-block-comment-starter", env)
+                .is_some_and(|value| value.is_truthy());
+            if !(has_line || has_block) {
+                return Ok(Value::Nil);
+            }
+            let use_block = match args.first() {
+                Some(Value::Nil) | None => !interp
+                    .lookup_var("c-block-comment-flag", env)
+                    .is_some_and(|value| value.is_truthy()),
+                Some(value) => value.as_integer()? > 0,
+            };
+            let use_block = if has_line && has_block {
+                use_block
+            } else {
+                has_block
+            };
+            if use_block {
+                let starter = interp
+                    .lookup_var("c-block-comment-starter", env)
+                    .and_then(|value| value.as_string().ok().map(str::to_string))
+                    .unwrap_or_else(|| "/*".into());
+                let ender = interp
+                    .lookup_var("c-block-comment-ender", env)
+                    .and_then(|value| value.as_string().ok().map(str::to_string))
+                    .unwrap_or_else(|| "*/".into());
+                interp.set_variable("c-block-comment-flag", Value::T, env);
+                interp.set_variable("comment-start", Value::String(format!("{starter} ")), env);
+                interp.set_variable("comment-end", Value::String(format!(" {ender}")), env);
+            } else {
+                let starter = interp
+                    .lookup_var("c-line-comment-starter", env)
+                    .and_then(|value| value.as_string().ok().map(str::to_string))
+                    .unwrap_or_else(|| "//".into());
+                interp.set_variable("c-block-comment-flag", Value::Nil, env);
+                interp.set_variable("comment-start", Value::String(format!("{starter} ")), env);
+                interp.set_variable("comment-end", Value::String(String::new()), env);
+            }
             Ok(Value::Nil)
         }
         "c-point-syntax" => {
