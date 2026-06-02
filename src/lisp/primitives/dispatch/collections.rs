@@ -1,5 +1,20 @@
 use super::*;
 
+fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
+    match value {
+        Value::Integer(index) => Ok(*index),
+        other => Err(wrong_type_argument("fixnump", other.clone())),
+    }
+}
+
+fn args_out_of_range(sequence: &Value, index: &Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("args-out-of-range".into()),
+        sequence.clone(),
+        index.clone(),
+    ]))
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -50,6 +65,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "standard-syntax-table"
             | "set-syntax-table"
             | "modify-syntax-entry"
+            | "setcar"
             | "setcdr"
             | "emaxx-default-region-extract-function"
             | "make-category-table"
@@ -417,7 +433,11 @@ pub(super) fn call(
 
         "aref" => {
             need_args(name, args, 2)?;
-            let idx = args[1].as_integer()? as usize;
+            let raw_idx = fixnum_index_arg(&args[1])?;
+            if raw_idx < 0 {
+                return Err(args_out_of_range(&args[0], &args[1]));
+            }
+            let idx = raw_idx as usize;
             // Support both list-vectors and strings
             if let Some(items) = record_literal_items(&args[0]) {
                 return record_literal_aref(&args[0], &items, idx, &args[1]);
@@ -428,15 +448,11 @@ pub(super) fn call(
                         .and_then(|string| string.text.chars().nth(idx).map(|ch| (string, ch)))
                     {
                         Some((string, ch)) => Ok(string_sequence_value(&string, ch)),
-                        None => Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("args-out-of-range".into()),
-                            args[0].clone(),
-                            args[1].clone(),
-                        ]))),
+                        None => Err(args_out_of_range(&args[0], &args[1])),
                     }
                 }
                 Value::CharTable(id) => {
-                    let key = args[1].as_integer()? as u32;
+                    let key = raw_idx as u32;
                     Ok(syntax::char_table_public_value(
                         interp,
                         *id,
@@ -448,33 +464,27 @@ pub(super) fn call(
                         LispError::TypeError("record".into(), format!("record<{id}>"))
                     })?;
                     if record.type_name == "bool-vector" {
-                        return record.slots.get(idx).cloned().ok_or_else(|| {
-                            LispError::SignalValue(Value::list([
-                                Value::Symbol("args-out-of-range".into()),
-                                args[0].clone(),
-                                args[1].clone(),
-                            ]))
-                        });
+                        return record
+                            .slots
+                            .get(idx)
+                            .cloned()
+                            .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                     }
                     if record.type_name == "byte-code-function" {
-                        return record.slots.get(idx).cloned().ok_or_else(|| {
-                            LispError::SignalValue(Value::list([
-                                Value::Symbol("args-out-of-range".into()),
-                                args[0].clone(),
-                                args[1].clone(),
-                            ]))
-                        });
+                        return record
+                            .slots
+                            .get(idx)
+                            .cloned()
+                            .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                     }
                     if idx == 0 {
                         Ok(Value::Symbol(record.type_name.clone()))
                     } else {
-                        record.slots.get(idx - 1).cloned().ok_or_else(|| {
-                            LispError::SignalValue(Value::list([
-                                Value::Symbol("args-out-of-range".into()),
-                                args[0].clone(),
-                                args[1].clone(),
-                            ]))
-                        })
+                        record
+                            .slots
+                            .get(idx - 1)
+                            .cloned()
+                            .ok_or_else(|| args_out_of_range(&args[0], &args[1]))
                     }
                 }
                 _ => {
@@ -482,13 +492,10 @@ pub(super) fn call(
                         vector_slot_value(&args[0], idx)
                     } else {
                         let items = vector_items(&args[0])?;
-                        items.get(idx).cloned().ok_or_else(|| {
-                            LispError::SignalValue(Value::list([
-                                Value::Symbol("args-out-of-range".into()),
-                                args[0].clone(),
-                                args[1].clone(),
-                            ]))
-                        })
+                        items
+                            .get(idx)
+                            .cloned()
+                            .ok_or_else(|| args_out_of_range(&args[0], &args[1]))
                     }
                 }
             }
@@ -496,27 +503,28 @@ pub(super) fn call(
 
         "aset" => {
             need_args(name, args, 3)?;
+            let raw_idx = fixnum_index_arg(&args[1])?;
+            if raw_idx < 0 {
+                return Err(args_out_of_range(&args[0], &args[1]));
+            }
+            let idx = raw_idx as usize;
             match &args[0] {
                 value if is_vector_value(value) => {
-                    aset_vector_value(value, args[1].as_integer()? as usize, args[2].clone())?;
+                    aset_vector_value(value, idx, args[2].clone())
+                        .map_err(|_| args_out_of_range(&args[0], &args[1]))?;
                     Ok(args[2].clone())
                 }
                 Value::CharTable(id) => {
-                    let key = args[1].as_integer()? as u32;
+                    let key = raw_idx as u32;
                     interp.char_table_set(*id, key, args[2].clone())?;
                     Ok(args[2].clone())
                 }
                 value if is_bool_vector_value(interp, value) => {
-                    set_bool_vector_bit(
-                        interp,
-                        value,
-                        args[1].as_integer()? as usize,
-                        args[2].is_truthy(),
-                    )?;
+                    set_bool_vector_bit(interp, value, idx, args[2].is_truthy())?;
                     Ok(args[2].clone())
                 }
                 Value::String(_) | Value::StringObject(_) => {
-                    aset_string_value(&args[0], args[1].as_integer()? as usize, &args[2])?;
+                    aset_string_value(&args[0], idx, &args[2])?;
                     Ok(args[2].clone())
                 }
                 _ => Err(LispError::TypeError("array".into(), args[0].type_name())),
@@ -986,8 +994,20 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
 
+        "setcar" => {
+            need_args(name, args, 2)?;
+            let Value::Cons(_, _) = &args[0] else {
+                return Err(wrong_type_argument("consp", args[0].clone()));
+            };
+            args[0].set_car(args[1].clone())?;
+            Ok(args[1].clone())
+        }
+
         "setcdr" => {
             need_args(name, args, 2)?;
+            let Value::Cons(_, _) = &args[0] else {
+                return Err(wrong_type_argument("consp", args[0].clone()));
+            };
             args[0].set_cdr(args[1].clone())?;
             Ok(args[1].clone())
         }

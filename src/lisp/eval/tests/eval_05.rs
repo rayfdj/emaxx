@@ -141,6 +141,49 @@ fn default_file_modes_can_be_read_and_updated() {
 }
 
 #[test]
+fn list_operation_type_errors_include_original_value() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (condition-case err (car 'a) (wrong-type-argument err))
+               (condition-case err (nth 1 \"abc\") (wrong-type-argument err)))"
+        ),
+        Value::list([
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("listp"),
+                Value::symbol("a"),
+            ]),
+            Value::list([
+                Value::symbol("wrong-type-argument"),
+                Value::symbol("listp"),
+                Value::String("abc".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn throw_from_handler_inside_function_reaches_matching_catch() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun sample-error-frame ()
+                 (letrec ((handler (lambda (err) (throw 'sample-tag err))))
+                   (catch 'sample-tag
+                     (handler-bind ((error handler))
+                       (car 'a)))))
+               (sample-error-frame))"
+        ),
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("listp"),
+            Value::symbol("a"),
+        ])
+    );
+}
+
+#[test]
 fn coding_system_list_is_bound_and_callable() {
     let result = eval_str(
         "(list (boundp 'coding-system-list)
@@ -756,6 +799,14 @@ fn self_insert_command_uses_last_command_event_and_runs_hook() {
 }
 
 #[test]
+fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
+    assert_eq!(
+        eval_str("(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"),
+        Value::String(" ".into())
+    );
+}
+
+#[test]
 fn return_key_defaults_to_newline_command() {
     assert_eq!(
         eval_str("(key-binding [?\r])"),
@@ -891,6 +942,28 @@ fn scan_sexps_uses_current_string_quote_delimiter() {
                (scan-sexps 1 1))"
         ),
         Value::Integer(4)
+    );
+}
+
+#[test]
+fn syntax_ppss_ignores_escaped_string_quote_start() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (set-syntax-table (make-syntax-table))
+               (modify-syntax-entry 39 \"\\\"\")
+               (insert \"\\\\''\")
+               (list (nth 3 (syntax-ppss 3))
+                     (nth 8 (syntax-ppss 3))
+                     (nth 3 (syntax-ppss 4))
+                     (nth 8 (syntax-ppss 4))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Integer('\'' as i64),
+            Value::Integer(3),
+        ])
     );
 }
 

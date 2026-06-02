@@ -696,6 +696,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "standard-syntax-table"
             | "set-syntax-table"
             | "modify-syntax-entry"
+            | "setcar"
             | "setcdr"
             | "emaxx-default-region-extract-function"
             | "emaxx-default-revert-buffer-function"

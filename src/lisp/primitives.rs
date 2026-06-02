@@ -435,6 +435,14 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
     )
 }
 
+pub(crate) fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::Symbol("wrong-type-argument".into()),
+        Value::Symbol(predicate.into()),
+        value,
+    ]))
+}
+
 pub use dispatch::{call, is_builtin};
 
 #[cfg(test)]

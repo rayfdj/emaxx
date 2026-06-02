@@ -1193,10 +1193,12 @@ pub(super) fn parse_forward(
         let entry = syntax_entry_for_char(interp, table_id, ch);
         match entry.class {
             SyntaxClass::StringQuote => {
-                state.string = Some(StringState {
-                    quote: ch,
-                    start_pos: idx + 1,
-                });
+                if !is_escaped(&chars, idx) {
+                    state.string = Some(StringState {
+                        quote: ch,
+                        start_pos: idx + 1,
+                    });
+                }
                 idx += 1;
             }
             SyntaxClass::OpenParen => {

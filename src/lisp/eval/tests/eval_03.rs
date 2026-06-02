@@ -1023,6 +1023,23 @@ fn cl_defmethod_lowers_specialized_arguments() {
 }
 
 #[test]
+fn cl_defmethod_ignores_context_specializers_for_dispatch_args() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defgeneric sample-context-method (value))
+               (cl-defmethod sample-context-method (value)
+                 'base)
+               (cl-defmethod sample-context-method
+                   (value &context (major-mode (eql text-mode)))
+                 'text)
+               (sample-context-method 'item))"
+        ),
+        Value::Symbol("text".into())
+    );
+}
+
+#[test]
 fn cl_defmethod_dispatches_eieio_specializers_without_clobbering_previous_methods() {
     assert_eq!(
         eval_str(

@@ -192,7 +192,7 @@ fn execute_kbd_macro(
             continue;
         }
         if !binding.is_nil() {
-            execute_kbd_macro_command(interp, &binding, env)?;
+            execute_kbd_macro_command(interp, &binding, &event, env)?;
             interp.set_variable("current-prefix-arg", Value::Nil, env);
             pending_keys.clear();
         } else if pending_keys.len() == 1
@@ -210,9 +210,11 @@ fn execute_kbd_macro(
 fn execute_kbd_macro_command(
     interp: &mut Interpreter,
     command: &Value,
+    event: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
     interp.set_variable("deactivate-mark", Value::Nil, env);
+    interp.set_variable("last-command-event", event.clone(), env);
     interp.set_variable("this-original-command", command.clone(), env);
     interp.set_variable("this-command", command.clone(), env);
     run_named_hooks(
@@ -302,6 +304,25 @@ fn keyboard_macro_self_insert_text(event: &Value) -> Option<String> {
     Some(ch.to_string())
 }
 
+fn nth_list_element(list: &Value, n: usize) -> Result<Value, LispError> {
+    let mut tail = list.clone();
+    for _ in 0..n {
+        match tail {
+            Value::Nil => return Ok(Value::Nil),
+            Value::Cons(_, ref cdr) => {
+                let next = cdr.borrow().clone();
+                tail = next;
+            }
+            other => return Err(wrong_type_argument("listp", other)),
+        }
+    }
+    match tail {
+        Value::Nil => Ok(Value::Nil),
+        Value::Cons(ref car, _) => Ok(car.borrow().clone()),
+        other => Err(wrong_type_argument("listp", other)),
+    }
+}
+
 pub(super) fn call(
     interp: &mut Interpreter,
     name: &str,
@@ -319,7 +340,9 @@ pub(super) fn call(
             if let Some(items) = keymap_list_items(interp, &args[0])? {
                 Ok(items.into_iter().next().unwrap_or(Value::Nil))
             } else {
-                args[0].car()
+                args[0]
+                    .car()
+                    .map_err(|_| wrong_type_argument("listp", args[0].clone()))
             }
         }
         "cl-first" | "cl-second" | "cl-third" => {
@@ -340,7 +363,9 @@ pub(super) fn call(
             if let Some(items) = keymap_list_items(interp, &args[0])? {
                 Ok(Value::list(items.into_iter().skip(1)))
             } else {
-                args[0].cdr()
+                args[0]
+                    .cdr()
+                    .map_err(|_| wrong_type_argument("listp", args[0].clone()))
             }
         }
         "car-safe" => {
@@ -395,8 +420,11 @@ pub(super) fn call(
         "nth" => {
             need_args(name, args, 2)?;
             let n = args[0].as_integer()? as usize;
-            let list = list_sequence_items(interp, &args[1])?;
-            Ok(list.get(n).cloned().unwrap_or(Value::Nil))
+            if let Some(items) = keymap_list_items(interp, &args[1])? {
+                Ok(items.get(n).cloned().unwrap_or(Value::Nil))
+            } else {
+                nth_list_element(&args[1], n)
+            }
         }
         "elt" => {
             need_args(name, args, 2)?;
@@ -409,8 +437,7 @@ pub(super) fn call(
                 super::call(interp, "aref", args, env)
             } else if matches!(args[0], Value::Nil | Value::Cons(_, _)) {
                 let n = args[1].as_integer()? as usize;
-                let list = args[0].to_vec()?;
-                Ok(list.get(n).cloned().unwrap_or(Value::Nil))
+                nth_list_element(&args[0], n)
             } else {
                 super::call(interp, "aref", args, env)
             }

@@ -827,6 +827,22 @@ impl Interpreter {
             .map(|frame| frame.locals.clone())
     }
 
+    pub fn backtrace_frame_locals_snapshot_with_base(
+        &self,
+        index: usize,
+        base: Option<&Value>,
+    ) -> Option<Vec<(String, Value)>> {
+        let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
+        let start = base
+            .and_then(|base| frames.iter().position(|frame| &frame.function == base))
+            .unwrap_or(0);
+        frames
+            .into_iter()
+            .skip(start)
+            .nth(index)
+            .map(|frame| frame.locals.clone())
+    }
+
     pub fn push_handler_bindings(&mut self, bindings: &[(String, Value)]) -> usize {
         let start = self.active_handlers.len();
         self.active_handlers.extend_from_slice(bindings);

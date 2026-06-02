@@ -144,7 +144,9 @@ pub(crate) fn list_sequence_items(
     if let Some(items) = keymap_list_items(interp, value)? {
         Ok(items)
     } else {
-        value.to_vec()
+        value
+            .to_vec()
+            .map_err(|_| wrong_type_argument("listp", value.clone()))
     }
 }
 
