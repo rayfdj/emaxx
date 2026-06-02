@@ -865,7 +865,6 @@ fn is_special_form_name(name: &str) -> bool {
             | "decf"
             | "cl-decf"
             | "cl-callf"
-            | "setcar"
             | "defvar"
             | "defconst"
             | "defcustom"

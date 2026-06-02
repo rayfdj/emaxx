@@ -416,6 +416,18 @@ impl Interpreter {
         }
     }
 
+    pub(super) fn sf_throw(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if items.len() != 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "throw".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let tag = self.eval(&items[1], env)?;
+        let value = self.eval(&items[2], env)?;
+        Err(LispError::Throw(tag, value))
+    }
+
     pub(super) fn sf_prog1(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Ok(Value::Nil);

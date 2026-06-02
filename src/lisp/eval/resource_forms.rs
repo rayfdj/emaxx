@@ -1139,7 +1139,11 @@ impl Interpreter {
             let current = self.lookup(name, env)?;
             let new_value = self.eval(&items[3], env)?;
             let index_value = self.eval(&items[2], env)?;
-            if matches!(current, Value::CharTable(_))
+            self.push_backtrace_frame(
+                Value::Symbol("aset".into()),
+                vec![current.clone(), index_value.clone(), new_value.clone()],
+            );
+            let result = if matches!(current, Value::CharTable(_))
                 || matches!(
                     &current,
                     Value::Record(id)
@@ -1147,49 +1151,75 @@ impl Interpreter {
                             .find_record(*id)
                             .is_some_and(|record| record.type_name == "bool-vector")
                 )
+                || primitives::record_literal_items(&current).is_some()
+                || primitives::is_vector_value(&current)
             {
                 primitives::call(
                     self,
                     "aset",
                     &[current, index_value, new_value.clone()],
                     env,
-                )?;
-                return Ok(new_value);
-            }
-            if primitives::is_vector_value(&current) {
-                primitives::call(
-                    self,
-                    "aset",
-                    &[current, index_value, new_value.clone()],
-                    env,
-                )?;
-                return Ok(new_value);
-            }
-            let index = index_value.as_integer()? as usize;
-            if matches!(current, Value::String(_) | Value::StringObject(_)) {
-                let updated = primitives::aset_string_value(&current, index, &new_value)?;
-                self.set_variable(name, updated, env);
-                return Ok(new_value);
-            }
-            let mut entries = current.to_vec()?;
-            let tagged = matches!(
-                entries.first(),
-                Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
-            );
-            let slot = if tagged { index + 1 } else { index };
-            if slot >= entries.len() {
-                return Err(LispError::Signal("Args out of range".into()));
-            }
-            entries[slot] = new_value.clone();
-            self.set_variable(name, Value::list(entries), env);
-            return Ok(new_value);
+                )
+                .map(|_| new_value.clone())
+            } else {
+                match index_value.as_integer() {
+                    Ok(index) => {
+                        let index = index as usize;
+                        if matches!(current, Value::String(_) | Value::StringObject(_)) {
+                            primitives::aset_string_value(&current, index, &new_value).map(
+                                |updated| {
+                                    self.set_variable(name, updated, env);
+                                    new_value.clone()
+                                },
+                            )
+                        } else {
+                            match current.to_vec() {
+                                Ok(mut entries) => {
+                                    let tagged = matches!(
+                                        entries.first(),
+                                        Some(Value::Symbol(symbol))
+                                            if symbol == "vector" || symbol == "vector-literal"
+                                    );
+                                    let slot = if tagged { index + 1 } else { index };
+                                    if slot >= entries.len() {
+                                        Err(LispError::Signal("Args out of range".into()))
+                                    } else {
+                                        entries[slot] = new_value.clone();
+                                        self.set_variable(name, Value::list(entries), env);
+                                        Ok(new_value.clone())
+                                    }
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
+            };
+            let result = match result {
+                Ok(value) => Ok(value),
+                Err(error @ LispError::Throw(_, _)) => Err(error),
+                Err(error) => self.dispatch_handler_bindings(error, env),
+            };
+            self.pop_backtrace_frame();
+            return result;
         }
 
         let vector = self.eval(&items[1], env)?;
         let index = self.eval(&items[2], env)?;
         let new_value = self.eval(&items[3], env)?;
-        primitives::call(self, "aset", &[vector, index, new_value.clone()], env)?;
-        Ok(new_value)
+        self.push_backtrace_frame(
+            Value::Symbol("aset".into()),
+            vec![vector.clone(), index.clone(), new_value.clone()],
+        );
+        let result = match primitives::call(self, "aset", &[vector, index, new_value.clone()], env)
+        {
+            Ok(_) => Ok(new_value),
+            Err(error @ LispError::Throw(_, _)) => Err(error),
+            Err(error) => self.dispatch_handler_bindings(error, env),
+        };
+        self.pop_backtrace_frame();
+        result
     }
 
     // ── cl-flet ──

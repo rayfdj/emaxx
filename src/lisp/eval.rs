@@ -1797,7 +1797,16 @@ impl ClDefmethodSpecializer {
 fn first_cl_defmethod_specializer(
     spec: &Value,
 ) -> Result<Option<ClDefmethodSpecializer>, LispError> {
+    let mut skip_context_arg = false;
     for item in spec.to_vec()? {
+        if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
+            skip_context_arg = true;
+            continue;
+        }
+        if skip_context_arg {
+            skip_context_arg = false;
+            continue;
+        }
         let Value::Cons(_, _) = item else {
             continue;
         };

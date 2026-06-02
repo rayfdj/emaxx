@@ -68,6 +68,7 @@ impl Interpreter {
                         "atomic-change-group" => {
                             return self.sf_atomic_change_group(&items[1..], env);
                         }
+                        "throw" => return self.sf_throw(&items, env),
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),
                         "let" | "dlet" => return self.sf_let(&items, env),
@@ -94,7 +95,6 @@ impl Interpreter {
                         "incf" | "cl-incf" => return self.sf_incf(&items, env, 1),
                         "decf" | "cl-decf" => return self.sf_incf(&items, env, -1),
                         "cl-callf" => return self.sf_cl_callf(&items, env),
-                        "setcar" => return self.sf_setcar(&items, env),
                         "defvar" | "defconst" | "defcustom" => {
                             return self.sf_defvar(&items, env);
                         }
@@ -414,10 +414,19 @@ impl Interpreter {
                 }
                 Ok(self.selected_window_value())
             }
-            Value::BuiltinFunc(ref name) => match primitives::call(self, name, args, env) {
-                Ok(value) => Ok(value),
-                Err(error) => self.dispatch_handler_bindings(error, env),
-            },
+            Value::BuiltinFunc(ref name) => {
+                let backtrace_function = original_name
+                    .map(|name| Value::Symbol(name.to_string()))
+                    .unwrap_or_else(|| Value::Symbol(name.clone()));
+                self.push_backtrace_frame(backtrace_function, args.to_vec());
+                let result = match primitives::call(self, name, args, env) {
+                    Ok(value) => Ok(value),
+                    Err(error @ LispError::Throw(_, _)) => Err(error),
+                    Err(error) => self.dispatch_handler_bindings(error, env),
+                };
+                self.pop_backtrace_frame();
+                result
+            }
             Value::Record(id)
                 if self
                     .find_record(id)

@@ -19,9 +19,9 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1505/7080 are verified locally.
+- Tests through 1506/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1505/7080: preserve macroexpanded let bindings`.
+  `Compat 1506/7080: preserve byte-op error backtraces`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
@@ -246,7 +246,12 @@ counts as the progress denominator.
   warning defaults used by byte compilation, preserving native mode-hook
   dispatch, adding default file-mode helpers, and applying the
   `no-byte-compile` file-local header in `normal-mode`.
-  Selector 1506, `bytecomp--byte-op-error-backtrace`, is next.
+- Selector 1506, `bytecomp--byte-op-error-backtrace` in
+  `test/lisp/emacs-lisp/bytecomp-tests.el`, passed after preserving builtin
+  call frames through handler dispatch, treating `throw` as a non-evaluating
+  special form, and matching byte-op error payloads for list, cons, vector,
+  record, and string accessors.
+  Selector 1507, `bytecomp--copy-tree`, is next.
 
 ## Workflow
 

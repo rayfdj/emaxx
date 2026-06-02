@@ -1725,7 +1725,16 @@ pub(super) fn call(
         "mapbacktrace" => {
             need_arg_range(name, args, 1, 2)?;
             let callback = resolve_callable(interp, &args[0], env)?;
-            for (evald, function, frame_args, debug_on_exit) in interp.backtrace_frames_snapshot() {
+            let base = args.get(1).filter(|value| !value.is_nil());
+            let frames = interp.backtrace_frames_snapshot();
+            let start = base
+                .and_then(|base| {
+                    frames
+                        .iter()
+                        .position(|(_, function, _, _)| function == base)
+                })
+                .unwrap_or(0);
+            for (evald, function, frame_args, debug_on_exit) in frames.into_iter().skip(start) {
                 let flags = if debug_on_exit {
                     Value::list([Value::Symbol(":debug-on-exit".into()), Value::T])
                 } else {
@@ -1782,8 +1791,9 @@ pub(super) fn call(
                 ])));
             }
             let index = raw_index as usize;
+            let base = args.get(1).filter(|value| !value.is_nil());
             let locals = interp
-                .backtrace_frame_locals_snapshot(index)
+                .backtrace_frame_locals_snapshot_with_base(index, base)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(name, value)| Value::cons(Value::Symbol(name), value))

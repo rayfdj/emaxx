@@ -1644,30 +1644,6 @@ impl Interpreter {
         Ok(updated)
     }
 
-    pub(super) fn sf_setcar(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        if items.len() != 3 {
-            return Err(LispError::WrongNumberOfArgs(
-                "setcar".into(),
-                items.len().saturating_sub(1),
-            ));
-        }
-        let target = if let Ok(name) = items[1].as_symbol() {
-            self.lookup(name, env)?
-        } else {
-            self.eval(&items[1], env)?
-        };
-        let target_name = items[1].as_symbol().ok().map(str::to_string);
-        let Value::Cons(_, _) = &target else {
-            return Err(LispError::TypeError("cons".into(), items[1].type_name()));
-        };
-        let updated_car = self.eval(&items[2], env)?;
-        target.set_car(updated_car.clone())?;
-        if let Some(name) = target_name {
-            self.set_variable(&name, target, env);
-        }
-        Ok(updated_car)
-    }
-
     pub(super) fn sf_add_to_list(
         &mut self,
         items: &[Value],
