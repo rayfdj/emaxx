@@ -69,6 +69,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "locate-library"
             | "get-load-suffixes"
             | "load"
+            | "load-file"
             | "locate-file-internal"
             | "directory-files"
             | "directory-files-and-attributes"
@@ -1107,6 +1108,21 @@ pub(super) fn call(
                 ])));
             };
             crate::lisp::load_file_strict(interp, &path)?;
+            Ok(Value::T)
+        }
+        "load-file" => {
+            need_args(name, args, 1)?;
+            let path = string_text(&args[0])?;
+            let path_buf = std::path::PathBuf::from(&path);
+            if !path_buf.is_file() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("file-missing".into()),
+                    Value::String("Cannot open load file".into()),
+                    Value::String("No such file or directory".into()),
+                    Value::String(path),
+                ])));
+            }
+            crate::lisp::load_file_strict(interp, &path_buf)?;
             Ok(Value::T)
         }
         "locate-file-internal" => {

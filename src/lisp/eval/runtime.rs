@@ -1149,6 +1149,7 @@ impl Interpreter {
         if !self.provided_features.iter().any(|name| name == feature) {
             self.provided_features.push(feature.to_string());
         }
+        self.set_global_binding("features", self.features_value());
         if feature == "abbrev" {
             primitives::ensure_standard_abbrev_tables(self);
         }
@@ -1176,7 +1177,24 @@ impl Interpreter {
     }
 
     pub fn has_feature(&self, feature: &str) -> bool {
-        self.provided_features.iter().any(|name| name == feature)
+        self.global_value("features")
+            .unwrap_or_else(|| self.features_value())
+            .to_vec()
+            .is_ok_and(|features| {
+                features
+                    .iter()
+                    .any(|value| matches!(value, Value::Symbol(name) if name == feature))
+            })
+    }
+
+    pub(super) fn features_value(&self) -> Value {
+        Value::list(
+            self.provided_features
+                .iter()
+                .cloned()
+                .map(Value::Symbol)
+                .collect::<Vec<_>>(),
+        )
     }
 }
 

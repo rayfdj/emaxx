@@ -164,6 +164,61 @@ fn list_operation_type_errors_include_original_value() {
 }
 
 #[test]
+fn read_positioning_symbols_preserves_eq_binding_through_byte_compile() {
+    assert_eq!(
+        eval_str(
+            "(let* ((sym-with-pos1 (read-positioning-symbols \"sym\"))
+                    (sym-with-pos2 (read-positioning-symbols \" sym\"))
+                    (without-pos-eq-compiled
+                     (byte-compile
+                      (lambda (a b)
+                        (let ((symbols-with-pos-enabled nil))
+                          (eq a b)))))
+                    (with-pos-eq-compiled
+                     (byte-compile
+                      (lambda (a b)
+                        (let ((symbols-with-pos-enabled t))
+                          (eq a b))))))
+               (list (eq sym-with-pos1 sym-with-pos2)
+                     (funcall without-pos-eq-compiled sym-with-pos1 sym-with-pos2)
+                     (funcall with-pos-eq-compiled sym-with-pos1 sym-with-pos2)
+                     (symbol-with-pos-pos sym-with-pos1)
+                     (symbol-with-pos-pos sym-with-pos2)))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::Integer(0),
+            Value::Integer(1),
+        ])
+    );
+}
+
+#[test]
+fn condition_case_success_uses_arith_error_condition_value() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (condition-case x
+                   (/ 1 0)
+                 (error (cons 'bad x)))
+               (condition-case x
+                   (list 42)
+                 (error (cons 'bad x))
+                 (:success (cons 'good x))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("bad".into()),
+                Value::Symbol("arith-error".into())
+            ]),
+            Value::list([Value::Symbol("good".into()), Value::Integer(42)]),
+        ])
+    );
+}
+
+#[test]
 fn throw_from_handler_inside_function_reaches_matching_catch() {
     assert_eq!(
         eval_str(

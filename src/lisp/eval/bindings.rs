@@ -201,6 +201,7 @@ impl Interpreter {
             } else {
                 Value::Nil
             }),
+            "features" => Some(self.features_value()),
             "selection-converter-alist" => Some(Value::Nil),
             "early-init-file" => Some(Value::Nil),
             "init-file-user" => Some(Value::Nil),

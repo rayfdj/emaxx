@@ -551,7 +551,7 @@ pub(crate) fn integer_rounding_value(
         integer_like_bigint_for_rounding(interp, &args[1]),
     ) {
         if divisor.is_zero() {
-            return Err(LispError::Signal("Division by zero".into()));
+            return Err(arith_error());
         }
         let rounded = exact_integer_division_round(kind, numerator, divisor);
         return if float_result {
@@ -565,7 +565,7 @@ pub(crate) fn integer_rounding_value(
 
     let divisor = numeric_to_f64(interp, &args[1])?;
     if divisor == 0.0 || divisor.is_nan() {
-        return Err(LispError::Signal("Division by zero".into()));
+        return Err(arith_error());
     }
     let quotient = numeric_to_f64(interp, &args[0])? / divisor;
     let rounded = apply_rounding_kind(kind, quotient)?;
@@ -603,7 +603,7 @@ pub(crate) fn exact_numeric_division_round(
         return Ok(None);
     };
     if div_sig.is_zero() {
-        return Err(LispError::Signal("Division by zero".into()));
+        return Err(arith_error());
     }
     let mut scaled_num = num_sig;
     let mut scaled_div = div_sig;
