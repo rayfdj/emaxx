@@ -298,7 +298,8 @@ fn eval_arithmetic() {
         let form = Reader::new("(/ 0)").read().unwrap().unwrap();
         assert!(matches!(
             interp.eval(&form, &mut env),
-            Err(LispError::Signal(message)) if message == "Division by zero"
+            Err(LispError::SignalValue(value))
+                if value == Value::list([Value::Symbol("arith-error".into())])
         ));
     }
     assert_eq!(eval_str("(+ 1 2 3 4)"), Value::Integer(10));

@@ -775,6 +775,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "ert-fail"
             | "get-load-suffixes"
             | "load"
+            | "load-file"
             | "locate-file-internal"
             | "directory-files"
             | "directory-files-and-attributes"

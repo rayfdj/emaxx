@@ -74,7 +74,29 @@ impl Interpreter {
         let body_result = self.eval(&items[2], env);
         self.condition_case_depth = self.condition_case_depth.saturating_sub(1);
         match body_result {
-            Ok(val) => Ok(val),
+            Ok(val) => {
+                for handler in &items[3..] {
+                    let parts = handler.to_vec()?;
+                    if !matches!(parts.first(), Some(Value::Symbol(symbol)) if symbol == ":success")
+                    {
+                        continue;
+                    }
+                    if let Some(ref var_name) = var {
+                        env.push(vec![(var_name.clone(), val.clone())]);
+                    }
+                    let result = self.sf_progn(&parts[1..], env);
+                    if let (Some(var_name), Ok(value)) = (&var, &result)
+                        && let Some(current_value) = current_frame_binding(env, var_name).cloned()
+                    {
+                        patch_returned_closure_binding(value, var_name, &current_value);
+                    }
+                    if var.is_some() {
+                        env.pop();
+                    }
+                    return result;
+                }
+                Ok(val)
+            }
             Err(e) => {
                 if self.take_condition_case_suspend() {
                     return Err(e);
@@ -102,6 +124,11 @@ impl Interpreter {
                         env.push(vec![(var_name.clone(), error_condition_value(&e))]);
                     }
                     let result = self.sf_progn(&parts[1..], env);
+                    if let (Some(var_name), Ok(value)) = (&var, &result)
+                        && let Some(current_value) = current_frame_binding(env, var_name).cloned()
+                    {
+                        patch_returned_closure_binding(value, var_name, &current_value);
+                    }
                     if var.is_some() {
                         env.pop();
                     }
@@ -1322,4 +1349,29 @@ impl Interpreter {
     }
 
     // ── Backquote ──
+}
+
+fn current_frame_binding<'a>(env: &'a Env, name: &str) -> Option<&'a Value> {
+    env.last()
+        .and_then(|frame| frame.iter().find(|(symbol, _)| symbol == name))
+        .map(|(_, value)| value)
+}
+
+fn patch_returned_closure_binding(value: &Value, name: &str, current_value: &Value) {
+    match value {
+        Value::Lambda(_, _, closure_env) => {
+            for frame in closure_env.borrow_mut().iter_mut() {
+                for (symbol, captured) in frame {
+                    if symbol == name {
+                        *captured = current_value.clone();
+                    }
+                }
+            }
+        }
+        Value::Cons(car, cdr) => {
+            patch_returned_closure_binding(&car.borrow(), name, current_value);
+            patch_returned_closure_binding(&cdr.borrow(), name, current_value);
+        }
+        _ => {}
+    }
 }

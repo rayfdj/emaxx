@@ -169,7 +169,7 @@ pub(super) fn call(
                 let mut result = if args.len() == 1 {
                     let divisor = integer_like_bigint(interp, &args[0])?;
                     if divisor.is_zero() {
-                        return Err(LispError::Signal("Division by zero".into()));
+                        return Err(arith_error());
                     }
                     BigInt::from(1u8) / divisor
                 } else {
@@ -178,7 +178,7 @@ pub(super) fn call(
                 for a in &args[1..] {
                     let divisor = integer_like_bigint(interp, a)?;
                     if divisor.is_zero() {
-                        return Err(LispError::Signal("Division by zero".into()));
+                        return Err(arith_error());
                     }
                     result /= divisor;
                 }
@@ -187,7 +187,7 @@ pub(super) fn call(
                 let mut result = if args.len() == 1 {
                     let divisor = integer_like_i64(interp, &args[0])?;
                     if divisor == 0 {
-                        return Err(LispError::Signal("Division by zero".into()));
+                        return Err(arith_error());
                     }
                     1 / divisor
                 } else {
@@ -196,7 +196,7 @@ pub(super) fn call(
                 for a in &args[1..] {
                     let divisor = integer_like_i64(interp, a)?;
                     if divisor == 0 {
-                        return Err(LispError::Signal("Division by zero".into()));
+                        return Err(arith_error());
                     }
                     result /= divisor;
                 }
@@ -222,7 +222,7 @@ pub(super) fn call(
                 let a = integer_like_bigint(interp, &args[0])?;
                 let b = integer_like_bigint(interp, &args[1])?;
                 if b.is_zero() {
-                    return Err(LispError::Signal("Division by zero".into()));
+                    return Err(arith_error());
                 }
                 let mut r = &a % &b;
                 if name == "mod" && !r.is_zero() && (r.sign() != b.sign()) {
@@ -233,7 +233,7 @@ pub(super) fn call(
             let a = integer_like_i64(interp, &args[0])?;
             let b = integer_like_i64(interp, &args[1])?;
             if b == 0 {
-                return Err(LispError::Signal("Division by zero".into()));
+                return Err(arith_error());
             }
             Ok(Value::Integer(if name == "mod" {
                 let mut remainder = a % b;

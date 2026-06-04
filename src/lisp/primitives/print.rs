@@ -1085,6 +1085,189 @@ pub(crate) fn read_one_form(text: &str) -> Result<(Value, usize), LispError> {
     Ok((value, consumed))
 }
 
+pub(crate) fn read_positioning_symbols_from_lisp_source(
+    interp: &mut Interpreter,
+    source: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    match source {
+        Value::Buffer(_, _) => {
+            let buffer_id = interp.resolve_buffer_id(source)?;
+            let (start, end, text) = {
+                let buffer = interp
+                    .get_buffer_by_id(buffer_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+                let start = buffer.point();
+                let end = buffer.point_max();
+                (
+                    start,
+                    end,
+                    buffer
+                        .buffer_substring(start, end)
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                )
+            };
+            let (value, consumed) = read_one_positioned_form(interp, &text, start as i64)?;
+            if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                buffer.goto_char((start + consumed).min(end));
+            }
+            Ok(value)
+        }
+        Value::Marker(id) => {
+            let (buffer_id, start) = {
+                let marker = interp.find_marker(*id).ok_or_else(|| {
+                    LispError::TypeError("marker".into(), format!("marker<{id}>"))
+                })?;
+                let buffer_id = marker
+                    .buffer_id
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+                let start = marker
+                    .position
+                    .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into()))?;
+                (buffer_id, start)
+            };
+            let end = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
+                .point_max();
+            let text = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let (value, consumed) = read_one_positioned_form(interp, &text, start as i64)?;
+            interp.set_marker(*id, Some((start + consumed).min(end)), Some(buffer_id))?;
+            Ok(value)
+        }
+        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => {
+            let value = read_from_callable_source(interp, source, env)?;
+            Ok(position_symbols_in_value(
+                interp,
+                value,
+                &mut VecDeque::new(),
+            ))
+        }
+        Value::Symbol(symbol) if interp.lookup_function(symbol, env).is_ok() => {
+            let value = read_from_callable_source(interp, source, env)?;
+            Ok(position_symbols_in_value(
+                interp,
+                value,
+                &mut VecDeque::new(),
+            ))
+        }
+        _ => {
+            let text = string_text(source)?;
+            read_one_positioned_form(interp, &text, 0).map(|(value, _)| value)
+        }
+    }
+}
+
+fn read_one_positioned_form(
+    interp: &mut Interpreter,
+    text: &str,
+    base_position: i64,
+) -> Result<(Value, usize), LispError> {
+    let (value, consumed) = read_one_form(text)?;
+    let mut tokens = symbol_tokens_with_positions(text, base_position);
+    Ok((
+        position_symbols_in_value(interp, value, &mut tokens),
+        consumed,
+    ))
+}
+
+fn position_symbols_in_value(
+    interp: &mut Interpreter,
+    value: Value,
+    tokens: &mut VecDeque<(String, i64)>,
+) -> Value {
+    match value {
+        Value::Symbol(symbol) => {
+            if matches!(tokens.front(), Some((token, _)) if token == &symbol)
+                && let Some((_, position)) = tokens.pop_front()
+            {
+                interp.create_record(
+                    "symbol-with-pos",
+                    vec![Value::Symbol(symbol), Value::Integer(position)],
+                )
+            } else {
+                Value::Symbol(symbol)
+            }
+        }
+        Value::Cons(car, cdr) => {
+            let positioned_car = position_symbols_in_value(interp, car.borrow().clone(), tokens);
+            let positioned_cdr = position_symbols_in_value(interp, cdr.borrow().clone(), tokens);
+            Value::cons(positioned_car, positioned_cdr)
+        }
+        other => other,
+    }
+}
+
+fn symbol_tokens_with_positions(text: &str, base_position: i64) -> VecDeque<(String, i64)> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut tokens = VecDeque::new();
+    let mut idx = 0usize;
+    while idx < chars.len() {
+        let (_, ch) = chars[idx];
+        if ch.is_whitespace() {
+            idx += 1;
+            continue;
+        }
+        if ch == ';' {
+            idx += 1;
+            while idx < chars.len() && chars[idx].1 != '\n' {
+                idx += 1;
+            }
+            continue;
+        }
+        if ch == '"' {
+            idx += 1;
+            let mut escaped = false;
+            while idx < chars.len() {
+                let current = chars[idx].1;
+                idx += 1;
+                if escaped {
+                    escaped = false;
+                } else if current == '\\' {
+                    escaped = true;
+                } else if current == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if is_reader_delimiter(ch) {
+            idx += 1;
+            continue;
+        }
+
+        let start = idx;
+        let start_char_pos = text[..chars[start].0].chars().count() as i64;
+        let mut token = String::new();
+        while idx < chars.len() {
+            let current = chars[idx].1;
+            if current.is_whitespace() || is_reader_delimiter(current) || current == ';' {
+                break;
+            }
+            if current == '\\' && idx + 1 < chars.len() {
+                idx += 1;
+                token.push(chars[idx].1);
+                idx += 1;
+                continue;
+            }
+            token.push(current);
+            idx += 1;
+        }
+        if !token.is_empty() && token != "." {
+            tokens.push_back((token, base_position + start_char_pos));
+        }
+    }
+    tokens
+}
+
+fn is_reader_delimiter(ch: char) -> bool {
+    matches!(ch, '(' | ')' | '[' | ']' | '\'' | '`' | ',' | '"' | '#')
+}
+
 pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
     let items = value.to_vec().ok()?;
     matches!(

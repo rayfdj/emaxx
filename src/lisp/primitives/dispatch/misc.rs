@@ -4,6 +4,7 @@ pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
         "read"
+            | "read-positioning-symbols"
             | "read-from-string"
             | "md5"
             | "sha1"
@@ -110,6 +111,15 @@ pub(super) fn call(
         "read" => {
             need_args(name, args, 1)?;
             read_from_lisp_source(interp, &args[0], env)
+        }
+        "read-positioning-symbols" => {
+            need_arg_range(name, args, 0, 1)?;
+            let source = args
+                .first()
+                .cloned()
+                .or_else(|| interp.lookup_var("standard-input", env))
+                .unwrap_or(Value::Nil);
+            read_positioning_symbols_from_lisp_source(interp, &source, env)
         }
         "read-from-string" => {
             if args.is_empty() || args.len() > 3 {
