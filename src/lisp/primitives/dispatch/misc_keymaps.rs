@@ -1647,12 +1647,19 @@ pub(super) fn call(
         }
         "byte-compile" => {
             need_args(name, args, 1)?;
+            if let Ok(symbol) = args[0].as_symbol() {
+                let callable = resolve_callable(interp, &args[0], env)?;
+                let slots = byte_code_function_slots(interp, Some(symbol), callable);
+                return Ok(interp.create_record("byte-code-function", slots));
+            }
             if is_lambda_value(&args[0]) {
                 validate_lambda_form(&args[0])?;
-                return Ok(interp.create_record("byte-code-function", vec![args[0].clone()]));
+                let slots = byte_code_function_slots(interp, None, args[0].clone());
+                return Ok(interp.create_record("byte-code-function", slots));
             }
             if matches!(args[0], Value::Lambda(_, _, _)) {
-                return Ok(interp.create_record("byte-code-function", vec![args[0].clone()]));
+                let slots = byte_code_function_slots(interp, None, args[0].clone());
+                return Ok(interp.create_record("byte-code-function", slots));
             }
             Ok(args[0].clone())
         }
@@ -7688,4 +7695,68 @@ fn semantic_tag_has_typemodifier(tag: &Value, modifier: &str) -> bool {
                     || matches!(value, Value::Symbol(symbol) if symbol == modifier)
             })
         })
+}
+
+fn byte_code_function_slots(
+    interp: &Interpreter,
+    symbol: Option<&str>,
+    callable: Value,
+) -> Vec<Value> {
+    let doc = symbol
+        .and_then(|name| interp.get_symbol_property(name, "function-documentation"))
+        .and_then(|value| byte_code_docstring(value, &callable));
+    let interactive = symbol
+        .and_then(|name| interp.get_symbol_property(name, "interactive-form"))
+        .and_then(|form| form.to_vec().ok())
+        .and_then(|items| items.get(1).cloned())
+        .unwrap_or(Value::Nil);
+    vec![
+        callable,
+        Value::Nil,
+        Value::Nil,
+        Value::Nil,
+        doc.unwrap_or(Value::Nil),
+        interactive,
+    ]
+}
+
+fn byte_code_docstring(doc: Value, callable: &Value) -> Option<Value> {
+    let text = match doc {
+        Value::String(text) => text,
+        Value::StringObject(state) => state.borrow().text.clone(),
+        _ => return None,
+    };
+    let Some(usage) = byte_code_usage(callable) else {
+        return Some(Value::String(text));
+    };
+    Some(Value::String(format!("{text}\n\n{usage}")))
+}
+
+fn byte_code_usage(callable: &Value) -> Option<String> {
+    match callable {
+        Value::Lambda(params, _, _) => Some(format!("(fn{})", byte_code_usage_params(params))),
+        value if is_lambda_value(value) => {
+            let items = value.to_vec().ok()?;
+            let params = items.get(1)?.to_vec().ok()?;
+            let params = params
+                .iter()
+                .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+                .collect::<Vec<_>>();
+            Some(format!("(fn{})", byte_code_usage_params(&params)))
+        }
+        _ => None,
+    }
+}
+
+fn byte_code_usage_params(params: &[String]) -> String {
+    let rendered = params
+        .iter()
+        .filter(|param| !param.starts_with('&'))
+        .map(|param| param.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    if rendered.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", rendered.join(" "))
+    }
 }

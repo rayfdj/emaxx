@@ -233,6 +233,60 @@ fn byte_compile_wraps_lambdas_in_byte_code_function_records() {
 }
 
 #[test]
+fn byte_compile_symbol_preserves_function_attributes() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-bytecomp-attr-test (x)
+                    "tata"
+                    (declare (pure t) (indent 1))
+                    (interactive "P")
+                    (list 'toto x))
+                  (let ((bc (byte-compile 'emaxx-bytecomp-attr-test)))
+                    (list (byte-code-function-p bc)
+                          (funcall bc 'titi)
+                          (aref bc 5)
+                          (get 'emaxx-bytecomp-attr-test 'pure)
+                          (get 'emaxx-bytecomp-attr-test 'lisp-indent-function)
+                          (aref bc 4))))
+                "#
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::Symbol("toto".into()), Value::Symbol("titi".into())]),
+            Value::String("P".into()),
+            Value::T,
+            Value::Integer(1),
+            Value::String("tata\n\n(fn X)".into()),
+        ])
+    );
+}
+
+#[test]
+fn eval_lexical_lambda_honors_local_defvar_specialness() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-local-defvar-get-vars ()
+                    (list (ignore-errors (symbol-value 'emaxx-local-defvar-var1))
+                          (ignore-errors (symbol-value 'emaxx-local-defvar-var2))))
+                  (let ((lexical-binding t))
+                    (let ((fun '(lambda ()
+                                  (defvar emaxx-local-defvar-var1)
+                                  (let ((emaxx-local-defvar-var1 'a)
+                                        (emaxx-local-defvar-var2 'b))
+                                    (ignore emaxx-local-defvar-var2)
+                                    (emaxx-local-defvar-get-vars)))))
+                      (funcall (eval fun t)))))
+                "#
+        ),
+        Value::list([Value::Symbol("a".into()), Value::Nil])
+    );
+}
+
+#[test]
 fn syntax_table_reports_the_current_buffer_table() {
     assert_eq!(
         eval_str(

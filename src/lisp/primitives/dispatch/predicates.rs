@@ -416,6 +416,13 @@ pub(super) fn call(
         }
         "commandp" => {
             need_args(name, args, 1)?;
+            if let Ok(symbol) = args[0].as_symbol()
+                && interp
+                    .get_symbol_property(symbol, "interactive-form")
+                    .is_some()
+            {
+                return Ok(Value::T);
+            }
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
             Ok(
                 if autoload_command_p(&value) || interactive_form_items(&value).is_some() {
