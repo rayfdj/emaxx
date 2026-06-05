@@ -19,9 +19,18 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1506/7080 are verified locally.
+- Tests through 1517/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1506/7080: preserve byte-op error backtraces`.
+  `Compat 1517/7080: expose byte-switch decompile metadata`.
+- The next observed frontier is selector 1518,
+  `bytecomp-test--with-suppressed-warnings` in
+  `test/lisp/emacs-lisp/bytecomp-tests.el`.
+- Current verification cadence: for each batch, exact-replay the selectors
+  touched by the batch and run impacted unit/regression tests; run full
+  `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo fmt --check`, and `git diff --check` before pushing. Full selected
+  prefix replays should be used strategically at larger milestones rather than
+  after every small commit.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

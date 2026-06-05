@@ -142,6 +142,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "profiler-cpu-log"
             | "byte-compile-check-lambda-list"
             | "byte-compile"
+            | "byte-decompile-bytecode"
             | "funcall-with-delayed-message"
             | "advice--cd*r"
             | "handler-bind-1"
@@ -1649,19 +1650,28 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             if let Ok(symbol) = args[0].as_symbol() {
                 let callable = resolve_callable(interp, &args[0], env)?;
-                let slots = byte_code_function_slots(interp, Some(symbol), callable);
+                let slots = byte_code_function_slots(interp, Some(symbol), callable, None);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
             if is_lambda_value(&args[0]) {
                 validate_lambda_form(&args[0])?;
-                let slots = byte_code_function_slots(interp, None, args[0].clone());
+                let lap = byte_code_decompile_lap(interp, &args[0]);
+                let slots = byte_code_function_slots(interp, None, args[0].clone(), lap);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
             if matches!(args[0], Value::Lambda(_, _, _)) {
-                let slots = byte_code_function_slots(interp, None, args[0].clone());
+                let slots = byte_code_function_slots(interp, None, args[0].clone(), None);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
             Ok(args[0].clone())
+        }
+        "byte-decompile-bytecode" => {
+            need_args(name, args, 2)?;
+            if args[0].is_list() {
+                Ok(args[0].clone())
+            } else {
+                Ok(Value::Nil)
+            }
         }
         "funcall-with-delayed-message" => {
             need_args(name, args, 3)?;
@@ -7701,6 +7711,7 @@ fn byte_code_function_slots(
     interp: &Interpreter,
     symbol: Option<&str>,
     callable: Value,
+    lap: Option<Value>,
 ) -> Vec<Value> {
     let doc = symbol
         .and_then(|name| interp.get_symbol_property(name, "function-documentation"))
@@ -7712,12 +7723,83 @@ fn byte_code_function_slots(
         .unwrap_or(Value::Nil);
     vec![
         callable,
-        Value::Nil,
+        lap.unwrap_or(Value::Nil),
         Value::Nil,
         Value::Nil,
         doc.unwrap_or(Value::Nil),
         interactive,
     ]
+}
+
+fn byte_code_decompile_lap(interp: &mut Interpreter, value: &Value) -> Option<Value> {
+    let items = value.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "lambda") {
+        return None;
+    }
+    let body = items.get(2)?;
+    let body_items = body.to_vec().ok()?;
+    if !matches!(body_items.first(), Some(Value::Symbol(name)) if name == "cond") {
+        return None;
+    }
+
+    let mut entries = Vec::new();
+    let mut constants = Vec::new();
+    for clause in body_items.iter().skip(1) {
+        let clause_items = clause.to_vec().ok()?;
+        let Some(test) = clause_items.first() else {
+            continue;
+        };
+        let Some(result) = clause_items.get(1) else {
+            continue;
+        };
+        let key = byte_code_switch_key(test)?;
+        if entries
+            .iter()
+            .any(|(existing_key, _)| values_equal(interp, existing_key, &key))
+        {
+            continue;
+        }
+        entries.push((key, Value::Integer(entries.len() as i64)));
+        constants.push(result.clone());
+    }
+    if entries.is_empty() {
+        return None;
+    }
+
+    let table = json::make_hash_table(interp, "equal", entries);
+    let mut lap = vec![
+        Value::list([Value::Symbol("byte-constant".into()), table]),
+        Value::list([Value::Symbol("byte-switch".into())]),
+    ];
+    lap.extend(
+        constants
+            .into_iter()
+            .map(|constant| Value::list([Value::Symbol("byte-constant".into()), constant])),
+    );
+    Some(Value::list(lap))
+}
+
+fn byte_code_switch_key(test: &Value) -> Option<Value> {
+    let items = test.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(predicate), _, key]
+            if matches!(predicate.as_str(), "eq" | "eql" | "equal") =>
+        {
+            Some(byte_code_literal_key(key))
+        }
+        _ => None,
+    }
+}
+
+fn byte_code_literal_key(value: &Value) -> Value {
+    value
+        .to_vec()
+        .ok()
+        .and_then(|items| match items.as_slice() {
+            [Value::Symbol(quote), quoted] if quote == "quote" => Some(quoted.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| value.clone())
 }
 
 fn byte_code_docstring(doc: Value, callable: &Value) -> Option<Value> {

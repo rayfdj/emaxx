@@ -264,6 +264,63 @@ fn byte_compile_symbol_preserves_function_attributes() {
 }
 
 #[test]
+fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((bc (byte-compile
+                            '(lambda (x)
+                               (cond ((eq x 'a) 111)
+                                     ((eq x 'b) 222)
+                                     ((eq x 'a) 333)
+                                     ((eq x 'c) 444)))))
+                       (_ (autoload 'byte-decompile-bytecode "byte-opt"))
+                       (lap (byte-decompile-bytecode (aref bc 1) (aref bc 2)))
+                       (table (cadr (assq 'byte-constant lap))))
+                  (list (hash-table-p table)
+                        (sort (hash-table-keys table) #'string<)
+                        (member '(byte-constant 111) lap)
+                        (member '(byte-constant 222) lap)
+                        (member '(byte-constant 333) lap)
+                        (member '(byte-constant 444) lap)
+                        (let* ((bc2 (byte-compile
+                                     '(lambda (x)
+                                        (cond ((eql x #x10000000000000000) 111)
+                                              ((eql x #x10000000000000001) 222)
+                                              ((eql x #x10000000000000000) 333)
+                                              ((eql x #x10000000000000002) 444)))))
+                               (lap2 (byte-decompile-bytecode (aref bc2 1) (aref bc2 2)))
+                               (table2 (cadr (assq 'byte-constant lap2))))
+                          (mapcar #'numberp (hash-table-keys table2)))))
+                "#
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ]),
+            Value::list([
+                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(111)]),
+                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(222)]),
+                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(444)]),
+            ]),
+            Value::list([
+                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(222)]),
+                Value::list([Value::Symbol("byte-constant".into()), Value::Integer(444)]),
+            ]),
+            Value::Nil,
+            Value::list([Value::list([
+                Value::Symbol("byte-constant".into()),
+                Value::Integer(444),
+            ])]),
+            Value::list([Value::T, Value::T, Value::T]),
+        ])
+    );
+}
+
+#[test]
 fn eval_lexical_lambda_honors_local_defvar_specialness() {
     assert_eq!(
         eval_str(
