@@ -331,6 +331,10 @@ pub(super) fn call(
             let docstring = args.get(2).cloned().unwrap_or(Value::Nil);
             let interactive = args.get(3).cloned().unwrap_or(Value::Nil);
             let kind = args.get(4).cloned().unwrap_or(Value::Nil);
+            if crate::lisp::primitives::prefer_builtin_override(&function) {
+                interp.push_function_binding(&function, Value::BuiltinFunc(function.clone()));
+                return Ok(Value::Symbol(function));
+            }
             interp.push_function_binding(
                 &function,
                 Value::list([
