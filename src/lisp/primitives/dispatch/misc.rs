@@ -62,6 +62,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-language-environment"
             | "setenv"
             | "ignore"
+            | "byte-run--unescaped-character-literals-warning"
             | "purecopy"
             | "help--docstring-quote"
             | "help-add-fundoc-usage"
@@ -410,12 +411,7 @@ pub(super) fn call(
         "symbol-value" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            if let Some(value) = interp.lookup_var(symbol, env) {
-                Ok(value)
-            } else {
-                let resolved = interp.resolve_variable_name(symbol)?;
-                Err(LispError::Void(resolved))
-            }
+            interp.symbol_value_cell(symbol)
         }
         "default-value" => {
             need_args(name, args, 1)?;
@@ -449,6 +445,11 @@ pub(super) fn call(
         }
         "interactive-form" => {
             need_args(name, args, 1)?;
+            if let Ok(symbol) = args[0].as_symbol()
+                && let Some(form) = interp.get_symbol_property(symbol, "interactive-form")
+            {
+                return Ok(form);
+            }
             let mut value = resolve_callable(interp, &args[0], env)?;
             if let (Some(symbol), Some((file, _, _))) =
                 (args[0].as_symbol().ok(), autoload_parts(&value))
@@ -893,6 +894,10 @@ pub(super) fn call(
             Ok(value.map(Value::String).unwrap_or(Value::Nil))
         }
         "ignore" => Ok(Value::Nil),
+        "byte-run--unescaped-character-literals-warning" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Nil)
+        }
         // Load-time compatibility shims for upstream Lisp helpers whose exact
         // side effects are not needed by the currently exercised batch paths.
         "purecopy" => {

@@ -1,5 +1,43 @@
 use super::*;
 
+fn record_defun_attributes(interp: &mut Interpreter, name: &str, forms: &[Value]) {
+    interp.remove_symbol_property(name, "interactive-form");
+    for form in forms {
+        if matches!(form, Value::String(_) | Value::StringObject(_)) {
+            continue;
+        }
+        let Ok(items) = form.to_vec() else {
+            break;
+        };
+        match items.first().and_then(|value| value.as_symbol().ok()) {
+            Some("declare") => {
+                for declaration in items.iter().skip(1) {
+                    let Ok(parts) = declaration.to_vec() else {
+                        continue;
+                    };
+                    match parts.first().and_then(|value| value.as_symbol().ok()) {
+                        Some("pure") if parts.len() >= 2 => {
+                            interp.put_symbol_property(name, "pure", parts[1].clone());
+                        }
+                        Some("indent") if parts.len() >= 2 => {
+                            interp.put_symbol_property(
+                                name,
+                                "lisp-indent-function",
+                                parts[1].clone(),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("interactive") => {
+                interp.put_symbol_property(name, "interactive-form", Value::list(items));
+            }
+            _ => break,
+        }
+    }
+}
+
 impl Interpreter {
     pub(super) fn sf_setq(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_setq_internal(items, env, false)
@@ -1763,6 +1801,19 @@ impl Interpreter {
         }
         let name = items[1].as_symbol()?.to_string();
         let params = self.parse_params(&items[2])?;
+
+        let docstring = match items.get(3) {
+            Some(Value::String(text)) => Some(Value::String(text.clone())),
+            Some(Value::StringObject(state)) => Some(Value::String(state.borrow().text.clone())),
+            _ => None,
+        };
+        if let Some(docstring) = docstring.clone() {
+            self.put_symbol_property(&name, "function-documentation", docstring);
+        } else {
+            self.remove_symbol_property(&name, "function-documentation");
+        }
+
+        record_defun_attributes(self, &name, &items[3..]);
 
         // Skip docstring if present
         let body_start = if items.len() > 4 {

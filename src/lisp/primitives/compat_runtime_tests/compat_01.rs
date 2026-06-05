@@ -1539,6 +1539,36 @@ fn file_writable_p_is_true_for_creatable_missing_files() {
     std::fs::remove_dir_all(path.parent().expect("temp dir")).expect("cleanup temp dir");
 }
 
+#[cfg(unix)]
+#[test]
+fn file_writable_p_is_nil_for_missing_files_in_unwritable_directories() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let dir = std::env::temp_dir().join(format!("emaxx-file-unwritable-{}", std::process::id()));
+    let path = dir.join("missing.txt");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let original_perms = std::fs::metadata(&dir).expect("metadata").permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+        .expect("make temp dir unwritable");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "file-writable-p",
+            &[Value::String(path.display().to_string())],
+            &mut env,
+        )
+        .expect("file-writable-p for missing path"),
+        Value::Nil
+    );
+
+    std::fs::set_permissions(&dir, original_perms).expect("restore original permissions");
+    std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
+}
+
 #[test]
 fn find_file_marks_unwritable_files_read_only() {
     let mut interp = Interpreter::new();

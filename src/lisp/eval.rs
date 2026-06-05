@@ -514,6 +514,7 @@ impl Interpreter {
                     "vc-directory-exclusion-list".into(),
                     preloaded_vc_directory_exclusion_list(),
                 ),
+                ("lread--unescaped-character-literals".into(), Value::Nil),
                 (
                     "standard-output".into(),
                     Value::Symbol("external-debugging-output".into()),
@@ -538,6 +539,7 @@ impl Interpreter {
                 "inhibit-read-only".into(),
                 "inhibit-file-name-handlers".into(),
                 "inhibit-file-name-operation".into(),
+                "indent-tabs-mode".into(),
                 "initial-window-system".into(),
                 "last-coding-system-used".into(),
                 "line-spacing".into(),

@@ -5,6 +5,11 @@ pub(crate) fn function_documentation(
     value: &Value,
     env: &Env,
 ) -> Option<Value> {
+    if let Value::Symbol(symbol) = value
+        && let Some(documentation) = interp.get_symbol_property(symbol, "function-documentation")
+    {
+        return Some(documentation);
+    }
     let value = match value {
         Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok()?,
         other => other.clone(),

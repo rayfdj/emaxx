@@ -1200,15 +1200,49 @@ pub(crate) fn file_writable_p(path: &str) -> bool {
         if let Ok(metadata) = fs::metadata(candidate)
             && metadata.is_dir()
         {
-            return !metadata.permissions().readonly();
+            return directory_allows_create(candidate);
         }
         return fs::OpenOptions::new().write(true).open(candidate).is_ok();
     }
-    candidate
-        .parent()
-        .and_then(|parent| fs::metadata(parent).ok())
-        .map(|metadata| metadata.is_dir() && !metadata.permissions().readonly())
+    let Some(parent) = candidate.parent() else {
+        return false;
+    };
+    directory_allows_create(parent)
+}
+
+fn directory_allows_create(directory: &Path) -> bool {
+    let directory = if directory.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        directory
+    };
+    if !fs::metadata(directory)
+        .map(|metadata| metadata.is_dir())
         .unwrap_or(false)
+    {
+        return false;
+    }
+    let pid = std::process::id();
+    for attempt in 0..8u8 {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let probe = directory.join(format!(".emaxx-writable-probe-{pid}-{stamp:x}-{attempt:x}"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(_) => {
+                let _ = fs::remove_file(probe);
+                return true;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 pub(crate) fn file_executable_p(path: &str) -> bool {
