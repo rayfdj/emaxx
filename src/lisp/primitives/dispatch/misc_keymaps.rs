@@ -142,6 +142,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "profiler-cpu-log"
             | "byte-compile-check-lambda-list"
             | "byte-compile"
+            | "byte-compile-file"
             | "byte-decompile-bytecode"
             | "funcall-with-delayed-message"
             | "advice--cd*r"
@@ -1648,23 +1649,26 @@ pub(super) fn call(
         }
         "byte-compile" => {
             need_args(name, args, 1)?;
+            let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
+            byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
             if let Ok(symbol) = args[0].as_symbol() {
                 let callable = resolve_callable(interp, &args[0], env)?;
                 let slots = byte_code_function_slots(interp, Some(symbol), callable, None);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
-            if is_lambda_value(&args[0]) {
-                validate_lambda_form(&args[0])?;
-                let lap = byte_code_decompile_lap(interp, &args[0]);
-                let slots = byte_code_function_slots(interp, None, args[0].clone(), lap);
+            if is_lambda_value(&compile_target) {
+                validate_lambda_form(&compile_target)?;
+                let lap = byte_code_decompile_lap(interp, &compile_target);
+                let slots = byte_code_function_slots(interp, None, compile_target.clone(), lap);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
-            if matches!(args[0], Value::Lambda(_, _, _)) {
-                let slots = byte_code_function_slots(interp, None, args[0].clone(), None);
+            if matches!(compile_target, Value::Lambda(_, _, _)) {
+                let slots = byte_code_function_slots(interp, None, compile_target.clone(), None);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
-            Ok(args[0].clone())
+            Ok(compile_target)
         }
+        "byte-compile-file" => byte_compile_file(interp, args, env),
         "byte-decompile-bytecode" => {
             need_args(name, args, 2)?;
             if args[0].is_list() {
@@ -7729,6 +7733,495 @@ fn byte_code_function_slots(
         doc.unwrap_or(Value::Nil),
         interactive,
     ]
+}
+
+#[derive(Clone)]
+struct ByteCompileSuppression {
+    category: String,
+    name: Option<String>,
+}
+
+fn byte_compile_target_and_suppressions(value: &Value) -> (Value, Vec<ByteCompileSuppression>) {
+    let Ok(items) = value.to_vec() else {
+        return (value.clone(), Vec::new());
+    };
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "with-suppressed-warnings") {
+        return (value.clone(), Vec::new());
+    }
+    let suppressions = items
+        .get(1)
+        .map(byte_compile_suppressions)
+        .unwrap_or_default();
+    let target = if items.len() == 3 {
+        items[2].clone()
+    } else {
+        let mut body = vec![Value::Symbol("progn".into())];
+        body.extend(items.into_iter().skip(2));
+        Value::list(body)
+    };
+    (target, suppressions)
+}
+
+fn byte_compile_suppressions(value: &Value) -> Vec<ByteCompileSuppression> {
+    value
+        .to_vec()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let parts = entry.to_vec().ok()?;
+            let category = parts.first()?.as_symbol().ok()?.to_string();
+            let name = parts.get(1).and_then(|value| {
+                value
+                    .as_symbol()
+                    .ok()
+                    .map(str::to_string)
+                    .or_else(|| string_like(value).map(|string| string.text))
+            });
+            Some(ByteCompileSuppression { category, name })
+        })
+        .collect()
+}
+
+fn byte_compile_emit_warnings(
+    interp: &mut Interpreter,
+    form: &Value,
+    suppressions: &[ByteCompileSuppression],
+    env: &Env,
+) -> Result<(), LispError> {
+    let mut diagnostics = ByteCompileDiagnostics::default();
+    diagnostics.scan(interp, form, false);
+    for warning in diagnostics.warnings {
+        if !byte_compile_warning_suppressed(suppressions, warning.category, warning.name.as_deref())
+        {
+            byte_compile_log_warning(interp, env, &warning.message)?;
+        }
+    }
+    Ok(())
+}
+
+fn byte_compile_file(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_arg_range("byte-compile-file", args, 1, 2)?;
+    let file = string_text(&args[0])?;
+    let source_path = resolve_file_name_in_env(interp, env, &file);
+    let source = fs::read_to_string(&source_path).map_err(|error| {
+        LispError::SignalValue(file_error_value(&error.to_string(), &source_path))
+    })?;
+    if source_contains_truthy_file_local(&source, "no-byte-compile") {
+        return Ok(Value::Symbol("no-byte-compile".into()));
+    }
+
+    let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
+    for form in forms {
+        let (compile_target, suppressions) = byte_compile_target_and_suppressions(&form);
+        byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
+    }
+
+    let output_path = byte_compile_output_path(interp, env, &source_path)?;
+    fs::write(&output_path, b";ELC\n")
+        .map_err(|error| byte_compile_output_error(&output_path, &error))?;
+    Ok(Value::String(output_path))
+}
+
+fn byte_compile_output_path(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    source_path: &str,
+) -> Result<String, LispError> {
+    if let Some(function) = interp.lookup_var("byte-compile-dest-file-function", env)
+        && function.is_truthy()
+    {
+        let output = interp.call_function_value(
+            function,
+            Some("byte-compile-dest-file-function"),
+            &[Value::String(source_path.to_string())],
+            env,
+        )?;
+        return Ok(resolve_file_name_in_env(
+            interp,
+            env,
+            &string_text(&output)?,
+        ));
+    }
+    let mut path = PathBuf::from(source_path);
+    path.set_extension("elc");
+    Ok(path.display().to_string())
+}
+
+fn source_contains_truthy_file_local(source: &str, variable: &str) -> bool {
+    source
+        .lines()
+        .take(2)
+        .any(|line| line.contains(variable) && line.contains(": t"))
+}
+
+fn byte_compile_output_error(path: &str, error: &std::io::Error) -> LispError {
+    let rendered = error.to_string();
+    let detail = rendered
+        .split_once(" (os error")
+        .map(|(detail, _)| detail)
+        .unwrap_or(rendered.as_str());
+    LispError::SignalValue(Value::list([
+        Value::Symbol("file-missing".into()),
+        Value::String("Opening output file".into()),
+        Value::String(detail.into()),
+        Value::String(path.into()),
+    ]))
+}
+
+fn byte_compile_warning_suppressed(
+    suppressions: &[ByteCompileSuppression],
+    category: &str,
+    name: Option<&str>,
+) -> bool {
+    suppressions.iter().any(|suppression| {
+        suppression.category == category
+            && suppression
+                .name
+                .as_deref()
+                .is_none_or(|suppressed_name| name == Some(suppressed_name))
+    })
+}
+
+fn byte_compile_log_warning(
+    interp: &mut Interpreter,
+    env: &Env,
+    message: &str,
+) -> Result<(), LispError> {
+    let buffer_id = match interp.lookup_var("byte-compile-log-buffer", env) {
+        Some(Value::Buffer(id, _)) => id,
+        _ => {
+            let (id, _) = interp
+                .find_buffer("*Compile-Log*")
+                .unwrap_or_else(|| interp.create_buffer("*Compile-Log*"));
+            id
+        }
+    };
+    if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        let end = buffer.point_max();
+        buffer.goto_char(end);
+        buffer.insert(&(message.to_string() + "\n"));
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ByteCompileDiagnostics {
+    warnings: Vec<ByteCompileWarning>,
+    obsolete_functions: Vec<String>,
+    function_arities: Vec<(String, usize, Option<usize>)>,
+}
+
+struct ByteCompileWarning {
+    category: &'static str,
+    name: Option<String>,
+    message: String,
+}
+
+impl ByteCompileDiagnostics {
+    fn warn(&mut self, category: &'static str, name: impl Into<Option<String>>, message: String) {
+        self.warnings.push(ByteCompileWarning {
+            category,
+            name: name.into(),
+            message,
+        });
+    }
+
+    fn scan(&mut self, interp: &Interpreter, form: &Value, ignored_value: bool) {
+        let Ok(items) = form.to_vec() else {
+            if let Ok(symbol) = form.as_symbol()
+                && matches!(symbol, "obsolete-variable" | "free-variable")
+            {
+                self.warn_symbol_reference(interp, symbol);
+            }
+            return;
+        };
+        let Some(head) = items.first().and_then(|value| value.as_symbol().ok()) else {
+            for item in &items {
+                self.scan(interp, item, false);
+            }
+            return;
+        };
+
+        match head {
+            "defvar" => self.scan_defvar(&items),
+            "defun" => self.scan_defun(interp, &items),
+            "progn" => self.scan_body(interp, &items[1..]),
+            "with-suppressed-warnings" => self.scan_with_suppressed_warnings(interp, &items),
+            "save-excursion" => self.scan_save_excursion(interp, &items),
+            "condition-case" => self.scan_condition_case(interp, &items),
+            "unwind-protect" => self.scan_unwind_protect(interp, &items),
+            "cond" => self.scan_cond(interp, &items),
+            "let" | "let*" | "when" | "unless" | "ignore-error" => {
+                self.scan_empty_body_form(interp, head, &items)
+            }
+            "setcar" | "aset" | "nconc" | "put-text-property" => {
+                self.scan_mutate_constant(interp, head, &items)
+            }
+            "mapcar" if ignored_value => {
+                self.warn(
+                    "ignored-return-value",
+                    Some("mapcar".to_string()),
+                    "Warning: value from call to `mapcar' is unused; use `mapc' or `dolist' instead"
+                        .into(),
+                );
+                self.scan_body(interp, &items[1..]);
+            }
+            _ => {
+                self.scan_call(head, &items);
+                self.scan_body(interp, &items[1..]);
+            }
+        }
+    }
+
+    fn scan_body(&mut self, interp: &Interpreter, forms: &[Value]) {
+        for (index, form) in forms.iter().enumerate() {
+            self.scan(interp, form, index + 1 < forms.len());
+        }
+    }
+
+    fn scan_defvar(&mut self, items: &[Value]) {
+        if let Some(symbol) = items.get(1).and_then(|value| value.as_symbol().ok())
+            && !symbol.contains('-')
+        {
+            self.warn(
+                "lexical",
+                Some(symbol.to_string()),
+                format!("Warning: global/dynamic var `{symbol}' lacks a prefix"),
+            );
+        }
+    }
+
+    fn scan_defun(&mut self, interp: &Interpreter, items: &[Value]) {
+        let name = items.get(1).and_then(|value| value.as_symbol().ok());
+        if let Some(name) = name {
+            if defun_declares_obsolete(items) {
+                self.obsolete_functions.push(name.to_string());
+            }
+            if let Some((required, maximum)) = defun_arity(items) {
+                self.function_arities
+                    .push((name.to_string(), required, maximum));
+            }
+        }
+        let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
+            4
+        } else {
+            3
+        };
+        self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+    }
+
+    fn scan_with_suppressed_warnings(&mut self, interp: &Interpreter, items: &[Value]) {
+        if items.len() <= 2 {
+            self.warn(
+                "empty-body",
+                Some("with-suppressed-warnings".to_string()),
+                "Warning: `with-suppressed-warnings' with empty body".into(),
+            );
+        }
+        self.scan_body(interp, items.get(2..).unwrap_or_default());
+    }
+
+    fn scan_save_excursion(&mut self, interp: &Interpreter, items: &[Value]) {
+        for form in items.iter().skip(1) {
+            if let Ok(parts) = form.to_vec()
+                && matches!(parts.first(), Some(Value::Symbol(name)) if name == "set-buffer")
+            {
+                self.warn(
+                    "suspicious",
+                    Some("set-buffer".to_string()),
+                    "Warning: Use `with-current-buffer' rather than set-buffer".into(),
+                );
+            }
+            self.scan(interp, form, false);
+        }
+    }
+
+    fn scan_condition_case(&mut self, interp: &Interpreter, items: &[Value]) {
+        if items.len() <= 3 {
+            self.warn(
+                "suspicious",
+                Some("condition-case".to_string()),
+                "Warning: `condition-case' without handlers".into(),
+            );
+        }
+        self.scan_body(interp, items.get(2..).unwrap_or_default());
+    }
+
+    fn scan_unwind_protect(&mut self, interp: &Interpreter, items: &[Value]) {
+        if items.len() <= 2 {
+            self.warn(
+                "suspicious",
+                Some("unwind-protect".to_string()),
+                "Warning: `unwind-protect' without unwind forms".into(),
+            );
+        }
+        self.scan_body(interp, items.get(1..).unwrap_or_default());
+    }
+
+    fn scan_cond(&mut self, interp: &Interpreter, items: &[Value]) {
+        let mut saw_default = false;
+        for clause in items.iter().skip(1) {
+            if saw_default {
+                self.warn(
+                    "suspicious",
+                    Some("cond".to_string()),
+                    "Warning: Useless clause following default `cond' clause".into(),
+                );
+                break;
+            }
+            if let Ok(parts) = clause.to_vec() {
+                if matches!(parts.first(), Some(Value::T)) {
+                    saw_default = true;
+                }
+                self.scan_body(interp, parts.get(1..).unwrap_or_default());
+            }
+        }
+    }
+
+    fn scan_empty_body_form(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        let body_start = match head {
+            "let" | "let*" => 2,
+            "when" | "unless" | "ignore-error" => 2,
+            _ => 1,
+        };
+        if items.len() <= body_start {
+            self.warn(
+                "empty-body",
+                Some(head.to_string()),
+                format!("Warning: `{head}' with empty body"),
+            );
+        }
+        self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+    }
+
+    fn scan_mutate_constant(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        match head {
+            "setcar" if items.get(1).is_some_and(quoted_list_literal) => self.warn(
+                "mutate-constant",
+                Some("setcar".to_string()),
+                "Warning: `setcar' on constant list (arg 1)".into(),
+            ),
+            "aset" if items.get(1).is_some_and(is_vector_value) => self.warn(
+                "mutate-constant",
+                Some("aset".to_string()),
+                "Warning: `aset' on constant vector (arg 1)".into(),
+            ),
+            "aset" if items.get(1).is_some_and(Value::is_string) => self.warn(
+                "mutate-constant",
+                Some("aset".to_string()),
+                "Warning: `aset' on constant string (arg 1)".into(),
+            ),
+            "nconc" if items.get(3).is_some_and(quoted_list_literal) => self.warn(
+                "mutate-constant",
+                Some("nconc".to_string()),
+                "Warning: `nconc' on constant list (arg 3)".into(),
+            ),
+            "put-text-property" if items.get(5).is_some_and(Value::is_string) => self.warn(
+                "mutate-constant",
+                Some("put-text-property".to_string()),
+                "Warning: `put-text-property' on constant string (arg 5)".into(),
+            ),
+            _ => {}
+        }
+        self.scan_body(interp, &items[1..]);
+    }
+
+    fn scan_call(&mut self, head: &str, items: &[Value]) {
+        if self.obsolete_functions.iter().any(|name| name == head) {
+            self.warn(
+                "obsolete",
+                Some(head.to_string()),
+                format!("Warning: `{head}' is an obsolete function"),
+            );
+        }
+        if head == "next-line" {
+            self.warn(
+                "interactive-only",
+                Some("next-line".to_string()),
+                "Warning: `next-line' is for interactive use only".into(),
+            );
+        }
+        if let Some((_, required, maximum)) = self
+            .function_arities
+            .iter()
+            .find(|(name, _, _)| name == head)
+            && maximum.is_some_and(|maximum| items.len() - 1 > maximum)
+        {
+            self.warn(
+                "callargs",
+                Some(head.to_string()),
+                format!(
+                    "Warning: `{head}' called with {} arguments, but accepts {}",
+                    items.len() - 1,
+                    required
+                ),
+            );
+        }
+    }
+
+    fn warn_symbol_reference(&mut self, interp: &Interpreter, symbol: &str) {
+        if symbol == "free-variable" {
+            self.warn(
+                "free-vars",
+                Some(symbol.to_string()),
+                "Warning: reference to free variable `free-variable'".into(),
+            );
+            return;
+        }
+        if symbol == "obsolete-variable"
+            && interp
+                .get_symbol_property(symbol, "byte-obsolete-variable")
+                .is_some()
+        {
+            self.warn(
+                "obsolete",
+                Some(symbol.to_string()),
+                "Warning: `obsolete-variable' is an obsolete variable".into(),
+            );
+        }
+    }
+}
+
+fn defun_declares_obsolete(items: &[Value]) -> bool {
+    items.iter().skip(3).any(|form| {
+        form.to_vec().ok().is_some_and(|parts| {
+            matches!(parts.first(), Some(Value::Symbol(name)) if name == "declare")
+                && parts.iter().skip(1).any(|decl| {
+                    decl.to_vec().ok().is_some_and(|decl_parts| {
+                        matches!(decl_parts.first(), Some(Value::Symbol(name)) if name == "obsolete")
+                    })
+                })
+        })
+    })
+}
+
+fn defun_arity(items: &[Value]) -> Option<(usize, Option<usize>)> {
+    let params = items.get(2)?.to_vec().ok()?;
+    let mut required = 0usize;
+    let mut maximum = 0usize;
+    let mut optional = false;
+    for param in params {
+        match param.as_symbol().ok()? {
+            "&optional" => optional = true,
+            "&rest" => return Some((required, None)),
+            _ if optional => maximum += 1,
+            _ => {
+                required += 1;
+                maximum += 1;
+            }
+        }
+    }
+    Some((required, Some(maximum)))
+}
+
+fn quoted_list_literal(value: &Value) -> bool {
+    value.to_vec().ok().is_some_and(|items| {
+        matches!(items.as_slice(), [Value::Symbol(quote), quoted] if quote == "quote" && quoted.is_list())
+    })
 }
 
 fn byte_code_decompile_lap(interp: &mut Interpreter, value: &Value) -> Option<Value> {

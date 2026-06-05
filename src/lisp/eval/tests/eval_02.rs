@@ -321,6 +321,70 @@ fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
 }
 
 #[test]
+fn byte_compile_file_logs_and_suppresses_structural_warnings() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-warn-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let warn_src = dir.join("warn.el");
+    let suppressed_src = dir.join("suppressed.el");
+    let warn_dest = dir.join("warn.elc");
+    let suppressed_dest = dir.join("suppressed.elc");
+    std::fs::write(&warn_src, "(defvar prefixless)\n").unwrap();
+    std::fs::write(
+        &suppressed_src,
+        "(with-suppressed-warnings ((lexical prefixless)) (defvar prefixless))\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let* ((warn-src {warn_src:?})
+                   (warn-dest {warn_dest:?})
+                   (suppressed-src {suppressed_src:?})
+                   (suppressed-dest {suppressed_dest:?})
+                   (byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+              (let ((byte-compile-dest-file-function (lambda (_) warn-dest)))
+                (byte-compile-file warn-src))
+              (let ((warn-log (with-current-buffer byte-compile-log-buffer
+                                (buffer-string))))
+                (with-current-buffer byte-compile-log-buffer
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)))
+                (let ((byte-compile-dest-file-function (lambda (_) suppressed-dest)))
+                  (byte-compile-file suppressed-src))
+                (list (string-match "global/dynamic var .prefixless. lacks" warn-log)
+                      (with-current-buffer byte-compile-log-buffer
+                        (buffer-string))
+                      (file-exists-p warn-dest)
+                      (file-exists-p suppressed-dest))))
+            "#,
+        warn_src = warn_src.display().to_string(),
+        warn_dest = warn_dest.display().to_string(),
+        suppressed_src = suppressed_src.display().to_string(),
+        suppressed_dest = suppressed_dest.display().to_string(),
+    );
+
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Integer(9),
+            Value::String(String::new()),
+            Value::T,
+            Value::T
+        ])
+    );
+}
+
+#[test]
 fn eval_lexical_lambda_honors_local_defvar_specialness() {
     assert_eq!(
         eval_str(

@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1517/7080 are verified locally.
+- Tests through 1518/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1517/7080: expose byte-switch decompile metadata`.
-- The next observed frontier is selector 1518,
-  `bytecomp-test--with-suppressed-warnings` in
+  `Compat 1518/7080: honor byte compile warning suppression`.
+- The next observed frontier is selector 1519,
+  `bytecomp-test-defcustom-type` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
