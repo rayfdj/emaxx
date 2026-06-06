@@ -7901,9 +7901,11 @@ fn byte_compile_log_warning(
         }
     };
     if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        let old_point = buffer.point();
         let end = buffer.point_max();
         buffer.goto_char(end);
         buffer.insert(&(message.to_string() + "\n"));
+        buffer.goto_char(old_point);
     }
     Ok(())
 }
@@ -7948,6 +7950,7 @@ impl ByteCompileDiagnostics {
 
         match head {
             "defvar" => self.scan_defvar(&items),
+            "defcustom" => self.scan_defcustom(interp, &items),
             "defun" => self.scan_defun(interp, &items),
             "progn" => self.scan_body(interp, &items[1..]),
             "with-suppressed-warnings" => self.scan_with_suppressed_warnings(interp, &items),
@@ -7993,6 +7996,224 @@ impl ByteCompileDiagnostics {
                 format!("Warning: global/dynamic var `{symbol}' lacks a prefix"),
             );
         }
+    }
+
+    fn scan_defcustom(&mut self, interp: &Interpreter, items: &[Value]) {
+        if let Some(initializer) = items.get(2) {
+            self.scan(interp, initializer, false);
+        }
+        let mut index = 4;
+        while index + 1 < items.len() {
+            if matches!(&items[index], Value::Symbol(keyword) if keyword == ":type") {
+                let spec = custom_type_unquote(&items[index + 1])
+                    .unwrap_or_else(|| items[index + 1].clone());
+                self.scan_custom_type_spec(&spec);
+                break;
+            }
+            index += 1;
+        }
+    }
+
+    fn scan_custom_type_spec(&mut self, spec: &Value) {
+        if custom_type_unquote(spec).is_some() {
+            self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                "Warning: type should not be quoted".into(),
+            );
+            return;
+        }
+
+        let Ok(items) = spec.to_vec() else {
+            match spec {
+                Value::Symbol(name) if name == "list" => self.warn(
+                    "suspicious",
+                    Some("defcustom".to_string()),
+                    "Warning: `list' without arguments".into(),
+                ),
+                Value::Symbol(name) if !custom_type_symbol_is_valid(name) => self.warn(
+                    "suspicious",
+                    Some("defcustom".to_string()),
+                    format!("Warning: `{name}' is not a valid type"),
+                ),
+                Value::Symbol(_) => {}
+                _ => self.warn(
+                    "suspicious",
+                    Some("defcustom".to_string()),
+                    format!("Warning: irregular type `{}'", custom_type_render(spec)),
+                ),
+            }
+            return;
+        };
+
+        let Some(head) = items.first().and_then(|value| value.as_symbol().ok()) else {
+            self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                format!("Warning: irregular type `{}'", custom_type_render(spec)),
+            );
+            return;
+        };
+        if head.starts_with(':') {
+            self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                format!("Warning: irregular type `{head}'"),
+            );
+            return;
+        }
+
+        match head {
+            "choice" => self.scan_custom_choice_type(&items[1..]),
+            "cons" => {
+                let args = self.custom_type_arguments(&items[1..]);
+                if args.len() != 2 {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        format!(
+                            "Warning: `cons' requires 2 type specs, found {}",
+                            args.len()
+                        ),
+                    );
+                }
+                for arg in args {
+                    self.scan_custom_type_spec(arg);
+                }
+            }
+            "repeat" => {
+                let args = self.custom_type_arguments(&items[1..]);
+                if args.is_empty() {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        "Warning: `repeat' without type specs".into(),
+                    );
+                }
+                for arg in args {
+                    self.scan_custom_type_spec(arg);
+                }
+            }
+            "const" => {
+                let args = self.custom_type_arguments(&items[1..]);
+                if args.len() > 1 {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        "Warning: `const' with too many values".into(),
+                    );
+                }
+                if args
+                    .first()
+                    .is_some_and(|value| custom_type_unquote(value).is_some())
+                {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        "Warning: `const' with quoted value".into(),
+                    );
+                }
+            }
+            "list" => {
+                let args = self.custom_type_arguments(&items[1..]);
+                if args.is_empty() {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        "Warning: `list' without arguments".into(),
+                    );
+                }
+                for arg in args {
+                    self.scan_custom_type_spec(arg);
+                }
+            }
+            _ if custom_type_symbol_is_valid(head) => {
+                for arg in self.custom_type_arguments(&items[1..]) {
+                    self.scan_custom_type_spec(arg);
+                }
+            }
+            _ => self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                format!("Warning: `{head}' is not a valid type"),
+            ),
+        }
+    }
+
+    fn scan_custom_choice_type(&mut self, raw_args: &[Value]) {
+        let args = self.custom_type_arguments(raw_args);
+        if args.is_empty() {
+            self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                "Warning: `choice' without any types inside".into(),
+            );
+        }
+
+        let mut const_values: Vec<String> = Vec::new();
+        let mut tag_values: Vec<String> = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            if let Ok(items) = arg.to_vec() {
+                if matches!(items.first(), Some(Value::Symbol(head)) if head == "other")
+                    && index + 1 < args.len()
+                {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        "Warning: `other' not last in `choice'".into(),
+                    );
+                }
+                if let Some(tag) = custom_type_tag(&items[1..]) {
+                    if tag_values.iter().any(|seen| seen == &tag) {
+                        self.warn(
+                            "suspicious",
+                            Some("defcustom".to_string()),
+                            format!("Warning: duplicated :tag string in `choice': \"{tag}\""),
+                        );
+                    }
+                    tag_values.push(tag);
+                }
+                if matches!(items.first(), Some(Value::Symbol(head)) if head == "const")
+                    && let Some(value) = self.custom_type_arguments(&items[1..]).first()
+                {
+                    let rendered = custom_type_render(value);
+                    if const_values.iter().any(|seen| seen == &rendered) {
+                        self.warn(
+                            "suspicious",
+                            Some("defcustom".to_string()),
+                            format!("Warning: duplicated value in `choice': `{rendered}'"),
+                        );
+                    }
+                    const_values.push(rendered);
+                }
+            }
+            self.scan_custom_type_spec(arg);
+        }
+    }
+
+    fn custom_type_arguments<'a>(&mut self, raw_args: &'a [Value]) -> Vec<&'a Value> {
+        let mut args = Vec::new();
+        let mut index = 0;
+        let mut saw_argument = false;
+        while index < raw_args.len() {
+            if let Value::Symbol(keyword) = &raw_args[index]
+                && keyword.starts_with(':')
+            {
+                if saw_argument && keyword == ":tag" {
+                    self.warn(
+                        "suspicious",
+                        Some("defcustom".to_string()),
+                        "Warning: misplaced :tag keyword".into(),
+                    );
+                }
+                index += if index + 1 < raw_args.len() { 2 } else { 1 };
+                continue;
+            }
+            saw_argument = true;
+            args.push(&raw_args[index]);
+            index += 1;
+        }
+        args
     }
 
     fn scan_defun(&mut self, interp: &Interpreter, items: &[Value]) {
@@ -8222,6 +8443,70 @@ fn quoted_list_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         matches!(items.as_slice(), [Value::Symbol(quote), quoted] if quote == "quote" && quoted.is_list())
     })
+}
+
+fn custom_type_unquote(value: &Value) -> Option<Value> {
+    value
+        .to_vec()
+        .ok()
+        .and_then(|items| match items.as_slice() {
+            [Value::Symbol(quote), quoted] if quote == "quote" => Some(quoted.clone()),
+            _ => None,
+        })
+}
+
+fn custom_type_symbol_is_valid(name: &str) -> bool {
+    matches!(
+        name,
+        "alist"
+            | "boolean"
+            | "character"
+            | "choice"
+            | "coding-system"
+            | "color"
+            | "const"
+            | "cons"
+            | "directory"
+            | "face"
+            | "file"
+            | "float"
+            | "function"
+            | "group"
+            | "hook"
+            | "integer"
+            | "key-sequence"
+            | "list"
+            | "number"
+            | "other"
+            | "plist"
+            | "radio"
+            | "regexp"
+            | "repeat"
+            | "restricted-sexp"
+            | "set"
+            | "sexp"
+            | "string"
+            | "symbol"
+            | "variable"
+            | "vector"
+    )
+}
+
+fn custom_type_tag(args: &[Value]) -> Option<String> {
+    args.windows(2).find_map(|window| match window {
+        [Value::Symbol(keyword), Value::String(tag)] if keyword == ":tag" => Some(tag.clone()),
+        _ => None,
+    })
+}
+
+fn custom_type_render(value: &Value) -> String {
+    match value {
+        Value::Nil => "nil".into(),
+        Value::T => "t".into(),
+        Value::Symbol(symbol) => symbol.clone(),
+        Value::String(text) => format!("{text:?}"),
+        _ => format!("{value}"),
+    }
 }
 
 fn byte_code_decompile_lap(interp: &mut Interpreter, value: &Value) -> Option<Value> {
