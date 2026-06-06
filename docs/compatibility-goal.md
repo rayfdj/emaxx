@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1525/7080 are verified locally.
+- Tests through 1526/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1525/7080: warn on missing lexical binding cookies`.
-- The next observed frontier is selector 1526,
-  `bytecomp-tests--unescaped-char-literals` in
+  `Compat 1526/7080: error on unescaped byte-compile char literals`.
+- The next observed frontier is selector 1527,
+  `bytecomp-tests--warnings` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -279,7 +279,10 @@ counts as the progress denominator.
   directive, preserving the existing file-output error behavior, and adding a
   compact `define-advice` special form that installs named advice through the
   existing advice wrappers without loading the full `nadvice.el` runtime.
-  Selector 1526, `bytecomp-tests--unescaped-char-literals`, is next.
+- Selector 1526, `bytecomp-tests--unescaped-char-literals`, passed after
+  routing byte compilation through the existing unescaped character literal
+  scanner and honoring `byte-compile-error-on-warn` for compile warnings.
+  Selector 1527, `bytecomp-tests--warnings`, is next.
 
 ## Workflow
 
