@@ -8209,9 +8209,8 @@ impl ByteCompileDiagnostics {
             "condition-case" => self.scan_condition_case(interp, &items),
             "unwind-protect" => self.scan_unwind_protect(interp, &items),
             "cond" => self.scan_cond(interp, &items),
-            "let" | "let*" | "when" | "unless" | "ignore-error" => {
-                self.scan_empty_body_form(interp, head, &items)
-            }
+            "ignore-error" => self.scan_ignore_error(interp, &items),
+            "let" | "let*" | "when" | "unless" => self.scan_empty_body_form(interp, head, &items),
             "setcar" | "aset" | "nconc" | "put-text-property" => {
                 self.scan_mutate_constant(interp, head, &items)
             }
@@ -8646,6 +8645,40 @@ impl ByteCompileDiagnostics {
                 "Warning: `condition-case' without handlers".into(),
             );
         }
+        for handler in items.iter().skip(3) {
+            if let Ok(handler_items) = handler.to_vec()
+                && let Some(condition) = handler_items.first()
+                && let Some(quoted) = quoted_condition_name(condition)
+            {
+                self.warn(
+                    "suspicious",
+                    Some("condition-case".to_string()),
+                    format!("Warning: `condition-case' condition should not be quoted: '{quoted}"),
+                );
+            }
+        }
+        self.scan_body(interp, items.get(2..).unwrap_or_default());
+    }
+
+    fn scan_ignore_error(&mut self, interp: &Interpreter, items: &[Value]) {
+        if items.len() <= 2 {
+            self.warn(
+                "empty-body",
+                Some("ignore-error".to_string()),
+                "Warning: `ignore-error' with empty body".into(),
+            );
+        }
+        if let Some(condition) = items.get(1)
+            && let Some(quoted) = quoted_condition_name(condition)
+        {
+            self.warn(
+                "suspicious",
+                Some("ignore-error".to_string()),
+                format!(
+                    "Warning: `ignore-error' condition argument should not be quoted: '{quoted}"
+                ),
+            );
+        }
         self.scan_body(interp, items.get(2..).unwrap_or_default());
     }
 
@@ -9026,6 +9059,10 @@ fn quoted_symbol_name(value: &Value) -> Option<String> {
         [Value::Symbol(quote), Value::Symbol(symbol)] if quote == "quote" => Some(symbol.clone()),
         _ => None,
     }
+}
+
+fn quoted_condition_name(value: &Value) -> Option<String> {
+    quoted_symbol_name(value)
 }
 
 fn symbol_designator_name(value: &Value) -> Option<String> {

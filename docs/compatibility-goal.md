@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1534/7080 are verified locally.
+- Tests through 1541/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1534/7080: warn on dodgy member literals`.
-- The next observed frontier is selector 1535,
-  `bytecomp-warn-quoted-condition` in
+  `Compat 1541/7080: warn on quoted byte-compile conditions`.
+- The next observed frontier is selector 1544,
+  `bytecomp/warn-callargs-defsubst.el` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -308,7 +308,13 @@ counts as the progress denominator.
   same literal diagnostics to identity-based member functions and quoted
   list/alist elements, and after making `cl-labels` local functions visible to
   each other.
-  Selector 1535, `bytecomp-warn-quoted-condition`, is next.
+- Selector 1535, `bytecomp-warn-quoted-condition`, passed after warning when
+  `condition-case` handlers and `ignore-error` condition arguments quote their
+  condition names.
+- Selectors 1536..1541, the lexical-variable hook warning resource files,
+  passed without additional code changes.
+  Selector 1544, `bytecomp/warn-callargs-defsubst.el`, is the next observed
+  failure; selectors 1542..1543 passed in the same warning-file probe.
 
 ## Workflow
 
