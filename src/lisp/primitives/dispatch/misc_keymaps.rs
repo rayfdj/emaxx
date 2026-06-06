@@ -8196,11 +8196,13 @@ impl ByteCompileDiagnostics {
             "defcustom" => self.scan_defcustom(interp, &items),
             "defun" => self.scan_defun(interp, &items),
             "defmacro" => self.scan_defmacro(interp, &items),
+            "lambda" => self.scan_lambda(interp, &items),
             "eval-and-compile" | "eval-when-compile" => self.scan_compile_time_body(interp, &items),
             "if" => self.scan_if(interp, &items),
             "and" => self.scan_and(interp, &items),
             "or" => self.scan_or(interp, &items),
             "not" => self.scan_body(interp, &items[1..]),
+            "ignore" => self.scan_body(interp, &items[1..]),
             "progn" => self.scan_body(interp, &items[1..]),
             "with-suppressed-warnings" => self.scan_with_suppressed_warnings(interp, &items),
             "save-excursion" => self.scan_save_excursion(interp, &items),
@@ -8212,6 +8214,14 @@ impl ByteCompileDiagnostics {
             }
             "setcar" | "aset" | "nconc" | "put-text-property" => {
                 self.scan_mutate_constant(interp, head, &items)
+            }
+            "assq" if ignored_value => {
+                self.warn(
+                    "ignored-return-value",
+                    Some("assq".to_string()),
+                    "Warning: value from call to `assq' is unused".into(),
+                );
+                self.scan_body(interp, &items[1..]);
             }
             "mapcar" if ignored_value => {
                 self.warn(
@@ -8508,6 +8518,33 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
     }
 
+    fn scan_lambda(&mut self, interp: &Interpreter, items: &[Value]) {
+        let params = items
+            .get(1)
+            .and_then(|value| byte_compile_lambda_parameters(value).ok())
+            .unwrap_or_default();
+        let body_start = if items.len() > 3 && matches!(items[2], Value::String(_)) {
+            3
+        } else {
+            2
+        };
+        let body = items.get(body_start..).unwrap_or_default();
+        let mut used_symbols = Vec::new();
+        for form in body {
+            collect_symbol_references(form, &mut used_symbols);
+            self.scan(interp, form, false);
+        }
+        for param in params {
+            if !used_symbols.iter().any(|symbol| symbol == &param) {
+                self.warn(
+                    "unused-lexical-argument",
+                    Some(param.clone()),
+                    format!("Warning: lexical argument `{param}' is unused"),
+                );
+            }
+        }
+    }
+
     fn scan_compile_time_body(&mut self, interp: &Interpreter, items: &[Value]) {
         for form in items.iter().skip(1) {
             if let Ok(parts) = form.to_vec()
@@ -8785,6 +8822,51 @@ fn defun_arity(items: &[Value]) -> Option<(usize, Option<usize>)> {
         }
     }
     Some((required, Some(maximum)))
+}
+
+fn byte_compile_lambda_parameters(spec: &Value) -> Result<Vec<String>, LispError> {
+    let mut params = Vec::new();
+    for item in spec.to_vec()? {
+        let symbol = item.as_symbol()?;
+        if matches!(
+            symbol,
+            "&optional" | "&rest" | "&body" | "&key" | "&allow-other-keys" | "&aux"
+        ) {
+            continue;
+        }
+        params.push(symbol.to_string());
+    }
+    Ok(params)
+}
+
+fn collect_symbol_references(value: &Value, references: &mut Vec<String>) {
+    if let Ok(symbol) = value.as_symbol() {
+        references.push(symbol.to_string());
+        return;
+    }
+    let Ok(items) = value.to_vec() else {
+        return;
+    };
+    match items.as_slice() {
+        [Value::Symbol(head), _] if head == "quote" || head == "function" => {}
+        [Value::Symbol(head), params, body @ ..] if head == "lambda" => {
+            let shadowed = byte_compile_lambda_parameters(params).unwrap_or_default();
+            let mut nested_references = Vec::new();
+            for form in body {
+                collect_symbol_references(form, &mut nested_references);
+            }
+            references.extend(
+                nested_references
+                    .into_iter()
+                    .filter(|symbol| !shadowed.iter().any(|param| param == symbol)),
+            );
+        }
+        _ => {
+            for item in &items {
+                collect_symbol_references(item, references);
+            }
+        }
+    }
 }
 
 fn quoted_list_literal(value: &Value) -> bool {
