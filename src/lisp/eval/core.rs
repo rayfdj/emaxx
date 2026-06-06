@@ -1,6 +1,10 @@
 use super::*;
 use crate::lisp::types::SharedEnv;
 
+fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
+    matches!(record.slots.get(2), Some(Value::Symbol(symbol)) if symbol == "dynamic-binding")
+}
+
 impl Interpreter {
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
@@ -433,16 +437,26 @@ impl Interpreter {
                     .find_record(id)
                     .is_some_and(|record| record.type_name == "byte-code-function") =>
             {
-                let Some(record) = self.find_record(id) else {
-                    unreachable!("checked record presence");
+                let (inner, uses_dynamic_binding) = {
+                    let Some(record) = self.find_record(id) else {
+                        unreachable!("checked record presence");
+                    };
+                    let Some(inner) = record.slots.first().cloned() else {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("invalid-function".into()),
+                            Value::Record(id),
+                        ])));
+                    };
+                    (inner, byte_code_function_uses_dynamic_binding(record))
                 };
-                let Some(inner) = record.slots.first() else {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("invalid-function".into()),
-                        Value::Record(id),
-                    ])));
-                };
-                self.call_function_value(inner.clone(), original_name, args, env)
+                if uses_dynamic_binding {
+                    self.push_lambda_capture_override(false);
+                    let result = self.call_function_value(inner, original_name, args, env);
+                    self.pop_lambda_capture_override();
+                    result
+                } else {
+                    self.call_function_value(inner, original_name, args, env)
+                }
             }
             Value::Lambda(ref params, ref body, ref closure_env) => {
                 if is_semantic_lambda_params(params) {

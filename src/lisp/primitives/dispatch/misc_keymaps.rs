@@ -1661,17 +1661,21 @@ pub(super) fn call(
             byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
             if let Ok(symbol) = args[0].as_symbol() {
                 let callable = resolve_callable(interp, &args[0], env)?;
-                let slots = byte_code_function_slots(interp, Some(symbol), callable, None);
+                let slots = byte_code_function_slots(interp, Some(symbol), callable, None, false);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
             if is_lambda_value(&compile_target) {
                 validate_lambda_form(&compile_target)?;
                 let lap = byte_code_decompile_lap(interp, &compile_target);
-                let slots = byte_code_function_slots(interp, None, compile_target.clone(), lap);
+                let capture_lexical = byte_compile_capture_lexical(interp, env);
+                let callable =
+                    byte_compile_lambda_callable(interp, env, &compile_target, capture_lexical)?;
+                let slots = byte_code_function_slots(interp, None, callable, lap, !capture_lexical);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
             if matches!(compile_target, Value::Lambda(_, _, _)) {
-                let slots = byte_code_function_slots(interp, None, compile_target.clone(), None);
+                let slots =
+                    byte_code_function_slots(interp, None, compile_target.clone(), None, false);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
             Ok(compile_target)
@@ -7735,6 +7739,7 @@ fn byte_code_function_slots(
     symbol: Option<&str>,
     callable: Value,
     lap: Option<Value>,
+    dynamic_binding: bool,
 ) -> Vec<Value> {
     let doc = symbol
         .and_then(|name| interp.get_symbol_property(name, "function-documentation"))
@@ -7747,11 +7752,33 @@ fn byte_code_function_slots(
     vec![
         callable,
         lap.unwrap_or(Value::Nil),
-        Value::Nil,
+        if dynamic_binding {
+            Value::Symbol("dynamic-binding".into())
+        } else {
+            Value::Nil
+        },
         Value::Nil,
         doc.unwrap_or(Value::Nil),
         interactive,
     ]
+}
+
+fn byte_compile_capture_lexical(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var("lexical-binding", env)
+        .is_some_and(|value| value.is_truthy())
+}
+
+fn byte_compile_lambda_callable(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    lambda_form: &Value,
+    capture_lexical: bool,
+) -> Result<Value, LispError> {
+    interp.push_lambda_capture_override(capture_lexical);
+    let result = interp.eval(lambda_form, env);
+    interp.pop_lambda_capture_override();
+    result
 }
 
 #[derive(Clone)]

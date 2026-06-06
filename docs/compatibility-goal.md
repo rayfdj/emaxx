@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1528/7080 are verified locally.
+- Tests through 1529/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1528/7080: recognize byte-compile arg-list docstrings`.
-- The next observed frontier is selector 1529,
-  `bytecomp-tests-dynbind` in
+  `Compat 1529/7080: preserve dynamic lambda binding in byte compile`.
+- The next observed frontier is selector 1530,
+  `bytecomp-tests-function-put` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -291,7 +291,11 @@ counts as the progress denominator.
   implementing `byte-compile--wide-docstring-p` as a protected byte-compile
   primitive that ignores function argument-list docstring lines, URLs, and
   fixed-width command-key substitutions.
-  Selector 1529, `bytecomp-tests-dynbind`, is next.
+- Selector 1529, `bytecomp-tests-dynbind`, passed after making compiled lambda
+  forms honor the current `lexical-binding` mode, propagating dynamic binding
+  into nested lambdas, and preserving dynamic `condition-case` handler
+  variables captured by returned lambdas.
+  Selector 1530, `bytecomp-tests-function-put`, is next.
 
 ## Workflow
 

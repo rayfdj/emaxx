@@ -685,6 +685,72 @@ fn byte_compile_wide_docstring_ignores_function_arg_lists() {
 }
 
 #[test]
+fn byte_compile_lambda_form_honors_dynamic_lexical_binding() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((x 1))
+                  (list
+                   (let ((lexical-binding nil)
+                         (compiled (byte-compile '(lambda () x))))
+                     (let ((x 2))
+                       (funcall compiled)))
+                   (let ((compiled (let ((lexical-binding t)
+                                         (x 3))
+                                     (byte-compile '(lambda () x)))))
+                     (let ((x 4))
+                       (funcall compiled)))))
+                "#
+        ),
+        Value::list([Value::Integer(2), Value::Integer(3)])
+    );
+}
+
+#[test]
+fn condition_case_dynamic_handler_lambdas_capture_error_variable() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((form '(funcall
+                              (condition-case x
+                                  (/ 1 0)
+                                (arith-error
+                                 (prog1 (lambda (y) (+ y x))
+                                   (setq x 10))))
+                              4))
+                      (lexical-binding nil))
+                  (list (eval form lexical-binding)
+                        (funcall (byte-compile (list 'lambda nil form)))))
+                "#
+        ),
+        Value::list([Value::Integer(14), Value::Integer(14)])
+    );
+}
+
+#[test]
+fn byte_compile_dynamic_nested_lambdas_do_not_capture_outer_parameters() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((form '(let ((f (lambda (x)
+                                        (lambda nil
+                                          (let ((g (lambda nil x)))
+                                            (let ((x 'a))
+                                              (list x (funcall g))))))))
+                               (funcall (funcall f 'b))))
+                      (lexical-binding nil))
+                  (list (eval form lexical-binding)
+                        (funcall (byte-compile (list 'lambda nil form)))))
+                "#
+        ),
+        Value::list([
+            Value::list([Value::Symbol("a".into()), Value::Symbol("a".into())]),
+            Value::list([Value::Symbol("a".into()), Value::Symbol("a".into())]),
+        ])
+    );
+}
+
+#[test]
 fn define_advice_installs_named_around_advice() {
     assert_eq!(
         eval_str(
