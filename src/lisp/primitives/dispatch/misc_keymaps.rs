@@ -8215,6 +8215,7 @@ impl ByteCompileDiagnostics {
             "setcar" | "aset" | "nconc" | "put-text-property" => {
                 self.scan_mutate_constant(interp, head, &items)
             }
+            "eq" | "eql" => self.scan_eq_like_call(interp, head, &items),
             "assq" if ignored_value => {
                 self.warn(
                     "ignored-return-value",
@@ -8723,6 +8724,23 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, &items[1..]);
     }
 
+    fn scan_eq_like_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        self.scan_call(interp, head, items);
+        for (index, arg) in items.iter().skip(1).enumerate() {
+            if let Some(literal_type) = dodgy_eq_literal_type(head, arg) {
+                let arg_number = index + 1;
+                self.warn(
+                    "suspicious",
+                    Some(head.to_string()),
+                    format!(
+                        "Warning: `{head}' called with literal {literal_type} that may never match (arg {arg_number})"
+                    ),
+                );
+            }
+        }
+        self.scan_body(interp, &items[1..]);
+    }
+
     fn scan_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         if !self.called_functions.iter().any(|name| name == head) {
             self.called_functions.push(head.to_string());
@@ -8873,6 +8891,40 @@ fn quoted_list_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         matches!(items.as_slice(), [Value::Symbol(quote), quoted] if quote == "quote" && quoted.is_list())
     })
+}
+
+fn dodgy_eq_literal_type(function: &str, value: &Value) -> Option<&'static str> {
+    match value {
+        Value::String(_) | Value::StringObject(_) => Some("string"),
+        Value::Float(_) if function == "eq" => Some("float"),
+        Value::Integer(_) | Value::BigInteger(_) if function == "eq" => Some("integer"),
+        Value::Cons(_, _) => dodgy_eq_list_literal_type(function, value),
+        _ => None,
+    }
+}
+
+fn dodgy_eq_list_literal_type(function: &str, value: &Value) -> Option<&'static str> {
+    if is_vector_value(value) {
+        return Some("vector");
+    }
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(head), literal] if head == "quote" => {
+            dodgy_eq_literal_type(function, literal)
+        }
+        [Value::Symbol(head), ..] if head == "lambda" => Some("function"),
+        [Value::Symbol(head), literal] if head == "function" => {
+            if matches!(
+                literal.to_vec().ok().as_deref(),
+                Some([Value::Symbol(lambda), ..]) if lambda == "lambda"
+            ) {
+                Some("function")
+            } else {
+                None
+            }
+        }
+        _ => Some("list"),
+    }
 }
 
 fn feature_condition_value(interp: &Interpreter, value: &Value) -> Option<bool> {

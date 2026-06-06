@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1532/7080 are verified locally.
+- Tests through 1533/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1532/7080: warn on ignored byte-compile values`.
-- The next observed frontier is selector 1533,
-  `bytecomp-warn-dodgy-args-eq` in
+  `Compat 1533/7080: warn on dodgy eq literals`.
+- The next observed frontier is selector 1534,
+  `bytecomp-warn-dodgy-args-memq` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -301,7 +301,10 @@ counts as the progress denominator.
 - Selector 1532, `bytecomp-warn--ignore`, passed after adding byte-compile
   diagnostics for unused lambda arguments and ignored `assq` return values,
   while treating `ignore` as an explicit use.
-  Selector 1533, `bytecomp-warn-dodgy-args-eq`, is next.
+- Selector 1533, `bytecomp-warn-dodgy-args-eq`, passed after warning when
+  `eq`/`eql` compare literal values whose identity-oriented semantics may
+  never match, preserving `eql` numeric literal exceptions.
+  Selector 1534, `bytecomp-warn-dodgy-args-memq`, is next.
 
 ## Workflow
 
