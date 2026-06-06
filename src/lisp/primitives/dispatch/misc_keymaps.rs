@@ -8002,6 +8002,7 @@ struct ByteCompileDiagnostics {
     obsolete_functions: Vec<String>,
     function_arities: Vec<(String, usize, Option<usize>)>,
     defined_functions: Vec<String>,
+    called_functions: Vec<String>,
     suppressions: Vec<ByteCompileSuppression>,
     warn_unresolved: bool,
 }
@@ -8045,6 +8046,8 @@ impl ByteCompileDiagnostics {
             "defvar" => self.scan_defvar(&items),
             "defcustom" => self.scan_defcustom(interp, &items),
             "defun" => self.scan_defun(interp, &items),
+            "defmacro" => self.scan_defmacro(interp, &items),
+            "eval-and-compile" | "eval-when-compile" => self.scan_compile_time_body(interp, &items),
             "if" => self.scan_if(interp, &items),
             "and" => self.scan_and(interp, &items),
             "or" => self.scan_or(interp, &items),
@@ -8335,6 +8338,53 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
     }
 
+    fn scan_defmacro(&mut self, interp: &Interpreter, items: &[Value]) {
+        if let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok())
+            && self
+                .called_functions
+                .iter()
+                .any(|called_function| called_function == name)
+        {
+            self.warn(
+                "suspicious",
+                Some(name.to_string()),
+                format!("Warning: {name}:\n  function called before it was defined as a macro"),
+            );
+        }
+        let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
+            4
+        } else {
+            3
+        };
+        self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+    }
+
+    fn scan_compile_time_body(&mut self, interp: &Interpreter, items: &[Value]) {
+        for form in items.iter().skip(1) {
+            if let Ok(parts) = form.to_vec()
+                && let Some(head) = parts.first().and_then(|value| value.as_symbol().ok())
+            {
+                match head {
+                    "defun" => {
+                        self.scan_defun(interp, &parts);
+                        continue;
+                    }
+                    "defmacro" => {
+                        if let Some(name) = parts.get(1).and_then(|value| value.as_symbol().ok())
+                            && !self.defined_functions.iter().any(|defined| defined == name)
+                        {
+                            self.defined_functions.push(name.to_string());
+                        }
+                        self.scan_defmacro(interp, &parts);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            self.scan(interp, form, false);
+        }
+    }
+
     fn scan_if(&mut self, interp: &Interpreter, items: &[Value]) {
         if let Some(condition) = items.get(1) {
             self.scan(interp, condition, false);
@@ -8488,6 +8538,9 @@ impl ByteCompileDiagnostics {
     }
 
     fn scan_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        if !self.called_functions.iter().any(|name| name == head) {
+            self.called_functions.push(head.to_string());
+        }
         if self.obsolete_functions.iter().any(|name| name == head) {
             self.warn(
                 "obsolete",
