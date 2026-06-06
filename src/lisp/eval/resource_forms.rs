@@ -1410,7 +1410,12 @@ fn current_frame_binding<'a>(env: &'a Env, name: &str) -> Option<&'a Value> {
 fn patch_returned_closure_binding(value: &Value, name: &str, current_value: &Value) {
     match value {
         Value::Lambda(_, _, closure_env) => {
-            for frame in closure_env.borrow_mut().iter_mut() {
+            let mut closure_env = closure_env.borrow_mut();
+            if closure_env.is_empty() {
+                closure_env.push(vec![(name.to_string(), current_value.clone())]);
+                return;
+            }
+            for frame in closure_env.iter_mut() {
                 for (symbol, captured) in frame {
                     if symbol == name {
                         *captured = current_value.clone();
