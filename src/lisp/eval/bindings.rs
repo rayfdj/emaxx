@@ -195,6 +195,7 @@ impl Interpreter {
             "exec-suffixes" => Some(Value::list([Value::String(String::new())])),
             "debug-on-error" => Some(Value::Nil),
             "debugger-stack-frame-as-list" => Some(Value::Nil),
+            "print-quoted" => Some(Value::T),
             "eval-buffer-list" => Some(Value::Nil),
             "load-in-progress" => Some(if self.current_load_file.is_some() {
                 Value::T
