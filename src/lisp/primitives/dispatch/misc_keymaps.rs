@@ -7864,6 +7864,9 @@ fn byte_compile_file(
             "Warning: file has no `lexical-binding' directive on its first line",
         )?;
     }
+    if let Some(warning) = crate::lisp::byte_compile_unescaped_char_literal_warning(&source) {
+        byte_compile_log_warning(interp, env, &warning)?;
+    }
 
     let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
     for form in forms {
@@ -7978,6 +7981,17 @@ fn byte_compile_log_warning(
         buffer.goto_char(end);
         buffer.insert(&(message.to_string() + "\n"));
         buffer.goto_char(old_point);
+    }
+    if interp
+        .lookup_var("byte-compile-error-on-warn", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Err(LispError::Signal(
+            message
+                .strip_prefix("Warning: ")
+                .unwrap_or(message)
+                .to_string(),
+        ));
     }
     Ok(())
 }

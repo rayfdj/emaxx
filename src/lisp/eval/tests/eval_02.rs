@@ -552,6 +552,49 @@ fn byte_compile_file_warns_when_lexical_binding_cookie_is_missing() {
 }
 
 #[test]
+fn byte_compile_file_errors_on_unescaped_character_literal_warnings() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-unescaped-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.el");
+    let dest_path = dir.join("source.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*-lexical-binding:t-*-\n(list ?) ?( ?; ?\" ?[ ?])\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-error-on-warn t)
+                  (byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (cdr (should-error (byte-compile-file {source_path:?}))))
+            "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    );
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        result,
+        Value::list([Value::String(
+            concat!(
+                "unescaped character literals `?\"', `?(', `?)', `?;', `?[', `?]' detected, ",
+                "`?\\\"', `?\\(', `?\\)', `?\\;', `?\\[', `?\\]' expected!"
+            )
+            .into()
+        )])
+    );
+}
+
+#[test]
 fn define_advice_installs_named_around_advice() {
     assert_eq!(
         eval_str(

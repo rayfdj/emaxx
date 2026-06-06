@@ -31,7 +31,7 @@ fn append_message(interp: &mut eval::Interpreter, text: &str) {
     }
 }
 
-fn unescaped_char_literal_warning(path: &Path, source: &str) -> Option<String> {
+fn unescaped_char_literal_warning_parts(source: &str) -> Option<(String, String)> {
     let pairs = [
         ('"', "`?\"'", "`?\\\"'"),
         ('(', "`?('", "`?\\('"),
@@ -57,11 +57,23 @@ fn unescaped_char_literal_warning(path: &Path, source: &str) -> Option<String> {
         .map(|(_, _, expected)| *expected)
         .collect::<Vec<_>>()
         .join(", ");
+    Some((actual, expected))
+}
+
+fn unescaped_char_literal_warning(path: &Path, source: &str) -> Option<String> {
+    let (actual, expected) = unescaped_char_literal_warning_parts(source)?;
     Some(format!(
         "Loading `{}': unescaped character literals {} detected, {} expected!",
         path.display(),
         actual,
         expected
+    ))
+}
+
+pub(crate) fn byte_compile_unescaped_char_literal_warning(source: &str) -> Option<String> {
+    let (actual, expected) = unescaped_char_literal_warning_parts(source)?;
+    Some(format!(
+        "unescaped character literals {actual} detected, {expected} expected!"
     ))
 }
 
