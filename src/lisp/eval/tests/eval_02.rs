@@ -321,6 +321,77 @@ fn byte_compile_decompile_cond_switch_drops_duplicate_keys() {
 }
 
 #[test]
+fn byte_compile_warns_for_malformed_defcustom_types() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-bytecomp-defcustom-type-matches-p (pattern form)
+                    (with-current-buffer (get-buffer-create "*Compile-Log*")
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile form)
+                    (with-current-buffer "*Compile-Log*"
+                      (not (null (re-search-forward pattern nil t)))))
+                  (mapcar
+                   (lambda (case)
+                     (emaxx-bytecomp-defcustom-type-matches-p (car case) (cadr case)))
+                   '(("type should not be quoted"
+                      (defcustom mytest nil "doc" :type ''integer :group 'test))
+                     ("type should not be quoted"
+                      (defcustom mytest nil "doc" :type '(choice '(repeat boolean)) :group 'test))
+                     ("misplaced :tag keyword"
+                      (defcustom mytest nil "doc" :type '(choice (const b :tag "a")) :group 'test))
+                     ("`choice' without any types inside"
+                      (defcustom mytest nil "doc" :type '(choice :tag "a") :group 'test))
+                     ("`other' not last in `choice'"
+                      (defcustom mytest nil "doc" :type '(choice (const a) (other b) (const c)) :group 'test))
+                     ("duplicated value in `choice': `a'"
+                      (defcustom mytest nil "doc" :type '(choice (const a) (const b) (const a)) :group 'test))
+                     ("duplicated :tag string in `choice': \"X\""
+                      (defcustom mytest nil "doc" :type '(choice (const :tag "X" a) (const :tag "Y" b) (other :tag "X" c)) :group 'test))
+                     ("`cons' requires 2 type specs, found 1"
+                      (defcustom mytest nil "doc" :type '(cons :tag "a" integer) :group 'test))
+                     ("`repeat' without type specs"
+                      (defcustom mytest nil "doc" :type '(repeat :tag "a") :group 'test))
+                     ("`const' with too many values"
+                      (defcustom mytest nil "doc" :type '(const :tag "a" x y) :group 'test))
+                     ("`const' with quoted value"
+                      (defcustom mytest nil "doc" :type '(const :tag "a" 'x) :group 'test))
+                     ("`bool' is not a valid type"
+                      (defcustom mytest nil "doc" :type '(bool :tag "a") :group 'test))
+                     ("irregular type `:tag'"
+                      (defcustom mytest nil "doc" :type '(:tag "a") :group 'test))
+                     ("irregular type"
+                      (defcustom mytest nil "doc" :type '(list "string") :group 'test))
+                     ("`list' without arguments"
+                      (defcustom mytest nil "doc" :type 'list :group 'test))
+                     ("`integerp' is not a valid type"
+                      (defcustom mytest nil "doc" :type 'integerp :group 'test)))))
+                "#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn byte_compile_file_logs_and_suppresses_structural_warnings() {
     let unique = format!(
         "{}-{}",

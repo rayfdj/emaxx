@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1518/7080 are verified locally.
+- Tests through 1519/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1518/7080: honor byte compile warning suppression`.
-- The next observed frontier is selector 1519,
-  `bytecomp-test-defcustom-type` in
+  `Compat 1519/7080: validate defcustom byte-compile types`.
+- The next observed frontier is selector 1520,
+  `bytecomp-test-featurep-warnings` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -260,7 +260,16 @@ counts as the progress denominator.
   call frames through handler dispatch, treating `throw` as a non-evaluating
   special form, and matching byte-op error payloads for list, cons, vector,
   record, and string accessors.
-  Selector 1507, `bytecomp--copy-tree`, is next.
+- Selectors 1507..1518 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
+  after adding copy-tree support, byte-compile function metadata preservation,
+  byte-switch decompile metadata, byte-compile-file warning handling, and
+  `with-suppressed-warnings` suppression for structural byte-compile
+  diagnostics.
+- Selector 1519, `bytecomp-test-defcustom-type` in
+  `test/lisp/emacs-lisp/bytecomp-tests.el`, passed after validating malformed
+  `defcustom :type` specs in the byte-compile diagnostic scanner and preserving
+  the compile-log buffer point while appending warnings.
+  Selector 1520, `bytecomp-test-featurep-warnings`, is next.
 
 ## Workflow
 
