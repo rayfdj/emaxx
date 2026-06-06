@@ -1335,6 +1335,47 @@ impl Interpreter {
         result
     }
 
+    // ── cl-labels ──
+    // (cl-labels ((name (args) body...) ...) body...)
+    pub(super) fn sf_cl_labels(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-labels".into(),
+                items.len() - 1,
+            ));
+        }
+        let bindings = items[1].to_vec()?;
+        let closure_env = shared_env(Vec::new());
+        let mut frame = Vec::new();
+        for binding in &bindings {
+            let parts = binding.to_vec()?;
+            if parts.len() < 2 {
+                continue;
+            }
+            let fname = parts[0].as_symbol()?.to_string();
+            let params_val = parts[1].to_vec()?;
+            let mut params = Vec::new();
+            for p in &params_val {
+                params.push(p.as_symbol()?.to_string());
+            }
+            let body: Vec<Value> = parts[2..].to_vec();
+            frame.push((fname, Value::Lambda(params, body, closure_env.clone())));
+        }
+
+        let mut captured = env.clone();
+        captured.push(frame.clone());
+        *closure_env.borrow_mut() = captured;
+
+        env.push(frame);
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
+        result
+    }
+
     // ── cl-macrolet ──
     // (cl-macrolet ((name (args) body...) ...) body...)
     pub(super) fn sf_cl_macrolet(

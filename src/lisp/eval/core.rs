@@ -236,7 +236,8 @@ impl Interpreter {
                         }
                         "cl-letf" => return self.sf_cl_letf(&items, env),
                         "aset" => return self.sf_aset(&items, env),
-                        "cl-flet" | "cl-labels" => return self.sf_cl_flet(&items, env),
+                        "cl-flet" => return self.sf_cl_flet(&items, env),
+                        "cl-labels" => return self.sf_cl_labels(&items, env),
                         "cl-macrolet" => return self.sf_cl_macrolet(&items, env),
                         "cl-symbol-macrolet" => return self.sf_cl_symbol_macrolet(&items, env),
                         "push" => {

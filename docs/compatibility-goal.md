@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1533/7080 are verified locally.
+- Tests through 1534/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1533/7080: warn on dodgy eq literals`.
-- The next observed frontier is selector 1534,
-  `bytecomp-warn-dodgy-args-memq` in
+  `Compat 1534/7080: warn on dodgy member literals`.
+- The next observed frontier is selector 1535,
+  `bytecomp-warn-quoted-condition` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -304,7 +304,11 @@ counts as the progress denominator.
 - Selector 1533, `bytecomp-warn-dodgy-args-eq`, passed after warning when
   `eq`/`eql` compare literal values whose identity-oriented semantics may
   never match, preserving `eql` numeric literal exceptions.
-  Selector 1534, `bytecomp-warn-dodgy-args-memq`, is next.
+- Selector 1534, `bytecomp-warn-dodgy-args-memq`, passed after extending the
+  same literal diagnostics to identity-based member functions and quoted
+  list/alist elements, and after making `cl-labels` local functions visible to
+  each other.
+  Selector 1535, `bytecomp-warn-quoted-condition`, is next.
 
 ## Workflow
 
