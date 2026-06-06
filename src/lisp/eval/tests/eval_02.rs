@@ -732,6 +732,66 @@ fn byte_compile_warns_for_unused_args_and_ignored_assq_values() {
 }
 
 #[test]
+fn byte_compile_warns_for_dodgy_eq_and_eql_literal_args() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+                  (with-current-buffer byte-compile-log-buffer
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (dolist (form '((eq '(a) 'x)
+                                  (eq 'x "a")
+                                  (eq 'x [a])
+                                  (eq 'x (lambda () 1))
+                                  (eq 'x #'(lambda () 1))
+                                  (eq 'x #x10000000000)
+                                  (eq 'x 1.0)
+                                  (eql '(a) 'x)
+                                  (eql 'x "a")
+                                  (eql 'x [a])
+                                  (eql 'x (lambda () 1))
+                                  (eql 'x #'(lambda () 1))))
+                    (byte-compile form))
+                  (let ((warn-log (with-current-buffer byte-compile-log-buffer
+                                    (buffer-string))))
+                    (with-current-buffer byte-compile-log-buffer
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile '(eql 'x #x10000000000))
+                    (byte-compile '(eql 'x 1.0))
+                    (let ((numeric-eql-log (with-current-buffer byte-compile-log-buffer
+                                             (buffer-string))))
+                      (list (not (null (string-match "`eq'.*list.*arg 1" warn-log)))
+                            (not (null (string-match "`eq'.*string.*arg 2" warn-log)))
+                            (not (null (string-match "`eq'.*vector.*arg 2" warn-log)))
+                            (not (null (string-match "`eq'.*function.*arg 2" warn-log)))
+                            (not (null (string-match "`eq'.*integer.*arg 2" warn-log)))
+                            (not (null (string-match "`eq'.*float.*arg 2" warn-log)))
+                            (not (null (string-match "`eql'.*list.*arg 1" warn-log)))
+                            (not (null (string-match "`eql'.*string.*arg 2" warn-log)))
+                            (not (null (string-match "`eql'.*vector.*arg 2" warn-log)))
+                            (not (null (string-match "`eql'.*function.*arg 2" warn-log)))
+                            numeric-eql-log))))
+            "#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::String(String::new())
+        ])
+    );
+}
+
+#[test]
 fn byte_compile_wide_docstring_ignores_function_arg_lists() {
     assert_eq!(
         eval_str(
