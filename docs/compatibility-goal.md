@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1527/7080 are verified locally.
+- Tests through 1528/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1527/7080: warn on calls before macro definitions`.
-- The next observed frontier is selector 1528,
-  `bytecomp-tests-byte-compile--wide-docstring-p/func-arg-list` in
+  `Compat 1528/7080: recognize byte-compile arg-list docstrings`.
+- The next observed frontier is selector 1529,
+  `bytecomp-tests-dynbind` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -286,8 +286,12 @@ counts as the progress denominator.
   diagnostic scanner started tracking earlier function calls and warning when
   a later `defmacro` redefines that callee as a macro, while treating
   `eval-and-compile` definitions as compile-time knowledge.
-  Selector 1528,
-  `bytecomp-tests-byte-compile--wide-docstring-p/func-arg-list`, is next.
+- Selector 1528,
+  `bytecomp-tests-byte-compile--wide-docstring-p/func-arg-list`, passed after
+  implementing `byte-compile--wide-docstring-p` as a protected byte-compile
+  primitive that ignores function argument-list docstring lines, URLs, and
+  fixed-width command-key substitutions.
+  Selector 1529, `bytecomp-tests-dynbind`, is next.
 
 ## Workflow
 

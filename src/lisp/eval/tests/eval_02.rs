@@ -646,6 +646,45 @@ fn byte_compile_file_warns_when_calls_precede_macro_definitions() {
 }
 
 #[test]
+fn byte_compile_wide_docstring_ignores_function_arg_lists() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (list
+                 (progn
+                   (defun byte-compile--wide-docstring-p (_docstring _max-width) t)
+                   (byte-compile--wide-docstring-p
+                    "\\(dbus-register-property BUS SERVICE PATH INTERFACE PROPERTY ACCESS [TYPE] VALUE &optional EMITS-SIGNAL DONT-REGISTER-SERVICE)"
+                    fill-column))
+                 (byte-compile--wide-docstring-p
+                  "(dbus-register-property BUS SERVICE PATH INTERFACE PROPERTY ACCESS [TYPE] VALUE &optional EMITS-SIGNAL DONT-REGISTER-SERVICE)"
+                  fill-column)
+                 (byte-compile--wide-docstring-p
+                  "(fn CMD FLAGS FIS &key (BUF (cvs-temp-buffer)) DONT-CHANGE-DISC CVSARGS POSTPROC)"
+                  fill-column)
+                 (byte-compile--wide-docstring-p
+                  "(fn (THIS rudel-protocol-backend) TRANSPORT INFO INFO-CALLBACK &optional PROGRESS-CALLBACK)"
+                  fill-column)
+                 (byte-compile--wide-docstring-p
+                  "(fn NAME FIXTURE INPUT &key SKIP-PAIR-STRING EXPECTED-STRING EXPECTED-POINT BINDINGS (MODES \\='\\='(ruby-mode js-mode python-mode)) (TEST-IN-COMMENTS t) (TEST-IN-STRINGS t) (TEST-IN-CODE t) (FIXTURE-FN \\='#\\='electric-pair-mode))"
+                  fill-column)
+                 (byte-compile--wide-docstring-p
+                  "This ordinary documentation sentence is intentionally long enough to exceed the usual fill column and should still count as wide prose."
+                  fill-column))
+                "#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T
+        ])
+    );
+}
+
+#[test]
 fn define_advice_installs_named_around_advice() {
     assert_eq!(
         eval_str(

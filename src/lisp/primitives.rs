@@ -371,6 +371,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "byte-compile-from-buffer"
             | "byte-compile-check-lambda-list"
             | "byte-compile-file"
+            | "byte-compile--wide-docstring-p"
             | "byte-decompile-bytecode"
             | "cl-type-of"
             | "cl-prin1"

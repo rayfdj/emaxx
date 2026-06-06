@@ -144,6 +144,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "byte-compile"
             | "byte-compile-from-buffer"
             | "byte-compile-file"
+            | "byte-compile--wide-docstring-p"
             | "byte-decompile-bytecode"
             | "funcall-with-delayed-message"
             | "advice--cd*r"
@@ -1677,6 +1678,16 @@ pub(super) fn call(
         }
         "byte-compile-from-buffer" => byte_compile_from_buffer(interp, args, env),
         "byte-compile-file" => byte_compile_file(interp, args, env),
+        "byte-compile--wide-docstring-p" => {
+            need_args(name, args, 2)?;
+            let docstring = string_text(&args[0])?;
+            let max_width = args[1].as_integer()? as usize;
+            Ok(if byte_compile_wide_docstring_p(&docstring, max_width) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "byte-decompile-bytecode" => {
             need_args(name, args, 2)?;
             if args[0].is_list() {
@@ -7945,6 +7956,117 @@ fn byte_compile_from_buffer_source(source: &str) -> String {
         at_line_start = ch == '\n';
     }
     normalized
+}
+
+fn byte_compile_wide_docstring_p(docstring: &str, max_width: usize) -> bool {
+    docstring.lines().any(|line| {
+        line.chars().count() > max_width && byte_compile_docstring_line_width(line) > max_width
+    })
+}
+
+fn byte_compile_docstring_line_width(line: &str) -> usize {
+    let mut text = strip_docstring_literal_key_markup(line);
+    text = replace_bracket_command_substitutions(&text);
+    text = strip_docstring_ignored_substitutions(&text);
+    text = strip_docstring_url(&text);
+    if docstring_line_is_function_signature(&text) {
+        return 0;
+    }
+    text.chars().count()
+}
+
+fn strip_docstring_literal_key_markup(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("\\`") {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find('\'') else {
+            output.push_str(&rest[start..]);
+            return output;
+        };
+        output.push_str(&after_start[..end]);
+        rest = &after_start[end + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn replace_bracket_command_substitutions(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("\\[") {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find(']') else {
+            output.push_str(&rest[start..]);
+            return output;
+        };
+        output.push_str("xxx");
+        rest = &after_start[end + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn strip_docstring_ignored_substitutions(line: &str) -> String {
+    let mut output = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            output.push(ch);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('=') => {
+                chars.next();
+            }
+            Some('<') => {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner == '>' {
+                        break;
+                    }
+                }
+            }
+            Some('{') => {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        break;
+                    }
+                }
+            }
+            _ => output.push(ch),
+        }
+    }
+    output
+}
+
+fn strip_docstring_url(line: &str) -> String {
+    let Some(start) = line.find("http://").or_else(|| line.find("https://")) else {
+        return line.to_string();
+    };
+    line[..start].to_string()
+}
+
+fn docstring_line_is_function_signature(line: &str) -> bool {
+    let trimmed = line.trim_start_matches('\\').trim();
+    let Some(inner) = trimmed
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let mut parts = inner.split_whitespace();
+    let Some(function) = parts.next() else {
+        return false;
+    };
+    !function.is_empty()
+        && parts.next().is_some()
+        && function
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '/' | ':' | '[' | ']' | '&'))
 }
 
 fn byte_compile_warning_suppressed(
