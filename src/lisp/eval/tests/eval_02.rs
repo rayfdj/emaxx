@@ -687,6 +687,51 @@ fn byte_compile_file_applies_function_put_before_macro_expansion() {
 }
 
 #[test]
+fn byte_compile_warns_for_unused_args_and_ignored_assq_values() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+                  (with-current-buffer byte-compile-log-buffer
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (byte-compile '(lambda (y) 6))
+                  (let ((unused-arg-log (with-current-buffer byte-compile-log-buffer
+                                          (buffer-string))))
+                    (with-current-buffer byte-compile-log-buffer
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile '(lambda (y) (ignore y) 6))
+                    (let ((ignored-arg-log (with-current-buffer byte-compile-log-buffer
+                                             (buffer-string))))
+                      (with-current-buffer byte-compile-log-buffer
+                        (let ((inhibit-read-only t))
+                          (erase-buffer)))
+                      (byte-compile '(lambda (x y) (progn (assq x y) 5)))
+                      (let ((assq-log (with-current-buffer byte-compile-log-buffer
+                                        (buffer-string))))
+                        (with-current-buffer byte-compile-log-buffer
+                          (let ((inhibit-read-only t))
+                            (erase-buffer)))
+                        (byte-compile '(lambda (x y) (progn (ignore (assq x y)) 5)))
+                        (let ((ignored-assq-log (with-current-buffer byte-compile-log-buffer
+                                                  (buffer-string))))
+                          (list (not (null (string-match "unused" unused-arg-log)))
+                                ignored-arg-log
+                                (not (null (string-match "assq" assq-log)))
+                                ignored-assq-log))))))
+            "#
+        ),
+        Value::list([
+            Value::T,
+            Value::String(String::new()),
+            Value::T,
+            Value::String(String::new())
+        ])
+    );
+}
+
+#[test]
 fn byte_compile_wide_docstring_ignores_function_arg_lists() {
     assert_eq!(
         eval_str(
