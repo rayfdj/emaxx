@@ -629,6 +629,7 @@ impl Interpreter {
             macros: Vec::new(),
             functions: Vec::new(),
             provided_features: vec![
+                "emacs".into(),
                 "emaxx".into(),
                 "ert".into(),
                 "kqueue".into(),

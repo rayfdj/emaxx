@@ -392,6 +392,37 @@ fn byte_compile_warns_for_malformed_defcustom_types() {
 }
 
 #[test]
+fn byte_compile_from_buffer_warns_for_unresolved_calls_outside_feature_guards() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+                  (with-temp-buffer
+                    (insert "\\(defun foo ()\n"
+                            "  (an-undefined-function))\n"
+                            "\\(defun foo1 ()\n"
+                            "  (if (featurep 'xemacs)\n"
+                            "      (some-undefined-function-if)))\n"
+                            "\\(defun foo2 ()\n"
+                            "  (and (featurep 'xemacs)\n"
+                            "       (some-undefined-function-and)))\n"
+                            "\\(defun foo3 ()\n"
+                            "  (if (not (featurep 'emacs))\n"
+                            "      (some-undefined-function-not)))\n"
+                            "\\(defun foo4 ()\n"
+                            "  (or (featurep 'emacs)\n"
+                            "      (some-undefined-function-or)))\n")
+                    (byte-compile-from-buffer (current-buffer)))
+                  (with-current-buffer byte-compile-log-buffer
+                    (list (not (null (search-forward "an-undefined-function" nil t)))
+                          (not (null (search-forward "some-undefined-function" nil t))))))
+                "#
+        ),
+        Value::list([Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn byte_compile_file_logs_and_suppresses_structural_warnings() {
     let unique = format!(
         "{}-{}",

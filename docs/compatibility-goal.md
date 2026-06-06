@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1519/7080 are verified locally.
+- Tests through 1521/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1519/7080: validate defcustom byte-compile types`.
-- The next observed frontier is selector 1520,
-  `bytecomp-test-featurep-warnings` in
+  `Compat 1521/7080: scan buffer byte-compile feature guards`.
+- The next observed frontier is selector 1522,
+  `bytecomp-tests--lexical-binding-cookie` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -269,7 +269,12 @@ counts as the progress denominator.
   `test/lisp/emacs-lisp/bytecomp-tests.el`, passed after validating malformed
   `defcustom :type` specs in the byte-compile diagnostic scanner and preserving
   the compile-log buffer point while appending warnings.
-  Selector 1520, `bytecomp-test-featurep-warnings`, is next.
+- Selectors 1520..1521 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
+  after routing `byte-compile-from-buffer` through the structural byte-compile
+  diagnostic scanner, warning for unresolved calls outside known feature
+  guards, treating `featurep 'emacs` as true, and reading the accessible buffer
+  region used by the byte compiler.
+  Selector 1522, `bytecomp-tests--lexical-binding-cookie`, is next.
 
 ## Workflow
 
