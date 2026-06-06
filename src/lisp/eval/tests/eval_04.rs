@@ -2977,6 +2977,7 @@ fn inhibited_interaction_uses_expected_condition_type() {
 
 #[test]
 fn native_comp_capability_probes_are_honest() {
+    assert_eq!(eval_str("(featurep 'emacs)"), Value::T);
     assert_eq!(eval_str("(native-comp-available-p)"), Value::Nil);
     assert_eq!(eval_str("(featurep 'native-compile)"), Value::Nil);
     assert_eq!(

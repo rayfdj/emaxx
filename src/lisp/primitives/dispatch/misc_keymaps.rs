@@ -142,6 +142,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "profiler-cpu-log"
             | "byte-compile-check-lambda-list"
             | "byte-compile"
+            | "byte-compile-from-buffer"
             | "byte-compile-file"
             | "byte-decompile-bytecode"
             | "funcall-with-delayed-message"
@@ -1668,6 +1669,7 @@ pub(super) fn call(
             }
             Ok(compile_target)
         }
+        "byte-compile-from-buffer" => byte_compile_from_buffer(interp, args, env),
         "byte-compile-file" => byte_compile_file(interp, args, env),
         "byte-decompile-bytecode" => {
             need_args(name, args, 2)?;
@@ -7790,6 +7792,15 @@ fn byte_compile_emit_warnings(
 ) -> Result<(), LispError> {
     let mut diagnostics = ByteCompileDiagnostics::default();
     diagnostics.scan(interp, form, false);
+    byte_compile_log_diagnostics(interp, env, suppressions, diagnostics)
+}
+
+fn byte_compile_log_diagnostics(
+    interp: &mut Interpreter,
+    env: &Env,
+    suppressions: &[ByteCompileSuppression],
+    diagnostics: ByteCompileDiagnostics,
+) -> Result<(), LispError> {
     for warning in diagnostics.warnings {
         if !byte_compile_warning_suppressed(suppressions, warning.category, warning.name.as_deref())
         {
@@ -7797,6 +7808,33 @@ fn byte_compile_emit_warnings(
         }
     }
     Ok(())
+}
+
+fn byte_compile_from_buffer(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_args("byte-compile-from-buffer", args, 1)?;
+    let buffer_id = interp.resolve_buffer_id(&args[0])?;
+    let source = interp
+        .get_buffer_by_id(buffer_id)
+        .map(|buffer| buffer.buffer_string())
+        .ok_or_else(|| LispError::Signal("Buffer not found".into()))?;
+    let source = byte_compile_from_buffer_source(&source);
+    let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
+    let mut diagnostics = ByteCompileDiagnostics {
+        warn_unresolved: true,
+        ..Default::default()
+    };
+    for form in forms {
+        let (compile_target, suppressions) = byte_compile_target_and_suppressions(&form);
+        diagnostics.add_suppressions(&suppressions);
+        diagnostics.scan(interp, &compile_target, false);
+    }
+    let suppressions = diagnostics.suppressions.clone();
+    byte_compile_log_diagnostics(interp, env, &suppressions, diagnostics)?;
+    Ok(Value::Nil)
 }
 
 fn byte_compile_file(
@@ -7872,6 +7910,20 @@ fn byte_compile_output_error(path: &str, error: &std::io::Error) -> LispError {
     ]))
 }
 
+fn byte_compile_from_buffer_source(source: &str) -> String {
+    let mut normalized = String::with_capacity(source.len());
+    let mut at_line_start = true;
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if at_line_start && ch == '\\' && matches!(chars.peek(), Some('(')) {
+            continue;
+        }
+        normalized.push(ch);
+        at_line_start = ch == '\n';
+    }
+    normalized
+}
+
 fn byte_compile_warning_suppressed(
     suppressions: &[ByteCompileSuppression],
     category: &str,
@@ -7915,6 +7967,9 @@ struct ByteCompileDiagnostics {
     warnings: Vec<ByteCompileWarning>,
     obsolete_functions: Vec<String>,
     function_arities: Vec<(String, usize, Option<usize>)>,
+    defined_functions: Vec<String>,
+    suppressions: Vec<ByteCompileSuppression>,
+    warn_unresolved: bool,
 }
 
 struct ByteCompileWarning {
@@ -7930,6 +7985,10 @@ impl ByteCompileDiagnostics {
             name: name.into(),
             message,
         });
+    }
+
+    fn add_suppressions(&mut self, suppressions: &[ByteCompileSuppression]) {
+        self.suppressions.extend(suppressions.iter().cloned());
     }
 
     fn scan(&mut self, interp: &Interpreter, form: &Value, ignored_value: bool) {
@@ -7952,6 +8011,10 @@ impl ByteCompileDiagnostics {
             "defvar" => self.scan_defvar(&items),
             "defcustom" => self.scan_defcustom(interp, &items),
             "defun" => self.scan_defun(interp, &items),
+            "if" => self.scan_if(interp, &items),
+            "and" => self.scan_and(interp, &items),
+            "or" => self.scan_or(interp, &items),
+            "not" => self.scan_body(interp, &items[1..]),
             "progn" => self.scan_body(interp, &items[1..]),
             "with-suppressed-warnings" => self.scan_with_suppressed_warnings(interp, &items),
             "save-excursion" => self.scan_save_excursion(interp, &items),
@@ -7974,7 +8037,7 @@ impl ByteCompileDiagnostics {
                 self.scan_body(interp, &items[1..]);
             }
             _ => {
-                self.scan_call(head, &items);
+                self.scan_call(interp, head, &items);
                 self.scan_body(interp, &items[1..]);
             }
         }
@@ -8219,6 +8282,9 @@ impl ByteCompileDiagnostics {
     fn scan_defun(&mut self, interp: &Interpreter, items: &[Value]) {
         let name = items.get(1).and_then(|value| value.as_symbol().ok());
         if let Some(name) = name {
+            if !self.defined_functions.iter().any(|defined| defined == name) {
+                self.defined_functions.push(name.to_string());
+            }
             if defun_declares_obsolete(items) {
                 self.obsolete_functions.push(name.to_string());
             }
@@ -8233,6 +8299,42 @@ impl ByteCompileDiagnostics {
             3
         };
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+    }
+
+    fn scan_if(&mut self, interp: &Interpreter, items: &[Value]) {
+        if let Some(condition) = items.get(1) {
+            self.scan(interp, condition, false);
+        }
+        match items
+            .get(1)
+            .and_then(|condition| feature_condition_value(interp, condition))
+        {
+            Some(true) => {
+                if let Some(then_form) = items.get(2) {
+                    self.scan(interp, then_form, false);
+                }
+            }
+            Some(false) => self.scan_body(interp, items.get(3..).unwrap_or_default()),
+            None => self.scan_body(interp, items.get(2..).unwrap_or_default()),
+        }
+    }
+
+    fn scan_and(&mut self, interp: &Interpreter, items: &[Value]) {
+        for form in items.iter().skip(1) {
+            self.scan(interp, form, false);
+            if feature_condition_value(interp, form) == Some(false) {
+                break;
+            }
+        }
+    }
+
+    fn scan_or(&mut self, interp: &Interpreter, items: &[Value]) {
+        for form in items.iter().skip(1) {
+            self.scan(interp, form, false);
+            if feature_condition_value(interp, form) == Some(true) {
+                break;
+            }
+        }
     }
 
     fn scan_with_suppressed_warnings(&mut self, interp: &Interpreter, items: &[Value]) {
@@ -8351,7 +8453,7 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, &items[1..]);
     }
 
-    fn scan_call(&mut self, head: &str, items: &[Value]) {
+    fn scan_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         if self.obsolete_functions.iter().any(|name| name == head) {
             self.warn(
                 "obsolete",
@@ -8380,6 +8482,16 @@ impl ByteCompileDiagnostics {
                     items.len() - 1,
                     required
                 ),
+            );
+        }
+        if self.warn_unresolved
+            && !self.defined_functions.iter().any(|name| name == head)
+            && interp.raw_function_binding(head, &Vec::new()).is_none()
+        {
+            self.warn(
+                "unresolved",
+                Some(head.to_string()),
+                format!("Warning: the function `{head}' is not known to be defined."),
             );
         }
     }
@@ -8443,6 +8555,27 @@ fn quoted_list_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         matches!(items.as_slice(), [Value::Symbol(quote), quoted] if quote == "quote" && quoted.is_list())
     })
+}
+
+fn feature_condition_value(interp: &Interpreter, value: &Value) -> Option<bool> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(head), feature] if head == "featurep" => {
+            Some(interp.has_feature(&quoted_symbol_name(feature)?))
+        }
+        [Value::Symbol(head), inner] if head == "not" => {
+            feature_condition_value(interp, inner).map(|value| !value)
+        }
+        _ => None,
+    }
+}
+
+fn quoted_symbol_name(value: &Value) -> Option<String> {
+    let items = value.to_vec().ok()?;
+    match items.as_slice() {
+        [Value::Symbol(quote), Value::Symbol(symbol)] if quote == "quote" => Some(symbol.clone()),
+        _ => None,
+    }
 }
 
 fn custom_type_unquote(value: &Value) -> Option<Value> {
