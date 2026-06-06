@@ -595,6 +595,57 @@ fn byte_compile_file_errors_on_unescaped_character_literal_warnings() {
 }
 
 #[test]
+fn byte_compile_file_warns_when_calls_precede_macro_definitions() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-macro-warn-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.el");
+    let dest_path = dir.join("source.elc");
+    std::fs::write(
+        &source_path,
+        concat!(
+            ";;; -*-lexical-binding:t-*-\n",
+            "(progn\n",
+            "  (defun my-test0 ()\n",
+            "    (my--test11 3)\n",
+            "    (my--test12 3)\n",
+            "    (my--test2 5))\n",
+            "  (defmacro my--test11 (arg) (+ arg 1))\n",
+            "  (eval-and-compile\n",
+            "    (defmacro my--test12 (arg) (+ arg 1))\n",
+            "    (defun my--test2 (arg) (+ arg 1))))\n",
+        ),
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*"))
+                  (byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (byte-compile-file {source_path:?})
+              (with-current-buffer byte-compile-log-buffer
+                (list (not (null (re-search-forward "my--test11:\n.*macro" nil t)))
+                      (not (null (re-search-forward "my--test12:\n.*macro" nil t)))
+                      (progn
+                        (goto-char (point-min))
+                        (re-search-forward "my--test2" nil t)))))
+            "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    );
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::list([Value::T, Value::T, Value::Nil]));
+}
+
+#[test]
 fn define_advice_installs_named_around_advice() {
     assert_eq!(
         eval_str(

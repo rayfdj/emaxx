@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1526/7080 are verified locally.
+- Tests through 1527/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1526/7080: error on unescaped byte-compile char literals`.
-- The next observed frontier is selector 1527,
-  `bytecomp-tests--warnings` in
+  `Compat 1527/7080: warn on calls before macro definitions`.
+- The next observed frontier is selector 1528,
+  `bytecomp-tests-byte-compile--wide-docstring-p/func-arg-list` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -282,7 +282,12 @@ counts as the progress denominator.
 - Selector 1526, `bytecomp-tests--unescaped-char-literals`, passed after
   routing byte compilation through the existing unescaped character literal
   scanner and honoring `byte-compile-error-on-warn` for compile warnings.
-  Selector 1527, `bytecomp-tests--warnings`, is next.
+- Selector 1527, `bytecomp-tests--warnings`, passed after the byte-compile
+  diagnostic scanner started tracking earlier function calls and warning when
+  a later `defmacro` redefines that callee as a macro, while treating
+  `eval-and-compile` definitions as compile-time knowledge.
+  Selector 1528,
+  `bytecomp-tests-byte-compile--wide-docstring-p/func-arg-list`, is next.
 
 ## Workflow
 
