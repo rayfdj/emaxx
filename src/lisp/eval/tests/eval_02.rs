@@ -792,6 +792,79 @@ fn byte_compile_warns_for_dodgy_eq_and_eql_literal_args() {
 }
 
 #[test]
+fn byte_compile_warns_for_dodgy_identity_member_literal_args() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+                  (with-current-buffer byte-compile-log-buffer
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (dolist (form '((memq '(a) '(x))
+                                  (memq "a" '(x))
+                                  (memq [a] '(x))
+                                  (memq (lambda () 1) '(x))
+                                  (memq #'(lambda () 1) '(x))
+                                  (memq #x10000000000 '(x))
+                                  (memq 1.0 '(x))
+                                  (memq 'x '(a "b" c))
+                                  (memq 'x '(a ''b c))
+                                  (assq 'x '((a . 1) ("b" . 2) (c . 3)))
+                                  (rassq 'x '((1 . a) (2 . "b") (3 . c)))))
+                    (byte-compile form))
+                  (let ((warn-log (with-current-buffer byte-compile-log-buffer
+                                    (buffer-string))))
+                    (with-current-buffer byte-compile-log-buffer
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile '(memql #x10000000000 '(x)))
+                    (byte-compile '(memql 1.0 '(x)))
+                    (let ((numeric-memql-log (with-current-buffer byte-compile-log-buffer
+                                               (buffer-string))))
+                      (list (not (null (string-match "`memq'.*list.*arg 1" warn-log)))
+                            (not (null (string-match "`memq'.*string.*arg 1" warn-log)))
+                            (not (null (string-match "`memq'.*vector.*arg 1" warn-log)))
+                            (not (null (string-match "`memq'.*function.*arg 1" warn-log)))
+                            (not (null (string-match "`memq'.*integer.*arg 1" warn-log)))
+                            (not (null (string-match "`memq'.*float.*arg 1" warn-log)))
+                            (not (null (string-match "`memq'.*string.*element 2 of arg 2" warn-log)))
+                            (not (null (string-match "`memq'.*list.*element 2 of arg 2" warn-log)))
+                            (not (null (string-match "`assq'.*string.*element 2 of arg 2" warn-log)))
+                            (not (null (string-match "`rassq'.*string.*element 2 of arg 2" warn-log)))
+                            numeric-memql-log))))
+            "#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::String(String::new())
+        ])
+    );
+}
+
+#[test]
+fn cl_labels_functions_can_call_local_labels() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (cl-labels ((double (x) (+ x x))
+                            (quadruple (x) (double (double x))))
+                  (quadruple 7))
+            "#
+        ),
+        Value::Integer(28)
+    );
+}
+
+#[test]
 fn byte_compile_wide_docstring_ignores_function_arg_lists() {
     assert_eq!(
         eval_str(

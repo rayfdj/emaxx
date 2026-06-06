@@ -8216,6 +8216,9 @@ impl ByteCompileDiagnostics {
                 self.scan_mutate_constant(interp, head, &items)
             }
             "eq" | "eql" => self.scan_eq_like_call(interp, head, &items),
+            "memq" | "memql" | "remq" | "delq" | "rassq" => {
+                self.scan_identity_member_call(interp, head, &items)
+            }
             "assq" if ignored_value => {
                 self.warn(
                     "ignored-return-value",
@@ -8224,6 +8227,7 @@ impl ByteCompileDiagnostics {
                 );
                 self.scan_body(interp, &items[1..]);
             }
+            "assq" => self.scan_identity_member_call(interp, head, &items),
             "mapcar" if ignored_value => {
                 self.warn(
                     "ignored-return-value",
@@ -8724,6 +8728,33 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, &items[1..]);
     }
 
+    fn scan_identity_member_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        self.scan_call(interp, head, items);
+        if let Some(arg) = items.get(1)
+            && let Some(literal_type) = dodgy_identity_member_literal_type(head, arg)
+        {
+            self.warn(
+                "suspicious",
+                Some(head.to_string()),
+                format!(
+                    "Warning: `{head}' called with literal {literal_type} that may never match (arg 1)"
+                ),
+            );
+        }
+        if let Some(list_arg) = items.get(2) {
+            for (index, literal_type) in dodgy_identity_member_list_literal_types(head, list_arg) {
+                self.warn(
+                    "suspicious",
+                    Some(head.to_string()),
+                    format!(
+                        "Warning: `{head}' called with literal {literal_type} that may never match (element {index} of arg 2)"
+                    ),
+                );
+            }
+        }
+        self.scan_body(interp, &items[1..]);
+    }
+
     fn scan_eq_like_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         self.scan_call(interp, head, items);
         for (index, arg) in items.iter().skip(1).enumerate() {
@@ -8925,6 +8956,55 @@ fn dodgy_eq_list_literal_type(function: &str, value: &Value) -> Option<&'static 
         }
         _ => Some("list"),
     }
+}
+
+fn dodgy_identity_member_literal_type(function: &str, value: &Value) -> Option<&'static str> {
+    let comparison = if function == "memql" { "eql" } else { "eq" };
+    dodgy_eq_literal_type(comparison, value)
+}
+
+fn dodgy_identity_member_data_literal_type(function: &str, value: &Value) -> Option<&'static str> {
+    let comparison = if function == "memql" { "eql" } else { "eq" };
+    dodgy_literal_data_type(comparison, value)
+}
+
+fn dodgy_literal_data_type(function: &str, value: &Value) -> Option<&'static str> {
+    match value {
+        Value::String(_) | Value::StringObject(_) => Some("string"),
+        Value::Float(_) if function == "eq" => Some("float"),
+        Value::Integer(_) | Value::BigInteger(_) if function == "eq" => Some("integer"),
+        Value::Cons(_, _) if is_vector_value(value) => Some("vector"),
+        Value::Cons(_, _) => Some("list"),
+        _ => None,
+    }
+}
+
+fn dodgy_identity_member_list_literal_types(
+    function: &str,
+    list_arg: &Value,
+) -> Vec<(usize, &'static str)> {
+    let Some(list) = custom_type_unquote(list_arg) else {
+        return Vec::new();
+    };
+    if !matches!(list, Value::Cons(_, _)) {
+        return Vec::new();
+    }
+    let Ok(elements) = list.to_vec() else {
+        return Vec::new();
+    };
+    elements
+        .iter()
+        .enumerate()
+        .filter_map(|(index, element)| {
+            let candidate = match function {
+                "assq" => element.car().ok(),
+                "rassq" => element.cdr().ok(),
+                _ => Some(element.clone()),
+            }?;
+            dodgy_identity_member_data_literal_type(function, &candidate)
+                .map(|literal_type| (index + 1, literal_type))
+        })
+        .collect()
 }
 
 fn feature_condition_value(interp: &Interpreter, value: &Value) -> Option<bool> {
