@@ -865,6 +865,29 @@ fn cl_labels_functions_can_call_local_labels() {
 }
 
 #[test]
+fn byte_compile_warns_for_quoted_condition_names() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+                  (with-current-buffer byte-compile-log-buffer
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (byte-compile '(condition-case nil
+                                     (abc)
+                                   ('arith-error "ugh")))
+                  (byte-compile '(ignore-error 'error (abc)))
+                  (let ((warn-log (with-current-buffer byte-compile-log-buffer
+                                    (buffer-string))))
+                    (list (not (null (string-match "`condition-case'.*'arith-error" warn-log)))
+                          (not (null (string-match "`ignore-error'.*'error" warn-log))))))
+            "#
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn byte_compile_wide_docstring_ignores_function_arg_lists() {
     assert_eq!(
         eval_str(
