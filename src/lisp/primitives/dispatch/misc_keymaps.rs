@@ -1010,14 +1010,20 @@ pub(super) fn call(
             if args.len() < 3 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let function_name = args[0].as_symbol()?.to_string();
+            let function_name = symbol_designator_name(&args[0])
+                .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
             let where_sym = args[1].as_symbol()?;
             let original = interp.lookup_function(&function_name, env)?;
             let advice = match &args[2] {
                 Value::Symbol(symbol) => interp
                     .lookup_function(symbol, env)
                     .unwrap_or_else(|_| Value::Symbol(symbol.clone())),
-                other => other.clone(),
+                value => match symbol_designator_name(value) {
+                    Some(symbol) => interp
+                        .lookup_function(&symbol, env)
+                        .unwrap_or(Value::Symbol(symbol)),
+                    None => value.clone(),
+                },
             };
             let wrapped = match where_sym {
                 ":override" => advice,
@@ -7851,6 +7857,13 @@ fn byte_compile_file(
     if source_contains_truthy_file_local(&source, "no-byte-compile") {
         return Ok(Value::Symbol("no-byte-compile".into()));
     }
+    if !source_has_lexical_binding_cookie(&source) {
+        byte_compile_log_warning(
+            interp,
+            env,
+            "Warning: file has no `lexical-binding' directive on its first line",
+        )?;
+    }
 
     let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
     for form in forms {
@@ -7894,6 +7907,13 @@ fn source_contains_truthy_file_local(source: &str, variable: &str) -> bool {
         .lines()
         .take(2)
         .any(|line| line.contains(variable) && line.contains(": t"))
+}
+
+fn source_has_lexical_binding_cookie(source: &str) -> bool {
+    source
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains("lexical-binding"))
 }
 
 fn byte_compile_output_error(path: &str, error: &std::io::Error) -> LispError {
@@ -8575,6 +8595,23 @@ fn quoted_symbol_name(value: &Value) -> Option<String> {
     match items.as_slice() {
         [Value::Symbol(quote), Value::Symbol(symbol)] if quote == "quote" => Some(symbol.clone()),
         _ => None,
+    }
+}
+
+fn symbol_designator_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(symbol) => Some(symbol.clone()),
+        _ => {
+            let items = value.to_vec().ok()?;
+            match items.as_slice() {
+                [Value::Symbol(head), Value::Symbol(symbol)]
+                    if matches!(head.as_str(), "quote" | "function") =>
+                {
+                    Some(symbol.clone())
+                }
+                _ => None,
+            }
+        }
     }
 }
 

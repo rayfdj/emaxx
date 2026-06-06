@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1521/7080 are verified locally.
+- Tests through 1525/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1521/7080: scan buffer byte-compile feature guards`.
-- The next observed frontier is selector 1522,
-  `bytecomp-tests--lexical-binding-cookie` in
+  `Compat 1525/7080: warn on missing lexical binding cookies`.
+- The next observed frontier is selector 1526,
+  `bytecomp-tests--unescaped-char-literals` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -274,7 +274,12 @@ counts as the progress denominator.
   diagnostic scanner, warning for unresolved calls outside known feature
   guards, treating `featurep 'emacs` as true, and reading the accessible buffer
   region used by the byte compiler.
-  Selector 1522, `bytecomp-tests--lexical-binding-cookie`, is next.
+- Selectors 1522..1525 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
+  after warning when `byte-compile-file` sees no first-line `lexical-binding`
+  directive, preserving the existing file-output error behavior, and adding a
+  compact `define-advice` special form that installs named advice through the
+  existing advice wrappers without loading the full `nadvice.el` runtime.
+  Selector 1526, `bytecomp-tests--unescaped-char-literals`, is next.
 
 ## Workflow
 

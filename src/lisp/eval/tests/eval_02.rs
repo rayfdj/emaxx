@@ -438,10 +438,14 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
     let suppressed_src = dir.join("suppressed.el");
     let warn_dest = dir.join("warn.elc");
     let suppressed_dest = dir.join("suppressed.elc");
-    std::fs::write(&warn_src, "(defvar prefixless)\n").unwrap();
+    std::fs::write(
+        &warn_src,
+        ";;; -*-lexical-binding:t-*-\n(defvar prefixless)\n",
+    )
+    .unwrap();
     std::fs::write(
         &suppressed_src,
-        "(with-suppressed-warnings ((lexical prefixless)) (defvar prefixless))\n",
+        ";;; -*-lexical-binding:t-*-\n(with-suppressed-warnings ((lexical prefixless)) (defvar prefixless))\n",
     )
     .unwrap();
 
@@ -483,6 +487,87 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
             Value::T,
             Value::T
         ])
+    );
+}
+
+#[test]
+fn byte_compile_file_warns_when_lexical_binding_cookie_is_missing() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-cookie-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let missing = dir.join("missing.el");
+    let lexical_t = dir.join("lexical-t.el");
+    let lexical_nil = dir.join("lexical-nil.el");
+    let dest = dir.join("out.elc");
+    std::fs::write(&missing, "(defun my-fun () 12)\n").unwrap();
+    std::fs::write(
+        &lexical_t,
+        ";;; -*-lexical-binding:t-*-\n(defun my-fun () 12)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &lexical_nil,
+        ";;; -*-lexical-binding:nil-*-\n(defun my-fun () 12)\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*"))
+                  (byte-compile-dest-file-function (lambda (_) {dest:?})))
+              (byte-compile-file {missing:?})
+              (let ((missing-log (with-current-buffer byte-compile-log-buffer
+                                   (buffer-string))))
+                (with-current-buffer byte-compile-log-buffer
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)))
+                (byte-compile-file {lexical_t:?})
+                (let ((lexical-t-log (with-current-buffer byte-compile-log-buffer
+                                       (buffer-string))))
+                  (with-current-buffer byte-compile-log-buffer
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (byte-compile-file {lexical_nil:?})
+                  (let ((lexical-nil-log (with-current-buffer byte-compile-log-buffer
+                                           (buffer-string))))
+                    (list (not (null (string-search "no `lexical-binding' directive" missing-log)))
+                          (string-search "no `lexical-binding' directive" lexical-t-log)
+                          (string-search "no `lexical-binding' directive" lexical-nil-log))))))
+            "#,
+        dest = dest.display().to_string(),
+        missing = missing.display().to_string(),
+        lexical_t = lexical_t.display().to_string(),
+        lexical_nil = lexical_nil.display().to_string(),
+    );
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::list([Value::T, Value::Nil, Value::Nil]));
+}
+
+#[test]
+fn define_advice_installs_named_around_advice() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-define-advice-target () 'base)
+                  (define-advice emaxx-define-advice-target
+                      (:around (oldfun &rest args) test)
+                    (cons (apply oldfun args) 'advised))
+                  (emaxx-define-advice-target))
+                "#
+        ),
+        Value::cons(
+            Value::Symbol("base".into()),
+            Value::Symbol("advised".into())
+        )
     );
 }
 

@@ -685,6 +685,56 @@ impl Interpreter {
         primitives::call(self, "add-function", &args, env)
     }
 
+    pub(super) fn sf_define_advice(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::WrongNumberOfArgs(
+                "define-advice".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let target = items[1].as_symbol()?.to_string();
+        let args = items[2].to_vec()?;
+        if args.len() < 2 || args.len() > 4 {
+            return Err(LispError::WrongNumberOfArgs(
+                "define-advice".into(),
+                args.len(),
+            ));
+        }
+        let how = args[0].clone();
+        let params = self.parse_params(&args[1])?;
+        let advice_name = match args.get(2) {
+            Some(Value::String(name)) => Some(name.clone()),
+            Some(Value::Symbol(name)) => Some(name.clone()),
+            Some(Value::Nil) | None => None,
+            Some(other) => {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("symbol".into()),
+                    other.clone(),
+                ])));
+            }
+        };
+        let advice = if let Some(name) = advice_name {
+            let function_name = format!("{target}@{name}");
+            let lambda = Value::Lambda(params, items[3..].to_vec(), shared_env(env.clone()));
+            self.push_function_binding(&function_name, lambda);
+            Value::Symbol(function_name)
+        } else {
+            Value::Lambda(params, items[3..].to_vec(), shared_env(env.clone()))
+        };
+        primitives::call(
+            self,
+            "advice-add",
+            &[Value::Symbol(target.clone()), how, advice],
+            env,
+        )?;
+        Ok(Value::Symbol(target))
+    }
+
     pub(super) fn sf_with_environment_variables(
         &mut self,
         items: &[Value],
