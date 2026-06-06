@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1529/7080 are verified locally.
+- Tests through 1531/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1529/7080: preserve dynamic lambda binding in byte compile`.
-- The next observed frontier is selector 1530,
-  `bytecomp-tests-function-put` in
+  `Compat 1531/7080: print quoted forms for byte compile inputs`.
+- The next observed frontier is selector 1532,
+  `bytecomp-warn--ignore` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -295,7 +295,10 @@ counts as the progress denominator.
   forms honor the current `lexical-binding` mode, propagating dynamic binding
   into nested lambdas, and preserving dynamic `condition-case` handler
   variables captured by returned lambdas.
-  Selector 1530, `bytecomp-tests-function-put`, is next.
+- Selectors 1530..1531, `bytecomp-tests-function-put` and
+  `bytecomp-tests-lexbind`, passed after defaulting `print-quoted` to non-nil
+  so printed source forms preserve backquote/comma syntax for byte compilation.
+  Selector 1532, `bytecomp-warn--ignore`, is next.
 
 ## Workflow
 

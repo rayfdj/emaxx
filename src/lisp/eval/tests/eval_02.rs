@@ -646,6 +646,47 @@ fn byte_compile_file_warns_when_calls_precede_macro_definitions() {
 }
 
 #[test]
+fn byte_compile_file_applies_function_put_before_macro_expansion() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-function-put-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.el");
+    let dest_path = dir.join("source.elc");
+
+    let source = format!(
+        r#"
+            (with-temp-buffer
+              (insert ";;; -*-lexical-binding:t-*-\n")
+              (dolist (form '((function-put 'sample-bytecomp-foo 'foo 1)
+                              (function-put 'sample-bytecomp-foo 'bar 2)
+                              (defmacro sample-bytecomp-foobar ()
+                                `(cons ,(function-get 'sample-bytecomp-foo 'foo)
+                                       ,(function-get 'sample-bytecomp-foo 'bar)))
+                              (defvar sample-bytecomp-foobar 1)
+                              (setq sample-bytecomp-foobar (sample-bytecomp-foobar))))
+                (print form (current-buffer)))
+              (write-region (point-min) (point-max) {source_path:?} nil 'silent))
+            (let ((byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (byte-compile-file {source_path:?})
+              (load {source_path:?})
+              sample-bytecomp-foobar)
+            "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    );
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::cons(Value::Integer(1), Value::Integer(2)));
+}
+
+#[test]
 fn byte_compile_wide_docstring_ignores_function_arg_lists() {
     assert_eq!(
         eval_str(
