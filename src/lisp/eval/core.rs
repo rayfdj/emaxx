@@ -122,6 +122,7 @@ impl Interpreter {
                         }
                         "defclass" => return self.sf_defclass(&items),
                         "defun" | "defsubst" => return self.sf_defun(&items, env),
+                        "define-advice" => return self.sf_define_advice(&items, env),
                         "cl-defun" => return self.sf_cl_defun(&items, env),
                         "cl-defmacro" => return self.sf_cl_defmacro(&items, env),
                         "cl-generic-define-generalizer" => {
