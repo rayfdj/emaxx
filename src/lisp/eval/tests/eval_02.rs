@@ -450,6 +450,8 @@ fn byte_compile_warns_for_free_vars_and_interactive_only_forms() {
                     (byte-compile form)
                     (with-current-buffer "*Compile-Log*"
                       (not (null (re-search-forward pattern nil t)))))
+                  (defvar emaxx-bytecomp-obsolete-var nil)
+                  (make-obsolete-variable 'emaxx-bytecomp-obsolete-var nil "31.1")
                   (list
                    (emaxx-bytecomp-warning-p
                     "free.*foo"
@@ -462,10 +464,33 @@ fn byte_compile_warns_for_free_vars_and_interactive_only_forms() {
                     '(defun sample-buffer-local () (make-variable-buffer-local 'foobar)))
                    (emaxx-bytecomp-warning-p
                     "next-line.*interactive use only.*forward-line"
-                    '(defun sample-next-line () (next-line)))))
+                    '(defun sample-next-line () (next-line)))
+                   (emaxx-bytecomp-warning-p
+                    "malformed .interactive. specification"
+                    '(defun sample-bad-interactive ()
+                       (interactive "foo" "bar")))
+                   (emaxx-bytecomp-warning-p
+                    "sample-old.*obsolete function.*31.1"
+                    '(progn
+                       (defun sample-old ()
+                         (declare (obsolete nil "31.1"))
+                         nil)
+                       (sample-old)))
+                   (emaxx-bytecomp-warning-p
+                    "emaxx-bytecomp-obsolete-var.*obsolete variable.*31.1"
+                    '(defun sample-obsolete-var ()
+                       emaxx-bytecomp-obsolete-var))))
                 "#
         ),
-        Value::list([Value::T, Value::T, Value::T, Value::T])
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T
+        ])
     );
 }
 

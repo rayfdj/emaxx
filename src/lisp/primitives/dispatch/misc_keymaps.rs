@@ -8263,7 +8263,7 @@ fn byte_compile_log_warning(
 #[derive(Default)]
 struct ByteCompileDiagnostics {
     warnings: Vec<ByteCompileWarning>,
-    obsolete_functions: Vec<String>,
+    obsolete_functions: Vec<(String, Option<String>)>,
     function_arities: Vec<(String, usize, Option<usize>)>,
     defined_functions: Vec<String>,
     defined_variables: Vec<String>,
@@ -8313,9 +8313,7 @@ impl ByteCompileDiagnostics {
 
     fn scan(&mut self, interp: &Interpreter, form: &Value, ignored_value: bool) {
         let Ok(items) = form.to_vec() else {
-            if let Ok(symbol) = form.as_symbol()
-                && matches!(symbol, "obsolete-variable" | "free-variable")
-            {
+            if let Ok(symbol) = form.as_symbol() {
                 self.warn_symbol_reference(interp, symbol);
             }
             if let Ok(symbol) = form.as_symbol()
@@ -8363,6 +8361,7 @@ impl ByteCompileDiagnostics {
             "and" => self.scan_and(interp, &items),
             "or" => self.scan_or(interp, &items),
             "setq" => self.scan_setq(interp, &items),
+            "interactive" => self.scan_interactive(interp, &items),
             "not" => self.scan_body(interp, &items[1..]),
             "ignore" => self.scan_body(interp, &items[1..]),
             "progn" => self.scan_body(interp, &items[1..]),
@@ -8405,6 +8404,25 @@ impl ByteCompileDiagnostics {
                 );
                 self.scan_body(interp, &items[1..]);
             }
+            "make-process" => self.scan_keyword_call(
+                interp,
+                head,
+                &items,
+                &[
+                    ":name",
+                    ":buffer",
+                    ":command",
+                    ":coding",
+                    ":noquery",
+                    ":stop",
+                    ":connection-type",
+                    ":filter",
+                    ":sentinel",
+                    ":stderr",
+                    ":file-handler",
+                ],
+                &[":name", ":command"],
+            ),
             _ => {
                 self.scan_call(interp, head, &items);
                 self.scan_body(interp, &items[1..]);
@@ -8677,8 +8695,8 @@ impl ByteCompileDiagnostics {
             if !self.defined_functions.iter().any(|defined| defined == name) {
                 self.defined_functions.push(name.to_string());
             }
-            if defun_declares_obsolete(items) {
-                self.obsolete_functions.push(name.to_string());
+            if let Some(version) = defun_obsolete_version(items) {
+                self.obsolete_functions.push((name.to_string(), version));
             }
             if let Some((required, maximum)) = defun_arity(items) {
                 self.function_arities
@@ -8979,6 +8997,17 @@ impl ByteCompileDiagnostics {
         }
     }
 
+    fn scan_interactive(&mut self, interp: &Interpreter, items: &[Value]) {
+        if items.len() > 2 {
+            self.warn(
+                "suspicious",
+                Some("interactive".to_string()),
+                "Warning: malformed `interactive' specification".into(),
+            );
+        }
+        self.scan_body(interp, items.get(1..).unwrap_or_default());
+    }
+
     fn scan_mutate_constant(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         match head {
             "setcar" if items.get(1).is_some_and(quoted_list_literal) => self.warn(
@@ -9057,34 +9086,102 @@ impl ByteCompileDiagnostics {
 
     fn scan_lexical_symbol_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         self.scan_call(interp, head, items);
-        if let Some(symbol) = items.get(1).and_then(quoted_symbol_name)
-            && self
+        if let Some(symbol) = items.get(1).and_then(quoted_symbol_name) {
+            self.warn_symbol_reference(interp, &symbol);
+            if self
                 .lexical_bindings
                 .iter()
                 .rev()
                 .any(|binding| binding == &symbol)
-        {
-            self.warn(
-                "lexical",
-                Some(head.to_string()),
-                format!("Warning: `{head}' references lexical var `{symbol}'"),
-            );
-            if !self.lexical_hook_symbols.iter().any(|hook| hook == &symbol) {
-                self.lexical_hook_symbols.push(symbol);
+            {
+                self.warn(
+                    "lexical",
+                    Some(head.to_string()),
+                    format!("Warning: `{head}' references lexical var `{symbol}'"),
+                );
+                if !self.lexical_hook_symbols.iter().any(|hook| hook == &symbol) {
+                    self.lexical_hook_symbols.push(symbol);
+                }
             }
         }
         self.scan_body(interp, &items[1..]);
+    }
+
+    fn scan_keyword_call(
+        &mut self,
+        interp: &Interpreter,
+        head: &str,
+        items: &[Value],
+        allowed_keys: &[&str],
+        required_keys: &[&str],
+    ) {
+        self.scan_call(interp, head, items);
+        let mut seen = Vec::new();
+        let mut index = 1;
+        while index < items.len() {
+            let key = items[index].as_symbol().ok();
+            match key {
+                Some(key) if allowed_keys.contains(&key) => {
+                    if seen.contains(&key) {
+                        self.warn(
+                            "suspicious",
+                            Some(head.to_string()),
+                            format!(
+                                "Warning: `{head}' called with repeated keyword argument {key}"
+                            ),
+                        );
+                    } else {
+                        seen.push(key);
+                    }
+                }
+                Some(key) if key.starts_with(':') => {
+                    self.warn(
+                        "suspicious",
+                        Some(head.to_string()),
+                        format!("Warning: `{head}' called with unknown keyword argument {key}"),
+                    );
+                }
+                _ => {}
+            }
+            if index + 1 >= items.len() {
+                if let Some(key) = key {
+                    self.warn(
+                        "suspicious",
+                        Some(head.to_string()),
+                        format!("Warning: missing value for keyword argument {key}"),
+                    );
+                }
+                break;
+            }
+            self.scan(interp, &items[index + 1], false);
+            index += 2;
+        }
+        for required in required_keys {
+            if !seen.iter().any(|key| key == required) {
+                self.warn(
+                    "suspicious",
+                    Some(head.to_string()),
+                    format!(
+                        "Warning: `{head}' called without required keyword argument {required}"
+                    ),
+                );
+            }
+        }
     }
 
     fn scan_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         if !self.called_functions.iter().any(|name| name == head) {
             self.called_functions.push(head.to_string());
         }
-        if self.obsolete_functions.iter().any(|name| name == head) {
+        if let Some((_, version)) = self
+            .obsolete_functions
+            .iter()
+            .find(|(name, _)| name == head)
+        {
             self.warn(
                 "obsolete",
                 Some(head.to_string()),
-                format!("Warning: `{head}' is an obsolete function"),
+                obsolete_function_warning_message(head, version.as_deref()),
             );
         }
         if head == "next-line" {
@@ -9155,15 +9252,11 @@ impl ByteCompileDiagnostics {
             );
             return;
         }
-        if symbol == "obsolete-variable"
-            && interp
-                .get_symbol_property(symbol, "byte-obsolete-variable")
-                .is_some()
-        {
+        if let Some(property) = interp.get_symbol_property(symbol, "byte-obsolete-variable") {
             self.warn(
                 "obsolete",
                 Some(symbol.to_string()),
-                "Warning: `obsolete-variable' is an obsolete variable".into(),
+                obsolete_variable_warning_message(symbol, &property),
             );
         }
     }
@@ -9222,17 +9315,38 @@ fn count_format_fields(format_string: &str) -> usize {
     fields
 }
 
-fn defun_declares_obsolete(items: &[Value]) -> bool {
-    items.iter().skip(3).any(|form| {
-        form.to_vec().ok().is_some_and(|parts| {
-            matches!(parts.first(), Some(Value::Symbol(name)) if name == "declare")
-                && parts.iter().skip(1).any(|decl| {
-                    decl.to_vec().ok().is_some_and(|decl_parts| {
-                        matches!(decl_parts.first(), Some(Value::Symbol(name)) if name == "obsolete")
-                    })
-                })
+fn defun_obsolete_version(items: &[Value]) -> Option<Option<String>> {
+    items.iter().skip(3).find_map(|form| {
+        let parts = form.to_vec().ok()?;
+        if !matches!(parts.first(), Some(Value::Symbol(name)) if name == "declare") {
+            return None;
+        }
+        parts.iter().skip(1).find_map(|decl| {
+            let decl_parts = decl.to_vec().ok()?;
+            if !matches!(decl_parts.first(), Some(Value::Symbol(name)) if name == "obsolete") {
+                return None;
+            }
+            Some(decl_parts.get(2).and_then(format_string_literal))
         })
     })
+}
+
+fn obsolete_function_warning_message(name: &str, version: Option<&str>) -> String {
+    match version {
+        Some(version) => format!("Warning: `{name}' is an obsolete function (as of {version})"),
+        None => format!("Warning: `{name}' is an obsolete function"),
+    }
+}
+
+fn obsolete_variable_warning_message(name: &str, property: &Value) -> String {
+    let version = property
+        .to_vec()
+        .ok()
+        .and_then(|parts| parts.get(2).and_then(format_string_literal));
+    match version {
+        Some(version) => format!("Warning: `{name}' is an obsolete variable (as of {version})"),
+        None => format!("Warning: `{name}' is an obsolete variable"),
+    }
 }
 
 fn defun_arity(items: &[Value]) -> Option<(usize, Option<usize>)> {
