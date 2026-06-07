@@ -661,6 +661,58 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
 }
 
 #[test]
+fn byte_compile_file_loads_macro_expanded_function_bodies() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-macroexpand-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("macroexpand.el");
+    let dest_path = dir.join("macroexpand.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*- lexical-binding: t -*-\n(eval-and-compile\n  (defmacro sample-compile-macro () -7)\n  (defun sample-compile-def () (sample-compile-macro)))\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (byte-compile-file {source_path:?})
+              (load {dest_path:?} nil 'nomessage)
+              (sample-compile-def))
+            "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    );
+
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::Integer(-7));
+}
+
+#[test]
+fn cl_macrolet_expands_defun_body_before_local_macro_exits() {
+    let result = eval_str(
+        r#"
+        (progn
+          (require 'cl-lib)
+          (cl-macrolet ((sample-cl-macrolet-macro () 4))
+            (defmacro sample-cl-macrolet-macro () 5)
+            (defun sample-cl-macrolet-def () (sample-cl-macrolet-macro)))
+          (sample-cl-macrolet-def))
+        "#,
+    );
+
+    assert_eq!(result, Value::Integer(4));
+}
+
+#[test]
 fn byte_compile_file_suppression_survives_compile_and_load_flow() {
     let unique = format!(
         "{}-{}",

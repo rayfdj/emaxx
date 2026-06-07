@@ -301,6 +301,8 @@ struct ScheduledTimer {
     args: Vec<Value>,
 }
 
+type MacroBinding = (String, Vec<String>, Vec<Value>);
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -395,7 +397,7 @@ pub struct Interpreter {
     /// Prevent recursive before/after-change hook re-entry.
     change_hooks_running: usize,
     /// User-defined macros: name → (params, body).
-    macros: Vec<(String, Vec<String>, Vec<Value>)>,
+    macros: Vec<MacroBinding>,
     /// User-defined functions in the function namespace.
     functions: Vec<(String, Value)>,
     /// Features currently available in this interpreter.

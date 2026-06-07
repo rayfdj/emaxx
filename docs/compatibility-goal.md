@@ -19,12 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1589/7080 are verified locally.
+- Tests through 1597/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1589/7080: warn for wide byte compile docstrings`.
-- The next observed frontier is selector 1590,
-  `test-byte-comp-macro-expand-lexical-override` in
-  `test/lisp/emacs-lisp/bytecomp-tests.el`.
+  `Compat 1597/7080: expand compiled macro bodies`.
+- The next observed frontier is selector 1598,
+  `cconv-closure-convert-remap-var` in
+  `test/lisp/emacs-lisp/cconv-tests.el`; the file currently reports a load
+  error before discovering the selected tests.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -43,6 +44,11 @@ counts as the progress denominator.
   after adding byte-compile diagnostics for wide docstrings in definition
   forms, including file-local docstring width overrides and ignored
   substitution/signature lines.
+- Selectors 1590..1597 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
+  after making `byte-compile-file` write macro-expanded top-level forms into
+  its `.elc` stub, making later macro definitions shadow earlier ones, and
+  expanding `defun`/`defsubst` bodies while `cl-macrolet` local macros are
+  active.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

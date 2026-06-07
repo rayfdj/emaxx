@@ -1389,9 +1389,32 @@ impl Interpreter {
                 items.len() - 1,
             ));
         }
-        let bindings = items[1].to_vec()?;
-        // Register macros temporarily
-        let saved_macros_len = self.macros.len();
+        let local_macros = self.parse_cl_macrolet_bindings(&items[1])?;
+
+        let mut result = Value::Nil;
+        for form in &items[2..] {
+            let local_start = self.macros.len();
+            self.macros.extend(local_macros.iter().cloned());
+            let local_count = self.macros.len() - local_start;
+
+            let expanded_form = self.cl_macrolet_form_with_expanded_function_body(form, env);
+            let eval_result = match expanded_form {
+                Ok(form) => self.eval(&form, env),
+                Err(error) => Err(error),
+            };
+            self.macros.drain(local_start..local_start + local_count);
+            result = eval_result?;
+        }
+
+        Ok(result)
+    }
+
+    fn parse_cl_macrolet_bindings(
+        &mut self,
+        bindings_value: &Value,
+    ) -> Result<Vec<MacroBinding>, LispError> {
+        let bindings = bindings_value.to_vec()?;
+        let mut parsed = Vec::with_capacity(bindings.len());
         for binding in &bindings {
             let parts = binding.to_vec()?;
             if parts.len() < 2 {
@@ -1404,11 +1427,37 @@ impl Interpreter {
                 params.push(p.as_symbol()?.to_string());
             }
             let body: Vec<Value> = parts[2..].to_vec();
-            self.macros.push((mname, params, body));
+            parsed.push((mname, params, body));
         }
-        let result = self.sf_progn(&items[2..], env);
-        self.macros.truncate(saved_macros_len);
-        result
+        Ok(parsed)
+    }
+
+    fn cl_macrolet_form_with_expanded_function_body(
+        &mut self,
+        form: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Ok(items) = form.to_vec() else {
+            return Ok(form.clone());
+        };
+        if !matches!(
+            items.first(),
+            Some(Value::Symbol(name)) if name == "defun" || name == "defsubst"
+        ) {
+            return Ok(form.clone());
+        }
+
+        let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
+            4
+        } else {
+            3
+        };
+        let mut expanded = Vec::with_capacity(items.len());
+        expanded.extend(items[..body_start].iter().cloned());
+        for body in &items[body_start..] {
+            expanded.push(self.macroexpand_all_form_with_environment(body, None, env)?);
+        }
+        Ok(Value::list(expanded))
     }
 
     pub(super) fn sf_cl_symbol_macrolet(
