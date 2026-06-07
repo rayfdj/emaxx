@@ -941,8 +941,28 @@ pub(crate) fn render_prin1_body(
             Ok(format!("[{}]", rendered_items.join(" ")))
         }
         Value::Cons(_, _) => render_prin1_list(interp, value, env, context, depth),
+        Value::Lambda(params, body, closure_env) => {
+            if let Some(rendered) = unreadable_override(interp, value, env)? {
+                return Ok(rendered);
+            }
+            let captured = closure_env.borrow().clone();
+            let prints_closure_env = body.len() > 1
+                && matches!(
+                    body.first(),
+                    Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
+                );
+            if captured.is_empty() || !prints_closure_env {
+                return Ok(value.to_string());
+            }
+            let params_value = Value::list(params.iter().cloned().map(Value::Symbol));
+            let env_value = closure_env_print_value(&captured);
+            Ok(format!(
+                "#<closure {} {}>",
+                render_prin1_with_context(interp, &params_value, env, context, depth + 1)?,
+                render_prin1_with_context(interp, &env_value, env, context, depth + 1)?
+            ))
+        }
         Value::BuiltinFunc(_)
-        | Value::Lambda(_, _, _)
         | Value::Buffer(_, _)
         | Value::Marker(_)
         | Value::Overlay(_)
@@ -1021,6 +1041,16 @@ pub(crate) fn render_prin1_body(
         }
         _ => Ok(value.to_string()),
     }
+}
+
+fn closure_env_print_value(env: &Env) -> Value {
+    Value::list(env.iter().map(|frame| {
+        Value::list(
+            frame
+                .iter()
+                .map(|(name, value)| Value::cons(Value::Symbol(name.clone()), value.clone())),
+        )
+    }))
 }
 
 pub(crate) fn finish_print_number_table(env: &mut Env, context: &PrintContext) {
