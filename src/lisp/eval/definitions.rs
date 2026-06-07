@@ -38,7 +38,56 @@ fn record_defun_attributes(interp: &mut Interpreter, name: &str, forms: &[Value]
     }
 }
 
+fn body_closure_dont_trim_context(body: &[Value]) -> bool {
+    let mut start = 0usize;
+    if body.len() > 1
+        && matches!(
+            body.first(),
+            Some(Value::String(_) | Value::StringObject(_))
+        )
+    {
+        start = 1;
+    }
+    matches!(
+        body.get(start),
+        Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
+    ) && body.len().saturating_sub(start) > 1
+}
+
 impl Interpreter {
+    fn normalize_function_body_documentation(
+        &mut self,
+        forms: &[Value],
+        env: &mut Env,
+    ) -> Result<(Option<Value>, Vec<Value>), LispError> {
+        let Some(first) = forms.first() else {
+            return Ok((None, Vec::new()));
+        };
+        let documentation = match first {
+            Value::String(text) => Some(Value::String(text.clone())),
+            Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
+            Value::Cons(_, _) => {
+                let items = first.to_vec()?;
+                match items.as_slice() {
+                    [Value::Symbol(head), expression] if head == ":documentation" => {
+                        let value = self.eval(expression, env)?;
+                        Some(Value::String(value.as_string()?.to_string()))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
+        let Some(documentation) = documentation else {
+            return Ok((None, forms.to_vec()));
+        };
+        let mut normalized = Vec::with_capacity(forms.len());
+        normalized.push(documentation.clone());
+        normalized.extend(forms[1..].iter().cloned());
+        Ok((Some(documentation), normalized))
+    }
+
     pub(super) fn sf_setq(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_setq_internal(items, env, false)
     }
@@ -1801,37 +1850,37 @@ impl Interpreter {
         }
         let name = items[1].as_symbol()?.to_string();
         let params = self.parse_params(&items[2])?;
+        let (docstring, normalized_forms) =
+            self.normalize_function_body_documentation(&items[3..], env)?;
 
-        let docstring = match items.get(3) {
-            Some(Value::String(text)) => Some(Value::String(text.clone())),
-            Some(Value::StringObject(state)) => Some(Value::String(state.borrow().text.clone())),
-            _ => None,
-        };
         if let Some(docstring) = docstring.clone() {
             self.put_symbol_property(&name, "function-documentation", docstring);
         } else {
             self.remove_symbol_property(&name, "function-documentation");
         }
 
-        record_defun_attributes(self, &name, &items[3..]);
+        record_defun_attributes(self, &name, &normalized_forms);
 
         // Skip docstring if present
-        let body_start = if items.len() > 4 {
-            if let Value::String(_) = &items[3] {
-                4
+        let body_start = if normalized_forms.len() > 1 {
+            if matches!(
+                normalized_forms.first(),
+                Some(Value::String(_) | Value::StringObject(_))
+            ) {
+                1
             } else {
-                3
+                0
             }
         } else {
-            3
+            0
         };
 
-        if body_start < items.len()
-            && let Some(setter) = function_declare_gv_setter(&items[body_start])
+        if body_start < normalized_forms.len()
+            && let Some(setter) = function_declare_gv_setter(&normalized_forms[body_start])
         {
             self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter));
         }
-        let body: Vec<Value> = items[body_start..].to_vec();
+        let body: Vec<Value> = normalized_forms[body_start..].to_vec();
         if crate::lisp::primitives::prefer_builtin_override(&name) {
             self.functions
                 .push((name.clone(), Value::BuiltinFunc(name.clone())));
@@ -2036,6 +2085,13 @@ impl Interpreter {
             items.get(3),
             Some(Value::String(_) | Value::StringObject(_))
         ) {
+            let doc = match &items[3] {
+                Value::String(text) => Value::String(text.clone()),
+                Value::StringObject(state) => Value::String(state.borrow().text.clone()),
+                _ => Value::Nil,
+            };
+            self.put_symbol_property(&name, "emaxx-cl-defgeneric-documentation", doc.clone());
+            self.put_symbol_property(&name, "function-documentation", doc);
             body_start = 4;
         }
         while let Some(form) = items.get(body_start) {
@@ -2049,7 +2105,20 @@ impl Interpreter {
                 "declare" => {
                     body_start += 1;
                 }
-                ":documentation" | ":argument-precedence-order" => {
+                ":documentation" => {
+                    if let Some(expression) = parts.get(1) {
+                        let value = self.eval(expression, env)?;
+                        let doc = Value::String(value.as_string()?.to_string());
+                        self.put_symbol_property(
+                            &name,
+                            "emaxx-cl-defgeneric-documentation",
+                            doc.clone(),
+                        );
+                        self.put_symbol_property(&name, "function-documentation", doc);
+                    }
+                    body_start += 1;
+                }
+                ":argument-precedence-order" => {
                     body_start += 1;
                 }
                 ":method" => {
@@ -2124,7 +2193,12 @@ impl Interpreter {
         lowered.push(Value::Symbol(name));
         let lowered_lambda_list = lower_cl_defmethod_lambda_list(&items[lambda_list_index])?;
         lowered.push(lowered_lambda_list.clone());
-        lowered.extend(items[lambda_list_index + 1..].iter().cloned());
+        let (method_doc, normalized_method_forms) =
+            self.normalize_function_body_documentation(&items[lambda_list_index + 1..], env)?;
+        if let Some(doc) = method_doc.clone() {
+            self.add_cl_defmethod_documentation(&function_name_from_binding_form(&items[1])?, doc);
+        }
+        lowered.extend(normalized_method_forms.iter().cloned());
         if let Some(specializer) = first_cl_defmethod_specializer(&items[lambda_list_index])?
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
@@ -2190,7 +2264,7 @@ impl Interpreter {
                 Value::list([Value::Symbol("&rest".into()), Value::Symbol("args".into())]),
                 next_method_body,
             ])]));
-            method_body.extend(items[lambda_list_index + 1..].iter().cloned());
+            method_body.extend(normalized_method_forms.iter().cloned());
             let wrapper_rest_param = "__emaxx-cl-defmethod-rest".to_string();
             let wrapper_params = cl_defmethod_dispatch_wrapper_params(
                 &lowered_lambda_list,
@@ -2291,6 +2365,21 @@ impl Interpreter {
         }
     }
 
+    fn add_cl_defmethod_documentation(&mut self, method_name: &str, doc: Value) {
+        let mut docs = self
+            .get_symbol_property(method_name, "emaxx-cl-defmethod-documentation")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default();
+        if !docs.iter().any(|value| value == &doc) {
+            docs.push(doc);
+            self.put_symbol_property(
+                method_name,
+                "emaxx-cl-defmethod-documentation",
+                Value::list(docs),
+            );
+        }
+    }
+
     pub(super) fn sf_oclosure_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
         let Some(name_form) = items.get(1) else {
             return Err(LispError::Signal("oclosure-define needs a name".into()));
@@ -2338,11 +2427,8 @@ impl Interpreter {
             return Err(LispError::Signal("lambda needs params".into()));
         }
         let params = self.parse_params(&items[1])?;
-        let body: Vec<Value> = items[2..].to_vec();
-        let keep_full_context = matches!(
-            body.first(),
-            Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
-        ) && body.len() > 1;
+        let (_, body) = self.normalize_function_body_documentation(&items[2..], env)?;
+        let keep_full_context = body_closure_dont_trim_context(&body);
         let closure_env = if self.lambda_capture_override().unwrap_or(true) {
             let captured = if keep_full_context {
                 env.clone()

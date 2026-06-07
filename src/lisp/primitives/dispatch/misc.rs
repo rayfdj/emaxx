@@ -581,6 +581,9 @@ pub(super) fn call(
         }
         "documentation" => {
             need_args(name, args, 1)?;
+            if let Some(documentation) = function_documentation(interp, &args[0], env) {
+                return Ok(documentation);
+            }
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
             Ok(function_documentation(interp, &value, env).unwrap_or(Value::Nil))
         }
@@ -947,8 +950,30 @@ pub(super) fn call(
         }
         "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
         "describe-function" => {
+            need_args(name, args, 1)?;
             let _ = get_or_create_buffer(interp, "*Help*");
-            Ok(Value::Nil)
+            let mut docs = Vec::new();
+            let target = args[0].as_symbol().ok();
+            if let Some(symbol) = target {
+                if let Some(doc) =
+                    interp.get_symbol_property(symbol, "emaxx-cl-defgeneric-documentation")
+                {
+                    docs.push(string_text(&doc)?);
+                } else if let Some(doc) = function_documentation(interp, &args[0], env) {
+                    docs.push(string_text(&doc)?);
+                }
+                if let Some(method_docs) =
+                    interp.get_symbol_property(symbol, "emaxx-cl-defmethod-documentation")
+                    && let Ok(items) = method_docs.to_vec()
+                {
+                    for doc in items {
+                        docs.push(string_text(&doc)?);
+                    }
+                }
+            } else if let Some(doc) = function_documentation(interp, &args[0], env) {
+                docs.push(string_text(&doc)?);
+            }
+            Ok(Value::String(docs.join("\n")))
         }
         "macroexp-quote" => {
             need_args(name, args, 1)?;

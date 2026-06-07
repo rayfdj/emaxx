@@ -2171,7 +2171,11 @@ pub(super) fn call(
         }
         "called-interactively-p" => {
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::Nil)
+            Ok(if interp.in_interactive_call() {
+                Value::T
+            } else {
+                Value::Nil
+            })
         }
         "kill-all-local-variables" => {
             need_args(name, args, 0)?;

@@ -19,12 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1607/7080 are verified locally.
+- Tests through 1623/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1607/7080: trim lambda closure contexts`.
-- The next observed frontier is selector 1608,
-  `cconv-tests-cl-defgeneric-:documentation` in
-  `test/lisp/emacs-lisp/cconv-tests.el`.
+  `Compat 1623/7080: preserve cconv documentation`.
+- The next observed frontier is selector 1624, `check-declare-tests-scan` in
+  `test/lisp/emacs-lisp/check-declare-tests.el`; it currently fails with
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -59,6 +59,13 @@ counts as the progress denominator.
   closure frames for evaluated lambdas, honoring
   `:closure-dont-trim-context`, and printing retained closure environments
   through `prin1`.
+- Selectors 1608..1622 in `test/lisp/emacs-lisp/cconv-tests.el` passed after
+  evaluating and recording leading `(:documentation FORM)` metadata for
+  lambdas, `defun`/`defsubst`, `cl-defun`/`cl-defsubst`,
+  `cl-function`, and generic/method definitions, returning generic/method docs
+  from `describe-function`, preserving interactive-form closure mutations, and
+  making `called-interactively-p` reflect `call-interactively` calls. Selector
+  1623, `check-declare-tests-locate`, also passed without further changes.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

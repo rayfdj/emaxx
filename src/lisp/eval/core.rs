@@ -524,8 +524,7 @@ impl Interpreter {
                     frame.clone(),
                     true,
                 );
-                let captured_snapshot = closure_env.borrow().clone();
-                let result = if captured_snapshot.is_empty() {
+                let result = if closure_env.borrow().is_empty() {
                     let mut call_env = env.clone();
                     call_env.push(frame);
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
@@ -534,31 +533,12 @@ impl Interpreter {
                     env.extend(call_env);
                     result
                 } else {
-                    let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
-                    let mut call_env =
-                        Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
-                    call_env.push(frame);
-                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
-                    call_env.pop();
-                    {
-                        let mut stored_env = closure_env.borrow_mut();
-                        if stored_env.len() != captured_snapshot.len() {
-                            stored_env.clear();
-                            stored_env.extend(captured_snapshot.clone());
-                        }
-                        for (captured_index, updated) in call_env.iter().enumerate() {
-                            if captured_index >= stored_env.len() {
-                                break;
-                            }
-                            stored_env[captured_index] = updated.clone();
-                            if let Some(current_index) = frame_mapping[captured_index]
-                                && current_index < env.len()
-                            {
-                                env[current_index] = updated.clone();
-                            }
-                        }
-                    }
-                    result
+                    self.eval_with_closure_env(closure_env, env, |interp, call_env| {
+                        call_env.push(frame);
+                        let result = interp.sf_progn(function_executable_body(body), call_env);
+                        call_env.pop();
+                        result
+                    })
                 };
                 self.pop_backtrace_frame();
                 result

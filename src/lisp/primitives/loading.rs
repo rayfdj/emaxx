@@ -89,7 +89,10 @@ pub(crate) fn call_interactively_impl(
         func = interp.lookup_function(symbol, env)?;
     }
     let interactive_args = collect_interactive_args(interp, &func, env)?;
-    let result = invoke_function_value(interp, &func, &interactive_args, env)?;
+    interp.push_interactive_call();
+    let result = invoke_function_value(interp, &func, &interactive_args, env);
+    interp.pop_interactive_call();
+    let result = result?;
     if args.get(1).is_some_and(Value::is_truthy)
         && let Some(function_name) = callable_name(&args[0], &func)
     {
