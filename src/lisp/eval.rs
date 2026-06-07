@@ -466,6 +466,7 @@ impl Interpreter {
                 ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
                 ("case-replace".into(), Value::T),
+                ("byte-compile-log-buffer".into(), Value::Nil),
                 ("defining-kbd-macro".into(), Value::Nil),
                 ("delay-mode-hooks".into(), Value::Nil),
                 ("delayed-after-hook-functions".into(), Value::Nil),
@@ -524,6 +525,7 @@ impl Interpreter {
             variable_aliases: Vec::new(),
             special_variables: vec![
                 "case-fold-search".into(),
+                "byte-compile-log-buffer".into(),
                 "command-line-args".into(),
                 "command-line-args-left".into(),
                 "command-switch-alist".into(),

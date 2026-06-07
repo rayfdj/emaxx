@@ -1660,8 +1660,8 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
             byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
-            if let Ok(symbol) = args[0].as_symbol() {
-                let callable = resolve_callable(interp, &args[0], env)?;
+            if let Ok(symbol) = compile_target.as_symbol() {
+                let callable = resolve_callable(interp, &compile_target, env)?;
                 let slots = byte_code_function_slots(interp, Some(symbol), callable, None, false);
                 return Ok(interp.create_record("byte-code-function", slots));
             }
@@ -7836,8 +7836,8 @@ fn byte_compile_emit_warnings(
     env: &Env,
 ) -> Result<(), LispError> {
     let mut diagnostics = ByteCompileDiagnostics::default();
-    diagnostics.scan(interp, form, false);
-    byte_compile_log_diagnostics(interp, env, suppressions, diagnostics)
+    diagnostics.scan_with_suppressions(interp, form, false, suppressions);
+    byte_compile_log_diagnostics(interp, env, &[], diagnostics)
 }
 
 fn byte_compile_log_diagnostics(
@@ -7927,12 +7927,9 @@ fn byte_compile_from_buffer(
         ..Default::default()
     };
     for form in forms {
-        let (compile_target, suppressions) = byte_compile_target_and_suppressions(&form);
-        diagnostics.add_suppressions(&suppressions);
-        diagnostics.scan(interp, &compile_target, false);
+        diagnostics.scan(interp, &form, false);
     }
-    let suppressions = diagnostics.suppressions.clone();
-    byte_compile_log_diagnostics(interp, env, &suppressions, diagnostics)?;
+    byte_compile_log_diagnostics(interp, env, &[], diagnostics)?;
     Ok(Value::Nil)
 }
 
@@ -7964,12 +7961,9 @@ fn byte_compile_file(
     let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
     let mut diagnostics = ByteCompileDiagnostics::default();
     for form in forms {
-        let (compile_target, suppressions) = byte_compile_target_and_suppressions(&form);
-        diagnostics.add_suppressions(&suppressions);
-        diagnostics.scan(interp, &compile_target, false);
+        diagnostics.scan(interp, &form, false);
     }
-    let suppressions = diagnostics.suppressions.clone();
-    byte_compile_log_diagnostics(interp, env, &suppressions, diagnostics)?;
+    byte_compile_log_diagnostics(interp, env, &[], diagnostics)?;
     byte_compile_log_source_attribute_warnings(interp, env, &source)?;
 
     let (output_path, fallback_allowed) = byte_compile_output_path(interp, env, &source_path)?;
@@ -8272,10 +8266,12 @@ struct ByteCompileDiagnostics {
     obsolete_functions: Vec<String>,
     function_arities: Vec<(String, usize, Option<usize>)>,
     defined_functions: Vec<String>,
+    defined_variables: Vec<String>,
     called_functions: Vec<String>,
     suppressions: Vec<ByteCompileSuppression>,
     lexical_bindings: Vec<String>,
     lexical_hook_symbols: Vec<String>,
+    function_depth: usize,
     warn_unresolved: bool,
 }
 
@@ -8287,9 +8283,13 @@ struct ByteCompileWarning {
 
 impl ByteCompileDiagnostics {
     fn warn(&mut self, category: &'static str, name: impl Into<Option<String>>, message: String) {
+        let name = name.into();
+        if byte_compile_warning_suppressed(&self.suppressions, category, name.as_deref()) {
+            return;
+        }
         self.warnings.push(ByteCompileWarning {
             category,
-            name: name.into(),
+            name,
             message,
         });
     }
@@ -8298,12 +8298,35 @@ impl ByteCompileDiagnostics {
         self.suppressions.extend(suppressions.iter().cloned());
     }
 
+    fn scan_with_suppressions(
+        &mut self,
+        interp: &Interpreter,
+        form: &Value,
+        ignored_value: bool,
+        suppressions: &[ByteCompileSuppression],
+    ) {
+        let existing = self.suppressions.len();
+        self.add_suppressions(suppressions);
+        self.scan(interp, form, ignored_value);
+        self.suppressions.truncate(existing);
+    }
+
     fn scan(&mut self, interp: &Interpreter, form: &Value, ignored_value: bool) {
         let Ok(items) = form.to_vec() else {
             if let Ok(symbol) = form.as_symbol()
                 && matches!(symbol, "obsolete-variable" | "free-variable")
             {
                 self.warn_symbol_reference(interp, symbol);
+            }
+            if let Ok(symbol) = form.as_symbol()
+                && self.function_depth > 0
+                && !self.variable_is_known(interp, symbol)
+            {
+                self.warn(
+                    "free-vars",
+                    Some(symbol.to_string()),
+                    format!("Warning: reference to free variable `{symbol}'"),
+                );
             }
             if let Ok(symbol) = form.as_symbol()
                 && self
@@ -8334,10 +8357,12 @@ impl ByteCompileDiagnostics {
             "defun" | "defsubst" => self.scan_defun(interp, &items),
             "defmacro" => self.scan_defmacro(interp, &items),
             "lambda" => self.scan_lambda(interp, &items),
+            "quote" | "function" => {}
             "eval-and-compile" | "eval-when-compile" => self.scan_compile_time_body(interp, &items),
             "if" => self.scan_if(interp, &items),
             "and" => self.scan_and(interp, &items),
             "or" => self.scan_or(interp, &items),
+            "setq" => self.scan_setq(interp, &items),
             "not" => self.scan_body(interp, &items[1..]),
             "ignore" => self.scan_body(interp, &items[1..]),
             "progn" => self.scan_body(interp, &items[1..]),
@@ -8394,9 +8419,11 @@ impl ByteCompileDiagnostics {
     }
 
     fn scan_defvar(&mut self, items: &[Value]) {
-        if let Some(symbol) = items.get(1).and_then(|value| value.as_symbol().ok())
-            && !symbol.contains('-')
-        {
+        if let Some(symbol) = items.get(1).and_then(|value| value.as_symbol().ok()) {
+            self.define_variable(symbol);
+            if symbol.contains('-') {
+                return;
+            }
             self.warn(
                 "lexical",
                 Some(symbol.to_string()),
@@ -8406,6 +8433,9 @@ impl ByteCompileDiagnostics {
     }
 
     fn scan_defcustom(&mut self, interp: &Interpreter, items: &[Value]) {
+        if let Some(symbol) = items.get(1).and_then(|value| value.as_symbol().ok()) {
+            self.define_variable(symbol);
+        }
         if let Some(initializer) = items.get(2) {
             self.scan(interp, initializer, false);
         }
@@ -8660,7 +8690,16 @@ impl ByteCompileDiagnostics {
         } else {
             3
         };
+        let params = items
+            .get(2)
+            .and_then(|value| byte_compile_lambda_parameters(value).ok())
+            .unwrap_or_default();
+        let existing_bindings = self.lexical_bindings.len();
+        self.lexical_bindings.extend(params);
+        self.function_depth += 1;
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+        self.function_depth -= 1;
+        self.lexical_bindings.truncate(existing_bindings);
     }
 
     fn scan_defmacro(&mut self, interp: &Interpreter, items: &[Value]) {
@@ -8695,11 +8734,16 @@ impl ByteCompileDiagnostics {
             2
         };
         let body = items.get(body_start..).unwrap_or_default();
+        let existing_bindings = self.lexical_bindings.len();
+        self.lexical_bindings.extend(params.iter().cloned());
+        self.function_depth += 1;
         let mut used_symbols = Vec::new();
         for form in body {
             collect_symbol_references(form, &mut used_symbols);
             self.scan(interp, form, false);
         }
+        self.function_depth -= 1;
+        self.lexical_bindings.truncate(existing_bindings);
         for param in params {
             if !used_symbols.iter().any(|symbol| symbol == &param) {
                 self.warn(
@@ -8781,7 +8825,14 @@ impl ByteCompileDiagnostics {
                 "Warning: `with-suppressed-warnings' with empty body".into(),
             );
         }
+        let suppressions = items
+            .get(1)
+            .map(byte_compile_suppressions)
+            .unwrap_or_default();
+        let existing = self.suppressions.len();
+        self.add_suppressions(&suppressions);
         self.scan_body(interp, items.get(2..).unwrap_or_default());
+        self.suppressions.truncate(existing);
     }
 
     fn scan_save_excursion(&mut self, interp: &Interpreter, items: &[Value]) {
@@ -8911,6 +8962,23 @@ impl ByteCompileDiagnostics {
         self.lexical_bindings.truncate(existing);
     }
 
+    fn scan_setq(&mut self, interp: &Interpreter, items: &[Value]) {
+        for pair in items[1..].chunks(2) {
+            if let Some(variable) = pair.first().and_then(|value| value.as_symbol().ok())
+                && !self.variable_is_known(interp, variable)
+            {
+                self.warn(
+                    "free-vars",
+                    Some(variable.to_string()),
+                    format!("Warning: assignment to free variable `{variable}'"),
+                );
+            }
+            if let Some(value) = pair.get(1) {
+                self.scan(interp, value, false);
+            }
+        }
+    }
+
     fn scan_mutate_constant(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         match head {
             "setcar" if items.get(1).is_some_and(quoted_list_literal) => self.warn(
@@ -9023,8 +9091,32 @@ impl ByteCompileDiagnostics {
             self.warn(
                 "interactive-only",
                 Some("next-line".to_string()),
-                "Warning: `next-line' is for interactive use only".into(),
+                "Warning: `next-line' is for interactive use only; use `forward-line' instead"
+                    .into(),
             );
+        }
+        if head == "make-variable-buffer-local" && self.function_depth > 0 {
+            self.warn(
+                "suspicious",
+                Some("make-variable-buffer-local".to_string()),
+                "Warning: `make-variable-buffer-local' not called at toplevel".into(),
+            );
+        }
+        if matches!(head, "format" | "message")
+            && let Some(format_string) = items.get(1).and_then(format_string_literal)
+        {
+            let argument_count = items.len().saturating_sub(2);
+            let field_count = count_format_fields(&format_string);
+            if argument_count > field_count {
+                let field_label = if field_count == 1 { "field" } else { "fields" };
+                self.warn(
+                    "callargs",
+                    Some(head.to_string()),
+                    format!(
+                        "Warning: `{head}' called with {argument_count} arguments to fill {field_count} format {field_label}"
+                    ),
+                );
+            }
         }
         if let Some((_, required, maximum)) = self
             .function_arities
@@ -9075,6 +9167,59 @@ impl ByteCompileDiagnostics {
             );
         }
     }
+
+    fn define_variable(&mut self, symbol: &str) {
+        if !self.defined_variables.iter().any(|name| name == symbol) {
+            self.defined_variables.push(symbol.to_string());
+        }
+    }
+
+    fn variable_is_known(&self, interp: &Interpreter, symbol: &str) -> bool {
+        matches!(symbol, "nil" | "t")
+            || symbol.starts_with(':')
+            || self
+                .lexical_bindings
+                .iter()
+                .rev()
+                .any(|name| name == symbol)
+            || self.defined_variables.iter().any(|name| name == symbol)
+            || interp.default_toplevel_value(symbol).is_some()
+            || interp
+                .get_symbol_property(symbol, "byte-obsolete-variable")
+                .is_some()
+            || interp.builtin_var_value(symbol).is_some()
+    }
+}
+
+fn format_string_literal(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::StringObject(state) => Some(state.borrow().text.clone()),
+        _ => None,
+    }
+}
+
+fn count_format_fields(format_string: &str) -> usize {
+    let mut chars = format_string.chars().peekable();
+    let mut fields = 0;
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            continue;
+        }
+        if chars.peek().is_some_and(|next| *next == '%') {
+            chars.next();
+            continue;
+        }
+        while chars.peek().is_some_and(|next| {
+            matches!(*next, '#' | '0' | '-' | '+' | ' ' | '\'' | '.' | '*') || next.is_ascii_digit()
+        }) {
+            chars.next();
+        }
+        if chars.next().is_some() {
+            fields += 1;
+        }
+    }
+    fields
 }
 
 fn defun_declares_obsolete(items: &[Value]) -> bool {

@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1547/7080 are verified locally.
+- Tests through 1552/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1547/7080: warn on incomplete defcustom declarations`.
-- The next observed frontier is selector 1548,
-  `bytecomp/warn-format.el` in
+  `Compat 1552/7080: expand byte compile call warnings`.
+- The next observed frontier is selector 1553,
+  `bytecomp/warn-lambda-malformed-interactive-spec.el` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full

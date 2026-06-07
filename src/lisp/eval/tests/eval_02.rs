@@ -418,6 +418,82 @@ fn byte_compile_warns_for_missing_defcustom_type_and_group() {
 }
 
 #[test]
+fn byte_compile_warns_for_extra_format_arguments() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (with-current-buffer (get-buffer-create "*Compile-Log*")
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (byte-compile '(message "%s" 1 2))
+                  (with-current-buffer "*Compile-Log*"
+                    (not (null (re-search-forward
+                                "called with 2 arguments to fill 1 format field"
+                                nil t)))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn byte_compile_warns_for_free_vars_and_interactive_only_forms() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-bytecomp-warning-p (pattern form)
+                    (with-current-buffer (get-buffer-create "*Compile-Log*")
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile form)
+                    (with-current-buffer "*Compile-Log*"
+                      (not (null (re-search-forward pattern nil t)))))
+                  (list
+                   (emaxx-bytecomp-warning-p
+                    "free.*foo"
+                    '(setq foo 'bar))
+                   (emaxx-bytecomp-warning-p
+                    "free variable .bar"
+                    '(defun sample-free-ref () bar))
+                   (emaxx-bytecomp-warning-p
+                    "make-variable-buffer-local. not called at toplevel"
+                    '(defun sample-buffer-local () (make-variable-buffer-local 'foobar)))
+                   (emaxx-bytecomp-warning-p
+                    "next-line.*interactive use only.*forward-line"
+                    '(defun sample-next-line () (next-line)))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn byte_compile_suppresses_prefixless_defvar_warning() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (with-current-buffer (get-buffer-create "*Compile-Log*")
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)))
+                  (byte-compile '(with-suppressed-warnings ((lexical prefixless))
+                                   (defvar prefixless)))
+                  (and
+                   (with-current-buffer "*Compile-Log*"
+                     (not (string-match "global/dynamic var .prefixless. lacks"
+                                        (buffer-string))))
+                   (equal (byte-compile '(defvar prefixless))
+                          (byte-compile '(with-suppressed-warnings ((lexical prefixless))
+                                           (defvar prefixless))))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn byte_compile_from_buffer_warns_for_unresolved_calls_outside_feature_guards() {
     assert_eq!(
         eval_str(
@@ -514,6 +590,165 @@ fn byte_compile_file_logs_and_suppresses_structural_warnings() {
             Value::T
         ])
     );
+}
+
+#[test]
+fn byte_compile_file_suppression_survives_compile_and_load_flow() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-suppress-flow-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let unsuppressed = dir.join("unsuppressed.el");
+    let suppressed = dir.join("suppressed.el");
+    let unsuppressed_dest = dir.join("unsuppressed.elc");
+    let suppressed_dest = dir.join("suppressed.elc");
+    std::fs::write(
+        &unsuppressed,
+        ";;; -*- lexical-binding: t -*-\n(defvar prefixless)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &suppressed,
+        ";;; -*- lexical-binding: t -*-\n(with-suppressed-warnings ((lexical prefixless))\n  (defvar prefixless))\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+              (let ((byte-compile-dest-file-function (lambda (_) {unsuppressed_dest:?})))
+                (byte-compile-file {unsuppressed:?}))
+              (with-current-buffer byte-compile-log-buffer
+                (let ((inhibit-read-only t))
+                  (erase-buffer)))
+              (let ((byte-compile-dest-file-function (lambda (_) {suppressed_dest:?})))
+                (byte-compile-file {suppressed:?}))
+              (load {suppressed:?} nil 'nomessage)
+              (with-current-buffer byte-compile-log-buffer
+                (not (string-match "global/dynamic var .prefixless. lacks"
+                                   (buffer-string)))))
+            "#,
+        unsuppressed = unsuppressed.display().to_string(),
+        suppressed = suppressed.display().to_string(),
+        unsuppressed_dest = unsuppressed_dest.display().to_string(),
+        suppressed_dest = suppressed_dest.display().to_string(),
+    );
+
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::T);
+}
+
+#[test]
+fn byte_compile_file_uses_dynamic_log_buffer_across_helper_call() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-dynamic-log-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("suppressed.el");
+    let warning_path = dir.join("warning.el");
+    let output_path = dir.join("suppressed.elc");
+    let warning_output_path = dir.join("warning.elc");
+    std::fs::write(
+        &warning_path,
+        ";;; -*- lexical-binding: t -*-\n(defvar prefixless)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &source_path,
+        ";;; -*- lexical-binding: t -*-\n(with-suppressed-warnings ((lexical prefixless))\n  (defvar prefixless))\n",
+    )
+    .unwrap();
+
+    let source = format!(
+        r#"
+            (let ((lexical-binding t))
+              (defun emaxx-bytecomp-helper (src dest)
+                (let ((byte-compile-dest-file-function (lambda (_) dest)))
+                  (byte-compile-file src)))
+              (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*")))
+                (emaxx-bytecomp-helper {warning_path:?} {warning_output_path:?})
+                (with-current-buffer byte-compile-log-buffer
+                  (unless (string-match "global/dynamic var .prefixless. lacks"
+                                        (buffer-string))
+                    (error "missing unsuppressed warning: %s" (buffer-string))))
+                (with-current-buffer byte-compile-log-buffer
+                  (let ((inhibit-read-only t))
+                    (erase-buffer)))
+                (emaxx-bytecomp-helper {source_path:?} {output_path:?})
+                (with-current-buffer byte-compile-log-buffer
+                  (not (string-match "global/dynamic var .prefixless. lacks"
+                                     (buffer-string))))))
+            "#,
+        source_path = source_path.display().to_string(),
+        warning_path = warning_path.display().to_string(),
+        output_path = output_path.display().to_string(),
+        warning_output_path = warning_output_path.display().to_string(),
+    );
+
+    let result = eval_str(&source);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::T);
+}
+
+#[test]
+fn bytecomp_tests_suppression_helper_matches_prefixless_defvar() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.set_global_binding("noninteractive", Value::T);
+    let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
+    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"
+                (test-suppression
+                 '(defvar prefixless)
+                 '((lexical prefixless))
+                 "global/dynamic var .prefixless. lacks")
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn bytecomp_tests_suppression_case_passes_in_default_ert_run() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.set_global_binding("noninteractive", Value::T);
+    let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
+    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+    let selector =
+        crate::lisp::reader::Reader::new("(not (or (tag :expensive-test) (tag :unstable)))")
+            .read()
+            .unwrap()
+            .unwrap();
+    let _ = interp.run_ert_tests_with_selector(Some(&selector));
+    let outcome = interp
+        .test_results
+        .iter()
+        .find(|result| result.name == "bytecomp-test--with-suppressed-warnings")
+        .expect("selected suppression test");
+    assert_eq!(outcome.status, TestStatus::Passed, "{outcome:?}");
 }
 
 #[test]
