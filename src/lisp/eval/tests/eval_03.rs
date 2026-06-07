@@ -186,6 +186,27 @@ fn eval_second_argument_controls_lambda_capture() {
 }
 
 #[test]
+fn eval_lambda_trims_unused_lexical_context_unless_marker_requests_it() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((magic "This-is-a-magic-string")
+                       (safe-p (lambda (x)
+                                 (not (string-match magic (format "%S" x))))))
+                  (list
+                   (funcall safe-p (eval '(lambda (x) (+ x 1))
+                                         `((y . ,magic))))
+                   (funcall safe-p (eval '(lambda (x) :closure-dont-trim-context)
+                                         `((y . ,magic))))
+                   (funcall safe-p (eval '(lambda (x) :closure-dont-trim-context (+ x 1))
+                                         `((y . ,magic))))))
+            "#
+        ),
+        Value::list([Value::T, Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn dynamic_lambdas_write_back_mutated_caller_bindings() {
     assert_eq!(
         eval_str(

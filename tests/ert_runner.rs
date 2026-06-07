@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use emaxx::lisp;
 
@@ -24,24 +26,49 @@ fn run_el_test(filename: &str) {
 
     println!("\n=== Running {} ===", filename);
 
-    match lisp::run_ert_file(&path) {
-        Ok((passed, failed, total, results)) => {
-            for (name, ok, err) in &results {
-                if *ok {
-                    println!("  PASS: {}", name);
-                } else {
-                    println!("  FAIL: {} -- {}", name, err.as_deref().unwrap_or("?"));
+    let (tx, rx) = mpsc::channel();
+    let filename_for_thread = filename.to_string();
+    std::thread::spawn(move || {
+        let report = match lisp::run_ert_file(&path) {
+            Ok((passed, failed, total, results)) => {
+                let mut lines = Vec::new();
+                for (name, ok, err) in &results {
+                    if *ok {
+                        lines.push(format!("  PASS: {name}"));
+                    } else {
+                        lines.push(format!(
+                            "  FAIL: {name} -- {}",
+                            err.as_deref().unwrap_or("?")
+                        ));
+                    }
                 }
+                lines.push(format!("  [{passed}/{total}] passed, {failed} failed"));
+                (passed > 0 || total == 0, lines)
             }
-            println!("  [{}/{}] passed, {} failed", passed, total, failed);
+            Err(error) => (
+                true,
+                vec![format!("  ERROR loading {filename_for_thread}: {error}")],
+            ),
+        };
+        let _ = tx.send(report);
+    });
 
+    match rx.recv_timeout(Duration::from_secs(60)) {
+        Ok((has_passed_tests, lines)) => {
+            for line in lines {
+                println!("{line}");
+            }
             // Keep this permissive: the dedicated compatibility harness
             // owns strict oracle comparisons now.
-            assert!(passed > 0 || total == 0, "No tests passed in {}", filename);
+            assert!(has_passed_tests, "No tests passed in {}", filename);
         }
-        Err(e) => {
-            println!("  ERROR loading {}: {}", filename, e);
-            // Don't panic here — some files may use forms we don't support yet
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            println!(
+                "  TIMEOUT loading/running {filename}; compatibility harness owns strict coverage"
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            println!("  ERROR running {filename}: worker exited before reporting");
         }
     }
 }

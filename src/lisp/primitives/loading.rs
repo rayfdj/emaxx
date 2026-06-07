@@ -108,16 +108,16 @@ pub(crate) fn eval_impl(
         return Err(LispError::WrongNumberOfArgs("eval".into(), args.len()));
     }
     if let Some(lexical) = args.get(1) {
-        let (capture_lexical, mut eval_env) = match lexical {
-            Value::Nil => (false, Vec::new()),
-            Value::T => (true, env.clone()),
+        let (capture_lexical, trim_context, mut eval_env) = match lexical {
+            Value::Nil => (false, false, Vec::new()),
+            Value::T => (true, false, env.clone()),
             Value::Cons(_, _) => {
                 let frame = lexical_alist_frame(lexical)?;
-                (true, vec![frame])
+                (true, true, vec![frame])
             }
-            _ => (true, env.clone()),
+            _ => (true, false, env.clone()),
         };
-        interp.push_lambda_capture_override(capture_lexical);
+        interp.push_lambda_eval_context(capture_lexical, trim_context);
         let result = interp.eval(&args[0], &mut eval_env);
         interp.pop_lambda_capture_override();
         result

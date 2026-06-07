@@ -2339,8 +2339,19 @@ impl Interpreter {
         }
         let params = self.parse_params(&items[1])?;
         let body: Vec<Value> = items[2..].to_vec();
+        let keep_full_context = matches!(
+            body.first(),
+            Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
+        ) && body.len() > 1;
         let closure_env = if self.lambda_capture_override().unwrap_or(true) {
-            shared_env(env.clone())
+            let captured = if keep_full_context {
+                env.clone()
+            } else if self.lambda_trim_override() {
+                trim_lambda_closure_env(env, &body)
+            } else {
+                env.clone()
+            };
+            shared_env(captured)
         } else {
             shared_env(Vec::new())
         };
@@ -2364,6 +2375,52 @@ impl Interpreter {
         }
         crate::lisp::primitives::eval_impl(self, &evaluated, env)
     }
+}
+
+fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
+    let mut referenced = HashSet::new();
+    for form in body {
+        collect_referenced_symbols(form, &mut referenced);
+    }
+
+    env.iter()
+        .filter_map(|frame| {
+            let last_used = frame
+                .iter()
+                .rposition(|(name, _)| referenced.contains(name.as_str()))?;
+            Some(frame[..=last_used].to_vec())
+        })
+        .collect()
+}
+
+fn collect_referenced_symbols(value: &Value, referenced: &mut HashSet<String>) {
+    match value {
+        Value::Symbol(symbol) => {
+            referenced.insert(symbol.clone());
+        }
+        Value::Cons(_, _) => {
+            let Ok(items) = value.to_vec() else {
+                collect_dotted_list_symbols(value, referenced);
+                return;
+            };
+            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "quote") {
+                return;
+            }
+            for item in items {
+                collect_referenced_symbols(&item, referenced);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_dotted_list_symbols(value: &Value, referenced: &mut HashSet<String>) {
+    let Some((car, cdr)) = value.cons_values() else {
+        collect_referenced_symbols(value, referenced);
+        return;
+    };
+    collect_referenced_symbols(&car, referenced);
+    collect_referenced_symbols(&cdr, referenced);
 }
 
 fn custom_type_matches_value(custom_type: &Value, value: &Value) -> bool {

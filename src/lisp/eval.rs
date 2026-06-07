@@ -429,6 +429,7 @@ pub struct Interpreter {
     load_path: Vec<PathBuf>,
     loading_features: Vec<String>,
     lambda_capture_overrides: Vec<bool>,
+    lambda_trim_overrides: Vec<bool>,
     thread_states: Vec<ThreadState>,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
@@ -660,6 +661,7 @@ impl Interpreter {
             load_path: Vec::new(),
             loading_features: Vec::new(),
             lambda_capture_overrides: Vec::new(),
+            lambda_trim_overrides: Vec::new(),
             thread_states: vec![ThreadState {
                 record_id: main_thread_id,
                 name: None,
@@ -861,14 +863,25 @@ impl Interpreter {
 
     pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
         self.lambda_capture_overrides.push(capture);
+        self.lambda_trim_overrides.push(false);
+    }
+
+    pub(crate) fn push_lambda_eval_context(&mut self, capture: bool, trim_context: bool) {
+        self.lambda_capture_overrides.push(capture);
+        self.lambda_trim_overrides.push(trim_context);
     }
 
     pub(crate) fn pop_lambda_capture_override(&mut self) {
         self.lambda_capture_overrides.pop();
+        self.lambda_trim_overrides.pop();
     }
 
     pub(crate) fn lambda_capture_override(&self) -> Option<bool> {
         self.lambda_capture_overrides.last().copied()
+    }
+
+    pub(crate) fn lambda_trim_override(&self) -> bool {
+        self.lambda_trim_overrides.last().copied().unwrap_or(false)
     }
 }
 
@@ -1192,6 +1205,14 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
     }
     while start < body.len()
         && (is_function_declare_form(&body[start]) || is_function_interactive_form(&body[start]))
+    {
+        start += 1;
+    }
+    if body.len().saturating_sub(start) > 1
+        && matches!(
+            body.get(start),
+            Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
+        )
     {
         start += 1;
     }
