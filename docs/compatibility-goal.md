@@ -19,13 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1633/7080 are verified locally.
+- Tests through 1705/7080 are verified locally against the current canonical
+  manifest.
 - The latest compatibility batch is
-  `Compat 1633/7080: load checkdoc cl-defmethods`.
-- The next observed frontier is selector 1634,
-  `checkdoc-cl-defun-with-allow-other-keys-ok` in
-  `test/lisp/emacs-lisp/checkdoc-tests.el`; it currently fails with a
-  `void-variable` for `down-list`.
+  `Compat 1705/7080: navigate checkdoc cl-defuns`.
+- The next observed frontier is selector 1706,
+  `checkdoc-tests--bug-24998` in `test/lisp/emacs-lisp/checkdoc-tests.el`;
+  it currently fails because emaxx does not report the expected checkdoc
+  diagnostic.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -71,11 +72,20 @@ counts as the progress denominator.
   passed after exposing the standard `hack-local-variables` entry point used
   when scanning or verifying Elisp files and making `display-warning` honor
   warning prefix callbacks and explicit warning buffer arguments.
-- Selectors 1629..1633 in `test/lisp/emacs-lisp/checkdoc-tests.el` passed
+- Selectors 1696..1700 in `test/lisp/emacs-lisp/checkdoc-tests.el` passed
   after preloading `completion-table-dynamic`, dispatching programmed
   completion collections through `try-completion`/`all-completions`/
   `test-completion`, and adding callable `prog-mode` with its standard
   `fundamental-mode` parent.
+- Selectors 1701..1705 in `test/lisp/emacs-lisp/checkdoc-tests.el` passed
+  after adding enough Lisp list/defun navigation for checkdoc to find
+  docstrings, exposing `ppss-depth`, and defining the standard
+  `sentence-end-double-space` default. Exact replays run for this batch:
+  selector `checkdoc-cl-defun-with-allow-other-keys-ok`; selector
+  `checkdoc-docstring-avoid-false-positive-ok`; grouped replay
+  `checkdoc-cl-defun-with-(key|allow-other-keys|default-optional-value|destructuring)-ok`
+  plus `checkdoc-tests--next-docstring`, which confirmed selectors 1701..1705
+  passed and selector 1706 remained the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

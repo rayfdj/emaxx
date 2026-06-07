@@ -1693,6 +1693,50 @@ fn forward_list_moves_over_syntax_table_brace_lists() {
 }
 
 #[test]
+fn down_and_up_list_move_through_nested_lists() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "(outer (inner value)) tail")
+                  (goto-char (point-min))
+                  (down-list)
+                  (let ((after-down (point)))
+                    (down-list)
+                    (up-list)
+                    (list after-down (point))))
+                "#
+        ),
+        Value::list([Value::Integer(2), Value::Integer(21)])
+    );
+}
+
+#[test]
+fn beginning_of_defun_raw_moves_between_column_zero_lists() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "(defun first () nil)\n\n(defun second () nil)\n")
+                  (goto-char (point-max))
+                  (let ((backward (beginning-of-defun-raw))
+                        (first-point (point)))
+                    (beginning-of-defun-raw)
+                    (let ((second-point (point)))
+                      (beginning-of-defun-raw -1)
+                      (list backward first-point second-point (point)))))
+                "#
+        ),
+        Value::list([
+            Value::T,
+            Value::Integer(23),
+            Value::Integer(1),
+            Value::Integer(23),
+        ])
+    );
+}
+
+#[test]
 fn forward_comment_moves_backward_over_lisp_line_comments() {
     assert_eq!(
         eval_str(
@@ -3640,6 +3684,11 @@ fn backup_retention_variables_match_batch_defaults() {
 #[test]
 fn sentence_end_defaults_to_nil_in_batch() {
     assert_eq!(eval_str("sentence-end"), Value::Nil);
+}
+
+#[test]
+fn sentence_end_double_space_defaults_to_t() {
+    assert_eq!(eval_str("sentence-end-double-space"), Value::T);
 }
 
 #[test]

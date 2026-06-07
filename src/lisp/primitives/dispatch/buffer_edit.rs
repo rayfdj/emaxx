@@ -4,6 +4,53 @@ fn search_noerror_moves(noerror: Option<&Value>) -> bool {
     noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
 }
 
+fn column_zero_list_starts(interp: &Interpreter) -> Result<Vec<usize>, LispError> {
+    let start = interp.buffer.point_min();
+    let text = interp
+        .buffer
+        .buffer_substring(start, interp.buffer.point_max())
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let mut starts = Vec::new();
+    let mut at_line_start = true;
+    for (pos, ch) in (start..).zip(text.chars()) {
+        if at_line_start && ch == '(' {
+            starts.push(pos);
+        }
+        at_line_start = ch == '\n';
+    }
+    Ok(starts)
+}
+
+fn beginning_of_defun_raw_fallback(interp: &mut Interpreter, arg: i64) -> Result<Value, LispError> {
+    let starts = column_zero_list_starts(interp)?;
+    if starts.is_empty() || arg == 0 {
+        return Ok(Value::Nil);
+    }
+
+    let point = interp.buffer.point();
+    let target = if arg > 0 {
+        starts
+            .iter()
+            .rev()
+            .filter(|pos| **pos < point)
+            .nth((arg - 1) as usize)
+            .copied()
+    } else {
+        starts
+            .iter()
+            .filter(|pos| **pos > point)
+            .nth((-arg - 1) as usize)
+            .copied()
+    };
+
+    if let Some(pos) = target {
+        interp.buffer.goto_char(pos);
+        Ok(Value::T)
+    } else {
+        Ok(Value::Nil)
+    }
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -36,6 +83,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "back-to-indentation"
             | "end-of-line"
             | "beginning-of-defun"
+            | "beginning-of-defun-raw"
             | "end-of-defun"
             | "backward-sentence"
             | "forward-paragraph"
@@ -51,12 +99,15 @@ pub(super) fn handles(name: &str) -> bool {
             | "re-search-backward"
             | "search-backward-regexp"
             | "forward-list"
+            | "down-list"
+            | "up-list"
             | "forward-sexp"
             | "backward-sexp"
             | "forward-comment"
             | "scan-lists"
             | "scan-sexps"
             | "syntax-ppss"
+            | "ppss-depth"
             | "syntax-ppss-flush-cache"
             | "parse-partial-sexp"
             | "buffer-string"
@@ -581,6 +632,22 @@ pub(super) fn call(
             interp.buffer.goto_char(interp.buffer.point_min());
             Ok(Value::T)
         }
+        "beginning-of-defun-raw" => {
+            need_arg_range(name, args, 0, 1)?;
+            let arg = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            if let Some(function) = interp
+                .lookup_var("beginning-of-defun-function", env)
+                .filter(Value::is_truthy)
+            {
+                return call_function_value(interp, &function, &[Value::Integer(arg)], env);
+            }
+            beginning_of_defun_raw_fallback(interp, arg)
+        }
         "end-of-defun" => {
             let arg = args.first().cloned().unwrap_or(Value::Integer(1));
             if let Some(function) = interp
@@ -799,6 +866,14 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
+        "down-list" => {
+            need_arg_range(name, args, 0, 1)?;
+            syntax::down_list_impl(interp, args.first(), env)
+        }
+        "up-list" => {
+            need_arg_range(name, args, 0, 1)?;
+            syntax::up_list_impl(interp, args.first(), env)
+        }
         "forward-sexp" | "backward-sexp" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -870,6 +945,10 @@ pub(super) fn call(
             );
             interp.buffer.goto_char(saved);
             state
+        }
+        "ppss-depth" => {
+            need_args(name, args, 1)?;
+            Ok(args[0].to_vec()?.first().cloned().unwrap_or(Value::Nil))
         }
         "syntax-ppss-flush-cache" => {
             need_arg_range(name, args, 1, usize::MAX)?;
