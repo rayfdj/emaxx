@@ -2251,6 +2251,9 @@ fn pcase_pattern_bindings_inner(
         && name != "nil"
         && name != "t"
     {
+        if name.starts_with(':') {
+            return Ok(pattern == value);
+        }
         if backquoted {
             return Ok(pattern == value);
         }
@@ -2271,10 +2274,23 @@ fn pcase_pattern_bindings_inner(
         }
         if backquoted {
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
-                && let Some(Value::Symbol(name)) = parts.get(1)
             {
-                bindings.push((name.clone(), value.clone()));
-                return Ok(true);
+                let Some(pattern) = parts.get(1) else {
+                    return Ok(false);
+                };
+                if let Value::Symbol(name) = pattern {
+                    bindings.push((name.clone(), value.clone()));
+                    return Ok(true);
+                }
+                return pcase_pattern_bindings_inner(
+                    interp,
+                    env,
+                    pattern,
+                    value,
+                    bindings,
+                    lenient_list_match,
+                    false,
+                );
             }
         } else {
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "or") {
@@ -2353,14 +2369,7 @@ fn pcase_pattern_bindings_inner(
                 } else {
                     (false, parts[1].clone())
                 };
-                let predicate = pcase_predicate_function(interp, env, &predicate_form)?;
-                let matches = crate::lisp::primitives::call_function_value(
-                    interp,
-                    &predicate,
-                    std::slice::from_ref(value),
-                    env,
-                )?
-                .is_truthy();
+                let matches = pcase_predicate_matches(interp, env, &predicate_form, value)?;
                 return Ok(if negated { !matches } else { matches });
             }
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "cl-struct")
@@ -2560,18 +2569,32 @@ fn pcase_pattern_bindings_inner(
     }
 }
 
-fn pcase_predicate_function(
+fn pcase_predicate_matches(
     interp: &mut Interpreter,
     env: &mut Env,
     predicate_form: &Value,
-) -> Result<Value, LispError> {
-    match interp.eval(predicate_form, env) {
-        Ok(value) => Ok(value),
-        Err(LispError::Void(_)) if matches!(predicate_form, Value::Symbol(_)) => {
-            Ok(predicate_form.clone())
-        }
-        Err(error) => Err(error),
+    value: &Value,
+) -> Result<bool, LispError> {
+    if let Ok(mut items) = predicate_form.to_vec()
+        && !items.is_empty()
+    {
+        items.push(quoted_literal(value));
+        return Ok(interp.eval(&Value::list(items), env)?.is_truthy());
     }
+    let predicate = match interp.eval(predicate_form, env) {
+        Ok(predicate) => predicate,
+        Err(LispError::Void(_)) if matches!(predicate_form, Value::Symbol(_)) => {
+            predicate_form.clone()
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(crate::lisp::primitives::call_function_value(
+        interp,
+        &predicate,
+        std::slice::from_ref(value),
+        env,
+    )?
+    .is_truthy())
 }
 
 fn is_compat_preloaded_feature(feature: &str) -> bool {

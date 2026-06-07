@@ -2095,6 +2095,42 @@ fn pcase_backquote_treats_plain_symbols_as_literals() {
 }
 
 #[test]
+fn pcase_backquote_treats_t_and_nil_as_literals() {
+    assert_eq!(
+        eval_str(
+            "(list
+                   (pcase '(binder read nil t nil)
+                     (`(,binder ,_ t t ,_) 'wrong)
+                     (_ 'other))
+                   (pcase '(binder nil nil t nil)
+                     (`(,binder nil ,_ ,_ nil) 'unused)
+                     (_ 'other)))"
+        ),
+        Value::list([
+            Value::Symbol("other".into()),
+            Value::Symbol("unused".into()),
+        ])
+    );
+}
+
+#[test]
+fn pcase_backquote_comma_matches_nested_patterns() {
+    assert_eq!(
+        eval_str(
+            "(pcase '(let ((f 1)) body)
+               (`(,(and letsym (or 'let* 'let)) ,binders . ,body)
+                (list letsym binders body))
+               (_ 'miss))"
+        ),
+        Value::list([
+            Value::Symbol("let".into()),
+            Value::list([Value::list([Value::Symbol("f".into()), Value::Integer(1)])]),
+            Value::list([Value::Symbol("body".into())]),
+        ])
+    );
+}
+
+#[test]
 fn pcase_let_lenient_backquoted_lists_bind_missing_nil_and_ignore_extra() {
     assert_eq!(
         eval_str(
@@ -2160,6 +2196,22 @@ fn pcase_matches_quoted_symbols_and_wildcards() {
 }
 
 #[test]
+fn pcase_matches_keyword_symbols_as_constants() {
+    assert_eq!(
+        eval_str(
+            "(list
+                   (pcase :captured+mutated
+                     (:captured+mutated 'hit)
+                     (_ 'miss))
+                   (pcase nil
+                     (:captured+mutated 'wrong)
+                     (_ 'other)))"
+        ),
+        Value::list([Value::Symbol("hit".into()), Value::Symbol("other".into()),])
+    );
+}
+
+#[test]
 fn pcase_matches_or_patterns() {
     assert_eq!(
         eval_str(
@@ -2184,6 +2236,19 @@ fn pcase_matches_predicate_patterns() {
             Value::Symbol("list".into()),
             Value::Symbol("number".into()),
         ])
+    );
+}
+
+#[test]
+fn pcase_predicate_patterns_append_value_to_function_forms() {
+    assert_eq!(
+        eval_str(
+            "(let ((target (quote (a b))))
+               (list
+                (pcase (quote (a b)) ((pred (equal target)) (quote hit)) (_ (quote miss)))
+                (pcase (quote (a c)) ((pred (equal target)) (quote wrong)) (_ (quote other)))))"
+        ),
+        Value::list([Value::Symbol("hit".into()), Value::Symbol("other".into())])
     );
 }
 
