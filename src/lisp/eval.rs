@@ -35,6 +35,35 @@ mod ert;
 
 pub(crate) use rx::compile_rx_to_string;
 
+fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
+    [
+        ("autoload", 3),
+        ("defadvice", 3),
+        ("defalias", 3),
+        ("defconst", 3),
+        ("defconstant", 3),
+        ("defgeneric", 3),
+        ("defmacro", 3),
+        ("defmethod", 3),
+        ("defparameter", 3),
+        ("defsubst", 3),
+        ("defun", 3),
+        ("defvar", 3),
+        ("defvaralias", 3),
+        ("define-category", 2),
+        ("define-compiler-macro", 3),
+        ("define-setf-expander", 3),
+    ]
+    .into_iter()
+    .map(|(symbol, doc_index)| {
+        (
+            symbol.to_string(),
+            vec![("doc-string-elt".to_string(), Value::Integer(doc_index))],
+        )
+    })
+    .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
     pub name: String,
@@ -570,7 +599,7 @@ impl Interpreter {
                 "vertical-scroll-bar".into(),
                 "vc-directory-exclusion-list".into(),
             ],
-            symbol_properties: Vec::new(),
+            symbol_properties: builtin_symbol_properties(),
             interned_symbols: Vec::new(),
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
