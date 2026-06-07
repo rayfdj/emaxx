@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::primitives;
 use super::reader::RECORD_LITERAL_SYMBOL;
 use super::sqlite::SqliteHandleState;
-use super::types::{Env, LispError, Value, shared_env};
+use super::types::{Env, LispError, SharedEnv, Value, shared_env};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use regex::Regex;
 
@@ -422,6 +422,7 @@ pub struct Interpreter {
     pub profiler_cpu_log_pending: bool,
     pub message_capture_stack: Vec<String>,
     pub lossage_size: i64,
+    interactive_call_depth: usize,
     face_inheritance: Vec<(String, Option<String>)>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
@@ -654,6 +655,7 @@ impl Interpreter {
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
             lossage_size: 300,
+            interactive_call_depth: 0,
             face_inheritance: Vec::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
@@ -882,6 +884,56 @@ impl Interpreter {
 
     pub(crate) fn lambda_trim_override(&self) -> bool {
         self.lambda_trim_overrides.last().copied().unwrap_or(false)
+    }
+
+    pub(crate) fn eval_with_closure_env<F>(
+        &mut self,
+        closure_env: &SharedEnv,
+        env: &mut Env,
+        evaluate: F,
+    ) -> Result<Value, LispError>
+    where
+        F: FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
+    {
+        let captured_snapshot = closure_env.borrow().clone();
+        if captured_snapshot.is_empty() {
+            return evaluate(self, env);
+        }
+
+        let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
+        let mut call_env = Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
+        let result = evaluate(self, &mut call_env);
+        {
+            let mut stored_env = closure_env.borrow_mut();
+            if stored_env.len() != captured_snapshot.len() {
+                stored_env.clear();
+                stored_env.extend(captured_snapshot.clone());
+            }
+            for (captured_index, updated) in call_env.iter().enumerate() {
+                if captured_index >= stored_env.len() {
+                    break;
+                }
+                stored_env[captured_index] = updated.clone();
+                if let Some(current_index) = frame_mapping[captured_index]
+                    && current_index < env.len()
+                {
+                    env[current_index] = updated.clone();
+                }
+            }
+        }
+        result
+    }
+
+    pub(crate) fn push_interactive_call(&mut self) {
+        self.interactive_call_depth += 1;
+    }
+
+    pub(crate) fn pop_interactive_call(&mut self) {
+        self.interactive_call_depth = self.interactive_call_depth.saturating_sub(1);
+    }
+
+    pub(crate) fn in_interactive_call(&self) -> bool {
+        self.interactive_call_depth > 0
     }
 }
 

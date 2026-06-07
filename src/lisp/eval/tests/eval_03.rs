@@ -207,6 +207,55 @@ fn eval_lambda_trims_unused_lexical_context_unless_marker_requests_it() {
 }
 
 #[test]
+fn documentation_form_is_recorded_for_defun_and_lambda() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun sample-doc-form ()
+                    (:documentation (concat "defun" " documentation"))
+                    'ok)
+                  (let ((fun (lambda ()
+                               (:documentation (concat "lambda" " documentation"))
+                               'ok)))
+                    (list (documentation 'sample-doc-form)
+                          (sample-doc-form)
+                          (documentation fun)
+                          (funcall fun))))
+            "#
+        ),
+        Value::list([
+            Value::String("defun documentation".into()),
+            Value::Symbol("ok".into()),
+            Value::String("lambda documentation".into()),
+            Value::Symbol("ok".into()),
+        ])
+    );
+}
+
+#[test]
+fn call_interactively_preserves_interactive_form_closure_mutations() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((f (let ((d 51695))
+                           (lambda (data)
+                             (interactive (progn (setq d (1+ d)) (list d)))
+                             (list (called-interactively-p 'any) data)))))
+                  (list (call-interactively f)
+                        (funcall f 51695)
+                        (call-interactively f)))
+            "#
+        ),
+        Value::list([
+            Value::list([Value::T, Value::Integer(51696)]),
+            Value::list([Value::Nil, Value::Integer(51695)]),
+            Value::list([Value::T, Value::Integer(51697)]),
+        ])
+    );
+}
+
+#[test]
 fn dynamic_lambdas_write_back_mutated_caller_bindings() {
     assert_eq!(
         eval_str(

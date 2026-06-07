@@ -250,16 +250,9 @@ pub(crate) fn eval_callable_metadata_form(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if let Value::Lambda(_, _, closure_env) = func {
-        let mut captured_frames = 0;
-        for captured in closure_env.borrow().iter().rev() {
-            env.insert(0, captured.clone());
-            captured_frames += 1;
-        }
-        let result = interp.eval(form, env);
-        for _ in 0..captured_frames {
-            env.remove(0);
-        }
-        result
+        interp.eval_with_closure_env(closure_env, env, |interp, call_env| {
+            interp.eval(form, call_env)
+        })
     } else {
         interp.eval(form, env)
     }
