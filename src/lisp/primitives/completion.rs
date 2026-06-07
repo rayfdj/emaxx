@@ -506,8 +506,9 @@ pub(crate) fn default_intern_soft_result(
     symbol_name: &str,
     env: &Env,
 ) -> Value {
-    if matches!(symbol_name, "nil" | "t")
-        || symbol_name.starts_with(':')
+    if matches!(symbol_name, "nil" | "t") {
+        crate::lisp::types::interned_symbol_value(symbol_name.into())
+    } else if symbol_name.starts_with(':')
         || interp.lookup_var(symbol_name, env).is_some()
         || interp.lookup_function(symbol_name, env).is_ok()
         || is_builtin(symbol_name)

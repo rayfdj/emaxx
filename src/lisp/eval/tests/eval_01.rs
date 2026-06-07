@@ -80,6 +80,16 @@ fn intern_soft_accepts_symbol_arguments() {
 }
 
 #[test]
+fn intern_preserves_canonical_nil_and_t_values() {
+    assert_eq!(
+        eval_str(
+            "(list (intern \"nil\") (intern \"t\") (intern-soft \"nil\") (intern-soft \"t\"))"
+        ),
+        Value::list([Value::Nil, Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn handler_bind_errors_skip_inner_condition_case() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();

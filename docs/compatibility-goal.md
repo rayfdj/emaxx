@@ -19,13 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1597/7080 are verified locally.
+- Tests through 1599/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1597/7080: expand compiled macro bodies`.
-- The next observed frontier is selector 1598,
-  `cconv-closure-convert-remap-var` in
-  `test/lisp/emacs-lisp/cconv-tests.el`; the file currently reports a load
-  error before discovering the selected tests.
+  `Compat 1599/7080: match cconv pcase forms`.
+- The next observed frontier is selector 1600, `cconv-safe-for-space` in
+  `test/lisp/emacs-lisp/cconv-tests.el`; it currently fails because
+  `safe-p` returns truthy for the `:closure-dont-trim-context` eval case.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -49,6 +48,11 @@ counts as the progress denominator.
   its `.elc` stub, making later macro definitions shadow earlier ones, and
   expanding `defun`/`defsubst` bodies while `cl-macrolet` local macros are
   active.
+- Selectors 1598..1599 in `test/lisp/emacs-lisp/cconv-tests.el` passed after
+  restoring load-time `lexical-binding` state, reporting `identity` arity,
+  making `pcase` treat keyword symbols as constants, making backquoted comma
+  forms match nested pcase patterns, canonicalizing `intern`/`intern-soft` for
+  `nil` and `t`, and accepting function-quoted lambdas in `byte-compile`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

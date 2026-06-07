@@ -191,7 +191,9 @@ pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
 
 pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
     let arity = match name {
-        "car" | "caar" | "func-arity" | "subr-arity" => (Value::Integer(1), Value::Integer(1)),
+        "car" | "caar" | "identity" | "func-arity" | "subr-arity" => {
+            (Value::Integer(1), Value::Integer(1))
+        }
         "cons" => (Value::Integer(2), Value::Integer(2)),
         "list" => (Value::Integer(0), Value::Symbol("many".into())),
         "format" => (Value::Integer(1), Value::Symbol("many".into())),

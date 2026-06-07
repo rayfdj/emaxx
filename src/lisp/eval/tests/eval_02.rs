@@ -233,6 +233,14 @@ fn byte_compile_wraps_lambdas_in_byte_code_function_records() {
 }
 
 #[test]
+fn byte_compile_accepts_function_quoted_lambdas() {
+    assert_eq!(
+        eval_str("(funcall (byte-compile #'(lambda (x) (1+ x))) 41)"),
+        Value::Integer(42)
+    );
+}
+
+#[test]
 fn byte_compile_symbol_preserves_function_attributes() {
     assert_eq!(
         eval_str(
@@ -4054,6 +4062,207 @@ fn fboundp_recognizes_special_forms() {
             Value::cons(Value::Integer(0), Value::Symbol("unevalled".into())),
         ])
     );
+}
+
+#[test]
+fn subr_arity_reports_regular_builtin_functions() {
+    assert_eq!(
+        eval_str("(subr-arity (symbol-function 'identity))"),
+        Value::cons(Value::Integer(1), Value::Integer(1))
+    );
+}
+
+#[test]
+fn cl_assert_signals_condition_with_asserted_form() {
+    let mut interp = Interpreter::new();
+    let form = Reader::new("(cl-assert lexical-binding)")
+        .read()
+        .unwrap()
+        .unwrap();
+    interp.set_variable("lexical-binding", Value::Nil, &mut Vec::new());
+    let error = interp.eval(&form, &mut Vec::new()).unwrap_err();
+    let LispError::SignalValue(value) = error else {
+        panic!("expected cl assertion signal");
+    };
+    assert_eq!(
+        value,
+        Value::list([
+            Value::Symbol("cl-assertion-failed".into()),
+            Value::Symbol("lexical-binding".into())
+        ])
+    );
+}
+
+#[test]
+fn load_file_strict_keeps_lexical_binding_for_cl_iter_defun() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-cl-iter-defun-{}.el",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(cl-iter-defun sample-cl-iter-defun ()\n  (:documentation (concat \"sample\"))\n  (iter-yield 'ok))\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![
+        std::path::PathBuf::from("../emacs/lisp"),
+        std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
+    ]);
+    let result = crate::lisp::load_file_strict(&mut interp, &path);
+    let _ = std::fs::remove_file(path);
+    result.unwrap();
+}
+
+#[test]
+fn load_file_strict_restores_lexical_binding_after_nested_require() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("emaxx-nested-lexical-binding-{unique}"));
+    std::fs::create_dir_all(&root).unwrap();
+    let inner = root.join("inner-lexical.el");
+    let outer = root.join("outer-lexical.el");
+    std::fs::write(
+        &inner,
+        ";;; -*- lexical-binding: nil -*-\n(provide 'inner-lexical)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &outer,
+        ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(require 'inner-lexical)\n(cl-iter-defun sample-nested-cl-iter-defun ()\n  (iter-yield 'ok))\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![
+        root.clone(),
+        std::path::PathBuf::from("../emacs/lisp"),
+        std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
+    ]);
+    let result = crate::lisp::load_file_strict(&mut interp, &outer);
+    let _ = std::fs::remove_dir_all(&root);
+    result.unwrap();
+    assert_eq!(
+        interp.lookup_var("lexical-binding", &Vec::new()),
+        Some(Value::T)
+    );
+}
+
+#[test]
+fn cconv_closure_convert_captures_simple_free_variable() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+
+    let result = eval_str_with(
+        &mut interp,
+        r#"
+        (progn
+          (setq lexical-binding t)
+          (require 'ert)
+          (require 'cl-lib)
+          (require 'generator)
+          (require 'bytecomp)
+          (require 'cconv)
+          (defun sample-cconv-intern-all (x)
+            (cond ((symbolp x) (intern (symbol-name x)))
+                  ((consp x) (cons (sample-cconv-intern-all (car x))
+                                   (sample-cconv-intern-all (cdr x))))
+                  (t x)))
+          (sample-cconv-intern-all
+           (cconv-closure-convert '#'(lambda (x) #'(lambda () x)))))
+        "#,
+    );
+
+    assert_eq!(
+        result,
+        eval_str("'#'(lambda (x) (internal-make-closure nil (x) nil (internal-get-closed-var 0)))")
+    );
+}
+
+#[test]
+fn cconv_closure_convert_remaps_shadowed_lambda_lifted_variable() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+
+    let result = eval_str_with(
+        &mut interp,
+        r#"
+        (progn
+          (setq lexical-binding t)
+          (require 'ert)
+          (require 'cl-lib)
+          (require 'generator)
+          (require 'bytecomp)
+          (require 'cconv)
+          (defun sample-cconv-intern-all (x)
+            (cond ((symbolp x) (intern (symbol-name x)))
+                  ((consp x) (cons (sample-cconv-intern-all (car x))
+                                   (sample-cconv-intern-all (cdr x))))
+                  (t x)))
+          (sample-cconv-intern-all
+           (cconv-closure-convert
+            '#'(lambda (x)
+                 (let ((f #'(lambda () x)))
+                   (let ((x 'b))
+                     (list x (funcall f))))))))
+        "#,
+    );
+
+    assert_eq!(
+        result,
+        eval_str(
+            "'#'(lambda (x)
+                  (let ((f #'(lambda (x) x)))
+                    (let ((x 'b)
+                          (closed-x x))
+                      (list x (funcall f closed-x)))))"
+        )
+    );
+}
+
+#[test]
+fn cconv_analyze_keeps_simple_captured_argument_unmutated() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+
+    let result = eval_str_with(
+        &mut interp,
+        r#"
+        (progn
+          (setq lexical-binding t)
+          (require 'ert)
+          (require 'cl-lib)
+          (require 'generator)
+          (require 'bytecomp)
+          (require 'cconv)
+          (let ((cconv-var-classification nil)
+                (byte-compile-lexical-variables nil)
+                (cconv--interactive-form-funs (make-hash-table))
+                cconv-freevars-alist cconv--dynbound-variables)
+            (cconv-analyze-form '#'(lambda (x) #'(lambda () x)) nil)
+            cconv-var-classification))
+        "#,
+    );
+
+    assert_eq!(result, Value::Nil);
 }
 
 #[test]

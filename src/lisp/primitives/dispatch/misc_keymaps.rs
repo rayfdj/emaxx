@@ -1659,6 +1659,7 @@ pub(super) fn call(
         "byte-compile" => {
             need_args(name, args, 1)?;
             let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
+            let compile_target = byte_compile_function_quoted_lambda_target(compile_target);
             byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
             if let Ok(symbol) = compile_target.as_symbol() {
                 let callable = resolve_callable(interp, &compile_target, env)?;
@@ -7807,6 +7808,19 @@ fn byte_compile_target_and_suppressions(value: &Value) -> (Value, Vec<ByteCompil
         Value::list(body)
     };
     (target, suppressions)
+}
+
+fn byte_compile_function_quoted_lambda_target(value: Value) -> Value {
+    let Ok(items) = value.to_vec() else {
+        return value;
+    };
+    if matches!(items.first(), Some(Value::Symbol(name)) if name == "function")
+        && items.len() == 2
+        && is_lambda_value(&items[1])
+    {
+        return items[1].clone();
+    }
+    value
 }
 
 fn byte_compile_suppressions(value: &Value) -> Vec<ByteCompileSuppression> {

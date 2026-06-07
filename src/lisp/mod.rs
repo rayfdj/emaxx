@@ -302,6 +302,7 @@ pub fn load_file_strict(
     let previous_read_symbol_shorthands = interp
         .lookup_var("read-symbol-shorthands", &types::Env::new())
         .unwrap_or(types::Value::Nil);
+    let previous_lexical_binding = interp.lookup_var("lexical-binding", &types::Env::new());
     interp.set_global_binding(
         "lexical-binding",
         if settings.lexical_binding {
@@ -326,8 +327,12 @@ pub fn load_file_strict(
     {
         Ok(forms) => forms,
         Err(error) => {
-            interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
-            interp.set_global_binding("current-load-list", previous_load_list);
+            restore_load_dynamic_bindings(
+                interp,
+                previous_lexical_binding,
+                previous_read_symbol_shorthands,
+                previous_load_list,
+            );
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -335,8 +340,12 @@ pub fn load_file_strict(
     for form in &forms {
         let mut env = types::Env::new();
         if let Err(error) = interp.eval(form, &mut env) {
-            interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
-            interp.set_global_binding("current-load-list", previous_load_list);
+            restore_load_dynamic_bindings(
+                interp,
+                previous_lexical_binding,
+                previous_read_symbol_shorthands,
+                previous_load_list,
+            );
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -351,8 +360,12 @@ pub fn load_file_strict(
     if let Some(message) = warning_message {
         append_message(interp, &message);
     }
-    interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
-    interp.set_global_binding("current-load-list", previous_load_list);
+    restore_load_dynamic_bindings(
+        interp,
+        previous_lexical_binding,
+        previous_read_symbol_shorthands,
+        previous_load_list,
+    );
     interp.set_current_load_file(previous);
     Ok(())
 }
@@ -372,6 +385,7 @@ pub fn run_ert_file(
     let previous_read_symbol_shorthands = interp
         .lookup_var("read-symbol-shorthands", &types::Env::new())
         .unwrap_or(types::Value::Nil);
+    let previous_lexical_binding = interp.lookup_var("lexical-binding", &types::Env::new());
     interp.set_global_binding(
         "lexical-binding",
         if settings.lexical_binding {
@@ -396,8 +410,12 @@ pub fn run_ert_file(
     {
         Ok(forms) => forms,
         Err(error) => {
-            interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
-            interp.set_global_binding("current-load-list", previous_load_list);
+            restore_load_dynamic_bindings(
+                &mut interp,
+                previous_lexical_binding,
+                previous_read_symbol_shorthands,
+                previous_load_list,
+            );
             interp.set_current_load_file(previous);
             return Err(error);
         }
@@ -409,8 +427,12 @@ pub fn run_ert_file(
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);
     }
-    interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
-    interp.set_global_binding("current-load-list", previous_load_list);
+    restore_load_dynamic_bindings(
+        &mut interp,
+        previous_lexical_binding,
+        previous_read_symbol_shorthands,
+        previous_load_list,
+    );
     interp.set_current_load_file(previous);
 
     // Run the collected tests
@@ -428,6 +450,19 @@ pub fn run_ert_file(
         .collect();
 
     Ok((passed, failed, total, results))
+}
+
+fn restore_load_dynamic_bindings(
+    interp: &mut eval::Interpreter,
+    previous_lexical_binding: Option<types::Value>,
+    previous_read_symbol_shorthands: types::Value,
+    previous_load_list: types::Value,
+) {
+    if let Some(value) = previous_lexical_binding {
+        interp.set_global_binding("lexical-binding", value);
+    }
+    interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
+    interp.set_global_binding("current-load-list", previous_load_list);
 }
 
 #[cfg(test)]

@@ -269,7 +269,7 @@ pub(super) fn call(
                 }
                 _ => {
                     interp.intern_symbol_name(&symbol_name);
-                    Ok(Value::Symbol(symbol_name))
+                    Ok(crate::lisp::types::interned_symbol_value(symbol_name))
                 }
             }
         }

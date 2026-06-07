@@ -87,6 +87,14 @@ pub(crate) fn visible_symbol_name(symbol: &str) -> &str {
         .unwrap_or(symbol)
 }
 
+pub(crate) fn interned_symbol_value(symbol: String) -> Value {
+    match symbol.as_str() {
+        "nil" => Value::Nil,
+        "t" => Value::T,
+        _ => Value::Symbol(symbol),
+    }
+}
+
 pub(crate) fn format_float(value: f64) -> String {
     let mut rendered = value.to_string();
     if !rendered.contains(['.', 'e', 'E']) {

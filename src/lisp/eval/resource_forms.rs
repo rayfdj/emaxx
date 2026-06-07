@@ -1095,7 +1095,10 @@ impl Interpreter {
         if result.is_truthy() {
             Ok(result)
         } else {
-            Err(LispError::Signal("Assertion failed".into()))
+            Err(LispError::SignalValue(Value::list([
+                Value::Symbol("cl-assertion-failed".into()),
+                items[1].clone(),
+            ])))
         }
     }
 
