@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1541/7080 are verified locally.
+- Tests through 1544/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1541/7080: warn on quoted byte-compile conditions`.
-- The next observed frontier is selector 1544,
-  `bytecomp/warn-callargs-defsubst.el` in
+  `Compat 1544/7080: retain byte compile file diagnostics`.
+- The next observed frontier is selector 1545,
+  `bytecomp/warn-defcustom-nogroup.el` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -313,8 +313,15 @@ counts as the progress denominator.
   condition names.
 - Selectors 1536..1541, the lexical-variable hook warning resource files,
   passed without additional code changes.
-  Selector 1544, `bytecomp/warn-callargs-defsubst.el`, is the next observed
-  failure; selectors 1542..1543 passed in the same warning-file probe.
+- Selector 1544, `bytecomp/warn-callargs-defsubst.el`, passed after retaining a
+  single byte-compile diagnostics pass across all forms in `byte-compile-file`,
+  teaching the scanner that `defsubst` establishes callable arity, matching the
+  GNU warning text for too many arguments, and falling back to a temporary
+  output file when the default `.elc` destination is unwritable.
+  A forward probe of nearby warning-file selectors observed selector 1545,
+  `bytecomp/warn-defcustom-nogroup.el`, as the next mismatch; the oracle side of
+  the grouped probe hit `file-missing` for several later resource-file tests, so
+  those later selectors still need individual confirmation.
 
 ## Workflow
 
