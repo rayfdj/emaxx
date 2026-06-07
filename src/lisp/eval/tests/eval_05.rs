@@ -131,6 +131,31 @@ fn warning_series_variables_have_default_bindings() {
 }
 
 #[test]
+fn display_warning_uses_prefix_function_and_explicit_buffer() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (let ((target (buffer-name))
+                       (warning-prefix-function
+                        (lambda (_level entry)
+                          (insert "prefix:")
+                          entry)))
+                   (display-warning 'check "body" nil target)
+                   (buffer-string)))"#
+        ),
+        Value::String("prefix:Warning (check): body\n".into())
+    );
+}
+
+#[test]
+fn hack_local_variables_accepts_optional_mode_arg() {
+    assert_eq!(
+        eval_str("(list (hack-local-variables) (hack-local-variables 'no-mode))"),
+        Value::list([Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
 fn default_file_modes_can_be_read_and_updated() {
     assert_eq!(
         eval_str(

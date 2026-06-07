@@ -19,12 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1623/7080 are verified locally.
+- Tests through 1628/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1623/7080: preserve cconv documentation`.
-- The next observed frontier is selector 1624, `check-declare-tests-scan` in
-  `test/lisp/emacs-lisp/check-declare-tests.el`; it currently fails with
-  `void-variable`.
+  `Compat 1628/7080: honor check-declare warnings`.
+- The next observed frontier is selector 1629, the first `checkdoc-tests.el`
+  selector after `test/lisp/emacs-lisp/check-declare-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -66,6 +65,10 @@ counts as the progress denominator.
   from `describe-function`, preserving interactive-form closure mutations, and
   making `called-interactively-p` reflect `call-interactively` calls. Selector
   1623, `check-declare-tests-locate`, also passed without further changes.
+- Selectors 1624..1628 in `test/lisp/emacs-lisp/check-declare-tests.el`
+  passed after exposing the standard `hack-local-variables` entry point used
+  when scanning or verifying Elisp files and making `display-warning` honor
+  warning prefix callbacks and explicit warning buffer arguments.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

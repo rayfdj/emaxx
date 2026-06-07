@@ -325,7 +325,31 @@ pub(super) fn call(
                 format!("Warning ({warning_type}): {message}")
             };
             let _ = super::call(interp, "message", &[Value::String(warning.clone())], env)?;
-            append_to_warnings_buffer(interp, &warning);
+            let buffer_name = args
+                .get(3)
+                .and_then(string_like)
+                .map(|string| string.text)
+                .unwrap_or_else(|| "*Warnings*".into());
+            let warning = if let Some(prefix_function) =
+                interp.lookup_var("warning-prefix-function", env)
+                && prefix_function.is_truthy()
+            {
+                let prefix = interp.call_function_value(
+                    prefix_function,
+                    None,
+                    &[
+                        args[2].clone(),
+                        Value::list([args[0].clone(), args[1].clone()]),
+                    ],
+                    env,
+                )?;
+                string_like(&prefix)
+                    .map(|prefix| format!("{}{}", prefix.text, warning))
+                    .unwrap_or(warning)
+            } else {
+                warning
+            };
+            append_to_named_warnings_buffer(interp, &buffer_name, &warning);
             Ok(Value::Nil)
         }
         "current-message" => {
@@ -1736,10 +1760,14 @@ pub(super) fn call(
 }
 
 fn append_to_warnings_buffer(interp: &mut Interpreter, warning: &str) {
+    append_to_named_warnings_buffer(interp, "*Warnings*", warning);
+}
+
+fn append_to_named_warnings_buffer(interp: &mut Interpreter, buffer_name: &str, warning: &str) {
     let buffer_id = interp
-        .find_buffer("*Warnings*")
+        .find_buffer(buffer_name)
         .map(|(id, _)| id)
-        .unwrap_or_else(|| interp.create_buffer("*Warnings*").0);
+        .unwrap_or_else(|| interp.create_buffer(buffer_name).0);
     if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         let end = buffer.point_max();
         buffer.goto_char(end);
