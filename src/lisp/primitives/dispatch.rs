@@ -1263,6 +1263,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "unix-sync"
             | "called-interactively-p"
             | "kill-all-local-variables"
+            | "hack-local-variables"
             | "hack-local-variables-filter"
             | "hack-local-variables-apply"
             | "hack-dir-local-variables-non-file-buffer"

@@ -199,6 +199,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "propertized-buffer-identification"
             | "called-interactively-p"
             | "kill-all-local-variables"
+            | "hack-local-variables"
             | "hack-local-variables-filter"
             | "hack-local-variables-apply"
             | "hack-dir-local-variables-non-file-buffer"
@@ -2203,6 +2204,10 @@ pub(super) fn call(
             for (name, value) in permanent {
                 interp.set_buffer_local_value(buffer_id, &name, value);
             }
+            Ok(Value::Nil)
+        }
+        "hack-local-variables" => {
+            need_arg_range(name, args, 0, 1)?;
             Ok(Value::Nil)
         }
         "hack-local-variables-filter" => {
