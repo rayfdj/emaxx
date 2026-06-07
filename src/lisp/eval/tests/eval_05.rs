@@ -951,6 +951,14 @@ fn syntax_ppss_flush_cache_is_callable() {
 }
 
 #[test]
+fn ppss_depth_returns_syntax_ppss_depth() {
+    assert_eq!(
+        eval_str("(with-temp-buffer (insert \"(a (b))\") (ppss-depth (syntax-ppss 6)))"),
+        Value::Integer(2)
+    );
+}
+
+#[test]
 fn syntax_ppss_reports_string_start() {
     assert_eq!(
         eval_str(

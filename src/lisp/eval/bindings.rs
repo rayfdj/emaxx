@@ -203,6 +203,7 @@ impl Interpreter {
             "purify-flag" => Some(Value::Nil),
             "require-final-newline" => Some(Value::T),
             "sentence-end" => Some(Value::Nil),
+            "sentence-end-double-space" => Some(Value::T),
             "null-device" => Some(Value::String("/dev/null".into())),
             "exec-suffixes" => Some(Value::list([Value::String(String::new())])),
             "debug-on-error" => Some(Value::Nil),

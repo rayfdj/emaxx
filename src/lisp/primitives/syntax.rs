@@ -1640,6 +1640,109 @@ pub(super) fn scan_lists_impl(
     ])))
 }
 
+pub(super) fn down_list_impl(
+    interp: &mut Interpreter,
+    count_value: Option<&Value>,
+    _env: &Env,
+) -> Result<Value, LispError> {
+    let count = count_value.map_or(Ok(1), Value::as_integer)?;
+    if count < 0 {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unsupported negative down-list".into()),
+        ])));
+    }
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let table_id = interp.current_syntax_table_id();
+    for _ in 0..count {
+        let mut idx = interp.buffer.point().saturating_sub(1);
+        let mut found = None;
+        while idx < chars.len() {
+            let ch = chars[idx];
+            let entry = syntax_entry_for_char(interp, table_id, ch);
+            match entry.class {
+                SyntaxClass::StringQuote => {
+                    idx = scan_string_forward(&chars, idx, chars.len())
+                        .map(|end| end + 1)
+                        .unwrap_or(chars.len());
+                }
+                SyntaxClass::OpenParen => {
+                    found = Some(idx + 2);
+                    break;
+                }
+                _ => idx += 1,
+            }
+        }
+        let Some(position) = found else {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("scan-error".into()),
+                Value::String("No containing expression".into()),
+            ])));
+        };
+        interp.buffer.goto_char(position);
+    }
+    Ok(Value::Nil)
+}
+
+pub(super) fn up_list_impl(
+    interp: &mut Interpreter,
+    count_value: Option<&Value>,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let count = count_value.map_or(Ok(1), Value::as_integer)?;
+    if count < 0 {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("scan-error".into()),
+            Value::String("Unsupported negative up-list".into()),
+        ])));
+    }
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let table_id = interp.current_syntax_table_id();
+    for _ in 0..count {
+        let point_idx = interp.buffer.point().saturating_sub(1).min(chars.len());
+        let mut stack: Vec<usize> = Vec::new();
+        let mut idx = 0;
+        while idx < point_idx {
+            let ch = chars[idx];
+            let entry = syntax_entry_for_char(interp, table_id, ch);
+            match entry.class {
+                SyntaxClass::StringQuote => {
+                    idx = scan_string_forward(&chars, idx, point_idx)
+                        .map(|end| end + 1)
+                        .unwrap_or(point_idx);
+                }
+                SyntaxClass::OpenParen => {
+                    stack.push(idx + 1);
+                    idx += 1;
+                }
+                SyntaxClass::CloseParen => {
+                    stack.pop();
+                    idx += 1;
+                }
+                _ => idx += 1,
+            }
+        }
+        let Some(open_pos) = stack.last().copied() else {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("scan-error".into()),
+                Value::String("No containing expression".into()),
+            ])));
+        };
+        let close_pos = scan_lists_impl(
+            interp,
+            &[
+                Value::Integer(open_pos as i64),
+                Value::Integer(1),
+                Value::Integer(0),
+            ],
+            env,
+        )?
+        .as_integer()? as usize;
+        interp.buffer.goto_char(close_pos);
+    }
+    Ok(Value::Nil)
+}
+
 pub(super) fn forward_comment_impl(
     interp: &mut Interpreter,
     count_value: Option<&Value>,
