@@ -8410,14 +8410,32 @@ impl ByteCompileDiagnostics {
             self.scan(interp, initializer, false);
         }
         let mut index = 4;
+        let mut saw_type = false;
+        let mut saw_group = false;
         while index + 1 < items.len() {
             if matches!(&items[index], Value::Symbol(keyword) if keyword == ":type") {
+                saw_type = true;
                 let spec = custom_type_unquote(&items[index + 1])
                     .unwrap_or_else(|| items[index + 1].clone());
                 self.scan_custom_type_spec(&spec);
-                break;
+            } else if matches!(&items[index], Value::Symbol(keyword) if keyword == ":group") {
+                saw_group = true;
             }
             index += 1;
+        }
+        if !saw_group {
+            self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                "Warning: defcustom fails to specify containing group".into(),
+            );
+        }
+        if !saw_type {
+            self.warn(
+                "suspicious",
+                Some("defcustom".to_string()),
+                "Warning: defcustom missing :type keyword parameter".into(),
+            );
         }
     }
 

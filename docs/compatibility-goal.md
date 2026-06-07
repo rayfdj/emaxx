@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1544/7080 are verified locally.
+- Tests through 1547/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1544/7080: retain byte compile file diagnostics`.
-- The next observed frontier is selector 1545,
-  `bytecomp/warn-defcustom-nogroup.el` in
+  `Compat 1547/7080: warn on incomplete defcustom declarations`.
+- The next observed frontier is selector 1548,
+  `bytecomp/warn-format.el` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -318,10 +318,12 @@ counts as the progress denominator.
   teaching the scanner that `defsubst` establishes callable arity, matching the
   GNU warning text for too many arguments, and falling back to a temporary
   output file when the default `.elc` destination is unwritable.
-  A forward probe of nearby warning-file selectors observed selector 1545,
-  `bytecomp/warn-defcustom-nogroup.el`, as the next mismatch; the oracle side of
-  the grouped probe hit `file-missing` for several later resource-file tests, so
-  those later selectors still need individual confirmation.
+- Selectors 1545..1547 passed after adding byte-compile diagnostics for
+  `defcustom` forms that omit `:group` or `:type`; selector 1547,
+  `bytecomp/warn-defvar-lacks-prefix.el`, was confirmed in the same forward
+  probe and required no additional code changes.
+  A forward probe of nearby warning-file selectors observed selector 1548,
+  `bytecomp/warn-format.el`, as the next mismatch.
 
 ## Workflow
 
