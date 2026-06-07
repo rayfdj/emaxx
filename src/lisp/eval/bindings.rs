@@ -12,6 +12,12 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
+        let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
+            restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
+        });
+        if active_global_special && let Some(value) = self.global_value(&resolved) {
+            return Some(value);
+        }
         if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
             return Some(value);
         }
@@ -23,6 +29,12 @@ impl Interpreter {
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
+        let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
+            restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
+        });
+        if active_global_special && let Some(value) = self.global_value(&resolved) {
+            return Ok(value);
+        }
         if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
             return Ok(value);
         }
