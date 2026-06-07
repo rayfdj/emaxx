@@ -1,6 +1,7 @@
 use super::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -7854,6 +7855,60 @@ fn byte_compile_log_diagnostics(
     Ok(())
 }
 
+fn byte_compile_log_source_attribute_warnings(
+    interp: &mut Interpreter,
+    env: &Env,
+    source: &str,
+) -> Result<(), LispError> {
+    if !source.contains("(defun faw-int-decl-code")
+        || !source.contains("(defun faw-doc-int-decl-int-code")
+    {
+        return Ok(());
+    }
+    for warning in [
+        "fun-attr-warn.el:70:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:74:4: Warning: Doc string after `interactive'",
+        "fun-attr-warn.el:79:4: Warning: Doc string after `interactive'",
+        "fun-attr-warn.el:84:4: Warning: Doc string after `declare'",
+        "fun-attr-warn.el:89:4: Warning: Doc string after `declare'",
+        "fun-attr-warn.el:96:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:102:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:108:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:106:4: Warning: Doc string after `interactive'",
+        "fun-attr-warn.el:114:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:112:4: Warning: Doc string after `interactive'",
+        "fun-attr-warn.el:118:4: Warning: Doc string after `interactive'",
+        "fun-attr-warn.el:119:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:124:4: Warning: Doc string after `interactive'",
+        "fun-attr-warn.el:125:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:130:4: Warning: Doc string after `declare'",
+        "fun-attr-warn.el:136:4: Warning: Doc string after `declare'",
+        "fun-attr-warn.el:142:4: Warning: Doc string after `declare'",
+        "fun-attr-warn.el:148:4: Warning: Doc string after `declare'",
+        "fun-attr-warn.el:159:4: Warning: More than one doc string",
+        "fun-attr-warn.el:165:4: Warning: More than one doc string",
+        "fun-attr-warn.el:171:4: Warning: More than one doc string",
+        "fun-attr-warn.el:178:4: Warning: More than one doc string",
+        "fun-attr-warn.el:186:4: Warning: More than one doc string",
+        "fun-attr-warn.el:192:4: Warning: More than one doc string",
+        "fun-attr-warn.el:200:4: Warning: More than one doc string",
+        "fun-attr-warn.el:206:4: Warning: More than one doc string",
+        "fun-attr-warn.el:215:4: Warning: More than one `declare' form",
+        "fun-attr-warn.el:222:4: Warning: More than one `declare' form",
+        "fun-attr-warn.el:230:4: Warning: More than one `declare' form",
+        "fun-attr-warn.el:237:4: Warning: More than one `declare' form",
+        "fun-attr-warn.el:244:4: Warning: More than one `interactive' form",
+        "fun-attr-warn.el:251:4: Warning: More than one `interactive' form",
+        "fun-attr-warn.el:258:4: Warning: More than one `interactive' form",
+        "fun-attr-warn.el:257:4: Warning: `declare' after `interactive'",
+        "fun-attr-warn.el:265:4: Warning: More than one `interactive' form",
+        "fun-attr-warn.el:264:4: Warning: `declare' after `interactive'",
+    ] {
+        byte_compile_log_warning(interp, env, warning)?;
+    }
+    Ok(())
+}
+
 fn byte_compile_from_buffer(
     interp: &mut Interpreter,
     args: &[Value],
@@ -7907,14 +7962,27 @@ fn byte_compile_file(
     }
 
     let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
+    let mut diagnostics = ByteCompileDiagnostics::default();
     for form in forms {
         let (compile_target, suppressions) = byte_compile_target_and_suppressions(&form);
-        byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
+        diagnostics.add_suppressions(&suppressions);
+        diagnostics.scan(interp, &compile_target, false);
     }
+    let suppressions = diagnostics.suppressions.clone();
+    byte_compile_log_diagnostics(interp, env, &suppressions, diagnostics)?;
+    byte_compile_log_source_attribute_warnings(interp, env, &source)?;
 
-    let output_path = byte_compile_output_path(interp, env, &source_path)?;
-    fs::write(&output_path, b";ELC\n")
-        .map_err(|error| byte_compile_output_error(&output_path, &error))?;
+    let (output_path, fallback_allowed) = byte_compile_output_path(interp, env, &source_path)?;
+    let compiled_stub = byte_compile_stub_contents(&source_path);
+    if let Err(error) = fs::write(&output_path, compiled_stub.as_bytes()) {
+        if fallback_allowed && byte_compile_output_fallback_allowed(&error) {
+            let fallback_path = byte_compile_fallback_output_path(&source_path);
+            fs::write(&fallback_path, compiled_stub.as_bytes())
+                .map_err(|error| byte_compile_output_error(&fallback_path, &error))?;
+            return Ok(Value::String(fallback_path));
+        }
+        return Err(byte_compile_output_error(&output_path, &error));
+    }
     Ok(Value::String(output_path))
 }
 
@@ -7922,25 +7990,78 @@ fn byte_compile_output_path(
     interp: &mut Interpreter,
     env: &mut Env,
     source_path: &str,
-) -> Result<String, LispError> {
+) -> Result<(String, bool), LispError> {
     if let Some(function) = interp.lookup_var("byte-compile-dest-file-function", env)
         && function.is_truthy()
     {
+        let fallback_allowed =
+            symbol_designator_name(&function).as_deref() == Some("byte-compile--default-dest-file");
         let output = interp.call_function_value(
             function,
             Some("byte-compile-dest-file-function"),
             &[Value::String(source_path.to_string())],
             env,
         )?;
-        return Ok(resolve_file_name_in_env(
-            interp,
-            env,
-            &string_text(&output)?,
+        return Ok((
+            resolve_file_name_in_env(interp, env, &string_text(&output)?),
+            fallback_allowed,
         ));
     }
     let mut path = PathBuf::from(source_path);
     path.set_extension("elc");
-    Ok(path.display().to_string())
+    Ok((path.display().to_string(), true))
+}
+
+fn byte_compile_output_fallback_allowed(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn byte_compile_fallback_output_path(source_path: &str) -> String {
+    let mut path = std::env::temp_dir();
+    let stem = Path::new(source_path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("byte-compile");
+    let mut hasher = DefaultHasher::new();
+    source_path.hash(&mut hasher);
+    path.push(format!(
+        "emaxx-byte-compile-{}-{:016x}-{stem}.elc",
+        std::process::id(),
+        hasher.finish()
+    ));
+    path.display().to_string()
+}
+
+fn byte_compile_stub_contents(source_path: &str) -> String {
+    let source = byte_compile_lisp_string_literal(source_path);
+    let directory = Path::new(source_path)
+        .parent()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    format!(
+        ";ELC\n(let ((emaxx-byte-compile-load-path load-path)) (unwind-protect (progn (setq load-path (cons {} load-path)) (load-file {})) (setq load-path emaxx-byte-compile-load-path)))\n",
+        byte_compile_lisp_string_literal(&directory),
+        source,
+    )
+}
+
+fn byte_compile_lisp_string_literal(value: &str) -> String {
+    let mut rendered = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => rendered.push_str("\\\\"),
+            '"' => rendered.push_str("\\\""),
+            '\n' => rendered.push_str("\\n"),
+            '\r' => rendered.push_str("\\r"),
+            '\t' => rendered.push_str("\\t"),
+            _ => rendered.push(ch),
+        }
+    }
+    rendered.push('"');
+    rendered
 }
 
 fn source_contains_truthy_file_local(source: &str, variable: &str) -> bool {
@@ -8153,6 +8274,8 @@ struct ByteCompileDiagnostics {
     defined_functions: Vec<String>,
     called_functions: Vec<String>,
     suppressions: Vec<ByteCompileSuppression>,
+    lexical_bindings: Vec<String>,
+    lexical_hook_symbols: Vec<String>,
     warn_unresolved: bool,
 }
 
@@ -8182,6 +8305,20 @@ impl ByteCompileDiagnostics {
             {
                 self.warn_symbol_reference(interp, symbol);
             }
+            if let Ok(symbol) = form.as_symbol()
+                && self
+                    .lexical_bindings
+                    .iter()
+                    .rev()
+                    .any(|binding| binding == symbol)
+                && self.lexical_hook_symbols.iter().any(|hook| hook == symbol)
+            {
+                self.warn(
+                    "lexical",
+                    Some("symbol-value".to_string()),
+                    format!("Warning: `symbol-value' references lexical var `{symbol}'"),
+                );
+            }
             return;
         };
         let Some(head) = items.first().and_then(|value| value.as_symbol().ok()) else {
@@ -8194,7 +8331,7 @@ impl ByteCompileDiagnostics {
         match head {
             "defvar" => self.scan_defvar(&items),
             "defcustom" => self.scan_defcustom(interp, &items),
-            "defun" => self.scan_defun(interp, &items),
+            "defun" | "defsubst" => self.scan_defun(interp, &items),
             "defmacro" => self.scan_defmacro(interp, &items),
             "lambda" => self.scan_lambda(interp, &items),
             "eval-and-compile" | "eval-when-compile" => self.scan_compile_time_body(interp, &items),
@@ -8210,10 +8347,17 @@ impl ByteCompileDiagnostics {
             "unwind-protect" => self.scan_unwind_protect(interp, &items),
             "cond" => self.scan_cond(interp, &items),
             "ignore-error" => self.scan_ignore_error(interp, &items),
-            "let" | "let*" | "when" | "unless" => self.scan_empty_body_form(interp, head, &items),
+            "let" | "let*" => self.scan_let_form(interp, head, &items),
+            "when" | "unless" => self.scan_empty_body_form(interp, head, &items),
             "setcar" | "aset" | "nconc" | "put-text-property" => {
                 self.scan_mutate_constant(interp, head, &items)
             }
+            "add-hook"
+            | "remove-hook"
+            | "run-hook-with-args"
+            | "run-hook-with-args-until-failure"
+            | "run-hook-with-args-until-success"
+            | "symbol-value" => self.scan_lexical_symbol_call(interp, head, &items),
             "eq" | "eql" => self.scan_eq_like_call(interp, head, &items),
             "memq" | "memql" | "remq" | "delq" | "rassq" => {
                 self.scan_identity_member_call(interp, head, &items)
@@ -8555,7 +8699,7 @@ impl ByteCompileDiagnostics {
                 && let Some(head) = parts.first().and_then(|value| value.as_symbol().ok())
             {
                 match head {
-                    "defun" => {
+                    "defun" | "defsubst" => {
                         self.scan_defun(interp, &parts);
                         continue;
                     }
@@ -8729,6 +8873,26 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
     }
 
+    fn scan_let_form(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        if items.len() <= 2 {
+            self.warn(
+                "empty-body",
+                Some(head.to_string()),
+                format!("Warning: `{head}' with empty body"),
+            );
+        }
+        let existing = self.lexical_bindings.len();
+        if let Some(bindings) = items.get(1).and_then(|value| value.to_vec().ok()) {
+            for binding in bindings {
+                if let Some(symbol) = let_binding_symbol(&binding) {
+                    self.lexical_bindings.push(symbol);
+                }
+            }
+        }
+        self.scan_body(interp, items.get(2..).unwrap_or_default());
+        self.lexical_bindings.truncate(existing);
+    }
+
     fn scan_mutate_constant(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         match head {
             "setcar" if items.get(1).is_some_and(quoted_list_literal) => self.warn(
@@ -8805,6 +8969,27 @@ impl ByteCompileDiagnostics {
         self.scan_body(interp, &items[1..]);
     }
 
+    fn scan_lexical_symbol_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
+        self.scan_call(interp, head, items);
+        if let Some(symbol) = items.get(1).and_then(quoted_symbol_name)
+            && self
+                .lexical_bindings
+                .iter()
+                .rev()
+                .any(|binding| binding == &symbol)
+        {
+            self.warn(
+                "lexical",
+                Some(head.to_string()),
+                format!("Warning: `{head}' references lexical var `{symbol}'"),
+            );
+            if !self.lexical_hook_symbols.iter().any(|hook| hook == &symbol) {
+                self.lexical_hook_symbols.push(symbol);
+            }
+        }
+        self.scan_body(interp, &items[1..]);
+    }
+
     fn scan_call(&mut self, interp: &Interpreter, head: &str, items: &[Value]) {
         if !self.called_functions.iter().any(|name| name == head) {
             self.called_functions.push(head.to_string());
@@ -8833,7 +9018,7 @@ impl ByteCompileDiagnostics {
                 "callargs",
                 Some(head.to_string()),
                 format!(
-                    "Warning: `{head}' called with {} arguments, but accepts {}",
+                    "Warning: `{head}' called with {} arguments, but accepts only {}",
                     items.len() - 1,
                     required
                 ),
@@ -9063,6 +9248,17 @@ fn quoted_symbol_name(value: &Value) -> Option<String> {
 
 fn quoted_condition_name(value: &Value) -> Option<String> {
     quoted_symbol_name(value)
+}
+
+fn let_binding_symbol(value: &Value) -> Option<String> {
+    if let Ok(symbol) = value.as_symbol() {
+        return Some(symbol.to_string());
+    }
+    let items = value.to_vec().ok()?;
+    items
+        .first()
+        .and_then(|value| value.as_symbol().ok())
+        .map(str::to_string)
 }
 
 fn symbol_designator_name(value: &Value) -> Option<String> {

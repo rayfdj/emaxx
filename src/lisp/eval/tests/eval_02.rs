@@ -551,6 +551,83 @@ fn byte_compile_file_warns_when_lexical_binding_cookie_is_missing() {
     assert_eq!(result, Value::list([Value::T, Value::Nil, Value::Nil]));
 }
 
+#[cfg(unix)]
+#[test]
+fn byte_compile_file_uses_temp_output_when_source_directory_is_unwritable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-readonly-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.el");
+    let source_elc = dir.join("source.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*-lexical-binding:t-*-\n(defun sample () 1)\n",
+    )
+    .unwrap();
+    let original_perms = std::fs::metadata(&dir).unwrap().permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = eval_str(&format!(
+        r#"
+            (let ((output (byte-compile-file {source_path:?})))
+              (list (file-exists-p output)
+                    (not (null (string-match-p "emaxx-byte-compile" output)))
+                    (file-exists-p {source_elc:?})))
+        "#,
+        source_path = source_path.display().to_string(),
+        source_elc = source_elc.display().to_string(),
+    ));
+
+    std::fs::set_permissions(&dir, original_perms).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::list([Value::T, Value::T, Value::Nil]));
+}
+
+#[test]
+fn byte_compile_file_warns_for_defsubst_callargs() {
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("emaxx-byte-compile-defsubst-{unique}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source_path = dir.join("source.el");
+    let dest_path = dir.join("source.elc");
+    std::fs::write(
+        &source_path,
+        ";;; -*-lexical-binding:t-*-\n(defsubst sample-defsubst (_x) nil)\n(defun caller () (sample-defsubst 1 2))\n",
+    )
+    .unwrap();
+
+    let result = eval_str(&format!(
+        r#"
+            (let ((byte-compile-log-buffer (generate-new-buffer " *Compile-Log*"))
+                  (byte-compile-dest-file-function (lambda (_) {dest_path:?})))
+              (byte-compile-file {source_path:?})
+              (with-current-buffer byte-compile-log-buffer
+                (not (null (string-match "with 2 arguments, but accepts only 1" (buffer-string))))))
+        "#,
+        source_path = source_path.display().to_string(),
+        dest_path = dest_path.display().to_string(),
+    ));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(result, Value::T);
+}
+
 #[test]
 fn byte_compile_file_errors_on_unescaped_character_literal_warnings() {
     let unique = format!(

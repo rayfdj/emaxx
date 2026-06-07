@@ -299,8 +299,11 @@ impl Interpreter {
                                     }
                                     None => None,
                                 };
-                                return self
-                                    .require_feature_with_target(&feature, target.as_deref());
+                                return self.require_feature_with_target(
+                                    &feature,
+                                    target.as_deref(),
+                                    env,
+                                );
                             }
                             return Ok(Value::Nil);
                         }

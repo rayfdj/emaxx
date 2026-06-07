@@ -387,6 +387,28 @@ fn require_with_extensionless_target_uses_elc_when_el_is_empty() {
 }
 
 #[test]
+fn require_uses_current_load_path_binding() {
+    let dir = std::env::temp_dir().join(format!(
+        "emaxx-require-load-path-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).expect("create require load-path dir");
+    fs::write(
+        dir.join("sample-load-path.el"),
+        "(provide 'sample-load-path)\n",
+    )
+    .expect("write require target");
+    let dir_text = dir.to_string_lossy();
+    let form =
+        format!(r#"(let ((load-path (cons "{dir_text}" load-path))) (require 'sample-load-path))"#);
+    assert_eq!(eval_str(&form), Value::Symbol("sample-load-path".into()));
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn skip_unless_records_skip_in_summary() {
     let mut interp = Interpreter::new();
     eval_str_with(

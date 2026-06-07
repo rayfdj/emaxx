@@ -178,6 +178,7 @@ impl Interpreter {
         &mut self,
         feature: &str,
         target: Option<&str>,
+        env: &Env,
     ) -> Result<Value, LispError> {
         if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
             return Ok(Value::Symbol(feature.to_string()));
@@ -188,12 +189,14 @@ impl Interpreter {
         if feature == "cus-edit" || target == Some("cus-edit") {
             for dependency in ["custom", "lisp-mode", "pp", "tabify"] {
                 if !self.has_feature(dependency) {
-                    self.require_feature_with_target(dependency, None)?;
+                    self.require_feature_with_target(dependency, None, &Env::new())?;
                 }
             }
         }
         let load_target = target.unwrap_or(feature);
-        let Some(path) = self.resolve_load_target(load_target) else {
+        let Some(path) =
+            crate::lisp::primitives::resolve_load_target_in_env(self, load_target, env)
+        else {
             return Err(load_file_missing_error(load_target));
         };
         self.loading_features.push(feature.to_string());
