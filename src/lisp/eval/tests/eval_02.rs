@@ -392,6 +392,32 @@ fn byte_compile_warns_for_malformed_defcustom_types() {
 }
 
 #[test]
+fn byte_compile_warns_for_missing_defcustom_type_and_group() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-bytecomp-defcustom-warning-p (pattern form)
+                    (with-current-buffer (get-buffer-create "*Compile-Log*")
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile form)
+                    (with-current-buffer "*Compile-Log*"
+                      (not (null (re-search-forward pattern nil t)))))
+                  (list
+                   (emaxx-bytecomp-defcustom-warning-p
+                    "fails to specify containing group"
+                    '(defcustom mytest nil "doc" :type 'boolean))
+                   (emaxx-bytecomp-defcustom-warning-p
+                    "missing :type keyword parameter"
+                    '(defcustom mytest nil "doc" :group 'test))))
+                "#
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn byte_compile_from_buffer_warns_for_unresolved_calls_outside_feature_guards() {
     assert_eq!(
         eval_str(
