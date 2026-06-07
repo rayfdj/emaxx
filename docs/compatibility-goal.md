@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1563/7080 are verified locally.
+- Tests through 1572/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1563/7080: expand byte compile warning diagnostics`.
-- The next observed frontier is selector 1564,
-  `bytecomp/warn-redefine-defun-as-macro.el` in
+  `Compat 1572/7080: cover byte compile structural warnings`.
+- The next observed frontier is selector 1573,
+  `bytecomp/warn-wide-docstring-autoload.el` in
   `test/lisp/emacs-lisp/bytecomp-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -35,6 +35,10 @@ counts as the progress denominator.
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable
   warnings, and obsolete hook-variable references.
+- Selectors 1564..1572 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
+  after adding byte-compile diagnostics for function/macro redefinitions,
+  `save-excursion` around `set-buffer`, constant/nonvariable `let` bindings,
+  constant/nonvariable `setq` targets, and odd `setq` argument counts.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

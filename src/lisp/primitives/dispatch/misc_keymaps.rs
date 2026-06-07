@@ -8266,6 +8266,7 @@ struct ByteCompileDiagnostics {
     obsolete_functions: Vec<(String, Option<String>)>,
     function_arities: Vec<(String, usize, Option<usize>)>,
     defined_functions: Vec<String>,
+    defined_callables: Vec<(String, ByteCompileDefinitionKind)>,
     defined_variables: Vec<String>,
     called_functions: Vec<String>,
     suppressions: Vec<ByteCompileSuppression>,
@@ -8273,6 +8274,12 @@ struct ByteCompileDiagnostics {
     lexical_hook_symbols: Vec<String>,
     function_depth: usize,
     warn_unresolved: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ByteCompileDefinitionKind {
+    Function,
+    Macro,
 }
 
 struct ByteCompileWarning {
@@ -8692,6 +8699,7 @@ impl ByteCompileDiagnostics {
     fn scan_defun(&mut self, interp: &Interpreter, items: &[Value]) {
         let name = items.get(1).and_then(|value| value.as_symbol().ok());
         if let Some(name) = name {
+            self.note_callable_definition(name, ByteCompileDefinitionKind::Function);
             if !self.defined_functions.iter().any(|defined| defined == name) {
                 self.defined_functions.push(name.to_string());
             }
@@ -8721,17 +8729,22 @@ impl ByteCompileDiagnostics {
     }
 
     fn scan_defmacro(&mut self, interp: &Interpreter, items: &[Value]) {
-        if let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok())
-            && self
+        if let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) {
+            self.note_callable_definition(name, ByteCompileDefinitionKind::Macro);
+            if !self.defined_functions.iter().any(|defined| defined == name) {
+                self.defined_functions.push(name.to_string());
+            }
+            if self
                 .called_functions
                 .iter()
                 .any(|called_function| called_function == name)
-        {
-            self.warn(
-                "suspicious",
-                Some(name.to_string()),
-                format!("Warning: {name}:\n  function called before it was defined as a macro"),
-            );
+            {
+                self.warn(
+                    "suspicious",
+                    Some(name.to_string()),
+                    format!("Warning: {name}:\n  function called before it was defined as a macro"),
+                );
+            }
         }
         let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
             4
@@ -8861,7 +8874,8 @@ impl ByteCompileDiagnostics {
                 self.warn(
                     "suspicious",
                     Some("set-buffer".to_string()),
-                    "Warning: Use `with-current-buffer' rather than set-buffer".into(),
+                    "Warning: use `with-current-buffer' rather than save-excursion with set-buffer"
+                        .into(),
                 );
             }
             self.scan(interp, form, false);
@@ -8971,8 +8985,29 @@ impl ByteCompileDiagnostics {
         let existing = self.lexical_bindings.len();
         if let Some(bindings) = items.get(1).and_then(|value| value.to_vec().ok()) {
             for binding in bindings {
-                if let Some(symbol) = let_binding_symbol(&binding) {
-                    self.lexical_bindings.push(symbol);
+                match let_binding_symbol(&binding) {
+                    Some(symbol) if constant_variable_name(&symbol) => {
+                        self.warn(
+                            "suspicious",
+                            Some(symbol),
+                            "Warning: attempt to let-bind constant".into(),
+                        );
+                    }
+                    Some(symbol) => {
+                        self.lexical_bindings.push(symbol);
+                    }
+                    None => {
+                        self.warn(
+                            "suspicious",
+                            Some(head.to_string()),
+                            "Warning: attempt to let-bind nonvariable".into(),
+                        );
+                    }
+                }
+                if let Ok(parts) = binding.to_vec()
+                    && let Some(initializer) = parts.get(1)
+                {
+                    self.scan(interp, initializer, false);
                 }
             }
         }
@@ -8980,16 +9015,61 @@ impl ByteCompileDiagnostics {
         self.lexical_bindings.truncate(existing);
     }
 
-    fn scan_setq(&mut self, interp: &Interpreter, items: &[Value]) {
-        for pair in items[1..].chunks(2) {
-            if let Some(variable) = pair.first().and_then(|value| value.as_symbol().ok())
-                && !self.variable_is_known(interp, variable)
-            {
+    fn note_callable_definition(&mut self, name: &str, kind: ByteCompileDefinitionKind) {
+        if let Some((_, previous_kind)) = self
+            .defined_callables
+            .iter()
+            .find(|(defined, _)| defined == name)
+        {
+            if *previous_kind == kind {
                 self.warn(
-                    "free-vars",
-                    Some(variable.to_string()),
-                    format!("Warning: assignment to free variable `{variable}'"),
+                    "suspicious",
+                    Some(name.to_string()),
+                    format!("Warning: `{name}' defined multiple times"),
                 );
+            } else {
+                self.warn(
+                    "suspicious",
+                    Some(name.to_string()),
+                    format!("Warning: `{name}' defined as both function and macro"),
+                );
+            }
+        }
+        self.defined_callables.push((name.to_string(), kind));
+    }
+
+    fn scan_setq(&mut self, interp: &Interpreter, items: &[Value]) {
+        if items.len().is_multiple_of(2) {
+            self.warn(
+                "suspicious",
+                Some("setq".to_string()),
+                "Warning: `setq' with odd number of arguments".into(),
+            );
+        }
+        for pair in items[1..].chunks(2) {
+            match pair.first().and_then(|value| value.as_symbol().ok()) {
+                Some(variable) if constant_variable_name(variable) => {
+                    self.warn(
+                        "suspicious",
+                        Some(variable.to_string()),
+                        format!("Warning: attempt to set constant `{variable}'"),
+                    );
+                }
+                Some(variable) if !self.variable_is_known(interp, variable) => {
+                    self.warn(
+                        "free-vars",
+                        Some(variable.to_string()),
+                        format!("Warning: assignment to free variable `{variable}'"),
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    self.warn(
+                        "suspicious",
+                        Some("setq".to_string()),
+                        "Warning: attempt to set non-variable".into(),
+                    );
+                }
             }
             if let Some(value) = pair.get(1) {
                 self.scan(interp, value, false);
@@ -9536,6 +9616,10 @@ fn let_binding_symbol(value: &Value) -> Option<String> {
         .first()
         .and_then(|value| value.as_symbol().ok())
         .map(str::to_string)
+}
+
+fn constant_variable_name(name: &str) -> bool {
+    matches!(name, "nil" | "t")
 }
 
 fn symbol_designator_name(value: &Value) -> Option<String> {

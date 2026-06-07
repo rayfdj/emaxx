@@ -479,10 +479,53 @@ fn byte_compile_warns_for_free_vars_and_interactive_only_forms() {
                    (emaxx-bytecomp-warning-p
                     "emaxx-bytecomp-obsolete-var.*obsolete variable.*31.1"
                     '(defun sample-obsolete-var ()
-                       emaxx-bytecomp-obsolete-var))))
+                       emaxx-bytecomp-obsolete-var))
+                   (emaxx-bytecomp-warning-p
+                    "as both function and macro"
+                    '(progn
+                       (defun sample-redefined () nil)
+                       (defmacro sample-redefined () t)))
+                   (emaxx-bytecomp-warning-p
+                    "defined multiple"
+                    '(progn
+                       (defun sample-defined-twice () nil)
+                       (defun sample-defined-twice () t)))
+                   (emaxx-bytecomp-warning-p
+                    "with-current.*rather than save-excursion"
+                    '(defun sample-set-buffer ()
+                       (save-excursion
+                         (set-buffer (current-buffer)))))
+                   (emaxx-bytecomp-warning-p
+                    "let-bind constant"
+                    '(defun sample-let-constant ()
+                       (let ((t 1)) t)))
+                   (emaxx-bytecomp-warning-p
+                    "let-bind nonvariable"
+                    '(defun sample-let-nonvariable ()
+                       (let (('t 1)) t)))
+                   (emaxx-bytecomp-warning-p
+                    "attempt to set constant"
+                    '(defun sample-set-constant ()
+                       (setq t nil)))
+                   (emaxx-bytecomp-warning-p
+                    "attempt to set non-variable"
+                    '(defun sample-set-nonvariable ()
+                       (setq (a) nil)))
+                   (emaxx-bytecomp-warning-p
+                    "odd number of arguments"
+                    '(defun sample-setq-odd (a b)
+                       (setq a 1 b)))))
                 "#
         ),
         Value::list([
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
             Value::T,
             Value::T,
             Value::T,
