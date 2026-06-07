@@ -1333,6 +1333,45 @@ fn byte_compile_wide_docstring_ignores_function_arg_lists() {
 }
 
 #[test]
+fn byte_compile_warns_for_wide_docstrings_in_definition_forms() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-bytecomp-warning-p (pattern form)
+                    (with-current-buffer (get-buffer-create "*Compile-Log*")
+                      (let ((inhibit-read-only t))
+                        (erase-buffer)))
+                    (byte-compile form)
+                    (with-current-buffer "*Compile-Log*"
+                      (not (null (re-search-forward pattern nil t)))))
+                  (list
+                   (emaxx-bytecomp-warning-p
+                    "defvar .sample-wide-var. docstring wider"
+                    '(defvar sample-wide-var nil
+                       "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
+                   (emaxx-bytecomp-warning-p
+                    "defalias .sample-wide-alias. docstring wider"
+                    '(defalias 'sample-wide-alias #'ignore
+                       "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"))
+                   (emaxx-bytecomp-warning-p
+                    "docstring wider"
+                    '(defun sample-wide-function ()
+                       "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                       nil))
+                   (not
+                    (emaxx-bytecomp-warning-p
+                     "docstring wider"
+                     '(defun sample-signature-only ()
+                        "(fn NAME FIXTURE INPUT &key SKIP-PAIR-STRING EXPECTED-STRING EXPECTED-POINT BINDINGS (MODES \\='\\='(ruby-mode js-mode python-mode)) (TEST-IN-COMMENTS t) (TEST-IN-STRINGS t) (TEST-IN-CODE t))"
+                        nil)))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn byte_compile_lambda_form_honors_dynamic_lexical_binding() {
     assert_eq!(
         eval_str(

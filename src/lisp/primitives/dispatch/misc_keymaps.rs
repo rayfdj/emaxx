@@ -7959,7 +7959,10 @@ fn byte_compile_file(
     }
 
     let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
-    let mut diagnostics = ByteCompileDiagnostics::default();
+    let mut diagnostics = ByteCompileDiagnostics {
+        docstring_max_width: byte_compile_source_docstring_max_width(&source),
+        ..Default::default()
+    };
     for form in forms {
         diagnostics.scan(interp, &form, false);
     }
@@ -8065,6 +8068,37 @@ fn source_contains_truthy_file_local(source: &str, variable: &str) -> bool {
         .any(|line| line.contains(variable) && line.contains(": t"))
 }
 
+fn byte_compile_source_docstring_max_width(source: &str) -> Option<usize> {
+    ["byte-compile-docstring-max-column", "fill-column"]
+        .into_iter()
+        .filter_map(|variable| source_file_local_integer(source, variable))
+        .filter(|width| *width > BYTE_COMPILE_DOCSTRING_MAX_WIDTH)
+        .max()
+}
+
+fn source_file_local_integer(source: &str, variable: &str) -> Option<usize> {
+    let mut inside_block = false;
+    for line in source.lines().rev() {
+        let trimmed = line.trim_start();
+        let comment_text = trimmed.trim_start_matches(';').trim_start();
+        if comment_text == "End:" {
+            inside_block = true;
+            continue;
+        }
+        if !inside_block {
+            continue;
+        }
+        if comment_text == "Local Variables:" {
+            break;
+        }
+        let (name, value) = comment_text.split_once(':')?;
+        if name.trim() == variable {
+            return value.trim().parse().ok();
+        }
+    }
+    None
+}
+
 fn source_has_lexical_binding_cookie(source: &str) -> bool {
     source
         .lines()
@@ -8099,6 +8133,8 @@ fn byte_compile_from_buffer_source(source: &str) -> String {
     }
     normalized
 }
+
+const BYTE_COMPILE_DOCSTRING_MAX_WIDTH: usize = 80;
 
 fn byte_compile_wide_docstring_p(docstring: &str, max_width: usize) -> bool {
     docstring.lines().any(|line| {
@@ -8274,12 +8310,19 @@ struct ByteCompileDiagnostics {
     lexical_hook_symbols: Vec<String>,
     function_depth: usize,
     warn_unresolved: bool,
+    docstring_max_width: Option<usize>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ByteCompileDefinitionKind {
     Function,
     Macro,
+}
+
+#[derive(Clone, Copy)]
+enum ByteCompileNameForm {
+    Symbol,
+    QuotedSymbol,
 }
 
 struct ByteCompileWarning {
@@ -8363,6 +8406,70 @@ impl ByteCompileDiagnostics {
             "defmacro" => self.scan_defmacro(interp, &items),
             "lambda" => self.scan_lambda(interp, &items),
             "quote" | "function" => {}
+            "autoload" => self.scan_named_docstring_form(
+                interp,
+                "autoload",
+                &items,
+                1,
+                3,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
+            "custom-declare-variable" => self.scan_named_docstring_form(
+                interp,
+                "custom-declare-variable",
+                &items,
+                1,
+                3,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
+            "defalias" => self.scan_named_docstring_form(
+                interp,
+                "defalias",
+                &items,
+                1,
+                3,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
+            "defconst" => self.scan_named_docstring_form(
+                interp,
+                "defconst",
+                &items,
+                1,
+                3,
+                ByteCompileNameForm::Symbol,
+            ),
+            "define-abbrev-table" => self.scan_named_docstring_form(
+                interp,
+                "define-abbrev-table",
+                &items,
+                1,
+                3,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
+            "define-obsolete-function-alias" => self.scan_named_docstring_form(
+                interp,
+                "defalias",
+                &items,
+                1,
+                4,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
+            "define-obsolete-variable-alias" => self.scan_named_docstring_form(
+                interp,
+                "defvaralias",
+                &items,
+                1,
+                4,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
+            "defvaralias" => self.scan_named_docstring_form(
+                interp,
+                "defvaralias",
+                &items,
+                1,
+                3,
+                ByteCompileNameForm::QuotedSymbol,
+            ),
             "eval-and-compile" | "eval-when-compile" => self.scan_compile_time_body(interp, &items),
             "if" => self.scan_if(interp, &items),
             "and" => self.scan_and(interp, &items),
@@ -8446,6 +8553,9 @@ impl ByteCompileDiagnostics {
     fn scan_defvar(&mut self, items: &[Value]) {
         if let Some(symbol) = items.get(1).and_then(|value| value.as_symbol().ok()) {
             self.define_variable(symbol);
+            if let Some(docstring) = items.get(3).and_then(format_string_literal) {
+                self.warn_if_wide_named_docstring("defvar", symbol, &docstring);
+            }
             if symbol.contains('-') {
                 return;
             }
@@ -8716,6 +8826,9 @@ impl ByteCompileDiagnostics {
         } else {
             3
         };
+        if let Some(docstring) = items.get(3).and_then(format_string_literal) {
+            self.warn_if_wide_docstring(&docstring);
+        }
         let params = items
             .get(2)
             .and_then(|value| byte_compile_lambda_parameters(value).ok())
@@ -8752,6 +8865,55 @@ impl ByteCompileDiagnostics {
             3
         };
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+    }
+
+    fn scan_named_docstring_form(
+        &mut self,
+        interp: &Interpreter,
+        form_name: &str,
+        items: &[Value],
+        name_index: usize,
+        docstring_index: usize,
+        name_form: ByteCompileNameForm,
+    ) {
+        if let Some(name) = items
+            .get(name_index)
+            .and_then(|value| byte_compile_docstring_name(value, name_form))
+            && let Some(docstring) = items.get(docstring_index).and_then(format_string_literal)
+        {
+            self.warn_if_wide_named_docstring(form_name, &name, &docstring);
+        }
+        self.scan_call(interp, items[0].as_symbol().unwrap_or(form_name), items);
+        self.scan_body(interp, &items[1..]);
+    }
+
+    fn warn_if_wide_named_docstring(&mut self, form_name: &str, name: &str, docstring: &str) {
+        let max_width = self.docstring_max_width();
+        if byte_compile_wide_docstring_p(docstring, max_width) {
+            self.warn(
+                "docstrings",
+                Some(name.to_string()),
+                format!(
+                    "Warning: {form_name} `{name}' docstring wider than {max_width} characters"
+                ),
+            );
+        }
+    }
+
+    fn warn_if_wide_docstring(&mut self, docstring: &str) {
+        let max_width = self.docstring_max_width();
+        if byte_compile_wide_docstring_p(docstring, max_width) {
+            self.warn(
+                "docstrings",
+                None,
+                format!("Warning: docstring wider than {max_width} characters"),
+            );
+        }
+    }
+
+    fn docstring_max_width(&self) -> usize {
+        self.docstring_max_width
+            .unwrap_or(BYTE_COMPILE_DOCSTRING_MAX_WIDTH)
     }
 
     fn scan_lambda(&mut self, interp: &Interpreter, items: &[Value]) {
@@ -9605,6 +9767,13 @@ fn quoted_symbol_name(value: &Value) -> Option<String> {
 
 fn quoted_condition_name(value: &Value) -> Option<String> {
     quoted_symbol_name(value)
+}
+
+fn byte_compile_docstring_name(value: &Value, name_form: ByteCompileNameForm) -> Option<String> {
+    match name_form {
+        ByteCompileNameForm::Symbol => value.as_symbol().ok().map(str::to_string),
+        ByteCompileNameForm::QuotedSymbol => quoted_symbol_name(value),
+    }
 }
 
 fn let_binding_symbol(value: &Value) -> Option<String> {
