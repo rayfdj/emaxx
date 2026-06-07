@@ -7963,14 +7963,14 @@ fn byte_compile_file(
         docstring_max_width: byte_compile_source_docstring_max_width(&source),
         ..Default::default()
     };
-    for form in forms {
-        diagnostics.scan(interp, &form, false);
+    for form in &forms {
+        diagnostics.scan(interp, form, false);
     }
     byte_compile_log_diagnostics(interp, env, &[], diagnostics)?;
     byte_compile_log_source_attribute_warnings(interp, env, &source)?;
 
     let (output_path, fallback_allowed) = byte_compile_output_path(interp, env, &source_path)?;
-    let compiled_stub = byte_compile_stub_contents(&source_path);
+    let compiled_stub = byte_compile_stub_contents(interp, env, &source_path, &forms)?;
     if let Err(error) = fs::write(&output_path, compiled_stub.as_bytes()) {
         if fallback_allowed && byte_compile_output_fallback_allowed(&error) {
             let fallback_path = byte_compile_fallback_output_path(&source_path);
@@ -8032,17 +8032,164 @@ fn byte_compile_fallback_output_path(source_path: &str) -> String {
     path.display().to_string()
 }
 
-fn byte_compile_stub_contents(source_path: &str) -> String {
-    let source = byte_compile_lisp_string_literal(source_path);
+fn byte_compile_stub_contents(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    source_path: &str,
+    forms: &[Value],
+) -> Result<String, LispError> {
+    let compiled_forms = byte_compile_expanded_top_level_forms(interp, env, forms)?;
     let directory = Path::new(source_path)
         .parent()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| ".".to_string());
-    format!(
-        ";ELC\n(let ((emaxx-byte-compile-load-path load-path)) (unwind-protect (progn (setq load-path (cons {} load-path)) (load-file {})) (setq load-path emaxx-byte-compile-load-path)))\n",
+    let mut output = format!(
+        ";ELC\n(let ((emaxx-byte-compile-load-path load-path)) (unwind-protect (progn (setq load-path (cons {} load-path))",
         byte_compile_lisp_string_literal(&directory),
-        source,
-    )
+    );
+    for form in compiled_forms {
+        output.push(' ');
+        output.push_str(&byte_compile_render_form(&form));
+    }
+    output.push_str(") (setq load-path emaxx-byte-compile-load-path)))\n");
+    Ok(output)
+}
+
+fn byte_compile_expanded_top_level_forms(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    forms: &[Value],
+) -> Result<Vec<Value>, LispError> {
+    let mut expanded = Vec::with_capacity(forms.len());
+    for form in forms {
+        let compiled = byte_compile_expand_top_level_form(interp, env, form)?;
+        if !matches!(compiled, Value::Nil) {
+            expanded.push(compiled);
+        }
+    }
+    Ok(expanded)
+}
+
+fn byte_compile_expand_top_level_form(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    form: &Value,
+) -> Result<Value, LispError> {
+    let Ok(items) = form.to_vec() else {
+        return Ok(form.clone());
+    };
+    let Some(head) = items.first().and_then(|value| value.as_symbol().ok()) else {
+        return Ok(form.clone());
+    };
+    match head {
+        "eval-and-compile" => {
+            let mut compiled = Vec::with_capacity(items.len());
+            compiled.push(Value::Symbol("progn".into()));
+            for child in &items[1..] {
+                interp.eval(child, env)?;
+                let expanded = byte_compile_expand_top_level_form(interp, env, child)?;
+                if !matches!(expanded, Value::Nil) {
+                    compiled.push(expanded);
+                }
+            }
+            Ok(Value::list(compiled))
+        }
+        "eval-when-compile" => {
+            let mut compile_value = Value::Nil;
+            for child in &items[1..] {
+                compile_value = interp.eval(child, env)?;
+            }
+            Ok(byte_compile_quoted_literal(compile_value))
+        }
+        "progn" => {
+            let mut compiled = Vec::with_capacity(items.len());
+            compiled.push(Value::Symbol("progn".into()));
+            for child in &items[1..] {
+                let expanded = byte_compile_expand_top_level_form(interp, env, child)?;
+                if !matches!(expanded, Value::Nil) {
+                    compiled.push(expanded);
+                }
+            }
+            Ok(Value::list(compiled))
+        }
+        "defmacro" => {
+            interp.eval(form, env)?;
+            Ok(form.clone())
+        }
+        "defun" | "defsubst" => byte_compile_expand_defun(interp, env, &items),
+        _ => Ok(interp.macroexpand_all_form_with_environment(form, None, env)?),
+    }
+}
+
+fn byte_compile_expand_defun(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    items: &[Value],
+) -> Result<Value, LispError> {
+    let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
+        4
+    } else {
+        3
+    };
+    let mut expanded = Vec::with_capacity(items.len());
+    expanded.extend(items[..body_start].iter().cloned());
+    for body in &items[body_start..] {
+        expanded.push(interp.macroexpand_all_form_with_environment(body, None, env)?);
+    }
+    Ok(Value::list(expanded))
+}
+
+fn byte_compile_quoted_literal(value: Value) -> Value {
+    Value::list([Value::Symbol("quote".into()), value])
+}
+
+fn byte_compile_render_form(value: &Value) -> String {
+    match value {
+        Value::Nil => "nil".into(),
+        Value::T => "t".into(),
+        Value::Integer(number) => number.to_string(),
+        Value::BigInteger(number) => number.to_string(),
+        Value::Float(number) => number.to_string(),
+        Value::String(text) => byte_compile_lisp_string_literal(text),
+        Value::StringObject(state) => byte_compile_lisp_string_literal(&state.borrow().text),
+        Value::Symbol(symbol) => symbol.clone(),
+        Value::Cons(_, _) => byte_compile_render_cons(value),
+        Value::Lambda(_, _, _) => "nil".into(),
+        Value::BuiltinFunc(name) => format!("#'{name}"),
+        Value::Buffer(_, _)
+        | Value::Marker(_)
+        | Value::Overlay(_)
+        | Value::CharTable(_)
+        | Value::Record(_)
+        | Value::Finalizer(_)
+        | Value::Unbound => "nil".into(),
+    }
+}
+
+fn byte_compile_render_cons(value: &Value) -> String {
+    let mut output = String::from("(");
+    let mut current = value.clone();
+    let mut first = true;
+    loop {
+        match current {
+            Value::Cons(car, cdr) => {
+                if !first {
+                    output.push(' ');
+                }
+                output.push_str(&byte_compile_render_form(&car.borrow()));
+                first = false;
+                current = cdr.borrow().clone();
+            }
+            Value::Nil => break,
+            other => {
+                output.push_str(" . ");
+                output.push_str(&byte_compile_render_form(&other));
+                break;
+            }
+        }
+    }
+    output.push(')');
+    output
 }
 
 fn byte_compile_lisp_string_literal(value: &str) -> String {

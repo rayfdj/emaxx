@@ -643,6 +643,7 @@ impl Interpreter {
             if let Some((_, params, body)) = self
                 .macros
                 .iter()
+                .rev()
                 .find(|(macro_name, _, _)| macro_name == &current)
             {
                 return Some((params.clone(), body.clone()));
