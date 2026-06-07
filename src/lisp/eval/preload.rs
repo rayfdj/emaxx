@@ -193,6 +193,92 @@ pub(crate) fn preloaded_vc_directory_exclusion_list() -> Value {
     )
 }
 
+pub(crate) fn preloaded_completion_table_dynamic() -> Value {
+    Value::Lambda(
+        vec!["fun".into(), "&optional".into(), "switch-buffer".into()],
+        vec![Value::list([
+            Value::Symbol("lambda".into()),
+            Value::list([
+                Value::Symbol("string".into()),
+                Value::Symbol("pred".into()),
+                Value::Symbol("action".into()),
+            ]),
+            Value::list([
+                Value::Symbol("cond".into()),
+                Value::list([
+                    Value::list([
+                        Value::Symbol("or".into()),
+                        Value::list([
+                            Value::Symbol("eq".into()),
+                            Value::list([
+                                Value::Symbol("car-safe".into()),
+                                Value::Symbol("action".into()),
+                            ]),
+                            Value::list([
+                                Value::Symbol("quote".into()),
+                                Value::Symbol("boundaries".into()),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("eq".into()),
+                            Value::Symbol("action".into()),
+                            Value::list([
+                                Value::Symbol("quote".into()),
+                                Value::Symbol("metadata".into()),
+                            ]),
+                        ]),
+                    ]),
+                    Value::Nil,
+                ]),
+                Value::list([
+                    Value::list([
+                        Value::Symbol("eq".into()),
+                        Value::Symbol("action".into()),
+                        Value::T,
+                    ]),
+                    Value::list([
+                        Value::Symbol("all-completions".into()),
+                        Value::Symbol("string".into()),
+                        Value::list([
+                            Value::Symbol("funcall".into()),
+                            Value::Symbol("fun".into()),
+                            Value::Symbol("string".into()),
+                        ]),
+                        Value::Symbol("pred".into()),
+                    ]),
+                ]),
+                Value::list([
+                    Value::Symbol("action".into()),
+                    Value::list([
+                        Value::Symbol("test-completion".into()),
+                        Value::Symbol("string".into()),
+                        Value::list([
+                            Value::Symbol("funcall".into()),
+                            Value::Symbol("fun".into()),
+                            Value::Symbol("string".into()),
+                        ]),
+                        Value::Symbol("pred".into()),
+                    ]),
+                ]),
+                Value::list([
+                    Value::T,
+                    Value::list([
+                        Value::Symbol("try-completion".into()),
+                        Value::Symbol("string".into()),
+                        Value::list([
+                            Value::Symbol("funcall".into()),
+                            Value::Symbol("fun".into()),
+                            Value::Symbol("string".into()),
+                        ]),
+                        Value::Symbol("pred".into()),
+                    ]),
+                ]),
+            ]),
+        ])],
+        shared_env(Vec::new()),
+    )
+}
+
 pub(crate) fn builtin_file_autoload(file: &str, interactive: Value) -> Value {
     Value::list([
         Value::Symbol("autoload".into()),
@@ -216,6 +302,7 @@ pub(crate) fn builtin_macro_autoload(file: &str) -> Value {
 pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
+        "completion-table-dynamic" => Some(preloaded_completion_table_dynamic()),
         "cl-assoc-if" | "cl-assoc-if-not" | "cl-delete-duplicates" => {
             Some(builtin_file_autoload("cl-seq", Value::Nil))
         }

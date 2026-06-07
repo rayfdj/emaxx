@@ -22,6 +22,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "local"
             | "add-function"
             | "fundamental-mode"
+            | "prog-mode"
             | "emacs-lisp-mode"
             | "special-mode"
             | "normal-mode"
@@ -448,6 +449,21 @@ pub(super) fn call(
                 interp.current_buffer_id(),
                 "mode-name",
                 Value::String("Fundamental".into()),
+            );
+            Ok(Value::Nil)
+        }
+        "prog-mode" => {
+            need_args(name, args, 0)?;
+            derived_mode_set_parent(interp, "prog-mode", Some("fundamental-mode"));
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "major-mode",
+                Value::Symbol("prog-mode".into()),
+            );
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "mode-name",
+                Value::String("Prog".into()),
             );
             Ok(Value::Nil)
         }

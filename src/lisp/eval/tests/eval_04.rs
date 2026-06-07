@@ -2925,6 +2925,26 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
     assert_eq!(
         eval_str(
             r#"
+                (let ((table (completion-table-dynamic
+                              (lambda (_string)
+                                '("ab-one" "ab-two")))))
+                  (list (try-completion "ab" table)
+                        (all-completions "ab" table)
+                        (test-completion "ab-one" table)))
+                "#
+        ),
+        Value::list([
+            Value::String("ab-".into()),
+            Value::list([
+                Value::String("ab-one".into()),
+                Value::String("ab-two".into())
+            ]),
+            Value::T,
+        ])
+    );
+    assert_eq!(
+        eval_str(
+            r#"
                 (let ((ht (make-hash-table :test #'equal)))
                   (puthash "abc" 1 ht)
                   (gethash "abc" ht))

@@ -19,11 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1628/7080 are verified locally.
+- Tests through 1633/7080 are verified locally.
 - The latest compatibility batch is
-  `Compat 1628/7080: honor check-declare warnings`.
-- The next observed frontier is selector 1629, the first `checkdoc-tests.el`
-  selector after `test/lisp/emacs-lisp/check-declare-tests.el`.
+  `Compat 1633/7080: load checkdoc cl-defmethods`.
+- The next observed frontier is selector 1634,
+  `checkdoc-cl-defun-with-allow-other-keys-ok` in
+  `test/lisp/emacs-lisp/checkdoc-tests.el`; it currently fails with a
+  `void-variable` for `down-list`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -69,6 +71,11 @@ counts as the progress denominator.
   passed after exposing the standard `hack-local-variables` entry point used
   when scanning or verifying Elisp files and making `display-warning` honor
   warning prefix callbacks and explicit warning buffer arguments.
+- Selectors 1629..1633 in `test/lisp/emacs-lisp/checkdoc-tests.el` passed
+  after preloading `completion-table-dynamic`, dispatching programmed
+  completion collections through `try-completion`/`all-completions`/
+  `test-completion`, and adding callable `prog-mode` with its standard
+  `fundamental-mode` parent.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

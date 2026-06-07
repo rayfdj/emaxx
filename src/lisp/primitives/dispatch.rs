@@ -472,6 +472,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "matching-paren"
             | "get-byte"
             | "fundamental-mode"
+            | "prog-mode"
             | "emacs-lisp-mode"
             | "special-mode"
             | "treesit-available-p"
