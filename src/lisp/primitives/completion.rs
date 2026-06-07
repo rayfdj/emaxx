@@ -747,6 +747,41 @@ pub(crate) fn filtered_completion_matches(
     Ok(matches)
 }
 
+fn completion_collection_function(
+    collection: &Value,
+    interp: &Interpreter,
+    env: &Env,
+) -> Option<Value> {
+    match collection {
+        Value::BuiltinFunc(_) | Value::Lambda(_, _, _) => Some(collection.clone()),
+        Value::Symbol(symbol) => interp.lookup_function(symbol, env).ok(),
+        _ => None,
+    }
+}
+
+fn call_programmed_completion(
+    interp: &mut Interpreter,
+    input: &str,
+    collection: &Value,
+    predicate: Option<&Value>,
+    action: Value,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let Some(function) = completion_collection_function(collection, interp, env) else {
+        return Ok(None);
+    };
+    Ok(Some(interp.call_function_value(
+        function,
+        None,
+        &[
+            Value::String(input.into()),
+            predicate.cloned().unwrap_or(Value::Nil),
+            action,
+        ],
+        env,
+    )?))
+}
+
 pub(crate) fn try_completion(
     interp: &mut Interpreter,
     args: &[Value],
@@ -759,6 +794,11 @@ pub(crate) fn try_completion(
         ));
     }
     let input = string_text(&args[0])?;
+    if let Some(result) =
+        call_programmed_completion(interp, &input, &args[1], args.get(2), Value::Nil, env)?
+    {
+        return Ok(result);
+    }
     let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
     if matches.is_empty() {
         return Ok(Value::Nil);
@@ -801,6 +841,11 @@ pub(crate) fn all_completions(
         ));
     }
     let input = string_text(&args[0])?;
+    if let Some(result) =
+        call_programmed_completion(interp, &input, &args[1], args.get(2), Value::T, env)?
+    {
+        return Ok(result);
+    }
     Ok(Value::list(
         filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?
             .into_iter()
@@ -822,6 +867,16 @@ pub(crate) fn test_completion(
         ));
     }
     let input = string_text(&args[0])?;
+    if let Some(result) = call_programmed_completion(
+        interp,
+        &input,
+        &args[1],
+        args.get(2),
+        Value::Symbol("lambda".into()),
+        env,
+    )? {
+        return Ok(result);
+    }
     let ignore_case = completion_ignores_case(interp, env);
     let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
     Ok(
