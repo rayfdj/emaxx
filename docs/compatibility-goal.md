@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1705/7080 are verified locally against the current canonical
+- Tests through 1721/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1705/7080: navigate checkdoc cl-defuns`.
-- The next observed frontier is selector 1706,
-  `checkdoc-tests--bug-24998` in `test/lisp/emacs-lisp/checkdoc-tests.el`;
-  it currently fails because emaxx does not report the expected checkdoc
-  diagnostic.
+  `Compat 1721/7080: seed docstring metadata`.
+- The next observed frontier is selector 1722,
+  `cl-extra-test-cl-make-random-state` in
+  `test/lisp/emacs-lisp/cl-extra-tests.el`; it currently fails with
+  `invalid-function`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -86,6 +86,14 @@ counts as the progress denominator.
   `checkdoc-cl-defun-with-(key|allow-other-keys|default-optional-value|destructuring)-ok`
   plus `checkdoc-tests--next-docstring`, which confirmed selectors 1701..1705
   passed and selector 1706 remained the next frontier.
+- Selectors 1706..1719 in `test/lisp/emacs-lisp/checkdoc-tests.el` and
+  selector 1721, `cl-concatenate`, passed after seeding the standard
+  `doc-string-elt` symbol properties used by checkdoc and making unknown
+  string escapes read like GNU Emacs by dropping the quoting backslash. Exact
+  replays run for this batch: selectors `checkdoc-tests--bug-24998`,
+  `checkdoc-tests--next-docstring`, grouped checkdoc error/fix tests, grouped
+  checkdoc abbreviation tests, full `cl-extra-tests.el` to identify the next
+  failure, and standalone selector `cl-concatenate`.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

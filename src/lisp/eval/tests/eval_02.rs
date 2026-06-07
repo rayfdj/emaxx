@@ -3692,6 +3692,24 @@ fn sentence_end_double_space_defaults_to_t() {
 }
 
 #[test]
+fn core_definition_forms_have_doc_string_slots() {
+    assert_eq!(
+        eval_str(
+            "(list (function-get 'defun 'doc-string-elt)
+                   (function-get 'defmacro 'doc-string-elt)
+                   (function-get 'defvar 'doc-string-elt)
+                   (function-get 'define-category 'doc-string-elt))"
+        ),
+        Value::list([
+            Value::Integer(3),
+            Value::Integer(3),
+            Value::Integer(3),
+            Value::Integer(2),
+        ])
+    );
+}
+
+#[test]
 fn page_delimiter_has_standard_default() {
     assert_eq!(
         eval_str("page-delimiter"),
