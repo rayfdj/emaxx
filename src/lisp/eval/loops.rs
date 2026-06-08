@@ -1157,7 +1157,7 @@ impl Interpreter {
                 }
                 Ok(Value::list(resolved))
             }
-            Some(Value::Symbol(name)) if name == "plist-get" => {
+            Some(Value::Symbol(name)) if matches!(name.as_str(), "plist-get" | "cl-getf") => {
                 let Some(plist_place) = items.get(1) else {
                     return Ok(place.clone());
                 };
@@ -1166,13 +1166,13 @@ impl Interpreter {
                 };
                 let key = self.eval(key_expr, env)?;
                 let mut resolved = vec![
-                    Value::Symbol("plist-get".into()),
+                    Value::Symbol(name.clone()),
                     self.resolve_setf_place(plist_place, env)?,
                     quoted_literal(&key),
                 ];
-                if let Some(testfn_expr) = items.get(3) {
-                    let testfn = self.eval(testfn_expr, env)?;
-                    resolved.push(quoted_literal(&testfn));
+                if let Some(extra_expr) = items.get(3) {
+                    let extra = self.eval(extra_expr, env)?;
+                    resolved.push(quoted_literal(&extra));
                 }
                 Ok(Value::list(resolved))
             }

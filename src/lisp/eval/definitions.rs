@@ -295,7 +295,7 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
-            Some(Value::Symbol(name)) if name == "plist-get" => {
+            Some(Value::Symbol(name)) if matches!(name.as_str(), "plist-get" | "cl-getf") => {
                 self.sf_setf_plist_get(&place, &items[2], env)
             }
             Some(Value::Symbol(name)) if name == "gethash" => {
@@ -492,7 +492,12 @@ impl Interpreter {
         let plist = self.eval(plist_place, env)?;
         let key = self.eval(key_expr, env)?;
         let value = self.eval(value_expr, env)?;
-        let updated = if let Some(testfn_expr) = place.get(3) {
+        let head = place.first().and_then(|value| value.as_symbol().ok());
+        let updated = if head == Some("cl-getf") {
+            self.cl_set_getf(plist, key, value.clone(), env)?
+        } else if head == Some("plist-get")
+            && let Some(testfn_expr) = place.get(3)
+        {
             let testfn = self.eval(testfn_expr, env)?;
             primitives::call(self, "plist-put", &[plist, key, value.clone(), testfn], env)?
         } else {
@@ -500,6 +505,50 @@ impl Interpreter {
         };
         self.set_setf_place_value(plist_place, updated, env)?;
         Ok(value)
+    }
+
+    fn cl_set_getf(
+        &mut self,
+        plist: Value,
+        key: Value,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let mut current = plist.clone();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            match current {
+                Value::Nil => {
+                    return Ok(Value::cons(key, Value::cons(value, plist)));
+                }
+                Value::Cons(car, cdr) => {
+                    let cell_id = std::rc::Rc::as_ptr(&car) as usize;
+                    if !seen.insert(cell_id) {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("circular-list".into()),
+                            Value::String("Circular list".into()),
+                        ])));
+                    }
+                    let property = car.borrow().clone();
+                    if primitives::value_matches_with_test(self, &property, &key, None, env)? {
+                        return match cdr.borrow().clone() {
+                            Value::Cons(value_cell, _) => {
+                                *value_cell.borrow_mut() = value;
+                                Ok(plist)
+                            }
+                            Value::Nil => Ok(Value::cons(key, Value::cons(value, plist))),
+                            _ => Err(primitives::plist_type_error(&plist)),
+                        };
+                    }
+                    match cdr.borrow().clone() {
+                        Value::Cons(_, next_cdr) => current = next_cdr.borrow().clone(),
+                        Value::Nil => return Ok(Value::cons(key, Value::cons(value, plist))),
+                        _ => return Err(primitives::plist_type_error(&plist)),
+                    }
+                }
+                _ => return Err(primitives::plist_type_error(&plist)),
+            }
+        }
     }
 
     pub(super) fn sf_setf_gethash(
@@ -805,8 +854,10 @@ impl Interpreter {
                 {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_alist_get(&items, &value_expr, env).map(|_| ())
-                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "plist-get")
-                {
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if matches!(name.as_str(), "plist-get" | "cl-getf")
+                ) {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_plist_get(&items, &value_expr, env).map(|_| ())
                 } else if matches!(
