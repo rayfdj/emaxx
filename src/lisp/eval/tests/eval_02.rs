@@ -53,6 +53,26 @@ fn cl_defstruct_honors_conc_name_for_accessors_and_setf() {
 }
 
 #[test]
+fn cl_defstruct_honors_explicit_predicate_name() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (cl-defstruct (sample-pred
+                                  (:constructor nil)
+                                  (:predicate sample-pred-object-p)
+                                  (:constructor make-sample-pred (value)))
+                     value)
+                   (let ((sample (make-sample-pred 42)))
+                     (list
+                      (fboundp 'sample-pred-p)
+                      (sample-pred-object-p sample)
+                      (sample-pred-value sample))))"
+        ),
+        Value::list([Value::Nil, Value::T, Value::Integer(42)])
+    );
+}
+
+#[test]
 fn cl_defstruct_constructor_respects_optional_marker() {
     assert_eq!(
         eval_str(
