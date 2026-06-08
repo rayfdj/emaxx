@@ -1489,6 +1489,7 @@ impl Interpreter {
         let mut constructors = Vec::new();
         let mut saw_constructor_option = false;
         let mut conc_name = format!("{name}-");
+        let mut predicate_name = format!("{name}-p");
         for option in options {
             let Some(parts) = option.to_vec().ok() else {
                 continue;
@@ -1516,6 +1517,11 @@ impl Interpreter {
                         _ => {}
                     }
                 }
+                Some(Value::Symbol(keyword)) if keyword == ":predicate" => match parts.get(1) {
+                    Some(Value::Nil) => predicate_name.clear(),
+                    Some(Value::Symbol(predicate)) => predicate_name = predicate.clone(),
+                    _ => {}
+                },
                 Some(Value::Symbol(keyword)) if keyword == ":conc-name" => match parts.get(1) {
                     Some(Value::Nil) => conc_name.clear(),
                     Some(Value::Symbol(prefix)) => conc_name = prefix.clone(),
@@ -1551,19 +1557,20 @@ impl Interpreter {
 
         self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
 
-        let predicate_name = format!("{name}-p");
-        self.set_function_binding(
-            &predicate_name,
-            Some(Value::Lambda(
-                vec!["object".into()],
-                vec![Value::list([
-                    Value::Symbol("emaxx-struct-p".into()),
-                    struct_name.clone(),
-                    Value::Symbol("object".into()),
-                ])],
-                shared_env(Vec::new()),
-            )),
-        );
+        if !predicate_name.is_empty() {
+            self.set_function_binding(
+                &predicate_name,
+                Some(Value::Lambda(
+                    vec!["object".into()],
+                    vec![Value::list([
+                        Value::Symbol("emaxx-struct-p".into()),
+                        struct_name.clone(),
+                        Value::Symbol("object".into()),
+                    ])],
+                    shared_env(Vec::new()),
+                )),
+            );
+        }
 
         for (index, slot_name) in slot_names.iter().enumerate() {
             let accessor_name = format!("{conc_name}{slot_name}");
