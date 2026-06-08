@@ -308,6 +308,11 @@ fn emacs_lisp_mode_syntax_table_defaults_to_placeholder() {
 }
 
 #[test]
+fn emacs_lisp_mode_map_defaults_to_keymap() {
+    assert_eq!(eval_str("(keymapp emacs-lisp-mode-map)"), Value::T);
+}
+
+#[test]
 fn cl_loop_supports_across_with_unbounded_from() {
     assert_eq!(
         eval_str(

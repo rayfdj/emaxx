@@ -1947,6 +1947,33 @@ fn first_cl_defmethod_specializer(
     Ok(None)
 }
 
+fn cl_defgeneric_edebug_method_name(
+    generic_name: &str,
+    method_parts: &[Value],
+) -> Result<Option<String>, LispError> {
+    let mut cursor = 1;
+    let qualifier = method_parts
+        .get(cursor)
+        .and_then(|value| value.as_symbol().ok())
+        .filter(|name| name.starts_with(':'));
+    if qualifier.is_some() {
+        cursor += 1;
+    }
+    let Some(lambda_list) = method_parts.get(cursor) else {
+        return Ok(None);
+    };
+    let Some(specializer) = first_cl_defmethod_specializer(lambda_list)? else {
+        return Ok(Some(generic_name.to_string()));
+    };
+    let Some(class_name) = specializer.class_name() else {
+        return Ok(Some(format!("{generic_name} ({})", specializer.key())));
+    };
+    let qualifier = qualifier
+        .map(|value| format!(" {value}"))
+        .unwrap_or_default();
+    Ok(Some(format!("{generic_name}{qualifier} ({class_name})")))
+}
+
 fn substitute_symbol_macros(
     form: &Value,
     expansions: &HashMap<String, Value>,

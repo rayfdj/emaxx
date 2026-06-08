@@ -1016,7 +1016,9 @@ pub(super) fn call(
             let function_name = symbol_designator_name(&args[0])
                 .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
             let where_sym = args[1].as_symbol()?;
-            let original = interp.lookup_function(&function_name, env)?;
+            let Ok(original) = interp.lookup_function(&function_name, env) else {
+                return Ok(Value::Nil);
+            };
             let advice = match &args[2] {
                 Value::Symbol(symbol) => interp
                     .lookup_function(symbol, env)

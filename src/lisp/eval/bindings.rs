@@ -295,6 +295,13 @@ impl Interpreter {
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
             "text-mode-map" => Some(primitives::keymap_placeholder(Some("text-mode-map"))),
+            "lisp-mode-shared-map" => {
+                Some(primitives::keymap_placeholder(Some("lisp-mode-shared-map")))
+            }
+            "lisp-mode-map" => Some(primitives::keymap_placeholder(Some("lisp-mode-map"))),
+            "emacs-lisp-mode-map" => {
+                Some(primitives::keymap_placeholder(Some("emacs-lisp-mode-map")))
+            }
             "tex-mode" => Some(Value::Symbol("tex-mode".into())),
             "tex-mode-map" => Some(primitives::keymap_placeholder(Some("tex-mode-map"))),
             "texinfo-mode-map" => Some(primitives::keymap_placeholder(Some("texinfo-mode-map"))),

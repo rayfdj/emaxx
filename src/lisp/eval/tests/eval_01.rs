@@ -643,6 +643,19 @@ fn advice_member_p_defaults_to_nil_for_untracked_advice() {
     );
 }
 
+#[test]
+fn advice_add_allows_forward_target_symbols() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defun sample-forward-advice (&rest _) nil)
+                   (advice-add 'sample-forward-target :around #'sample-forward-advice)
+                   (fboundp 'sample-forward-target))"
+        ),
+        Value::Nil
+    );
+}
+
 fn assert_format_prompt_uses_first_default_choice() {
     assert_eq!(
         eval_str(r#"(format-prompt "Regexp to unhighlight" '("a" "b"))"#),

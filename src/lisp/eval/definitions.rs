@@ -2180,6 +2180,9 @@ impl Interpreter {
                     body_start += 1;
                 }
                 ":method" => {
+                    if let Some(method_name) = cl_defgeneric_edebug_method_name(&name, &parts)? {
+                        self.maybe_notify_edebug_new_definition(&method_name, env)?;
+                    }
                     let mut lowered_method = Vec::with_capacity(parts.len() + 1);
                     lowered_method.push(Value::Symbol("cl-defmethod".into()));
                     lowered_method.push(Value::Symbol(name.clone()));
@@ -2206,7 +2209,31 @@ impl Interpreter {
         } else if self.lookup_function(&name, env).is_err() {
             self.set_function_binding(&name, Some(Value::BuiltinFunc("ignore".into())));
         }
+        self.maybe_notify_edebug_new_definition(&name, env)?;
         Ok(Value::Symbol(name))
+    }
+
+    fn maybe_notify_edebug_new_definition(
+        &mut self,
+        name: &str,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if !self
+            .lookup_var("edebug-all-defs", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            return Ok(());
+        }
+        let arg = Value::Symbol(name.to_string());
+        if let Some(handler) = self
+            .lookup_var("edebug-new-definition-function", env)
+            .filter(Value::is_truthy)
+        {
+            self.call_function_value(handler, None, &[arg], env)?;
+        } else if let Ok(handler) = self.lookup_function("edebug-new-definition", env) {
+            self.call_function_value(handler, Some("edebug-new-definition"), &[arg], env)?;
+        }
+        Ok(())
     }
 
     pub(super) fn sf_cl_generic_define_generalizer(
