@@ -1717,6 +1717,33 @@ fn cl_defgeneric_keeps_its_default_body() {
 }
 
 #[test]
+fn cl_defgeneric_notifies_edebug_definition_names_for_methods() {
+    assert_eq!(
+        eval_str(
+            "(let ((edebug-all-defs t)
+                   (instrumented-names nil)
+                   (edebug-new-definition-function
+                    (lambda (name) (push name instrumented-names))))
+               (cl-defgeneric cl-defgeneric/edebug/method/1 (_)
+                 (:method ((_ number)) 1)
+                 (:method ((_ string)) 2)
+                 (:method :around ((_ number)) 3))
+               (cl-defgeneric cl-defgeneric/edebug/method/2 (_)
+                 (:method ((_ number)) 3))
+               (reverse instrumented-names))"
+        ),
+        Value::list([
+            Value::Symbol("cl-defgeneric/edebug/method/1 (number)".into()),
+            Value::Symbol("cl-defgeneric/edebug/method/1 (string)".into()),
+            Value::Symbol("cl-defgeneric/edebug/method/1 :around (number)".into()),
+            Value::Symbol("cl-defgeneric/edebug/method/1".into()),
+            Value::Symbol("cl-defgeneric/edebug/method/2 (number)".into()),
+            Value::Symbol("cl-defgeneric/edebug/method/2".into()),
+        ])
+    );
+}
+
+#[test]
 fn oclosure_lambda_lowers_to_plain_lambda() {
     assert_eq!(
         eval_str("(funcall (oclosure-lambda (sample-type) (x) x) 7)"),

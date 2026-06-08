@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1729/7080 are verified locally against the current canonical
+- Tests through 1733/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1729/7080: setf cl-getf places`.
-- The next observed frontier is selector 1731, `cl-defgeneric/edebug/method`
-  in `test/lisp/emacs-lisp/cl-generic-tests.el`; the file currently fails at
-  load time before discovering its selected tests.
+  `Compat 1733/7080: load cl-generic edebug`.
+- The next observed frontier is selector 1734, `cl-generic-test-02-struct`
+  in `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -104,6 +104,16 @@ counts as the progress denominator.
   `cl--set-getf` semantics for odd property lists. Exact replays run for this
   batch: selector `cl-getf`, full `cl-extra-tests.el`, and full
   `cl-generic-tests.el` to identify the next load-time frontier.
+- Selectors 1731..1733 in `test/lisp/emacs-lisp/cl-generic-tests.el` passed
+  after preloading standard Emacs Lisp mode keymaps needed by `edebug`, making
+  load-time advice on not-yet-defined targets a tolerated no-op, and notifying
+  Edebug definition hooks for `cl-defgeneric` inline `:method` forms. Exact
+  replays run for this batch: full `cl-generic-tests.el` to expose the load
+  blocker, selector `cl-defgeneric/edebug/method`, selector
+  `cl-generic-test-00`, selector `cl-generic-test-01-eql`, and exploratory
+  grouped replay for `cl-generic-test-01-eql` through
+  `cl-generic-test-05-alias`, which identified selector 1734 as the next
+  frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
