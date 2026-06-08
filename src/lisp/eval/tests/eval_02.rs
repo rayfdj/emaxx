@@ -73,6 +73,92 @@ fn cl_defstruct_honors_explicit_predicate_name() {
 }
 
 #[test]
+fn cl_getf_places_update_plists() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun cl-getf (plist tag &optional def)
+                 (let ((tail plist)
+                       found)
+                   (while (consp tail)
+                     (if (eq (car tail) tag)
+                         (setq found tail
+                               tail nil)
+                       (setq tail (cdr (cdr tail)))))
+                   (if (and found (consp (cdr found)))
+                       (car (cdr found))
+                     def)))
+               (let ((plist '(x 1 y)))
+                 (list
+                  (cl-incf (cl-getf plist 'x 10) 2)
+                  plist
+                  (cl-incf (cl-getf plist 'y 10) 4)
+                  plist)))"
+        ),
+        Value::list([
+            Value::Integer(3),
+            Value::list([
+                Value::Symbol("x".into()),
+                Value::Integer(3),
+                Value::Symbol("y".into()),
+            ]),
+            Value::Integer(14),
+            Value::list([
+                Value::Symbol("y".into()),
+                Value::Integer(14),
+                Value::Symbol("x".into()),
+                Value::Integer(3),
+                Value::Symbol("y".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn cl_getf_handles_malformed_plists_like_cl_extra() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun cl-getf (plist tag &optional def)
+                 (let ((tail plist)
+                       found)
+                   (while (consp tail)
+                     (if (eq (car tail) tag)
+                         (setq found tail
+                               tail nil)
+                       (setq tail (cdr (cdr tail)))))
+                   (if (and found (consp (cdr found)))
+                       (car (cdr found))
+                     def)))
+               (let ((plist '(x 1 y . 2)))
+                 (list
+                  (cl-getf plist 'x)
+                  (cl-incf (cl-getf plist 'x 10) 2)
+                  plist
+                  (condition-case err
+                      (cl-getf plist 'y :none)
+                    (wrong-type-argument (car err)))
+                  (condition-case err
+                      (cl-getf plist 'z :none)
+                    (wrong-type-argument (car err))))))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(3),
+            Value::cons(
+                Value::Symbol("x".into()),
+                Value::cons(
+                    Value::Integer(3),
+                    Value::cons(Value::Symbol("y".into()), Value::Integer(2)),
+                ),
+            ),
+            Value::Symbol(":none".into()),
+            Value::Symbol("wrong-type-argument".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_defstruct_constructor_respects_optional_marker() {
     assert_eq!(
         eval_str(
