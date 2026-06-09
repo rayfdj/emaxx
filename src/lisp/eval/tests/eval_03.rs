@@ -1246,6 +1246,100 @@ fn cl_defmethod_call_next_method_dispatches_to_previous_specializer() {
 }
 
 #[test]
+fn cl_defmethod_around_method_keeps_next_method_binding_distinct() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (cl-defstruct sample-next-parent a b)
+                   (cl-defstruct (sample-next-child (:include sample-next-parent)) c)
+                   (fmakunbound 'sample-next-generic)
+                   (cl-defgeneric sample-next-generic (x y))
+                   (cl-defmethod sample-next-generic ((x t) y)
+                     (cons x y))
+                   (cl-defmethod sample-next-generic ((_x sample-next-parent) y)
+                     (cons 'parent (cl-call-next-method 'a y)))
+                   (cl-defmethod sample-next-generic ((_x sample-next-child) _y)
+                     (cons 'child (cl-call-next-method)))
+                   (cl-defmethod sample-next-generic :around ((_x t) _y)
+                     (cons 'around (cl-call-next-method)))
+                   (cl-defstruct (sample-next-child11 (:include sample-next-child)) d)
+                   (cl-defmethod sample-next-generic :around ((_x sample-next-child11) _y)
+                     (cons 'child11 (cl-call-next-method)))
+                   (list
+                    (sample-next-generic (make-sample-next-child) nil)
+                    (sample-next-generic (make-sample-next-child11) nil)
+                    (progn
+                      (cl-defstruct (sample-next-child2 (:include sample-next-parent)) d)
+                      (cl-defmethod sample-next-generic ((_x sample-next-child2) _y)
+                        (cons 'child2 (cl-call-next-method)))
+                      (sample-next-generic (make-sample-next-child2) nil))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("around".into()),
+                Value::Symbol("child".into()),
+                Value::Symbol("parent".into()),
+                Value::Symbol("a".into()),
+            ]),
+            Value::list([
+                Value::Symbol("child11".into()),
+                Value::Symbol("around".into()),
+                Value::Symbol("child".into()),
+                Value::Symbol("parent".into()),
+                Value::Symbol("a".into()),
+            ]),
+            Value::list([
+                Value::Symbol("around".into()),
+                Value::Symbol("child2".into()),
+                Value::Symbol("parent".into()),
+                Value::Symbol("a".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn setf_generic_place_calls_setf_generic_after_place_args() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (fmakunbound 'sample-setf-generic)
+                   (cl-defgeneric sample-setf-generic (x y))
+                   (cl-defmethod (setf sample-setf-generic) (v (y t) z)
+                     (list v y z))
+                   (cl-defmethod (setf sample-setf-generic) (v (_y (eql 4)) z)
+                     (list v 'four z))
+                   (let ((x nil))
+                     (list
+                      (setf (sample-setf-generic 'a 'b) 'v)
+                      (setf (sample-setf-generic 4 'b) 'v)
+                      (setf (sample-setf-generic (progn (push 1 x) 'a)
+                                                 (progn (push 2 x) 'b))
+                            (progn (push 3 x) 'v))
+                      x)))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("v".into()),
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+            ]),
+            Value::list([
+                Value::Symbol("v".into()),
+                Value::Symbol("four".into()),
+                Value::Symbol("b".into()),
+            ]),
+            Value::list([
+                Value::Symbol("v".into()),
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+            ]),
+            Value::list([Value::Integer(3), Value::Integer(2), Value::Integer(1)]),
+        ])
+    );
+}
+
+#[test]
 fn defclass_returns_the_class_name() {
     assert_eq!(
         eval_str("(defclass sample-class nil nil)"),

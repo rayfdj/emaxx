@@ -346,6 +346,24 @@ impl Interpreter {
                 self.set_setf_place_value(&items[1], value.clone(), env)?;
                 Ok(value)
             }
+            Some(Value::Symbol(name)) => {
+                let setter_name = format!("(setf {name})");
+                let Ok(setter) = self.lookup_function(&setter_name, env) else {
+                    return Err(LispError::Signal(format!(
+                        "Unsupported setf place: {}",
+                        items[1]
+                    )));
+                };
+                let mut place_args = Vec::with_capacity(place.len().saturating_sub(1));
+                for arg in &place[1..] {
+                    place_args.push(self.eval(arg, env)?);
+                }
+                let value = self.eval(&items[2], env)?;
+                let mut args = Vec::with_capacity(place_args.len() + 1);
+                args.push(value);
+                args.extend(place_args);
+                self.call_function_value(setter, Some(&setter_name), &args, env)
+            }
             _ => Err(LispError::Signal(format!(
                 "Unsupported setf place: {}",
                 items[1]
@@ -1541,11 +1559,17 @@ impl Interpreter {
         let mut saw_constructor_option = false;
         let mut conc_name = format!("{name}-");
         let mut predicate_name = format!("{name}-p");
+        let mut parent_names = Vec::new();
         for option in options {
             let Some(parts) = option.to_vec().ok() else {
                 continue;
             };
             match parts.first() {
+                Some(Value::Symbol(keyword)) if keyword == ":include" => {
+                    if let Some(Value::Symbol(parent_name)) = parts.get(1) {
+                        parent_names.push(parent_name.clone());
+                    }
+                }
                 Some(Value::Symbol(keyword)) if keyword == ":constructor" => {
                     saw_constructor_option = true;
                     match parts.get(1) {
@@ -1607,6 +1631,12 @@ impl Interpreter {
             Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
 
         self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
+        self.register_class(
+            &name,
+            parent_names,
+            slot_names.iter().cloned().map(Value::Symbol).collect(),
+            Vec::new(),
+        );
 
         if !predicate_name.is_empty() {
             self.set_function_binding(
@@ -2290,6 +2320,28 @@ impl Interpreter {
             && previous != Value::BuiltinFunc("ignore".into())
         {
             let method_name = function_name_from_binding_form(&items[1])?;
+            let is_around_method = items[2..lambda_list_index]
+                .iter()
+                .any(|value| matches!(value, Value::Symbol(name) if name == ":around"));
+            let around_splice = if is_around_method {
+                None
+            } else {
+                let target_class = specializer.class_name();
+                let mut is_applicable = |around_class: &str| {
+                    around_class == "t"
+                        || target_class.is_some_and(|target_class| {
+                            around_class == target_class
+                                || self.class_allparents(target_class).iter().any(|parent| {
+                                    matches!(parent, Value::Symbol(parent) if parent == around_class)
+                                })
+                        })
+                };
+                cl_defmethod_around_previous_binding(&previous, &method_name, &mut is_applicable)
+            };
+            let dispatch_previous = around_splice
+                .as_ref()
+                .map(|(_, _, value)| value.clone())
+                .unwrap_or_else(|| previous.clone());
             let previous_specializers = self
                 .get_symbol_property(&method_name, "emaxx-cl-defmethod-specializers")
                 .and_then(|value| value.to_vec().ok())
@@ -2298,6 +2350,8 @@ impl Interpreter {
                 .iter()
                 .filter_map(|value| value.as_symbol().ok())
                 .filter(|previous_class| {
+                    !is_around_method
+                        &&
                     Some(*previous_class) != specializer.class_name()
                         && self
                             .class_allparents(previous_class)
@@ -2307,12 +2361,15 @@ impl Interpreter {
                 .map(str::to_string)
                 .collect::<Vec<_>>();
             let params = self.parse_params(&lowered_lambda_list)?;
+            let qualifier_key = cl_defmethod_qualifier_key(&items[2..lambda_list_index]);
             let previous_method_symbol = format!(
-                "__emaxx_previous_method_{}_{}",
+                "__emaxx_previous_method_{}_{}{}",
                 function_name_from_binding_form(&items[1])?.replace('-', "_"),
+                qualifier_key,
                 specializer.key().replace([':', '\'', ' ', '(', ')'], "_")
             );
-            let current_method_symbol = format!("{previous_method_symbol}_current");
+            let method_previous_symbol = format!("{previous_method_symbol}_method");
+            let current_method_symbol = format!("{method_previous_symbol}_current");
             let rest_param = lambda_list_rest_param(&lowered_lambda_list)?;
             let fixed_call_args = params
                 .iter()
@@ -2332,24 +2389,11 @@ impl Interpreter {
             } else {
                 Value::list(next_default_args)
             };
-            let next_method_body = Value::list([
-                Value::Symbol("apply".into()),
-                Value::Symbol(previous_method_symbol.clone()),
-                Value::list([
-                    Value::Symbol("if".into()),
-                    Value::Symbol("args".into()),
-                    Value::Symbol("args".into()),
-                    next_default_form,
-                ]),
-            ]);
-            let mut method_body = Vec::with_capacity(items.len() - lambda_list_index + 3);
-            method_body.push(Value::Symbol("cl-flet".into()));
-            method_body.push(Value::list([Value::list([
-                Value::Symbol("cl-call-next-method".into()),
-                Value::list([Value::Symbol("&rest".into()), Value::Symbol("args".into())]),
-                next_method_body,
-            ])]));
-            method_body.extend(normalized_method_forms.iter().cloned());
+            let method_body = rewrite_cl_call_next_method_forms(
+                &normalized_method_forms,
+                &method_previous_symbol,
+                &next_default_form,
+            )?;
             let wrapper_rest_param = "__emaxx-cl-defmethod-rest".to_string();
             let wrapper_params = cl_defmethod_dispatch_wrapper_params(
                 &lowered_lambda_list,
@@ -2369,6 +2413,14 @@ impl Interpreter {
                 Value::list(wrapper_arg_list),
                 Value::Symbol(wrapper_rest_param),
             ]);
+            let current_method = Value::Lambda(
+                params,
+                method_body,
+                shared_env(vec![vec![(
+                    method_previous_symbol.clone(),
+                    Self::stored_value(dispatch_previous.clone()),
+                )]]),
+            );
             let mut condition = specializer.condition();
             for previous_class in more_specific_previous {
                 condition = Value::list([
@@ -2401,20 +2453,28 @@ impl Interpreter {
                     forwarded_args,
                 ]),
             ])];
-            let method_closure = shared_env(vec![vec![(
-                previous_method_symbol.clone(),
-                Self::stored_value(previous.clone()),
-            )]]);
-            let current_method =
-                Value::Lambda(params, vec![Value::list(method_body)], method_closure);
             let closure = shared_env(vec![vec![
-                (previous_method_symbol, Self::stored_value(previous)),
+                (
+                    previous_method_symbol,
+                    Self::stored_value(dispatch_previous),
+                ),
                 (current_method_symbol, Self::stored_value(current_method)),
             ]]);
-            self.set_function_binding(
-                &method_name,
-                Some(Value::Lambda(wrapper_params, dispatch_body, closure)),
-            );
+            let wrapper = Value::Lambda(wrapper_params, dispatch_body, closure);
+            if let Some((around_env, around_previous_name, _)) = around_splice {
+                let mut around_env = around_env.borrow_mut();
+                for frame in around_env.iter_mut() {
+                    if let Some((_, value)) = frame
+                        .iter_mut()
+                        .find(|(name, _)| name == &around_previous_name)
+                    {
+                        *value = Self::stored_value(wrapper.clone());
+                        break;
+                    }
+                }
+            } else {
+                self.set_function_binding(&method_name, Some(wrapper));
+            }
             if let Some(class_name) = specializer.class_name() {
                 self.add_cl_defmethod_specializer(&method_name, class_name);
             }

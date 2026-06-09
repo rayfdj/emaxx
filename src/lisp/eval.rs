@@ -1930,6 +1930,12 @@ fn first_cl_defmethod_specializer(
                     kind: ClDefmethodSpecializerKind::Class(class_name.clone()),
                 }));
             }
+            Some(Value::T) => {
+                return Ok(Some(ClDefmethodSpecializer {
+                    variable: variable.clone(),
+                    kind: ClDefmethodSpecializerKind::Class("t".into()),
+                }));
+            }
             Some(Value::Cons(_, _)) => {
                 let specializer = parts[1].to_vec()?;
                 if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
@@ -1972,6 +1978,133 @@ fn cl_defgeneric_edebug_method_name(
         .map(|value| format!(" {value}"))
         .unwrap_or_default();
     Ok(Some(format!("{generic_name}{qualifier} ({class_name})")))
+}
+
+fn cl_defmethod_qualifier_key(qualifiers: &[Value]) -> String {
+    let parts = qualifiers
+        .iter()
+        .filter_map(|value| value.as_symbol().ok())
+        .map(|name| name.trim_start_matches(':'))
+        .map(|name| name.replace([':', '\'', ' ', '(', ')', '-'], "_"))
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("{}_", parts.join("_"))
+    }
+}
+
+fn cl_defmethod_around_previous_binding(
+    function: &Value,
+    method_name: &str,
+    is_applicable: &mut impl FnMut(&str) -> bool,
+) -> Option<(SharedEnv, String, Value)> {
+    let prefix = format!(
+        "__emaxx_previous_method_{}_around_",
+        method_name.replace('-', "_")
+    );
+    let Value::Lambda(_, _, closure_env) = function else {
+        return None;
+    };
+    for frame in closure_env.borrow().iter() {
+        for (name, value) in frame {
+            if name.starts_with(&prefix) {
+                let around_class_key = &name[prefix.len()..];
+                let around_class = around_class_key
+                    .strip_prefix("class_")
+                    .unwrap_or(around_class_key);
+                if is_applicable(around_class) {
+                    let method_previous_name = format!("{name}_method");
+                    let current_method_name = format!("{method_previous_name}_current");
+                    for frame in closure_env.borrow().iter() {
+                        for (candidate_name, candidate_value) in frame {
+                            if candidate_name != &current_method_name {
+                                continue;
+                            }
+                            let Value::Lambda(_, _, current_method_env) = candidate_value else {
+                                continue;
+                            };
+                            for current_method_frame in current_method_env.borrow().iter() {
+                                for (current_method_name, current_method_value) in
+                                    current_method_frame
+                                {
+                                    if current_method_name == &method_previous_name {
+                                        return Some((
+                                            current_method_env.clone(),
+                                            current_method_name.clone(),
+                                            current_method_value.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Some((closure_env.clone(), name.clone(), value.clone()));
+                }
+                if let Some(nested) =
+                    cl_defmethod_around_previous_binding(value, method_name, is_applicable)
+                {
+                    return Some(nested);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn rewrite_cl_call_next_method_forms(
+    forms: &[Value],
+    previous_method_symbol: &str,
+    default_args: &Value,
+) -> Result<Vec<Value>, LispError> {
+    forms
+        .iter()
+        .map(|form| rewrite_cl_call_next_method_form(form, previous_method_symbol, default_args))
+        .collect()
+}
+
+fn rewrite_cl_call_next_method_form(
+    form: &Value,
+    previous_method_symbol: &str,
+    default_args: &Value,
+) -> Result<Value, LispError> {
+    let Ok(items) = form.to_vec() else {
+        return Ok(form.clone());
+    };
+    let Some(Value::Symbol(head)) = items.first() else {
+        return items
+            .iter()
+            .map(|item| {
+                rewrite_cl_call_next_method_form(item, previous_method_symbol, default_args)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::list);
+    };
+    match head.as_str() {
+        "quote" | "function" => Ok(form.clone()),
+        "cl-call-next-method" => {
+            let args = if items.len() == 1 {
+                default_args.clone()
+            } else {
+                let mut list_form = Vec::with_capacity(items.len());
+                list_form.push(Value::Symbol("list".into()));
+                list_form.extend(items[1..].iter().cloned());
+                Value::list(list_form)
+            };
+            Ok(Value::list([
+                Value::Symbol("apply".into()),
+                Value::Symbol(previous_method_symbol.to_string()),
+                args,
+            ]))
+        }
+        _ => items
+            .iter()
+            .map(|item| {
+                rewrite_cl_call_next_method_form(item, previous_method_symbol, default_args)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::list),
+    }
 }
 
 fn substitute_symbol_macros(
