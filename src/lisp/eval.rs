@@ -2106,6 +2106,39 @@ fn cl_defmethod_previous_binding(
     cl_defmethod_previous_binding_inner(function, previous_method_symbol, &mut seen, &mut seen_cons)
 }
 
+fn cl_defmethod_first_previous_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
+    let mut seen = HashSet::new();
+    cl_defmethod_first_previous_binding_inner(function, &mut seen)
+}
+
+fn cl_defmethod_first_previous_binding_inner(
+    function: &Value,
+    seen_envs: &mut HashSet<usize>,
+) -> Option<(SharedEnv, String, Value)> {
+    let Value::Lambda(_, _, closure_env) = function else {
+        return None;
+    };
+    let env_id = closure_env.as_ptr() as usize;
+    if !seen_envs.insert(env_id) {
+        return None;
+    }
+    for frame in closure_env.borrow().iter() {
+        for (name, value) in frame {
+            if name.starts_with("__emaxx_") && name.contains("_method_") {
+                return Some((closure_env.clone(), name.clone(), value.clone()));
+            }
+        }
+    }
+    for frame in closure_env.borrow().iter() {
+        for (_, value) in frame {
+            if let Some(found) = cl_defmethod_first_previous_binding_inner(value, seen_envs) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 fn cl_defmethod_previous_binding_inner(
     function: &Value,
     previous_method_symbol: &str,

@@ -1405,6 +1405,37 @@ fn cl_defmethod_honors_argument_precedence_order() {
 }
 
 #[test]
+fn cl_defmethod_before_after_methods_wrap_primary_result() {
+    assert_eq!(
+        eval_str(
+            "(let ((log nil))
+               (fmakunbound 'sample-before-after-generic)
+               (cl-defgeneric sample-before-after-generic (x y))
+               (cl-defmethod sample-before-after-generic ((_x t) y)
+                 (cons y log))
+               (cl-defmethod sample-before-after-generic ((_x (eql 4)) _y)
+                 (cons 'four (cl-call-next-method)))
+               (cl-defmethod sample-before-after-generic :after (x _y)
+                 (push (list :after x) log))
+               (cl-defmethod sample-before-after-generic :before (x _y)
+                 (push (list :before x) log))
+               (list (sample-before-after-generic 4 6) log))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("four".into()),
+                Value::Integer(6),
+                Value::list([Value::Symbol(":before".into()), Value::Integer(4)]),
+            ]),
+            Value::list([
+                Value::list([Value::Symbol(":after".into()), Value::Integer(4)]),
+                Value::list([Value::Symbol(":before".into()), Value::Integer(4)]),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn cl_typep_recognizes_builtin_numeric_parent_types() {
     assert_eq!(
         eval_str("(list (cl-typep 1 'integer) (cl-typep 1 'number) (cl-typep 1.5 'number))"),

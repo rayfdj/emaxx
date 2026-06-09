@@ -19,13 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1739/7080 are verified locally against the current canonical
+- Tests through 1740/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1739/7080: honor generic argument precedence`.
-- The next observed frontier is selector 1740, `cl-generic-test-08-after/before` in
-  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
-  `ert-test-failed`.
+  `Compat 1740/7080: run before and after generic methods`.
+- The next observed frontier is selector 1741,
+  `cl-generic-test-09-call-next-method-error` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently hangs in the
+  exploratory replay.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -142,6 +143,14 @@ counts as the progress denominator.
   replays run for this batch: selector `cl-generic-test-07-apo`; exploratory
   selector `cl-generic-test-08-after/before`, which identified selector 1740
   as the next frontier.
+- Selector 1740, `cl-generic-test-08-after/before` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after installing
+  `cl-defmethod :before` and `:after` qualifiers as generic wrappers that run
+  side effects around the primary method result while preserving live lexical
+  frames shared with primary dispatch. Exact replays run for this batch:
+  selector `cl-generic-test-08-after/before`; exploratory selector
+  `cl-generic-test-09-call-next-method-error`, which currently hangs and
+  identifies selector 1741 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
