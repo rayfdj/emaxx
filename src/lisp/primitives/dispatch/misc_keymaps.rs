@@ -5559,6 +5559,11 @@ fn cl_typep_matches(
                 .class_name_from_value(value)
                 .is_some_and(|name| interp.class_value(&name).is_some()))
         || target == actual
+        || (is_builtin_class_name(target)
+            && interp
+                .class_allparents(actual)
+                .iter()
+                .any(|parent| matches!(parent, Value::Symbol(parent) if parent == target)))
         || (!is_builtin_class_name(target) && interp.value_is_instance_of_class(value, target))
         || (target == "function"
             && matches!(

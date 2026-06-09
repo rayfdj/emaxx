@@ -1901,6 +1901,18 @@ impl ClDefmethodSpecializer {
             ClDefmethodSpecializerKind::Eql(_) => None,
         }
     }
+
+    fn metadata_value(&self) -> Value {
+        match &self.kind {
+            ClDefmethodSpecializerKind::Class(class_name) => Value::list([
+                Value::Symbol("class".into()),
+                Value::Symbol(class_name.clone()),
+            ]),
+            ClDefmethodSpecializerKind::Eql(value) => {
+                Value::list([Value::Symbol("eql".into()), value.clone()])
+            }
+        }
+    }
 }
 
 fn first_cl_defmethod_specializer(
@@ -2050,6 +2062,72 @@ fn cl_defmethod_around_previous_binding(
         }
     }
     None
+}
+
+fn cl_defmethod_previous_binding(
+    function: &Value,
+    previous_method_symbol: &str,
+) -> Option<(SharedEnv, String, Value)> {
+    let mut seen = HashSet::new();
+    let mut seen_cons = HashSet::new();
+    cl_defmethod_previous_binding_inner(function, previous_method_symbol, &mut seen, &mut seen_cons)
+}
+
+fn cl_defmethod_previous_binding_inner(
+    function: &Value,
+    previous_method_symbol: &str,
+    seen_envs: &mut HashSet<usize>,
+    seen_cons: &mut HashSet<usize>,
+) -> Option<(SharedEnv, String, Value)> {
+    match function {
+        Value::Lambda(_, _, closure_env) => {
+            let env_id = closure_env.as_ptr() as usize;
+            if !seen_envs.insert(env_id) {
+                return None;
+            }
+            for frame in closure_env.borrow().iter() {
+                for (name, value) in frame {
+                    if name == previous_method_symbol {
+                        return Some((closure_env.clone(), name.clone(), value.clone()));
+                    }
+                }
+            }
+            for frame in closure_env.borrow().iter() {
+                for (_, value) in frame {
+                    if let Some(found) = cl_defmethod_previous_binding_inner(
+                        value,
+                        previous_method_symbol,
+                        seen_envs,
+                        seen_cons,
+                    ) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        Value::Cons(car, cdr) => {
+            let cons_id = car.as_ptr() as usize;
+            if !seen_cons.insert(cons_id) {
+                return None;
+            }
+            cl_defmethod_previous_binding_inner(
+                &car.borrow(),
+                previous_method_symbol,
+                seen_envs,
+                seen_cons,
+            )
+            .or_else(|| {
+                cl_defmethod_previous_binding_inner(
+                    &cdr.borrow(),
+                    previous_method_symbol,
+                    seen_envs,
+                    seen_cons,
+                )
+            })
+        }
+        _ => None,
+    }
 }
 
 fn rewrite_cl_call_next_method_forms(
