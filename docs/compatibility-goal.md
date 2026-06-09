@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1745/7080 are verified locally against the current canonical
+- Tests through 1746/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1745/7080: dispatch head specializers`.
-- The next observed frontier is selector 1746,
-  `cl-generic-test-14-advice-docstring` in
-  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently hangs during
-  exploratory replay.
+  `Compat 1746/7080: record generic calling conventions`.
+- The next observed frontier is selector 1747,
+  `cl-generic-tests--method-files--finds-methods` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -190,8 +190,17 @@ counts as the progress denominator.
   checking them as guarded `consp`/`car` equality conditions so non-list
   arguments fall through to broader methods. Exact replays run for this batch:
   selector `cl-generic-test-13-head`; exploratory selector
-  `cl-generic-test-14-advice-docstring`, which identified selector 1746 as the
-  next frontier by hanging during replay.
+  `cl-generic-tests--advertised-calling-convention-bug58563`, which identified
+  selector 1746 as the next frontier.
+- Selector 1746, `cl-generic-tests--advertised-calling-convention-bug58563` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after recording
+  `advertised-calling-convention` declarations on `cl-defgeneric` symbols and
+  making the byte-compiler report method-body `declare` forms as stray, so
+  `byte-compile-error-on-warn` raises the expected warning error. Exact replays
+  run for this batch: selector
+  `cl-generic-tests--advertised-calling-convention-bug58563`; exploratory
+  selector `cl-generic-tests--method-files--finds-methods`, which identified
+  selector 1747 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

@@ -1837,6 +1837,35 @@ fn cl_defmethod_dispatches_head_specializers() {
 }
 
 #[test]
+fn cl_defgeneric_records_advertised_calling_convention() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (fmakunbound 'sample-acc-generic)
+                  (cl-defgeneric sample-acc-generic (x &optional y)
+                    (declare (advertised-calling-convention (x) "671.2")))
+                  (cl-defmethod sample-acc-generic ((x float)) (+ x 5.0))
+                  (list
+                   (get-advertised-calling-convention
+                    (indirect-function 'sample-acc-generic))
+                   (condition-case err
+                       (let ((byte-compile-error-on-warn t))
+                         (byte-compile
+                          '(cl-defmethod sample-acc-generic ((x list))
+                             (declare (advertised-calling-convention (y) "1.1"))
+                             (cons x '(5 5 5 5 5))))
+                         nil)
+                     (error
+                      (and (eq 'error (car err))
+                           (string-match "Stray.*declare" (cadr err)))))))
+                "#
+        ),
+        Value::list([Value::list([Value::Symbol("x".into())]), Value::Integer(0)])
+    );
+}
+
+#[test]
 fn bindat_pack_val_round_trips_integer_representation() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
