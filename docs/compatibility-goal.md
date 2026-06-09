@@ -19,13 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1733/7080 are verified locally against the current canonical
+- Tests through 1735/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1733/7080: load cl-generic edebug`.
-- The next observed frontier is selector 1734, `cl-generic-test-02-struct`
-  in `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
-  `void-variable`.
+  `Compat 1735/7080: struct and setf generics`.
+- The next observed frontier is selector 1736,
+  `cl-generic-test-04-overlapping-tagcodes` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
+  `ert-test-failed`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -114,6 +115,15 @@ counts as the progress denominator.
   grouped replay for `cl-generic-test-01-eql` through
   `cl-generic-test-05-alias`, which identified selector 1734 as the next
   frontier.
+- Selectors 1734..1735 in `test/lisp/emacs-lisp/cl-generic-tests.el` passed
+  after registering `cl-defstruct :include` parentage for class dispatch,
+  rewriting `cl-call-next-method` forms against explicit captured previous
+  methods so nested `:around` wrappers stay distinct, and dispatching
+  generalized `(setf (generic ...))` places through `(setf generic)` after
+  evaluating place subforms. Exact replays run for this batch: selector
+  `cl-generic-test-02-struct`, selector `cl-generic-test-03-setf`, and
+  exploratory selector `cl-generic-test-04-overlapping-tagcodes`, which
+  identified selector 1736 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
