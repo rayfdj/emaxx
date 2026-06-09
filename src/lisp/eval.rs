@@ -2222,7 +2222,26 @@ fn rewrite_cl_call_next_method_forms(
 ) -> Result<Vec<Value>, LispError> {
     forms
         .iter()
-        .map(|form| rewrite_cl_call_next_method_form(form, previous_method_symbol, default_args))
+        .map(|form| {
+            rewrite_cl_call_next_method_form(form, previous_method_symbol, default_args, &Value::T)
+        })
+        .collect()
+}
+
+fn rewrite_cl_next_method_p_forms(
+    forms: &[Value],
+    next_method_p: Value,
+) -> Result<Vec<Value>, LispError> {
+    forms
+        .iter()
+        .map(|form| {
+            rewrite_cl_call_next_method_form(
+                form,
+                "__emaxx-cl-defmethod-no-next-method",
+                &Value::Nil,
+                &next_method_p,
+            )
+        })
         .collect()
 }
 
@@ -2230,6 +2249,7 @@ fn rewrite_cl_call_next_method_form(
     form: &Value,
     previous_method_symbol: &str,
     default_args: &Value,
+    next_method_p: &Value,
 ) -> Result<Value, LispError> {
     let Ok(items) = form.to_vec() else {
         return Ok(form.clone());
@@ -2238,13 +2258,19 @@ fn rewrite_cl_call_next_method_form(
         return items
             .iter()
             .map(|item| {
-                rewrite_cl_call_next_method_form(item, previous_method_symbol, default_args)
+                rewrite_cl_call_next_method_form(
+                    item,
+                    previous_method_symbol,
+                    default_args,
+                    next_method_p,
+                )
             })
             .collect::<Result<Vec<_>, _>>()
             .map(Value::list);
     };
     match head.as_str() {
         "quote" | "function" => Ok(form.clone()),
+        "cl-next-method-p" if items.len() == 1 => Ok(next_method_p.clone()),
         "cl-call-next-method" => {
             let args = if items.len() == 1 {
                 default_args.clone()
@@ -2263,7 +2289,12 @@ fn rewrite_cl_call_next_method_form(
         _ => items
             .iter()
             .map(|item| {
-                rewrite_cl_call_next_method_form(item, previous_method_symbol, default_args)
+                rewrite_cl_call_next_method_form(
+                    item,
+                    previous_method_symbol,
+                    default_args,
+                    next_method_p,
+                )
             })
             .collect::<Result<Vec<_>, _>>()
             .map(Value::list),
