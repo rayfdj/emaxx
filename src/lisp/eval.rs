@@ -2097,6 +2097,20 @@ fn cl_defmethod_around_previous_binding(
     None
 }
 
+fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
+    let Value::Lambda(_, _, closure_env) = function else {
+        return None;
+    };
+    for frame in closure_env.borrow().iter() {
+        for (name, value) in frame {
+            if name == "__emaxx-advice-around-original" || name == "__emaxx-advice-after-original" {
+                return Some((closure_env.clone(), name.clone(), value.clone()));
+            }
+        }
+    }
+    None
+}
+
 fn cl_defmethod_previous_binding(
     function: &Value,
     previous_method_symbol: &str,

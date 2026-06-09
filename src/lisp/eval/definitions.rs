@@ -2782,6 +2782,11 @@ impl Interpreter {
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
             && previous != Value::BuiltinFunc("ignore".into())
         {
+            let advice_original = cl_defmethod_advice_original_binding(&previous);
+            let dispatch_root = advice_original
+                .as_ref()
+                .map(|(_, _, value)| value.clone())
+                .unwrap_or_else(|| previous.clone());
             let is_around_method = items[2..lambda_list_index]
                 .iter()
                 .any(|value| matches!(value, Value::Symbol(name) if name == ":around"));
@@ -2798,7 +2803,11 @@ impl Interpreter {
                                 })
                         })
                 };
-                cl_defmethod_around_previous_binding(&previous, &method_name, &mut is_applicable)
+                cl_defmethod_around_previous_binding(
+                    &dispatch_root,
+                    &method_name,
+                    &mut is_applicable,
+                )
             };
             let previous_specializers = self
                 .get_symbol_property(&method_name, "emaxx-cl-defmethod-specializers")
@@ -2874,7 +2883,7 @@ impl Interpreter {
                             qualifier_key,
                             previous_specializer.hidden_key()
                         );
-                        cl_defmethod_previous_binding(&previous, &previous_method_symbol)
+                        cl_defmethod_previous_binding(&dispatch_root, &previous_method_symbol)
                     })
                     .collect::<Vec<_>>()
             };
@@ -2882,7 +2891,7 @@ impl Interpreter {
                 .as_ref()
                 .map(|(_, _, value)| value.clone())
                 .or_else(|| specific_splices.first().map(|(_, _, value)| value.clone()))
-                .unwrap_or_else(|| previous.clone());
+                .unwrap_or_else(|| dispatch_root.clone());
             let method_rest_param = lambda_list_rest_param_from_params(&params);
             let generic_rest_param = lambda_list_rest_param_from_params(&generic_params);
             let method_fixed_params = lambda_list_fixed_params(&params);
@@ -3043,7 +3052,22 @@ impl Interpreter {
                         }
                     }
                 }
-                self.set_function_binding(&method_name, Some(top_wrapper));
+                if let Some((advice_env, advice_original_name, _)) = advice_original {
+                    let mut advice_env = advice_env.borrow_mut();
+                    for frame in advice_env.iter_mut() {
+                        if let Some((_, value)) = frame
+                            .iter_mut()
+                            .find(|(name, _)| name == &advice_original_name)
+                        {
+                            *value = Self::stored_value(top_wrapper.clone());
+                            break;
+                        }
+                    }
+                    drop(advice_env);
+                    self.replace_next_function_binding(&method_name, top_wrapper);
+                } else {
+                    self.set_function_binding(&method_name, Some(top_wrapper));
+                }
             }
             self.add_cl_defmethod_specializer(
                 &method_name,

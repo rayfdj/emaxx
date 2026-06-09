@@ -1350,8 +1350,25 @@ pub(super) fn call(
             treesit_linecol_at(interp, pos)
         }
         "apply" => {
-            if args.len() < 2 {
+            if args.is_empty() {
                 return Err(LispError::WrongNumberOfArgs("apply".into(), args.len()));
+            }
+            if args.len() == 1 {
+                let expanded_args = args[0].to_vec()?;
+                if expanded_args.len() < 2 {
+                    return Err(LispError::WrongNumberOfArgs(
+                        "apply".into(),
+                        expanded_args.len(),
+                    ));
+                }
+                let resolved = resolve_callable(interp, &expanded_args[0], env)?;
+                let original_name = expanded_args[0].as_symbol().ok();
+                return interp.call_function_value(
+                    resolved,
+                    original_name,
+                    &expanded_args[1..],
+                    env,
+                );
             }
             let func = &args[0];
             let last = &args[args.len() - 1];
