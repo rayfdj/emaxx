@@ -3130,7 +3130,16 @@ impl Interpreter {
             );
             return Ok(items[1].clone());
         }
-        let result = self.sf_cl_defun(&lowered, env);
+        let result = if method_specializers.is_empty() {
+            self.sf_cl_defun(&lowered, env)
+        } else {
+            let mut direct_lowered = lowered[..3].to_vec();
+            direct_lowered.extend(rewrite_cl_next_method_p_forms(
+                &normalized_method_forms,
+                Value::Nil,
+            )?);
+            self.sf_cl_defun(&direct_lowered, env)
+        };
         if !method_specializers.is_empty() {
             let params = self.parse_params(&lowered_lambda_list)?;
             let generic_lambda_list = self

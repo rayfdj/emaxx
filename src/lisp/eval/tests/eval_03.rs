@@ -1742,6 +1742,36 @@ fn cl_defmethod_specializes_extra_fixed_arg_from_generic_rest() {
 }
 
 #[test]
+fn cl_defmethod_rewrites_next_method_p() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (fmakunbound 'sample-next-p-generic)
+                  (cl-defgeneric sample-next-p-generic (x y))
+                  (cl-defmethod sample-next-p-generic ((x t) y)
+                    (list x y
+                          (with-suppressed-warnings ((obsolete cl-next-method-p))
+                            (cl-next-method-p))))
+                  (cl-defmethod sample-next-p-generic ((_x (eql 4)) _y)
+                    (cons 'four
+                          (cons (with-suppressed-warnings ((obsolete cl-next-method-p))
+                                  (cl-next-method-p))
+                                (cl-call-next-method))))
+                  (sample-next-p-generic 4 5))
+                "#
+        ),
+        Value::list([
+            Value::Symbol("four".into()),
+            Value::T,
+            Value::Integer(4),
+            Value::Integer(5),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn bindat_pack_val_round_trips_integer_representation() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
