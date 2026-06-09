@@ -4,6 +4,7 @@ use super::*;
 enum ClDefmethodStoredSpecializer {
     Class(String),
     Eql(Value),
+    Head(Value),
 }
 
 fn cl_defmethod_argument_key(name: &str) -> &str {
@@ -190,6 +191,9 @@ impl ClDefmethodStoredSpecializer {
                 [Value::Symbol(kind), eql_value] if kind == "eql" => {
                     return Some(Self::Eql(eql_value.clone()));
                 }
+                [Value::Symbol(kind), head_value] if kind == "head" => {
+                    return Some(Self::Head(head_value.clone()));
+                }
                 _ => {}
             }
         }
@@ -203,6 +207,7 @@ impl ClDefmethodStoredSpecializer {
         match self {
             Self::Class(class_name) => format!("class:{class_name}"),
             Self::Eql(value) => format!("eql:{value}"),
+            Self::Head(value) => format!("head:{value}"),
         }
     }
 
@@ -217,6 +222,15 @@ impl ClDefmethodStoredSpecializer {
                 Value::Symbol(class_name.clone()),
             ]),
             Self::Eql(value) => Value::list([Value::Symbol("eql".into()), value.clone()]),
+            Self::Head(value) => Value::list([Value::Symbol("head".into()), value.clone()]),
+        }
+    }
+
+    fn quoted_or_self_evaluating(value: &Value) -> Value {
+        if matches!(value, Value::Symbol(_) | Value::Nil | Value::T) {
+            Value::list([Value::Symbol("quote".into()), value.clone()])
+        } else {
+            value.clone()
         }
     }
 
@@ -234,11 +248,16 @@ impl ClDefmethodStoredSpecializer {
             Self::Eql(expected) => Value::list([
                 Value::Symbol("eql".into()),
                 runtime_value,
-                if matches!(expected, Value::Symbol(_) | Value::Nil | Value::T) {
-                    Value::list([Value::Symbol("quote".into()), expected.clone()])
-                } else {
-                    expected.clone()
-                },
+                Self::quoted_or_self_evaluating(expected),
+            ]),
+            Self::Head(expected) => Value::list([
+                Value::Symbol("and".into()),
+                Value::list([Value::Symbol("consp".into()), runtime_value.clone()]),
+                Value::list([
+                    Value::Symbol("eql".into()),
+                    Value::list([Value::Symbol("car".into()), runtime_value]),
+                    Self::quoted_or_self_evaluating(expected),
+                ]),
             ]),
         }
     }
@@ -262,6 +281,7 @@ impl ClDefmethodStoredSpecializer {
                         |parent| matches!(parent, Value::Symbol(parent) if parent == class_name),
                     )
             }
+            (Self::Head(_), Self::Class(class_name)) => class_name == "t",
             _ => false,
         }
     }

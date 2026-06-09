@@ -1907,6 +1907,7 @@ fn cl_defmethod_dispatch_stop_variable(
 enum ClDefmethodSpecializerKind {
     Class(String),
     Eql(Value),
+    Head(Value),
 }
 
 #[derive(Clone)]
@@ -1921,13 +1922,14 @@ impl ClDefmethodSpecializer {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => format!("class:{class_name}"),
             ClDefmethodSpecializerKind::Eql(value) => format!("eql:{value}"),
+            ClDefmethodSpecializerKind::Head(value) => format!("head:{value}"),
         }
     }
 
     fn class_name(&self) -> Option<&str> {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => Some(class_name),
-            ClDefmethodSpecializerKind::Eql(_) => None,
+            ClDefmethodSpecializerKind::Eql(_) | ClDefmethodSpecializerKind::Head(_) => None,
         }
     }
 
@@ -1939,6 +1941,9 @@ impl ClDefmethodSpecializer {
             ]),
             ClDefmethodSpecializerKind::Eql(value) => {
                 Value::list([Value::Symbol("eql".into()), value.clone()])
+            }
+            ClDefmethodSpecializerKind::Head(value) => {
+                Value::list([Value::Symbol("head".into()), value.clone()])
             }
         }
     }
@@ -1996,6 +2001,14 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
                     specializers.push(ClDefmethodSpecializer {
                         variable: variable.clone(),
                         kind: ClDefmethodSpecializerKind::Eql(value.clone()),
+                        is_context: next_is_context,
+                    });
+                } else if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "head")
+                    && let Some(value) = specializer.get(1)
+                {
+                    specializers.push(ClDefmethodSpecializer {
+                        variable: variable.clone(),
+                        kind: ClDefmethodSpecializerKind::Head(value.clone()),
                         is_context: next_is_context,
                     });
                 }
