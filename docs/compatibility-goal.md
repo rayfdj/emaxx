@@ -19,11 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1741/7080 are verified locally against the current canonical
+- Tests through 1742/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1741/7080: preserve generic advice wrappers`.
-- The next observed frontier is selector 1742, `cl-generic-test-10-weird` in
+  `Compat 1742/7080: dispatch generic rest specializers`.
+- The next observed frontier is selector 1743,
+  `cl-generic-test-11-next-method-p` in
   `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
   `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
@@ -158,6 +159,14 @@ counts as the progress denominator.
   Exact replays run for this batch: selector `cl-generic-test-09-advice`;
   exploratory selector `cl-generic-test-10-weird`, which identified selector
   1742 as the next frontier.
+- Selector 1742, `cl-generic-test-10-weird` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after making generic
+  dispatch evaluate method specializers on extra fixed arguments from the
+  generic rest list and avoiding duplicate rest parameters in generated
+  dispatch wrappers. Exact replays run for this batch: selector
+  `cl-generic-test-10-weird`; exploratory selector
+  `cl-generic-test-11-next-method-p`, which identified selector 1743 as the
+  next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

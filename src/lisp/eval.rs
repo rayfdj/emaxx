@@ -1859,14 +1859,19 @@ fn cl_defmethod_dispatch_wrapper_params(
     rest_param: &str,
 ) -> Result<Vec<String>, LispError> {
     let mut params = Vec::new();
+    let mut previous_was_rest_keyword = false;
     for item in spec.to_vec()? {
         let name = item.as_symbol()?.to_string();
         params.push(name.clone());
         if name == specializer_variable {
+            if previous_was_rest_keyword {
+                return Ok(params);
+            }
             params.push("&rest".into());
             params.push(rest_param.into());
             return Ok(params);
         }
+        previous_was_rest_keyword = name == "&rest" || name == "&body";
     }
     Err(LispError::Signal(
         "cl-defmethod dispatch lost specializer variable".into(),

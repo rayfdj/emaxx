@@ -23,28 +23,89 @@ fn cl_defmethod_dispatch_specializers(
     method_params: &[String],
     generic_params: &[String],
 ) -> Vec<ClDefmethodSpecializer> {
-    let method_argument_variables = method_params
-        .iter()
-        .filter(|param| !is_lambda_list_keyword(param))
-        .collect::<Vec<_>>();
-    let generic_argument_variables = generic_params
-        .iter()
-        .filter(|param| !is_lambda_list_keyword(param))
-        .collect::<Vec<_>>();
+    let method_argument_variables = lambda_list_fixed_params(method_params);
+    let generic_argument_variables = lambda_list_fixed_params(generic_params);
     method_specializers
         .iter()
         .map(|specializer| {
             let mut dispatch_specializer = specializer.clone();
             if let Some(position) = method_argument_variables
                 .iter()
-                .position(|variable| variable == &&specializer.variable)
+                .position(|variable| variable == &specializer.variable)
                 && let Some(generic_variable) = generic_argument_variables.get(position)
             {
-                dispatch_specializer.variable = (*generic_variable).clone();
+                dispatch_specializer.variable = generic_variable.clone();
             }
             dispatch_specializer
         })
         .collect()
+}
+
+fn cl_defmethod_runtime_variables(
+    method_params: &[String],
+    generic_params: &[String],
+) -> Vec<(String, String, Value)> {
+    let method_fixed_params = lambda_list_fixed_params(method_params);
+    let generic_fixed_params = lambda_list_fixed_params(generic_params);
+    let method_rest_param = lambda_list_rest_param_from_params(method_params);
+    let generic_rest_param = lambda_list_rest_param_from_params(generic_params);
+    let mut runtime_variables = generic_fixed_params
+        .iter()
+        .map(|param| {
+            (
+                param.clone(),
+                cl_defmethod_argument_key(param).to_string(),
+                Value::Symbol(param.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+    if let Some(rest_param) = &generic_rest_param {
+        runtime_variables.push((
+            rest_param.clone(),
+            cl_defmethod_argument_key(rest_param).to_string(),
+            Value::Symbol(rest_param.clone()),
+        ));
+    }
+    for (index, param) in method_fixed_params.iter().enumerate() {
+        let source = if let Some(generic) = generic_fixed_params.get(index) {
+            Value::Symbol(generic.clone())
+        } else if let Some(generic_rest_param) = &generic_rest_param {
+            Value::list([
+                Value::Symbol("nth".into()),
+                Value::Integer((index - generic_fixed_params.len()) as i64),
+                Value::Symbol(generic_rest_param.clone()),
+            ])
+        } else {
+            continue;
+        };
+        runtime_variables.push((
+            param.clone(),
+            cl_defmethod_argument_key(param).to_string(),
+            source,
+        ));
+    }
+    if let (Some(method_rest_param), Some(generic_rest_param)) =
+        (&method_rest_param, &generic_rest_param)
+    {
+        let rest_offset = method_fixed_params
+            .len()
+            .saturating_sub(generic_fixed_params.len());
+        let source = if rest_offset == 0 {
+            Value::Symbol(generic_rest_param.clone())
+        } else {
+            Value::list([
+                Value::Symbol("nthcdr".into()),
+                Value::Integer(rest_offset as i64),
+                Value::Symbol(generic_rest_param.clone()),
+            ])
+        };
+        runtime_variables.push((
+            method_rest_param.clone(),
+            cl_defmethod_argument_key(method_rest_param).to_string(),
+            source,
+        ));
+    }
+    runtime_variables
 }
 
 fn cl_defmethod_alias_method_body(
@@ -144,21 +205,19 @@ impl ClDefmethodStoredSpecializer {
         }
     }
 
-    fn condition(&self, variable: &str) -> Value {
+    fn condition_value(&self, runtime_value: Value) -> Value {
         match self {
             Self::Class(class_name) => Value::list([
                 Value::Symbol("cl-typep".into()),
-                Value::Symbol(variable.to_string()),
+                runtime_value,
                 Value::list([
                     Value::Symbol("quote".into()),
                     Value::Symbol(class_name.clone()),
                 ]),
             ]),
-            Self::Eql(value) => Value::list([
-                Value::Symbol("eql".into()),
-                Value::Symbol(variable.to_string()),
-                value.clone(),
-            ]),
+            Self::Eql(expected) => {
+                Value::list([Value::Symbol("eql".into()), runtime_value, expected.clone()])
+            }
         }
     }
 
@@ -248,7 +307,7 @@ impl ClDefmethodStoredMethod {
             .replace([':', '\'', ' ', '(', ')'], "_")
     }
 
-    fn condition(&self, runtime_variables: &[(String, String)]) -> Value {
+    fn condition(&self, runtime_variables: &[(String, String, Value)]) -> Value {
         let mut conditions = self
             .specializers
             .iter()
@@ -257,10 +316,10 @@ impl ClDefmethodStoredMethod {
                 let runtime_variable =
                     runtime_variables
                         .iter()
-                        .find_map(|(runtime, runtime_key)| {
-                            (runtime == variable || runtime_key == key).then_some(runtime.as_str())
+                        .find_map(|(runtime, runtime_key, value)| {
+                            (runtime == variable || runtime_key == key).then_some(value.clone())
                         })?;
-                Some(specializer.condition(runtime_variable))
+                Some(specializer.condition_value(runtime_variable))
             });
         let Some(first) = conditions.next() else {
             return Value::T;
@@ -2673,11 +2732,8 @@ impl Interpreter {
                 cl_defmethod_dispatch_specializers(&method_specializers, &params, &generic_params);
             let current_stored_specializer =
                 ClDefmethodStoredMethod::from_specializers(&dispatch_method_specializers);
-            let generic_runtime_variables = generic_params
-                .iter()
-                .filter(|param| !is_lambda_list_keyword(param))
-                .map(|param| (param.clone(), cl_defmethod_argument_key(param).to_string()))
-                .collect::<Vec<_>>();
+            let generic_runtime_variables =
+                cl_defmethod_runtime_variables(&params, &generic_params);
             let condition = current_stored_specializer.condition(&generic_runtime_variables);
             let method_rest_param = lambda_list_rest_param_from_params(&params);
             let generic_rest_param = lambda_list_rest_param_from_params(&generic_params);
@@ -2857,11 +2913,8 @@ impl Interpreter {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let generic_runtime_variables = generic_params
-                .iter()
-                .filter(|param| !is_lambda_list_keyword(param))
-                .map(|param| (param.clone(), cl_defmethod_argument_key(param).to_string()))
-                .collect::<Vec<_>>();
+            let generic_runtime_variables =
+                cl_defmethod_runtime_variables(&params, &generic_params);
             let qualifier_key = cl_defmethod_qualifier_key(&items[2..lambda_list_index]);
             let previous_method_symbol = format!(
                 "__emaxx_previous_method_{}_{}{}",
@@ -2947,6 +3000,8 @@ impl Interpreter {
                 )?,
                 &wrapper_rest_param,
             )?;
+            let wrapper_forward_rest_param =
+                lambda_list_rest_param_from_params(&wrapper_params).unwrap_or(wrapper_rest_param);
             let wrapper_fixed_args = wrapper_params
                 .iter()
                 .take_while(|param| param.as_str() != "&rest")
@@ -2958,7 +3013,7 @@ impl Interpreter {
             let forwarded_args = Value::list([
                 Value::Symbol("append".into()),
                 Value::list(wrapper_arg_list),
-                Value::Symbol(wrapper_rest_param),
+                Value::Symbol(wrapper_forward_rest_param),
             ]);
             let method_next = dispatch_previous.clone();
             let current_method_env = std::iter::once(vec![(
