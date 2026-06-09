@@ -1378,6 +1378,33 @@ fn cl_defmethod_orders_overlapping_numeric_specializers() {
 }
 
 #[test]
+fn cl_defmethod_honors_argument_precedence_order() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (fmakunbound 'sample-apo-generic)
+                   (cl-defgeneric sample-apo-generic (x y)
+                     (:argument-precedence-order y x))
+                   (cl-defmethod sample-apo-generic (x y) (list x y))
+                   (cl-defmethod sample-apo-generic (_x (_y integer))
+                     (cons 'y-int (cl-call-next-method)))
+                   (cl-defmethod sample-apo-generic ((_x integer) _y)
+                     (cons 'x-int (cl-call-next-method)))
+                   (cl-defmethod sample-apo-generic ((_x integer) (_y integer))
+                     (cons 'both (cl-call-next-method)))
+                   (sample-apo-generic 1 2))"
+        ),
+        Value::list([
+            Value::Symbol("both".into()),
+            Value::Symbol("y-int".into()),
+            Value::Symbol("x-int".into()),
+            Value::Integer(1),
+            Value::Integer(2),
+        ])
+    );
+}
+
+#[test]
 fn cl_typep_recognizes_builtin_numeric_parent_types() {
     assert_eq!(
         eval_str("(list (cl-typep 1 'integer) (cl-typep 1 'number) (cl-typep 1.5 'number))"),

@@ -6,6 +6,47 @@ enum ClDefmethodStoredSpecializer {
     Eql(Value),
 }
 
+fn cl_defmethod_argument_key(name: &str) -> &str {
+    name.trim_start_matches('_')
+}
+
+fn cl_defmethod_argument_precedence_index(variable: &str, precedence_order: &[String]) -> usize {
+    let key = cl_defmethod_argument_key(variable);
+    precedence_order
+        .iter()
+        .position(|candidate| candidate == variable || candidate == key)
+        .unwrap_or(usize::MAX)
+}
+
+fn cl_defmethod_dispatch_specializers(
+    method_specializers: &[ClDefmethodSpecializer],
+    method_params: &[String],
+    generic_params: &[String],
+) -> Vec<ClDefmethodSpecializer> {
+    let method_argument_variables = method_params
+        .iter()
+        .filter(|param| !is_lambda_list_keyword(param))
+        .collect::<Vec<_>>();
+    let generic_argument_variables = generic_params
+        .iter()
+        .filter(|param| !is_lambda_list_keyword(param))
+        .collect::<Vec<_>>();
+    method_specializers
+        .iter()
+        .map(|specializer| {
+            let mut dispatch_specializer = specializer.clone();
+            if let Some(position) = method_argument_variables
+                .iter()
+                .position(|variable| variable == &&specializer.variable)
+                && let Some(generic_variable) = generic_argument_variables.get(position)
+            {
+                dispatch_specializer.variable = (*generic_variable).clone();
+            }
+            dispatch_specializer
+        })
+        .collect()
+}
+
 impl ClDefmethodStoredSpecializer {
     fn parse(value: &Value) -> Option<Self> {
         if let Ok(name) = value.as_symbol() {
@@ -30,6 +71,16 @@ impl ClDefmethodStoredSpecializer {
 
     fn hidden_key(&self) -> String {
         self.key().replace([':', '\'', ' ', '(', ')'], "_")
+    }
+
+    fn metadata_value(&self) -> Value {
+        match self {
+            Self::Class(class_name) => Value::list([
+                Value::Symbol("class".into()),
+                Value::Symbol(class_name.clone()),
+            ]),
+            Self::Eql(value) => Value::list([Value::Symbol("eql".into()), value.clone()]),
+        }
     }
 
     fn condition(&self, variable: &str) -> Value {
@@ -71,6 +122,140 @@ impl ClDefmethodStoredSpecializer {
             }
             _ => false,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ClDefmethodStoredMethod {
+    specializers: Vec<(String, ClDefmethodStoredSpecializer)>,
+}
+
+impl ClDefmethodStoredMethod {
+    fn from_specializers(specializers: &[ClDefmethodSpecializer]) -> Self {
+        let specializers = specializers
+            .iter()
+            .filter_map(|specializer| {
+                ClDefmethodStoredSpecializer::parse(&specializer.metadata_value())
+                    .map(|stored| (specializer.variable.clone(), stored))
+            })
+            .collect();
+        Self { specializers }
+    }
+
+    fn parse(value: &Value) -> Option<Self> {
+        if let Some(specializer) = ClDefmethodStoredSpecializer::parse(value) {
+            return Some(Self {
+                specializers: vec![("".into(), specializer)],
+            });
+        }
+        let items = value.to_vec().ok()?;
+        if !matches!(items.first(), Some(Value::Symbol(kind)) if kind == "method") {
+            return None;
+        }
+        let mut specializers = Vec::new();
+        for item in &items[1..] {
+            let parts = item.to_vec().ok()?;
+            let [Value::Symbol(variable), specializer] = parts.as_slice() else {
+                return None;
+            };
+            specializers.push((
+                variable.clone(),
+                ClDefmethodStoredSpecializer::parse(specializer)?,
+            ));
+        }
+        Some(Self { specializers })
+    }
+
+    fn metadata_value(&self) -> Value {
+        let mut items = Vec::with_capacity(self.specializers.len() + 1);
+        items.push(Value::Symbol("method".into()));
+        items.extend(self.specializers.iter().map(|(variable, specializer)| {
+            Value::list([
+                Value::Symbol(variable.clone()),
+                specializer.metadata_value(),
+            ])
+        }));
+        Value::list(items)
+    }
+
+    fn hidden_key(&self) -> String {
+        self.specializers
+            .iter()
+            .map(|(variable, specializer)| format!("{variable}_{}", specializer.hidden_key()))
+            .collect::<Vec<_>>()
+            .join("_")
+            .replace([':', '\'', ' ', '(', ')'], "_")
+    }
+
+    fn condition(&self, runtime_variables: &[(String, String)]) -> Value {
+        let mut conditions = self
+            .specializers
+            .iter()
+            .filter_map(|(variable, specializer)| {
+                let key = cl_defmethod_argument_key(variable);
+                let runtime_variable =
+                    runtime_variables
+                        .iter()
+                        .find_map(|(runtime, runtime_key)| {
+                            (runtime == variable || runtime_key == key).then_some(runtime.as_str())
+                        })?;
+                Some(specializer.condition(runtime_variable))
+            });
+        let Some(first) = conditions.next() else {
+            return Value::T;
+        };
+        conditions.fold(first, |condition, next| {
+            Value::list([Value::Symbol("and".into()), condition, next])
+        })
+    }
+
+    fn is_more_specific_than(
+        &self,
+        other: &Self,
+        precedence_order: &[String],
+        interp: &Interpreter,
+    ) -> bool {
+        let mut variables = self
+            .specializers
+            .iter()
+            .map(|(variable, _)| variable.clone())
+            .chain(
+                other
+                    .specializers
+                    .iter()
+                    .map(|(variable, _)| variable.clone()),
+            )
+            .collect::<Vec<_>>();
+        variables.sort();
+        variables.dedup();
+        variables.sort_by_key(|variable| {
+            cl_defmethod_argument_precedence_index(variable, precedence_order)
+        });
+        for variable in variables {
+            let left = self.specializer_for(&variable);
+            let right = other.specializer_for(&variable);
+            match (left, right) {
+                (Some(left), Some(right)) if left == right => {}
+                (Some(left), Some(right)) if left.is_more_specific_than(right, interp) => {
+                    return true;
+                }
+                (Some(_), None) => return true,
+                (None, Some(_)) => return false,
+                (Some(_), Some(_)) => return false,
+                (None, None) => {}
+            }
+        }
+        false
+    }
+
+    fn specializer_for(&self, variable: &str) -> Option<&ClDefmethodStoredSpecializer> {
+        let key = cl_defmethod_argument_key(variable);
+        self.specializers
+            .iter()
+            .find_map(|(candidate, specializer)| {
+                (candidate == variable || cl_defmethod_argument_key(candidate) == key)
+                    .then_some(specializer)
+            })
     }
 }
 
@@ -2242,6 +2427,7 @@ impl Interpreter {
             ));
         }
         let name = function_name_from_binding_form(&items[1])?;
+        self.put_symbol_property(&name, "emaxx-cl-defgeneric-lambda-list", items[2].clone());
         let mut body_start = 3;
         if matches!(
             items.get(3),
@@ -2281,6 +2467,16 @@ impl Interpreter {
                     body_start += 1;
                 }
                 ":argument-precedence-order" => {
+                    let precedence = parts[1..]
+                        .iter()
+                        .filter_map(|value| value.as_symbol().ok())
+                        .map(|name| Value::Symbol(name.to_string()))
+                        .collect::<Vec<_>>();
+                    self.put_symbol_property(
+                        &name,
+                        "emaxx-cl-defgeneric-argument-precedence-order",
+                        Value::list(precedence),
+                    );
                     body_start += 1;
                 }
                 ":method" => {
@@ -2388,13 +2584,19 @@ impl Interpreter {
             self.add_cl_defmethod_documentation(&function_name_from_binding_form(&items[1])?, doc);
         }
         lowered.extend(normalized_method_forms.iter().cloned());
-        if let Some(specializer) = first_cl_defmethod_specializer(&items[lambda_list_index])?
+        let requested_method_name = function_name_from_binding_form(&items[1])?;
+        let method_name = self.canonical_function_name(&requested_method_name, env);
+        let precedence_order = self.cl_defgeneric_argument_precedence_order(&method_name);
+        let method_specializers = cl_defmethod_specializers(&items[lambda_list_index])?;
+        let mut ordered_method_specializers = method_specializers.clone();
+        ordered_method_specializers.sort_by_key(|specializer| {
+            cl_defmethod_argument_precedence_index(&specializer.variable, &precedence_order)
+        });
+        if let Some(specializer) = ordered_method_specializers.first().cloned()
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
             && previous != Value::BuiltinFunc("ignore".into())
         {
-            let requested_method_name = function_name_from_binding_form(&items[1])?;
-            let method_name = self.canonical_function_name(&requested_method_name, env);
             let is_around_method = items[2..lambda_list_index]
                 .iter()
                 .any(|value| matches!(value, Value::Symbol(name) if name == ":around"));
@@ -2419,18 +2621,29 @@ impl Interpreter {
                 .unwrap_or_default();
             let previous_specializers = previous_specializers
                 .iter()
-                .filter_map(ClDefmethodStoredSpecializer::parse)
+                .filter_map(ClDefmethodStoredMethod::parse)
                 .collect::<Vec<_>>();
+            let params = self.parse_params(&lowered_lambda_list)?;
+            let generic_lambda_list = self
+                .cl_defgeneric_lambda_list(&method_name)
+                .unwrap_or_else(|| lowered_lambda_list.clone());
+            let generic_params = self.parse_params(&generic_lambda_list)?;
+            let dispatch_method_specializers =
+                cl_defmethod_dispatch_specializers(&method_specializers, &params, &generic_params);
             let current_stored_specializer =
-                ClDefmethodStoredSpecializer::parse(&specializer.metadata_value())
-                    .expect("cl-defmethod specializers always produce metadata");
+                ClDefmethodStoredMethod::from_specializers(&dispatch_method_specializers);
+            let current_method_key = current_stored_specializer.hidden_key();
             let more_specific_previous = if is_around_method {
                 Vec::new()
             } else {
                 previous_specializers
                     .iter()
                     .filter(|previous| {
-                        previous.is_more_specific_than(&current_stored_specializer, self)
+                        previous.is_more_specific_than(
+                            &current_stored_specializer,
+                            &precedence_order,
+                            self,
+                        )
                     })
                     .cloned()
                     .collect::<Vec<_>>()
@@ -2440,19 +2653,27 @@ impl Interpreter {
                 .filter(|previous| {
                     !more_specific_previous.iter().any(|candidate| {
                         *previous != candidate
-                            && previous.is_more_specific_than(candidate, self)
-                            && candidate.is_more_specific_than(&current_stored_specializer, self)
+                            && previous.is_more_specific_than(candidate, &precedence_order, self)
+                            && candidate.is_more_specific_than(
+                                &current_stored_specializer,
+                                &precedence_order,
+                                self,
+                            )
                     })
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            let params = self.parse_params(&lowered_lambda_list)?;
+            let generic_runtime_variables = generic_params
+                .iter()
+                .filter(|param| !is_lambda_list_keyword(param))
+                .map(|param| (param.clone(), cl_defmethod_argument_key(param).to_string()))
+                .collect::<Vec<_>>();
             let qualifier_key = cl_defmethod_qualifier_key(&items[2..lambda_list_index]);
             let previous_method_symbol = format!(
                 "__emaxx_previous_method_{}_{}{}",
                 function_name_from_binding_form(&items[1])?.replace('-', "_"),
                 qualifier_key,
-                specializer.key().replace([':', '\'', ' ', '(', ')'], "_")
+                current_method_key
             );
             let method_previous_symbol = format!("{previous_method_symbol}_method");
             let current_method_symbol = format!("{method_previous_symbol}_current");
@@ -2477,17 +2698,18 @@ impl Interpreter {
                 .map(|(_, _, value)| value.clone())
                 .or_else(|| specific_splices.first().map(|(_, _, value)| value.clone()))
                 .unwrap_or_else(|| previous.clone());
-            let rest_param = lambda_list_rest_param(&lowered_lambda_list)?;
-            let fixed_call_args = params
+            let method_rest_param = lambda_list_rest_param_from_params(&params);
+            let generic_rest_param = lambda_list_rest_param_from_params(&generic_params);
+            let method_fixed_params = lambda_list_fixed_params(&params);
+            let generic_fixed_params = lambda_list_fixed_params(&generic_params);
+            let fixed_call_args = generic_fixed_params
                 .iter()
-                .filter(|param| !is_lambda_list_keyword(param))
-                .filter(|param| Some(param.as_str()) != rest_param.as_deref())
                 .map(|param| Value::Symbol(param.clone()))
                 .collect::<Vec<_>>();
             let mut next_default_args = Vec::with_capacity(fixed_call_args.len() + 1);
             next_default_args.push(Value::Symbol("list".into()));
             next_default_args.extend(fixed_call_args.iter().cloned());
-            let next_default_form = if let Some(rest_param) = &rest_param {
+            let next_default_form = if let Some(rest_param) = &generic_rest_param {
                 Value::list([
                     Value::Symbol("append".into()),
                     Value::list(next_default_args),
@@ -2501,10 +2723,79 @@ impl Interpreter {
                 &method_previous_symbol,
                 &next_default_form,
             )?;
+            let mut alias_bindings = Vec::new();
+            for (index, param) in method_fixed_params.iter().enumerate() {
+                let source = if let Some(generic) = generic_fixed_params.get(index) {
+                    Value::Symbol(generic.clone())
+                } else if let Some(rest_param) = &generic_rest_param {
+                    Value::list([
+                        Value::Symbol("nth".into()),
+                        Value::Integer((index - generic_fixed_params.len()) as i64),
+                        Value::Symbol(rest_param.clone()),
+                    ])
+                } else {
+                    continue;
+                };
+                if !matches!(&source, Value::Symbol(name) if name == param) {
+                    alias_bindings.push(Value::list([Value::Symbol(param.clone()), source]));
+                }
+            }
+            if let (Some(method_rest_param), Some(generic_rest_param)) =
+                (&method_rest_param, &generic_rest_param)
+            {
+                let rest_offset = method_fixed_params
+                    .len()
+                    .saturating_sub(generic_fixed_params.len());
+                let source = if rest_offset == 0 {
+                    Value::Symbol(generic_rest_param.clone())
+                } else {
+                    Value::list([
+                        Value::Symbol("nthcdr".into()),
+                        Value::Integer(rest_offset as i64),
+                        Value::Symbol(generic_rest_param.clone()),
+                    ])
+                };
+                if !matches!(&source, Value::Symbol(name) if name == method_rest_param) {
+                    alias_bindings.push(Value::list([
+                        Value::Symbol(method_rest_param.clone()),
+                        source,
+                    ]));
+                }
+            }
+            let method_body = if alias_bindings.is_empty() {
+                method_body
+            } else {
+                vec![Value::list([
+                    Value::Symbol("let".into()),
+                    Value::list(alias_bindings),
+                    Value::list(
+                        std::iter::once(Value::Symbol("progn".into()))
+                            .chain(method_body)
+                            .collect::<Vec<_>>(),
+                    ),
+                ])]
+            };
+            let mut dispatch_stop_variables = dispatch_method_specializers
+                .iter()
+                .map(|specializer| specializer.variable.clone())
+                .collect::<Vec<_>>();
+            dispatch_stop_variables.extend(more_specific_previous.iter().flat_map(|method| {
+                method
+                    .specializers
+                    .iter()
+                    .map(|(variable, _)| variable.clone())
+            }));
             let wrapper_rest_param = "__emaxx-cl-defmethod-rest".to_string();
             let wrapper_params = cl_defmethod_dispatch_wrapper_params(
-                &lowered_lambda_list,
-                &specializer.variable,
+                &generic_lambda_list,
+                &cl_defmethod_dispatch_stop_variable(
+                    &generic_lambda_list,
+                    &dispatch_stop_variables,
+                    generic_params
+                        .last()
+                        .map(String::as_str)
+                        .unwrap_or(&specializer.variable),
+                )?,
                 &wrapper_rest_param,
             )?;
             let wrapper_fixed_args = wrapper_params
@@ -2522,14 +2813,14 @@ impl Interpreter {
             ]);
             let method_next = dispatch_previous.clone();
             let current_method = Value::Lambda(
-                params,
+                generic_params.clone(),
                 method_body,
                 shared_env(vec![vec![(
                     method_previous_symbol.clone(),
                     Self::stored_value(method_next),
                 )]]),
             );
-            let next_condition = specializer.condition();
+            let next_condition = current_stored_specializer.condition(&generic_runtime_variables);
             let mut top_condition = next_condition.clone();
             for previous in &more_specific_previous {
                 top_condition = Value::list([
@@ -2537,7 +2828,7 @@ impl Interpreter {
                     top_condition,
                     Value::list([
                         Value::Symbol("not".into()),
-                        previous.condition(&specializer.variable),
+                        previous.condition(&generic_runtime_variables),
                     ]),
                 ]);
             }
@@ -2607,14 +2898,27 @@ impl Interpreter {
                 }
                 self.set_function_binding(&method_name, Some(top_wrapper));
             }
-            self.add_cl_defmethod_specializer(&method_name, specializer.metadata_value());
+            self.add_cl_defmethod_specializer(
+                &method_name,
+                current_stored_specializer.metadata_value(),
+            );
             return Ok(items[1].clone());
         }
         let result = self.sf_cl_defun(&lowered, env);
-        if let Some(specializer) = first_cl_defmethod_specializer(&items[lambda_list_index])? {
-            let requested_method_name = function_name_from_binding_form(&items[1])?;
-            let method_name = self.canonical_function_name(&requested_method_name, env);
-            self.add_cl_defmethod_specializer(&method_name, specializer.metadata_value());
+        if !method_specializers.is_empty() {
+            let params = self.parse_params(&lowered_lambda_list)?;
+            let generic_lambda_list = self
+                .cl_defgeneric_lambda_list(&method_name)
+                .unwrap_or_else(|| lowered_lambda_list.clone());
+            let generic_params = self.parse_params(&generic_lambda_list)?;
+            let dispatch_method_specializers =
+                cl_defmethod_dispatch_specializers(&method_specializers, &params, &generic_params);
+            let current_stored_specializer =
+                ClDefmethodStoredMethod::from_specializers(&dispatch_method_specializers);
+            self.add_cl_defmethod_specializer(
+                &method_name,
+                current_stored_specializer.metadata_value(),
+            );
         }
         result
     }
@@ -2629,6 +2933,19 @@ impl Interpreter {
             }
         }
         name.to_string()
+    }
+
+    fn cl_defgeneric_argument_precedence_order(&self, method_name: &str) -> Vec<String> {
+        self.get_symbol_property(method_name, "emaxx-cl-defgeneric-argument-precedence-order")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+            .collect()
+    }
+
+    fn cl_defgeneric_lambda_list(&self, method_name: &str) -> Option<Value> {
+        self.get_symbol_property(method_name, "emaxx-cl-defgeneric-lambda-list")
     }
 
     fn add_cl_defmethod_specializer(&mut self, method_name: &str, specializer: Value) {
