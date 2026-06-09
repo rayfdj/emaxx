@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1738/7080 are verified locally against the current canonical
+- Tests through 1739/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1738/7080: order generic specializers`.
-- The next observed frontier is selector 1739, `cl-generic-test-07-apo` in
+  `Compat 1739/7080: honor generic argument precedence`.
+- The next observed frontier is selector 1740, `cl-generic-test-08-after/before` in
   `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
   `ert-test-failed`.
 - Current verification cadence: for each batch, exact-replay the selectors
@@ -134,6 +134,14 @@ counts as the progress denominator.
   `cl-generic-test-06-multiple-dispatch`, and exploratory selector
   `cl-generic-test-07-apo`, which identified selector 1739 as the next
   frontier.
+- Selector 1739, `cl-generic-test-07-apo` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after honoring
+  `cl-defgeneric :argument-precedence-order`, mapping method specializers to
+  generic argument positions, and giving each stored method a full hidden key
+  so same-class specializers on different arguments do not collide. Exact
+  replays run for this batch: selector `cl-generic-test-07-apo`; exploratory
+  selector `cl-generic-test-08-after/before`, which identified selector 1740
+  as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

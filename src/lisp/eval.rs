@@ -1833,12 +1833,24 @@ fn lower_cl_defmethod_lambda_list(spec: &Value) -> Result<Value, LispError> {
     Ok(Value::list(lowered))
 }
 
-fn lambda_list_rest_param(spec: &Value) -> Result<Option<String>, LispError> {
-    let items = spec.to_vec()?;
-    Ok(items.windows(2).find_map(|pair| match pair {
-        [Value::Symbol(keyword), Value::Symbol(name)] if keyword == "&rest" => Some(name.clone()),
+fn lambda_list_fixed_params(params: &[String]) -> Vec<String> {
+    let mut fixed = Vec::new();
+    for param in params {
+        if param == "&rest" || param == "&body" {
+            break;
+        }
+        if !is_lambda_list_keyword(param) {
+            fixed.push(param.clone());
+        }
+    }
+    fixed
+}
+
+fn lambda_list_rest_param_from_params(params: &[String]) -> Option<String> {
+    params.windows(2).find_map(|pair| match pair {
+        [keyword, name] if keyword == "&rest" || keyword == "&body" => Some(name.clone()),
         _ => None,
-    }))
+    })
 }
 
 fn cl_defmethod_dispatch_wrapper_params(
@@ -1861,6 +1873,27 @@ fn cl_defmethod_dispatch_wrapper_params(
     ))
 }
 
+fn cl_defmethod_dispatch_stop_variable(
+    dispatch_spec: &Value,
+    specialized_variable_names: &[String],
+    default_variable: &str,
+) -> Result<String, LispError> {
+    let specialized_variables = specialized_variable_names
+        .iter()
+        .map(|variable| variable.trim_start_matches('_').to_string())
+        .collect::<HashSet<_>>();
+    let mut stop_variable = default_variable.to_string();
+    for item in dispatch_spec.to_vec()? {
+        if let Ok(name) = item.as_symbol() {
+            let argument_key = name.trim_start_matches('_');
+            if specialized_variables.contains(argument_key) {
+                stop_variable = name.to_string();
+            }
+        }
+    }
+    Ok(stop_variable)
+}
+
 #[derive(Clone)]
 enum ClDefmethodSpecializerKind {
     Class(String),
@@ -1878,20 +1911,6 @@ impl ClDefmethodSpecializer {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => format!("class:{class_name}"),
             ClDefmethodSpecializerKind::Eql(value) => format!("eql:{value}"),
-        }
-    }
-
-    fn condition(&self) -> Value {
-        let variable = Value::Symbol(self.variable.clone());
-        match &self.kind {
-            ClDefmethodSpecializerKind::Class(class_name) => Value::list([
-                Value::Symbol("cl-typep".into()),
-                variable,
-                quoted_literal(&Value::Symbol(class_name.clone())),
-            ]),
-            ClDefmethodSpecializerKind::Eql(value) => {
-                Value::list([Value::Symbol("eql".into()), variable, value.clone()])
-            }
         }
     }
 
@@ -1915,10 +1934,9 @@ impl ClDefmethodSpecializer {
     }
 }
 
-fn first_cl_defmethod_specializer(
-    spec: &Value,
-) -> Result<Option<ClDefmethodSpecializer>, LispError> {
+fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>, LispError> {
     let mut skip_context_arg = false;
+    let mut specializers = Vec::new();
     for item in spec.to_vec()? {
         if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
             skip_context_arg = true;
@@ -1937,32 +1955,46 @@ fn first_cl_defmethod_specializer(
         };
         match parts.get(1) {
             Some(Value::Symbol(class_name)) => {
-                return Ok(Some(ClDefmethodSpecializer {
+                specializers.push(ClDefmethodSpecializer {
                     variable: variable.clone(),
                     kind: ClDefmethodSpecializerKind::Class(class_name.clone()),
-                }));
+                });
             }
             Some(Value::T) => {
-                return Ok(Some(ClDefmethodSpecializer {
+                specializers.push(ClDefmethodSpecializer {
                     variable: variable.clone(),
                     kind: ClDefmethodSpecializerKind::Class("t".into()),
-                }));
+                });
             }
             Some(Value::Cons(_, _)) => {
                 let specializer = parts[1].to_vec()?;
                 if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
                     && let Some(value) = specializer.get(1)
                 {
-                    return Ok(Some(ClDefmethodSpecializer {
+                    specializers.push(ClDefmethodSpecializer {
                         variable: variable.clone(),
                         kind: ClDefmethodSpecializerKind::Eql(value.clone()),
-                    }));
+                    });
                 }
             }
             _ => {}
         }
     }
-    Ok(None)
+    Ok(specializers)
+}
+
+fn first_cl_defmethod_specializer(
+    spec: &Value,
+    precedence_order: &[String],
+) -> Result<Option<ClDefmethodSpecializer>, LispError> {
+    let mut specializers = cl_defmethod_specializers(spec)?;
+    specializers.sort_by_key(|specializer| {
+        precedence_order
+            .iter()
+            .position(|name| name == &specializer.variable)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(specializers.into_iter().next())
 }
 
 fn cl_defgeneric_edebug_method_name(
@@ -1980,7 +2012,7 @@ fn cl_defgeneric_edebug_method_name(
     let Some(lambda_list) = method_parts.get(cursor) else {
         return Ok(None);
     };
-    let Some(specializer) = first_cl_defmethod_specializer(lambda_list)? else {
+    let Some(specializer) = first_cl_defmethod_specializer(lambda_list, &[])? else {
         return Ok(Some(generic_name.to_string()));
     };
     let Some(class_name) = specializer.class_name() else {
@@ -2023,7 +2055,8 @@ fn cl_defmethod_around_previous_binding(
             if name.starts_with(&prefix) {
                 let around_class_key = &name[prefix.len()..];
                 let around_class = around_class_key
-                    .strip_prefix("class_")
+                    .split_once("class_")
+                    .map(|(_, class_name)| class_name)
                     .unwrap_or(around_class_key);
                 if is_applicable(around_class) {
                     let method_previous_name = format!("{name}_method");
