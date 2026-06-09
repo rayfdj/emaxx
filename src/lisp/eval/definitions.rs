@@ -2613,6 +2613,22 @@ impl Interpreter {
             };
             match head.as_str() {
                 "declare" => {
+                    for declaration in &parts[1..] {
+                        let Ok(declaration_parts) = declaration.to_vec() else {
+                            continue;
+                        };
+                        if matches!(
+                            declaration_parts.first(),
+                            Some(Value::Symbol(kind)) if kind == "advertised-calling-convention"
+                        ) && let Some(convention) = declaration_parts.get(1)
+                        {
+                            self.put_symbol_property(
+                                &name,
+                                "advertised-calling-convention",
+                                convention.clone(),
+                            );
+                        }
+                    }
                     body_start += 1;
                 }
                 ":documentation" => {

@@ -8581,6 +8581,7 @@ impl ByteCompileDiagnostics {
             "defcustom" => self.scan_defcustom(interp, &items),
             "defun" | "defsubst" => self.scan_defun(interp, &items),
             "defmacro" => self.scan_defmacro(interp, &items),
+            "cl-defmethod" => self.scan_cl_defmethod(interp, &items),
             "lambda" => self.scan_lambda(interp, &items),
             "quote" | "function" => {}
             "autoload" => self.scan_named_docstring_form(
@@ -9042,6 +9043,39 @@ impl ByteCompileDiagnostics {
             3
         };
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+    }
+
+    fn scan_cl_defmethod(&mut self, interp: &Interpreter, items: &[Value]) {
+        let Some(lambda_list_index) =
+            items.iter().enumerate().skip(2).find_map(|(index, value)| {
+                matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
+            })
+        else {
+            self.scan_body(interp, &items[1..]);
+            return;
+        };
+        let mut body_start = lambda_list_index + 1;
+        if items
+            .get(body_start)
+            .and_then(format_string_literal)
+            .is_some()
+        {
+            body_start += 1;
+        }
+        if items
+            .get(body_start)
+            .is_some_and(crate::lisp::primitives::interactive::is_declare_form)
+        {
+            self.warn(
+                "suspicious",
+                Some("declare".to_string()),
+                "Warning: Stray `declare' form".into(),
+            );
+            body_start += 1;
+        }
+        self.function_depth += 1;
+        self.scan_body(interp, items.get(body_start..).unwrap_or_default());
+        self.function_depth -= 1;
     }
 
     fn scan_named_docstring_form(
