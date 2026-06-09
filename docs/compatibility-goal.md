@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1743/7080 are verified locally against the current canonical
+- Tests through 1744/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1743/7080: rewrite next-method availability`.
-- The next observed frontier is selector 1744, `cl-generic-test-12-context` in
+  `Compat 1744/7080: dispatch context specializers`.
+- The next observed frontier is selector 1745, `cl-generic-test-13-head` in
   `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
-  `wrong-type-argument`.
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -173,6 +173,15 @@ counts as the progress denominator.
   methods. Exact replays run for this batch: selector
   `cl-generic-test-11-next-method-p`; exploratory selector
   `cl-generic-test-12-context`, which identified selector 1744 as the next
+  frontier.
+- Selector 1744, `cl-generic-test-12-context` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after preserving
+  `&context` specializers as dynamic dispatch conditions, keeping explicit
+  `eql` metadata distinct from class metadata, installing context-only methods
+  as wrappers even over an empty generic, and allowing `overwrite-mode` to hold
+  the dynamic values used by the upstream test. Exact replays run for this
+  batch: selector `cl-generic-test-12-context`; exploratory selector
+  `cl-generic-test-13-head`, which identified selector 1745 as the next
   frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again

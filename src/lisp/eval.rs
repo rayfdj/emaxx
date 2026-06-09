@@ -1860,7 +1860,11 @@ fn cl_defmethod_dispatch_wrapper_params(
 ) -> Result<Vec<String>, LispError> {
     let mut params = Vec::new();
     let mut previous_was_rest_keyword = false;
-    for item in spec.to_vec()? {
+    let items = spec.to_vec()?;
+    if items.is_empty() {
+        return Ok(params);
+    }
+    for item in items {
         let name = item.as_symbol()?.to_string();
         params.push(name.clone());
         if name == specializer_variable {
@@ -1909,6 +1913,7 @@ enum ClDefmethodSpecializerKind {
 struct ClDefmethodSpecializer {
     variable: String,
     kind: ClDefmethodSpecializerKind,
+    is_context: bool,
 }
 
 impl ClDefmethodSpecializer {
@@ -1940,15 +1945,11 @@ impl ClDefmethodSpecializer {
 }
 
 fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>, LispError> {
-    let mut skip_context_arg = false;
+    let mut next_is_context = false;
     let mut specializers = Vec::new();
     for item in spec.to_vec()? {
         if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
-            skip_context_arg = true;
-            continue;
-        }
-        if skip_context_arg {
-            skip_context_arg = false;
+            next_is_context = true;
             continue;
         }
         let Value::Cons(_, _) = item else {
@@ -1958,17 +1959,33 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
         let Some(Value::Symbol(variable)) = parts.first() else {
             continue;
         };
+        if next_is_context && let Some(Value::Cons(_, _)) = parts.get(1) {
+            let specializer = parts[1].to_vec()?;
+            if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
+                && let Some(value) = specializer.get(1)
+            {
+                specializers.push(ClDefmethodSpecializer {
+                    variable: variable.clone(),
+                    kind: ClDefmethodSpecializerKind::Eql(value.clone()),
+                    is_context: true,
+                });
+            }
+            next_is_context = false;
+            continue;
+        }
         match parts.get(1) {
             Some(Value::Symbol(class_name)) => {
                 specializers.push(ClDefmethodSpecializer {
                     variable: variable.clone(),
                     kind: ClDefmethodSpecializerKind::Class(class_name.clone()),
+                    is_context: next_is_context,
                 });
             }
             Some(Value::T) => {
                 specializers.push(ClDefmethodSpecializer {
                     variable: variable.clone(),
                     kind: ClDefmethodSpecializerKind::Class("t".into()),
+                    is_context: next_is_context,
                 });
             }
             Some(Value::Cons(_, _)) => {
@@ -1979,11 +1996,13 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
                     specializers.push(ClDefmethodSpecializer {
                         variable: variable.clone(),
                         kind: ClDefmethodSpecializerKind::Eql(value.clone()),
+                        is_context: next_is_context,
                     });
                 }
             }
             _ => {}
         }
+        next_is_context = false;
     }
     Ok(specializers)
 }
@@ -2125,6 +2144,77 @@ fn cl_defmethod_previous_binding(
     cl_defmethod_previous_binding_inner(function, previous_method_symbol, &mut seen, &mut seen_cons)
 }
 
+fn cl_defmethod_replace_ignore_previous_bindings(function: &Value, replacement: &Value) -> bool {
+    let mut seen_envs = HashSet::new();
+    let mut seen_cons = HashSet::new();
+    cl_defmethod_replace_ignore_previous_bindings_inner(
+        function,
+        replacement,
+        &mut seen_envs,
+        &mut seen_cons,
+    )
+}
+
+fn cl_defmethod_replace_ignore_previous_bindings_inner(
+    function: &Value,
+    replacement: &Value,
+    seen_envs: &mut HashSet<usize>,
+    seen_cons: &mut HashSet<usize>,
+) -> bool {
+    match function {
+        Value::Lambda(_, _, closure_env) => {
+            let env_id = closure_env.as_ptr() as usize;
+            if !seen_envs.insert(env_id) {
+                return false;
+            }
+            let mut replaced = false;
+            let mut nested = Vec::new();
+            {
+                let mut closure_env = closure_env.borrow_mut();
+                for frame in closure_env.iter_mut() {
+                    for (name, value) in frame.iter_mut() {
+                        if (name.starts_with("__emaxx_previous_method_")
+                            || name.starts_with("__emaxx_"))
+                            && value == &Value::BuiltinFunc("ignore".into())
+                        {
+                            *value = replacement.clone();
+                            replaced = true;
+                        } else {
+                            nested.push(value.clone());
+                        }
+                    }
+                }
+            }
+            nested.into_iter().fold(replaced, |replaced, value| {
+                cl_defmethod_replace_ignore_previous_bindings_inner(
+                    &value,
+                    replacement,
+                    seen_envs,
+                    seen_cons,
+                ) || replaced
+            })
+        }
+        Value::Cons(car, cdr) => {
+            let cons_id = car.as_ptr() as usize;
+            if !seen_cons.insert(cons_id) {
+                return false;
+            }
+            cl_defmethod_replace_ignore_previous_bindings_inner(
+                &car.borrow(),
+                replacement,
+                seen_envs,
+                seen_cons,
+            ) || cl_defmethod_replace_ignore_previous_bindings_inner(
+                &cdr.borrow(),
+                replacement,
+                seen_envs,
+                seen_cons,
+            )
+        }
+        _ => false,
+    }
+}
+
 fn cl_defmethod_first_previous_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
     let mut seen = HashSet::new();
     cl_defmethod_first_previous_binding_inner(function, &mut seen)
@@ -2219,11 +2309,17 @@ fn rewrite_cl_call_next_method_forms(
     forms: &[Value],
     previous_method_symbol: &str,
     default_args: &Value,
+    next_method_p: Value,
 ) -> Result<Vec<Value>, LispError> {
     forms
         .iter()
         .map(|form| {
-            rewrite_cl_call_next_method_form(form, previous_method_symbol, default_args, &Value::T)
+            rewrite_cl_call_next_method_form(
+                form,
+                previous_method_symbol,
+                default_args,
+                &next_method_p,
+            )
         })
         .collect()
 }
@@ -2234,14 +2330,7 @@ fn rewrite_cl_next_method_p_forms(
 ) -> Result<Vec<Value>, LispError> {
     forms
         .iter()
-        .map(|form| {
-            rewrite_cl_call_next_method_form(
-                form,
-                "__emaxx-cl-defmethod-no-next-method",
-                &Value::Nil,
-                &next_method_p,
-            )
-        })
+        .map(|form| rewrite_cl_call_next_method_form(form, "ignore", &Value::Nil, &next_method_p))
         .collect()
 }
 
