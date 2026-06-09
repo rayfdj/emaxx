@@ -1801,6 +1801,42 @@ fn cl_defmethod_dispatches_context_specializers() {
 }
 
 #[test]
+fn cl_defmethod_dispatches_head_specializers() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (fmakunbound 'sample-head-generic)
+                  (cl-defgeneric sample-head-generic (x y))
+                  (cl-defmethod sample-head-generic ((x t) y) (cons x y))
+                  (cl-defmethod sample-head-generic ((_x (head 4)) _y)
+                    (cons "quatre" (cl-call-next-method)))
+                  (cl-defmethod sample-head-generic ((_x (head 5)) _y)
+                    (cons "cinq" (cl-call-next-method)))
+                  (cl-defmethod sample-head-generic ((_x (head 6)) y)
+                    (cons "six" (cl-call-next-method 'a y)))
+                  (list (sample-head-generic 'a nil)
+                        (sample-head-generic '(4) nil)
+                        (sample-head-generic '(5) nil)
+                        (sample-head-generic '(6) nil)))
+                "#
+        ),
+        Value::list([
+            Value::list([Value::Symbol("a".into())]),
+            Value::list([
+                Value::String("quatre".into()),
+                Value::list([Value::Integer(4)]),
+            ]),
+            Value::list([
+                Value::String("cinq".into()),
+                Value::list([Value::Integer(5)]),
+            ]),
+            Value::list([Value::String("six".into()), Value::Symbol("a".into())]),
+        ])
+    );
+}
+
+#[test]
 fn bindat_pack_val_round_trips_integer_representation() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
