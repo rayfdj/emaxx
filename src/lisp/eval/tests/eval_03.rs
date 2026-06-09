@@ -1722,6 +1722,26 @@ fn cl_defmethod_dispatches_eql_specializers() {
 }
 
 #[test]
+fn cl_defmethod_specializes_extra_fixed_arg_from_generic_rest() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (cl-defgeneric sample-rest-specializer (x &rest r))
+                  (cl-defmethod sample-rest-specializer (x &rest r)
+                    (cons x r))
+                  (cl-defmethod sample-rest-specializer (x (y integer) &rest r)
+                    (list 'integer y x r))
+                  (equal (list (sample-rest-specializer 'a 'b)
+                               (sample-rest-specializer 1 2))
+                         '((a b) (integer 2 1 nil))))
+                "#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn bindat_pack_val_round_trips_integer_representation() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
