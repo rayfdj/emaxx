@@ -1098,14 +1098,17 @@ fn cl_defmethod_ignores_context_specializers_for_dispatch_args() {
         eval_str(
             "(progn
                (cl-defgeneric sample-context-method (value))
-               (cl-defmethod sample-context-method (value)
-                 'base)
                (cl-defmethod sample-context-method
                    (value &context (major-mode (eql text-mode)))
                  'text)
-               (sample-context-method 'item))"
+               (cl-defmethod sample-context-method (value)
+                 'base)
+               (list (let ((major-mode 'text-mode))
+                       (sample-context-method 'item))
+                     (let ((major-mode 'fundamental-mode))
+                       (sample-context-method 'item))))"
         ),
-        Value::Symbol("text".into())
+        Value::list([Value::Symbol("base".into()), Value::Symbol("base".into())])
     );
 }
 
@@ -1767,6 +1770,32 @@ fn cl_defmethod_rewrites_next_method_p() {
             Value::Integer(4),
             Value::Integer(5),
             Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn cl_defmethod_dispatches_context_specializers() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (fmakunbound 'sample-context-generic)
+                  (cl-defgeneric sample-context-generic ())
+                  (cl-defmethod sample-context-generic (&context (overwrite-mode (eql t)))
+                    (list 'is-t (cl-call-next-method)))
+                  (cl-defmethod sample-context-generic (&context (overwrite-mode (eql nil)))
+                    (list 'is-nil (cl-call-next-method)))
+                  (cl-defmethod sample-context-generic () 'any)
+                  (list (let ((overwrite-mode t)) (sample-context-generic))
+                        (let ((overwrite-mode nil)) (sample-context-generic))
+                        (let ((overwrite-mode 1)) (sample-context-generic))))
+                "#
+        ),
+        Value::list([
+            Value::list([Value::Symbol("is-t".into()), Value::Symbol("any".into())]),
+            Value::list([Value::Symbol("is-nil".into()), Value::Symbol("any".into()),]),
+            Value::Symbol("any".into()),
         ])
     );
 }

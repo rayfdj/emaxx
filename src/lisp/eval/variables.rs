@@ -638,18 +638,7 @@ impl Interpreter {
                 }
                 other => Err(wrong_type_argument("symbolp", other)),
             },
-            "overwrite-mode" => match value {
-                Value::Nil => Ok(Value::Nil),
-                Value::Symbol(ref symbol)
-                    if matches!(
-                        symbol.as_str(),
-                        "overwrite-mode-textual" | "overwrite-mode-binary"
-                    ) =>
-                {
-                    Ok(value)
-                }
-                other => Err(wrong_type_argument("symbolp", other)),
-            },
+            "overwrite-mode" => Ok(value),
             _ => Ok(value),
         }
     }
