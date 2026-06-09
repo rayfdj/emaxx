@@ -641,7 +641,12 @@ impl Interpreter {
                 return;
             }
             output.push(Value::Symbol(name.to_string()));
-            if let Some(state) = interp.find_class_state(name) {
+            let builtin_parents = primitives::builtin_class_parents(name);
+            if !builtin_parents.is_empty() {
+                for parent in builtin_parents {
+                    visit(interp, parent, output, seen);
+                }
+            } else if let Some(state) = interp.find_class_state(name) {
                 if state.parents.is_empty() {
                     if name != "t" {
                         visit(interp, "t", output, seen);

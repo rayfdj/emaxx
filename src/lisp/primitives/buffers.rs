@@ -1029,6 +1029,7 @@ pub(crate) fn is_builtin_class_name(name: &str) -> bool {
             | "bignum"
             | "integer"
             | "float"
+            | "number"
             | "string"
             | "list"
             | "vector"
@@ -1048,6 +1049,26 @@ pub(crate) fn is_builtin_class_name(name: &str) -> bool {
             | "subr"
             | "function"
     )
+}
+
+pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
+    match name {
+        "null" => &["symbol", "list"],
+        "boolean" => &["symbol"],
+        "symbol" | "list" | "vector" | "buffer" | "marker" | "overlay" | "finalizer" | "record"
+        | "function" => &["t"],
+        "symbol-with-pos" => &["cons"],
+        "fixnum" | "bignum" => &["integer"],
+        "integer" | "float" => &["number"],
+        "number" | "string" | "char-table" | "cons" | "native-comp-unit" => &["t"],
+        "bool-vector" => &["vector"],
+        "primitive-function"
+        | "special-form"
+        | "interpreted-function"
+        | "byte-code-function"
+        | "subr" => &["function"],
+        _ => &[],
+    }
 }
 
 pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'static str, LispError> {

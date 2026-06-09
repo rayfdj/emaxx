@@ -1340,6 +1340,52 @@ fn setf_generic_place_calls_setf_generic_after_place_args() {
 }
 
 #[test]
+fn cl_defmethod_orders_overlapping_numeric_specializers() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (fmakunbound 'sample-overlap-generic)
+                   (cl-defgeneric sample-overlap-generic (x y))
+                   (cl-defmethod sample-overlap-generic ((y t) z) (list y z))
+                   (cl-defmethod sample-overlap-generic ((_y (eql 4)) _z)
+                     (cons 'four (cl-call-next-method)))
+                   (cl-defmethod sample-overlap-generic ((_y integer) _z)
+                     (cons 'integer (cl-call-next-method)))
+                   (cl-defmethod sample-overlap-generic ((_y number) _z)
+                     (cons 'number (cl-call-next-method)))
+                   (list
+                    (sample-overlap-generic 'a 'b)
+                    (sample-overlap-generic 1 'b)
+                    (sample-overlap-generic 4 'b)))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            Value::list([
+                Value::Symbol("integer".into()),
+                Value::Symbol("number".into()),
+                Value::Integer(1),
+                Value::Symbol("b".into()),
+            ]),
+            Value::list([
+                Value::Symbol("four".into()),
+                Value::Symbol("integer".into()),
+                Value::Symbol("number".into()),
+                Value::Integer(4),
+                Value::Symbol("b".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn cl_typep_recognizes_builtin_numeric_parent_types() {
+    assert_eq!(
+        eval_str("(list (cl-typep 1 'integer) (cl-typep 1 'number) (cl-typep 1.5 'number))"),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn defclass_returns_the_class_name() {
     assert_eq!(
         eval_str("(defclass sample-class nil nil)"),
