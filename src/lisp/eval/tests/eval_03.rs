@@ -1436,6 +1436,45 @@ fn cl_defmethod_before_after_methods_wrap_primary_result() {
 }
 
 #[test]
+fn cl_defmethod_updates_generic_under_around_advice() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (fmakunbound 'sample-advised-generic)
+                 (cl-defgeneric sample-advised-generic (x y))
+                 (cl-defmethod sample-advised-generic (x y) (list x y))
+                 (defun sample-advised-wrapper (&rest args)
+                   (cons 'advice (apply args)))
+                 (advice-add 'sample-advised-generic :around #'sample-advised-wrapper)
+                 (let ((before (sample-advised-generic 4 5)))
+                   (cl-defmethod sample-advised-generic ((_x integer) _y)
+                     (cons 'integer (cl-call-next-method)))
+                   (let ((during (sample-advised-generic 4 5)))
+                     (advice-remove 'sample-advised-generic #'sample-advised-wrapper)
+                     (list before during (sample-advised-generic 4 5)))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("advice".into()),
+                Value::Integer(4),
+                Value::Integer(5),
+            ]),
+            Value::list([
+                Value::Symbol("advice".into()),
+                Value::Symbol("integer".into()),
+                Value::Integer(4),
+                Value::Integer(5),
+            ]),
+            Value::list([
+                Value::Symbol("integer".into()),
+                Value::Integer(4),
+                Value::Integer(5),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn cl_typep_recognizes_builtin_numeric_parent_types() {
     assert_eq!(
         eval_str("(list (cl-typep 1 'integer) (cl-typep 1 'number) (cl-typep 1.5 'number))"),

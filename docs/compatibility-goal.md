@@ -19,14 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1740/7080 are verified locally against the current canonical
+- Tests through 1741/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1740/7080: run before and after generic methods`.
-- The next observed frontier is selector 1741,
-  `cl-generic-test-09-call-next-method-error` in
-  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently hangs in the
-  exploratory replay.
+  `Compat 1741/7080: preserve generic advice wrappers`.
+- The next observed frontier is selector 1742, `cl-generic-test-10-weird` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -149,8 +148,16 @@ counts as the progress denominator.
   side effects around the primary method result while preserving live lexical
   frames shared with primary dispatch. Exact replays run for this batch:
   selector `cl-generic-test-08-after/before`; exploratory selector
-  `cl-generic-test-09-call-next-method-error`, which currently hangs and
-  identifies selector 1741 as the next frontier.
+  `cl-generic-test-09-advice`, which identified selector 1741 as the next
+  frontier.
+- Selector 1741, `cl-generic-test-09-advice` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after making
+  single-list `apply` calls support the advice idiom `(apply args)` and
+  teaching `cl-defmethod` to update the generic implementation underneath an
+  active advice wrapper so `advice-remove` reveals the updated generic.
+  Exact replays run for this batch: selector `cl-generic-test-09-advice`;
+  exploratory selector `cl-generic-test-10-weird`, which identified selector
+  1742 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
