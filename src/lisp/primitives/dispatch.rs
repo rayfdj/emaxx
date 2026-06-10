@@ -144,6 +144,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "featurep"
             | "consp"
             | "listp"
+            | "cl-endp"
             | "proper-list-p"
             | "bufferp"
             | "buffer-live-p"
