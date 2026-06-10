@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1775/7080 are verified locally against the current canonical
+- Tests through 1778/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1775/7080: expose cl multiple-value aliases`.
-- The next observed frontier is selector 1778, `cl-lib-test-typep` in
+  `Compat 1778/7080: expand cl-deftype specs`.
+- The next observed frontier is selector 1779, `cl-lib-symbol-macrolet` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
-  `ert-test-failed`.
+  `wrong-type-argument`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -256,6 +256,14 @@ counts as the progress denominator.
   `cl-lib-test-nth-value`, `cl-lib-nth-value-test-multiple-values`, and
   `cl-test-ldiff` in `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory
   selector `cl-lib-test-typep`, which identified selector 1778 as the next
+  frontier.
+- Selector 1778 passed after recording `cl-deftype` handlers as callable Lisp
+  metadata and expanding them inside `cl-typep`, including GNU `cl-lib`'s rule
+  that omitted optional deftype arguments default to `*`. The same matcher now
+  evaluates expanded `member`, `and`, `or`, and `not` type specs recursively.
+  Exact replay run for this batch: selector `cl-lib-test-typep` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
+  `cl-lib-symbol-macrolet`, which identified selector 1779 as the next
   frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again

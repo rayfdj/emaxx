@@ -2405,6 +2405,24 @@ impl Interpreter {
         Ok(Value::Symbol(name))
     }
 
+    pub(super) fn sf_cl_deftype(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() < 4 {
+            return Err(LispError::Signal(
+                "cl-deftype needs name, params, body".into(),
+            ));
+        }
+        let name = items[1].as_symbol()?.to_string();
+        let params = self.parse_params(&items[2])?;
+        let body = items[3..].to_vec();
+        let lambda = Value::Lambda(params, body, shared_env(env.clone()));
+        self.put_symbol_property(&name, "emaxx-cl-deftype-handler", lambda);
+        Ok(Value::Symbol(name))
+    }
+
     pub(super) fn sf_defclass(&mut self, items: &[Value]) -> Result<Value, LispError> {
         let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
             return Ok(Value::Nil);

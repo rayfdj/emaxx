@@ -323,11 +323,11 @@ impl Interpreter {
                         | "declare-function"
                         | "cl-declaim"
                         | "declaim"
-                        | "cl-deftype"
                         | "def-edebug-elem-spec"
                         | "def-edebug-spec" => {
                             return Ok(Value::Nil);
                         }
+                        "cl-deftype" => return self.sf_cl_deftype(&items, env),
                         "eval-and-compile" | "eval-when-compile" => {
                             return self.sf_progn(&items[1..], env);
                         }
