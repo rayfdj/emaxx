@@ -576,6 +576,29 @@ fn cl_list_accessors_cover_first_ten_elements() {
 }
 
 #[test]
+fn cl_endp_distinguishes_empty_lists_from_cons_cells() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (cl-endp nil)
+               (cl-endp '(1))
+               (condition-case err
+                   (cl-endp 1)
+                 (wrong-type-argument (car err)))
+               (condition-case err
+                   (cl-endp [1])
+                 (wrong-type-argument (car err))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("wrong-type-argument".into()),
+        ])
+    );
+}
+
+#[test]
 fn proper_list_p_returns_length_for_proper_lists_only() {
     assert_eq!(
         eval_str(

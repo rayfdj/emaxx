@@ -61,6 +61,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "libxml-available-p"
             | "consp"
             | "listp"
+            | "cl-endp"
             | "proper-list-p"
             | "bufferp"
             | "buffer-live-p"
@@ -674,6 +675,17 @@ pub(super) fn call(
                     Value::Nil
                 },
             )
+        }
+        "cl-endp" => {
+            need_args(name, args, 1)?;
+            if is_vector_like_value(interp, &args[0]) {
+                return Err(wrong_type_argument("listp", args[0].clone()));
+            }
+            match &args[0] {
+                Value::Nil => Ok(Value::T),
+                Value::Cons(_, _) => Ok(Value::Nil),
+                other => Err(wrong_type_argument("listp", other.clone())),
+            }
         }
         "proper-list-p" => {
             need_args(name, args, 1)?;

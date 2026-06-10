@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1771/7080 are verified locally against the current canonical
+- Tests through 1772/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1771/7080: extend cl positional accessors`.
-- The next observed frontier is selector 1772, `cl-lib-test-endp` in
+  `Compat 1772/7080: preserve cl-endp primitive`.
+- The next observed frontier is selector 1773, `cl-lib-test-nth-value` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
-  `ert-test-failed`.
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -242,6 +242,12 @@ counts as the progress denominator.
   `cl-lib-test-eighth`, `cl-lib-test-ninth`, and `cl-lib-test-tenth` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
   `cl-lib-test-endp`, which identified selector 1772 as the next frontier.
+- Selector 1772 passed after adding an honest `cl-endp` primitive that accepts
+  only nil or cons cells, rejects vector-like values as non-lists, and is
+  protected from `cl-loaddefs` autoload shadowing via the builtin override
+  table. Exact replay run for this batch: selector `cl-lib-test-endp` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
+  `cl-lib-test-nth-value`, which identified selector 1773 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
