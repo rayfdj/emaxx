@@ -72,6 +72,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "define-obsolete-face-alias"
             | "define-obsolete-function-alias"
             | "macroexp-warn-and-return"
+            | "cl--generic-method-files"
             | "describe-function"
             | "macroexp-quote"
             | "macroexp-progn"
@@ -949,6 +950,28 @@ pub(super) fn call(
             Ok(Value::Symbol(obsolete_name.to_string()))
         }
         "macroexp-warn-and-return" => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
+        "cl--generic-method-files" => {
+            need_args(name, args, 1)?;
+            let method_name = args[0].as_symbol()?;
+            let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
+            let mut result = Vec::new();
+            for load_entry in load_history.to_vec().unwrap_or_default() {
+                let Some((file, defs)) = load_entry.cons_values() else {
+                    continue;
+                };
+                for def in defs.to_vec().unwrap_or_default() {
+                    let Ok(parts) = def.to_vec() else {
+                        continue;
+                    };
+                    if matches!(parts.first(), Some(Value::Symbol(kind)) if kind == "cl-defmethod")
+                        && matches!(parts.get(1), Some(Value::Symbol(method)) if method == method_name)
+                    {
+                        result.push(Value::cons(file.clone(), Value::list(parts[1..].to_vec())));
+                    }
+                }
+            }
+            Ok(Value::list(result))
+        }
         "describe-function" => {
             need_args(name, args, 1)?;
             let _ = get_or_create_buffer(interp, "*Help*");

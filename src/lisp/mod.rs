@@ -350,12 +350,12 @@ pub fn load_file_strict(
             return Err(error);
         }
     }
+    let current_load_list = interp
+        .lookup_var("current-load-list", &types::Env::new())
+        .unwrap_or_else(|| types::Value::list([types::Value::String(path.display().to_string())]));
     interp.set_global_binding(
         "load-history",
-        types::Value::cons(
-            types::Value::list([types::Value::String(path.display().to_string())]),
-            previous_load_history,
-        ),
+        types::Value::cons(current_load_list, previous_load_history),
     );
     if let Some(message) = warning_message {
         append_message(interp, &message);

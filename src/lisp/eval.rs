@@ -498,6 +498,7 @@ impl Interpreter {
                 ),
                 ("cpp-font-lock-keywords".into(), Value::Nil),
                 ("current-load-list".into(), Value::Nil),
+                ("load-history".into(), Value::Nil),
                 ("case-replace".into(), Value::T),
                 ("byte-compile-log-buffer".into(), Value::Nil),
                 ("defining-kbd-macro".into(), Value::Nil),
@@ -564,6 +565,7 @@ impl Interpreter {
                 "command-switch-alist".into(),
                 "cl--proclaims-deferred".into(),
                 "current-load-list".into(),
+                "load-history".into(),
                 "delay-mode-hooks".into(),
                 "delayed-after-hook-functions".into(),
                 "delayed-mode-hooks".into(),
@@ -2073,6 +2075,30 @@ fn cl_defmethod_qualifier_key(qualifiers: &[Value]) -> String {
     } else {
         format!("{}_", parts.join("_"))
     }
+}
+
+fn cl_defmethod_load_history_specializers(spec: &Value) -> Vec<Value> {
+    let Ok(items) = spec.to_vec() else {
+        return Vec::new();
+    };
+    let mut specializers = Vec::new();
+    let mut is_context = false;
+    for item in items {
+        if matches!(&item, Value::Symbol(symbol) if symbol == "&context") {
+            is_context = true;
+            continue;
+        }
+        let Ok(parts) = item.to_vec() else {
+            continue;
+        };
+        if is_context {
+            specializers.push(item);
+            is_context = false;
+        } else if let Some(specializer) = parts.get(1) {
+            specializers.push(specializer.clone());
+        }
+    }
+    specializers
 }
 
 fn cl_defmethod_around_previous_binding(
