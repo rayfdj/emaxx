@@ -37,6 +37,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "remove-variable-watcher"
             | "get-variable-watchers"
             | "command-modes"
+            | "help-function-arglist"
             | "indirect-function"
             | "byteorder"
             | "subr-arity"
@@ -631,6 +632,38 @@ pub(super) fn call(
             Ok(interp
                 .get_symbol_property(args[0].as_symbol()?, "command-modes")
                 .unwrap_or(Value::Nil))
+        }
+        "help-function-arglist" => {
+            need_arg_range(name, args, 1, 2)?;
+            let function = if let Ok(symbol) = args[0].as_symbol() {
+                if let Some(arglist) = interp.get_symbol_property(symbol, "emaxx-function-arglist")
+                {
+                    return Ok(arglist);
+                }
+                interp.lookup_function(symbol, env)?
+            } else {
+                args[0].clone()
+            };
+            match function {
+                Value::Lambda(params, _, _) => {
+                    Ok(Value::list(params.into_iter().map(Value::Symbol)))
+                }
+                Value::Symbol(symbol) => {
+                    if let Some(arglist) =
+                        interp.get_symbol_property(&symbol, "emaxx-function-arglist")
+                    {
+                        Ok(arglist)
+                    } else {
+                        match interp.lookup_function(&symbol, env)? {
+                            Value::Lambda(params, _, _) => {
+                                Ok(Value::list(params.into_iter().map(Value::Symbol)))
+                            }
+                            _ => Ok(Value::Nil),
+                        }
+                    }
+                }
+                _ => Ok(Value::Nil),
+            }
         }
         "indirect-function" => {
             need_arg_range(name, args, 1, 2)?;

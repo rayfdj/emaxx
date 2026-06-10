@@ -19,13 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1753/7080 are verified locally against the current canonical
+- Tests through 1764/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1753/7080: describe generic method signatures`.
-- The next observed frontier is selector 1754,
-  `cl-lib-arglist-performance` in `test/lisp/emacs-lisp/cl-lib-tests.el`,
-  which currently fails with
+  `Compat 1764/7080: expose constructor arglists`.
+- The next observed frontier is selector 1765, `cl-lib-test-fourth` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
   `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -223,6 +222,17 @@ counts as the progress denominator.
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
   `cl-lib-arglist-performance`, which identified selector 1754 as the next
   frontier.
+- Selectors 1754..1764 passed after recording public lambda lists for
+  generated `cl-defstruct` constructors and exposing a minimal
+  `help-function-arglist` primitive that returns that metadata before falling
+  back to interpreted lambda parameters. This keeps constructors with only
+  `&aux` bindings from advertising the internal `&rest args` wrapper. Exact
+  replays run for this batch: selectors `cl-lib-arglist-performance`,
+  `cl-the`, `cl-lib-test-incf`, `cl-lib-test-decf`, `cl-lib-test-plusp`,
+  `cl-lib-test-minusp`, `cl-lib-test-oddp`, `cl-lib-test-evenp`,
+  `cl-lib-test-first`, `cl-lib-test-second`, and `cl-lib-test-third` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
+  `cl-lib-test-fourth`, which identified selector 1765 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
