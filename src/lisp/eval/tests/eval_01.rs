@@ -547,6 +547,35 @@ fn cl_list_accessors_return_positional_elements() {
 }
 
 #[test]
+fn cl_list_accessors_cover_first_ten_elements() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (cl-fourth '(1 2 3 4 5 6 7 8 9 10))
+               (cl-fifth '(1 2 3 4 5 6 7 8 9 10))
+               (cl-sixth '(1 2 3 4 5 6 7 8 9 10))
+               (cl-seventh '(1 2 3 4 5 6 7 8 9 10))
+               (cl-eighth '(1 2 3 4 5 6 7 8 9 10))
+               (cl-ninth '(1 2 3 4 5 6 7 8 9 10))
+               (cl-tenth '(1 2 3 4 5 6 7 8 9 10))
+               (condition-case err
+                   (cl-fourth \"1234\")
+                 (wrong-type-argument (car err))))"
+        ),
+        Value::list([
+            Value::Integer(4),
+            Value::Integer(5),
+            Value::Integer(6),
+            Value::Integer(7),
+            Value::Integer(8),
+            Value::Integer(9),
+            Value::Integer(10),
+            Value::Symbol("wrong-type-argument".into()),
+        ])
+    );
+}
+
+#[test]
 fn proper_list_p_returns_length_for_proper_lists_only() {
     assert_eq!(
         eval_str(

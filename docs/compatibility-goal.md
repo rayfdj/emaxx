@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1764/7080 are verified locally against the current canonical
+- Tests through 1771/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1764/7080: expose constructor arglists`.
-- The next observed frontier is selector 1765, `cl-lib-test-fourth` in
+  `Compat 1771/7080: extend cl positional accessors`.
+- The next observed frontier is selector 1772, `cl-lib-test-endp` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
-  `void-variable`.
+  `ert-test-failed`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -233,6 +233,15 @@ counts as the progress denominator.
   `cl-lib-test-first`, `cl-lib-test-second`, and `cl-lib-test-third` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
   `cl-lib-test-fourth`, which identified selector 1765 as the next frontier.
+- Selectors 1765..1771 passed after extending the existing `cl-first` through
+  `cl-third` positional accessor primitive to the rest of GNU `cl-lib`'s
+  one-based accessor family, `cl-fourth` through `cl-tenth`, preserving the
+  same list traversal and wrong-type behavior as the earlier accessors. Exact
+  replays run for this batch: selectors `cl-lib-test-fourth`,
+  `cl-lib-test-fifth`, `cl-lib-test-sixth`, `cl-lib-test-seventh`,
+  `cl-lib-test-eighth`, `cl-lib-test-ninth`, and `cl-lib-test-tenth` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
+  `cl-lib-test-endp`, which identified selector 1772 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
