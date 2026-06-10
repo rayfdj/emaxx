@@ -211,6 +211,24 @@ fn cl_defstruct_constructor_evaluates_aux_slot_initializers() {
 }
 
 #[test]
+fn cl_defstruct_constructor_arglists_ignore_aux_bindings() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defstruct (arglist-struct
+                              (:constructor make-arglist-empty (&aux (abc 1)))
+                              (:constructor make-arglist-optional (&optional def)))
+                 (abc 5) def)
+               (list
+                (help-function-arglist 'make-arglist-empty)
+                (pcase (help-function-arglist 'make-arglist-optional)
+                  (`(&optional ,_) t))))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn abbrev_expansion_respects_table_props_and_parent_tables() {
     assert_eq!(
         eval_str(

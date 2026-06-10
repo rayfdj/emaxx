@@ -2102,6 +2102,11 @@ impl Interpreter {
         }
 
         for (constructor_name, params, aux_bindings) in constructors {
+            self.put_symbol_property(
+                &constructor_name,
+                "emaxx-function-arglist",
+                Value::list(params.iter().cloned().map(Value::Symbol)),
+            );
             let params_for_make = if aux_bindings.is_empty() {
                 params.clone()
             } else {

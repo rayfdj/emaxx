@@ -606,6 +606,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "remove-variable-watcher"
             | "get-variable-watchers"
             | "command-modes"
+            | "help-function-arglist"
             | "indirect-function"
             | "byteorder"
             | "subr-arity"
