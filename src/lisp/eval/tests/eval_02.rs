@@ -3732,6 +3732,43 @@ fn load_file_strict_prebinds_current_load_list() {
 }
 
 #[test]
+fn load_file_strict_records_cl_defmethod_files() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-cl-defmethod-load-history-{}.el",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        "(cl-defgeneric sample-load-method (x))\n\
+         (cl-defmethod sample-load-method ((x string)) x)\n\
+         (cl-defmethod sample-load-method ((x integer)) x)\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            &format!(
+                "(let ((files (cl--generic-method-files 'sample-load-method))\
+                       (path {path:?}))\
+                   (and (equal (length files) 2)\
+                        (equal (mapcar #'car files) (list path path))\
+                        (equal (mapcar #'cadr files)\
+                               '(sample-load-method sample-load-method))))"
+            )
+        ),
+        Value::T
+    );
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn load_in_progress_is_truthy_while_loading_files() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-load-progress-{}.el",

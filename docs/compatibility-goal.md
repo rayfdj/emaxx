@@ -19,12 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1746/7080 are verified locally against the current canonical
+- Tests through 1748/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1746/7080: record generic calling conventions`.
-- The next observed frontier is selector 1747,
-  `cl-generic-tests--method-files--finds-methods` in
+  `Compat 1748/7080: record generic method files`.
+- The next observed frontier is selector 1749,
+  `cl-generic-tests--print-quoted` in
   `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
   `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
@@ -201,6 +201,17 @@ counts as the progress denominator.
   `cl-generic-tests--advertised-calling-convention-bug58563`; exploratory
   selector `cl-generic-tests--method-files--finds-methods`, which identified
   selector 1747 as the next frontier.
+- Selectors 1747..1748,
+  `cl-generic-tests--method-files--finds-methods` and
+  `cl-generic-tests--method-files--nonexistent-methods` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, passed after preserving each
+  loaded file's full `current-load-list` into `load-history`, recording
+  `cl-defmethod` load-history entries with method/specializer metadata, and
+  exposing `cl--generic-method-files` over those entries. Exact replays run for
+  this batch: selectors `cl-generic-tests--method-files--finds-methods` and
+  `cl-generic-tests--method-files--nonexistent-methods`; exploratory selector
+  `cl-generic-tests--print-quoted`, which identified selector 1749 as the next
+  frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

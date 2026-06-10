@@ -2766,6 +2766,11 @@ impl Interpreter {
         let method_name = self.canonical_function_name(&requested_method_name, env);
         let precedence_order = self.cl_defgeneric_argument_precedence_order(&method_name);
         let method_specializers = cl_defmethod_specializers(&items[lambda_list_index])?;
+        self.add_cl_defmethod_load_history(
+            &method_name,
+            &items[2..lambda_list_index],
+            &items[lambda_list_index],
+        );
         let is_before_method = items[2..lambda_list_index]
             .iter()
             .any(|value| matches!(value, Value::Symbol(name) if name == ":before"));
@@ -3302,6 +3307,35 @@ impl Interpreter {
                 Value::list(docs),
             );
         }
+    }
+
+    fn add_cl_defmethod_load_history(
+        &mut self,
+        method_name: &str,
+        qualifiers: &[Value],
+        spec: &Value,
+    ) {
+        let Some(mut current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
+            return;
+        };
+        if current_load_list.is_nil() {
+            return;
+        }
+        let mut method = Vec::with_capacity(2 + qualifiers.len());
+        method.push(Value::Symbol(method_name.to_string()));
+        method.push(Value::list(qualifiers.to_vec()));
+        method.extend(cl_defmethod_load_history_specializers(spec));
+        let entry = Value::cons(Value::Symbol("cl-defmethod".into()), Value::list(method));
+        if current_load_list
+            .to_vec()
+            .is_ok_and(|items| items.iter().any(|item| item == &entry))
+        {
+            return;
+        }
+        let mut entries = current_load_list.to_vec().unwrap_or_default();
+        entries.push(entry);
+        current_load_list = Value::list(entries);
+        self.set_global_binding("current-load-list", current_load_list);
     }
 
     pub(super) fn sf_oclosure_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
