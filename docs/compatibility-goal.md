@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1748/7080 are verified locally against the current canonical
+- Tests through 1753/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1748/7080: record generic method files`.
-- The next observed frontier is selector 1749,
-  `cl-generic-tests--print-quoted` in
-  `test/lisp/emacs-lisp/cl-generic-tests.el`, which currently fails with
+  `Compat 1753/7080: describe generic method signatures`.
+- The next observed frontier is selector 1754,
+  `cl-lib-arglist-performance` in `test/lisp/emacs-lisp/cl-lib-tests.el`,
+  which currently fails with
   `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -211,6 +211,17 @@ counts as the progress denominator.
   this batch: selectors `cl-generic-tests--method-files--finds-methods` and
   `cl-generic-tests--method-files--nonexistent-methods`; exploratory selector
   `cl-generic-tests--print-quoted`, which identified selector 1749 as the next
+  frontier.
+- Selectors 1749..1753 passed after exposing a minimal
+  `cl--generic-describe` implementation that renders recorded `cl-defmethod`
+  load-history metadata into the current help buffer with normal `prin1`
+  quoting, preserving `(eql '4)` without turning it into function-quote syntax.
+  Exact replays run for this batch: selector
+  `cl-generic-tests--print-quoted` in
+  `test/lisp/emacs-lisp/cl-generic-tests.el`, plus selectors `cl-constantly`,
+  `cl-digit-char-p`, `cl-flet-test`, and `cl-lib-adjoin-test` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
+  `cl-lib-arglist-performance`, which identified selector 1754 as the next
   frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again

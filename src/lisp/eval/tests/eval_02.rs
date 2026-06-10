@@ -3769,6 +3769,40 @@ fn load_file_strict_records_cl_defmethod_files() {
 }
 
 #[test]
+fn cl_generic_describe_prints_quoted_eql_specializers() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-cl-generic-describe-{}.el",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        "(cl-defgeneric sample-describe-method (function))\n\
+         (cl-defmethod sample-describe-method ((function (eql '4))) (+ function 1))\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-temp-buffer
+               (cl--generic-describe 'sample-describe-method)
+               (list (not (re-search-forward \"#'\" nil t))
+                     (progn
+                       (goto-char (point-min))
+                       (not (null (re-search-forward \"(eql '4)\" nil t))))))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn load_in_progress_is_truthy_while_loading_files() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-load-progress-{}.el",
