@@ -1114,6 +1114,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "define-obsolete-variable-alias"
             | "macroexp-warn-and-return"
             | "cl--generic-method-files"
+            | "cl--generic-describe"
             | "macroexp-quote"
             | "macroexp-progn"
             | "macroexp-compiling-p"

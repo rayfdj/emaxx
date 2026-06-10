@@ -73,6 +73,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "define-obsolete-function-alias"
             | "macroexp-warn-and-return"
             | "cl--generic-method-files"
+            | "cl--generic-describe"
             | "describe-function"
             | "macroexp-quote"
             | "macroexp-progn"
@@ -953,24 +954,24 @@ pub(super) fn call(
         "cl--generic-method-files" => {
             need_args(name, args, 1)?;
             let method_name = args[0].as_symbol()?;
-            let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
-            let mut result = Vec::new();
-            for load_entry in load_history.to_vec().unwrap_or_default() {
-                let Some((file, defs)) = load_entry.cons_values() else {
+            Ok(Value::list(cl_generic_method_file_entries(
+                interp,
+                env,
+                method_name,
+            )))
+        }
+        "cl--generic-describe" => {
+            need_args(name, args, 1)?;
+            let method_name = args[0].as_symbol()?;
+            for entry in cl_generic_method_file_entries(interp, env, method_name) {
+                let Some((_file, method)) = entry.cons_values() else {
                     continue;
                 };
-                for def in defs.to_vec().unwrap_or_default() {
-                    let Ok(parts) = def.to_vec() else {
-                        continue;
-                    };
-                    if matches!(parts.first(), Some(Value::Symbol(kind)) if kind == "cl-defmethod")
-                        && matches!(parts.get(1), Some(Value::Symbol(method)) if method == method_name)
-                    {
-                        result.push(Value::cons(file.clone(), Value::list(parts[1..].to_vec())));
-                    }
-                }
+                let rendered = render_prin1(interp, &method, env)?;
+                interp.insert_current_buffer(&rendered);
+                interp.insert_current_buffer("\n");
             }
-            Ok(Value::list(result))
+            Ok(Value::Nil)
         }
         "describe-function" => {
             need_args(name, args, 1)?;
@@ -1251,6 +1252,31 @@ fn post_self_insert_hook_depth(hook: &Value) -> i32 {
         Value::Symbol(name) if name == "electric-indent-post-self-insert-function" => 60,
         _ => 50,
     }
+}
+
+fn cl_generic_method_file_entries(
+    interp: &Interpreter,
+    env: &Env,
+    method_name: &str,
+) -> Vec<Value> {
+    let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
+    let mut result = Vec::new();
+    for load_entry in load_history.to_vec().unwrap_or_default() {
+        let Some((file, defs)) = load_entry.cons_values() else {
+            continue;
+        };
+        for def in defs.to_vec().unwrap_or_default() {
+            let Ok(parts) = def.to_vec() else {
+                continue;
+            };
+            if matches!(parts.first(), Some(Value::Symbol(kind)) if kind == "cl-defmethod")
+                && matches!(parts.get(1), Some(Value::Symbol(method)) if method == method_name)
+            {
+                result.push(Value::cons(file.clone(), Value::list(parts[1..].to_vec())));
+            }
+        }
+    }
+    result
 }
 
 fn obsolete_definition_symbol(value: &Value) -> Result<&str, LispError> {
