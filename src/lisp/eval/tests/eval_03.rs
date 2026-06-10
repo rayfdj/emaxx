@@ -1486,6 +1486,20 @@ fn cl_typep_recognizes_builtin_numeric_parent_types() {
 }
 
 #[test]
+fn cl_deftype_optional_args_default_to_star() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-deftype sample-member-type (&optional x) `(member ,x))
+               (list (cl-typep '* 'sample-member-type)
+                     (cl-typep 1 'sample-member-type)
+                     (cl-typep 1 '(sample-member-type 1))))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn defclass_returns_the_class_name() {
     assert_eq!(
         eval_str("(defclass sample-class nil nil)"),

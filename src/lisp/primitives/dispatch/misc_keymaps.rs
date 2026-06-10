@@ -2595,7 +2595,7 @@ pub(super) fn call(
         }
         "cl-typep" => {
             need_args(name, args, 2)?;
-            let matches = cl_typep_matches(interp, &args[0], &args[1])?;
+            let matches = cl_typep_matches(interp, env, &args[0], &args[1])?;
             Ok(if matches { Value::T } else { Value::Nil })
         }
         "cl-functionp" => {
@@ -5533,23 +5533,47 @@ fn semantic_srecode_variable_tag(name: &str, value: Vec<Value>) -> Value {
 }
 
 fn cl_typep_matches(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
+    env: &mut Env,
     value: &Value,
     type_spec: &Value,
 ) -> Result<bool, LispError> {
     if let Ok(items) = type_spec.to_vec()
         && let Some(Value::Symbol(operator)) = items.first()
-        && operator == "or"
     {
-        for choice in &items[1..] {
-            if cl_typep_matches(interp, value, choice)? {
-                return Ok(true);
+        if operator == "or" {
+            for choice in &items[1..] {
+                if cl_typep_matches(interp, env, value, choice)? {
+                    return Ok(true);
+                }
             }
+            return Ok(false);
         }
-        return Ok(false);
+        if operator == "and" {
+            for choice in &items[1..] {
+                if !cl_typep_matches(interp, env, value, choice)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        if operator == "not" && items.len() == 2 {
+            return Ok(!cl_typep_matches(interp, env, value, &items[1])?);
+        }
+        if operator == "member" {
+            return Ok(items[1..]
+                .iter()
+                .any(|member| crate::lisp::primitives::values_equal(interp, value, member)));
+        }
+        if let Some(expanded) = cl_deftype_expansion(interp, env, operator, &items[1..])? {
+            return cl_typep_matches(interp, env, value, &expanded);
+        }
     }
 
     let target = type_spec.as_symbol()?;
+    if let Some(expanded) = cl_deftype_expansion(interp, env, target, &[])? {
+        return cl_typep_matches(interp, env, value, &expanded);
+    }
     let actual = cl_type_name(interp, value)?;
     let matches = target == "t"
         || (target == "list" && value.is_list())
@@ -5574,6 +5598,55 @@ fn cl_typep_matches(
                     | "byte-code-function"
             ));
     Ok(matches)
+}
+
+fn cl_deftype_expansion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    name: &str,
+    args: &[Value],
+) -> Result<Option<Value>, LispError> {
+    let Some(handler) = interp.get_symbol_property(name, "emaxx-cl-deftype-handler") else {
+        return Ok(None);
+    };
+    let Value::Lambda(params, _, _) = &handler else {
+        return Ok(None);
+    };
+    let call_args = cl_deftype_call_args(params, args)?;
+    interp
+        .call_function_value(handler, Some(name), &call_args, env)
+        .map(Some)
+}
+
+fn cl_deftype_call_args(params: &[String], args: &[Value]) -> Result<Vec<Value>, LispError> {
+    let mut required = 0usize;
+    let mut optional = 0usize;
+    let mut rest = false;
+    let mut in_optional = false;
+    for param in params {
+        match param.as_str() {
+            "&optional" => in_optional = true,
+            "&rest" => {
+                rest = true;
+                break;
+            }
+            _ if in_optional => optional += 1,
+            _ => required += 1,
+        }
+    }
+    if args.len() < required || (!rest && args.len() > required + optional) {
+        return Err(LispError::WrongNumberOfArgs(
+            "cl-deftype".into(),
+            args.len(),
+        ));
+    }
+    let mut call_args = args.to_vec();
+    if !rest {
+        while call_args.len() < required + optional {
+            call_args.push(Value::Symbol("*".into()));
+        }
+    }
+    Ok(call_args)
 }
 
 fn eieio_class_default_property(slot_name: &str) -> String {
