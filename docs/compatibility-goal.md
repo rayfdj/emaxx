@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1772/7080 are verified locally against the current canonical
+- Tests through 1775/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1772/7080: preserve cl-endp primitive`.
-- The next observed frontier is selector 1773, `cl-lib-test-nth-value` in
+  `Compat 1775/7080: expose cl multiple-value aliases`.
+- The next observed frontier is selector 1778, `cl-lib-test-typep` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
-  `void-variable`.
+  `ert-test-failed`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -248,6 +248,15 @@ counts as the progress denominator.
   table. Exact replay run for this batch: selector `cl-lib-test-endp` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
   `cl-lib-test-nth-value`, which identified selector 1773 as the next frontier.
+- Selectors 1773..1775 passed after exposing GNU `cl-lib`'s documented
+  multiple-value aliases directly in the list primitive layer: `cl-values`
+  behaves as `list`, and `cl-nth-value` behaves as `nth`. This preserves the
+  upstream semantics even when `cl--defalias` side effects have not installed
+  those aliases before use. Exact replays run for this batch: selectors
+  `cl-lib-test-nth-value`, `cl-lib-nth-value-test-multiple-values`, and
+  `cl-test-ldiff` in `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory
+  selector `cl-lib-test-typep`, which identified selector 1778 as the next
+  frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

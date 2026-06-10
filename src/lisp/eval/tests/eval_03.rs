@@ -3393,6 +3393,37 @@ fn defalias_can_reference_incf_via_function_quote() {
 }
 
 #[test]
+fn defalias_can_reference_list_primitives_via_function_quote() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defalias 'sample-values #'list)
+               (defalias 'sample-nth-value #'nth)
+               (let ((vals (sample-values 2 3)))
+                 (list (sample-nth-value 0 vals)
+                       (sample-nth-value 1 vals)
+                       (sample-nth-value 2 vals))))"
+        ),
+        Value::list([Value::Integer(2), Value::Integer(3), Value::Nil])
+    );
+}
+
+#[test]
+fn cl_lib_multiple_value_aliases_load_from_upstream() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'cl-lib)
+               (let ((vals (cl-values 2 3)))
+                 (list (cl-nth-value 0 vals)
+                       (cl-nth-value 1 vals)
+                       (cl-nth-value 2 vals))))"
+        ),
+        Value::list([Value::Integer(2), Value::Integer(3), Value::Nil])
+    );
+}
+
+#[test]
 fn fset_can_define_function_aliases() {
     assert_eq!(
         eval_str("(progn (fset 'sample-head #'car) (sample-head '(1 2 3)))"),
