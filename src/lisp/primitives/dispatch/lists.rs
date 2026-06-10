@@ -8,6 +8,13 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-first"
             | "cl-second"
             | "cl-third"
+            | "cl-fourth"
+            | "cl-fifth"
+            | "cl-sixth"
+            | "cl-seventh"
+            | "cl-eighth"
+            | "cl-ninth"
+            | "cl-tenth"
             | "cdr"
             | "car-safe"
             | "cdr-safe"
@@ -345,12 +352,20 @@ pub(super) fn call(
                     .map_err(|_| wrong_type_argument("listp", args[0].clone()))
             }
         }
-        "cl-first" | "cl-second" | "cl-third" => {
+        "cl-first" | "cl-second" | "cl-third" | "cl-fourth" | "cl-fifth" | "cl-sixth"
+        | "cl-seventh" | "cl-eighth" | "cl-ninth" | "cl-tenth" => {
             need_args(name, args, 1)?;
             let index = match name {
                 "cl-first" => 0,
                 "cl-second" => 1,
-                _ => 2,
+                "cl-third" => 2,
+                "cl-fourth" => 3,
+                "cl-fifth" => 4,
+                "cl-sixth" => 5,
+                "cl-seventh" => 6,
+                "cl-eighth" => 7,
+                "cl-ninth" => 8,
+                _ => 9,
             };
             let mut tail = args[0].clone();
             for _ in 0..index {
