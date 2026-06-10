@@ -20,9 +20,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "cdr-safe"
             | "identity"
             | "list"
+            | "cl-values"
             | "nconc"
             | "append"
             | "nth"
+            | "cl-nth-value"
             | "elt"
             | "nthcdr"
             | "last"
@@ -405,7 +407,7 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(args[0].clone())
         }
-        "list" => Ok(Value::list(args.iter().cloned())),
+        "list" | "cl-values" => Ok(Value::list(args.iter().cloned())),
         "nconc" => nconc_values(args),
         "append" => {
             let mut items: Vec<Value> = Vec::new();
@@ -432,7 +434,7 @@ pub(super) fn call(
             }
             Ok(Value::list(items))
         }
-        "nth" => {
+        "nth" | "cl-nth-value" => {
             need_args(name, args, 2)?;
             let n = args[0].as_integer()? as usize;
             if let Some(items) = keymap_list_items(interp, &args[1])? {
