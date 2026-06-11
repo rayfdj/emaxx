@@ -19,13 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1778/7080 are verified locally against the current canonical
+- Tests through 1782/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1778/7080: expand cl-deftype specs`.
-- The next observed frontier is selector 1779, `cl-lib-symbol-macrolet` in
+  `Compat 1782/7080: preserve symbol macro call heads`.
+- The next observed frontier is selector 1783, `old-struct` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
-  `wrong-type-argument`.
+  `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -265,6 +265,14 @@ counts as the progress denominator.
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
   `cl-lib-symbol-macrolet`, which identified selector 1779 as the next
   frontier.
+- Selectors 1779..1782 passed after making `cl-symbol-macrolet` rewrite
+  variable references without rewriting ordinary function-call operators, and
+  after teaching `cl-letf` symbol-macro substitution to rewrite its place while
+  keeping the macro visible in the body. Exact replays run for this batch:
+  selectors `cl-lib-symbol-macrolet`, `cl-lib-symbol-macrolet-2`,
+  `cl-lib-symbol-macrolet-hide`, and `cl-lib-defstruct-record` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector `old-struct`,
+  which identified selector 1783 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
