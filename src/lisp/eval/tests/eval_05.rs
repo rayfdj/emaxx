@@ -1350,6 +1350,52 @@ fn cl_loop_while_supports_equals_then_assignment() {
 }
 
 #[test]
+fn cl_loop_with_sequential_bindings_see_prior_values() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop with a = 1
+                      with b = (+ a 2)
+                      with c = (+ b 3)
+                      return (list a b c))"
+        ),
+        Value::list([Value::Integer(1), Value::Integer(3), Value::Integer(6)])
+    );
+}
+
+#[test]
+fn cl_loop_with_and_bindings_initialize_in_parallel() {
+    assert_eq!(
+        eval_str(
+            "(let ((a 5)
+                   (b 10))
+               (cl-loop with a = 1
+                        and b = (+ a 2)
+                        and c = (+ b 3)
+                        return (list a b c)))"
+        ),
+        Value::list([Value::Integer(1), Value::Integer(7), Value::Integer(13)])
+    );
+}
+
+#[test]
+fn cl_loop_with_defaults_to_nil_and_splits_do_finally() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (cl-loop for i below 3
+                        with loop-with
+                        do (push (* i i) loop-with)
+                        finally (cl-return loop-with))
+               (boundp 'loop-with))"
+        ),
+        Value::list([
+            Value::list([Value::Integer(4), Value::Integer(1), Value::Integer(0)]),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
 fn cl_loop_if_do_append_runs_body_before_append() {
     assert_eq!(
         eval_str(

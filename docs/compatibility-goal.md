@@ -19,18 +19,28 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1785/7080 are verified locally against the current canonical
+- Tests through 1786/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1785/7080: support cl-loop equals-then while`.
-- The next observed frontier is selector 1786, `cl-macs-loop-with` in
-  `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with `error`.
+  `Compat 1786/7080: support cl-loop with groups`.
+- The next observed frontier is selector 1787, `cl-macs-test--symbol-macrolet`
+  in `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with
+  emaxx condition type `error` while oracle GNU Emacs passes.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
   `cargo fmt --check`, and `git diff --check` before pushing. Full selected
   prefix replays should be used strategically at larger milestones rather than
   after every small commit.
+- Selector 1786, `cl-macs-loop-with` in
+  `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
+  support for sequential `with` initialization, parallel `with ... and ...`
+  initialization against surrounding bindings, default `nil` initialization
+  for bare `with` variables, and splitting `do ... finally FORM` so final
+  forms are not executed as loop body forms. Exact replay run for this batch:
+  selector `cl-macs-loop-with`; exploratory selector
+  `cl-macs-test--symbol-macrolet`, which identified selector 1787 as the next
+  frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable

@@ -317,25 +317,43 @@ impl Interpreter {
             ));
         }
         let mut specs = Vec::new();
-        let mut with_bindings = Vec::new();
+        let mut with_binding_groups = Vec::new();
         let mut while_expr = None;
         let mut index = 1usize;
         while index < items.len() {
             match items.get(index) {
                 Some(Value::Symbol(symbol)) if symbol == "with" => {
-                    let pattern = items
-                        .get(index + 1)
-                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                        .clone();
-                    if !matches!(items.get(index + 2), Some(Value::Symbol(eq)) if eq == "=") {
-                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    let mut group = Vec::new();
+                    loop {
+                        let pattern = items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone();
+                        let (expr, next_index) = if matches!(items.get(index + 2), Some(Value::Symbol(eq)) if eq == "=")
+                        {
+                            (
+                                Some(
+                                    items
+                                        .get(index + 3)
+                                        .ok_or_else(|| {
+                                            LispError::Signal("Unsupported cl-loop syntax".into())
+                                        })?
+                                        .clone(),
+                                ),
+                                index + 4,
+                            )
+                        } else {
+                            (None, index + 2)
+                        };
+                        group.push((pattern, expr));
+                        if !matches!(items.get(next_index), Some(Value::Symbol(and)) if and == "and")
+                        {
+                            index = next_index;
+                            break;
+                        }
+                        index = next_index;
                     }
-                    let expr = items
-                        .get(index + 3)
-                        .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                        .clone();
-                    with_bindings.push((pattern, expr));
-                    index += 4;
+                    with_binding_groups.push(group);
                 }
                 Some(Value::Symbol(symbol)) if symbol == "for" => {
                     let pattern = items
@@ -538,7 +556,7 @@ impl Interpreter {
             }
         }
 
-        if (specs.is_empty() && with_bindings.is_empty() && while_expr.is_none())
+        if (specs.is_empty() && with_binding_groups.is_empty() && while_expr.is_none())
             || index >= items.len()
         {
             return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
@@ -573,14 +591,19 @@ impl Interpreter {
                 self.collect_cl_pattern_names(pattern, &mut bindings)?;
             }
         }
-        for (pattern, _) in &with_bindings {
-            self.collect_cl_pattern_names(pattern, &mut bindings)?;
-        }
         env.push(bindings);
-        for (pattern, expr) in &with_bindings {
-            let value = self.eval(expr, env)?;
+        for group in &with_binding_groups {
+            let values = group
+                .iter()
+                .map(|(_, expr)| {
+                    expr.as_ref()
+                        .map_or(Ok(Value::Nil), |expr| self.eval(expr, env))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let frame = env.last_mut().expect("env frame just pushed");
-            self.bind_cl_pattern(pattern, value, frame)?;
+            for ((pattern, _), value) in group.iter().zip(values) {
+                self.bind_cl_pattern(pattern, value, frame)?;
+            }
         }
 
         let mut final_return = None;
@@ -754,7 +777,22 @@ impl Interpreter {
                 _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
             },
             Some(Value::Symbol(symbol)) if symbol == "do" => {
-                LoopAction::Do(items[index + 1..].to_vec())
+                let body_start = index + 1;
+                let finally_index = items[body_start..]
+                    .iter()
+                    .position(|item| matches!(item, Value::Symbol(symbol) if symbol == "finally"))
+                    .map(|offset| body_start + offset);
+                if let Some(finally_index) = finally_index {
+                    final_return = Some(
+                        items
+                            .get(finally_index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    );
+                    LoopAction::Do(items[body_start..finally_index].to_vec())
+                } else {
+                    LoopAction::Do(items[body_start..].to_vec())
+                }
             }
             Some(Value::Symbol(symbol)) if symbol == "collect" => {
                 if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "into") {
@@ -1166,7 +1204,7 @@ impl Interpreter {
         if let Some(expr) = final_return.as_ref()
             && !returned_early
         {
-            result = self.eval(expr, env)?;
+            result = self.eval_cl_loop_final_return(expr, env)?;
         }
 
         env.pop();
@@ -1192,6 +1230,23 @@ impl Interpreter {
             LoopAction::UnlessCollect { .. } => Value::list(collected),
             _ => result,
         })
+    }
+
+    fn eval_cl_loop_final_return(
+        &mut self,
+        expr: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if let Ok(items) = expr.to_vec()
+            && matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "cl-return")
+        {
+            return match items.as_slice() {
+                [_, value] => self.eval(value, env),
+                [_] => Ok(Value::Nil),
+                _ => Err(LispError::Signal("Unsupported cl-loop syntax".into())),
+            };
+        }
+        self.eval(expr, env)
     }
 
     pub(super) fn eval_resolved_setf_place_current_value(
