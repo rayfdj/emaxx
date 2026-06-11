@@ -227,6 +227,7 @@ impl Interpreter {
             Do(Vec<Value>),
             Collect(Value),
             Append(Value),
+            Vconcat(Value),
             Thereis {
                 expr: Value,
                 until: Option<Value>,
@@ -663,6 +664,12 @@ impl Interpreter {
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
                     .clone(),
             ),
+            Some(Value::Symbol(symbol)) if symbol == "vconcat" => LoopAction::Vconcat(
+                items
+                    .get(index + 1)
+                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                    .clone(),
+            ),
             Some(Value::Symbol(symbol)) if symbol == "thereis" => LoopAction::Thereis {
                 expr: items
                     .get(index + 1)
@@ -824,6 +831,11 @@ impl Interpreter {
                     let values = self.eval(expr, env)?.to_vec()?;
                     collected.extend(values);
                 }
+                LoopAction::Vconcat(expr) => {
+                    collected.extend(crate::lisp::primitives::vector_items(
+                        &self.eval(expr, env)?,
+                    )?);
+                }
                 LoopAction::Thereis { expr, until } => {
                     if let Some(until_expr) = until
                         && self.eval(until_expr, env)?.is_truthy()
@@ -937,6 +949,11 @@ impl Interpreter {
         }
         Ok(match action {
             LoopAction::Collect(_) | LoopAction::Append(_) => Value::list(collected),
+            LoopAction::Vconcat(_) => Value::list(
+                std::iter::once(Value::symbol("vector-literal"))
+                    .chain(collected)
+                    .collect::<Vec<_>>(),
+            ),
             LoopAction::WhenCollect { .. } | LoopAction::WhenAppend { .. } => {
                 Value::list(collected)
             }

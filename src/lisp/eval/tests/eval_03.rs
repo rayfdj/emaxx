@@ -1723,6 +1723,60 @@ fn cl_symbol_macrolet_hides_behind_lexical_bindings() {
 }
 
 #[test]
+fn cl_old_struct_compat_mode_types_tagged_vectors() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (cl-defstruct sample-old-struct x)
+                   (let ((x (vector 'cl-struct-sample-old-struct))
+                         (saved cl-old-struct-compat-mode))
+                     (cl-old-struct-compat-mode -1)
+                     (let ((disabled (type-of x)))
+                       (cl-old-struct-compat-mode 1)
+                       (defvar cl-struct-sample-old-struct)
+                       (let ((cl-struct-sample-old-struct
+                              (cl--struct-get-class 'sample-old-struct)))
+                         (setf (symbol-function 'cl-struct-sample-old-struct)
+                               :quick-object-witness-check)
+                         (prog1
+                             (list disabled
+                                   (type-of x)
+                                   (type-of (vector 'sample-old-struct)))
+                           (cl-old-struct-compat-mode (if saved 1 -1)))))))"
+        ),
+        Value::list([
+            Value::Symbol("vector".into()),
+            Value::Symbol("sample-old-struct".into()),
+            Value::Symbol("vector".into()),
+        ])
+    );
+}
+
+#[test]
+fn cl_struct_define_legacy_type_enables_old_struct_mode() {
+    assert_eq!(
+        eval_str(
+            "(let ((saved cl-old-struct-compat-mode))
+                   (cl-old-struct-compat-mode -1)
+                   (cl-struct-define 'sample-old-define \"\" 'cl-structure-object
+                                     nil nil nil
+                                     'cl-struct-sample-old-define-tags
+                                     'cl-struct-sample-old-define t)
+                   (prog1
+                       (list cl-old-struct-compat-mode
+                             cl-struct-sample-old-define-tags
+                             (symbol-function 'cl-struct-sample-old-define))
+                     (cl-old-struct-compat-mode (if saved 1 -1))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::Symbol("cl-struct-sample-old-define".into())]),
+            Value::Symbol(":quick-object-witness-check".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_generic_define_generalizer_registers_runtime_value() {
     assert_eq!(
         eval_str(

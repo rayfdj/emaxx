@@ -19,12 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1782/7080 are verified locally against the current canonical
+- Tests through 1783/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1782/7080: preserve symbol macro call heads`.
-- The next observed frontier is selector 1783, `old-struct` in
-  `test/lisp/emacs-lisp/cl-lib-tests.el`, which currently fails with
+  `Compat 1783/7080: support loop vconcat and old structs`.
+- The next observed frontier is selector 1784, `cl-macs-loop-when` in
+  `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with
   `void-variable`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -273,6 +273,17 @@ counts as the progress denominator.
   `cl-lib-symbol-macrolet-hide`, and `cl-lib-defstruct-record` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector `old-struct`,
   which identified selector 1783 as the next frontier.
+- Selector 1783 passed after adding `cl-loop` `vconcat` accumulation, which
+  evaluates a vector-producing expression each iteration and returns a vector
+  containing the concatenated elements. This batch also added honest legacy
+  CL struct compatibility support for `cl-old-struct-compat-mode`,
+  `cl--struct-get-class`, `cl-struct-define`, and old `cl-struct-*` tagged
+  vectors in `type-of`, covering earlier out-of-order selectors
+  `old-struct` and `cl-lib-old-struct`. Exact replays run for this batch:
+  selectors `cl-macs-loop-vconcat` in `test/lisp/emacs-lisp/cl-macs-tests.el`
+  and `old-struct`, `cl-lib-old-struct`, and `cl-constantly` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
+  `cl-macs-loop-when`, which identified selector 1784 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
