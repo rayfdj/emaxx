@@ -2460,12 +2460,16 @@ fn substitute_symbol_macros_in_list(
         "lambda" => substitute_symbol_macros_in_lambda(&items, expansions),
         "let" => substitute_symbol_macros_in_let(&items, expansions, false),
         "let*" => substitute_symbol_macros_in_let(&items, expansions, true),
+        "cl-letf" => substitute_symbol_macros_in_cl_letf(&items, expansions),
         "setq" => substitute_symbol_macros_in_setq(&items, expansions),
-        _ => items
-            .iter()
-            .map(|item| substitute_symbol_macros(item, expansions))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::list),
+        _ => {
+            let mut rewritten = Vec::with_capacity(items.len());
+            rewritten.push(items[0].clone());
+            for item in &items[1..] {
+                rewritten.push(substitute_symbol_macros(item, expansions)?);
+            }
+            Ok(Value::list(rewritten))
+        }
     }
 }
 
@@ -2546,6 +2550,37 @@ fn substitute_symbol_macros_in_let(
     rewritten.push(Value::list(rewritten_bindings));
     for form in &items[2..] {
         rewritten.push(substitute_symbol_macros(form, &body_scope)?);
+    }
+    Ok(Value::list(rewritten))
+}
+
+fn substitute_symbol_macros_in_cl_letf(
+    items: &[Value],
+    expansions: &HashMap<String, Value>,
+) -> Result<Value, LispError> {
+    let Some(bindings_value) = items.get(1) else {
+        return Ok(Value::list(items.iter().cloned()));
+    };
+    let mut rewritten_bindings = Vec::new();
+    for binding in bindings_value.to_vec()? {
+        let parts = binding.to_vec()?;
+        if parts.is_empty() {
+            rewritten_bindings.push(Value::list(parts));
+            continue;
+        }
+        let mut rewritten = Vec::with_capacity(parts.len());
+        rewritten.push(substitute_symbol_macros(&parts[0], expansions)?);
+        for form in &parts[1..] {
+            rewritten.push(substitute_symbol_macros(form, expansions)?);
+        }
+        rewritten_bindings.push(Value::list(rewritten));
+    }
+
+    let mut rewritten = Vec::with_capacity(items.len());
+    rewritten.push(items[0].clone());
+    rewritten.push(Value::list(rewritten_bindings));
+    for form in &items[2..] {
+        rewritten.push(substitute_symbol_macros(form, expansions)?);
     }
     Ok(Value::list(rewritten))
 }

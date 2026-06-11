@@ -1690,6 +1690,39 @@ fn cl_symbol_macrolet_respects_lexical_shadowing() {
 }
 
 #[test]
+fn cl_symbol_macrolet_preserves_function_call_position() {
+    assert_eq!(
+        eval_str(
+            "(cl-symbol-macrolet ((f (+ x 6)))
+                   (cl-flet ((f (x) (+ x 5)))
+                     (let ((x 5))
+                       (f f))))"
+        ),
+        Value::Integer(16)
+    );
+}
+
+#[test]
+fn cl_symbol_macrolet_hides_behind_lexical_bindings() {
+    assert_eq!(
+        eval_str(
+            "(let ((y 5))
+                   (cl-symbol-macrolet ((x y))
+                     (list x
+                           (let ((x 6)) (list x y))
+                           (cl-letf ((x 6)) (list x y))
+                           (apply (lambda (x) (+ x 1)) (list 8)))))"
+        ),
+        Value::list([
+            Value::Integer(5),
+            Value::list([Value::Integer(6), Value::Integer(5)]),
+            Value::list([Value::Integer(6), Value::Integer(6)]),
+            Value::Integer(9),
+        ])
+    );
+}
+
+#[test]
 fn cl_generic_define_generalizer_registers_runtime_value() {
     assert_eq!(
         eval_str(
