@@ -1270,6 +1270,21 @@ fn cl_loop_collect_into_finally_return() {
 }
 
 #[test]
+fn cl_loop_vconcat_accumulates_vector_elements() {
+    assert_eq!(
+        eval_str("(cl-loop for x in (list 1 2 3 4 5) vconcat (vector (1+ x)))"),
+        Value::list([
+            Value::symbol("vector-literal"),
+            Value::Integer(2),
+            Value::Integer(3),
+            Value::Integer(4),
+            Value::Integer(5),
+            Value::Integer(6),
+        ])
+    );
+}
+
+#[test]
 fn cl_loop_if_do_append_runs_body_before_append() {
     assert_eq!(
         eval_str(

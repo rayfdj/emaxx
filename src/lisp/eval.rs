@@ -492,6 +492,7 @@ impl Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
+                ("cl-old-struct-compat-mode".into(), Value::Nil),
                 (
                     "command-line-args".into(),
                     primitives::command_line_args_value(),

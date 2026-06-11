@@ -211,6 +211,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "type-of"
             | "cl-type-of"
             | "cl-find-class"
+            | "cl--struct-get-class"
+            | "cl-struct-define"
+            | "cl-old-struct-compat-mode"
             | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
@@ -2271,6 +2274,9 @@ pub(super) fn call(
         }
         "type-of" => {
             need_args(name, args, 1)?;
+            if let Some(type_name) = legacy_struct_vector_type(interp, &args[0], env) {
+                return Ok(Value::Symbol(type_name));
+            }
             let name = match &args[0] {
                 Value::Nil => "symbol",
                 Value::T => "symbol",
@@ -2313,6 +2319,51 @@ pub(super) fn call(
             } else {
                 Value::Nil
             })
+        }
+        "cl--struct-get-class" => {
+            need_args(name, args, 1)?;
+            let symbol = args[0].as_symbol()?;
+            Ok(interp.class_value(symbol).unwrap_or(Value::Nil))
+        }
+        "cl-struct-define" => {
+            need_args(name, args, 9)?;
+            let struct_name = args[0].as_symbol()?.to_string();
+            let type_arg = args[3].clone();
+            let children_symbol = args[6].as_symbol()?.to_string();
+            let tag = args[7].clone();
+            if type_arg.is_nil() {
+                interp.set_variable("cl-old-struct-compat-mode", Value::T, env);
+            }
+            let mut children = interp
+                .lookup_var(&children_symbol, env)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default();
+            if !children.iter().any(|child| child == &tag) {
+                children.insert(0, tag.clone());
+            }
+            interp.set_variable(&children_symbol, Value::list(children), env);
+            if !matches!(tag, Value::Symbol(ref tag_name) if tag_name == &struct_name)
+                && let Value::Symbol(tag_name) = &tag
+            {
+                let class_value = interp
+                    .class_value(&struct_name)
+                    .unwrap_or_else(|| Value::Symbol(struct_name.clone()));
+                interp.set_variable(tag_name, class_value, env);
+                interp.set_function_binding(
+                    tag_name,
+                    Some(Value::Symbol(":quick-object-witness-check".into())),
+                );
+            }
+            Ok(Value::Symbol(struct_name))
+        }
+        "cl-old-struct-compat-mode" => {
+            need_args(name, args, 1)?;
+            let enabled = !args[0].is_nil()
+                && !matches!(&args[0], Value::Integer(n) if *n <= 0)
+                && !matches!(&args[0], Value::BigInteger(n) if n <= &BigInt::from(0));
+            let value = if enabled { Value::T } else { Value::Nil };
+            interp.set_variable("cl-old-struct-compat-mode", value.clone(), env);
+            Ok(value)
         }
         "cl--class-parents" => {
             need_args(name, args, 1)?;
@@ -9943,6 +9994,27 @@ fn quoted_list_literal(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(|items| {
         matches!(items.as_slice(), [Value::Symbol(quote), quoted] if quote == "quote" && quoted.is_list())
     })
+}
+
+fn legacy_struct_vector_type(interp: &Interpreter, value: &Value, env: &Env) -> Option<String> {
+    if !interp
+        .lookup_var("cl-old-struct-compat-mode", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return None;
+    }
+    let items = vector_items(value).ok()?;
+    let Some(Value::Symbol(tag)) = items.first() else {
+        return None;
+    };
+    let type_name = tag.strip_prefix("cl-struct-")?;
+    interp.class_value(type_name)?;
+    let witness = interp.raw_function_binding(tag, env)?;
+    if witness == Value::Symbol(":quick-object-witness-check".into()) {
+        Some(type_name.to_string())
+    } else {
+        None
+    }
 }
 
 fn dodgy_eq_literal_type(function: &str, value: &Value) -> Option<&'static str> {
