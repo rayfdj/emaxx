@@ -19,11 +19,11 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1784/7080 are verified locally against the current canonical
+- Tests through 1785/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1784/7080: bind cl-loop when it`.
-- The next observed frontier is selector 1785, `cl-macs-loop-while` in
+  `Compat 1785/7080: support cl-loop equals-then while`.
+- The next observed frontier is selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with `error`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -291,6 +291,13 @@ counts as the progress denominator.
   Exact replay run for this batch: selector `cl-macs-loop-when` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`; exploratory selector
   `cl-macs-loop-while`, which identified selector 1785 as the next frontier.
+- Selector 1785 passed after teaching `cl-loop` `for VAR = INIT then STEP`
+  assignment clauses to evaluate `INIT` on the first iteration and `STEP` on
+  later iterations, and after checking loop `while` conditions before those
+  per-iteration assignment updates. Exact replay run for this batch: selector
+  `cl-macs-loop-while` in `test/lisp/emacs-lisp/cl-macs-tests.el`;
+  exploratory selector `cl-macs-loop-with`, which identified selector 1786 as
+  the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378
