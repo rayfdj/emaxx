@@ -1329,6 +1329,27 @@ fn cl_loop_when_nested_collects_into_else_targets() {
 }
 
 #[test]
+fn cl_loop_while_supports_equals_then_assignment() {
+    assert_eq!(
+        eval_str(
+            "(let ((stack '(a b c d e f)))
+                   (cl-loop while stack
+                            for item = (length stack) then (pop stack)
+                            collect item))"
+        ),
+        Value::list([
+            Value::Integer(6),
+            Value::Symbol("a".into()),
+            Value::Symbol("b".into()),
+            Value::Symbol("c".into()),
+            Value::Symbol("d".into()),
+            Value::Symbol("e".into()),
+            Value::Symbol("f".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_loop_if_do_append_runs_body_before_append() {
     assert_eq!(
         eval_str(

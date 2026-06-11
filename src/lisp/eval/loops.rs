@@ -216,11 +216,30 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         enum LoopSpec {
-            Range { name: String, values: Vec<Value> },
-            List { pattern: Value, values: Vec<Value> },
-            From { name: String, start: i64 },
-            Assign { name: String, expr: Value },
-            Repeat { count: usize },
+            Range {
+                name: String,
+                values: Vec<Value>,
+            },
+            List {
+                pattern: Value,
+                values: Vec<Value>,
+            },
+            From {
+                name: String,
+                start: i64,
+            },
+            Assign {
+                name: String,
+                expr: Value,
+            },
+            AssignThen {
+                name: String,
+                init: Value,
+                step: Value,
+            },
+            Repeat {
+                count: usize,
+            },
         }
 
         enum LoopAction {
@@ -471,8 +490,24 @@ impl Interpreter {
                                     LispError::Signal("Unsupported cl-loop syntax".into())
                                 })?
                                 .clone();
-                            specs.push(LoopSpec::Assign { name, expr });
-                            index += 4;
+                            if matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "then")
+                            {
+                                let step = items
+                                    .get(index + 5)
+                                    .ok_or_else(|| {
+                                        LispError::Signal("Unsupported cl-loop syntax".into())
+                                    })?
+                                    .clone();
+                                specs.push(LoopSpec::AssignThen {
+                                    name,
+                                    init: expr,
+                                    step,
+                                });
+                                index += 6;
+                            } else {
+                                specs.push(LoopSpec::Assign { name, expr });
+                                index += 4;
+                            }
                         }
                         _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
                     }
@@ -516,7 +551,9 @@ impl Interpreter {
                     Some(values.len())
                 }
                 LoopSpec::Repeat { count } => Some(*count),
-                LoopSpec::From { .. } | LoopSpec::Assign { .. } => None,
+                LoopSpec::From { .. } | LoopSpec::Assign { .. } | LoopSpec::AssignThen { .. } => {
+                    None
+                }
             })
             .min()
             .unwrap_or(if while_expr.is_some() { usize::MAX } else { 1 });
@@ -526,7 +563,8 @@ impl Interpreter {
             .filter_map(|spec| match spec {
                 LoopSpec::Range { name, .. }
                 | LoopSpec::From { name, .. }
-                | LoopSpec::Assign { name, .. } => Some((name.clone(), Value::Nil)),
+                | LoopSpec::Assign { name, .. }
+                | LoopSpec::AssignThen { name, .. } => Some((name.clone(), Value::Nil)),
                 LoopSpec::List { .. } | LoopSpec::Repeat { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -911,17 +949,9 @@ impl Interpreter {
                                 Self::stored_value(Value::Integer(*start + iteration as i64)),
                             );
                         }
-                        LoopSpec::Assign { .. } => {}
+                        LoopSpec::Assign { .. } | LoopSpec::AssignThen { .. } => {}
                         LoopSpec::Repeat { .. } => {}
                     }
-                }
-            }
-
-            for spec in &specs {
-                if let LoopSpec::Assign { name, expr } = spec {
-                    let value = Self::stored_value(self.eval(expr, env)?);
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    Self::upsert_frame_binding(frame, name.clone(), value);
                 }
             }
 
@@ -929,6 +959,23 @@ impl Interpreter {
                 && !self.eval(expr, env)?.is_truthy()
             {
                 break;
+            }
+
+            for spec in &specs {
+                match spec {
+                    LoopSpec::Assign { name, expr } => {
+                        let value = Self::stored_value(self.eval(expr, env)?);
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(frame, name.clone(), value);
+                    }
+                    LoopSpec::AssignThen { name, init, step } => {
+                        let form = if iteration == 0 { init } else { step };
+                        let value = Self::stored_value(self.eval(form, env)?);
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(frame, name.clone(), value);
+                    }
+                    _ => {}
+                }
             }
 
             match &action {
