@@ -19,13 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1783/7080 are verified locally against the current canonical
+- Tests through 1784/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1783/7080: support loop vconcat and old structs`.
-- The next observed frontier is selector 1784, `cl-macs-loop-when` in
-  `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with
-  `void-variable`.
+  `Compat 1784/7080: bind cl-loop when it`.
+- The next observed frontier is selector 1785, `cl-macs-loop-while` in
+  `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with `error`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -284,6 +283,14 @@ counts as the progress denominator.
   and `old-struct`, `cl-lib-old-struct`, and `cl-constantly` in
   `test/lisp/emacs-lisp/cl-lib-tests.el`; exploratory selector
   `cl-macs-loop-when`, which identified selector 1784 as the next frontier.
+- Selector 1784 passed after binding the CL loop anaphoric `it` variable to
+  the truthy `when` condition value for `return`, `collect`, `append`, and
+  `collect ... into` actions, and after accepting simple `when ... return`
+  clauses without a trailing `finally return`. The loop parser also recognizes
+  the nested `when`/`else` collect-into shape used by the upstream selector.
+  Exact replay run for this batch: selector `cl-macs-loop-when` in
+  `test/lisp/emacs-lisp/cl-macs-tests.el`; exploratory selector
+  `cl-macs-loop-while`, which identified selector 1785 as the next frontier.
 - The 1..378 exact selected-test prefix was replayed after the
   `primitives.rs`/`eval.rs` split, after the SRecode/Semantic fixes, and again
   after the char-fold/regexp changes; all 378 passed. The same exact 1..378

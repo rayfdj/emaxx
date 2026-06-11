@@ -1285,6 +1285,50 @@ fn cl_loop_vconcat_accumulates_vector_elements() {
 }
 
 #[test]
+fn cl_loop_when_binds_it_to_condition_value() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (cl-loop for i in '(1 2 3 4 5 6)
+                        when (and (> i 3) i)
+                          collect it)
+               (cl-loop for i in '(1 2 3 4 5 6)
+                        when (and (> i 3) i)
+                          return it))"
+        ),
+        Value::list([
+            Value::list([Value::Integer(4), Value::Integer(5), Value::Integer(6)]),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_when_nested_collects_into_else_targets() {
+    assert_eq!(
+        eval_str(
+            r#"(cl-loop for elt in '(1 a 2 "a" (3 4) 5 6)
+                      when (numberp elt)
+                        when (cl-evenp elt) collect elt into even
+                        else collect elt into odd
+                      else
+                        when (symbolp elt) collect elt into syms
+                        else collect elt into other
+                      finally return (list even odd syms other))"#
+        ),
+        Value::list([
+            Value::list([Value::Integer(2), Value::Integer(6)]),
+            Value::list([Value::Integer(1), Value::Integer(5)]),
+            Value::list([Value::Symbol("a".into())]),
+            Value::list([
+                Value::String("a".into()),
+                Value::list([Value::Integer(3), Value::Integer(4)]),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn cl_loop_if_do_append_runs_body_before_append() {
     assert_eq!(
         eval_str(
