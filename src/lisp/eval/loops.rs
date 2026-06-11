@@ -252,6 +252,7 @@ impl Interpreter {
                 expr: Value,
                 name: String,
             },
+            NestedWhenCollectInto(Box<NestedWhenCollectIntoAction>),
             UnlessCollect {
                 condition: Value,
                 expr: Value,
@@ -274,6 +275,20 @@ impl Interpreter {
                 condition: Value,
                 body: Vec<Value>,
             },
+        }
+
+        struct NestedWhenCollectIntoAction {
+            condition: Value,
+            then_condition: Value,
+            then_expr: Value,
+            then_name: String,
+            then_else_expr: Value,
+            then_else_name: String,
+            else_condition: Value,
+            else_expr: Value,
+            else_name: String,
+            else_else_expr: Value,
+            else_else_name: String,
         }
 
         if items.len() < 3 {
@@ -533,18 +548,97 @@ impl Interpreter {
         let mut final_return = None;
         let action = match items.get(index) {
             Some(Value::Symbol(symbol)) if symbol == "when" => match items.get(index + 2) {
-                Some(Value::Symbol(kind)) if kind == "return" => {
-                    if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
-                        || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
+                Some(Value::Symbol(kind)) if kind == "when" => {
+                    if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "collect")
+                        || !matches!(items.get(index + 6), Some(Value::Symbol(kind)) if kind == "into")
+                        || !matches!(items.get(index + 8), Some(Value::Symbol(kind)) if kind == "else")
+                        || !matches!(items.get(index + 9), Some(Value::Symbol(kind)) if kind == "collect")
+                        || !matches!(items.get(index + 11), Some(Value::Symbol(kind)) if kind == "into")
+                        || !matches!(items.get(index + 13), Some(Value::Symbol(kind)) if kind == "else")
+                        || !matches!(items.get(index + 14), Some(Value::Symbol(kind)) if kind == "when")
+                        || !matches!(items.get(index + 16), Some(Value::Symbol(kind)) if kind == "collect")
+                        || !matches!(items.get(index + 18), Some(Value::Symbol(kind)) if kind == "into")
+                        || !matches!(items.get(index + 20), Some(Value::Symbol(kind)) if kind == "else")
+                        || !matches!(items.get(index + 21), Some(Value::Symbol(kind)) if kind == "collect")
+                        || !matches!(items.get(index + 23), Some(Value::Symbol(kind)) if kind == "into")
+                        || !matches!(items.get(index + 25), Some(Value::Symbol(kind)) if kind == "finally")
+                        || !matches!(items.get(index + 26), Some(Value::Symbol(kind)) if kind == "return")
                     {
                         return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
                     }
                     final_return = Some(
                         items
-                            .get(index + 6)
+                            .get(index + 27)
                             .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
                             .clone(),
                     );
+                    LoopAction::NestedWhenCollectInto(Box::new(NestedWhenCollectIntoAction {
+                        condition: items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        then_condition: items
+                            .get(index + 3)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        then_expr: items
+                            .get(index + 5)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        then_name: items
+                            .get(index + 7)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .as_symbol()?
+                            .to_string(),
+                        then_else_expr: items
+                            .get(index + 10)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        then_else_name: items
+                            .get(index + 12)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .as_symbol()?
+                            .to_string(),
+                        else_condition: items
+                            .get(index + 15)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        else_expr: items
+                            .get(index + 17)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        else_name: items
+                            .get(index + 19)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .as_symbol()?
+                            .to_string(),
+                        else_else_expr: items
+                            .get(index + 22)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        else_else_name: items
+                            .get(index + 24)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .as_symbol()?
+                            .to_string(),
+                    }))
+                }
+                Some(Value::Symbol(kind)) if kind == "return" => {
+                    if items.get(index + 4).is_some() {
+                        if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
+                            || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
+                        {
+                            return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                        }
+                        final_return = Some(
+                            items
+                                .get(index + 6)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?
+                                .clone(),
+                        );
+                    }
                     LoopAction::WhenReturn {
                         condition: items
                             .get(index + 1)
@@ -771,11 +865,24 @@ impl Interpreter {
             },
             _ => return Err(LispError::Signal("Unsupported cl-loop syntax".into())),
         };
-        if let LoopAction::WhenCollectInto { name, .. } | LoopAction::CollectInto { name, .. } =
-            &action
         {
             let frame = env.last_mut().expect("env frame just pushed");
-            Self::upsert_frame_binding(frame, name.clone(), Value::Nil);
+            match &action {
+                LoopAction::WhenCollectInto { name, .. } | LoopAction::CollectInto { name, .. } => {
+                    Self::upsert_frame_binding(frame, name.clone(), Value::Nil);
+                }
+                LoopAction::NestedWhenCollectInto(action) => {
+                    for name in [
+                        &action.then_name,
+                        &action.then_else_name,
+                        &action.else_name,
+                        &action.else_else_name,
+                    ] {
+                        Self::upsert_frame_binding(frame, name.clone(), Value::Nil);
+                    }
+                }
+                _ => {}
+            }
         }
 
         let mut result = Value::Nil;
@@ -867,19 +974,40 @@ impl Interpreter {
                     break;
                 }
                 LoopAction::WhenReturn { condition, expr } => {
-                    if self.eval(condition, env)?.is_truthy() {
+                    let condition_value = self.eval(condition, env)?;
+                    if condition_value.is_truthy() {
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(
+                            frame,
+                            "it".into(),
+                            Self::stored_value(condition_value),
+                        );
                         result = self.eval(expr, env)?;
                         returned_early = true;
                         break;
                     }
                 }
                 LoopAction::WhenCollect { condition, expr } => {
-                    if self.eval(condition, env)?.is_truthy() {
+                    let condition_value = self.eval(condition, env)?;
+                    if condition_value.is_truthy() {
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(
+                            frame,
+                            "it".into(),
+                            Self::stored_value(condition_value),
+                        );
                         collected.push(self.eval(expr, env)?);
                     }
                 }
                 LoopAction::WhenAppend { condition, expr } => {
-                    if self.eval(condition, env)?.is_truthy() {
+                    let condition_value = self.eval(condition, env)?;
+                    if condition_value.is_truthy() {
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(
+                            frame,
+                            "it".into(),
+                            Self::stored_value(condition_value),
+                        );
                         collected.extend(self.eval(expr, env)?.to_vec()?);
                     }
                 }
@@ -893,7 +1021,14 @@ impl Interpreter {
                     expr,
                     name,
                 } => {
-                    if self.eval(condition, env)?.is_truthy() {
+                    let condition_value = self.eval(condition, env)?;
+                    if condition_value.is_truthy() {
+                        let frame = env.last_mut().expect("env frame just pushed");
+                        Self::upsert_frame_binding(
+                            frame,
+                            "it".into(),
+                            Self::stored_value(condition_value),
+                        );
                         collected.push(self.eval(expr, env)?);
                         let frame = env.last_mut().expect("env frame just pushed");
                         Self::upsert_frame_binding(
@@ -902,6 +1037,50 @@ impl Interpreter {
                             Value::list(collected.clone()),
                         );
                     }
+                }
+                LoopAction::NestedWhenCollectInto(action) => {
+                    let (target_expr, target_name) = {
+                        let condition_value = self.eval(&action.condition, env)?;
+                        if condition_value.is_truthy() {
+                            let frame = env.last_mut().expect("env frame just pushed");
+                            Self::upsert_frame_binding(
+                                frame,
+                                "it".into(),
+                                Self::stored_value(condition_value),
+                            );
+                            let nested_condition = self.eval(&action.then_condition, env)?;
+                            if nested_condition.is_truthy() {
+                                let frame = env.last_mut().expect("env frame just pushed");
+                                Self::upsert_frame_binding(
+                                    frame,
+                                    "it".into(),
+                                    Self::stored_value(nested_condition),
+                                );
+                                (&action.then_expr, &action.then_name)
+                            } else {
+                                (&action.then_else_expr, &action.then_else_name)
+                            }
+                        } else {
+                            let nested_condition = self.eval(&action.else_condition, env)?;
+                            if nested_condition.is_truthy() {
+                                let frame = env.last_mut().expect("env frame just pushed");
+                                Self::upsert_frame_binding(
+                                    frame,
+                                    "it".into(),
+                                    Self::stored_value(nested_condition),
+                                );
+                                (&action.else_expr, &action.else_name)
+                            } else {
+                                (&action.else_else_expr, &action.else_else_name)
+                            }
+                        }
+                    };
+                    let value = self.eval(target_expr, env)?;
+                    let current = self.lookup(target_name, env).unwrap_or(Value::Nil);
+                    let mut values = current.to_vec().unwrap_or_default();
+                    values.push(value);
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    Self::upsert_frame_binding(frame, target_name.clone(), Value::list(values));
                 }
                 LoopAction::UnlessCollect { condition, expr } => {
                     if !self.eval(condition, env)?.is_truthy() {
