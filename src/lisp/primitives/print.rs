@@ -51,6 +51,7 @@ pub(crate) struct PrintOptions {
     length: Option<usize>,
     level: Option<usize>,
     quoted: bool,
+    string_length: Option<usize>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -60,12 +61,14 @@ pub(crate) enum PrintDialect {
     Cl,
 }
 
+#[derive(Clone)]
 pub(crate) struct PrintContext {
     options: PrintOptions,
     counts: HashMap<PrintRefKey, usize>,
     labels: HashMap<PrintRefKey, usize>,
     next_label: usize,
     active: HashSet<PrintRefKey>,
+    first_ellipsis_expansion: Option<String>,
 }
 
 impl PrintContext {
@@ -90,7 +93,14 @@ impl PrintContext {
             labels,
             next_label,
             active: HashSet::new(),
+            first_ellipsis_expansion: None,
         })
+    }
+
+    fn record_ellipsis_expansion(&mut self, expansion: String) {
+        if self.first_ellipsis_expansion.is_none() {
+            self.first_ellipsis_expansion = Some(expansion);
+        }
     }
 }
 
@@ -125,6 +135,10 @@ pub(crate) fn print_options(
         quoted: interp
             .lookup_var("print-quoted", env)
             .is_some_and(|value| value.is_truthy()),
+        string_length: interp
+            .lookup_var("cl-print-string-length", env)
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok()),
     }
 }
 
@@ -186,7 +200,7 @@ pub(crate) fn print_ref_key(
 
 pub(crate) fn print_ref_placeholder(key: PrintRefKey) -> String {
     match key {
-        PrintRefKey::Cons(id) => format!("#{id}"),
+        PrintRefKey::Cons(_) => "#0".into(),
         PrintRefKey::Record(id) => format!("#{id}"),
         PrintRefKey::StringObject(_) => "#<string>".into(),
         PrintRefKey::Symbol(_) => "#<symbol>".into(),
@@ -456,6 +470,219 @@ pub(crate) fn print_preprocess(
     Ok(Value::Nil)
 }
 
+fn render_cl_ellipsis_object_expansion(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+    context: &PrintContext,
+) -> Result<String, LispError> {
+    let mut expansion_context = context.clone();
+    expansion_context.first_ellipsis_expansion = None;
+    if let Some(key) = print_ref_key(interp, value, context.options) {
+        expansion_context.active.remove(&key);
+    }
+    render_prin1_with_context(interp, value, env, &mut expansion_context, 0)
+}
+
+fn render_cl_list_tail_expansion(
+    interp: &mut Interpreter,
+    tail: &Value,
+    env: &mut Env,
+    context: &PrintContext,
+) -> Result<String, LispError> {
+    if let Some(key) = print_ref_key(interp, tail, context.options) {
+        if context.options.circle
+            && let Some(label) = context.labels.get(&key)
+        {
+            return Ok(format!("#{label}#"));
+        }
+        if !context.options.circle && context.active.contains(&key) {
+            return Ok(print_ref_placeholder(key));
+        }
+    }
+
+    let mut expansion_context = context.clone();
+    expansion_context.first_ellipsis_expansion = None;
+    let mut rendered = Vec::new();
+    let mut current = tail.clone();
+    loop {
+        match current {
+            Value::Nil => return Ok(rendered.join(" ")),
+            Value::Cons(_, _) if is_vector_value(&current) => {
+                let tail_rendered =
+                    render_prin1_with_context(interp, &current, env, &mut expansion_context, 0)?;
+                return Ok(if rendered.is_empty() {
+                    tail_rendered
+                } else {
+                    format!("{} . {}", rendered.join(" "), tail_rendered)
+                });
+            }
+            Value::Cons(_, _) => {
+                if expansion_context
+                    .options
+                    .length
+                    .is_some_and(|limit| rendered.len() >= limit)
+                {
+                    rendered.push("...".into());
+                    return Ok(rendered.join(" "));
+                }
+                let Some((car, cdr)) = current.cons_values() else {
+                    return Ok(rendered.join(" "));
+                };
+                rendered.push(render_prin1_with_context(
+                    interp,
+                    &car,
+                    env,
+                    &mut expansion_context,
+                    0,
+                )?);
+                current = cdr;
+            }
+            other => {
+                let tail_rendered =
+                    render_prin1_with_context(interp, &other, env, &mut expansion_context, 0)?;
+                return Ok(if rendered.is_empty() {
+                    tail_rendered
+                } else {
+                    format!("{} . {}", rendered.join(" "), tail_rendered)
+                });
+            }
+        }
+    }
+}
+
+fn render_cl_vector_tail_expansion(
+    interp: &mut Interpreter,
+    items: &[Value],
+    start: usize,
+    env: &mut Env,
+    context: &PrintContext,
+) -> Result<String, LispError> {
+    let mut expansion_context = context.clone();
+    expansion_context.first_ellipsis_expansion = None;
+    let mut rendered = Vec::new();
+    for item in items.iter().skip(start) {
+        if expansion_context
+            .options
+            .length
+            .is_some_and(|limit| rendered.len() >= limit)
+        {
+            rendered.push("...".into());
+            break;
+        }
+        rendered.push(render_prin1_with_context(
+            interp,
+            item,
+            env,
+            &mut expansion_context,
+            0,
+        )?);
+    }
+    Ok(rendered.join(" "))
+}
+
+fn render_cl_string_property_tail_expansion(
+    interp: &mut Interpreter,
+    fields: &[Value],
+    start: usize,
+    env: &mut Env,
+    context: &PrintContext,
+) -> Result<String, LispError> {
+    let mut expansion_context = context.clone();
+    expansion_context.first_ellipsis_expansion = None;
+    let interval_limit = context
+        .options
+        .length
+        .map(|limit| (limit / 3).max(1))
+        .unwrap_or(usize::MAX);
+    let mut rendered = Vec::new();
+    let mut intervals = 0usize;
+    let mut index = start;
+    while index < fields.len() {
+        if intervals >= interval_limit {
+            rendered.push("...".into());
+            break;
+        }
+        for field in fields.iter().skip(index).take(3) {
+            rendered.push(render_prin1_with_context(
+                interp,
+                field,
+                env,
+                &mut expansion_context,
+                0,
+            )?);
+        }
+        intervals += 1;
+        index += 3;
+    }
+    Ok(rendered.join(" "))
+}
+
+fn render_cl_record_tail_expansion(
+    interp: &mut Interpreter,
+    fields: &[Value],
+    start: usize,
+    env: &mut Env,
+    context: &PrintContext,
+) -> Result<String, LispError> {
+    let mut expansion_context = context.clone();
+    expansion_context.first_ellipsis_expansion = None;
+    let slot_limit = context.options.length.unwrap_or(usize::MAX);
+    let mut rendered = Vec::new();
+    let mut slots = 0usize;
+    let mut index = start;
+    while index < fields.len() {
+        if slots >= slot_limit {
+            rendered.push("...".into());
+            break;
+        }
+        rendered.push(render_prin1_with_context(
+            interp,
+            &fields[index],
+            env,
+            &mut expansion_context,
+            0,
+        )?);
+        if let Some(value) = fields.get(index + 1) {
+            rendered.push(render_prin1_with_context(
+                interp,
+                value,
+                env,
+                &mut expansion_context,
+                0,
+            )?);
+        }
+        slots += 1;
+        index += 2;
+    }
+    Ok(rendered.join(" "))
+}
+
+fn render_cl_string_literal(
+    interp: &Interpreter,
+    text: &str,
+    env: &Env,
+    context: &mut PrintContext,
+) -> String {
+    if context.options.dialect == PrintDialect::Cl
+        && let Some(limit) = context.options.string_length
+    {
+        let len = text.chars().count();
+        if len > limit {
+            let prefix = text.chars().take(limit).collect::<String>();
+            let tail = text.chars().skip(limit).collect::<String>();
+            let expansion = if tail.chars().count() > limit {
+                format!("{}...", tail.chars().take(limit).collect::<String>())
+            } else {
+                tail
+            };
+            context.record_ellipsis_expansion(expansion);
+            return render_prin1_string(interp, &format!("{prefix}..."), env);
+        }
+    }
+    render_prin1_string(interp, text, env)
+}
+
 pub(crate) fn render_prin1_list(
     interp: &mut Interpreter,
     value: &Value,
@@ -500,6 +727,10 @@ pub(crate) fn render_prin1_list(
                     .length
                     .is_some_and(|limit| rendered.len() >= limit)
                 {
+                    if context.options.dialect == PrintDialect::Cl {
+                        let expansion = render_cl_list_tail_expansion(interp, &tail, env, context)?;
+                        context.record_ellipsis_expansion(expansion);
+                    }
                     rendered.push("...".into());
                     return Ok(format!("({})", rendered.join(" ")));
                 }
@@ -831,12 +1062,25 @@ pub(crate) fn render_prin1_body(
     {
         match value {
             Value::StringObject(state) if !state.borrow().props.is_empty() => {
+                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
+                context.record_ellipsis_expansion(expansion);
                 return Ok("...".into());
             }
-            Value::Cons(_, _) if is_vector_value(value) => return Ok("...".into()),
+            Value::Cons(_, _) if is_vector_value(value) => {
+                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
+                context.record_ellipsis_expansion(expansion);
+                return Ok("...".into());
+            }
             Value::Record(id)
                 if record_prin1_fields(interp, *id, context.options.dialect).is_some() =>
             {
+                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
+                context.record_ellipsis_expansion(expansion);
+                return Ok("...".into());
+            }
+            Value::Cons(_, _) => {
+                let expansion = render_cl_ellipsis_object_expansion(interp, value, env, context)?;
+                context.record_ellipsis_expansion(expansion);
                 return Ok("...".into());
             }
             _ => {}
@@ -873,16 +1117,17 @@ pub(crate) fn render_prin1_body(
             }
             Ok(value.to_string())
         }
-        Value::String(text) => Ok(render_prin1_string(interp, text, env)),
+        Value::String(text) => Ok(render_cl_string_literal(interp, text, env, context)),
         Value::StringObject(state) => {
             let (text, props) = {
                 let state = state.borrow();
                 (state.text.clone(), state.props.clone())
             };
             if props.is_empty() {
-                return Ok(render_prin1_string(interp, &text, env));
+                return Ok(render_cl_string_literal(interp, &text, env, context));
             }
-            let mut rendered = vec![render_prin1_string(interp, &text, env)];
+            let mut rendered = vec![render_cl_string_literal(interp, &text, env, context)];
+            let mut field_values = Vec::new();
             for span in props {
                 let filtered_props = span
                     .props
@@ -903,18 +1148,39 @@ pub(crate) fn render_prin1_body(
                 if filtered_props.is_empty() {
                     continue;
                 }
-                rendered.push(span.start.to_string());
-                rendered.push(span.end.to_string());
+                field_values.push(Value::Integer(span.start as i64));
+                field_values.push(Value::Integer(span.end as i64));
+                field_values.push(plist_value(&filtered_props));
+            }
+            for (index, field) in field_values.iter().enumerate() {
+                if context
+                    .options
+                    .length
+                    .is_some_and(|limit| rendered.len() >= limit)
+                {
+                    if context.options.dialect == PrintDialect::Cl {
+                        let expansion = render_cl_string_property_tail_expansion(
+                            interp,
+                            &field_values,
+                            index,
+                            env,
+                            context,
+                        )?;
+                        context.record_ellipsis_expansion(expansion);
+                    }
+                    rendered.push("...".into());
+                    break;
+                }
                 rendered.push(render_prin1_with_context(
                     interp,
-                    &plist_value(&filtered_props),
+                    field,
                     env,
                     context,
                     depth + 1,
                 )?);
             }
             if rendered.len() == 1 {
-                return Ok(render_prin1_string(interp, &text, env));
+                return Ok(render_cl_string_literal(interp, &text, env, context));
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
@@ -927,6 +1193,11 @@ pub(crate) fn render_prin1_body(
             let mut rendered_items = Vec::new();
             for (index, item) in items.iter().enumerate() {
                 if context.options.length.is_some_and(|limit| index >= limit) {
+                    if context.options.dialect == PrintDialect::Cl {
+                        let expansion =
+                            render_cl_vector_tail_expansion(interp, &items, index, env, context)?;
+                        context.record_ellipsis_expansion(expansion);
+                    }
                     rendered_items.push("...".into());
                     break;
                 }
@@ -1017,9 +1288,58 @@ pub(crate) fn render_prin1_body(
                         else {
                             return Ok(value.to_string());
                         };
-                        format!(
-                            "#s({})",
-                            fields
+                        let mut rendered_fields = Vec::new();
+                        if context.options.dialect == PrintDialect::Cl
+                            && fields.len() > 1
+                            && fields.len() % 2 == 1
+                        {
+                            rendered_fields.push(render_prin1_with_context(
+                                interp,
+                                &fields[0],
+                                env,
+                                context,
+                                depth + 1,
+                            )?);
+                            let mut slot_index = 0usize;
+                            let mut field_index = 1usize;
+                            while field_index < fields.len() {
+                                if context
+                                    .options
+                                    .length
+                                    .is_some_and(|limit| slot_index >= limit)
+                                {
+                                    let expansion = render_cl_record_tail_expansion(
+                                        interp,
+                                        &fields,
+                                        field_index,
+                                        env,
+                                        context,
+                                    )?;
+                                    context.record_ellipsis_expansion(expansion);
+                                    rendered_fields.push("...".into());
+                                    break;
+                                }
+                                rendered_fields.push(render_prin1_with_context(
+                                    interp,
+                                    &fields[field_index],
+                                    env,
+                                    context,
+                                    depth + 1,
+                                )?);
+                                if let Some(field_value) = fields.get(field_index + 1) {
+                                    rendered_fields.push(render_prin1_with_context(
+                                        interp,
+                                        field_value,
+                                        env,
+                                        context,
+                                        depth + 1,
+                                    )?);
+                                }
+                                slot_index += 1;
+                                field_index += 2;
+                            }
+                        } else {
+                            rendered_fields = fields
                                 .iter()
                                 .map(|field| {
                                     render_prin1_with_context(
@@ -1030,9 +1350,9 @@ pub(crate) fn render_prin1_body(
                                         depth + 1,
                                     )
                                 })
-                                .collect::<Result<Vec<_>, _>>()?
-                                .join(" ")
-                        )
+                                .collect::<Result<Vec<_>, _>>()?;
+                        }
+                        format!("#s({})", rendered_fields.join(" "))
                     }
                 };
                 return Ok(rendered);
@@ -1094,6 +1414,44 @@ pub(crate) fn render_cl_prin1(
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
     finish_print_number_table(env, &context);
     Ok(rendered)
+}
+
+pub(crate) fn render_cl_prin1_value(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let mut context = PrintContext::new(
+        interp,
+        value,
+        env,
+        print_options(interp, env, PrintDialect::Cl),
+    )?;
+    let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
+    finish_print_number_table(env, &context);
+    let Some(expansion) = context.first_ellipsis_expansion else {
+        return Ok(Value::String(rendered));
+    };
+    let Some(start) = rendered
+        .find("...")
+        .map(|byte| rendered[..byte].chars().count())
+    else {
+        return Ok(Value::String(rendered));
+    };
+    Ok(string_like_value(
+        rendered,
+        vec![TextPropertySpan {
+            start,
+            end: start + 3,
+            props: vec![(
+                "cl-print-ellipsis".into(),
+                Value::list([
+                    Value::Symbol("emaxx-cl-print-ellipsis".into()),
+                    Value::String(expansion),
+                ]),
+            )],
+        }],
+    ))
 }
 
 pub(crate) fn render_prin1_ephemeral(

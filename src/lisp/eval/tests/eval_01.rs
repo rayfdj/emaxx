@@ -2698,7 +2698,7 @@ fn assoc_honors_optional_test_function() {
 fn garbage_collect_prunes_synthetic_weak_hash_table_entries() {
     assert_eq!(
         eval_str(
-            "(let ((table (make-hash-table :weakness 'key)))
+            "(let ((table (make-hash-table :test 'equal :weakness 'key)))
                    (puthash \"00-key-alive\" \"00-val-alive\" table)
                    (puthash \"01-key-dead\" \"01-val-alive\" table)
                    (garbage-collect)

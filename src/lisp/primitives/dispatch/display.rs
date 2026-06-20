@@ -25,6 +25,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "terpri"
             | "prin1-to-string"
             | "cl-prin1-to-string"
+            | "cl-print--expand-ellipsis"
             | "write-char"
             | "redirect-debugging-output"
             | "external-debugging-output"
@@ -511,12 +512,32 @@ pub(super) fn call(
         "cl-prin1-to-string" => {
             need_arg_range(name, args, 1, 3)?;
             if matches!(args.get(2), None | Some(Value::Nil)) {
-                return Ok(Value::String(render_cl_prin1(interp, &args[0], env)?));
+                return render_cl_prin1_value(interp, &args[0], env);
             }
             let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-            let rendered = render_cl_prin1(interp, &args[0], &mut print_env)?;
+            let rendered = render_cl_prin1_value(interp, &args[0], &mut print_env)?;
             sync_print_number_table(env, args.get(2), &print_env);
-            Ok(Value::String(rendered))
+            Ok(rendered)
+        }
+        "cl-print--expand-ellipsis" => {
+            need_args(name, args, 2)?;
+            let parts = args[0].to_vec()?;
+            let [Value::Symbol(tag), expansion] = parts.as_slice() else {
+                return Err(LispError::TypeError(
+                    "cl-print-ellipsis".into(),
+                    args[0].type_name(),
+                ));
+            };
+            if tag != "emaxx-cl-print-ellipsis" {
+                return Err(LispError::TypeError(
+                    "cl-print-ellipsis".into(),
+                    args[0].type_name(),
+                ));
+            }
+            let expansion = string_text(expansion)?;
+            let stream = printer_stream_value(interp, env, args.get(1));
+            write_printer_output(interp, &expansion, stream.as_ref(), env)?;
+            Ok(Value::Nil)
         }
         "write-char" => {
             need_arg_range(name, args, 1, 2)?;

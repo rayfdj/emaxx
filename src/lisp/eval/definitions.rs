@@ -762,6 +762,12 @@ impl Interpreter {
                 Ok(value)
             }
             Some(Value::Symbol(name)) if name == "nth" => self.sf_setf_nth(&place, &items[2], env),
+            Some(Value::Symbol(name)) if name == "elt" => self.sf_setf_aref(&place, &items[2], env),
+            Some(Value::Symbol(name)) if name == "nthcdr" => {
+                let value = self.eval(&items[2], env)?;
+                self.set_setf_place_value(&items[1], value.clone(), env)?;
+                Ok(value)
+            }
             Some(Value::Symbol(name)) if name == "aref" => {
                 self.sf_setf_aref(&place, &items[2], env)
             }

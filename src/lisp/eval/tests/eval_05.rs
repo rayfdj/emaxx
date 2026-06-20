@@ -620,6 +620,64 @@ fn nested_backquote_splices_vector_result_without_internal_marker() {
 }
 
 #[test]
+fn eql_does_not_compare_distinct_strings_by_contents() {
+    assert_eq!(
+        eval_str(
+            "(let ((a (number-to-string 1))
+                   (b (number-to-string 1)))
+               (list (eql a b) (equal a b)))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn cl_mismatch_key_uses_eql_for_default_test() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'cl-seq)
+               (let ((list '(1 2 3 4 5 2 6)))
+                 (cl-mismatch list list :key #'number-to-string)))"
+        ),
+        Value::Integer(0)
+    );
+}
+
+#[test]
+fn cl_substitute_updates_list_copy_through_setf_elt() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'cl-seq)
+               (let ((list '(1 2 3 4 5 2 6)))
+                 (list (cl-substitute 'b 2 list)
+                       list)))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(1),
+                Value::Symbol("b".into()),
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5),
+                Value::Symbol("b".into()),
+                Value::Integer(6),
+            ]),
+            Value::list([
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+                Value::Integer(5),
+                Value::Integer(2),
+                Value::Integer(6),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn backtrace_get_frames_reports_live_lisp_call_symbols() {
     assert_eq!(
         eval_str_with_upstream_load_path(
