@@ -76,7 +76,7 @@ fn cl_prin1_respects_charset_text_property_modes() {
     run_with_large_stack(|| {
         assert_eq!(
             eval_str(
-                r#"
+                r##"
                     (list
                      (let ((print-charset-text-property nil))
                        (if (string-match
@@ -102,7 +102,7 @@ fn cl_prin1_respects_charset_text_property_modes() {
                             (cl-prin1-to-string
                              (propertize "a" 'charset 'unicode)))
                            t nil)))
-                    "#
+                    "##
             ),
             Value::list([Value::T, Value::T, Value::T, Value::T])
         );
@@ -114,7 +114,7 @@ fn cl_prin1_supports_continuous_numbering() {
     run_with_large_stack(|| {
         assert_eq!(
             eval_str(
-                r#"
+                r##"
                     (let* ((x (list 1))
                            (y "hello")
                            (g (gensym))
@@ -127,9 +127,228 @@ fn cl_prin1_supports_continuous_numbering() {
                            (mapconcat #'cl-prin1-to-string
                                       `((,x ,x ,y ,y) (,g ,g) (,x ,y ,g) ,y)))
                           t nil))
-                    "#
+                    "##
             ),
             Value::Nil
+        );
+    });
+}
+
+#[test]
+fn cl_prin1_to_string_marks_circular_ellipsis() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r##"
+                    (let ((wide-obj (list 0 1 2 3 4))
+                          (deep-obj (list 0 (list 1 (list 2 (list 3 (list 4))))))
+                          (print-length 4)
+                          (print-level 3))
+                      (setf (nth 4 wide-obj) wide-obj)
+                      (setf (car (cadadr (cadadr deep-obj))) deep-obj)
+                      (equal
+                       (list
+                        (let* ((print-circle nil)
+                               (result (cl-prin1-to-string wide-obj))
+                               (pos (next-single-property-change
+                                     0 'cl-print-ellipsis result))
+                               (value (get-text-property
+                                       pos 'cl-print-ellipsis result)))
+                          (list result
+                                (with-output-to-string
+                                  (cl-print--expand-ellipsis value nil))))
+                        (let* ((print-circle nil)
+                               (result (cl-prin1-to-string deep-obj))
+                               (pos (next-single-property-change
+                                     0 'cl-print-ellipsis result))
+                               (value (get-text-property
+                                       pos 'cl-print-ellipsis result)))
+                          (list result
+                                (with-output-to-string
+                                  (cl-print--expand-ellipsis value nil))))
+                        (let* ((print-circle t)
+                               (result (cl-prin1-to-string wide-obj))
+                               (pos (next-single-property-change
+                                     0 'cl-print-ellipsis result))
+                               (value (get-text-property
+                                       pos 'cl-print-ellipsis result)))
+                          (list result
+                                (with-output-to-string
+                                  (cl-print--expand-ellipsis value nil))))
+                        (let* ((print-circle t)
+                               (result (cl-prin1-to-string deep-obj))
+                               (pos (next-single-property-change
+                                     0 'cl-print-ellipsis result))
+                               (value (get-text-property
+                                       pos 'cl-print-ellipsis result)))
+                          (list result
+                                (with-output-to-string
+                                  (cl-print--expand-ellipsis value nil)))))
+                       '(("(0 1 2 3 ...)" "#0")
+                         ("(0 (1 (2 ...)))" "(3 (#0))")
+                         ("#1=(0 1 2 3 ...)" "#1#")
+                         ("#1=(0 (1 (2 ...)))" "(3 (#1#))"))))
+                    "##
+            ),
+            Value::T
+        );
+    });
+}
+
+#[test]
+fn cl_prin1_to_string_marks_simple_circular_ellipsis() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r##"
+                    (let ((wide-obj (list 0 1 2 3 4))
+                          (print-length 4)
+                          (print-level 3)
+                          (print-circle t))
+                        (setf (nth 4 wide-obj) wide-obj)
+                        (let* ((result (cl-prin1-to-string wide-obj))
+                               (pos (next-single-property-change
+                                     0 'cl-print-ellipsis result))
+                               (value (get-text-property
+                                       pos 'cl-print-ellipsis result)))
+                          (list result
+                                (with-output-to-string
+                                  (cl-print--expand-ellipsis value nil)))))
+                    "##
+            ),
+            Value::list([
+                Value::String("#1=(0 1 2 3 ...)".into()),
+                Value::String("#1#".into()),
+            ])
+        );
+    });
+}
+
+#[test]
+fn cl_prin1_to_string_marks_cons_ellipsis() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r##"
+                    (let ((print-length 4)
+                          (print-level 3))
+                      (equal
+                       (mapcar
+                        (lambda (object)
+                          (let* ((result (cl-prin1-to-string object))
+                                 (pos (next-single-property-change
+                                       0 'cl-print-ellipsis result))
+                                 (value (get-text-property
+                                         pos 'cl-print-ellipsis result)))
+                            (list result
+                                  (with-output-to-string
+                                    (cl-print--expand-ellipsis value nil)))))
+                        (list
+                         '(0 1 2 3 4 5)
+                         '(0 1 2 3 4 5 6 7 8 9)
+                         '(a (b (c (d (e)))))
+                         (let ((x (make-list 6 'b)))
+                           (setf (nthcdr 6 x) 'c)
+                           x)))
+                       '(("(0 1 2 3 ...)" "4 5")
+                         ("(0 1 2 3 ...)" "4 5 6 7 ...")
+                         ("(a (b (c ...)))" "(d (e))")
+                         ("(b b b b ...)" "b b . c"))))
+                    "##
+            ),
+            Value::T
+        );
+    });
+}
+
+#[test]
+fn cl_prin1_to_string_marks_string_ellipsis() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r##"
+                    (equal
+                     (list
+                      (let* ((cl-print-string-length 4)
+                             (result (cl-prin1-to-string "abcdefg"))
+                             (pos (next-single-property-change
+                                   0 'cl-print-ellipsis result))
+                             (value (get-text-property
+                                     pos 'cl-print-ellipsis result)))
+                        (list result
+                              (with-output-to-string
+                                (cl-print--expand-ellipsis value nil))))
+                      (let* ((cl-print-string-length 4)
+                             (result (cl-prin1-to-string "abcdefghijk"))
+                             (pos (next-single-property-change
+                                   0 'cl-print-ellipsis result))
+                             (value (get-text-property
+                                     pos 'cl-print-ellipsis result)))
+                        (list result
+                              (with-output-to-string
+                                (cl-print--expand-ellipsis value nil))))
+                      (let* ((print-length 4)
+                             (result (cl-prin1-to-string
+                                      #("abcd" 0 1 (bold t)
+                                        1 2 (invisible t)
+                                        3 4 (italic t))))
+                             (pos (next-single-property-change
+                                   0 'cl-print-ellipsis result))
+                             (value (get-text-property
+                                     pos 'cl-print-ellipsis result)))
+                        (list result
+                              (with-output-to-string
+                                (cl-print--expand-ellipsis value nil)))))
+                     '(("\"abcd...\"" "efg")
+                       ("\"abcd...\"" "efgh...")
+                       ("#(\"abcd\" 0 1 (bold t) ...)"
+                        "1 2 (invisible t) ...")))
+                    "##
+            ),
+            Value::T
+        );
+    });
+}
+
+#[test]
+fn cl_prin1_to_string_marks_struct_ellipsis() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r##"
+                    (progn
+                      (cl-defstruct (sample-print-struct
+                                     (:constructor make-sample-print-struct))
+                        a b c d e)
+                      (let ((struct (make-sample-print-struct))
+                            (print-length 4)
+                            (print-level 3))
+                        (equal
+                         (list
+                          (let* ((result (cl-prin1-to-string struct))
+                                 (pos (next-single-property-change
+                                       0 'cl-print-ellipsis result))
+                                 (value (get-text-property
+                                         pos 'cl-print-ellipsis result)))
+                            (list result
+                                  (with-output-to-string
+                                    (cl-print--expand-ellipsis value nil))))
+                          (let* ((print-length 2)
+                                 (result (cl-prin1-to-string struct))
+                                 (pos (next-single-property-change
+                                       0 'cl-print-ellipsis result))
+                                 (value (get-text-property
+                                         pos 'cl-print-ellipsis result)))
+                            (list result
+                                  (with-output-to-string
+                                    (cl-print--expand-ellipsis value nil)))))
+                         '(("#s(sample-print-struct :a nil :b nil :c nil :d nil ...)"
+                            ":e nil")
+                           ("#s(sample-print-struct :a nil :b nil ...)"
+                            ":c nil :d nil ...")))))
+                    "##
+            ),
+            Value::T
         );
     });
 }

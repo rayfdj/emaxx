@@ -914,6 +914,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl-prin1"
             | "prin1-to-string"
             | "cl-prin1-to-string"
+            | "cl-print--expand-ellipsis"
             | "print--preprocess"
             | "princ"
             | "print"

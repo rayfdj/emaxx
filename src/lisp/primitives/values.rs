@@ -276,7 +276,33 @@ pub(crate) fn values_equal_recursive(
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
-    left == right
+    match (left, right) {
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::BuiltinFunc(a), Value::BuiltinFunc(b)) => a == b,
+        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
+            Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
+        }
+        (
+            Value::Lambda(left_params, left_body, left_env),
+            Value::Lambda(right_params, right_body, right_env),
+        ) => {
+            left_params == right_params
+                && left_body == right_body
+                && Rc::ptr_eq(left_env, right_env)
+        }
+        (Value::Buffer(left_id, _), Value::Buffer(right_id, _))
+        | (Value::Marker(left_id), Value::Marker(right_id))
+        | (Value::Overlay(left_id), Value::Overlay(right_id))
+        | (Value::CharTable(left_id), Value::CharTable(right_id))
+        | (Value::Record(left_id), Value::Record(right_id))
+        | (Value::Finalizer(left_id), Value::Finalizer(right_id)) => left_id == right_id,
+        _ => false,
+    }
 }
 
 pub(crate) fn values_eq_in_env(

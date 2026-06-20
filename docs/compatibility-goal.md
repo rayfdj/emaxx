@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1788/7080 are verified locally against the current canonical
+- Tests through 1807/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1788/7080: reject builtin struct names`.
-- The next observed frontier is selector 1789,
-  `cl-print-tests-ellipsis-circular` in
-  `test/lisp/emacs-lisp/cl-print-tests.el`, which currently fails with
-  emaxx condition type `wrong-type-argument` while oracle GNU Emacs passes.
+  `Compat 1807/7080: support cl-print ellipses and cl-seq equality`.
+- The next observed frontier is selector 1808, `comp-cstr-test-1` in
+  `test/lisp/emacs-lisp/comp-cstr-tests.el`, which currently fails at file
+  load in emaxx while oracle GNU Emacs loads the file and discovers the
+  selected tests.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -65,6 +65,34 @@ counts as the progress denominator.
   `cargo test cl_find_class_prefers_builtin_runtime_for_builtin_classes --
   --nocapture`; exploratory selector `cl-print-tests-ellipsis-circular`, which
   identified selector 1789 as the next frontier.
+- Selectors 1789..1794 in `test/lisp/emacs-lisp/cl-print-tests.el` and
+  selectors 1795..1807 in `test/lisp/emacs-lisp/cl-seq-tests.el` passed after
+  adding CL printer ellipsis text properties and expansion support, honoring
+  `cl-print-string-length`, limiting string property intervals and CL struct
+  slots correctly, adding `cl-print--expand-ellipsis`, supporting `setf`
+  places for `nthcdr` and `elt`, and making `eql` stop comparing distinct
+  strings by contents. Exact replays run for this batch: selectors
+  `cl-print-tests-ellipsis-circular`, `cl-print-tests-ellipsis-cons`,
+  `cl-print-tests-ellipsis-string`, `cl-print-tests-ellipsis-struct`,
+  `cl-print-tests-ellipsis-vector`,
+  `cl-print-tests-print-to-string-with-limit`, grouped file replay for
+  `test/lisp/emacs-lisp/cl-print-tests.el`, selectors `cl-seq-bignum-eql`,
+  `cl-seq-count-test`, `cl-seq-delete-test`, `cl-seq-fill-test`,
+  `cl-seq-mismatch-test`, `cl-seq-nsubstitute-test`,
+  `cl-seq-position-test`, `cl-seq-remove-duplicates-test`,
+  `cl-seq-remove-test`, `cl-seq-replace-test`, `cl-seq-search-test`,
+  `cl-seq-substitute-test`, and grouped file replay for
+  `test/lisp/emacs-lisp/cl-seq-tests.el`; focused Rust regressions:
+  `cargo test cl_prin1_to_string_marks_circular_ellipsis -- --nocapture`,
+  `cargo test cl_prin1_to_string_marks_cons_ellipsis -- --nocapture`,
+  `cargo test cl_prin1_to_string_marks_string_ellipsis -- --nocapture`,
+  `cargo test cl_prin1_to_string_marks_struct_ellipsis -- --nocapture`,
+  `cargo test eql_does_not_compare_distinct_strings_by_contents --
+  --nocapture`, `cargo test cl_mismatch_key_uses_eql_for_default_test --
+  --nocapture`, and
+  `cargo test cl_substitute_updates_list_copy_through_setf_elt --
+  --nocapture`; exploratory selector `comp-cstr-test-1`, which identified
+  selector 1808 as the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable
