@@ -1040,6 +1040,7 @@ pub(crate) fn is_builtin_class_name(name: &str) -> bool {
             | "marker"
             | "overlay"
             | "finalizer"
+            | "hash-table"
             | "record"
             | "native-comp-unit"
             | "primitive-function"
@@ -1055,8 +1056,8 @@ pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
     match name {
         "null" => &["symbol", "list"],
         "boolean" => &["symbol"],
-        "symbol" | "list" | "vector" | "buffer" | "marker" | "overlay" | "finalizer" | "record"
-        | "function" => &["t"],
+        "symbol" | "list" | "vector" | "buffer" | "marker" | "overlay" | "finalizer"
+        | "hash-table" | "record" | "function" => &["t"],
         "symbol-with-pos" => &["cons"],
         "fixnum" | "bignum" => &["integer"],
         "integer" | "float" => &["number"],

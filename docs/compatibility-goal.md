@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1787/7080 are verified locally against the current canonical
+- Tests through 1788/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1787/7080: support gv synthetic places`.
-- The next observed frontier is selector 1788,
-  `cl-struct-define/builtin-type` in
-  `test/lisp/emacs-lisp/cl-preloaded-tests.el`, which currently fails with
-  emaxx condition type `ert-test-failed` while oracle GNU Emacs passes.
+  `Compat 1788/7080: reject builtin struct names`.
+- The next observed frontier is selector 1789,
+  `cl-print-tests-ellipsis-circular` in
+  `test/lisp/emacs-lisp/cl-print-tests.el`, which currently fails with
+  emaxx condition type `wrong-type-argument` while oracle GNU Emacs passes.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -55,6 +55,16 @@ counts as the progress denominator.
   `cargo test cl_letf_supports_gv_synthetic_place_restore -- --nocapture`;
   exploratory selector `cl-struct-define/builtin-type`, which identified
   selector 1788 as the next frontier.
+- Selector 1788, `cl-struct-define/builtin-type` in
+  `test/lisp/emacs-lisp/cl-preloaded-tests.el`, passed after making the
+  low-level `cl-struct-define` primitive reject built-in class names with the
+  GNU-compatible `wrong-type-argument cl--struct-name-p NAME name` error and
+  after registering `hash-table` as a built-in class. Exact replay run for this
+  batch: selector `cl-struct-define/builtin-type`; focused Rust regressions:
+  `cargo test cl_struct_define_rejects_builtin_type_names -- --nocapture` and
+  `cargo test cl_find_class_prefers_builtin_runtime_for_builtin_classes --
+  --nocapture`; exploratory selector `cl-print-tests-ellipsis-circular`, which
+  identified selector 1789 as the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable

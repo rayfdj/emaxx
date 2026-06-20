@@ -2328,6 +2328,14 @@ pub(super) fn call(
         "cl-struct-define" => {
             need_args(name, args, 9)?;
             let struct_name = args[0].as_symbol()?.to_string();
+            if is_builtin_class_name(&struct_name) {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("wrong-type-argument".into()),
+                    Value::Symbol("cl--struct-name-p".into()),
+                    Value::Symbol(struct_name),
+                    Value::Symbol("name".into()),
+                ])));
+            }
             let type_arg = args[3].clone();
             let children_symbol = args[6].as_symbol()?.to_string();
             let tag = args[7].clone();
