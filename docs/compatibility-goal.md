@@ -19,13 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1786/7080 are verified locally against the current canonical
+- Tests through 1787/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1786/7080: support cl-loop with groups`.
-- The next observed frontier is selector 1787, `cl-macs-test--symbol-macrolet`
-  in `test/lisp/emacs-lisp/cl-macs-tests.el`, which currently fails with
-  emaxx condition type `error` while oracle GNU Emacs passes.
+  `Compat 1787/7080: support gv synthetic places`.
+- The next observed frontier is selector 1788,
+  `cl-struct-define/builtin-type` in
+  `test/lisp/emacs-lisp/cl-preloaded-tests.el`, which currently fails with
+  emaxx condition type `ert-test-failed` while oracle GNU Emacs passes.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -41,6 +42,19 @@ counts as the progress denominator.
   selector `cl-macs-loop-with`; exploratory selector
   `cl-macs-test--symbol-macrolet`, which identified selector 1787 as the next
   frontier.
+- Selector 1787, `cl-macs-test--symbol-macrolet` in
+  `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after making
+  `gv-synthetic-place` resolve as a generalized place whose getter value is
+  preserved for readback and whose setter function is called to produce the
+  setter form evaluated in the live lexical context. Exact replay run for this
+  batch: selector `cl-macs-test--symbol-macrolet`; targeted replays:
+  `cl-lib-symbol-macrolet`, `cl-lib-symbol-macrolet-2`, and
+  `cl-lib-symbol-macrolet-hide` in
+  `test/lisp/emacs-lisp/cl-lib-tests.el`; focused Rust regressions:
+  `cargo test cl_symbol_macrolet_ -- --nocapture` and
+  `cargo test cl_letf_supports_gv_synthetic_place_restore -- --nocapture`;
+  exploratory selector `cl-struct-define/builtin-type`, which identified
+  selector 1788 as the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable

@@ -677,6 +677,12 @@ impl Interpreter {
                 self.set_resolved_setf_place_value(&resolved, value.clone(), env)?;
                 Ok(value)
             }
+            Some(Value::Symbol(name)) if name == "gv-synthetic-place" => {
+                let resolved = self.resolve_setf_place(&items[1], env)?;
+                let value = self.eval(&items[2], env)?;
+                self.set_resolved_setf_place_value(&resolved, value.clone(), env)?;
+                Ok(value)
+            }
             Some(Value::Symbol(name)) if name == "cl--class-parents" => {
                 let Some(target) = place.get(1) else {
                     return Err(LispError::Signal(format!(
@@ -1195,6 +1201,16 @@ impl Interpreter {
                     };
                     let mut cell = target.clone();
                     set_decoded_time_accessor_value(index, &mut cell, value)
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if name == "--emaxx-setf-gv-synthetic-place"
+                ) {
+                    let Some(setter) = items.get(2) else {
+                        return Err(LispError::Signal("Unsupported setf place".into()));
+                    };
+                    let setter_form =
+                        self.call_function_value(setter.clone(), None, &[value], env)?;
+                    self.eval(&setter_form, env).map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "symbol-value")
                 {
                     let Some(symbol_form) = items.get(1) else {

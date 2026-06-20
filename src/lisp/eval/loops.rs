@@ -1284,6 +1284,14 @@ impl Interpreter {
                         return Err(LispError::Signal("Unsupported setf place".into()));
                     };
                     decoded_time_accessor_value(index, target)
+                } else if matches!(
+                    items.first(),
+                    Some(Value::Symbol(name)) if name == "--emaxx-setf-gv-synthetic-place"
+                ) {
+                    items
+                        .get(1)
+                        .cloned()
+                        .ok_or_else(|| LispError::Signal("Unsupported setf place".into()))
                 } else {
                     self.eval(place, env)
                 }
@@ -1332,6 +1340,21 @@ impl Interpreter {
                     self.sf_progn(&items[1..items.len() - 1], env)?;
                 }
                 self.resolve_setf_place(items.last().unwrap_or(&Value::Nil), env)
+            }
+            Some(Value::Symbol(name)) if name == "gv-synthetic-place" => {
+                let Some(getter_expr) = items.get(1) else {
+                    return Ok(place.clone());
+                };
+                let Some(setter_expr) = items.get(2) else {
+                    return Ok(place.clone());
+                };
+                let getter = self.eval(getter_expr, env)?;
+                let setter = self.eval(setter_expr, env)?;
+                Ok(Value::list([
+                    Value::Symbol("--emaxx-setf-gv-synthetic-place".into()),
+                    getter,
+                    setter,
+                ]))
             }
             Some(Value::Symbol(name)) if name == "symbol-value" => {
                 let Some(symbol_form) = items.get(1) else {
