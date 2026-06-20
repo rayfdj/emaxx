@@ -1723,6 +1723,51 @@ fn cl_symbol_macrolet_hides_behind_lexical_bindings() {
 }
 
 #[test]
+fn cl_symbol_macrolet_preserves_invalid_setq_places() {
+    assert_eq!(
+        eval_str(
+            "(condition-case err
+                 (let ((l (list 1)))
+                   (cl-symbol-macrolet ((x 1))
+                     (setq (car l) 0)))
+               (error (car err)))"
+        ),
+        Value::Symbol("wrong-type-argument".into())
+    );
+}
+
+#[test]
+fn cl_symbol_macrolet_supports_gv_synthetic_place_in_incf() {
+    assert_eq!(
+        eval_str(
+            "(let ((l (list 0)))
+               (let ((cl (car l)))
+                 (cl-symbol-macrolet
+                     ((p (gv-synthetic-place cl (lambda (v) `(setcar l ,v)))))
+                   (cl-incf p)))
+               l)"
+        ),
+        Value::list([Value::Integer(1)])
+    );
+}
+
+#[test]
+fn cl_letf_supports_gv_synthetic_place_restore() {
+    assert_eq!(
+        eval_str(
+            "(let ((x 1))
+               (list x
+                     (cl-letf (((gv-synthetic-place (+ 1 2)
+                                                      (lambda (v) `(setq x ,v)))
+                                7))
+                       x)
+                     x))"
+        ),
+        Value::list([Value::Integer(1), Value::Integer(7), Value::Integer(3)])
+    );
+}
+
+#[test]
 fn cl_old_struct_compat_mode_types_tagged_vectors() {
     assert_eq!(
         eval_str(
