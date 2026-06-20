@@ -1822,6 +1822,25 @@ fn cl_struct_define_legacy_type_enables_old_struct_mode() {
 }
 
 #[test]
+fn cl_struct_define_rejects_builtin_type_names() {
+    assert_eq!(
+        eval_str(
+            "(condition-case err
+                 (cl-struct-define 'hash-table nil nil 'record nil nil
+                                   'cl-preloaded-tests-tag
+                                   'cl-preloaded-tests nil)
+               (wrong-type-argument err))"
+        ),
+        Value::list([
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("cl--struct-name-p".into()),
+            Value::Symbol("hash-table".into()),
+            Value::Symbol("name".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_generic_define_generalizer_registers_runtime_value() {
     assert_eq!(
         eval_str(
