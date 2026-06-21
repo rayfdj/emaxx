@@ -1055,6 +1055,34 @@ fn syntax_ppss_flush_cache_is_callable() {
 }
 
 #[test]
+fn execute_kbd_macro_exposes_this_single_command_keys() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (add-hook 'post-command-hook
+                         (lambda () (setq seen (this-single-command-keys))))
+               (with-temp-buffer
+                 (execute-kbd-macro (kbd \"a\"))
+                 (equal seen [?a])))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn call_last_kbd_macro_replays_dynamic_last_kbd_macro() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (let ((last-kbd-macro (kbd \"ab\")))
+                 (call-last-kbd-macro))
+               (buffer-string))"
+        ),
+        Value::String("ab".into())
+    );
+}
+
+#[test]
 fn ppss_depth_returns_syntax_ppss_depth() {
     assert_eq!(
         eval_str("(with-temp-buffer (insert \"(a (b))\") (ppss-depth (syntax-ppss 6)))"),
@@ -1391,6 +1419,22 @@ fn cl_loop_initially_before_while_for_do_collect() {
             Value::cons(Value::Symbol("start".into()), Value::Symbol("b".into())),
             Value::cons(Value::Symbol("start".into()), Value::Symbol("c".into())),
         ])
+    );
+}
+
+#[test]
+fn cl_loop_vconcat_into_append_into_finally_return() {
+    assert_eq!(
+        eval_str(
+            "(equal
+               (cl-loop for segment in (list [a b] [c])
+                        for thunks in '((x) (y z))
+                        vconcat segment into segments
+                        append thunks into thunk-list
+                        finally return (list segments thunk-list))
+               '([a b c] (x y z)))"
+        ),
+        Value::T
     );
 }
 

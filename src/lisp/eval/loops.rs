@@ -286,6 +286,12 @@ impl Interpreter {
             },
             Append(Value),
             Vconcat(Value),
+            VconcatIntoAppendInto {
+                vconcat_expr: Value,
+                vconcat_name: String,
+                append_expr: Value,
+                append_name: String,
+            },
             Thereis {
                 expr: Value,
                 until: Option<Value>,
@@ -1109,12 +1115,48 @@ impl Interpreter {
                     .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
                     .clone(),
             ),
-            Some(Value::Symbol(symbol)) if symbol == "vconcat" => LoopAction::Vconcat(
-                items
-                    .get(index + 1)
-                    .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                    .clone(),
-            ),
+            Some(Value::Symbol(symbol)) if symbol == "vconcat" => {
+                if matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "into")
+                    && matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "append")
+                    && matches!(items.get(index + 6), Some(Value::Symbol(kind)) if kind == "into")
+                    && matches!(items.get(index + 8), Some(Value::Symbol(kind)) if kind == "finally")
+                    && matches!(items.get(index + 9), Some(Value::Symbol(kind)) if kind == "return")
+                {
+                    final_return = Some(
+                        items
+                            .get(index + 10)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    );
+                    LoopAction::VconcatIntoAppendInto {
+                        vconcat_expr: items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        vconcat_name: items
+                            .get(index + 3)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .as_symbol()?
+                            .to_string(),
+                        append_expr: items
+                            .get(index + 5)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                        append_name: items
+                            .get(index + 7)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .as_symbol()?
+                            .to_string(),
+                    }
+                } else {
+                    LoopAction::Vconcat(
+                        items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    )
+                }
+            }
             Some(Value::Symbol(symbol)) if symbol == "thereis" => LoopAction::Thereis {
                 expr: items
                     .get(index + 1)
@@ -1473,6 +1515,18 @@ impl Interpreter {
                     Self::upsert_frame_binding(frame, collect_name.clone(), Value::Nil);
                     Self::upsert_frame_binding(frame, else_collect_name.clone(), Value::Nil);
                 }
+                LoopAction::VconcatIntoAppendInto {
+                    vconcat_name,
+                    append_name,
+                    ..
+                } => {
+                    Self::upsert_frame_binding(
+                        frame,
+                        vconcat_name.clone(),
+                        Value::list([Value::Symbol("vector-literal".into())]),
+                    );
+                    Self::upsert_frame_binding(frame, append_name.clone(), Value::Nil);
+                }
                 _ => {}
             }
         }
@@ -1480,6 +1534,8 @@ impl Interpreter {
         let mut result = Value::Nil;
         let mut returned_early = false;
         let mut collected = Vec::new();
+        let mut vconcat_into_collected = Vec::new();
+        let mut append_into_collected = Vec::new();
         let mut sum = 0i64;
         if !initially_body.is_empty() {
             match self.eval_cl_loop_do_body(&initially_body, env) {
@@ -1572,6 +1628,31 @@ impl Interpreter {
                     collected.extend(crate::lisp::primitives::vector_items(
                         &self.eval(expr, env)?,
                     )?);
+                }
+                LoopAction::VconcatIntoAppendInto {
+                    vconcat_expr,
+                    vconcat_name,
+                    append_expr,
+                    append_name,
+                } => {
+                    vconcat_into_collected.extend(crate::lisp::primitives::vector_items(
+                        &self.eval(vconcat_expr, env)?,
+                    )?);
+                    append_into_collected.extend(self.eval(append_expr, env)?.to_vec()?);
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    Self::upsert_frame_binding(
+                        frame,
+                        vconcat_name.clone(),
+                        Value::list(
+                            std::iter::once(Value::Symbol("vector-literal".into()))
+                                .chain(vconcat_into_collected.iter().cloned()),
+                        ),
+                    );
+                    Self::upsert_frame_binding(
+                        frame,
+                        append_name.clone(),
+                        Value::list(append_into_collected.clone()),
+                    );
                 }
                 LoopAction::Thereis { expr, until } => {
                     if let Some(until_expr) = until

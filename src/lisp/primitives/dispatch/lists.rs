@@ -94,7 +94,12 @@ pub(super) fn handles(name: &str) -> bool {
             | "keyboard-quit"
             | "start-kbd-macro"
             | "end-kbd-macro"
+            | "call-last-kbd-macro"
             | "execute-kbd-macro"
+            | "this-command-keys"
+            | "this-command-keys-vector"
+            | "this-single-command-keys"
+            | "this-single-command-raw-keys"
             | "define-keymap"
             | "define-abbrev-table"
             | "read-key"
@@ -207,6 +212,11 @@ fn execute_kbd_macro(
         } else if pending_keys.len() == 1
             && let Some(text) = keyboard_macro_self_insert_text(&event)
         {
+            interp.set_variable(
+                "this-single-command-keys",
+                Value::list([Value::Symbol("vector-literal".into()), event.clone()]),
+                env,
+            );
             execute_kbd_macro_self_insert(interp, &text, env)?;
             pending_keys.clear();
         }
@@ -222,6 +232,11 @@ fn execute_kbd_macro_command(
     event: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    interp.set_variable(
+        "this-single-command-keys",
+        Value::list([Value::Symbol("vector-literal".into()), event.clone()]),
+        env,
+    );
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("last-command-event", event.clone(), env);
     interp.set_variable("this-original-command", command.clone(), env);
@@ -1460,7 +1475,27 @@ pub(super) fn call(
             interp.set_variable("defining-kbd-macro", Value::Nil, env);
             Ok(Value::Nil)
         }
+        "call-last-kbd-macro" => {
+            need_arg_range(name, args, 0, 2)?;
+            let macro_value = interp
+                .lookup_var("last-kbd-macro", env)
+                .unwrap_or(Value::Nil);
+            if macro_value.is_nil() {
+                Ok(Value::Nil)
+            } else {
+                execute_kbd_macro(interp, &[macro_value], env)
+            }
+        }
         "execute-kbd-macro" => execute_kbd_macro(interp, args, env),
+        "this-command-keys"
+        | "this-command-keys-vector"
+        | "this-single-command-keys"
+        | "this-single-command-raw-keys" => {
+            need_args(name, args, 0)?;
+            Ok(interp
+                .lookup_var("this-single-command-keys", env)
+                .unwrap_or_else(|| Value::list([Value::Symbol("vector-literal".into())])))
+        }
         "define-keymap" => Ok(keymap_placeholder(None)),
         "define-abbrev-table" => {
             if args.len() < 2 {
