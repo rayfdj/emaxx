@@ -1178,6 +1178,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "cl--struct-get-class"
             | "cl-struct-define"
             | "cl-old-struct-compat-mode"
+            | "cl--class-name"
             | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"

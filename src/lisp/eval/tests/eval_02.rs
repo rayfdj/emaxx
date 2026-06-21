@@ -211,6 +211,55 @@ fn cl_defstruct_constructor_evaluates_aux_slot_initializers() {
 }
 
 #[test]
+fn cl_defstruct_constructor_aux_can_reference_constructor_args() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defstruct (aux-arg-struct
+                              (:constructor make-aux-arg-struct
+                                            (value &aux
+                                                   (integer (integerp value))
+                                                   (values (unless integer
+                                                             (list value)))
+                                                   (range (when integer
+                                                            `((,value . ,value)))))))
+                 integer values range)
+               (let ((from-int (make-aux-arg-struct 3))
+                     (from-symbol (make-aux-arg-struct 'alpha)))
+                 (list (aux-arg-struct-integer from-int)
+                       (aux-arg-struct-range from-int)
+                       (aux-arg-struct-integer from-symbol)
+                       (aux-arg-struct-values from-symbol))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::cons(Value::Integer(3), Value::Integer(3))]),
+            Value::Nil,
+            Value::list([Value::Symbol("alpha".into())]),
+        ])
+    );
+}
+
+#[test]
+fn cl_defstruct_named_constructors_keep_default_constructor() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defstruct (multi-ctor-struct
+                              (:constructor multi-ctor-from-value (value)))
+                 value)
+               (list
+                (fboundp 'make-multi-ctor-struct)
+                (multi-ctor-struct-value
+                 (make-multi-ctor-struct :value 'default))
+                (multi-ctor-struct-value
+                 (multi-ctor-from-value 'named))))"
+        ),
+        Value::list([Value::T, Value::symbol("default"), Value::symbol("named"),])
+    );
+}
+
+#[test]
 fn cl_defstruct_constructor_arglists_ignore_aux_bindings() {
     assert_eq!(
         eval_str(
@@ -847,6 +896,21 @@ fn cl_macrolet_expands_defun_body_before_local_macro_exits() {
     );
 
     assert_eq!(result, Value::Integer(4));
+}
+
+#[test]
+fn cl_macrolet_expands_setf_places() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defstruct sample-macrolet-place alpha)
+               (let ((obj (make-sample-macrolet-place)))
+                 (cl-macrolet ((slot (x) (list 'sample-macrolet-place-alpha x)))
+                   (setf (slot obj) 9)
+                   (sample-macrolet-place-alpha obj))))"
+        ),
+        Value::Integer(9)
+    );
 }
 
 #[test]
@@ -3085,9 +3149,28 @@ fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
                        (require 'cl-extra)
                        (list (cl-find-class 'fixnum)
                              (built-in-class-p (cl-find-class 'fixnum))
+                             (eq (get 'fixnum 'cl--class) 'fixnum)
+                             (mapcar #'cl--class-name
+                                     (cl--class-parents (cl-find-class 'fixnum)))
+                             (cl--class-allparents (get 'fixnum 'cl--class))
                              (cl-typep 10 'fixnum)))"
             ),
-            Value::list([Value::Symbol("fixnum".into()), Value::T, Value::T,])
+            Value::list([
+                Value::Symbol("fixnum".into()),
+                Value::T,
+                Value::T,
+                Value::list([Value::Symbol("integer".into())]),
+                Value::list([
+                    Value::Symbol("fixnum".into()),
+                    Value::Symbol("integer".into()),
+                    Value::Symbol("number".into()),
+                    Value::Symbol("integer-or-marker".into()),
+                    Value::Symbol("number-or-marker".into()),
+                    Value::Symbol("atom".into()),
+                    Value::Symbol("t".into()),
+                ]),
+                Value::T,
+            ])
         );
     });
 }

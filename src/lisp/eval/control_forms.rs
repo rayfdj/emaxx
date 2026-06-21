@@ -428,6 +428,51 @@ impl Interpreter {
         Err(LispError::Throw(tag, value))
     }
 
+    pub(super) fn sf_cl_return(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() > 2 {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-return".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let value = if let Some(value) = items.get(1) {
+            self.eval(value, env)?
+        } else {
+            Value::Nil
+        };
+        Err(LispError::Throw(
+            Value::Symbol("--cl-block-nil--".into()),
+            value,
+        ))
+    }
+
+    pub(super) fn sf_cl_return_from(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if !(2..=3).contains(&items.len()) {
+            return Err(LispError::WrongNumberOfArgs(
+                "cl-return-from".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name = items[1].as_symbol()?;
+        let value = if let Some(value) = items.get(2) {
+            self.eval(value, env)?
+        } else {
+            Value::Nil
+        };
+        Err(LispError::Throw(
+            Value::Symbol(format!("--cl-block-{name}--")),
+            value,
+        ))
+    }
+
     pub(super) fn sf_prog1(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Ok(Value::Nil);

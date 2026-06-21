@@ -923,7 +923,7 @@ pub(crate) fn remove_equal(
             .into_iter()
             .filter(|item| !values_equal(interp, item, elt))
             .collect::<Vec<_>>();
-        let mut result = vec![Value::symbol("vector")];
+        let mut result = vec![Value::symbol("vector-literal")];
         result.extend(filtered);
         return Ok(Value::list(result));
     }

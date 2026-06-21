@@ -780,7 +780,7 @@ fn serialize_value(
                 return Ok(rendered);
             }
             if let Ok(items) = vector_items(value)
-                && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()), Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal")
+                && matches!(value.to_vec().ok().and_then(|v| v.first().cloned()), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
             {
                 return serialize_array(interp, &items, options);
             }

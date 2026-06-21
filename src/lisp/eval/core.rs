@@ -72,6 +72,8 @@ impl Interpreter {
                         "atomic-change-group" => {
                             return self.sf_atomic_change_group(&items[1..], env);
                         }
+                        "cl-return" => return self.sf_cl_return(&items, env),
+                        "cl-return-from" => return self.sf_cl_return_from(&items, env),
                         "throw" => return self.sf_throw(&items, env),
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),

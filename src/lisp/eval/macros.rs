@@ -4,7 +4,7 @@ fn backquote_splice_elements(value: Value) -> Result<Vec<Value>, LispError> {
     let mut items = value.to_vec()?;
     if matches!(
         items.first(),
-        Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+        Some(Value::Symbol(symbol)) if symbol == "vector-literal"
     ) {
         items.remove(0);
     }

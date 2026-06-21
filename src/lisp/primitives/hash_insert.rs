@@ -387,9 +387,7 @@ pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Va
         {
             return items.get(1).cloned();
         }
-        if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal")
-            || matches!(items.first(), Some(Value::Symbol(name)) if name == "vector")
-        {
+        if matches!(items.first(), Some(Value::Symbol(name)) if name == "vector-literal") {
             for item in items.iter().skip(1) {
                 if let Some(found) = display_property_value(item, property) {
                     return Some(found);

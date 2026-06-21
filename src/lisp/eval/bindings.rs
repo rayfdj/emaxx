@@ -84,7 +84,7 @@ impl Interpreter {
                 Some(Value::Symbol("buffer-substring--filter".into()))
             }
             "meta-prefix-char" => Some(Value::Integer(27)),
-            "translation-table-vector" => Some(Value::list([Value::symbol("vector")])),
+            "translation-table-vector" => Some(Value::list([Value::symbol("vector-literal")])),
             "float-e" => Some(Value::Float(std::f64::consts::E)),
             "float-pi" => Some(Value::Float(std::f64::consts::PI)),
             "gc-elapsed" => Some(Value::Float(0.0)),

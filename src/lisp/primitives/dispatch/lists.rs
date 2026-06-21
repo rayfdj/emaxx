@@ -448,7 +448,7 @@ pub(super) fn call(
             if matches!(args[0], Value::Cons(_, _))
                 && matches!(
                     args[0].to_vec().ok().and_then(|items| items.first().cloned()),
-                    Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+                    Some(Value::Symbol(symbol)) if symbol == "vector-literal"
                 )
             {
                 super::call(interp, "aref", args, env)

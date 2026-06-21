@@ -19,14 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1807/7080 are verified locally against the current canonical
+- Tests through 1823/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1807/7080: support cl-print ellipses and cl-seq equality`.
-- The next observed frontier is selector 1808, `comp-cstr-test-1` in
-  `test/lisp/emacs-lisp/comp-cstr-tests.el`, which currently fails at file
-  load in emaxx while oracle GNU Emacs loads the file and discovers the
-  selected tests.
+  `Compat 1823/7080: support comp-cstr union setup`.
+- The next observed frontier is selector 1824, `comp-cstr-test-24` in
+  `test/lisp/emacs-lisp/comp-cstr-tests.el`, where oracle GNU Emacs passes
+  and emaxx fails with condition type `error`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -93,6 +92,34 @@ counts as the progress denominator.
   `cargo test cl_substitute_updates_list_copy_through_setf_elt --
   --nocapture`; exploratory selector `comp-cstr-test-1`, which identified
   selector 1808 as the next frontier.
+- Selectors 1808..1823 in `test/lisp/emacs-lisp/comp-cstr-tests.el` passed
+  after making `cl-defstruct` named constructors keep the default constructor,
+  allowing constructor `&aux` bindings to reference constructor arguments,
+  separating true vector literals from ordinary `(vector ...)` lists, expanding
+  local `cl-macrolet` macros in `setf` places, adding `cl-defun` named block
+  returns, supporting `cl-loop` forms used by comp-cstr, and completing
+  built-in class parent/name metadata for comp-cstr type normalization. Exact
+  replays run for this batch: selectors `comp-cstr-test-1`,
+  `comp-cstr-test-10`, `comp-cstr-test-11`, `comp-cstr-test-12`,
+  `comp-cstr-test-13`, `comp-cstr-test-14`, `comp-cstr-test-15`,
+  `comp-cstr-test-16`, `comp-cstr-test-17`, `comp-cstr-test-18`,
+  `comp-cstr-test-19`, `comp-cstr-test-2`, `comp-cstr-test-20`,
+  `comp-cstr-test-21`, `comp-cstr-test-22`, and `comp-cstr-test-23`;
+  grouped replay for `test/lisp/emacs-lisp/comp-cstr-tests.el`, which
+  confirmed later failures remain; focused Rust regressions:
+  `cargo test cl_defstruct_constructor_aux_can_reference_constructor_args --
+  --nocapture`,
+  `cargo test cl_defstruct_named_constructors_keep_default_constructor --
+  --nocapture`,
+  `cargo test vectorp_recognizes_vector_literals -- --nocapture`,
+  `cargo test remove_filters_lists_vectors_and_strings -- --nocapture`,
+  `cargo test cl_loop_if_do_else_do_supports_finally_return -- --nocapture`,
+  `cargo test cl_loop_named_catches_return_from_do_body -- --nocapture`,
+  `cargo test cl_defun_ -- --nocapture`,
+  `cargo test cl_macrolet_expands_setf_places -- --nocapture`, and
+  `cargo test cl_find_class_prefers_builtin_runtime_for_builtin_classes --
+  --nocapture`; exploratory selector `comp-cstr-test-24`, which identified
+  selector 1824 as the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable

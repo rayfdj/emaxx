@@ -1298,6 +1298,21 @@ fn cl_defun_supports_basic_key_arguments() {
 }
 
 #[test]
+fn cl_defun_wraps_body_in_named_block() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (require 'cl-lib)
+               (cl-defun emaxx-cl-defun-block-test ()
+                 (cl-return-from emaxx-cl-defun-block-test 'done)
+                 'missed)
+               (emaxx-cl-defun-block-test))"
+        ),
+        Value::Symbol("done".into())
+    );
+}
+
+#[test]
 fn cl_defmethod_lowers_specialized_arguments() {
     let result = eval_str(
         "(progn

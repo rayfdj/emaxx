@@ -722,6 +722,20 @@ impl Interpreter {
             suspend_condition_case_count: 0,
             condition_case_depth: 0,
         };
+        for class_name in primitives::builtin_class_names() {
+            interp.put_symbol_property(
+                class_name,
+                "cl--class",
+                Value::Symbol((*class_name).into()),
+            );
+            if let Some(predicate) = primitives::builtin_class_predicate(class_name) {
+                interp.put_symbol_property(
+                    class_name,
+                    "cl-deftype-satisfies",
+                    Value::Symbol(predicate.into()),
+                );
+            }
+        }
         let esc_map = primitives::make_runtime_full_keymap(&mut interp, Some("esc-map"));
         interp.set_global_binding("esc-map", esc_map.clone());
         let ctl_x_4_map = primitives::make_runtime_keymap(&mut interp, Some("ctl-x-4-map"));
@@ -2814,6 +2828,67 @@ fn parse_cl_defstruct_constructor_params(items: Vec<Value>) -> (Vec<String>, Vec
         }
     }
     (params, aux_bindings)
+}
+
+fn cl_defstruct_constructor_aux_let_bindings(
+    params: &[String],
+    aux_bindings: Vec<(String, Value)>,
+) -> Vec<Value> {
+    let mut bindings = Vec::new();
+    let mut positional_index = 0usize;
+    let mut mode = "required";
+    for param in params {
+        match param.as_str() {
+            "&optional" => {
+                mode = "optional";
+                continue;
+            }
+            "&key" => {
+                mode = "key";
+                continue;
+            }
+            "&rest" | "&body" => {
+                mode = "rest";
+                continue;
+            }
+            "&allow-other-keys" => continue,
+            marker if marker.starts_with('&') => continue,
+            _ => {}
+        }
+
+        let value_form = match mode {
+            "key" => Value::list([
+                Value::Symbol("plist-get".into()),
+                Value::Symbol("args".into()),
+                Value::Symbol(format!(":{param}")),
+            ]),
+            "rest" => {
+                mode = "after-rest";
+                Value::list([
+                    Value::Symbol("nthcdr".into()),
+                    Value::Integer(positional_index as i64),
+                    Value::Symbol("args".into()),
+                ])
+            }
+            "after-rest" => continue,
+            _ => {
+                let form = Value::list([
+                    Value::Symbol("nth".into()),
+                    Value::Integer(positional_index as i64),
+                    Value::Symbol("args".into()),
+                ]);
+                positional_index += 1;
+                form
+            }
+        };
+        bindings.push(Value::list([Value::Symbol(param.clone()), value_form]));
+    }
+    bindings.extend(
+        aux_bindings
+            .into_iter()
+            .map(|(name, form)| Value::list([Value::Symbol(name), form])),
+    );
+    bindings
 }
 
 fn pcase_pattern_bindings(
