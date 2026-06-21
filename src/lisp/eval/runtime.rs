@@ -454,6 +454,7 @@ impl Interpreter {
 
     pub(crate) fn class_name_from_value(&self, value: &Value) -> Option<String> {
         match value {
+            Value::T => Some("t".into()),
             Value::Symbol(symbol) => Some(symbol.clone()),
             Value::Record(record_id) => self
                 .find_class_state_by_record_id(*record_id)
@@ -468,13 +469,13 @@ impl Interpreter {
     }
 
     pub(crate) fn class_parents_value(&self, class: &Value) -> Result<Value, LispError> {
-        if let Value::Symbol(name) = class
-            && primitives::is_builtin_class_name(name)
+        if let Some(name) = self.class_name_from_value(class)
+            && primitives::is_builtin_class_name(&name)
         {
             return Ok(Value::list(
-                primitives::builtin_class_parents(name)
+                primitives::builtin_class_parents(&name)
                     .iter()
-                    .map(|parent| Value::Symbol((*parent).into())),
+                    .map(|parent| crate::lisp::types::interned_symbol_value((*parent).into())),
             ));
         }
         let Value::Record(record_id) = class else {
@@ -643,7 +644,7 @@ impl Interpreter {
         if let Some(parents) = primitives::builtin_class_allparents(name) {
             return parents
                 .iter()
-                .map(|parent| Value::Symbol((*parent).into()))
+                .map(|parent| crate::lisp::types::interned_symbol_value((*parent).into()))
                 .collect();
         }
 
@@ -656,7 +657,7 @@ impl Interpreter {
             if !seen.insert(name.to_string()) {
                 return;
             }
-            output.push(Value::Symbol(name.to_string()));
+            output.push(crate::lisp::types::interned_symbol_value(name.to_string()));
             let builtin_parents = primitives::builtin_class_parents(name);
             if !builtin_parents.is_empty() {
                 for parent in builtin_parents {

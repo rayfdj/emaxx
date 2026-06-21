@@ -3167,7 +3167,7 @@ fn cl_find_class_prefers_builtin_runtime_for_builtin_classes() {
                     Value::Symbol("integer-or-marker".into()),
                     Value::Symbol("number-or-marker".into()),
                     Value::Symbol("atom".into()),
-                    Value::Symbol("t".into()),
+                    Value::T,
                 ]),
                 Value::T,
             ])

@@ -2379,7 +2379,7 @@ pub(super) fn call(
             let Some(class_name) = interp.class_name_from_value(&args[0]) else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
-            Ok(Value::Symbol(class_name))
+            Ok(crate::lisp::types::interned_symbol_value(class_name))
         }
         "cl--class-parents" => {
             need_args(name, args, 1)?;
@@ -2394,9 +2394,9 @@ pub(super) fn call(
                 if interp.class_value(&symbol).is_some() || is_builtin_class_name(&symbol) {
                     Value::list(interp.class_allparents(&symbol))
                 } else if symbol == "t" {
-                    Value::list([Value::Symbol("t".into())])
+                    Value::list([Value::T])
                 } else {
-                    Value::list([Value::Symbol(symbol), Value::Symbol("t".into())])
+                    Value::list([crate::lisp::types::interned_symbol_value(symbol), Value::T])
                 },
             )
         }
