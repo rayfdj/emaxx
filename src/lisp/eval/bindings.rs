@@ -208,6 +208,7 @@ impl Interpreter {
             "null-device" => Some(Value::String("/dev/null".into())),
             "exec-suffixes" => Some(Value::list([Value::String(String::new())])),
             "debug-on-error" => Some(Value::Nil),
+            "eval-expression-debug-on-error" => Some(Value::T),
             "debugger-stack-frame-as-list" => Some(Value::Nil),
             "print-quoted" => Some(Value::T),
             "eval-buffer-list" => Some(Value::Nil),

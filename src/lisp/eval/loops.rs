@@ -246,9 +246,44 @@ impl Interpreter {
             },
         }
 
+        fn is_cl_loop_clause_keyword(value: Option<&Value>) -> bool {
+            matches!(
+                value,
+                Some(Value::Symbol(symbol))
+                    if matches!(
+                        symbol.as_str(),
+                        "with"
+                            | "for"
+                            | "while"
+                            | "until"
+                            | "repeat"
+                            | "initially"
+                            | "when"
+                            | "do"
+                            | "collect"
+                            | "append"
+                            | "vconcat"
+                            | "thereis"
+                            | "always"
+                            | "sum"
+                            | "return"
+                            | "unless"
+                            | "if"
+                    )
+            )
+        }
+
         enum LoopAction {
             Do(Vec<Value>),
+            DoCollect {
+                body: Vec<Value>,
+                collect: Value,
+            },
             Collect(Value),
+            CollectDo {
+                expr: Value,
+                body: Vec<Value>,
+            },
             Append(Value),
             Vconcat(Value),
             Thereis {
@@ -359,6 +394,8 @@ impl Interpreter {
         let mut specs = Vec::new();
         let mut with_binding_groups = Vec::new();
         let mut while_expr = None;
+        let mut until_expr = None;
+        let mut initially_body = Vec::new();
         let mut index = 1usize;
         let named_loop_tag = if matches!(items.get(index), Some(Value::Symbol(symbol)) if symbol == "named")
         {
@@ -588,6 +625,25 @@ impl Interpreter {
                     );
                     index += 2;
                 }
+                Some(Value::Symbol(symbol)) if symbol == "until" => {
+                    until_expr = Some(
+                        items
+                            .get(index + 1)
+                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
+                            .clone(),
+                    );
+                    index += 2;
+                }
+                Some(Value::Symbol(symbol)) if symbol == "initially" => {
+                    index += 1;
+                    while index < items.len() && !is_cl_loop_clause_keyword(items.get(index)) {
+                        initially_body.push(items[index].clone());
+                        index += 1;
+                    }
+                    if initially_body.is_empty() || index >= items.len() {
+                        return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                    }
+                }
                 Some(Value::Symbol(symbol)) if symbol == "repeat" => {
                     let count = self
                         .eval(
@@ -605,7 +661,10 @@ impl Interpreter {
             }
         }
 
-        if (specs.is_empty() && with_binding_groups.is_empty() && while_expr.is_none())
+        if (specs.is_empty()
+            && with_binding_groups.is_empty()
+            && while_expr.is_none()
+            && until_expr.is_none())
             || index >= items.len()
         {
             return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
@@ -665,32 +724,16 @@ impl Interpreter {
                 LoopSpec::ListExpr { .. } => unreachable!("list expressions are resolved"),
             })
             .min()
-            .unwrap_or(if while_expr.is_some() { usize::MAX } else { 1 });
+            .unwrap_or(if while_expr.is_some() || until_expr.is_some() {
+                usize::MAX
+            } else {
+                1
+            });
 
         let mut final_return = None;
-        let mut initially_body = Vec::new();
         if matches!(items.get(index), Some(Value::Symbol(symbol)) if symbol == "initially") {
             index += 1;
-            while index < items.len()
-                && !matches!(
-                    items.get(index),
-                    Some(Value::Symbol(symbol))
-                        if matches!(
-                            symbol.as_str(),
-                            "when"
-                                | "do"
-                                | "collect"
-                                | "append"
-                                | "vconcat"
-                                | "thereis"
-                                | "always"
-                                | "sum"
-                                | "return"
-                                | "unless"
-                                | "if"
-                        )
-                )
-            {
+            while index < items.len() && !is_cl_loop_clause_keyword(items.get(index)) {
                 initially_body.push(items[index].clone());
                 index += 1;
             }
@@ -988,17 +1031,52 @@ impl Interpreter {
                     );
                     LoopAction::Do(items[body_start..finally_index].to_vec())
                 } else {
-                    LoopAction::Do(items[body_start..].to_vec())
+                    let collect_index = items[body_start..]
+                        .iter()
+                        .position(
+                            |item| matches!(item, Value::Symbol(symbol) if symbol == "collect"),
+                        )
+                        .map(|offset| body_start + offset);
+                    if let Some(collect_index) = collect_index {
+                        if collect_index <= body_start || collect_index + 2 != items.len() {
+                            return Err(LispError::Signal("Unsupported cl-loop syntax".into()));
+                        }
+                        LoopAction::DoCollect {
+                            body: items[body_start..collect_index].to_vec(),
+                            collect: items
+                                .get(collect_index + 1)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?
+                                .clone(),
+                        }
+                    } else {
+                        LoopAction::Do(items[body_start..].to_vec())
+                    }
                 }
             }
             Some(Value::Symbol(symbol)) if symbol == "collect" => {
                 if !matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "into") {
-                    LoopAction::Collect(
-                        items
-                            .get(index + 1)
-                            .ok_or_else(|| LispError::Signal("Unsupported cl-loop syntax".into()))?
-                            .clone(),
-                    )
+                    if matches!(items.get(index + 2), Some(Value::Symbol(kind)) if kind == "do") {
+                        LoopAction::CollectDo {
+                            expr: items
+                                .get(index + 1)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?
+                                .clone(),
+                            body: items[index + 3..].to_vec(),
+                        }
+                    } else {
+                        LoopAction::Collect(
+                            items
+                                .get(index + 1)
+                                .ok_or_else(|| {
+                                    LispError::Signal("Unsupported cl-loop syntax".into())
+                                })?
+                                .clone(),
+                        )
+                    }
                 } else {
                     if !matches!(items.get(index + 4), Some(Value::Symbol(kind)) if kind == "finally")
                         || !matches!(items.get(index + 5), Some(Value::Symbol(kind)) if kind == "return")
@@ -1452,6 +1530,11 @@ impl Interpreter {
             {
                 break;
             }
+            if let Some(expr) = until_expr.as_ref()
+                && self.eval(expr, env)?.is_truthy()
+            {
+                break;
+            }
 
             for spec in &specs {
                 match spec {
@@ -1472,7 +1555,15 @@ impl Interpreter {
 
             match &action {
                 LoopAction::Do(body) => result = self.eval_cl_loop_do_body(body, env)?,
+                LoopAction::DoCollect { body, collect } => {
+                    result = self.eval_cl_loop_do_body(body, env)?;
+                    collected.push(self.eval(collect, env)?);
+                }
                 LoopAction::Collect(expr) => collected.push(self.eval(expr, env)?),
+                LoopAction::CollectDo { expr, body } => {
+                    collected.push(self.eval(expr, env)?);
+                    result = self.eval_cl_loop_do_body(body, env)?;
+                }
                 LoopAction::Append(expr) => {
                     let values = self.eval(expr, env)?.to_vec()?;
                     collected.extend(values);
@@ -1804,7 +1895,10 @@ impl Interpreter {
             return Ok(result);
         }
         Ok(match action {
-            LoopAction::Collect(_) | LoopAction::Append(_) => Value::list(collected),
+            LoopAction::Collect(_) | LoopAction::Append(_) | LoopAction::DoCollect { .. } => {
+                Value::list(collected)
+            }
+            LoopAction::CollectDo { .. } => Value::list(collected),
             LoopAction::Vconcat(_) => Value::list(
                 std::iter::once(Value::symbol("vector-literal"))
                     .chain(collected)

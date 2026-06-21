@@ -1357,6 +1357,44 @@ fn cl_loop_while_collect_without_for_clause() {
 }
 
 #[test]
+fn cl_loop_until_collect_do_runs_body_after_collecting() {
+    assert_eq!(
+        eval_str(
+            "(let ((items '(a b stop c)))
+               (list (cl-loop for form in items
+                              until (eq form 'stop)
+                              collect form
+                              do (pop items))
+                     items))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("a".into()), Value::Symbol("b".into())]),
+            Value::list([Value::Symbol("stop".into()), Value::Symbol("c".into())]),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_initially_before_while_for_do_collect() {
+    assert_eq!(
+        eval_str(
+            "(let ((items '(a b c))
+                   (seen nil))
+               (cl-loop initially (setq seen 'start)
+                        while items
+                        for name = (car items)
+                        do (pop items)
+                        collect (cons seen name)))"
+        ),
+        Value::list([
+            Value::cons(Value::Symbol("start".into()), Value::Symbol("a".into())),
+            Value::cons(Value::Symbol("start".into()), Value::Symbol("b".into())),
+            Value::cons(Value::Symbol("start".into()), Value::Symbol("c".into())),
+        ])
+    );
+}
+
+#[test]
 fn cl_loop_collect_into_finally_return() {
     assert_eq!(
         eval_str(
