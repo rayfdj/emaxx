@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1913/7080 are verified locally against the current canonical
+- Tests through 1914/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1913/7080: align edebug reader forms`.
-- The next observed frontier is selector 1914,
-  `edebug-tests--&rest-behavior` in
+  `Compat 1914/7080: support list-backed struct accessors`.
+- The next observed frontier is selector 1915,
+  `edebug-tests--conflicting-internal-names` in
   `test/lisp/emacs-lisp/edebug-tests.el`, which currently fails with
-  `wrong-type-argument`.
+  condition type `error`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -68,6 +68,14 @@ counts as the progress denominator.
   `cargo test runtime_read_returns_raw_backquote_symbols_and_accepts_dot_comma -- --nocapture`;
   exploratory selector `edebug-tests--&rest-behavior` identified selector 1914
   as the next frontier.
+- Selector 1914, `edebug-tests--&rest-behavior` in
+  `test/lisp/emacs-lisp/edebug-tests.el`, passed after making generated
+  `cl-defstruct (:type list)` accessors accept nil and proper list objects,
+  matching GNU behavior used by Edebug form-data entries. Exact replay run for
+  this batch: selector `edebug-tests--&rest-behavior`; focused Rust regression:
+  `cargo test cl_defstruct_type_list_accessors_accept_nil_and_lists -- --nocapture`;
+  exploratory selector `edebug-tests--conflicting-internal-names` identified
+  selector 1915 as the next frontier.
 - Selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
   support for sequential `with` initialization, parallel `with ... and ...`

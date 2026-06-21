@@ -73,6 +73,27 @@ fn cl_defstruct_honors_explicit_predicate_name() {
 }
 
 #[test]
+fn cl_defstruct_type_list_accessors_accept_nil_and_lists() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (cl-defstruct (sample-list-struct
+                                  (:type list)
+                                  (:predicate nil))
+                     alpha beta)
+                   (list (sample-list-struct-alpha nil)
+                         (sample-list-struct-alpha '(left right))
+                         (sample-list-struct-beta '(left right))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("left".into()),
+            Value::Symbol("right".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_getf_places_update_plists() {
     assert_eq!(
         eval_str(

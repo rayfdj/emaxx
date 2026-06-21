@@ -1302,9 +1302,42 @@ pub(super) fn call(
             })
         }
         "emaxx-struct-ref" => {
-            need_args(name, args, 3)?;
+            need_arg_range(name, args, 3, 4)?;
             let struct_name = args[0].as_symbol()?;
             let slot_index = args[1].as_integer()?.max(0) as usize;
+            let list_backed = args.get(3).is_some_and(|value| !value.is_nil());
+            if list_backed {
+                return match &args[2] {
+                    Value::Nil => Ok(Value::Nil),
+                    Value::Cons(_, _) => Ok(args[2]
+                        .to_vec()?
+                        .get(slot_index)
+                        .cloned()
+                        .unwrap_or(Value::Nil)),
+                    Value::Record(_) => {
+                        // Some locally generated list-backed constructors still
+                        // produce records; keep those working while runtime-read
+                        // forms use plain list values.
+                        let Value::Record(id) = &args[2] else {
+                            unreachable!();
+                        };
+                        let record = interp.find_record(*id).ok_or_else(|| {
+                            LispError::TypeError("record".into(), format!("record<{id}>"))
+                        })?;
+                        if record.type_name != struct_name {
+                            return Err(LispError::TypeError(
+                                format!("{struct_name}-p"),
+                                args[2].type_name(),
+                            ));
+                        }
+                        Ok(record.slots.get(slot_index).cloned().unwrap_or(Value::Nil))
+                    }
+                    other => Err(LispError::TypeError(
+                        format!("{struct_name}-p"),
+                        other.type_name(),
+                    )),
+                };
+            }
             match &args[2] {
                 Value::Record(id) => {
                     let record = interp.find_record(*id).ok_or_else(|| {

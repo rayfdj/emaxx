@@ -2043,6 +2043,7 @@ impl Interpreter {
         let mut conc_name = format!("{name}-");
         let mut predicate_name = format!("{name}-p");
         let mut parent_names = Vec::new();
+        let mut list_backed = false;
         for option in options {
             let Some(parts) = option.to_vec().ok() else {
                 continue;
@@ -2077,6 +2078,11 @@ impl Interpreter {
                     Some(Value::Symbol(predicate)) => predicate_name = predicate.clone(),
                     _ => {}
                 },
+                Some(Value::Symbol(keyword)) if keyword == ":type" => {
+                    if matches!(parts.get(1), Some(Value::Symbol(kind)) if kind == "list") {
+                        list_backed = true;
+                    }
+                }
                 Some(Value::Symbol(keyword)) if keyword == ":conc-name" => match parts.get(1) {
                     Some(Value::Nil) => conc_name.clear(),
                     Some(Value::Symbol(prefix)) => conc_name = prefix.clone(),
@@ -2159,6 +2165,7 @@ impl Interpreter {
                         struct_name.clone(),
                         Value::Integer(index as i64),
                         Value::Symbol("object".into()),
+                        if list_backed { Value::T } else { Value::Nil },
                     ])],
                     shared_env(Vec::new()),
                 )),
