@@ -672,6 +672,7 @@ impl Interpreter {
                 "ert".into(),
                 "kqueue".into(),
                 "lcms2".into(),
+                "native-compile".into(),
                 "threads".into(),
             ],
             after_load_forms: Vec::new(),

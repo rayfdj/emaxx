@@ -19,15 +19,15 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1900/7080 are verified locally against the current canonical
+- Tests through 1903/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1900/7080: finish comp-cstr tests`.
-- The next observed frontier is selector 1901,
-  `test-native-compile-prune-cache` in
-  `test/lisp/emacs-lisp/comp-tests.el`, where oracle GNU Emacs loads the file
-  and emaxx reports a load error: `Symbol's value as variable is void:
-  after-init-time`.
+  `Compat 1903/7080: expose native compile cache pruning`.
+- The next observed frontier is selector 1904,
+  `test-copyright-update` in
+  `test/lisp/emacs-lisp/copyright-tests.el`, where oracle GNU Emacs loads the
+  file and emaxx reports a load error: `Symbol's value as variable is void:
+  define-skeleton`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -137,6 +137,17 @@ counts as the progress denominator.
   `cargo test cl_find_class_prefers_builtin_runtime_for_builtin_classes --
   --nocapture`; exploratory selector `test-native-compile-prune-cache`, which
   identified selector 1901 as the next frontier.
+- Selectors 1901..1903 in `test/lisp/emacs-lisp/comp-tests.el` passed after
+  binding startup time variables used while loading `comp.el` and exposing the
+  `native-compile` feature so the upstream cache-pruning implementation runs,
+  while keeping native compilation availability and native-function probes
+  false in the headless runtime. Exact replays run for this batch: selector
+  `test-native-compile-prune-cache` and grouped replay for
+  `test/lisp/emacs-lisp/comp-tests.el`; focused Rust regressions:
+  `cargo test native_comp_capability_probes_are_honest -- --nocapture` and
+  `cargo test startup_time_variables_are_bound_in_batch_runtime --
+  --nocapture`; exploratory selector `test-copyright-update`, which identified
+  selector 1904 as the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable

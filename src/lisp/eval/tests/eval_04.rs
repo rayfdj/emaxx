@@ -3021,10 +3021,18 @@ fn inhibited_interaction_uses_expected_condition_type() {
 fn native_comp_capability_probes_are_honest() {
     assert_eq!(eval_str("(featurep 'emacs)"), Value::T);
     assert_eq!(eval_str("(native-comp-available-p)"), Value::Nil);
-    assert_eq!(eval_str("(featurep 'native-compile)"), Value::Nil);
+    assert_eq!(eval_str("(featurep 'native-compile)"), Value::T);
     assert_eq!(
         eval_str("(native-comp-function-p (symbol-function 'car))"),
         Value::Nil
+    );
+}
+
+#[test]
+fn startup_time_variables_are_bound_in_batch_runtime() {
+    assert_eq!(
+        eval_str("(list (boundp 'before-init-time) (boundp 'after-init-time) after-init-time)"),
+        Value::list([Value::T, Value::T, Value::T])
     );
 }
 

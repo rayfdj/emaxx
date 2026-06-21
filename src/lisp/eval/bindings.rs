@@ -218,6 +218,8 @@ impl Interpreter {
             "features" => Some(self.features_value()),
             "selection-converter-alist" => Some(Value::Nil),
             "early-init-file" => Some(Value::Nil),
+            "before-init-time" => Some(Value::Nil),
+            "after-init-time" => Some(Value::T),
             "init-file-user" => Some(Value::Nil),
             "site-run-file" => Some(Value::Nil),
             "user-init-file" => Some(Value::Nil),
