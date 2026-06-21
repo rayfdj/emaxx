@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1909/7080 are verified locally against the current canonical
+- Tests through 1911/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1909/7080: support derived mode hooks and font lock keywords`.
-- The next observed frontier is selector 1910,
-  `easy-mmode--globalized-predicate` in
-  `test/lisp/emacs-lisp/easy-mmode-tests.el`, where oracle GNU Emacs loads the
-  file and reports selectors 1910..1911, but emaxx reports `LoadError`.
+  `Compat 1911/7080: load easy-mmode tests`.
+- The next observed frontier is selector 1912,
+  `edebug-cl-defmethod-qualifier` in
+  `test/lisp/emacs-lisp/edebug-tests.el`, where grouped replay for the file
+  loads but shows broad edebug behavior failures.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -46,6 +46,15 @@ counts as the progress denominator.
   and `cargo test lexical_closures_ -- --nocapture`; exploratory grouped replay
   for `test/lisp/emacs-lisp/easy-mmode-tests.el` identified selector 1910 as
   the next frontier.
+- Selectors 1910..1911 in `test/lisp/emacs-lisp/easy-mmode-tests.el` passed
+  after adding the preloaded `define-mail-user-agent` helper used by generated
+  mail autoloads and seeding `text-mode-abbrev-table` at interpreter startup so
+  `message` can load. Exact replay run for this batch: grouped file replay for
+  `test/lisp/emacs-lisp/easy-mmode-tests.el`; focused Rust regressions:
+  `cargo test define_mail_user_agent_records_mail_properties -- --nocapture`
+  and `cargo test abbrev_require_seeds_standard_table_name_list -- --nocapture`;
+  exploratory grouped replay for `test/lisp/emacs-lisp/edebug-tests.el`
+  identified selector 1912 as the next frontier.
 - Selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
   support for sequential `with` initialization, parallel `with ... and ...`

@@ -807,6 +807,7 @@ impl Interpreter {
         interp.set_global_binding("query-replace-map", query_replace_map);
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
         interp.set_global_binding("minor-mode-map-alist", Value::Nil);
+        primitives::ensure_standard_abbrev_tables(&mut interp);
         interp.set_global_binding("font-lock-mode", Value::Nil);
         interp.mark_auto_buffer_local("font-lock-mode");
         interp.set_global_binding("font-lock-fontified", Value::Nil);

@@ -64,6 +64,32 @@ fn copyright_update_updates_last_notice_when_searching_from_end() {
 }
 
 #[test]
+fn define_mail_user_agent_records_mail_properties() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (define-mail-user-agent 'sample-agent 'compose 'send)
+               (define-mail-user-agent 'explicit-agent 'compose2 'send2 'abort2 'hook2)
+               (list
+                (get 'sample-agent 'composefunc)
+                (get 'sample-agent 'sendfunc)
+                (get 'sample-agent 'abortfunc)
+                (get 'sample-agent 'hookvar)
+                (get 'explicit-agent 'abortfunc)
+                (get 'explicit-agent 'hookvar)))"
+        ),
+        Value::list([
+            Value::Symbol("compose".into()),
+            Value::Symbol("send".into()),
+            Value::Symbol("kill-buffer".into()),
+            Value::Symbol("mail-send-hook".into()),
+            Value::Symbol("abort2".into()),
+            Value::Symbol("hook2".into()),
+        ])
+    );
+}
+
+#[test]
 fn sxhash_eql_matches_equal_bignums() {
     assert_eq!(
         eval_str(
