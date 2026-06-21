@@ -46,7 +46,13 @@ pub(crate) fn hook_values(
 ) -> Vec<Value> {
     let mut hooks = interp
         .lookup_var(hook_name, env)
-        .map(|value| value.to_vec().unwrap_or_default())
+        .map(|value| {
+            if value.is_nil() {
+                Vec::new()
+            } else {
+                value.to_vec().unwrap_or_else(|_| vec![value])
+            }
+        })
         .unwrap_or_default();
     if let Some(id) = buffer_id
         && let Some(local) = interp.buffer_local_hook(id, hook_name)

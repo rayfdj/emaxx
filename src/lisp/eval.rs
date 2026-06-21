@@ -950,6 +950,25 @@ impl Interpreter {
             return evaluate(self, env);
         }
 
+        if env_has_truthy_binding(env, "__closure-isolated-current-env") {
+            let mut call_env = captured_snapshot.clone();
+            let result = evaluate(self, &mut call_env);
+            {
+                let mut stored_env = closure_env.borrow_mut();
+                if stored_env.len() != captured_snapshot.len() {
+                    stored_env.clear();
+                    stored_env.extend(captured_snapshot.clone());
+                }
+                for (captured_index, updated) in call_env.iter().enumerate() {
+                    if captured_index >= stored_env.len() {
+                        break;
+                    }
+                    stored_env[captured_index] = updated.clone();
+                }
+            }
+            return result;
+        }
+
         let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
         let mut call_env = Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
         let result = evaluate(self, &mut call_env);
@@ -1314,11 +1333,36 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
         && matches!(
             body.get(start),
             Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
+                || marker == ":closure-isolated-current-env"
         )
     {
         start += 1;
     }
     &body[start..]
+}
+
+fn body_has_marker(body: &[Value], marker_name: &str) -> bool {
+    let mut start = 0usize;
+    if body.len() > 1
+        && matches!(
+            body.first(),
+            Some(Value::String(_) | Value::StringObject(_))
+        )
+    {
+        start = 1;
+    }
+    matches!(
+        body.get(start),
+        Some(Value::Symbol(marker)) if marker == marker_name
+    ) && body.len().saturating_sub(start) > 1
+}
+
+fn env_has_truthy_binding(env: &Env, name: &str) -> bool {
+    env.iter()
+        .rev()
+        .flat_map(|frame| frame.iter().rev())
+        .find(|(binding_name, _)| binding_name == name)
+        .is_some_and(|(_, value)| value.is_truthy())
 }
 
 fn is_function_declare_form(form: &Value) -> bool {

@@ -3116,6 +3116,55 @@ fn define_derived_mode_installs_callable_mode_body() {
 }
 
 #[test]
+fn define_derived_mode_delays_parent_hooks_and_runs_after_hooks() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (define-derived-mode sample-parent-mode fundamental-mode "P"
+                   :after-hook
+                   (let ((f (let ((x "S")) (lambda () x))))
+                     (insert (format "AFP=%s " (let ((x "D")) x (funcall f)))))
+                   (insert "PB "))
+                 (define-derived-mode sample-child-mode sample-parent-mode "C"
+                   :after-hook
+                   (let ((f (let ((x "S")) (lambda () x))))
+                     (insert (format "AFC=%s " (let ((x "D")) x (funcall f)))))
+                   (insert "CB "))
+                 (with-temp-buffer
+                   (let ((sample-child-mode-hook (lambda () (insert "MH "))))
+                     (sample-child-mode)
+                     (buffer-string))))"#
+        ),
+        Value::String("PB CB MH AFP=S AFC=S ".into())
+    );
+}
+
+#[test]
+fn font_lock_add_keywords_accumulates_derived_mode_keywords() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (define-derived-mode mode-a fundamental-mode "mode-a"
+                   (font-lock-add-keywords nil `(("a" 0 'font-lock-keyword-face))))
+                 (define-derived-mode mode-b mode-a "mode-b"
+                   (font-lock-add-keywords nil `(("b" 0 'font-lock-builtin-face))))
+                 (define-derived-mode mode-c mode-b "mode-c"
+                   (font-lock-add-keywords nil `(("c" 0 'font-lock-constant-face))))
+                 (with-temp-buffer
+                   (mode-c)
+                   (equal font-lock-keywords
+                          '(t (("c" 0 'font-lock-constant-face)
+                               ("b" 0 'font-lock-builtin-face)
+                               ("a" 0 'font-lock-keyword-face))
+                              ("c" (0 'font-lock-constant-face))
+                              ("b" (0 'font-lock-builtin-face))
+                              ("a" (0 'font-lock-keyword-face))))))"#
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn face_alias_predicates_and_fringe_bitmap_fallback_load() {
     assert_eq!(
         eval_str(

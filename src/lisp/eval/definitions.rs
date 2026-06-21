@@ -1918,15 +1918,24 @@ impl Interpreter {
                 ) {
                     index += 1;
                 }
-                let mut body = Vec::new();
-                if let Some(parent) = parent {
-                    body.push(Value::list([Value::Symbol(parent.to_string())]));
+                let mut after_hook = None;
+                while let Some(Value::Symbol(keyword)) = items.get(index)
+                    && keyword.starts_with(':')
+                {
+                    if keyword == ":after-hook" {
+                        after_hook = items.get(index + 1).cloned();
+                    }
+                    index += 2;
                 }
-                body.push(Value::list([
+                let mut delayed_body = Vec::new();
+                if let Some(parent) = parent {
+                    delayed_body.push(Value::list([Value::Symbol(parent.to_string())]));
+                }
+                delayed_body.push(Value::list([
                     Value::Symbol("use-local-map".into()),
                     Value::Symbol(map_name.clone()),
                 ]));
-                body.push(Value::list([
+                delayed_body.push(Value::list([
                     Value::Symbol("setq-local".into()),
                     Value::Symbol("major-mode".into()),
                     Value::list([
@@ -1935,13 +1944,37 @@ impl Interpreter {
                     ]),
                 ]));
                 if !matches!(items.get(3), None | Some(Value::Nil)) {
-                    body.push(Value::list([
+                    delayed_body.push(Value::list([
                         Value::Symbol("setq-local".into()),
                         Value::Symbol("mode-name".into()),
                         items[3].clone(),
                     ]));
                 }
-                body.extend_from_slice(&items[index..]);
+                delayed_body.extend_from_slice(&items[index..]);
+                let mut body = vec![Value::list(
+                    std::iter::once(Value::Symbol("delay-mode-hooks".into()))
+                        .chain(delayed_body)
+                        .collect::<Vec<_>>(),
+                )];
+                if let Some(after_hook) = after_hook {
+                    body.push(Value::list([
+                        Value::Symbol("push".into()),
+                        Value::list([
+                            Value::Symbol("lambda".into()),
+                            Value::Nil,
+                            Value::Symbol(":closure-isolated-current-env".into()),
+                            after_hook,
+                        ]),
+                        Value::Symbol("delayed-after-hook-functions".into()),
+                    ]));
+                }
+                body.push(Value::list([
+                    Value::Symbol("run-mode-hooks".into()),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(format!("{name}-hook")),
+                    ]),
+                ]));
                 body.push(Value::list([
                     Value::Symbol("quote".into()),
                     Value::Symbol(name.to_string()),

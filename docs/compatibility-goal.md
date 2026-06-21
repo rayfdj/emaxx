@@ -19,22 +19,33 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1907/7080 are verified locally against the current canonical
+- Tests through 1909/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1907/7080: support copyright tests`.
-- The next observed frontier is selector 1908,
-  `derived-tests-after-hook-lexical` in
-  `test/lisp/emacs-lisp/derived-tests.el`, where oracle GNU Emacs passes and
-  emaxx reports `ert-test-failed`; grouped replay for
-  `test/lisp/emacs-lisp/derived-tests.el` also shows selector 1909,
-  `test-add-font-lock`, failing with `ert-test-failed`.
+  `Compat 1909/7080: support derived mode hooks and font lock keywords`.
+- The next observed frontier is selector 1910,
+  `easy-mmode--globalized-predicate` in
+  `test/lisp/emacs-lisp/easy-mmode-tests.el`, where oracle GNU Emacs loads the
+  file and reports selectors 1910..1911, but emaxx reports `LoadError`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
   `cargo fmt --check`, and `git diff --check` before pushing. Full selected
   prefix replays should be used strategically at larger milestones rather than
   after every small commit.
+- Selectors 1908..1909 in `test/lisp/emacs-lisp/derived-tests.el` passed after
+  making `define-derived-mode` delay parent mode hooks, run `:after-hook`
+  bodies after mode hooks with the captured lexical environment, treating
+  single function hook values as hook functions, preserving isolated closure
+  bindings, and making `font-lock-add-keywords` maintain GNU-compatible raw and
+  compiled keyword entries. Exact replays run for this batch: selector
+  `derived-tests-after-hook-lexical`, selector `test-add-font-lock`, and grouped
+  file replay for `test/lisp/emacs-lisp/derived-tests.el`; focused Rust
+  regressions: `cargo test define_derived_mode_delays_parent_hooks_and_runs_after_hooks -- --nocapture`,
+  `cargo test font_lock_add_keywords_accumulates_derived_mode_keywords -- --nocapture`,
+  and `cargo test lexical_closures_ -- --nocapture`; exploratory grouped replay
+  for `test/lisp/emacs-lisp/easy-mmode-tests.el` identified selector 1910 as
+  the next frontier.
 - Selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
   support for sequential `with` initialization, parallel `with ... and ...`
