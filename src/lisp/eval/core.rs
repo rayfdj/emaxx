@@ -150,8 +150,8 @@ impl Interpreter {
                         "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
                         "cl-defstruct" => return self.sf_cl_defstruct(&items),
                         "defalias" => return self.sf_defalias(&items, env),
-                        "backquote" => return self.eval_backquote(&items[1], env),
-                        "comma" => {
+                        "backquote" | "`" => return self.eval_backquote(&items[1], env),
+                        "comma" | "," => {
                             if let Some(value) = items.get(1) {
                                 return self.eval(value, env);
                             }

@@ -243,6 +243,8 @@ pub struct Reader<'a> {
     input: &'a [u8],
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
+    backquote_depth: usize,
+    raw_quote_symbols: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -258,7 +260,15 @@ impl<'a> Reader<'a> {
             input: input.as_bytes(),
             pos: 0,
             symbol_shorthands,
+            backquote_depth: 0,
+            raw_quote_symbols: false,
         }
+    }
+
+    pub fn with_raw_quote_symbols(input: &'a str) -> Self {
+        let mut reader = Self::new(input);
+        reader.raw_quote_symbols = true;
+        reader
     }
 
     pub fn position(&self) -> usize {
@@ -389,6 +399,18 @@ impl<'a> Reader<'a> {
                         // Only a dot if followed by whitespace or paren
                         match self.peek_char() {
                             Some(ch) if ch.is_whitespace() || ch == ')' => {
+                                let val = self.read()?.ok_or(LispError::EndOfInput)?;
+                                dotted_end = Some(val);
+                                self.skip_whitespace_and_comments();
+                                if self.peek() == Some(b')') {
+                                    self.advance();
+                                    break;
+                                }
+                                return Err(LispError::ReadError(
+                                    "expected ')' after dotted pair".into(),
+                                ));
+                            }
+                            Some(',') if self.backquote_depth > 0 => {
                                 let val = self.read()?.ok_or(LispError::EndOfInput)?;
                                 dotted_end = Some(val);
                                 self.skip_whitespace_and_comments();
@@ -774,8 +796,23 @@ impl<'a> Reader<'a> {
         if name != "comma" && name != "comma-at" {
             self.advance(); // consume the quote/backquote char
         }
-        let inner = self.read()?.ok_or(LispError::EndOfInput)?;
-        Ok(Some(Value::list([Value::symbol(name), inner])))
+        let inner = if name == "backquote" {
+            self.backquote_depth += 1;
+            let result = self
+                .read()
+                .and_then(|value| value.ok_or(LispError::EndOfInput));
+            self.backquote_depth = self.backquote_depth.saturating_sub(1);
+            result?
+        } else {
+            self.read()?.ok_or(LispError::EndOfInput)?
+        };
+        let symbol = match (self.raw_quote_symbols, name) {
+            (true, "backquote") => "`",
+            (true, "comma") => ",",
+            (true, "comma-at") => ",@",
+            _ => name,
+        };
+        Ok(Some(Value::list([Value::symbol(symbol), inner])))
     }
 
     fn read_character(&mut self) -> Result<Option<Value>, LispError> {
@@ -1846,6 +1883,17 @@ mod tests {
         assert_eq!(items[2].cdr().unwrap(), Value::Integer(1 << 24));
         assert_eq!(items[3].car().unwrap(), Value::Integer('M' as i64));
         assert_eq!(items[3].cdr().unwrap(), Value::Integer(1 << 27));
+    }
+
+    #[test]
+    fn backquote_dot_comma_reads_as_dotted_comma_tail() {
+        assert_eq!(
+            read_one("`(t .,t)"),
+            Value::list([
+                Value::Symbol("backquote".into()),
+                Value::list([Value::T, Value::Symbol("comma".into()), Value::T,]),
+            ])
+        );
     }
 
     #[test]

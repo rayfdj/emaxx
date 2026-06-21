@@ -135,7 +135,7 @@ pub(super) fn call(
             let end = normalize_string_index(args.get(2), chars.len() as i64, chars.len() as i64)?
                 as usize;
             let slice: String = chars[start..end].iter().collect();
-            let mut reader = crate::lisp::reader::Reader::new(&slice);
+            let mut reader = crate::lisp::reader::Reader::with_raw_quote_symbols(&slice);
             match reader.read()? {
                 Some(val) => {
                     let consumed = slice[..reader.position()].chars().count();

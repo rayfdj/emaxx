@@ -48,6 +48,22 @@ fn read_accepts_buffer_and_marker_streams() {
 }
 
 #[test]
+fn runtime_read_returns_raw_backquote_symbols_and_accepts_dot_comma() {
+    assert_eq!(
+        eval_str(
+            "(let* ((value (car (read-from-string \"`(t .,t)\")))
+                    (body (car (cdr value))))
+               (and (eq (car value) (intern \"`\"))
+                    (eq (car body) t)
+                    (eq (car (cdr body)) (intern \",\"))
+                    (eq (car (cdr (cdr body))) t)
+                    (null (cdr (cdr (cdr body))))))"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn defun_does_not_shadow_preferred_builtin_overrides() {
     assert_eq!(
         eval_str(

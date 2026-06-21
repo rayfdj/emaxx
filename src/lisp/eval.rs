@@ -1489,11 +1489,22 @@ fn invalid_function(value: Value) -> LispError {
     ]))
 }
 
+fn is_backquote_head(symbol: &str) -> bool {
+    symbol == "backquote" || symbol == "`"
+}
+
+fn comma_head_kind(symbol: &str) -> Option<&'static str> {
+    match symbol {
+        "comma" | "," => Some("comma"),
+        "comma-at" | ",@" => Some("comma-at"),
+        _ => None,
+    }
+}
+
 fn backquote_unquote_form(value: &Value) -> Option<(&'static str, Value)> {
     let items = value.to_vec().ok()?;
     match items.as_slice() {
-        [Value::Symbol(symbol), value] if symbol == "comma" => Some(("comma", value.clone())),
-        [Value::Symbol(symbol), value] if symbol == "comma-at" => Some(("comma-at", value.clone())),
+        [Value::Symbol(symbol), value] => comma_head_kind(symbol).map(|kind| (kind, value.clone())),
         _ => None,
     }
 }
@@ -1501,7 +1512,7 @@ fn backquote_unquote_form(value: &Value) -> Option<(&'static str, Value)> {
 fn nested_backquote_body(value: &Value) -> Option<Value> {
     let items = value.to_vec().ok()?;
     match items.as_slice() {
-        [Value::Symbol(symbol), body] if symbol == "backquote" => Some(body.clone()),
+        [Value::Symbol(symbol), body] if is_backquote_head(symbol) => Some(body.clone()),
         _ => None,
     }
 }
@@ -2105,11 +2116,17 @@ fn cl_defgeneric_edebug_method_name(
     method_parts: &[Value],
 ) -> Result<Option<String>, LispError> {
     let mut cursor = 1;
-    let qualifier = method_parts
-        .get(cursor)
-        .and_then(|value| value.as_symbol().ok())
-        .filter(|name| name.starts_with(':'));
-    if qualifier.is_some() {
+    let mut qualifier = None;
+    while let Some(value) = method_parts.get(cursor) {
+        if matches!(value, Value::Cons(_, _) | Value::Nil) {
+            break;
+        }
+        if qualifier.is_none()
+            && let Ok(name) = value.as_symbol()
+            && name.starts_with(':')
+        {
+            qualifier = Some(name);
+        }
         cursor += 1;
     }
     let Some(lambda_list) = method_parts.get(cursor) else {
@@ -2739,12 +2756,12 @@ fn lower_inline_quote_form(value: &Value) -> Value {
         return value.clone();
     };
     match head.as_str() {
-        "comma" => items
+        "comma" | "," => items
             .get(1)
             .map(lower_define_inline_form)
             .unwrap_or(Value::Nil),
         "quote" if items.len() == 2 => match items[1].to_vec() {
-            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if name == "comma") => {
+            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if comma_head_kind(name) == Some("comma")) => {
                 quoted
                     .get(1)
                     .map(lower_define_inline_form)
@@ -2753,7 +2770,7 @@ fn lower_inline_quote_form(value: &Value) -> Value {
             _ => Value::list([Value::Symbol("quote".into()), items[1].clone()]),
         },
         "function" | "function-quote" if items.len() == 2 => match items[1].to_vec() {
-            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if name == "comma") => {
+            Ok(quoted) if matches!(quoted.first(), Some(Value::Symbol(name)) if comma_head_kind(name) == Some("comma")) => {
                 quoted
                     .get(1)
                     .map(lower_define_inline_form)
@@ -3005,7 +3022,7 @@ fn pcase_pattern_bindings_inner(
         return Ok(true);
     }
     if let Ok(parts) = pattern.to_vec() {
-        if matches!(parts.first(), Some(Value::Symbol(name)) if name == "backquote") {
+        if matches!(parts.first(), Some(Value::Symbol(name)) if is_backquote_head(name)) {
             return pcase_pattern_bindings_inner(
                 interp,
                 env,
@@ -3017,7 +3034,7 @@ fn pcase_pattern_bindings_inner(
             );
         }
         if backquoted {
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
+            if matches!(parts.first(), Some(Value::Symbol(name)) if comma_head_kind(name).is_some())
             {
                 let Some(pattern) = parts.get(1) else {
                     return Ok(false);
@@ -3235,7 +3252,7 @@ fn pcase_pattern_bindings_inner(
             if matches!(parts.first(), Some(Value::Symbol(name)) if name == "quote") {
                 return Ok(parts.get(1).is_some_and(|quoted| quoted == value));
             }
-            if matches!(parts.first(), Some(Value::Symbol(name)) if name == "comma" || name == "comma-at")
+            if matches!(parts.first(), Some(Value::Symbol(name)) if comma_head_kind(name).is_some())
                 && let Some(Value::Symbol(name)) = parts.get(1)
             {
                 bindings.push((name.clone(), value.clone()));
