@@ -317,6 +317,8 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         }
         "connection-local-value" => Some(builtin_macro_autoload("files-x")),
         "dired" => Some(builtin_file_autoload("dired", Value::T)),
+        "define-skeleton" => Some(builtin_macro_autoload("skeleton")),
+        "fill-region" => Some(builtin_file_autoload("fill", Value::Nil)),
         "gv-define-expander" => Some(builtin_macro_autoload("gv")),
         "gv-define-setter" => Some(builtin_macro_autoload("gv")),
         "gv-define-simple-setter" => Some(builtin_macro_autoload("gv")),

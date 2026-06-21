@@ -78,6 +78,7 @@ impl Interpreter {
             "case-fold-search" => Some(Value::T),
             "case-replace" => Some(Value::T),
             "case-symbols-as-words" => Some(Value::Nil),
+            "use-hard-newlines" => Some(Value::Nil),
             "fill-column" => Some(Value::Integer(70)),
             "indent-according-to-mode" => Some(Value::Symbol("indent-according-to-mode".into())),
             "filter-buffer-substring-function" => {

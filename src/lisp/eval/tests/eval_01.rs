@@ -1232,6 +1232,29 @@ fn re_search_backward_negative_count_searches_forward() {
 }
 
 #[test]
+fn re_search_backward_clamps_below_min_bound() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "foo")
+                  (goto-char (point-max))
+                  (list (re-search-backward "foo" -100 t)
+                        (point)
+                        (match-beginning 0)
+                        (match-end 0)))
+                "#
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(4),
+        ])
+    );
+}
+
+#[test]
 fn match_string_no_properties_reads_existing_match_data() {
     let value = eval_str(
         r#"

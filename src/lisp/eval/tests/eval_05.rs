@@ -44,6 +44,26 @@ fn mapcan_mutates_mapped_lists_destructively() {
 }
 
 #[test]
+fn copyright_update_updates_last_notice_when_searching_from_end() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_load_path(
+                r#"(progn
+                     (require 'copyright)
+                     (with-temp-buffer
+                       (dotimes (_ 2)
+                         (insert "Copyright 2021 FSF\n"))
+                       (let ((copyright-at-end-flag t)
+                             (copyright-query nil))
+                         (copyright-update))
+                       (buffer-string)))"#
+            ),
+            Value::String("Copyright 2021 FSF\nCopyright 2021, 2026 FSF\n".into())
+        );
+    });
+}
+
+#[test]
 fn sxhash_eql_matches_equal_bignums() {
     assert_eq!(
         eval_str(
