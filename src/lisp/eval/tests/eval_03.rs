@@ -1759,7 +1759,7 @@ fn defclass_registers_runtime_class_metadata() {
             Value::list([
                 Value::Symbol("sample-child".into()),
                 Value::Symbol("sample-parent".into()),
-                Value::Symbol("t".into()),
+                Value::T,
             ]),
             Value::list([Value::Symbol("sample-child".into())]),
         ])
@@ -1784,7 +1784,7 @@ fn setf_updates_eieio_class_parent_metadata() {
             Value::list([
                 Value::Symbol("sample-autoload-child".into()),
                 Value::Symbol("sample-autoload-parent".into()),
-                Value::Symbol("t".into()),
+                Value::T,
             ]),
             Value::T,
         ])

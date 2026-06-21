@@ -1387,6 +1387,28 @@ fn cl_loop_when_nested_collects_into_else_targets() {
 }
 
 #[test]
+fn cl_loop_sequential_when_collect_into_and_do_clauses() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (cl-loop with found
+                        for item in '(start mid stop tail)
+                        when found
+                          collect item into rest
+                        when (eq item 'stop)
+                          do (push (cons 'rest rest) seen)
+                             (cl-return seen)
+                        when (eq item 'start)
+                          do (setq found t)))"
+        ),
+        Value::list([Value::cons(
+            Value::symbol("rest"),
+            Value::list([Value::symbol("mid"), Value::symbol("stop")]),
+        )])
+    );
+}
+
+#[test]
 fn cl_loop_while_supports_equals_then_assignment() {
     assert_eq!(
         eval_str(
@@ -1482,6 +1504,62 @@ fn cl_loop_if_collect_else_collect() {
             Value::list([Value::symbol("a")]),
             Value::Integer(2),
             Value::list([Value::symbol("b")]),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_if_collect_into_else_collect_into_finally_return() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for item in '(1 nil 2 nil)
+                      if item
+                        collect item into present
+                      else
+                        collect item into absent
+                      finally return (list present absent))"
+        ),
+        Value::list([
+            Value::list([Value::Integer(1), Value::Integer(2)]),
+            Value::list([Value::Nil, Value::Nil]),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_initially_can_return_before_main_action() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for item in '(a b)
+                      initially (when t (cl-return 'empty))
+                      if item
+                        do (error \"should not iterate\")
+                      else
+                        do (error \"should not iterate\")
+                      finally return 'done)"
+        ),
+        Value::symbol("empty")
+    );
+}
+
+#[test]
+fn cl_loop_unless_do_supports_repeated_do_and_finally_progn() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (cl-loop for item in '(a b)
+                        unless (eq item 'a)
+                        do (push item seen)
+                        do (push 'visited seen)
+                        finally
+                        (push 'done seen)
+                        (cl-return seen)))"
+        ),
+        Value::list([
+            Value::symbol("done"),
+            Value::symbol("visited"),
+            Value::symbol("b"),
+            Value::symbol("visited"),
         ])
     );
 }

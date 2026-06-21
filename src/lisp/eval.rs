@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::primitives;
 use super::reader::RECORD_LITERAL_SYMBOL;
 use super::sqlite::SqliteHandleState;
-use super::types::{Env, LispError, SharedEnv, Value, shared_env};
+use super::types::{Env, LispError, SharedEnv, Value, interned_symbol_value, shared_env};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use regex::Regex;
 
@@ -726,7 +726,7 @@ impl Interpreter {
             interp.put_symbol_property(
                 class_name,
                 "cl--class",
-                Value::Symbol((*class_name).into()),
+                interned_symbol_value((*class_name).into()),
             );
             if let Some(predicate) = primitives::builtin_class_predicate(class_name) {
                 interp.put_symbol_property(

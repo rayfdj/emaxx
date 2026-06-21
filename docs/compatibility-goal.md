@@ -19,13 +19,15 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1823/7080 are verified locally against the current canonical
+- Tests through 1900/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1823/7080: support comp-cstr union setup`.
-- The next observed frontier is selector 1824, `comp-cstr-test-24` in
-  `test/lisp/emacs-lisp/comp-cstr-tests.el`, where oracle GNU Emacs passes
-  and emaxx fails with condition type `error`.
+  `Compat 1900/7080: finish comp-cstr tests`.
+- The next observed frontier is selector 1901,
+  `test-native-compile-prune-cache` in
+  `test/lisp/emacs-lisp/comp-tests.el`, where oracle GNU Emacs loads the file
+  and emaxx reports a load error: `Symbol's value as variable is void:
+  after-init-time`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -120,6 +122,21 @@ counts as the progress denominator.
   `cargo test cl_find_class_prefers_builtin_runtime_for_builtin_classes --
   --nocapture`; exploratory selector `comp-cstr-test-24`, which identified
   selector 1824 as the next frontier.
+- Selectors 1824..1900 completed the remaining selected tests in
+  `test/lisp/emacs-lisp/comp-cstr-tests.el` after extending `cl-loop` support
+  for comp-cstr normalization forms (`initially`, sequential `when` clauses,
+  `if ... collect ... into ... else collect ... into ...`, `unless ... do`
+  final forms, repeated `do` handling, and unconditional follow-up `do`
+  clauses) and canonicalizing built-in class name/parent values so `t` is the
+  real Lisp `t` object for `eq`/`memq` subtype checks. Exact replays run for
+  this batch: selectors `comp-cstr-test-24` through `comp-cstr-test-93`,
+  plus the lexicographic manifest selectors `comp-cstr-test-3` through
+  `comp-cstr-test-9`; grouped replay for
+  `test/lisp/emacs-lisp/comp-cstr-tests.el` passed. Focused Rust regressions:
+  `cargo test cl_loop_ -- --nocapture` and
+  `cargo test cl_find_class_prefers_builtin_runtime_for_builtin_classes --
+  --nocapture`; exploratory selector `test-native-compile-prune-cache`, which
+  identified selector 1901 as the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable
