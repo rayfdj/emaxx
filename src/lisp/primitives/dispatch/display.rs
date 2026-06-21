@@ -918,11 +918,9 @@ pub(super) fn call(
         "font-lock-add-keywords" => {
             need_arg_range(name, args, 2, 3)?;
             let buffer_id = interp.current_buffer_id();
-            let mut current = interp
-                .buffer_local_value(buffer_id, "font-lock-keywords")
-                .unwrap_or(Value::Nil)
-                .to_vec()
-                .unwrap_or_default();
+            let mut current = font_lock_raw_keyword_specs(
+                interp.buffer_local_value(buffer_id, "font-lock-keywords"),
+            );
             let additions = args[1].to_vec()?;
             if args.get(2).is_some_and(|value| !value.is_nil()) {
                 current.extend(additions);
@@ -931,7 +929,11 @@ pub(super) fn call(
                 updated.extend(current);
                 current = updated;
             }
-            interp.set_buffer_local_value(buffer_id, "font-lock-keywords", Value::list(current));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "font-lock-keywords",
+                font_lock_keywords_value(&current),
+            );
             Ok(Value::Nil)
         }
         "font-lock-remove-keywords" => {
@@ -1778,6 +1780,34 @@ pub(super) fn call(
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
     }
+}
+
+fn font_lock_raw_keyword_specs(current: Option<Value>) -> Vec<Value> {
+    let items = current.unwrap_or(Value::Nil).to_vec().unwrap_or_default();
+    if items.first() != Some(&Value::T) {
+        return items;
+    }
+    items
+        .get(1)
+        .and_then(|specs| specs.to_vec().ok())
+        .unwrap_or_default()
+}
+
+fn font_lock_keywords_value(raw_specs: &[Value]) -> Value {
+    let mut items = vec![Value::T, Value::list(raw_specs.iter().cloned())];
+    items.extend(raw_specs.iter().filter_map(font_lock_compiled_keyword_spec));
+    Value::list(items)
+}
+
+fn font_lock_compiled_keyword_spec(spec: &Value) -> Option<Value> {
+    let parts = spec.to_vec().ok()?;
+    if parts.len() < 3 {
+        return None;
+    }
+    Some(Value::list([
+        parts[0].clone(),
+        Value::list([parts[1].clone(), parts[2].clone()]),
+    ]))
 }
 
 fn append_to_warnings_buffer(interp: &mut Interpreter, warning: &str) {

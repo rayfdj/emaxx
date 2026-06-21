@@ -68,7 +68,12 @@ impl Interpreter {
                         "or" => return self.sf_or(&items, env),
                         "not" => return self.sf_not(&items, env),
                         "progn" => return self.sf_progn(&items[1..], env),
-                        "delay-mode-hooks" => return self.sf_progn(&items[1..], env),
+                        "delay-mode-hooks" => {
+                            env.push(vec![("delay-mode-hooks".into(), Value::T)]);
+                            let result = self.sf_progn(&items[1..], env);
+                            env.pop();
+                            return result;
+                        }
                         "atomic-change-group" => {
                             return self.sf_atomic_change_group(&items[1..], env);
                         }
@@ -533,6 +538,14 @@ impl Interpreter {
                     call_env.pop();
                     env.clear();
                     env.extend(call_env);
+                    result
+                } else if body_has_marker(body, ":closure-isolated-current-env") {
+                    let mut call_env = closure_env.borrow().clone();
+                    call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)]);
+                    call_env.push(frame);
+                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    call_env.pop();
+                    call_env.pop();
                     result
                 } else {
                     self.eval_with_closure_env(closure_env, env, |interp, call_env| {

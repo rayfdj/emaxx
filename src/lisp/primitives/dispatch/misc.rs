@@ -1121,9 +1121,52 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "run-hooks" | "run-mode-hooks" => {
+            if name == "run-mode-hooks"
+                && interp
+                    .lookup_var("delay-mode-hooks", env)
+                    .is_some_and(|value| value.is_truthy())
+            {
+                let mut delayed = interp
+                    .lookup_var("delayed-mode-hooks", env)
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default();
+                delayed.extend(args.iter().cloned());
+                interp.set_variable("delayed-mode-hooks", Value::list(delayed), env);
+                return Ok(Value::Nil);
+            }
             for hook in args {
                 if let Ok(hook_name) = hook.as_symbol() {
                     run_named_hooks(interp, hook_name, env, Some(interp.current_buffer_id()))?;
+                }
+            }
+            if name == "run-mode-hooks" {
+                let delayed = interp
+                    .lookup_var("delayed-mode-hooks", env)
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default();
+                if !delayed.is_empty() {
+                    interp.set_variable("delayed-mode-hooks", Value::Nil, env);
+                    for hook in delayed {
+                        if let Ok(hook_name) = hook.as_symbol() {
+                            run_named_hooks(
+                                interp,
+                                hook_name,
+                                env,
+                                Some(interp.current_buffer_id()),
+                            )?;
+                        }
+                    }
+                }
+                let mut after_hooks = interp
+                    .lookup_var("delayed-after-hook-functions", env)
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default();
+                if !after_hooks.is_empty() {
+                    interp.set_variable("delayed-after-hook-functions", Value::Nil, env);
+                    after_hooks.reverse();
+                    for hook in after_hooks {
+                        call_function_value(interp, &hook, &[], env)?;
+                    }
                 }
             }
             Ok(Value::Nil)
