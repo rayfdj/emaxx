@@ -19,15 +19,16 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1903/7080 are verified locally against the current canonical
+- Tests through 1907/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1903/7080: expose native compile cache pruning`.
-- The next observed frontier is selector 1904,
-  `test-copyright-update` in
-  `test/lisp/emacs-lisp/copyright-tests.el`, where oracle GNU Emacs loads the
-  file and emaxx reports a load error: `Symbol's value as variable is void:
-  define-skeleton`.
+  `Compat 1907/7080: support copyright tests`.
+- The next observed frontier is selector 1908,
+  `derived-tests-after-hook-lexical` in
+  `test/lisp/emacs-lisp/derived-tests.el`, where oracle GNU Emacs passes and
+  emaxx reports `ert-test-failed`; grouped replay for
+  `test/lisp/emacs-lisp/derived-tests.el` also shows selector 1909,
+  `test-add-font-lock`, failing with `ert-test-failed`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -148,6 +149,23 @@ counts as the progress denominator.
   `cargo test startup_time_variables_are_bound_in_batch_runtime --
   --nocapture`; exploratory selector `test-copyright-update`, which identified
   selector 1904 as the next frontier.
+- Selectors 1904..1907 in `test/lisp/emacs-lisp/copyright-tests.el` passed
+  after adding standard autoloads for `define-skeleton` and `fill-region`,
+  binding fill/runtime defaults (`char-script-table`, `use-hard-newlines`),
+  and making `re-search-backward` clamp below-min integer bounds for short
+  buffers so `copyright-at-end-flag` can search from the end. Exact replays run
+  for this batch: selector `test-copyright-update`, selector
+  `text-copyright-fix-years`, and grouped replay for
+  `test/lisp/emacs-lisp/copyright-tests.el`; focused Rust regressions:
+  `cargo test builtin_autoloads_cover_saveplace_dependencies -- --nocapture`,
+  `cargo test adaptive_fill_defaults_are_bound -- --nocapture`,
+  `cargo test char_script_table_is_bound_for_text_fill_runtime --
+  --nocapture`, `cargo test re_search_backward_clamps_below_min_bound --
+  --nocapture`, and
+  `cargo test copyright_update_updates_last_notice_when_searching_from_end --
+  --nocapture`; exploratory grouped replay for
+  `test/lisp/emacs-lisp/derived-tests.el`, which identified selector 1908 as
+  the next frontier.
 - Selectors 1553..1563 in `test/lisp/emacs-lisp/bytecomp-tests.el` passed
   after adding byte-compile diagnostics for malformed `interactive` forms,
   `make-process` keyword arguments, versioned obsolete function/variable

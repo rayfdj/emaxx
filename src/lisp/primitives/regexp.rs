@@ -1647,14 +1647,12 @@ pub(super) fn buffer_regex_search(
     )?;
     let noerror = args.get(2).is_some_and(Value::is_truthy);
     let move_on_failure = search_noerror_moves(args.get(2));
-    let limit = match args.get(1) {
-        Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-        _ if forward => interp.buffer.point_max(),
-        _ => interp.buffer.point_min(),
-    };
-
     if forward {
         let start = interp.buffer.point();
+        let limit = match args.get(1) {
+            Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+            _ => interp.buffer.point_max(),
+        };
         let limit = limit.min(interp.buffer.point_max());
         let count = args
             .get(3)
@@ -1762,6 +1760,13 @@ pub(super) fn buffer_regex_search(
             forward_args[3] = Value::Integer(-count);
             return buffer_regex_search(interp, &forward_args, env, true);
         }
+        let limit = match args.get(1) {
+            Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
+                interp.buffer.point_min()
+            }
+            Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+            _ => interp.buffer.point_min(),
+        };
         let limit = limit.max(interp.buffer.point_min());
         if limit > interp.buffer.point() {
             return if noerror {

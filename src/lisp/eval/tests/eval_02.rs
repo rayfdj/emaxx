@@ -3277,6 +3277,14 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         builtin_file_autoload("dired", Value::T)
     );
     assert_eq!(
+        interp.lookup_function("define-skeleton", &env).unwrap(),
+        builtin_macro_autoload("skeleton")
+    );
+    assert_eq!(
+        interp.lookup_function("fill-region", &env).unwrap(),
+        builtin_file_autoload("fill", Value::Nil)
+    );
+    assert_eq!(
         interp
             .lookup_function("with-connection-local-variables", &env)
             .unwrap(),
@@ -4003,6 +4011,7 @@ fn page_delimiter_has_standard_default() {
 #[test]
 fn adaptive_fill_defaults_are_bound() {
     assert_eq!(eval_str("adaptive-fill-mode"), Value::T);
+    assert_eq!(eval_str("use-hard-newlines"), Value::Nil);
     assert_eq!(
         eval_str("adaptive-fill-regexp"),
         Value::String("[-–!|#%;>*·•‣⁃◦ \t]*".into())

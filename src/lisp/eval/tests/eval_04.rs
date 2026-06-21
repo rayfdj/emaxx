@@ -3037,6 +3037,14 @@ fn startup_time_variables_are_bound_in_batch_runtime() {
 }
 
 #[test]
+fn char_script_table_is_bound_for_text_fill_runtime() {
+    assert_eq!(
+        eval_str("(list (char-table-p char-script-table) (char-table-subtype char-script-table))"),
+        Value::list([Value::T, Value::Symbol("char-script-table".into())])
+    );
+}
+
+#[test]
 fn nconc_supports_dotted_tails() {
     assert_eq!(
         eval_str("(nconc '(a b) 'tail)"),

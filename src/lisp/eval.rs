@@ -824,6 +824,9 @@ impl Interpreter {
         let glyphless_char_display =
             interp.make_char_table(Some("glyphless-char-display".into()), Value::Nil);
         interp.set_global_binding("glyphless-char-display", glyphless_char_display);
+        let char_script_table =
+            interp.make_char_table(Some("char-script-table".into()), Value::Nil);
+        interp.set_global_binding("char-script-table", char_script_table);
         interp.set_global_binding("buffer-read-only", Value::Nil);
         interp.mark_auto_buffer_local("buffer-read-only");
         interp.set_global_binding("read-only-mode", Value::Nil);
