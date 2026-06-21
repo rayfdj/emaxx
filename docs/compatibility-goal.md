@@ -19,14 +19,14 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1911/7080 are verified locally against the current canonical
+- Tests through 1913/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1911/7080: load easy-mmode tests`.
-- The next observed frontier is selector 1912,
-  `edebug-cl-defmethod-qualifier` in
-  `test/lisp/emacs-lisp/edebug-tests.el`, where grouped replay for the file
-  loads but shows broad edebug behavior failures.
+  `Compat 1913/7080: align edebug reader forms`.
+- The next observed frontier is selector 1914,
+  `edebug-tests--&rest-behavior` in
+  `test/lisp/emacs-lisp/edebug-tests.el`, which currently fails with
+  `wrong-type-argument`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -55,6 +55,19 @@ counts as the progress denominator.
   and `cargo test abbrev_require_seeds_standard_table_name_list -- --nocapture`;
   exploratory grouped replay for `test/lisp/emacs-lisp/edebug-tests.el`
   identified selector 1912 as the next frontier.
+- Selectors 1912..1913 in `test/lisp/emacs-lisp/edebug-tests.el` passed after
+  allowing empty `cl-defmethod` bodies to notify edebug with
+  GNU-compatible method names and making runtime `read`/`read-from-string`
+  return raw backquote/comma reader symbols, including the GNU dotted `.,`
+  shape inside backquoted lists. Exact replays run for this batch: selectors
+  `edebug-cl-defmethod-qualifier` and `edebug-test-dot-reader`; focused Rust
+  regressions:
+  `cargo test cl_defmethod_allows_empty_body_and_notifies_edebug_methods -- --nocapture`,
+  `cargo test backquote_dot_comma_reads_as_dotted_comma_tail -- --nocapture`,
+  and
+  `cargo test runtime_read_returns_raw_backquote_symbols_and_accepts_dot_comma -- --nocapture`;
+  exploratory selector `edebug-tests--&rest-behavior` identified selector 1914
+  as the next frontier.
 - Selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
   support for sequential `with` initialization, parallel `with ... and ...`

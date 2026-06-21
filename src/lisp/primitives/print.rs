@@ -1097,9 +1097,15 @@ pub(crate) fn render_prin1_body(
             {
                 Some(("#'", inner))
             }
-            [Value::Symbol(symbol), inner] if symbol == "backquote" => Some(("`", inner)),
-            [Value::Symbol(symbol), inner] if symbol == "comma" => Some((",", inner)),
-            [Value::Symbol(symbol), inner] if symbol == "comma-at" => Some((",@", inner)),
+            [Value::Symbol(symbol), inner] if symbol == "backquote" || symbol == "`" => {
+                Some(("`", inner))
+            }
+            [Value::Symbol(symbol), inner] if symbol == "comma" || symbol == "," => {
+                Some((",", inner))
+            }
+            [Value::Symbol(symbol), inner] if symbol == "comma-at" || symbol == ",@" => {
+                Some((",@", inner))
+            }
             _ => None,
         };
         if let Some((prefix, inner)) = quoted {
@@ -1184,9 +1190,9 @@ pub(crate) fn render_prin1_body(
             }
             Ok(format!("#({})", rendered.join(" ")))
         }
-        Value::Symbol(symbol) if symbol == "backquote" => Ok("\\`".into()),
-        Value::Symbol(symbol) if symbol == "comma" => Ok("\\,".into()),
-        Value::Symbol(symbol) if symbol == "comma-at" => Ok("\\,@".into()),
+        Value::Symbol(symbol) if symbol == "backquote" || symbol == "`" => Ok("\\`".into()),
+        Value::Symbol(symbol) if symbol == "comma" || symbol == "," => Ok("\\,".into()),
+        Value::Symbol(symbol) if symbol == "comma-at" || symbol == ",@" => Ok("\\,@".into()),
         Value::Symbol(symbol) => Ok(render_prin1_symbol(symbol, context.options)),
         Value::Cons(_, _) if is_vector_value(value) => {
             let items = vector_items(value)?;
@@ -1464,7 +1470,7 @@ pub(crate) fn render_prin1_ephemeral(
 }
 
 pub(crate) fn read_one_form(text: &str) -> Result<(Value, usize), LispError> {
-    let mut reader = crate::lisp::reader::Reader::new(text);
+    let mut reader = crate::lisp::reader::Reader::with_raw_quote_symbols(text);
     let value = match reader.read()? {
         Some(value) => crate::lisp::reader::resolve_circular_read_syntax(value)?,
         None => return Err(LispError::EndOfInput),

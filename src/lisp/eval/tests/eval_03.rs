@@ -2104,6 +2104,26 @@ fn cl_defmethod_accepts_extra_qualifiers_before_lambda_list() {
 }
 
 #[test]
+fn cl_defmethod_allows_empty_body_and_notifies_edebug_methods() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((edebug-all-defs t)
+                      (defined-symbols nil)
+                      (edebug-new-definition-function
+                       (lambda (def-name)
+                         (push def-name defined-symbols))))
+                 (cl-defmethod sample-edebug-method ((_ number)))
+                 (cl-defmethod sample-edebug-method :around ((_ number)))
+                 defined-symbols)"#
+        ),
+        Value::list([
+            Value::Symbol("sample-edebug-method :around (number)".into()),
+            Value::Symbol("sample-edebug-method (number)".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_defmethod_dispatches_eql_specializers() {
     assert_eq!(
         eval_str(

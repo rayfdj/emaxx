@@ -2748,9 +2748,6 @@ impl Interpreter {
                     body_start += 1;
                 }
                 ":method" => {
-                    if let Some(method_name) = cl_defgeneric_edebug_method_name(&name, &parts)? {
-                        self.maybe_notify_edebug_new_definition(&method_name, env)?;
-                    }
                     let mut lowered_method = Vec::with_capacity(parts.len() + 1);
                     lowered_method.push(Value::Symbol("cl-defmethod".into()));
                     lowered_method.push(Value::Symbol(name.clone()));
@@ -2827,9 +2824,9 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        if items.len() < 4 {
+        if items.len() < 3 {
             return Err(LispError::Signal(
-                "cl-defmethod needs name, params, body".into(),
+                "cl-defmethod needs name and params".into(),
             ));
         }
         let name = function_name_from_binding_form(&items[1])?;
@@ -2848,10 +2845,15 @@ impl Interpreter {
         lowered.push(lowered_lambda_list.clone());
         let (method_doc, normalized_method_forms) =
             self.normalize_function_body_documentation(&items[lambda_list_index + 1..], env)?;
+        let executable_method_forms = if normalized_method_forms.is_empty() {
+            vec![Value::Nil]
+        } else {
+            normalized_method_forms
+        };
         if let Some(doc) = method_doc.clone() {
             self.add_cl_defmethod_documentation(&function_name_from_binding_form(&items[1])?, doc);
         }
-        lowered.extend(normalized_method_forms.iter().cloned());
+        lowered.extend(executable_method_forms.iter().cloned());
         let requested_method_name = function_name_from_binding_form(&items[1])?;
         let method_name = self.canonical_function_name(&requested_method_name, env);
         let precedence_order = self.cl_defgeneric_argument_precedence_order(&method_name);
@@ -2861,6 +2863,14 @@ impl Interpreter {
             &items[2..lambda_list_index],
             &items[lambda_list_index],
         );
+        let mut edebug_method_parts = vec![Value::Symbol(":method".into())];
+        edebug_method_parts.extend(items[2..lambda_list_index].iter().cloned());
+        edebug_method_parts.push(items[lambda_list_index].clone());
+        if let Some(edebug_name) =
+            cl_defgeneric_edebug_method_name(&method_name, &edebug_method_parts)?
+        {
+            self.maybe_notify_edebug_new_definition(&edebug_name, env)?;
+        }
         let is_before_method = items[2..lambda_list_index]
             .iter()
             .any(|value| matches!(value, Value::Symbol(name) if name == ":before"));
@@ -2897,7 +2907,7 @@ impl Interpreter {
                 method_rest_param.as_deref(),
                 &generic_fixed_params,
                 generic_rest_param.as_deref(),
-                normalized_method_forms.clone(),
+                executable_method_forms.clone(),
             );
             let fixed_call_args = generic_fixed_params
                 .iter()
@@ -3122,7 +3132,7 @@ impl Interpreter {
                 Value::list(next_default_args)
             };
             let method_body = rewrite_cl_call_next_method_forms(
-                &normalized_method_forms,
+                &executable_method_forms,
                 &method_previous_symbol,
                 &next_default_form,
                 if dispatch_previous == Value::BuiltinFunc("ignore".into()) {
@@ -3309,7 +3319,7 @@ impl Interpreter {
             let generic_params = self.parse_params(&generic_lambda_list)?;
             let base_method = Value::Lambda(
                 generic_params,
-                normalized_method_forms.clone(),
+                executable_method_forms.clone(),
                 shared_env(env.clone()),
             );
             if cl_defmethod_replace_ignore_previous_bindings(&previous, &base_method) {
@@ -3321,7 +3331,7 @@ impl Interpreter {
         } else {
             let mut direct_lowered = lowered[..3].to_vec();
             direct_lowered.extend(rewrite_cl_next_method_p_forms(
-                &normalized_method_forms,
+                &executable_method_forms,
                 Value::Nil,
             )?);
             self.sf_cl_defun(&direct_lowered, env)
