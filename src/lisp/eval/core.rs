@@ -396,10 +396,17 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        let mut resolved_original_name = original_name.map(str::to_string);
         let func = match func {
-            Value::Symbol(name) => self.lookup_function(&name, env)?,
+            Value::Symbol(name) => {
+                if resolved_original_name.is_none() {
+                    resolved_original_name = Some(name.clone());
+                }
+                self.lookup_function(&name, env)?
+            }
             other => other,
         };
+        let original_name = resolved_original_name.as_deref();
         let func = match func {
             Value::Cons(_, _) => {
                 let func = if is_lambda_form(&func) {

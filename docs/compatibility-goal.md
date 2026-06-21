@@ -19,14 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1914/7080 are verified locally against the current canonical
+- Tests through 1915/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1914/7080: support list-backed struct accessors`.
-- The next observed frontier is selector 1915,
-  `edebug-tests--conflicting-internal-names` in
-  `test/lisp/emacs-lisp/edebug-tests.el`, which currently fails with
-  condition type `error`.
+  `Compat 1915/7080: support edebug eval-defun setup`.
+- The next observed frontier is selector 1916,
+  `edebug-tests-backtrace-goto-source` in
+  `test/lisp/emacs-lisp/edebug-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,
@@ -76,6 +75,22 @@ counts as the progress denominator.
   `cargo test cl_defstruct_type_list_accessors_accept_nil_and_lists -- --nocapture`;
   exploratory selector `edebug-tests--conflicting-internal-names` identified
   selector 1915 as the next frontier.
+- Selector 1915, `edebug-tests--conflicting-internal-names` in
+  `test/lisp/emacs-lisp/edebug-tests.el`, passed after extending `cl-loop` for
+  the Edebug setup forms (`initially` before iteration clauses, top-level
+  `until`, `collect ... do ...`, and `do ... collect ...`), preserving original
+  names when symbol-valued callables are invoked, preloading a scoped
+  `eval-defun` implementation for current-buffer definitions, and adding the
+  batch default for `eval-expression-debug-on-error`. Exact replay run for this
+  batch: selector `edebug-tests--conflicting-internal-names`; focused Rust
+  regressions:
+  `cargo test cl_loop_until_collect_do_runs_body_after_collecting -- --nocapture`,
+  `cargo test cl_loop_initially_before_while_for_do_collect -- --nocapture`,
+  `cargo test builtin_autoloads_cover_saveplace_dependencies -- --nocapture`,
+  `cargo test autoloaded_handler_function_quote_resolves_on_dispatch -- --nocapture`,
+  `cargo test preloaded_eval_defun_evaluates_current_definition -- --nocapture`,
+  and `cargo test debug_on_error_defaults_to_nil_in_batch -- --nocapture`;
+  selector `edebug-tests-backtrace-goto-source` is the next frontier.
 - Selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
   support for sequential `with` initialization, parallel `with ... and ...`

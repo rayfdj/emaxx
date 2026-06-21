@@ -3301,6 +3301,10 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         interp.lookup_function("define-skeleton", &env).unwrap(),
         builtin_macro_autoload("skeleton")
     );
+    assert!(matches!(
+        interp.lookup_function("eval-defun", &env).unwrap(),
+        Value::Lambda(_, _, _)
+    ));
     assert_eq!(
         interp.lookup_function("fill-region", &env).unwrap(),
         builtin_file_autoload("fill", Value::Nil)
@@ -3354,9 +3358,77 @@ fn autoloaded_functions_load_on_funcall() {
         eval_str_with(&mut interp, "(funcall 'sample-autoload)"),
         Value::Integer(42)
     );
+    eval_str_with(
+        &mut interp,
+        "(progn
+           (fmakunbound 'sample-autoload)
+           (autoload 'sample-autoload \"sample-autoload\"))",
+    );
+    assert_eq!(
+        eval_str_with(&mut interp, "(sample-autoload)"),
+        Value::Integer(42)
+    );
 
     std::fs::remove_file(&target).unwrap();
     std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
+fn autoloaded_handler_function_quote_resolves_on_dispatch() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-autoload-handler-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("sample-autoload-handler.el");
+    std::fs::write(
+        &target,
+        "(defun sample-autoload-handler (err) (throw 'handled err))\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![root.clone()]);
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (autoload 'sample-autoload-handler \"sample-autoload-handler\")
+               (catch 'handled
+                 (handler-bind ((error #'sample-autoload-handler))
+                   (error \"boom\"))))"
+        ),
+        Value::list([Value::Symbol("error".into()), Value::String("boom".into())])
+    );
+
+    std::fs::remove_file(&target).unwrap();
+    std::fs::remove_dir(&root).unwrap();
+}
+
+#[test]
+fn preloaded_eval_defun_evaluates_current_definition() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (setq sample-eval-defun-instrumented nil)
+               (setq edebug-new-definition-function
+                     (lambda (name)
+                       (setq sample-eval-defun-instrumented name)))
+               (with-temp-buffer
+                 (insert \"(defun sample-eval-defun () 42)\\n\")
+                 (goto-char (point-min))
+                 (re-search-forward \"sample-eval-defun\")
+                 (eval-defun t)
+                 (list (sample-eval-defun) sample-eval-defun-instrumented)))"
+        ),
+        Value::list([
+            Value::Integer(42),
+            Value::Symbol("sample-eval-defun".into())
+        ])
+    );
 }
 
 #[test]
@@ -4059,6 +4131,7 @@ fn exec_suffixes_matches_unix_batch_default() {
 #[test]
 fn debug_on_error_defaults_to_nil_in_batch() {
     assert_eq!(eval_str("debug-on-error"), Value::Nil);
+    assert_eq!(eval_str("eval-expression-debug-on-error"), Value::T);
 }
 
 #[test]
