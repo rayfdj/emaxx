@@ -214,6 +214,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl--struct-get-class"
             | "cl-struct-define"
             | "cl-old-struct-compat-mode"
+            | "cl--class-name"
             | "cl--class-parents"
             | "cl--class-allparents"
             | "cl--class-children"
@@ -2373,6 +2374,13 @@ pub(super) fn call(
             interp.set_variable("cl-old-struct-compat-mode", value.clone(), env);
             Ok(value)
         }
+        "cl--class-name" => {
+            need_args(name, args, 1)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            Ok(Value::Symbol(class_name))
+        }
         "cl--class-parents" => {
             need_args(name, args, 1)?;
             interp.class_parents_value(&args[0])
@@ -2382,13 +2390,15 @@ pub(super) fn call(
             let Some(symbol) = interp.class_name_from_value(&args[0]) else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
-            Ok(if interp.class_value(&symbol).is_some() {
-                Value::list(interp.class_allparents(&symbol))
-            } else if symbol == "t" {
-                Value::list([Value::Symbol("t".into())])
-            } else {
-                Value::list([Value::Symbol(symbol), Value::Symbol("t".into())])
-            })
+            Ok(
+                if interp.class_value(&symbol).is_some() || is_builtin_class_name(&symbol) {
+                    Value::list(interp.class_allparents(&symbol))
+                } else if symbol == "t" {
+                    Value::list([Value::Symbol("t".into())])
+                } else {
+                    Value::list([Value::Symbol(symbol), Value::Symbol("t".into())])
+                },
+            )
         }
         "cl--class-children" | "eieio-class-children" => {
             need_args(name, args, 1)?;

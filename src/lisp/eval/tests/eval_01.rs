@@ -812,7 +812,7 @@ fn remove_filters_lists_vectors_and_strings() {
     assert_eq!(
         items[1],
         Value::list([
-            Value::Symbol("vector".into()),
+            Value::Symbol("vector-literal".into()),
             Value::Integer(1),
             Value::Integer(3),
         ])

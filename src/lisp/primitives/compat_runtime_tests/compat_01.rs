@@ -800,7 +800,7 @@ fn fillarray_mutates_supported_sequences() {
     let mut env = Vec::new();
 
     let vector = Value::list([
-        Value::symbol("vector"),
+        Value::symbol("vector-literal"),
         Value::Integer(1),
         Value::Integer(2),
         Value::Integer(3),
@@ -1088,7 +1088,7 @@ fn reverse_and_nreverse_preserve_vector_types() {
     );
 
     let vector = Value::list([
-        Value::symbol("vector"),
+        Value::symbol("vector-literal"),
         Value::Integer(1),
         Value::Integer(2),
         Value::Integer(3),

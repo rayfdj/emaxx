@@ -1293,8 +1293,16 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([Value::symbol("vector"), left.clone(), Value::Integer(2)]),
-                Value::list([Value::symbol("vector"), right.clone(), Value::Integer(1)]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    left.clone(),
+                    Value::Integer(2),
+                ]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    right.clone(),
+                    Value::Integer(1),
+                ]),
             ],
             &mut env,
         )
@@ -1309,8 +1317,16 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([Value::symbol("vector"), right.clone(), Value::Integer(1)]),
-                Value::list([Value::symbol("vector"), left.clone(), Value::Integer(2)]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    right.clone(),
+                    Value::Integer(1),
+                ]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    left.clone(),
+                    Value::Integer(2),
+                ]),
             ],
             &mut env,
         )
@@ -1325,8 +1341,16 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([Value::symbol("vector"), left.clone(), Value::Integer(1)]),
-                Value::list([Value::symbol("vector"), left.clone(), Value::Integer(2)]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    left.clone(),
+                    Value::Integer(1),
+                ]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    left.clone(),
+                    Value::Integer(2),
+                ]),
             ],
             &mut env,
         )
@@ -1341,8 +1365,12 @@ fn value_less_selected_upstream_ordered_cases_match_emacs() {
             &mut interp,
             "value<",
             &[
-                Value::list([Value::symbol("vector"), right.clone(), Value::Integer(1)]),
-                Value::list([Value::symbol("vector"), right, Value::Integer(2)]),
+                Value::list([
+                    Value::symbol("vector-literal"),
+                    right.clone(),
+                    Value::Integer(1),
+                ]),
+                Value::list([Value::symbol("vector-literal"), right, Value::Integer(2)]),
             ],
             &mut env,
         )

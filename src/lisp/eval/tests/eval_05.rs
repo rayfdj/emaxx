@@ -1454,6 +1454,129 @@ fn cl_loop_with_defaults_to_nil_and_splits_do_finally() {
 }
 
 #[test]
+fn cl_loop_when_do_supports_finally_return() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (cl-loop for item in '(a nil b)
+                        when item
+                        do (push item seen)
+                        finally return seen))"
+        ),
+        Value::list([Value::symbol("b"), Value::symbol("a")])
+    );
+}
+
+#[test]
+fn cl_loop_if_collect_else_collect() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for item in '(1 a 2 b)
+                      if (numberp item)
+                        collect item
+                      else
+                        collect (list item))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::list([Value::symbol("a")]),
+            Value::Integer(2),
+            Value::list([Value::symbol("b")]),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_unless_count_else_count_finally() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop for item in '(nil a nil b)
+                      unless item
+                        count t into empty
+                      else
+                        count t into present
+                      finally
+                        (cl-return (list empty present)))"
+        ),
+        Value::list([Value::Integer(2), Value::Integer(2)])
+    );
+}
+
+#[test]
+fn cl_loop_for_in_sees_with_bindings() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop with items = '(a b c)
+                      for item in items
+                      collect item)"
+        ),
+        Value::list([Value::symbol("a"), Value::symbol("b"), Value::symbol("c")])
+    );
+}
+
+#[test]
+fn cl_loop_unless_do_supports_finally_return() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (cl-loop for item in '(a nil b)
+                        unless item
+                        do (push 'empty seen)
+                        finally return (cons 'done seen)))"
+        ),
+        Value::list([Value::symbol("done"), Value::symbol("empty")])
+    );
+}
+
+#[test]
+fn cl_loop_do_supports_finally_return_keyword() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (cl-loop for item in '(a b)
+                        do (push item seen)
+                        finally return seen))"
+        ),
+        Value::list([Value::symbol("b"), Value::symbol("a")])
+    );
+}
+
+#[test]
+fn cl_loop_if_do_else_do_supports_finally_return() {
+    assert_eq!(
+        eval_str(
+            "(let (seen)
+               (cl-loop for item in '(a 1 b 2)
+                        if (symbolp item)
+                        do (push item seen)
+                        else
+                        do (push 'num seen)
+                        finally return seen))"
+        ),
+        Value::list([
+            Value::symbol("num"),
+            Value::symbol("b"),
+            Value::symbol("num"),
+            Value::symbol("a"),
+        ])
+    );
+}
+
+#[test]
+fn cl_loop_named_catches_return_from_do_body() {
+    assert_eq!(
+        eval_str(
+            "(cl-loop named main
+                      for item in '(a b c)
+                      when (eq item 'b)
+                      do (cl-return-from main 'hit)
+                      finally return 'miss)"
+        ),
+        Value::Symbol("hit".into())
+    );
+}
+
+#[test]
 fn cl_loop_if_do_append_runs_body_before_append() {
     assert_eq!(
         eval_str(

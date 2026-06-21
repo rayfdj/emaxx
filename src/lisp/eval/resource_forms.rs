@@ -1258,7 +1258,7 @@ impl Interpreter {
                                     let tagged = matches!(
                                         entries.first(),
                                         Some(Value::Symbol(symbol))
-                                            if symbol == "vector" || symbol == "vector-literal"
+                                            if symbol == "vector-literal"
                                     );
                                     let slot = if tagged { index + 1 } else { index };
                                     if slot >= entries.len() {

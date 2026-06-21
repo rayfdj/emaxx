@@ -15,7 +15,7 @@ pub(crate) const KEY_DESCRIPTION_MODIFIER_MASK: i64 = KEY_DESCRIPTION_ALT_BIT
 pub(crate) const KEY_DESCRIPTION_META_PREFIX: i64 = 0x1B;
 
 pub(crate) fn parse_kbd_sequence(text: &str) -> Result<Value, LispError> {
-    let mut items = vec![Value::Symbol("vector".into())];
+    let mut items = vec![Value::Symbol("vector-literal".into())];
     for token in text.split_whitespace() {
         items.extend(parse_kbd_token(token));
     }
@@ -346,7 +346,7 @@ pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
         Value::String(_) | Value::StringObject(_) => string_like(value),
         Value::Cons(_, _) => {
             let items = value.to_vec().ok()?;
-            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector")
+            if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
                 && matches!(items.get(1), Some(Value::String(_)))
             {
                 string_like(value)

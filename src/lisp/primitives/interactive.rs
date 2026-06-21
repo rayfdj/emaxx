@@ -34,7 +34,7 @@ pub(crate) fn is_vector_value(value: &Value) -> bool {
     matches!(
         value,
         Value::Cons(car, _)
-            if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector" || symbol == "vector-literal")
+            if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal")
     )
 }
 
@@ -611,7 +611,7 @@ pub(crate) fn need_arg_range(
 pub(crate) fn parse_edmacro_key_sequence(source: &str) -> Result<Value, LispError> {
     let mut parser = EdmacroKeyParser::new(source);
     let items = parser.parse()?;
-    let mut vector = vec![Value::symbol("vector")];
+    let mut vector = vec![Value::symbol("vector-literal")];
     vector.extend(items);
     Ok(Value::list(vector))
 }

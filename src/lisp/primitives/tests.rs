@@ -1991,10 +1991,10 @@ fn key_description_matches_upstream_string_and_vector_cases() {
         "key-description",
         &[
             Value::list([
-                Value::Symbol("vector".into()),
+                Value::Symbol("vector-literal".into()),
                 Value::Symbol("right".into()),
             ]),
-            Value::list([Value::Symbol("vector".into()), Value::Integer(0x18)]),
+            Value::list([Value::Symbol("vector-literal".into()), Value::Integer(0x18)]),
         ],
         &mut env,
     )
@@ -2033,7 +2033,7 @@ fn key_sequence_binding_parts_preserve_control_prefixes() {
     );
     assert_eq!(
         key_sequence_binding_parts(&Value::list([
-            Value::Symbol("vector".into()),
+            Value::Symbol("vector-literal".into()),
             Value::Integer(3),
             Value::Integer('g' as i64),
         ]))

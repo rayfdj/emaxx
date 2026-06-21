@@ -468,6 +468,15 @@ impl Interpreter {
     }
 
     pub(crate) fn class_parents_value(&self, class: &Value) -> Result<Value, LispError> {
+        if let Value::Symbol(name) = class
+            && primitives::is_builtin_class_name(name)
+        {
+            return Ok(Value::list(
+                primitives::builtin_class_parents(name)
+                    .iter()
+                    .map(|parent| Value::Symbol((*parent).into())),
+            ));
+        }
         let Value::Record(record_id) = class else {
             return Err(LispError::TypeError("class".into(), class.type_name()));
         };
@@ -631,6 +640,13 @@ impl Interpreter {
     }
 
     pub(crate) fn class_allparents(&self, name: &str) -> Vec<Value> {
+        if let Some(parents) = primitives::builtin_class_allparents(name) {
+            return parents
+                .iter()
+                .map(|parent| Value::Symbol((*parent).into()))
+                .collect();
+        }
+
         fn visit(
             interp: &Interpreter,
             name: &str,

@@ -652,6 +652,13 @@ impl Interpreter {
             return self.sf_setq(&setq_items, env);
         }
         let place = items[1].to_vec()?;
+        if let Some(Value::Symbol(name)) = place.first()
+            && let Some(expanded) = self.try_macroexpand(name, &place[1..], env)?
+            && expanded != items[1]
+        {
+            let expanded_items = [Value::Symbol("setf".into()), expanded, items[2].clone()];
+            return self.sf_setf(&expanded_items, env);
+        }
         match place.first() {
             Some(Value::Symbol(name)) if name == "symbol-function" => {
                 let Some(target) = place.get(1) else {
@@ -1096,7 +1103,7 @@ impl Interpreter {
             let mut entries = current.to_vec()?;
             let tagged = matches!(
                 entries.first(),
-                Some(Value::Symbol(symbol)) if symbol == "vector" || symbol == "vector-literal"
+                Some(Value::Symbol(symbol)) if symbol == "vector-literal"
             );
             let slot = if tagged { index + 1 } else { index };
             if slot >= entries.len() {
@@ -1999,7 +2006,7 @@ impl Interpreter {
             .collect::<Vec<_>>();
 
         let mut constructors = Vec::new();
-        let mut saw_constructor_option = false;
+        let mut suppress_default_constructor = false;
         let mut conc_name = format!("{name}-");
         let mut predicate_name = format!("{name}-p");
         let mut parent_names = Vec::new();
@@ -2013,28 +2020,25 @@ impl Interpreter {
                         parent_names.push(parent_name.clone());
                     }
                 }
-                Some(Value::Symbol(keyword)) if keyword == ":constructor" => {
-                    saw_constructor_option = true;
-                    match parts.get(1) {
-                        Some(Value::Nil) => {}
-                        Some(Value::Symbol(constructor_name)) => {
-                            let (params, aux_bindings) = parts
-                                .get(2)
-                                .and_then(|value| value.to_vec().ok())
-                                .map(parse_cl_defstruct_constructor_params)
-                                .unwrap_or_else(|| {
-                                    (
-                                        std::iter::once("&key".to_string())
-                                            .chain(slot_names.iter().cloned())
-                                            .collect::<Vec<_>>(),
-                                        Vec::new(),
-                                    )
-                                });
-                            constructors.push((constructor_name.clone(), params, aux_bindings));
-                        }
-                        _ => {}
+                Some(Value::Symbol(keyword)) if keyword == ":constructor" => match parts.get(1) {
+                    Some(Value::Nil) => suppress_default_constructor = true,
+                    Some(Value::Symbol(constructor_name)) => {
+                        let (params, aux_bindings) = parts
+                            .get(2)
+                            .and_then(|value| value.to_vec().ok())
+                            .map(parse_cl_defstruct_constructor_params)
+                            .unwrap_or_else(|| {
+                                (
+                                    std::iter::once("&key".to_string())
+                                        .chain(slot_names.iter().cloned())
+                                        .collect::<Vec<_>>(),
+                                    Vec::new(),
+                                )
+                            });
+                        constructors.push((constructor_name.clone(), params, aux_bindings));
                     }
-                }
+                    _ => {}
+                },
                 Some(Value::Symbol(keyword)) if keyword == ":predicate" => match parts.get(1) {
                     Some(Value::Nil) => predicate_name.clear(),
                     Some(Value::Symbol(predicate)) => predicate_name = predicate.clone(),
@@ -2050,9 +2054,14 @@ impl Interpreter {
                 _ => {}
             }
         }
-        if !saw_constructor_option {
+        let default_constructor_name = format!("make-{name}");
+        if !suppress_default_constructor
+            && !constructors
+                .iter()
+                .any(|(constructor_name, _, _)| constructor_name == &default_constructor_name)
+        {
             constructors.push((
-                format!("make-{name}"),
+                default_constructor_name,
                 std::iter::once("&key".to_string())
                     .chain(slot_names.iter().cloned())
                     .collect::<Vec<_>>(),
@@ -2174,12 +2183,10 @@ impl Interpreter {
             let body = if aux_bindings.is_empty() {
                 make_form
             } else {
-                let let_bindings = Value::list(
-                    aux_bindings
-                        .into_iter()
-                        .map(|(name, form)| Value::list([Value::Symbol(name), form]))
-                        .collect::<Vec<_>>(),
-                );
+                let let_bindings = Value::list(cl_defstruct_constructor_aux_let_bindings(
+                    &params,
+                    aux_bindings,
+                ));
                 Value::list([Value::Symbol("let*".into()), let_bindings, make_form])
             };
             self.set_function_binding(
@@ -2580,7 +2587,12 @@ impl Interpreter {
             wrapped.append(&mut executable_body);
             executable_body = vec![Value::list(wrapped)];
         }
-        lowered_body.append(&mut executable_body);
+        let mut block_body = vec![
+            Value::Symbol("catch".into()),
+            quoted_literal(&Value::Symbol(format!("--cl-block-{name}--"))),
+        ];
+        block_body.append(&mut executable_body);
+        lowered_body.push(Value::list(block_body));
 
         let mut lowered = Vec::with_capacity(3 + lowered_body.len());
         lowered.push(Value::Symbol("defun".into()));

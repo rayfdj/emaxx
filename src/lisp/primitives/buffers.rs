@@ -357,7 +357,7 @@ pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool 
 
 pub(crate) fn vector_root_slot(value: &Value) -> Option<ConsSlot> {
     match value {
-        Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector" || symbol == "vector-literal") => {
+        Value::Cons(car, _) if matches!(&*car.borrow(), Value::Symbol(symbol) if symbol == "vector-literal") => {
             Some(car.clone())
         }
         _ => None,
@@ -1019,56 +1019,186 @@ pub(crate) fn derived_mode_parent_chain(interp: &Interpreter, mode: &str) -> Vec
 }
 
 pub(crate) fn is_builtin_class_name(name: &str) -> bool {
-    matches!(
-        name,
-        "t" | "null"
-            | "boolean"
-            | "symbol"
-            | "symbol-with-pos"
-            | "fixnum"
-            | "bignum"
-            | "integer"
-            | "float"
-            | "number"
-            | "string"
-            | "list"
-            | "vector"
-            | "bool-vector"
-            | "char-table"
-            | "cons"
-            | "buffer"
-            | "marker"
-            | "overlay"
-            | "finalizer"
-            | "hash-table"
-            | "record"
-            | "native-comp-unit"
-            | "primitive-function"
-            | "special-form"
-            | "interpreted-function"
-            | "byte-code-function"
-            | "subr"
-            | "function"
-    )
+    builtin_class_names().contains(&name)
+}
+
+pub(crate) fn builtin_class_names() -> &'static [&'static str] {
+    &[
+        "t",
+        "atom",
+        "sequence",
+        "array",
+        "number-or-marker",
+        "integer-or-marker",
+        "null",
+        "boolean",
+        "symbol",
+        "symbol-with-pos",
+        "fixnum",
+        "bignum",
+        "integer",
+        "float",
+        "number",
+        "string",
+        "list",
+        "vector",
+        "bool-vector",
+        "char-table",
+        "cons",
+        "buffer",
+        "marker",
+        "overlay",
+        "finalizer",
+        "hash-table",
+        "record",
+        "native-comp-unit",
+        "compiled-function",
+        "closure",
+        "primitive-function",
+        "special-form",
+        "interpreted-function",
+        "byte-code-function",
+        "subr",
+        "function",
+    ]
 }
 
 pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
     match name {
+        "atom" | "sequence" => &["t"],
+        "array" => &["sequence", "atom"],
+        "number-or-marker" => &["atom"],
+        "integer-or-marker" => &["number-or-marker"],
         "null" => &["symbol", "list"],
         "boolean" => &["symbol"],
-        "symbol" | "list" | "vector" | "buffer" | "marker" | "overlay" | "finalizer"
-        | "hash-table" | "record" | "function" => &["t"],
+        "symbol" | "buffer" | "overlay" | "finalizer" | "hash-table" | "record"
+        | "native-comp-unit" | "subr" | "function" => &["atom"],
+        "list" => &["sequence"],
         "symbol-with-pos" => &["cons"],
         "fixnum" | "bignum" => &["integer"],
-        "integer" | "float" => &["number"],
-        "number" | "string" | "char-table" | "cons" | "native-comp-unit" => &["t"],
-        "bool-vector" => &["vector"],
-        "primitive-function"
-        | "special-form"
-        | "interpreted-function"
-        | "byte-code-function"
-        | "subr" => &["function"],
+        "integer" => &["number", "integer-or-marker"],
+        "float" => &["number"],
+        "number" => &["number-or-marker"],
+        "marker" => &["integer-or-marker"],
+        "vector" | "bool-vector" | "char-table" | "string" => &["array"],
+        "cons" => &["list"],
+        "compiled-function" => &["function"],
+        "closure" => &["function"],
+        "byte-code-function" => &["compiled-function", "closure"],
+        "interpreted-function" => &["closure"],
+        "primitive-function" | "special-form" => &["subr"],
         _ => &[],
+    }
+}
+
+pub(crate) fn builtin_class_allparents(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "t" => &["t"],
+        "atom" => &["atom", "t"],
+        "sequence" => &["sequence", "t"],
+        "array" => &["array", "sequence", "atom", "t"],
+        "number-or-marker" => &["number-or-marker", "atom", "t"],
+        "integer-or-marker" => &["integer-or-marker", "number-or-marker", "atom", "t"],
+        "null" => &["null", "boolean", "symbol", "atom", "list", "sequence", "t"],
+        "boolean" => &["boolean", "symbol", "atom", "t"],
+        "symbol" => &["symbol", "atom", "t"],
+        "symbol-with-pos" => &["symbol-with-pos", "cons", "list", "sequence", "t"],
+        "fixnum" => &[
+            "fixnum",
+            "integer",
+            "number",
+            "integer-or-marker",
+            "number-or-marker",
+            "atom",
+            "t",
+        ],
+        "bignum" => &[
+            "bignum",
+            "integer",
+            "number",
+            "integer-or-marker",
+            "number-or-marker",
+            "atom",
+            "t",
+        ],
+        "integer" => &[
+            "integer",
+            "number",
+            "integer-or-marker",
+            "number-or-marker",
+            "atom",
+            "t",
+        ],
+        "float" => &["float", "number", "number-or-marker", "atom", "t"],
+        "number" => &["number", "number-or-marker", "atom", "t"],
+        "string" => &["string", "array", "sequence", "atom", "t"],
+        "list" => &["list", "sequence", "t"],
+        "vector" => &["vector", "array", "sequence", "atom", "t"],
+        "bool-vector" => &["bool-vector", "array", "sequence", "atom", "t"],
+        "char-table" => &["char-table", "array", "sequence", "atom", "t"],
+        "cons" => &["cons", "list", "sequence", "t"],
+        "buffer" => &["buffer", "atom", "t"],
+        "marker" => &[
+            "marker",
+            "integer-or-marker",
+            "number-or-marker",
+            "atom",
+            "t",
+        ],
+        "overlay" => &["overlay", "atom", "t"],
+        "finalizer" => &["finalizer", "atom", "t"],
+        "hash-table" => &["hash-table", "atom", "t"],
+        "record" => &["record", "atom", "t"],
+        "native-comp-unit" => &["native-comp-unit", "atom", "t"],
+        "compiled-function" => &["compiled-function", "function", "atom", "t"],
+        "closure" => &["closure", "function", "atom", "t"],
+        "byte-code-function" => &[
+            "byte-code-function",
+            "compiled-function",
+            "closure",
+            "function",
+            "atom",
+            "t",
+        ],
+        "interpreted-function" => &["interpreted-function", "closure", "function", "atom", "t"],
+        "subr" => &["subr", "atom", "t"],
+        "primitive-function" => &["primitive-function", "subr", "atom", "t"],
+        "special-form" => &["special-form", "subr", "atom", "t"],
+        "function" => &["function", "atom", "t"],
+        _ => return None,
+    })
+}
+
+pub(crate) fn builtin_class_predicate(name: &str) -> Option<&'static str> {
+    match name {
+        "atom" => Some("atom"),
+        "null" => Some("null"),
+        "boolean" => Some("booleanp"),
+        "symbol" => Some("symbolp"),
+        "fixnum" => Some("fixnump"),
+        "bignum" => Some("bignump"),
+        "integer" => Some("integerp"),
+        "float" => Some("floatp"),
+        "number" => Some("numberp"),
+        "string" => Some("stringp"),
+        "list" => Some("listp"),
+        "vector" => Some("vectorp"),
+        "bool-vector" => Some("bool-vector-p"),
+        "char-table" => Some("char-table-p"),
+        "cons" => Some("consp"),
+        "buffer" => Some("bufferp"),
+        "marker" => Some("markerp"),
+        "overlay" => Some("overlayp"),
+        "finalizer" => Some("finalizerp"),
+        "hash-table" => Some("hash-table-p"),
+        "record" => Some("recordp"),
+        "function" => Some("functionp"),
+        "compiled-function" => Some("compiled-function-p"),
+        "byte-code-function" => Some("byte-code-function-p"),
+        "interpreted-function" => Some("interpreted-function-p"),
+        "subr" | "primitive-function" => Some("subrp"),
+        "special-form" => Some("special-form-p"),
+        _ => None,
     }
 }
 
