@@ -903,7 +903,11 @@ pub(crate) fn set_abbrev_table_entries_from_definitions(
 }
 
 pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
-    for symbol in ["fundamental-mode-abbrev-table", "global-abbrev-table"] {
+    for symbol in [
+        "fundamental-mode-abbrev-table",
+        "global-abbrev-table",
+        "text-mode-abbrev-table",
+    ] {
         if !interp
             .lookup_var(symbol, &Vec::new())
             .is_some_and(|value| is_abbrev_table_value(interp, &value))
@@ -917,7 +921,11 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
         .lookup_var("abbrev-table-name-list", &Vec::new())
         .unwrap_or(Value::Nil);
     let mut items = existing.to_vec().unwrap_or_default();
-    for symbol in ["fundamental-mode-abbrev-table", "global-abbrev-table"] {
+    for symbol in [
+        "fundamental-mode-abbrev-table",
+        "global-abbrev-table",
+        "text-mode-abbrev-table",
+    ] {
         if !items
             .iter()
             .any(|value| value.as_symbol().ok() == Some(symbol))

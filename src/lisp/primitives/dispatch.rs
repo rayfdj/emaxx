@@ -1106,6 +1106,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "eval-after-load"
             | "define-error"
             | "define-fringe-bitmap"
+            | "define-mail-user-agent"
             | "describe-function"
             | "executable-find"
             | "run-at-time"

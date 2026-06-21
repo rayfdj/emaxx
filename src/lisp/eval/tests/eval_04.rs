@@ -2531,11 +2531,14 @@ fn abbrev_require_seeds_standard_table_name_list() {
                                         abbrev-table-name-list)))
                       (not (null (memq 'global-abbrev-table
                                         abbrev-table-name-list)))
+                      (not (null (memq 'text-mode-abbrev-table
+                                        abbrev-table-name-list)))
                       (abbrev-table-p fundamental-mode-abbrev-table)
-                      (abbrev-table-p global-abbrev-table))
+                      (abbrev-table-p global-abbrev-table)
+                      (abbrev-table-p text-mode-abbrev-table))
                 "#
         ),
-        Value::list([Value::T, Value::T, Value::T, Value::T])
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T])
     );
 }
 

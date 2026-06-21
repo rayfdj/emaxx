@@ -17,6 +17,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "throw"
             | "define-error"
             | "define-fringe-bitmap"
+            | "define-mail-user-agent"
             | "intern"
             | "intern-soft"
             | "unintern"
@@ -256,6 +257,29 @@ pub(super) fn call(
             Ok(args[0].clone())
         }
         "define-fringe-bitmap" => Ok(Value::Nil),
+        "define-mail-user-agent" => {
+            need_arg_range(name, args, 3, 5)?;
+            let symbol = args[0].as_symbol()?;
+            interp.put_symbol_property(symbol, "composefunc", args[1].clone());
+            interp.put_symbol_property(symbol, "sendfunc", args[2].clone());
+            interp.put_symbol_property(
+                symbol,
+                "abortfunc",
+                args.get(3)
+                    .filter(|value| value.is_truthy())
+                    .cloned()
+                    .unwrap_or_else(|| Value::Symbol("kill-buffer".into())),
+            );
+            interp.put_symbol_property(
+                symbol,
+                "hookvar",
+                args.get(4)
+                    .filter(|value| value.is_truthy())
+                    .cloned()
+                    .unwrap_or_else(|| Value::Symbol("mail-send-hook".into())),
+            );
+            Ok(args[0].clone())
+        }
         "intern" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
