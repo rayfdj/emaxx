@@ -19,12 +19,12 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1915/7080 are verified locally against the current canonical
+- Tests through 1916/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1915/7080: support edebug eval-defun setup`.
-- The next observed frontier is selector 1916,
-  `edebug-tests-backtrace-goto-source` in
+  `Compat 1916/7080: support edebug backtrace macro replay`.
+- The next observed frontier is selector 1917,
+  `edebug-tests-break-in-lambda-out-of-defining-context` in
   `test/lisp/emacs-lisp/edebug-tests.el`.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
@@ -91,6 +91,19 @@ counts as the progress denominator.
   `cargo test preloaded_eval_defun_evaluates_current_definition -- --nocapture`,
   and `cargo test debug_on_error_defaults_to_nil_in_batch -- --nocapture`;
   selector `edebug-tests-backtrace-goto-source` is the next frontier.
+- Selector 1916, `edebug-tests-backtrace-goto-source` in
+  `test/lisp/emacs-lisp/edebug-tests.el`, passed after extending `cl-loop` for
+  the Edebug keyboard macro preparation form (`vconcat ... into ... append ...
+  into ... finally return ...`), exposing the current command key vector during
+  keyboard macro execution, and adding `call-last-kbd-macro` replay support for
+  dynamic `last-kbd-macro` bindings. Exact replay run for this batch: selector
+  `edebug-tests-backtrace-goto-source`; focused Rust regressions:
+  `cargo test cl_loop_vconcat_into_append_into_finally_return -- --nocapture`,
+  `cargo test execute_kbd_macro_exposes_this_single_command_keys --
+  --nocapture`, and
+  `cargo test call_last_kbd_macro_replays_dynamic_last_kbd_macro --
+  --nocapture`; selector
+  `edebug-tests-break-in-lambda-out-of-defining-context` is the next frontier.
 - Selector 1786, `cl-macs-loop-with` in
   `test/lisp/emacs-lisp/cl-macs-tests.el`, passed after adding `cl-loop`
   support for sequential `with` initialization, parallel `with ... and ...`
