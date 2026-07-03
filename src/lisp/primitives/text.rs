@@ -272,6 +272,14 @@ pub(crate) fn format_s_conversion(
         let props = slice_string_props(&string.props, 0, end);
         return Ok((text, props));
     }
+    // `%s' uses princ semantics: a buffer prints as its name.
+    if let Value::Buffer(_, buffer_name) = arg {
+        let mut text = buffer_name.clone();
+        if let Some(precision) = precision {
+            text = text.chars().take(precision).collect();
+        }
+        return Ok((text, Vec::new()));
+    }
     let mut text = if ["print-circle", "print-gensym"].into_iter().any(|name| {
         interp
             .lookup_var(name, env)

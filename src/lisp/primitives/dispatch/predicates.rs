@@ -667,16 +667,22 @@ pub(super) fn call(
         "libxml-available-p" => Ok(Value::T),
         "consp" => {
             need_args(name, args, 1)?;
-            Ok(if args[0].is_cons() {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            // Vector and bool-vector literals ride on conses internally but
+            // are not conses to Lisp.
+            Ok(
+                if args[0].is_cons() && !is_vector_like_value(interp, &args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "listp" => {
             need_args(name, args, 1)?;
             Ok(
-                if args[0].is_list() || keymap_list_items(interp, &args[0])?.is_some() {
+                if (args[0].is_list() && !is_vector_like_value(interp, &args[0]))
+                    || keymap_list_items(interp, &args[0])?.is_some()
+                {
                     Value::T
                 } else {
                     Value::Nil
@@ -792,7 +798,9 @@ pub(super) fn call(
         "atom" => {
             need_args(name, args, 1)?;
             Ok(
-                if args[0].is_cons() || keymap_list_items(interp, &args[0])?.is_some() {
+                if (args[0].is_cons() && !is_vector_like_value(interp, &args[0]))
+                    || keymap_list_items(interp, &args[0])?.is_some()
+                {
                     Value::Nil
                 } else {
                     Value::T
@@ -803,7 +811,9 @@ pub(super) fn call(
         "nlistp" => {
             need_args(name, args, 1)?;
             Ok(
-                if args[0].is_list() || keymap_list_items(interp, &args[0])?.is_some() {
+                if (args[0].is_list() && !is_vector_like_value(interp, &args[0]))
+                    || keymap_list_items(interp, &args[0])?.is_some()
+                {
                     Value::Nil
                 } else {
                     Value::T

@@ -22,10 +22,10 @@ fn column_zero_list_starts(interp: &Interpreter) -> Result<Vec<usize>, LispError
 }
 
 fn beginning_of_defun_raw_fallback(interp: &mut Interpreter, arg: i64) -> Result<Value, LispError> {
-    let starts = column_zero_list_starts(interp)?;
-    if starts.is_empty() || arg == 0 {
+    if arg == 0 {
         return Ok(Value::Nil);
     }
+    let starts = column_zero_list_starts(interp)?;
 
     let point = interp.buffer.point();
     let target = if arg > 0 {
@@ -47,6 +47,15 @@ fn beginning_of_defun_raw_fallback(interp: &mut Interpreter, arg: i64) -> Result
         interp.buffer.goto_char(pos);
         Ok(Value::T)
     } else {
+        // The search runs with the `move' flag: on failure point lands at
+        // the buffer boundary in the search direction.
+        if arg > 0 {
+            let min = interp.buffer.point_min();
+            interp.buffer.goto_char(min);
+        } else {
+            let max = interp.buffer.point_max();
+            interp.buffer.goto_char(max);
+        }
         Ok(Value::Nil)
     }
 }
@@ -211,6 +220,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "forward-page"
             | "forward-line"
             | "line-move"
+            | "next-line"
+            | "previous-line"
+            | "move-end-of-line"
+            | "move-beginning-of-line"
             | "vertical-motion"
             | "search-forward"
             | "search-backward"
@@ -866,6 +879,60 @@ pub(super) fn call(
                 n,
             )))
         }
+        "next-line" | "previous-line" => {
+            need_arg_range(name, args, 0, 2)?;
+            let mut count = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            if name == "previous-line" {
+                count = -count;
+            }
+            // GNU line motion keeps the goal column across consecutive
+            // vertical motion commands via temporary-goal-column.
+            let last_command = interp.lookup_var("last-command", env).unwrap_or(Value::Nil);
+            let continuing = matches!(
+                &last_command,
+                Value::Symbol(symbol) if symbol == "next-line" || symbol == "previous-line"
+            );
+            let goal = if continuing {
+                interp
+                    .lookup_var("temporary-goal-column", env)
+                    .and_then(|value| value.as_integer().ok())
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                super::call(interp, "current-column", &[], env)
+                    .ok()
+                    .and_then(|value| value.as_integer().ok())
+                    .unwrap_or(0)
+            });
+            interp.set_global_binding("temporary-goal-column", Value::Integer(goal));
+            super::call(interp, "line-move", &[Value::Integer(count), Value::T], env)?;
+            super::call(interp, "move-to-column", &[Value::Integer(goal)], env)?;
+            Ok(Value::Nil)
+        }
+        "move-end-of-line" | "move-beginning-of-line" => {
+            need_arg_range(name, args, 0, 1)?;
+            let count = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            if count != 1 {
+                super::call(interp, "forward-line", &[Value::Integer(count - 1)], env)?;
+            }
+            if name == "move-end-of-line" {
+                interp.buffer.end_of_line();
+            } else {
+                interp.buffer.beginning_of_line();
+            }
+            Ok(Value::Nil)
+        }
         "line-move" => {
             need_arg_range(name, args, 1, 4)?;
             let n = integer_like_bigint(interp, &args[0])?;
@@ -1407,7 +1474,8 @@ pub(super) fn call(
                 Value::Record(id)
                     if interp
                         .find_record(*id)
-                        .is_some_and(|record| record.type_name == struct_name) =>
+                        .is_some_and(|record| record.type_name == struct_name)
+                        || interp.value_is_instance_of_class(&args[1], struct_name) =>
                 {
                     Value::T
                 }
@@ -1446,7 +1514,9 @@ pub(super) fn call(
                         let record = interp.find_record(*id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{id}>"))
                         })?;
-                        if record.type_name != struct_name {
+                        if record.type_name != struct_name
+                            && !interp.value_is_instance_of_class(&args[2], struct_name)
+                        {
                             return Err(LispError::TypeError(
                                 format!("{struct_name}-p"),
                                 args[2].type_name(),
@@ -1465,7 +1535,9 @@ pub(super) fn call(
                     let record = interp.find_record(*id).ok_or_else(|| {
                         LispError::TypeError("record".into(), format!("record<{id}>"))
                     })?;
-                    if record.type_name != struct_name {
+                    if record.type_name != struct_name
+                        && !interp.value_is_instance_of_class(&args[2], struct_name)
+                    {
                         return Err(LispError::TypeError(
                             format!("{struct_name}-p"),
                             args[2].type_name(),

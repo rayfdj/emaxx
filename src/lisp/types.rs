@@ -372,6 +372,22 @@ fn format_value(
         Value::String(s) => write!(f, "\"{}\"", s),
         Value::StringObject(state) => write!(f, "\"{}\"", state.borrow().text),
         Value::Symbol(s) => write!(f, "{}", visible_symbol_name(s)),
+        Value::Cons(car, cdr) if matches!(&*car.borrow(), Value::Symbol(head) if head == "vector-literal") =>
+        {
+            // Vector literals ride on conses internally but print as vectors.
+            write!(f, "[")?;
+            let mut current = cdr.borrow().clone();
+            let mut first = true;
+            while let Value::Cons(item, rest) = current {
+                if !first {
+                    write!(f, " ")?;
+                }
+                format_value(&item.borrow(), f, seen)?;
+                first = false;
+                current = rest.borrow().clone();
+            }
+            write!(f, "]")
+        }
         Value::Cons(_, _) => {
             write!(f, "(")?;
             let mut current = value.clone();

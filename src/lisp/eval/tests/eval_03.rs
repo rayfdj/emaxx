@@ -1327,7 +1327,9 @@ fn cl_defmethod_lowers_specialized_arguments() {
 }
 
 #[test]
-fn cl_defmethod_ignores_context_specializers_for_dispatch_args() {
+fn cl_defmethod_context_specializers_see_dynamic_bindings() {
+    // GNU dispatches the &context method when the context variable is
+    // let-bound around the call: (text base).
     assert_eq!(
         eval_str(
             "(progn
@@ -1342,7 +1344,7 @@ fn cl_defmethod_ignores_context_specializers_for_dispatch_args() {
                      (let ((major-mode 'fundamental-mode))
                        (sample-context-method 'item))))"
         ),
-        Value::list([Value::Symbol("base".into()), Value::Symbol("base".into())])
+        Value::list([Value::Symbol("text".into()), Value::Symbol("base".into())])
     );
 }
 
@@ -2104,7 +2106,10 @@ fn cl_defmethod_accepts_extra_qualifiers_before_lambda_list() {
 }
 
 #[test]
-fn cl_defmethod_allows_empty_body_and_notifies_edebug_methods() {
+fn cl_defmethod_allows_empty_body_without_edebug_notification() {
+    // Evaluating a cl-defmethod form directly (not through edebug's
+    // reader) does not notify `edebug-new-definition-function'; only
+    // instrumentation via the edebug spec does.
     assert_eq!(
         eval_str(
             r#"(let* ((edebug-all-defs t)
@@ -2116,10 +2121,7 @@ fn cl_defmethod_allows_empty_body_and_notifies_edebug_methods() {
                  (cl-defmethod sample-edebug-method :around ((_ number)))
                  defined-symbols)"#
         ),
-        Value::list([
-            Value::Symbol("sample-edebug-method :around (number)".into()),
-            Value::Symbol("sample-edebug-method (number)".into()),
-        ])
+        Value::Nil
     );
 }
 
@@ -2517,7 +2519,10 @@ fn cl_defgeneric_keeps_its_default_body() {
 }
 
 #[test]
-fn cl_defgeneric_notifies_edebug_definition_names_for_methods() {
+fn cl_defgeneric_does_not_notify_edebug_on_plain_eval() {
+    // Like GNU: evaluating cl-defgeneric/:method forms directly (not
+    // through edebug's reader) does not call
+    // `edebug-new-definition-function'.
     assert_eq!(
         eval_str(
             "(let ((edebug-all-defs t)
@@ -2532,14 +2537,7 @@ fn cl_defgeneric_notifies_edebug_definition_names_for_methods() {
                  (:method ((_ number)) 3))
                (reverse instrumented-names))"
         ),
-        Value::list([
-            Value::Symbol("cl-defgeneric/edebug/method/1 (number)".into()),
-            Value::Symbol("cl-defgeneric/edebug/method/1 (string)".into()),
-            Value::Symbol("cl-defgeneric/edebug/method/1 :around (number)".into()),
-            Value::Symbol("cl-defgeneric/edebug/method/1".into()),
-            Value::Symbol("cl-defgeneric/edebug/method/2 (number)".into()),
-            Value::Symbol("cl-defgeneric/edebug/method/2".into()),
-        ])
+        Value::Nil
     );
 }
 

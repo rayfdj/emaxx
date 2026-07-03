@@ -92,7 +92,18 @@ impl Interpreter {
                         "when-let*" => return self.sf_when_let_star(&items, env),
                         "unless" | "static-unless" => return self.sf_unless(&items, env),
                         "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
-                        "cond" => return self.sf_cond(&items, env),
+                        "cond" => {
+                            // Keep the in-progress form visible in
+                            // backtraces like GNU's eval frames.
+                            self.push_backtrace_frame_with_evald(
+                                items[0].clone(),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_cond(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
                         "pcase" => return self.sf_pcase(&items, env),
                         "pcase-defmacro" => return self.sf_pcase_defmacro(&items, env),
                         "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
@@ -115,9 +126,31 @@ impl Interpreter {
                         "throw" => return self.sf_throw(&items, env),
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),
-                        "let" | "dlet" => return self.sf_let(&items, env),
+                        "let" | "dlet" => {
+                            // Keep the in-progress form visible in
+                            // backtraces like GNU's eval frames.
+                            self.push_backtrace_frame_with_evald(
+                                items[0].clone(),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_let(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
                         "letrec" => return self.sf_letrec(&items, env),
-                        "let*" => return self.sf_letstar(&items, env),
+                        "let*" => {
+                            // Keep the in-progress form visible in
+                            // backtraces like GNU's eval frames.
+                            self.push_backtrace_frame_with_evald(
+                                items[0].clone(),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_letstar(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
                         "cl-progv" => return self.sf_cl_progv(&items, env),
                         "pcase-let" => return self.sf_pcase_let(&items, env, false),
                         "pcase-let*" => return self.sf_pcase_let(&items, env, true),
@@ -207,8 +240,30 @@ impl Interpreter {
                             }
                             return Ok(Value::Nil);
                         }
-                        "while" => return self.sf_while(&items, env),
-                        "dolist" => return self.sf_dolist(&items, env),
+                        "while" => {
+                            // Keep the in-progress form visible in
+                            // backtraces like GNU's eval frames.
+                            self.push_backtrace_frame_with_evald(
+                                items[0].clone(),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_while(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
+                        "dolist" => {
+                            // Keep the in-progress form visible in
+                            // backtraces like GNU's eval frames.
+                            self.push_backtrace_frame_with_evald(
+                                items[0].clone(),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_dolist(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
                         "dolist-with-progress-reporter" => {
                             return self.sf_dolist_with_progress_reporter(&items, env);
                         }
@@ -423,9 +478,29 @@ impl Interpreter {
         } else {
             self.eval(&items[0], env)?
         };
+        // While the arguments evaluate, the call is visible in backtraces as
+        // an in-progress frame with its unevaluated argument forms, the way
+        // GNU records the eval of a list form.
+        let unevald_frame = matches!(&items[0], Value::Symbol(_));
+        if unevald_frame {
+            self.push_backtrace_frame_with_evald(items[0].clone(), items[1..].to_vec(), false);
+        }
         let mut args = Vec::new();
+        let mut arg_error = None;
         for item in &items[1..] {
-            args.push(self.eval(item, env)?);
+            match self.eval(item, env) {
+                Ok(value) => args.push(value),
+                Err(error) => {
+                    arg_error = Some(error);
+                    break;
+                }
+            }
+        }
+        if unevald_frame {
+            self.pop_backtrace_frame();
+        }
+        if let Some(error) = arg_error {
+            return Err(error);
         }
         let original_name = match &items[0] {
             Value::Symbol(name) => Some(name.as_str()),
@@ -583,6 +658,7 @@ impl Interpreter {
                     frame.clone(),
                     true,
                 );
+                let previous_activation = self.enter_activation();
                 let result = if closure_env.borrow().is_empty() {
                     let mut call_env = env.clone();
                     call_env.push(frame);
@@ -590,6 +666,26 @@ impl Interpreter {
                     call_env.pop();
                     env.clear();
                     env.extend(call_env);
+                    result
+                } else if body_has_marker(body, ":closure-transparent-env") {
+                    // Advice wrappers are plumbing: run them on the caller's
+                    // environment chain with the wrapper's captured frames
+                    // appended, so lexical mutations made below the wrapper
+                    // still reach the calling scope.
+                    let caller_len = env.len();
+                    let mut call_env = env.clone();
+                    call_env.extend(closure_env.borrow().iter().cloned());
+                    call_env.push(frame);
+                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    call_env.pop();
+                    let captured: Vec<_> = call_env.drain(caller_len..).collect();
+                    env.clear();
+                    env.extend(call_env);
+                    {
+                        let mut stored = closure_env.borrow_mut();
+                        stored.clear();
+                        stored.extend(captured);
+                    }
                     result
                 } else if body_has_marker(body, ":closure-isolated-current-env") {
                     let mut call_env = closure_env.borrow().clone();
@@ -607,6 +703,7 @@ impl Interpreter {
                         result
                     })
                 };
+                self.leave_activation(previous_activation);
                 self.pop_backtrace_frame();
                 result
             }

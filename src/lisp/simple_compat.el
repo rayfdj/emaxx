@@ -131,6 +131,35 @@ the extra integer formats for values it covers."
             (when extra
               (princ extra out))))))))
 
+(defvar read-expression-map (make-sparse-keymap)
+  "Minibuffer keymap used for reading Lisp expressions.")
+
+(defvar read-expression-history nil
+  "History list for expressions read by `read--expression'.")
+
+(defun read--expression (prompt &optional initial-contents)
+  "Read an Emacs Lisp expression from the minibuffer.
+PROMPT and INITIAL-CONTENTS are as in `read-from-minibuffer'."
+  (read-from-minibuffer prompt initial-contents read-expression-map
+                        t 'read-expression-history))
+
+(defun subr-primitive-p (object)
+  "Return non-nil if OBJECT is a built-in primitive function."
+  (subrp object))
+
+(defun cl-generic-p (f)
+  "Return non-nil if F names a generic function."
+  (and (symbolp f)
+       (fboundp f)
+       (or (get f 'emaxx-cl-defgeneric-lambda-list)
+           (get f 'emaxx-cl-defmethod-specializers))
+       t))
+
+(defun one-window-p (&optional _nomini _all-frames)
+  "Return non-nil when the selected frame shows exactly one window.
+The batch frame always shows a single window."
+  t)
+
 (defvar with-timeout-timers nil
   "List of timers armed by `with-timeout' forms currently in flight.")
 
@@ -173,5 +202,137 @@ POS bounds the scan and defaults to point."
                            (syntax-ppss (match-beginning 0)))))
               (push var vars))))
         `(progn ,@(mapcar (lambda (v) `(defvar ,v)) vars) ,exp)))))
+
+
+(defun cl--generic-search-method (met-name)
+  "For `find-function-regexp-alist'.  Search for a `cl-defmethod'.
+MET-NAME is as recorded in `load-history' for the method."
+  (let ((base-re (concat "(\\(?:cl-\\)?defmethod[ \t]+"
+                         (regexp-quote (format "%s" (car met-name)))
+                         "\\_>")))
+    (or
+     (re-search-forward
+      (concat base-re "[^&\"\n]*"
+              (mapconcat (lambda (qualifier)
+                           (regexp-quote (format "%S" qualifier)))
+                         (cadr met-name)
+                         "[ \t\n]*")
+              (mapconcat (lambda (specializer)
+                           (regexp-quote
+                            (format "%S" (if (consp specializer)
+                                             (nth 1 specializer) specializer))))
+                         (remq t (cddr met-name))
+                         "[ \t\n]*)[^&\"\n]*"))
+      nil t)
+     (re-search-forward base-re nil t))))
+
+(with-eval-after-load 'find-func
+  (defvar find-function-regexp-alist)
+  (add-to-list 'find-function-regexp-alist
+               (cons 'cl-defmethod #'cl--generic-search-method)))
+
+(defun cl-generic--method-qualifier-p (x)
+  "Return non-nil if X is a method qualifier rather than an arglist."
+  (not (listp x)))
+
+(defvar cl--generic-edebug-name nil)
+
+(defun cl--generic-edebug-remember-name (name pf &rest specs)
+  ;; Remember the name in `cl-defgeneric' so we can use it when building
+  ;; the names of its `:methods'.
+  (let ((cl--generic-edebug-name (car name)))
+    (funcall pf specs)))
+
+(defun cl--generic-edebug-make-name (in:method _oldname &rest quals-and-args)
+  ;; The name to use in Edebug for a method: use the generic
+  ;; function's name plus all its qualifiers and finish with
+  ;; its specializers.
+  (pcase-let*
+      ((basename (if in:method cl--generic-edebug-name (pop quals-and-args)))
+       (args (car (last quals-and-args)))
+       (`(,spec-args . ,_) (cl--generic-split-args args))
+       (specializers (mapcar (lambda (spec-arg)
+                               (if (eq '&context (car-safe (car spec-arg)))
+                                   spec-arg (cdr spec-arg)))
+                             spec-args)))
+    (format "%s %s"
+            (mapconcat (lambda (sexp) (format "%s" sexp))
+                       (cons basename (butlast quals-and-args))
+                       " ")
+            specializers)))
+
+(defun cl--generic-split-args (args)
+  "Return (SPEC-ARGS . PLAIN-ARGS)."
+  (let ((plain-args ())
+        (specializers nil)
+        (mandatory t))
+    (dolist (arg args)
+      (push (pcase arg
+              ((or '&optional '&rest '&key) (setq mandatory nil) arg)
+              ('&context
+               (unless mandatory
+                 (error "&context not immediately after mandatory args"))
+               (setq mandatory 'context) nil)
+              ((let 'nil mandatory) arg)
+              ((let 'context mandatory)
+               (unless (consp arg)
+                 (error "Invalid &context arg: %S" arg))
+               (let* ((name (car arg))
+                      (rewriter
+                       (and (symbolp name)
+                            (get name 'cl-generic--context-rewriter))))
+                 (if rewriter (setq arg (apply rewriter (cdr arg)))))
+               (push `((&context . ,(car arg)) . ,(cadr arg)) specializers)
+               nil)
+              (`(,name . ,type)
+               (push (cons name (car type)) specializers)
+               name)
+              (_
+               (push (cons arg t) specializers)
+               arg))
+            plain-args))
+    (cons (nreverse specializers)
+          (nreverse (delq nil plain-args)))))
+
+;; Edebug element specs and the macrolet interposer that GNU registers in
+;; cl-macs.el, needed to instrument `cl-macrolet' forms (Bug#29919).
+(def-edebug-elem-spec 'cl-declarations
+  '(&rest ("cl-declare" &rest sexp)))
+
+(def-edebug-elem-spec 'cl-declarations-or-string
+  '(lambda-doc &or ("declare" def-declarations) cl-declarations))
+
+(def-edebug-elem-spec 'cl-macro-list
+  '(([&optional "&whole" arg] ; Only for compiler-macros or at lower levels.
+     [&optional "&environment" arg]     ; Only at top-level.
+     [&rest cl-macro-arg]
+     [&optional ["&optional" &rest
+		 &or (cl-macro-arg &optional def-form cl-macro-arg) arg]]
+     [&optional [[&or "&rest" "&body"] cl-macro-arg]]
+     [&optional ["&key" [&rest
+			 [&or ([&or (symbolp cl-macro-arg) arg]
+			       &optional def-form cl-macro-arg)
+			      arg]]
+		 &optional "&allow-other-keys"]]
+     [&optional ["&aux" &rest
+		 &or (cl-macro-arg &optional def-form) arg]]
+     [&optional "&environment" arg]     ; Only at top-level.
+     . [&or arg nil]                    ; Only allowed at lower levels.
+     )))
+
+(def-edebug-elem-spec 'cl-macro-arg
+  '(&or arg cl-macro-list))
+
+(defun cl--edebug-macrolet-interposer (bindings pf &rest specs)
+  ;; (cl-assert (null (cdr bindings)))
+  (setq bindings (car bindings))
+  (let ((edebug-lexical-macro-ctx
+         (nconc (mapcar (lambda (binding)
+                          (cons (car binding)
+                                (when (eq 'declare (car-safe (nth 2 binding)))
+                                  (nth 1 (assq 'debug (cdr (nth 2 binding)))))))
+                        bindings)
+                edebug-lexical-macro-ctx)))
+    (funcall pf specs)))
 
 ;;; simple_compat.el ends here

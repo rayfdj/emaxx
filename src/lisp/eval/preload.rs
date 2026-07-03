@@ -57,112 +57,137 @@ pub(crate) fn preloaded_command_line_1() -> Value {
     )
 }
 
+// `eval-defun' echoes its value the way `elisp--eval-defun' does: the value
+// via `print' and the integer rendering via `princ', both to the echo area.
+fn eval_defun_print_form() -> Value {
+    crate::lisp::reader::Reader::new(
+        "(progn
+           (print result t)
+           (let ((extra (and (fboundp 'eval-expression-print-format)
+                             (eval-expression-print-format result))))
+             (if extra (princ extra t))))",
+    )
+    .read_all()
+    .expect("static eval-defun print form parses")
+    .remove(0)
+}
+
 pub(crate) fn preloaded_eval_defun() -> Value {
     Value::Lambda(
         vec!["edebug-it".into()],
-        vec![Value::list([
-            Value::Symbol("save-excursion".into()),
+        vec![
             Value::list([
-                Value::Symbol("beginning-of-defun".into()),
-                Value::Integer(1),
+                Value::Symbol("interactive".into()),
+                Value::String("P".into()),
             ]),
             Value::list([
-                Value::Symbol("let*".into()),
+                Value::Symbol("save-excursion".into()),
                 Value::list([
+                    Value::Symbol("beginning-of-defun".into()),
+                    Value::Integer(1),
+                ]),
+                Value::list([
+                    Value::Symbol("let*".into()),
                     Value::list([
-                        Value::Symbol("edebug-all-defs".into()),
+                        Value::list([
+                            Value::Symbol("edebug-all-defs".into()),
+                            Value::list([
+                                Value::Symbol("if".into()),
+                                Value::Symbol("edebug-it".into()),
+                                Value::T,
+                                Value::list([
+                                    Value::Symbol("and".into()),
+                                    Value::list([
+                                        Value::Symbol("boundp".into()),
+                                        Value::list([
+                                            Value::Symbol("quote".into()),
+                                            Value::Symbol("edebug-all-defs".into()),
+                                        ]),
+                                    ]),
+                                    Value::Symbol("edebug-all-defs".into()),
+                                ]),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("form".into()),
+                            Value::list([
+                                Value::Symbol("funcall".into()),
+                                Value::Symbol("load-read-function".into()),
+                                Value::list([Value::Symbol("current-buffer".into())]),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("name".into()),
+                            Value::list([
+                                Value::Symbol("and".into()),
+                                Value::list([
+                                    Value::Symbol("consp".into()),
+                                    Value::Symbol("form".into()),
+                                ]),
+                                Value::list([
+                                    Value::Symbol("nth".into()),
+                                    Value::Integer(1),
+                                    Value::Symbol("form".into()),
+                                ]),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("result".into()),
+                            Value::list([
+                                Value::Symbol("eval".into()),
+                                Value::Symbol("form".into()),
+                            ]),
+                        ]),
+                    ]),
+                    Value::list([
+                        Value::Symbol("when".into()),
+                        Value::list([
+                            Value::Symbol("and".into()),
+                            Value::Symbol("edebug-it".into()),
+                            Value::list([
+                                Value::Symbol("symbolp".into()),
+                                Value::Symbol("name".into()),
+                            ]),
+                        ]),
                         Value::list([
                             Value::Symbol("if".into()),
-                            Value::Symbol("edebug-it".into()),
-                            Value::T,
                             Value::list([
                                 Value::Symbol("and".into()),
                                 Value::list([
                                     Value::Symbol("boundp".into()),
                                     Value::list([
                                         Value::Symbol("quote".into()),
-                                        Value::Symbol("edebug-all-defs".into()),
+                                        Value::Symbol("edebug-new-definition-function".into()),
                                     ]),
                                 ]),
-                                Value::Symbol("edebug-all-defs".into()),
-                            ]),
-                        ]),
-                    ]),
-                    Value::list([
-                        Value::Symbol("form".into()),
-                        Value::list([
-                            Value::Symbol("funcall".into()),
-                            Value::Symbol("load-read-function".into()),
-                            Value::list([Value::Symbol("current-buffer".into())]),
-                        ]),
-                    ]),
-                    Value::list([
-                        Value::Symbol("name".into()),
-                        Value::list([
-                            Value::Symbol("and".into()),
-                            Value::list([
-                                Value::Symbol("consp".into()),
-                                Value::Symbol("form".into()),
+                                Value::Symbol("edebug-new-definition-function".into()),
                             ]),
                             Value::list([
-                                Value::Symbol("nth".into()),
-                                Value::Integer(1),
-                                Value::Symbol("form".into()),
-                            ]),
-                        ]),
-                    ]),
-                    Value::list([
-                        Value::Symbol("result".into()),
-                        Value::list([Value::Symbol("eval".into()), Value::Symbol("form".into())]),
-                    ]),
-                ]),
-                Value::list([
-                    Value::Symbol("when".into()),
-                    Value::list([
-                        Value::Symbol("and".into()),
-                        Value::Symbol("edebug-it".into()),
-                        Value::list([
-                            Value::Symbol("symbolp".into()),
-                            Value::Symbol("name".into()),
-                        ]),
-                    ]),
-                    Value::list([
-                        Value::Symbol("if".into()),
-                        Value::list([
-                            Value::Symbol("and".into()),
-                            Value::list([
-                                Value::Symbol("boundp".into()),
-                                Value::list([
-                                    Value::Symbol("quote".into()),
-                                    Value::Symbol("edebug-new-definition-function".into()),
-                                ]),
-                            ]),
-                            Value::Symbol("edebug-new-definition-function".into()),
-                        ]),
-                        Value::list([
-                            Value::Symbol("funcall".into()),
-                            Value::Symbol("edebug-new-definition-function".into()),
-                            Value::Symbol("name".into()),
-                        ]),
-                        Value::list([
-                            Value::Symbol("when".into()),
-                            Value::list([
-                                Value::Symbol("fboundp".into()),
-                                Value::list([
-                                    Value::Symbol("quote".into()),
-                                    Value::Symbol("edebug-new-definition".into()),
-                                ]),
-                            ]),
-                            Value::list([
-                                Value::Symbol("edebug-new-definition".into()),
+                                Value::Symbol("funcall".into()),
+                                Value::Symbol("edebug-new-definition-function".into()),
                                 Value::Symbol("name".into()),
                             ]),
+                            Value::list([
+                                Value::Symbol("when".into()),
+                                Value::list([
+                                    Value::Symbol("fboundp".into()),
+                                    Value::list([
+                                        Value::Symbol("quote".into()),
+                                        Value::Symbol("edebug-new-definition".into()),
+                                    ]),
+                                ]),
+                                Value::list([
+                                    Value::Symbol("edebug-new-definition".into()),
+                                    Value::Symbol("name".into()),
+                                ]),
+                            ]),
                         ]),
                     ]),
+                    eval_defun_print_form(),
+                    Value::Symbol("result".into()),
                 ]),
-                Value::Symbol("result".into()),
             ]),
-        ])],
+        ],
         shared_env(Vec::new()),
     )
 }
@@ -430,6 +455,7 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "define-skeleton" => Some(builtin_macro_autoload("skeleton")),
         "eval-defun" => Some(preloaded_eval_defun()),
         "fill-region" => Some(builtin_file_autoload("fill", Value::Nil)),
+        "find-lisp-object-file-name" => Some(builtin_file_autoload("help-fns", Value::Nil)),
         "gv-define-expander" => Some(builtin_macro_autoload("gv")),
         "gv-define-setter" => Some(builtin_macro_autoload("gv")),
         "gv-define-simple-setter" => Some(builtin_macro_autoload("gv")),

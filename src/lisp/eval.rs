@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::Child;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
@@ -84,6 +85,18 @@ fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
         ("delay-mode-hooks", "t"),
         ("track-mouse", "(def-body)"),
         ("noreturn", "t"),
+        (
+            "cl-defmethod",
+            "(&define [&name [sexp [&rest cl-generic--method-qualifier-p] listp] cl--generic-edebug-make-name nil] lambda-doc def-body)",
+        ),
+        (
+            "cl-defgeneric",
+            "(&define &interpose [&name sexp] cl--generic-edebug-remember-name listp lambda-doc [&rest [&or (\"declare\" &rest sexp) (\":argument-precedence-order\" &rest sexp) (&define \":method\" [&name [[&rest cl-generic--method-qualifier-p] listp] cl--generic-edebug-make-name in:method] lambda-doc def-body)]] def-body)",
+        ),
+        (
+            "cl-macrolet",
+            "(&interpose (&rest (&define [&name symbolp \"@cl-macrolet@\"] [&name [] gensym] cl-macro-list cl-declarations-or-string def-body)) cl--edebug-macrolet-interposer cl-declarations body)",
+        ),
         ("1value", "t"),
     ]
     .into_iter()
@@ -99,6 +112,26 @@ fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
         ))
     })
     .collect()
+}
+
+// Declaration specs GNU registers in byte-run.el and gv.el so Edebug can
+// instrument handler lambdas inside `(declare ...)' forms.
+fn builtin_edebug_declaration_specs() -> Vec<(String, Vec<(String, Value)>)> {
+    let spec_text = "(&or symbolp (\"lambda\" &define lambda-list lambda-doc def-body))";
+    ["compiler-macro", "gv-expander", "gv-setter"]
+        .into_iter()
+        .filter_map(|symbol| {
+            let spec = crate::lisp::reader::Reader::new(spec_text)
+                .read_all()
+                .ok()?
+                .into_iter()
+                .next()?;
+            Some((
+                symbol.to_string(),
+                vec![("edebug-declaration-spec".to_string(), spec)],
+            ))
+        })
+        .collect()
 }
 
 fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
@@ -129,6 +162,7 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     })
     .collect();
     properties.extend(builtin_edebug_form_specs());
+    properties.extend(builtin_edebug_declaration_specs());
     properties
 }
 
@@ -138,6 +172,16 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
 pub(crate) struct KbdMacroExecutionState {
     pub(crate) events: Vec<Value>,
     pub(crate) index: usize,
+}
+
+// One active `ert-with-message-capture` scope.  When the capture variable is
+// special it stays dynamically bound for the body, so helpers called from the
+// body observe every message as soon as it is issued, like the upstream
+// `message' advice does.
+#[derive(Clone, Debug)]
+pub struct MessageCapture {
+    pub text: String,
+    pub live_var: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -528,7 +572,15 @@ pub struct Interpreter {
     pub profiler_memory_log_pending: bool,
     pub profiler_cpu_running: bool,
     pub profiler_cpu_log_pending: bool,
-    pub message_capture_stack: Vec<String>,
+    pub message_capture_stack: Vec<MessageCapture>,
+    /// Identity of the function activation currently being evaluated, plus
+    /// recently captured closure environments keyed by activation.  Sibling
+    /// lambdas captured in one activation with an unchanged lexical
+    /// environment share one environment cell, so a `setq' through one
+    /// closure is visible to the others like upstream lexical binding.
+    current_activation_id: u64,
+    next_activation_id: u64,
+    closure_capture_cache: Vec<(u64, std::rc::Weak<std::cell::RefCell<Env>>)>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     face_inheritance: Vec<(String, Option<String>)>,
@@ -651,6 +703,8 @@ impl Interpreter {
                 "last-event-frame".into(),
                 "last-nonmenu-event".into(),
                 "signal-hook-function".into(),
+                "command-error-function".into(),
+                "gensym-counter".into(),
                 "minor-mode-overriding-map-alist".into(),
                 "overriding-terminal-local-map".into(),
                 "overriding-local-map".into(),
@@ -792,6 +846,9 @@ impl Interpreter {
             profiler_cpu_running: false,
             profiler_cpu_log_pending: false,
             message_capture_stack: Vec::new(),
+            current_activation_id: 0,
+            next_activation_id: 0,
+            closure_capture_cache: Vec::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
             face_inheritance: Vec::new(),
@@ -852,6 +909,9 @@ impl Interpreter {
         interp.set_global_binding("tab-prefix-map", tab_prefix_map.clone());
         let ctl_x_map = primitives::make_runtime_full_keymap(&mut interp, Some("ctl-x-map"));
         interp.set_global_binding("ctl-x-map", ctl_x_map.clone());
+        // C-x is bound through the prefix command symbol in GNU; keep the
+        // symbol's definition around so `where-is-internal' can find it.
+        interp.push_function_binding("Control-X-prefix", ctl_x_map.clone());
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "4", ctl_x_4_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "5", ctl_x_5_map);
         let _ = primitives::keymap_define_binding(&mut interp, &ctl_x_map, "t", tab_prefix_map);
@@ -1099,6 +1159,61 @@ impl Interpreter {
         result
     }
 
+    // Append echo-area output to the active `ert-with-message-capture'
+    // scope, keeping a dynamically bound capture variable current.
+    pub fn append_message_capture(&mut self, text: &str, newline: bool) {
+        let live_update = if let Some(capture) = self.message_capture_stack.last_mut() {
+            capture.text.push_str(text);
+            if newline {
+                capture.text.push('\n');
+            }
+            capture
+                .live_var
+                .clone()
+                .map(|var| (var, capture.text.clone()))
+        } else {
+            None
+        };
+        if let Some((var, captured)) = live_update {
+            self.set_symbol_value_cell(&var, Value::String(captured));
+        }
+    }
+
+    // Capture a lambda's lexical environment, sharing the environment cell
+    // with sibling closures from the same activation whose captured content
+    // is identical.
+    pub(crate) fn capture_closure_env(&mut self, captured: Env) -> SharedEnv {
+        let activation = self.current_activation_id;
+        self.closure_capture_cache
+            .retain(|(_, weak)| weak.strong_count() > 0);
+        for (id, weak) in self.closure_capture_cache.iter().rev() {
+            if *id == activation
+                && let Some(existing) = weak.upgrade()
+                && bounded_env_eq(&existing.borrow(), &captured, &mut 4096)
+            {
+                return existing;
+            }
+        }
+        let shared = shared_env(captured);
+        self.closure_capture_cache
+            .push((activation, Rc::downgrade(&shared)));
+        if self.closure_capture_cache.len() > 128 {
+            self.closure_capture_cache.remove(0);
+        }
+        shared
+    }
+
+    pub(crate) fn enter_activation(&mut self) -> u64 {
+        let previous = self.current_activation_id;
+        self.next_activation_id += 1;
+        self.current_activation_id = self.next_activation_id;
+        previous
+    }
+
+    pub(crate) fn leave_activation(&mut self, previous: u64) {
+        self.current_activation_id = previous;
+    }
+
     pub(crate) fn push_interactive_call(&mut self) {
         self.interactive_call_depth += 1;
     }
@@ -1109,6 +1224,45 @@ impl Interpreter {
 
     pub(crate) fn in_interactive_call(&self) -> bool {
         self.interactive_call_depth > 0
+    }
+}
+
+// Environment comparison for closure-cell sharing.  Cyclic or very deep
+// values must not recurse without bound; when the budget runs out the
+// environments simply count as different and each closure keeps its own
+// cell.
+fn bounded_env_eq(left: &Env, right: &Env, budget: &mut usize) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter().zip(right.iter()).all(|(a, b)| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b.iter())
+                .all(|((an, av), (bn, bv))| an == bn && bounded_value_eq(av, bv, budget))
+    })
+}
+
+fn bounded_value_eq(left: &Value, right: &Value, budget: &mut usize) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    match (left, right) {
+        (Value::Cons(a1, a2), Value::Cons(b1, b2)) => {
+            bounded_value_eq(&a1.borrow(), &b1.borrow(), budget)
+                && bounded_value_eq(&a2.borrow(), &b2.borrow(), budget)
+        }
+        (Value::Lambda(ap, ab, ae), Value::Lambda(bp, bb, be)) => {
+            ap == bp
+                && Rc::ptr_eq(ae, be)
+                && ab.len() == bb.len()
+                && ab
+                    .iter()
+                    .zip(bb.iter())
+                    .all(|(a, b)| bounded_value_eq(a, b, budget))
+        }
+        _ => left == right,
     }
 }
 
@@ -1440,6 +1594,7 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
             body.get(start),
             Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
                 || marker == ":closure-isolated-current-env"
+                || marker == ":closure-transparent-env"
         )
     {
         start += 1;
@@ -1488,6 +1643,20 @@ fn function_declare_gv_setter(form: &Value) -> Option<String> {
             [Value::Symbol(kind), Value::Symbol(setter)] if kind == "gv-setter" => {
                 Some(setter.clone())
             }
+            _ => None,
+        }
+    })
+}
+
+pub(crate) fn function_declare_gv_expander(form: &Value) -> Option<Value> {
+    let items = form.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
+        return None;
+    }
+    items[1..].iter().find_map(|declaration| {
+        let declaration_items = declaration.to_vec().ok()?;
+        match declaration_items.as_slice() {
+            [Value::Symbol(kind), handler] if kind == "gv-expander" => Some(handler.clone()),
             _ => None,
         }
     })
@@ -2100,14 +2269,6 @@ struct ClDefmethodSpecializer {
 }
 
 impl ClDefmethodSpecializer {
-    fn key(&self) -> String {
-        match &self.kind {
-            ClDefmethodSpecializerKind::Class(class_name) => format!("class:{class_name}"),
-            ClDefmethodSpecializerKind::Eql(value) => format!("eql:{value}"),
-            ClDefmethodSpecializerKind::Head(value) => format!("head:{value}"),
-        }
-    }
-
     fn class_name(&self) -> Option<&str> {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => Some(class_name),
@@ -2200,53 +2361,6 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
         next_is_context = false;
     }
     Ok(specializers)
-}
-
-fn first_cl_defmethod_specializer(
-    spec: &Value,
-    precedence_order: &[String],
-) -> Result<Option<ClDefmethodSpecializer>, LispError> {
-    let mut specializers = cl_defmethod_specializers(spec)?;
-    specializers.sort_by_key(|specializer| {
-        precedence_order
-            .iter()
-            .position(|name| name == &specializer.variable)
-            .unwrap_or(usize::MAX)
-    });
-    Ok(specializers.into_iter().next())
-}
-
-fn cl_defgeneric_edebug_method_name(
-    generic_name: &str,
-    method_parts: &[Value],
-) -> Result<Option<String>, LispError> {
-    let mut cursor = 1;
-    let mut qualifier = None;
-    while let Some(value) = method_parts.get(cursor) {
-        if matches!(value, Value::Cons(_, _) | Value::Nil) {
-            break;
-        }
-        if qualifier.is_none()
-            && let Ok(name) = value.as_symbol()
-            && name.starts_with(':')
-        {
-            qualifier = Some(name);
-        }
-        cursor += 1;
-    }
-    let Some(lambda_list) = method_parts.get(cursor) else {
-        return Ok(None);
-    };
-    let Some(specializer) = first_cl_defmethod_specializer(lambda_list, &[])? else {
-        return Ok(Some(generic_name.to_string()));
-    };
-    let Some(class_name) = specializer.class_name() else {
-        return Ok(Some(format!("{generic_name} ({})", specializer.key())));
-    };
-    let qualifier = qualifier
-        .map(|value| format!(" {value}"))
-        .unwrap_or_default();
-    Ok(Some(format!("{generic_name}{qualifier} ({class_name})")))
 }
 
 fn cl_defmethod_qualifier_key(qualifiers: &[Value]) -> String {
@@ -2347,14 +2461,26 @@ fn cl_defmethod_around_previous_binding(
 }
 
 fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
-    let Value::Lambda(_, _, closure_env) = function else {
+    let Value::Lambda(params, _, closure_env) = function else {
         return None;
     };
+    // Only a function that IS an advice wrapper counts: its rest parameter
+    // carries the wrapper's unique suffix, which names the captured original.
+    // Dispatch wrappers can capture unrelated advice activations in their
+    // closure env, so scanning every frame for any original binding would
+    // misroute method registration through the advice-splice path.
+    let rest_param = params.last()?;
+    let original_name = rest_param
+        .strip_prefix("__emaxx-advice-around-args-")
+        .map(|unique| format!("__emaxx-advice-around-original-{unique}"))
+        .or_else(|| {
+            rest_param
+                .strip_prefix("__emaxx-advice-after-args-")
+                .map(|unique| format!("__emaxx-advice-after-original-{unique}"))
+        })?;
     for frame in closure_env.borrow().iter() {
         for (name, value) in frame {
-            if name.starts_with("__emaxx-advice-around-original")
-                || name.starts_with("__emaxx-advice-after-original")
-            {
+            if name == &original_name {
                 return Some((closure_env.clone(), name.clone(), value.clone()));
             }
         }

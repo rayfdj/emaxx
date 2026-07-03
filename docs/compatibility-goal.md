@@ -19,14 +19,15 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1956/7080 are verified locally against the current canonical
+- Tests through 1957/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1956/7080: run real edebug instrumentation and batch recursive edits`.
-- The next observed frontier is selector 1957,
-  `edebug-tests-writable-buffer-state-is-preserved` in
-  `test/lisp/emacs-lisp/edebug-tests.el` (oracle passed; emaxx failed with
-  condition type `void-variable`).
+  `Compat 1957/7080: run edebug keyboard-macro assertions for real`.
+- The next observed frontier is selector 1958, `eieio-test-cl-generic-1` in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el` (grouped
+  `check-all` replay shows missing emaxx results for several
+  `eieio-test-method-order-list-*` selectors, i.e. the emaxx run dies
+  mid-file).
 - Environment note: this container verifies against a locally rebuilt
   GNU Emacs 30.2 oracle (gnu/linux, native-compilation, built from the
   Ubuntu `emacs_30.2+1.orig` source snapshot at `/home/user/emacs`); the
@@ -73,17 +74,53 @@ counts as the progress denominator.
   `cargo test special_forms_resolve_through_function_cells`,
   `cargo test temporary_file_directory_names_a_directory_with_trailing_separator`,
   and `cargo test cl_defmethod_updates_generic_under_around_advice`.
-- Honesty caveat for the edebug batch: the interleaved keyboard-macro
-  assertions in `edebug-tests-run-kbd-macro` still do not execute because
-  `edebug-tests-prepare-macro`'s `cl-loop` shape (several sequential
-  `for VAR = EXPR` clauses with `while`, `vconcat ... into`,
-  `append ... into`, `finally return`, plus a nested
-  `for ... in ... until ... collect ... do` loop) is not supported by the
-  native `cl-loop` and currently yields an empty keyboard macro, so those
-  selectors match the oracle by status while the mid-macro `should` thunks
-  are skipped. Extending `cl-loop` for those shapes and re-verifying the
-  edebug file with live thunks is the highest-value next step after the
-  1957 frontier.
+- Selector 1957 (`edebug-tests-writable-buffer-state-is-preserved`) passed as
+  part of a batch that also resolved the earlier honesty caveat: the
+  `edebug-tests-prepare-macro` `cl-loop` shapes now run natively, the
+  interleaved keyboard-macro assertions in `edebug-tests-run-kbd-macro`
+  execute for real, and all 35 edebug selectors that had passed vacuously now
+  genuinely pass the grouped `check-all` replay of
+  `test/lisp/emacs-lisp/edebug-tests.el`. The batch spans: live
+  `ert-with-message-capture` via dynamic binding; keyboard-macro-driven
+  minibuffer reads (C-a/C-e/C-k/DEL editing, `read`-arg support);
+  `digit-argument` prefix accumulation; real `backtrace-eval` over frame
+  locals; case-sensitive key lookup; `command-error-function` routing;
+  activation-scoped closure-env sharing; `throw` passing through
+  `condition-case`/`ignore-errors`; interactive specs through advice
+  wrappers; prefix-key detection; `gensym-counter`; vector literals excluded
+  from `consp`/`listp`/`atom`/`nlistp`; negative `down-list`;
+  `forward-comment` leaving point after skipped whitespace on failure; GNU
+  eval frames for special forms and in-progress calls; `eval-buffer`
+  recording `load-history` under `buffer-file-name` (including `provide` and
+  `cl-defmethod` entries, with buffer-stream reads through a non-`read`
+  `load-read-function`); a native `unload-feature` that undefines the
+  feature's functions/methods and purges every `load-history` entry for the
+  feature's file; `cl--generic-search-method` +
+  `find-function-regexp-alist` registration so
+  `edebug-instrument-function` can find generic methods; GNU edebug specs
+  for `cl-defmethod`, `cl-defgeneric` (with `:method` naming), and
+  `cl-macrolet` (with `&interpose`, `cl--generic-edebug-make-name`,
+  `cl--generic-edebug-remember-name`, `cl--generic-split-args`, and the
+  `cl-macro-list` element specs ported to `simple_compat.el`);
+  `cl_defmethod_advice_original_binding` only treating a function that IS an
+  advice wrapper as advice (a dispatch wrapper whose closure captured an
+  unrelated advice activation previously misrouted re-registration so
+  freshly instrumented methods never reached the top of the dispatch
+  chain); `:closure-transparent-env` dispatch wrappers and method lambdas
+  for methods defined with no surrounding lexical bindings, so lexical
+  mutations inside top-level method bodies (edebug's spec-matching methods)
+  reach the calling scope; eager `cl-macrolet` macroexpansion inside
+  edebug-instrumented `defun` bodies (matching GNU's eager top-level
+  macroexpansion, Bug#29919); and `%s`/`princ` printing buffers as their
+  names. Oracle-verified unit-test corrections: plain evaluation of
+  `cl-defmethod`/`cl-defgeneric` forms does not call
+  `edebug-new-definition-function`, and `&context` specializers observe
+  dynamic bindings (`(text base)`), matching the GNU oracle. Exact replays
+  run for this batch: grouped `check-all` for `edebug-tests.el` (PASS) and
+  selector `edebug-tests-writable-buffer-state-is-preserved`; regression
+  comparisons showing failure sets identical to the parent commit for
+  `cl-generic-tests.el`, `cl-macs-tests.el`, `cl-lib-tests.el`, and a PASS
+  for `cl-print-tests.el`; full `cargo test` (1119 lib tests) green.
 - Observed pre-existing single-selector discrepancies in this Linux
   environment (each fails identically on the parent commit's build, so they
   are not regressions of this batch, but they contradict the recorded

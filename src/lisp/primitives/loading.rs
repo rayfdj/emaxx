@@ -142,6 +142,101 @@ fn lexical_alist_frame(value: &Value) -> Result<Vec<(String, Value)>, LispError>
     Ok(frame)
 }
 
+pub(crate) fn unload_feature_impl(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(LispError::WrongNumberOfArgs(
+            "unload-feature".into(),
+            args.len(),
+        ));
+    }
+    let feature = args[0].as_symbol()?.to_string();
+    if !interp.has_feature(&feature) {
+        return Err(LispError::Signal(format!(
+            "{feature} is not a currently loaded feature"
+        )));
+    }
+    let provide_entry = Value::cons(
+        Value::Symbol("provide".into()),
+        Value::Symbol(feature.clone()),
+    );
+    let load_history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
+    let mut entries = load_history.to_vec().unwrap_or_default();
+    let feature_entry = entries.iter().position(|entry| {
+        let Value::Cons(_, defs) = entry else {
+            return false;
+        };
+        let defs = defs.borrow().clone();
+        defs.to_vec()
+            .is_ok_and(|defs| defs.iter().any(|def| def == &provide_entry))
+    });
+    if let Some(index) = feature_entry {
+        // Purge every entry recorded for the feature's file: repeated
+        // evaluation of the same file stacks entries, and a stale entry
+        // keeps pointing at a temp file after it is deleted.
+        let feature_file = match &entries[index] {
+            Value::Cons(file, _) => Some(file.borrow().clone()),
+            _ => None,
+        };
+        let mut removed = vec![entries.remove(index)];
+        if let Some(feature_file) = &feature_file {
+            let mut kept = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let same_file = matches!(
+                    &entry,
+                    Value::Cons(file, _) if &*file.borrow() == feature_file
+                );
+                if same_file {
+                    removed.push(entry);
+                } else {
+                    kept.push(entry);
+                }
+            }
+            entries = kept;
+        }
+        for entry in &removed {
+            let Value::Cons(_, defs) = entry else {
+                continue;
+            };
+            let defs = defs.borrow().clone();
+            for def in defs.to_vec().unwrap_or_default() {
+                let Value::Cons(kind, target) = &def else {
+                    continue;
+                };
+                let kind = kind.borrow().clone();
+                let target = target.borrow().clone();
+                match (&kind, &target) {
+                    (Value::Symbol(kind), Value::Symbol(name)) if kind == "provide" => {
+                        interp.unprovide_feature(name);
+                    }
+                    (Value::Symbol(kind), Value::Symbol(name)) if kind == "defun" => {
+                        interp.remove_all_function_bindings(name);
+                    }
+                    (Value::Symbol(kind), rest) if kind == "cl-defmethod" => {
+                        if let Ok(parts) = rest.to_vec()
+                            && let Some(Value::Symbol(name)) = parts.first()
+                        {
+                            interp.remove_all_function_bindings(name);
+                            interp.put_symbol_property(
+                                name,
+                                "emaxx-cl-defmethod-specializers",
+                                Value::Nil,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        interp.set_global_binding("load-history", Value::list(entries));
+    }
+    interp.unprovide_feature(&feature);
+    Ok(Value::Nil)
+}
+
 pub(crate) fn eval_buffer_impl(
     interp: &mut Interpreter,
     args: &[Value],
@@ -158,6 +253,48 @@ pub(crate) fn eval_buffer_impl(
     } else {
         interp.current_buffer_id()
     };
+    // Like `readevalloop', evaluating a file-visiting buffer records its
+    // definitions in `load-history' under the buffer's file name.
+    let source_file = interp
+        .get_buffer_by_id(buffer_id)
+        .and_then(|buffer| buffer.file.clone());
+    let previous_load_list = source_file.as_ref().map(|file| {
+        let previous = interp
+            .lookup_var("current-load-list", env)
+            .unwrap_or(Value::Nil);
+        interp.set_global_binding(
+            "current-load-list",
+            Value::list([Value::String(file.clone())]),
+        );
+        previous
+    });
+    let result = eval_buffer_forms(interp, buffer_id, env);
+    if let Some(previous) = previous_load_list {
+        let current = interp
+            .lookup_var("current-load-list", env)
+            .unwrap_or(Value::Nil);
+        if result.is_ok() && current.to_vec().is_ok_and(|items| items.len() > 1) {
+            let history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
+            interp.set_global_binding("load-history", Value::cons(current, history));
+        }
+        interp.set_global_binding("current-load-list", previous);
+    }
+    result
+}
+
+fn eval_buffer_forms(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let load_read = interp
+        .lookup_var("load-read-function", env)
+        .unwrap_or_else(|| Value::Symbol("read".into()));
+    if !matches!(&load_read, Value::Symbol(symbol) if symbol == "read") {
+        // A customized reader (like `edebug--read') reads from the buffer
+        // itself, form by form, moving point like `readevalloop' does.
+        return eval_buffer_via_load_read_function(interp, buffer_id, &load_read, env);
+    }
     let text = interp
         .get_buffer_by_id(buffer_id)
         .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
@@ -168,6 +305,58 @@ pub(crate) fn eval_buffer_impl(
         result = interp.eval(&form, env)?;
     }
     Ok(result)
+}
+
+fn eval_buffer_via_load_read_function(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    load_read: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let previous_buffer = interp.current_buffer_id();
+    interp.switch_to_buffer_id(buffer_id)?;
+    let saved_point = interp.buffer.point();
+    let minimum = interp.buffer.point_min();
+    interp.buffer.goto_char(minimum);
+    let stream = crate::lisp::primitives::call(interp, "current-buffer", &[], env)?;
+    let mut result = Ok(Value::Nil);
+    loop {
+        let _ = crate::lisp::primitives::call(
+            interp,
+            "forward-comment",
+            &[Value::Integer(i64::MAX / 2)],
+            env,
+        );
+        if interp.buffer.point() >= interp.buffer.point_max() {
+            break;
+        }
+        let form = match interp.call_function_value(
+            load_read.clone(),
+            None,
+            std::slice::from_ref(&stream),
+            env,
+        ) {
+            Ok(form) => form,
+            Err(error) => {
+                if error.condition_type() == "end-of-file" {
+                    break;
+                }
+                result = Err(error);
+                break;
+            }
+        };
+        match interp.eval(&form, env) {
+            Ok(value) => result = Ok(value),
+            Err(error) => {
+                result = Err(error);
+                break;
+            }
+        }
+    }
+    let target = saved_point.min(interp.buffer.point_max());
+    interp.buffer.goto_char(target);
+    interp.switch_to_buffer_id(previous_buffer)?;
+    result
 }
 
 pub(crate) fn resolve_load_target_in_env(

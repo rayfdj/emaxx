@@ -197,6 +197,8 @@ pub(crate) fn file_locked_p(path: &str) -> Result<Value, LispError> {
 pub(crate) fn gensym_prefix(value: Option<&Value>) -> Result<String, LispError> {
     match value {
         None | Some(Value::Nil) => Ok("g".into()),
+        // `gensym' renders its prefix with %s, so symbols work too.
+        Some(Value::Symbol(name)) => Ok(name.clone()),
         Some(value) => string_text(value),
     }
 }
@@ -513,7 +515,15 @@ pub(crate) fn write_printer_output(
     env: &mut Env,
 ) -> Result<(), LispError> {
     match stream {
-        None | Some(Value::Nil | Value::T) => {
+        // An explicit `t' stream prints to the echo area, which
+        // `ert-with-message-capture' observes like the upstream print
+        // advice; it never inserts into the current buffer.
+        Some(Value::T) => {
+            interp.append_message_capture(text, false);
+            Ok(())
+        }
+        None | Some(Value::Nil) => {
+            interp.append_message_capture(text, false);
             interp.buffer.insert(text);
             Ok(())
         }
@@ -719,6 +729,8 @@ pub(crate) fn render_princ(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::StringObject(state) => state.borrow().text.clone(),
+        // princ prints a buffer as its name.
+        Value::Buffer(_, name) => name.clone(),
         _ => value.to_string(),
     }
 }

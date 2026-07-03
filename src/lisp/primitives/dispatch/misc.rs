@@ -342,8 +342,15 @@ pub(super) fn call(
         "gensym" => {
             need_arg_range(name, args, 0, 1)?;
             let prefix = gensym_prefix(args.first())?;
+            // The visible number comes from the `gensym-counter' variable so
+            // callers can rebind it; the uninterned identity stays unique.
+            let counter = interp
+                .lookup_var("gensym-counter", env)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or_else(|| GENSYM_COUNTER.load(AtomicOrdering::Relaxed) as i64);
+            interp.set_variable("gensym-counter", Value::Integer(counter + 1), env);
             let id = GENSYM_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-            let visible = format!("{prefix}{id}");
+            let visible = format!("{prefix}{counter}");
             Ok(Value::Symbol(
                 crate::lisp::types::make_uninterned_symbol_name(&visible, id),
             ))
@@ -503,7 +510,11 @@ pub(super) fn call(
             {
                 return Ok(Value::T);
             }
-            let definition = super::call(interp, "indirect-function", &[args[0].clone()], env)?;
+            // An unbound symbol is simply not a macro.
+            let Ok(definition) = super::call(interp, "indirect-function", &[args[0].clone()], env)
+            else {
+                return Ok(Value::Nil);
+            };
             let is_macro = if let Ok(items) = definition.to_vec() {
                 matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "macro")
                     || autoload_is_macro(interp, args[0].as_symbol().ok(), &definition)

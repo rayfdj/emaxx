@@ -451,6 +451,29 @@ pub(super) fn call(
                         None => Err(args_out_of_range(&args[0], &args[1])),
                     }
                 }
+                // Interpreted functions expose arglist, body, and captured
+                // environment through aref like GNU's closure objects.
+                Value::Lambda(params, body, closure_env) => Ok(match idx {
+                    0 => Value::list(
+                        params
+                            .iter()
+                            .map(|param| Value::Symbol(param.clone()))
+                            .collect::<Vec<_>>(),
+                    ),
+                    1 => Value::list(body.clone()),
+                    2 => {
+                        let mut entries = Vec::new();
+                        for frame in closure_env.borrow().iter().rev() {
+                            for (name, value) in frame.iter().rev() {
+                                entries
+                                    .push(Value::cons(Value::Symbol(name.clone()), value.clone()));
+                            }
+                        }
+                        entries.push(Value::T);
+                        Value::list(entries)
+                    }
+                    _ => Value::Nil,
+                }),
                 Value::CharTable(id) => {
                     let key = raw_idx as u32;
                     Ok(syntax::char_table_public_value(
