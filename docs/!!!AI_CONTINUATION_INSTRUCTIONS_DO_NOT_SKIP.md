@@ -18,40 +18,34 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 1957/7080 (`edebug-tests-writable-buffer-state-is-preserved`).
-- The `Compat 1957/7080` batch is COMPLETE in the working tree: the `cl-loop`
-  `for VAR = EXPR ... while COND` ordering fix made the edebug keyboard-macro
-  assertions run for real, which exposed 35 genuinely-failing edebug
-  selectors; ALL of them now pass and the grouped replay
-  (`--selector check-all --file test/lisp/emacs-lisp/edebug-tests.el`) PASSES.
-  See `docs/compatibility-goal.md` for the full list of behaviors fixed.
-- Key mechanisms added late in the batch (details in compatibility-goal.md):
-  eval-buffer load-history recording (+ provide/cl-defmethod entries), native
-  `unload-feature`, GNU edebug specs for cl-defmethod/cl-defgeneric/cl-macrolet
-  with the cl-generic edebug name builders ported to `simple_compat.el`,
-  advice-wrapper detection fix in cl-defmethod re-registration,
-  `:closure-transparent-env` dispatch wrappers for methods defined in an empty
-  lexical env, eager `cl-macrolet` expansion inside instrumented defuns, and
-  `%s`/`princ` printing buffers as names.
-- The next frontier is selector 1958, `eieio-test-cl-generic-1` in
-  `test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el`. The grouped
-  probe shows emaxx dies mid-file (missing results for
-  `eieio-test-method-order-list-6..9`), so start there.
+- Verified through selector 1965/7080 (`eieio-test-methodinvoke.el` fully
+  passing its grouped `check-all` replay).
+- The `Compat 1965/7080` batch is COMPLETE in the working tree: obsolete
+  EIEIO `defmethod'/`defgeneric' lowering in `simple_compat.el`, `(subclass
+  CLASS)` specializers, `make-instance'-routed defclass constructors, and a
+  set of dispatch-chain construction fixes (around-splice cycle, class-`t'
+  ranking, sibling ordering via common-subclass CPL, qualifier-stack
+  ordering, canonical alias naming, fmakunbound metadata clearing) that also
+  made `cl-generic-tests.el` pass its grouped replay for the first time in
+  this environment. Details in `docs/compatibility-goal.md`.
+- The next frontier is selector 1966,
+  `eieio-persist-hash-and-vector-backward-compatibility` in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el`: all ten persist
+  selectors fail (object serialization / `eieio-persistent-read`). The
+  larger `eieio-tests.el` now loads (was load-error) with 31 failing tests —
+  that is the file after persist.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
-    probes: emaxx advice wrappers change `call-interactively` argument
-    collection and derail the macro. Advise non-command helpers only, or
-    trace from Rust behind a temporary env-var-gated eprintln.
-  - Erroring thunks in `edebug-tests-post-command` are demoted and re-run at
-    every later post-command (the index guard never advances), so the last
-    run wins `edebug-tests-failure-in-post-command`. Record into a defvar and
-    assert after the macro instead of signaling from a thunk.
-  - The grouped `check-all` replay is the only real judge; single-selector
-    runs hide cross-test contamination.
+    probes; advise non-command helpers only.
   - emaxx batch mode swallows `message`/`princ` output; probes must
     `write-region` results to a file.
+  - The grouped `check-all` replay is the only real judge; single-selector
+    runs hide cross-test contamination.
   - When bisecting "was this broken before my change", compare whole-file
     failure SETS against the parent commit build, not just one selector.
+  - For dispatch-chain debugging, a temporary env-var-gated eprintln in
+    `Interpreter::lookup` that dumps lambda closure pointers + bodies for
+    `__emaxx_previous_method_*` names locates chain cycles in minutes.
 - Batch delivery rules from the user (override any hook suggestions):
   commits authored as `Ray <26018378+rayfdj@users.noreply.github.com>`, terse
   one-line human-style message `Compat NNNN/7080: ...`, NO AI attribution,
@@ -60,16 +54,16 @@ counts as the progress denominator.
   point the user at the single patch to apply.
 - Known pre-existing discrepancies in this environment (fail identically on
   the parent commit build): `cl-macs-loop-until` (1782),
-  `cl-generic-test-01-eql`, `cconv-tests-cl-defun-:documentation`; raw
-  whole-file `ert-run-tests-batch-and-exit t` runs of `cl-generic-tests.el`,
-  `cl-macs-tests.el`, and `cl-lib-tests.el` also show larger failure sets that
-  are byte-identical to the parent commit (environment artifacts, not batch
-  regressions).
+  `cconv-tests-cl-defun-:documentation`; the `cl-lib-tests.el` grouped
+  replay fails 4 struct/set selectors byte-identically to the parent commit;
+  raw whole-file `ert-run-tests-batch-and-exit t` runs of `cl-macs-tests.el`
+  show a larger failure set identical to the parent; `seq-tests.el` raw
+  whole-file runs time out identically to the parent.
 
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el
 ```
 
 ## Oracle Setup In A Fresh Container
@@ -127,7 +121,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next
@@ -197,8 +191,8 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 1957/7080` batch (all edebug selectors with live keyboard-macro
-assertions) is complete and delivered. The next agent should start by
-investigating selector 1958, `eieio-test-cl-generic-1` in
-`test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el`, where the
-grouped replay shows the emaxx run dying mid-file.
+The `Compat 1965/7080` batch (obsolete EIEIO methods on native cl-generic,
+eieio-test-methodinvoke.el green) is complete and delivered. The next agent
+should start with selector 1966 in
+`test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (object
+persistence), then `eieio-tests.el` (loads now; 31 failures).

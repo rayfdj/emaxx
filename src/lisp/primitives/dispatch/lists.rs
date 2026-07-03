@@ -1643,6 +1643,10 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             interp.set_function_binding(symbol, None);
+            // The dispatch-chain metadata describes the (now removed)
+            // function binding; a fresh generic must not rank its methods
+            // against specializers of the destroyed chain.
+            interp.put_symbol_property(symbol, "emaxx-cl-defmethod-specializers", Value::Nil);
             Ok(Value::Symbol(symbol.to_string()))
         }
         "funcall-interactively" => {

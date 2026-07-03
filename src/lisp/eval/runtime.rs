@@ -748,6 +748,26 @@ impl Interpreter {
         output
     }
 
+    // Sibling classes (neither inherits the other) have no global
+    // specificity order; CLOS resolves them through the class precedence
+    // list of the instance's class. A common subclass fixes that order
+    // statically: its precedence list mentions both, most-specific-first.
+    pub(crate) fn class_sibling_precedes(&self, left: &str, right: &str) -> bool {
+        for state in &self.class_states {
+            let parents = self.class_allparents(&state.name);
+            let left_position = parents
+                .iter()
+                .position(|parent| matches!(parent, Value::Symbol(name) if name == left));
+            let right_position = parents
+                .iter()
+                .position(|parent| matches!(parent, Value::Symbol(name) if name == right));
+            if let (Some(left_position), Some(right_position)) = (left_position, right_position) {
+                return left_position < right_position;
+            }
+        }
+        false
+    }
+
     pub(crate) fn value_is_instance_of_class(&self, value: &Value, class_name: &str) -> bool {
         let Value::Record(record_id) = value else {
             return false;

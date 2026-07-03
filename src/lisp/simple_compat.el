@@ -335,4 +335,60 @@ MET-NAME is as recorded in `load-history' for the method."
                 edebug-lexical-macro-ctx)))
     (funcall pf specs)))
 
+;; Obsolete EIEIO `defmethod'/`defgeneric' support: the macros come from
+;; lisp/obsolete/eieio-compat.el, but its runtime helpers are written
+;; against GNU cl-generic's internal method table.  Redefine them here in
+;; terms of `cl-defmethod' so the old API lowers onto the native dispatch
+;; machinery.
+(with-eval-after-load 'eieio-compat
+  ;; Old EIEIO's `constructor' generic is make-instance under a
+  ;; different name; methods defined on it must land on make-instance.
+  (unless (fboundp 'constructor)
+    (defalias 'constructor 'make-instance))
+  (defun eieio-compat--rename-cnm (form)
+    "Rename old-style `call-next-method'/`next-method-p' in FORM."
+    (cond
+     ((eq form 'call-next-method) 'cl-call-next-method)
+     ((eq form 'next-method-p) 'cl-next-method-p)
+     ((consp form)
+      (cons (eieio-compat--rename-cnm (car form))
+            (eieio-compat--rename-cnm (cdr form))))
+     (t form)))
+
+  (defun eieio--defgeneric-init-form (method doc-string)
+    (if doc-string (put method 'function-documentation doc-string))
+    (if (fboundp method)
+        (indirect-function method)
+      (symbol-function 'ignore)))
+
+  (defun eieio--defmethod (method kind argclass code)
+    (setq kind (intern (downcase (symbol-name kind))))
+    (when (eq kind :primary) (setq kind nil))
+    (let* ((static (eq kind :static))
+           (kind (if static nil kind))
+           (args (aref code 0))
+           (body (aref code 1))
+           (arg1 (or (car args) '_eieio-arg))
+           (rest (cdr args))
+           (spec (or argclass t))
+           (body (if (memq kind '(:before :after))
+                     body
+                   (eieio-compat--rename-cnm body))))
+      ;; Old EIEIO did not require a primary method for :before/:after
+      ;; methods to run; give the dispatch chain a pass-through primary.
+      (when (and (memq kind '(:before :after))
+                 (or (not (fboundp method))
+                     (eq (symbol-function method) #'ignore)))
+        (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest)
+                 (when (cl-next-method-p) (cl-call-next-method)))
+              t))
+      (if static
+          (progn
+            (eval `(cl-defmethod ,method ((,arg1 (subclass ,spec)) ,@rest) ,@body) t)
+            (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest) ,@body) t))
+        (eval `(cl-defmethod ,method ,@(if kind (list kind))
+                 ((,arg1 ,spec) ,@rest) ,@body)
+              t))
+      method)))
+
 ;;; simple_compat.el ends here

@@ -395,7 +395,6 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "eieio--class-name"
             | "eieio-object-p"
             | "slot-boundp"
-            | "make-instance"
             | "clone"
             | "semanticdb-find-tags-by-class"
             | "semanticdb-find-tags-by-name"
