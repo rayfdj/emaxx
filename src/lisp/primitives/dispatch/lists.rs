@@ -29,6 +29,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "nthcdr"
             | "last"
             | "butlast"
+            | "nbutlast"
             | "length"
             | "safe-length"
             | "length<"
@@ -58,6 +59,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-set-exclusive-or"
             | "cl-remove-if-not"
             | "cl-delete-if"
+            | "cl-position"
+            | "cl-remove"
+            | "cl-substitute"
+            | "cl-replace"
+            | "cl-fill"
             | "mapcar"
             | "mapcan"
             | "cl-mapcar"
@@ -723,7 +729,7 @@ pub(super) fn call(
                 }
             }
         }
-        "butlast" => {
+        "butlast" | "nbutlast" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
@@ -1186,6 +1192,204 @@ pub(super) fn call(
             Ok(Value::list(kept))
         }
         "cl-delete-if" => cl_delete_if_values(interp, args, env),
+        // Fast native ports of the GNU cl-seq.el sequence functions.  The
+        // interpreted Lisp definitions are semantically fine but far too
+        // slow for the multi-million-element sequences in
+        // cl-seq-test-bug24264, so these names are also listed in
+        // `prefer_builtin_override'.
+        "cl-position" => {
+            need_args(name, args, 2)?;
+            let keys = parse_cl_seq_keys(
+                &args[2..],
+                &[
+                    ":test",
+                    ":test-not",
+                    ":key",
+                    ":if",
+                    ":if-not",
+                    ":start",
+                    ":end",
+                    ":from-end",
+                ],
+            )?;
+            let items = cl_seq_elements(interp, &args[1])?;
+            let end = keys.end.unwrap_or(items.len()).min(items.len());
+            let mut result = Value::Nil;
+            for (index, item) in items.iter().enumerate().take(end).skip(keys.start) {
+                if cl_seq_match(interp, &keys, &args[0], item, env)? {
+                    result = Value::Integer(index as i64);
+                    if !keys.from_end {
+                        break;
+                    }
+                }
+            }
+            Ok(result)
+        }
+        "cl-remove" => {
+            need_args(name, args, 2)?;
+            let keys = parse_cl_seq_keys(
+                &args[2..],
+                &[
+                    ":test",
+                    ":test-not",
+                    ":key",
+                    ":if",
+                    ":if-not",
+                    ":count",
+                    ":from-end",
+                    ":start",
+                    ":end",
+                ],
+            )?;
+            let items = cl_seq_elements(interp, &args[1])?;
+            let count = keys.count.unwrap_or(items.len() as i64);
+            if count <= 0 {
+                return Ok(args[1].clone());
+            }
+            let end = keys.end.unwrap_or(items.len()).min(items.len());
+            let mut matched = Vec::new();
+            for (index, item) in items.iter().enumerate().take(end).skip(keys.start) {
+                if cl_seq_match(interp, &keys, &args[0], item, env)? {
+                    matched.push(index);
+                }
+            }
+            if matched.is_empty() {
+                return Ok(args[1].clone());
+            }
+            let count = count as usize;
+            if matched.len() > count {
+                if keys.from_end {
+                    matched.drain(..matched.len() - count);
+                } else {
+                    matched.truncate(count);
+                }
+            }
+            let mut kept = Vec::with_capacity(items.len() - matched.len());
+            let mut drop = matched.iter().copied().peekable();
+            for (index, item) in items.into_iter().enumerate() {
+                if drop.peek() == Some(&index) {
+                    drop.next();
+                } else {
+                    kept.push(item);
+                }
+            }
+            cl_seq_rebuild(&args[1], kept)
+        }
+        "cl-substitute" => {
+            need_args(name, args, 3)?;
+            let keys = parse_cl_seq_keys(
+                &args[3..],
+                &[
+                    ":test",
+                    ":test-not",
+                    ":key",
+                    ":if",
+                    ":if-not",
+                    ":count",
+                    ":start",
+                    ":end",
+                    ":from-end",
+                ],
+            )?;
+            let mut items = cl_seq_elements(interp, &args[2])?;
+            let count = keys.count.unwrap_or(items.len() as i64);
+            if count <= 0 || values_eq_in_env(interp, &args[0], &args[1], env) {
+                return Ok(args[2].clone());
+            }
+            let end = keys.end.unwrap_or(items.len()).min(items.len());
+            let mut matched = Vec::new();
+            for (index, item) in items.iter().enumerate().take(end).skip(keys.start) {
+                if cl_seq_match(interp, &keys, &args[1], item, env)? {
+                    matched.push(index);
+                }
+            }
+            if matched.is_empty() {
+                return Ok(args[2].clone());
+            }
+            let count = count as usize;
+            if matched.len() > count {
+                if keys.from_end {
+                    matched.drain(..matched.len() - count);
+                } else {
+                    matched.truncate(count);
+                }
+            }
+            for index in matched {
+                items[index] = args[0].clone();
+            }
+            cl_seq_rebuild(&args[2], items)
+        }
+        "cl-replace" => {
+            need_args(name, args, 2)?;
+            let keys = parse_cl_seq_keys(&args[2..], &[":start1", ":end1", ":start2", ":end2"])?;
+            let source = cl_seq_elements(interp, &args[1])?;
+            let source_end = keys.end2.unwrap_or(source.len()).min(source.len());
+            let source: Vec<Value> = source
+                .into_iter()
+                .take(source_end)
+                .skip(keys.start2)
+                .collect();
+            let mut budget = match keys.end1 {
+                Some(end1) => end1.saturating_sub(keys.start1).min(source.len()),
+                None => source.len(),
+            };
+            if matches!(&args[0], Value::Cons(_, _) | Value::Nil) && !is_vector_value(&args[0]) {
+                let mut tail = args[0].clone();
+                for _ in 0..keys.start1 {
+                    let Value::Cons(_, cdr) = tail else { break };
+                    let next = cdr.borrow().clone();
+                    tail = next;
+                }
+                let mut src = source.into_iter();
+                while budget > 0
+                    && matches!(&tail, Value::Cons(_, _))
+                    && let Some(item) = src.next()
+                {
+                    tail.set_car(item)?;
+                    let Value::Cons(_, cdr) = tail else { break };
+                    let next = cdr.borrow().clone();
+                    tail = next;
+                    budget -= 1;
+                }
+            } else {
+                let len = cl_seq_elements(interp, &args[0])?.len();
+                for (offset, item) in source.into_iter().take(budget).enumerate() {
+                    let index = keys.start1 + offset;
+                    if index >= len {
+                        break;
+                    }
+                    cl_seq_set_element(&args[0], index, item)?;
+                }
+            }
+            Ok(args[0].clone())
+        }
+        "cl-fill" => {
+            need_args(name, args, 2)?;
+            let keys = parse_cl_seq_keys(&args[2..], &[":start", ":end"])?;
+            if matches!(&args[0], Value::Cons(_, _) | Value::Nil) && !is_vector_value(&args[0]) {
+                let mut tail = args[0].clone();
+                for _ in 0..keys.start {
+                    let Value::Cons(_, cdr) = tail else { break };
+                    let next = cdr.borrow().clone();
+                    tail = next;
+                }
+                let mut budget = keys.end.map(|end| end.saturating_sub(keys.start));
+                while budget != Some(0) && matches!(&tail, Value::Cons(_, _)) {
+                    tail.set_car(args[1].clone())?;
+                    let Value::Cons(_, cdr) = tail else { break };
+                    let next = cdr.borrow().clone();
+                    tail = next;
+                    budget = budget.map(|n| n - 1);
+                }
+            } else {
+                let len = cl_seq_elements(interp, &args[0])?.len();
+                let end = keys.end.unwrap_or(len).min(len);
+                for index in keys.start..end {
+                    cl_seq_set_element(&args[0], index, args[1].clone())?;
+                }
+            }
+            Ok(args[0].clone())
+        }
         "mapcar" => {
             need_args(name, args, 2)?;
             let list = sequence_values(interp, &args[1])?;
@@ -1949,5 +2153,153 @@ pub(super) fn call(
         "format-prompt" => format_prompt(interp, args, env),
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+/// Parsed keyword arguments for the native cl-seq functions, mirroring the
+/// bindings established by GNU cl-seq.el's `cl--parsing-keywords'.
+struct ClSeqKeys {
+    test: Option<Value>,
+    test_not: bool,
+    if_fn: Option<Value>,
+    if_not: bool,
+    key: Option<Value>,
+    count: Option<i64>,
+    start: usize,
+    end: Option<usize>,
+    from_end: bool,
+    start1: usize,
+    end1: Option<usize>,
+    start2: usize,
+    end2: Option<usize>,
+}
+
+fn cl_seq_plist_value(keys: &[Value], keyword: &str) -> Option<Value> {
+    let mut index = 0;
+    while index < keys.len() {
+        if matches!(&keys[index], Value::Symbol(name) if name == keyword) {
+            return Some(keys.get(index + 1).cloned().unwrap_or(Value::Nil));
+        }
+        index += 2;
+    }
+    None
+}
+
+fn parse_cl_seq_keys(keys: &[Value], allowed: &[&str]) -> Result<ClSeqKeys, LispError> {
+    let allow_other = cl_seq_plist_value(keys, ":allow-other-keys")
+        .map(|value| value.is_truthy())
+        .unwrap_or(false);
+    if !allow_other {
+        let mut index = 0;
+        while index < keys.len() {
+            let known = matches!(&keys[index], Value::Symbol(name)
+                if allowed.iter().any(|kw| kw == name));
+            if !known {
+                return Err(LispError::Signal(format!(
+                    "Bad keyword argument {}",
+                    keys[index]
+                )));
+            }
+            index += 2;
+        }
+    }
+    let truthy = |keyword: &str| cl_seq_plist_value(keys, keyword).filter(Value::is_truthy);
+    let index_arg = |keyword: &str| -> Result<Option<usize>, LispError> {
+        truthy(keyword)
+            .map(|value| value.as_integer().map(|n| n.max(0) as usize))
+            .transpose()
+    };
+    let mut test = truthy(":test");
+    let mut test_not = false;
+    if let Some(value) = truthy(":test-not") {
+        test = Some(value);
+        test_not = true;
+    }
+    let mut if_fn = truthy(":if");
+    let mut if_not = false;
+    if let Some(value) = truthy(":if-not") {
+        if_fn = Some(value);
+        if_not = true;
+    }
+    Ok(ClSeqKeys {
+        test,
+        test_not,
+        if_fn,
+        if_not,
+        key: truthy(":key"),
+        count: truthy(":count")
+            .map(|value| value.as_integer())
+            .transpose()?,
+        start: index_arg(":start")?.unwrap_or(0),
+        end: index_arg(":end")?,
+        from_end: truthy(":from-end").is_some(),
+        start1: index_arg(":start1")?.unwrap_or(0),
+        end1: index_arg(":end1")?,
+        start2: index_arg(":start2")?.unwrap_or(0),
+        end2: index_arg(":end2")?,
+    })
+}
+
+/// GNU cl-seq.el's `cl--check-test': apply :key, then match via :test /
+/// :test-not / :if / :if-not, defaulting to `eql'.
+fn cl_seq_match(
+    interp: &mut Interpreter,
+    keys: &ClSeqKeys,
+    item: &Value,
+    element: &Value,
+    env: &mut crate::lisp::types::Env,
+) -> Result<bool, LispError> {
+    let keyed = match &keys.key {
+        Some(key) => call_function_value(interp, key, std::slice::from_ref(element), env)?,
+        None => element.clone(),
+    };
+    if let Some(test) = &keys.test {
+        let result = call_function_value(interp, test, &[item.clone(), keyed], env)?;
+        Ok(result.is_truthy() != keys.test_not)
+    } else if let Some(predicate) = &keys.if_fn {
+        let result = call_function_value(interp, predicate, &[keyed], env)?;
+        Ok(result.is_truthy() != keys.if_not)
+    } else {
+        Ok(values_eql(item, &keyed))
+    }
+}
+
+fn cl_seq_elements(interp: &Interpreter, sequence: &Value) -> Result<Vec<Value>, LispError> {
+    sequence_values(interp, sequence)
+}
+
+/// Rebuild a fresh sequence of the same kind as ORIGINAL, mirroring the
+/// list / `concat' / `vconcat' result types of GNU cl-remove.
+fn cl_seq_rebuild(original: &Value, items: Vec<Value>) -> Result<Value, LispError> {
+    match original {
+        Value::String(_) | Value::StringObject(_) => {
+            let mut text = String::new();
+            for item in &items {
+                let (ch, _multibyte) = concat_character_value(item)?;
+                text.push(ch);
+            }
+            Ok(Value::String(text))
+        }
+        value if is_vector_value(value) => {
+            let mut vector = vec![Value::symbol("vector-literal")];
+            vector.extend(items);
+            Ok(Value::list(vector))
+        }
+        Value::Cons(_, _) | Value::Nil => Ok(Value::list(items)),
+        _ => {
+            let mut vector = vec![Value::symbol("vector-literal")];
+            vector.extend(items);
+            Ok(Value::list(vector))
+        }
+    }
+}
+
+fn cl_seq_set_element(target: &Value, index: usize, value: Value) -> Result<(), LispError> {
+    match target {
+        Value::String(_) | Value::StringObject(_) => {
+            aset_string_value(target, index, &value)?;
+            Ok(())
+        }
+        _ => aset_vector_value(target, index, value),
     }
 }

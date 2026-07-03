@@ -195,6 +195,8 @@ pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
             (Value::Integer(1), Value::Integer(1))
         }
         "cons" => (Value::Integer(2), Value::Integer(2)),
+        "remq" => (Value::Integer(2), Value::Integer(2)),
+        "safe-length" => (Value::Integer(1), Value::Integer(1)),
         "list" => (Value::Integer(0), Value::Symbol("many".into())),
         "format" => (Value::Integer(1), Value::Symbol("many".into())),
         "directory-files" => (Value::Integer(1), Value::Integer(5)),
@@ -235,6 +237,14 @@ pub(crate) fn special_form_arity_value(name: &str) -> Option<Value> {
             Value::Symbol("unevalled".into()),
         )),
         _ => None,
+    }
+}
+
+pub(crate) fn fallback_subr_arity_value(name: &str) -> Value {
+    if is_special_form_name(name) {
+        Value::cons(Value::Integer(0), Value::Symbol("unevalled".into()))
+    } else {
+        Value::cons(Value::Integer(0), Value::Symbol("many".into()))
     }
 }
 

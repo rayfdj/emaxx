@@ -39,6 +39,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "seq-into"
             | "nreverse"
             | "copy-sequence"
+            | "cl-copy-seq"
             | "fillarray"
             | "load-average"
             | "locale-info"
@@ -607,7 +608,7 @@ pub(super) fn call(
             nreverse_sequence_value(interp, &args[0])
         }
 
-        "copy-sequence" => {
+        "copy-sequence" | "cl-copy-seq" => {
             need_args(name, args, 1)?;
             copy_sequence_value(interp, &args[0])
         }

@@ -558,6 +558,10 @@ pub struct Interpreter {
     after_load_forms: Vec<(String, Vec<Value>, Env)>,
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
+    // File the currently-running ERT test was defined in; used by
+    // `ert-resource-directory' without making `load-file-name' non-nil
+    // during test bodies (it is nil there in GNU).
+    pub(crate) ert_test_source_file: Option<String>,
     /// Collected ERT test definitions.
     pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
@@ -836,6 +840,7 @@ impl Interpreter {
             ],
             after_load_forms: Vec::new(),
             current_load_file: None,
+            ert_test_source_file: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),
@@ -998,6 +1003,15 @@ impl Interpreter {
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");
         interp.put_symbol_property("default-directory", "permanent-local", Value::T);
+        // GNU declares default-directory with DEFVAR_PER_BUFFER: setting it
+        // only ever affects the current buffer, so a dired/find-file in one
+        // buffer must not redirect unrelated buffers (and later `ls' spawns)
+        // into a directory that gets deleted by test cleanup.
+        interp.mark_auto_buffer_local("default-directory");
+        interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
+        interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
+        interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
+        interp.put_symbol_property("backup-inhibited", "permanent-local", Value::T);
         interp.set_global_binding("mark-ring", Value::Nil);
         interp.mark_auto_buffer_local("mark-ring");
         interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
@@ -1918,6 +1932,9 @@ struct LoweredClDefun {
     destructuring_bindings: Vec<(Value, String)>,
     keyword_rest_param: Option<String>,
     keyword_bindings: Vec<ClKeyBinding>,
+    // (PATTERN INIT) pairs from `&aux', bound sequentially after the
+    // arguments; PATTERN may destructure.
+    aux_bindings: Vec<(Value, Value)>,
 }
 
 struct ClKeyBinding {
@@ -1939,7 +1956,9 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
     let mut keyword_bindings = Vec::new();
     let mut keyword_rest_param = None;
     let mut in_key_section = false;
+    let mut in_aux_section = false;
     let mut expecting_rest_name = false;
+    let mut aux_bindings = Vec::new();
 
     for (index, item) in items.into_iter().enumerate() {
         match item {
@@ -1983,10 +2002,20 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                     }
                 }
                 "&allow-other-keys" if in_key_section => {}
-                "&aux" | "&whole" | "&environment" => {
+                "&aux" => {
+                    if expecting_rest_name {
+                        return Err(invalid_function(spec.clone()));
+                    }
+                    in_aux_section = true;
+                    in_key_section = false;
+                }
+                "&whole" | "&environment" => {
                     return Err(LispError::Signal(format!(
                         "Unsupported cl-defun lambda list keyword: {symbol}"
                     )));
+                }
+                _ if in_aux_section => {
+                    aux_bindings.push((Value::Symbol(symbol), Value::Nil));
                 }
                 _ if in_key_section => {
                     keyword_bindings.push(ClKeyBinding {
@@ -2004,6 +2033,15 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                     lowered.push(Value::Symbol(symbol));
                 }
             },
+            Value::Cons(_, _) if in_aux_section => {
+                let parts = item.to_vec()?;
+                let pattern = parts
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| invalid_function(spec.clone()))?;
+                let init = parts.get(1).cloned().unwrap_or(Value::Nil);
+                aux_bindings.push((pattern, init));
+            }
             Value::Cons(_, _) if in_key_section => {
                 keyword_bindings.push(parse_cl_defun_key_binding(item)?);
             }
@@ -2029,6 +2067,7 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
         destructuring_bindings,
         keyword_rest_param,
         keyword_bindings,
+        aux_bindings,
     })
 }
 
@@ -3580,6 +3619,20 @@ fn pcase_predicate_matches(
     if let Ok(mut items) = predicate_form.to_vec()
         && !items.is_empty()
     {
+        // A (lambda ...) pred is a function to call on VALUE; any other list
+        // form is a partial application that VALUE gets appended to, e.g.
+        // `(pred (> 5))' matches when `(> 5 VALUE)' is non-nil.
+        if matches!(items.first(), Some(Value::Symbol(head)) if head == "lambda" || head == "function" || head == "closure")
+        {
+            let function = interp.eval(predicate_form, env)?;
+            return Ok(crate::lisp::primitives::call_function_value(
+                interp,
+                &function,
+                std::slice::from_ref(value),
+                env,
+            )?
+            .is_truthy());
+        }
         items.push(quoted_literal(value));
         return Ok(interp.eval(&Value::list(items), env)?.is_truthy());
     }

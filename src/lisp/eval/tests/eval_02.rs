@@ -1047,50 +1047,54 @@ fn byte_compile_file_uses_dynamic_log_buffer_across_helper_call() {
 
 #[test]
 fn bytecomp_tests_suppression_helper_matches_prefixless_defvar() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    interp.set_global_binding("noninteractive", Value::T);
-    let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            r#"
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        interp.set_global_binding("noninteractive", Value::T);
+        let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
                 (test-suppression
                  '(defvar prefixless)
                  '((lexical prefixless))
                  "global/dynamic var .prefixless. lacks")
                 "#
-        ),
-        Value::T
-    );
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn bytecomp_tests_suppression_case_passes_in_default_ert_run() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    interp.set_global_binding("noninteractive", Value::T);
-    let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    let selector =
-        crate::lisp::reader::Reader::new("(not (or (tag :expensive-test) (tag :unstable)))")
-            .read()
-            .unwrap()
-            .unwrap();
-    let _ = interp.run_ert_tests_with_selector(Some(&selector));
-    let outcome = interp
-        .test_results
-        .iter()
-        .find(|result| result.name == "bytecomp-test--with-suppressed-warnings")
-        .expect("selected suppression test");
-    assert_eq!(outcome.status, TestStatus::Passed, "{outcome:?}");
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        interp.set_global_binding("noninteractive", Value::T);
+        let path = upstream_emacs_repo().join("test/lisp/emacs-lisp/bytecomp-tests.el");
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        let selector =
+            crate::lisp::reader::Reader::new("(not (or (tag :expensive-test) (tag :unstable)))")
+                .read()
+                .unwrap()
+                .unwrap();
+        let _ = interp.run_ert_tests_with_selector(Some(&selector));
+        let outcome = interp
+            .test_results
+            .iter()
+            .find(|result| result.name == "bytecomp-test--with-suppressed-warnings")
+            .expect("selected suppression test");
+        assert_eq!(outcome.status, TestStatus::Passed, "{outcome:?}");
+    });
 }
 
 #[test]
@@ -3879,158 +3883,168 @@ fn load_target_resolves_repeated_directory_autoload_aliases() {
 
 #[test]
 fn load_file_strict_sets_lexical_binding_from_file_cookie() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-lexical-binding-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        ";;; lexical-cookie -*- lexical-binding: t -*-\n(provide 'sample)\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-lexical-binding-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            ";;; lexical-cookie -*- lexical-binding: t -*-\n(provide 'sample)\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    assert_eq!(
-        interp.lookup_var("lexical-binding", &Vec::new()),
-        Some(Value::T)
-    );
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            interp.lookup_var("lexical-binding", &Vec::new()),
+            Some(Value::T)
+        );
 
-    std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+    });
 }
 
 #[test]
 fn load_file_strict_prebinds_current_load_list() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-current-load-list-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        "(setq sample-current-load-entry (car (last current-load-list)))\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-current-load-list-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(setq sample-current-load-entry (car (last current-load-list)))\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    assert_string_value(
-        interp
-            .lookup_var("sample-current-load-entry", &Vec::new())
-            .expect("sample-current-load-entry"),
-        &path.display().to_string(),
-    );
-    assert_eq!(
-        interp.lookup_var("current-load-list", &Vec::new()),
-        Some(Value::Nil)
-    );
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_string_value(
+            interp
+                .lookup_var("sample-current-load-entry", &Vec::new())
+                .expect("sample-current-load-entry"),
+            &path.display().to_string(),
+        );
+        assert_eq!(
+            interp.lookup_var("current-load-list", &Vec::new()),
+            Some(Value::Nil)
+        );
 
-    std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+    });
 }
 
 #[test]
 fn load_file_strict_records_cl_defmethod_files() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-cl-defmethod-load-history-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        "(cl-defgeneric sample-load-method (x))\n\
-         (cl-defmethod sample-load-method ((x string)) x)\n\
-         (cl-defmethod sample-load-method ((x integer)) x)\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-cl-defmethod-load-history-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(cl-defgeneric sample-load-method (x))\n\
+             (cl-defmethod sample-load-method ((x string)) x)\n\
+             (cl-defmethod sample-load-method ((x integer)) x)\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            &format!(
-                "(let ((files (cl--generic-method-files 'sample-load-method))\
-                       (path {path:?}))\
-                   (and (equal (length files) 2)\
-                        (equal (mapcar #'car files) (list path path))\
-                        (equal (mapcar #'cadr files)\
-                               '(sample-load-method sample-load-method))))"
-            )
-        ),
-        Value::T
-    );
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                &format!(
+                    "(let ((files (cl--generic-method-files 'sample-load-method))\
+                           (path {path:?}))\
+                       (and (equal (length files) 2)\
+                            (equal (mapcar #'car files) (list path path))\
+                            (equal (mapcar #'cadr files)\
+                                   '(sample-load-method sample-load-method))))"
+                )
+            ),
+            Value::T
+        );
 
-    std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+    });
 }
 
 #[test]
 fn cl_generic_describe_prints_quoted_eql_specializers() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-cl-generic-describe-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        "(cl-defgeneric sample-describe-method (function))\n\
-         (cl-defmethod sample-describe-method ((function (eql '4))) (+ function 1))\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-cl-generic-describe-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(cl-defgeneric sample-describe-method (function))\n\
+             (cl-defmethod sample-describe-method ((function (eql '4))) (+ function 1))\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            "(with-temp-buffer
-               (cl--generic-describe 'sample-describe-method)
-               (list (not (re-search-forward \"#'\" nil t))
-                     (progn
-                       (goto-char (point-min))
-                       (not (null (re-search-forward \"(eql '4)\" nil t))))))"
-        ),
-        Value::list([Value::T, Value::T])
-    );
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(with-temp-buffer
+                   (cl--generic-describe 'sample-describe-method)
+                   (list (not (re-search-forward \"#'\" nil t))
+                         (progn
+                           (goto-char (point-min))
+                           (not (null (re-search-forward \"(eql '4)\" nil t))))))"
+            ),
+            Value::list([Value::T, Value::T])
+        );
 
-    std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+    });
 }
 
 #[test]
 fn load_in_progress_is_truthy_while_loading_files() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-load-progress-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        "(setq sample-load-in-progress-seen load-in-progress)\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-load-progress-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(setq sample-load-in-progress-seen load-in-progress)\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    crate::lisp::load_file_strict(&mut interp, &path).unwrap();
-    assert_eq!(
-        interp.lookup_var("sample-load-in-progress-seen", &Vec::new()),
-        Some(Value::T)
-    );
-    assert_eq!(
-        interp.lookup_var("load-in-progress", &Vec::new()),
-        Some(Value::Nil)
-    );
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_eq!(
+            interp.lookup_var("sample-load-in-progress-seen", &Vec::new()),
+            Some(Value::T)
+        );
+        assert_eq!(
+            interp.lookup_var("load-in-progress", &Vec::new()),
+            Some(Value::Nil)
+        );
 
-    std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+    });
 }
 
 #[test]
@@ -4207,27 +4221,29 @@ fn defcustom_property_scan_stops_at_non_keyword_forms() {
 
 #[test]
 fn load_file_strict_preserves_original_load_errors() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-load-error-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        "(require 'mod-test \"/tmp/emaxx-missing-mod-test\")\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-load-error-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "(require 'mod-test \"/tmp/emaxx-missing-mod-test\")\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    let error = crate::lisp::load_file_strict(&mut interp, &path).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Cannot open load file: No such file or directory, /tmp/emaxx-missing-mod-test"
-    );
+        let mut interp = Interpreter::new();
+        let error = crate::lisp::load_file_strict(&mut interp, &path).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Cannot open load file: No such file or directory, /tmp/emaxx-missing-mod-test"
+        );
 
-    std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+    });
 }
 
 #[test]
@@ -4548,174 +4564,186 @@ fn cl_assert_signals_condition_with_asserted_form() {
 
 #[test]
 fn load_file_strict_keeps_lexical_binding_for_cl_iter_defun() {
-    let path = std::env::temp_dir().join(format!(
-        "emaxx-cl-iter-defun-{}.el",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::write(
-        &path,
-        ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(cl-iter-defun sample-cl-iter-defun ()\n  (:documentation (concat \"sample\"))\n  (iter-yield 'ok))\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-cl-iter-defun-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(cl-iter-defun sample-cl-iter-defun ()\n  (:documentation (concat \"sample\"))\n  (iter-yield 'ok))\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    interp.set_load_path(vec![
-        std::path::PathBuf::from("../emacs/lisp"),
-        std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
-    ]);
-    let result = crate::lisp::load_file_strict(&mut interp, &path);
-    let _ = std::fs::remove_file(path);
-    result.unwrap();
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![
+            std::path::PathBuf::from("../emacs/lisp"),
+            std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
+        ]);
+        let result = crate::lisp::load_file_strict(&mut interp, &path);
+        let _ = std::fs::remove_file(path);
+        result.unwrap();
+    });
 }
 
 #[test]
 fn load_file_strict_restores_lexical_binding_after_nested_require() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("emaxx-nested-lexical-binding-{unique}"));
-    std::fs::create_dir_all(&root).unwrap();
-    let inner = root.join("inner-lexical.el");
-    let outer = root.join("outer-lexical.el");
-    std::fs::write(
-        &inner,
-        ";;; -*- lexical-binding: nil -*-\n(provide 'inner-lexical)\n",
-    )
-    .unwrap();
-    std::fs::write(
-        &outer,
-        ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(require 'inner-lexical)\n(cl-iter-defun sample-nested-cl-iter-defun ()\n  (iter-yield 'ok))\n",
-    )
-    .unwrap();
+    run_with_large_stack(|| {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("emaxx-nested-lexical-binding-{unique}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let inner = root.join("inner-lexical.el");
+        let outer = root.join("outer-lexical.el");
+        std::fs::write(
+            &inner,
+            ";;; -*- lexical-binding: nil -*-\n(provide 'inner-lexical)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &outer,
+            ";;; -*- lexical-binding: t -*-\n(require 'cl-lib)\n(require 'generator)\n(require 'inner-lexical)\n(cl-iter-defun sample-nested-cl-iter-defun ()\n  (iter-yield 'ok))\n",
+        )
+        .unwrap();
 
-    let mut interp = Interpreter::new();
-    interp.set_load_path(vec![
-        root.clone(),
-        std::path::PathBuf::from("../emacs/lisp"),
-        std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
-    ]);
-    let result = crate::lisp::load_file_strict(&mut interp, &outer);
-    let _ = std::fs::remove_dir_all(&root);
-    result.unwrap();
-    assert_eq!(
-        interp.lookup_var("lexical-binding", &Vec::new()),
-        Some(Value::T)
-    );
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![
+            root.clone(),
+            std::path::PathBuf::from("../emacs/lisp"),
+            std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
+        ]);
+        let result = crate::lisp::load_file_strict(&mut interp, &outer);
+        let _ = std::fs::remove_dir_all(&root);
+        result.unwrap();
+        assert_eq!(
+            interp.lookup_var("lexical-binding", &Vec::new()),
+            Some(Value::T)
+        );
+    });
 }
 
 #[test]
 fn cconv_closure_convert_captures_simple_free_variable() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
 
-    let result = eval_str_with(
-        &mut interp,
-        r#"
-        (progn
-          (setq lexical-binding t)
-          (require 'ert)
-          (require 'cl-lib)
-          (require 'generator)
-          (require 'bytecomp)
-          (require 'cconv)
-          (defun sample-cconv-intern-all (x)
-            (cond ((symbolp x) (intern (symbol-name x)))
-                  ((consp x) (cons (sample-cconv-intern-all (car x))
-                                   (sample-cconv-intern-all (cdr x))))
-                  (t x)))
-          (sample-cconv-intern-all
-           (cconv-closure-convert '#'(lambda (x) #'(lambda () x)))))
-        "#,
-    );
+        let result = eval_str_with(
+            &mut interp,
+            r#"
+            (progn
+              (setq lexical-binding t)
+              (require 'ert)
+              (require 'cl-lib)
+              (require 'generator)
+              (require 'bytecomp)
+              (require 'cconv)
+              (defun sample-cconv-intern-all (x)
+                (cond ((symbolp x) (intern (symbol-name x)))
+                      ((consp x) (cons (sample-cconv-intern-all (car x))
+                                       (sample-cconv-intern-all (cdr x))))
+                      (t x)))
+              (sample-cconv-intern-all
+               (cconv-closure-convert '#'(lambda (x) #'(lambda () x)))))
+            "#,
+        );
 
-    assert_eq!(
-        result,
-        eval_str("'#'(lambda (x) (internal-make-closure nil (x) nil (internal-get-closed-var 0)))")
-    );
+        assert_eq!(
+            result,
+            eval_str(
+                "'#'(lambda (x) (internal-make-closure nil (x) nil (internal-get-closed-var 0)))"
+            )
+        );
+    });
 }
 
 #[test]
 fn cconv_closure_convert_remaps_shadowed_lambda_lifted_variable() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
 
-    let result = eval_str_with(
-        &mut interp,
-        r#"
-        (progn
-          (setq lexical-binding t)
-          (require 'ert)
-          (require 'cl-lib)
-          (require 'generator)
-          (require 'bytecomp)
-          (require 'cconv)
-          (defun sample-cconv-intern-all (x)
-            (cond ((symbolp x) (intern (symbol-name x)))
-                  ((consp x) (cons (sample-cconv-intern-all (car x))
-                                   (sample-cconv-intern-all (cdr x))))
-                  (t x)))
-          (sample-cconv-intern-all
-           (cconv-closure-convert
-            '#'(lambda (x)
-                 (let ((f #'(lambda () x)))
-                   (let ((x 'b))
-                     (list x (funcall f))))))))
-        "#,
-    );
+        let result = eval_str_with(
+            &mut interp,
+            r#"
+            (progn
+              (setq lexical-binding t)
+              (require 'ert)
+              (require 'cl-lib)
+              (require 'generator)
+              (require 'bytecomp)
+              (require 'cconv)
+              (defun sample-cconv-intern-all (x)
+                (cond ((symbolp x) (intern (symbol-name x)))
+                      ((consp x) (cons (sample-cconv-intern-all (car x))
+                                       (sample-cconv-intern-all (cdr x))))
+                      (t x)))
+              (sample-cconv-intern-all
+               (cconv-closure-convert
+                '#'(lambda (x)
+                     (let ((f #'(lambda () x)))
+                       (let ((x 'b))
+                         (list x (funcall f))))))))
+            "#,
+        );
 
-    assert_eq!(
-        result,
-        eval_str(
-            "'#'(lambda (x)
-                  (let ((f #'(lambda (x) x)))
-                    (let ((x 'b)
-                          (closed-x x))
-                      (list x (funcall f closed-x)))))"
-        )
-    );
+        assert_eq!(
+            result,
+            eval_str(
+                "'#'(lambda (x)
+                      (let ((f #'(lambda (x) x)))
+                        (let ((x 'b)
+                              (closed-x x))
+                          (list x (funcall f closed-x)))))"
+            )
+        );
+    });
 }
 
 #[test]
 fn cconv_analyze_keeps_simple_captured_argument_unmutated() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
 
-    let result = eval_str_with(
-        &mut interp,
-        r#"
-        (progn
-          (setq lexical-binding t)
-          (require 'ert)
-          (require 'cl-lib)
-          (require 'generator)
-          (require 'bytecomp)
-          (require 'cconv)
-          (let ((cconv-var-classification nil)
-                (byte-compile-lexical-variables nil)
-                (cconv--interactive-form-funs (make-hash-table))
-                cconv-freevars-alist cconv--dynbound-variables)
-            (cconv-analyze-form '#'(lambda (x) #'(lambda () x)) nil)
-            cconv-var-classification))
-        "#,
-    );
+        let result = eval_str_with(
+            &mut interp,
+            r#"
+            (progn
+              (setq lexical-binding t)
+              (require 'ert)
+              (require 'cl-lib)
+              (require 'generator)
+              (require 'bytecomp)
+              (require 'cconv)
+              (let ((cconv-var-classification nil)
+                    (byte-compile-lexical-variables nil)
+                    (cconv--interactive-form-funs (make-hash-table))
+                    cconv-freevars-alist cconv--dynbound-variables)
+                (cconv-analyze-form '#'(lambda (x) #'(lambda () x)) nil)
+                cconv-var-classification))
+            "#,
+        );
 
-    assert_eq!(result, Value::Nil);
+        assert_eq!(result, Value::Nil);
+    });
 }
 
 #[test]

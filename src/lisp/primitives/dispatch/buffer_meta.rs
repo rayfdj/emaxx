@@ -701,9 +701,9 @@ pub(super) fn call(
         "subr-arity" => {
             need_args(name, args, 1)?;
             match &args[0] {
-                Value::BuiltinFunc(symbol) => builtin_arity_value(symbol)
+                Value::BuiltinFunc(symbol) => Ok(builtin_arity_value(symbol)
                     .or_else(|| special_form_arity_value(symbol))
-                    .ok_or_else(|| LispError::TypeError("subr".into(), args[0].type_name())),
+                    .unwrap_or_else(|| fallback_subr_arity_value(symbol))),
                 other => Err(LispError::TypeError("subr".into(), other.type_name())),
             }
         }

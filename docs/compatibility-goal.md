@@ -22,7 +22,56 @@ counts as the progress denominator.
 - Tests through 1965/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1965/7080: run obsolete eieio methods on native cl-generic`.
+  `Compat 1965/7080: repair verified-prefix regressions across cl-lib, dired,
+  bookmark and friends` — a repair batch (no frontier advance) that fixed the
+  verified-prefix files an 81-file sweep found failing: arc-mode, cl-seq,
+  cl-macs (from 43 failing selectors to one), cl-lib, cconv, bookmark (fully
+  green), dired, bytecomp, char-fold (one selector remains) and
+  todo-mode/srecode (order-dependent, pass solo). Major pieces: GNU's cl-loop
+  engine, cl-flet/cl-labels/cl-function/cl--transform-lambda, letrec and
+  macroexp--fgrep ported verbatim into `src/lisp/simple_compat.el`; the
+  standard error-condition hierarchy and GNU `define-error'; cl-loaddefs
+  autoload registration on the intercepted `(require 'cl-lib)`; GNU
+  `autoload' no-clobber semantics; string-literal evaluation allocating
+  fresh mutable strings so `eq' identity works; `(setf (elt LIST i) v)'
+  structure mutation; marker-based `with-restriction' exit bounds;
+  buffer-local `default-directory'; `map-keymap' parent traversal; `--dired'
+  marker cleanup in native `insert-directory'; a `(pred (lambda ...))' pcase
+  fix; and `subr-arity' fallbacks. The batch also repaired what those
+  changes broke and what the sweep still showed red: native fast paths for
+  `cl-position'/`cl-remove'/`cl-substitute'/`cl-replace'/`cl-fill' (the
+  interpreted cl-seq engines were far too slow for the 8-million-element
+  lists in `cl-seq-test-bug24264'); `macroexpand-all' now walks backquote
+  templates natively and expands only the unquoted expressions (the oracle
+  backquote macro cannot see the reader's `comma' markers, so expanding
+  through it dropped every unquote — this broke `` `(,fn ...) `` inside
+  cl-flet/cl-labels bodies); macro-environment expanders run in a fresh
+  environment so caller locals cannot shadow their captured bindings
+  (cl-labels' own `var' shadowed the expander's `var', rewriting local
+  calls to the wrong function); `cl--find-class' as a native alias of
+  `cl-find-class' (comp-cstr/comp-tests); a cl-lib dependency preload when
+  oracle cl-macs.el loads into an environment without cl-lib's Lisp helpers
+  (bare-interpreter unit tests); `insert-char' honoring its INHERIT
+  argument (dired-align-file alignment spaces must inherit invisibility for
+  bug27899); `(:documentation ...)' in `cl-defgeneric' accepting mutable
+  strings; byte-compile scanner support for the generated
+  `cl-defsubst'/`cl-defstruct' docstrings, the non-top-level macro-autoload
+  warning, and `no-byte-compile: t' deleting a stale target. Follow-on
+  repairs surfaced by the post-fix sweeps: native `cl-defstruct' now also
+  defines the GNU `(setf ACCESSOR)' functions so gv's
+  `(funcall #'(setf ACC) V X)' fallback works (comp-cstr unions);
+  `\{,N\}' regexps translate to an explicit zero lower bound and the regex
+  delegate gets a larger compiled-size budget (cc-mode's
+  `[...]\{,1000\}' symbol matcher in semantic/format-tests).
+- Known remaining verified-prefix mismatches after this batch: the cedet
+  cluster (`semantic-utest-c/-ia/utest`, `srecode-utest-getset/-template`,
+  `srecode/document-tests` — an EIEIO slot mix-up puts a
+  `semantic-scope-cache' where `semanticdb-find-search-index' is expected),
+  `autorevert-tests.el` (five remote/deleted-file selectors),
+  `dabbrev-tests.el` (two order-dependent minibuffer selectors, pass solo),
+  `char-fold--test-with-customization` (char-fold-exclude not honored under
+  `char-fold-symmetric'), and `cl-flet/edebug` (edebug matcher loops on
+  destructuring lambda-lists inside cl-flet bindings).
 - The next observed frontier is selector 1966,
   `eieio-persist-hash-and-vector-backward-compatibility` in
   `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (grouped

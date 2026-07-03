@@ -996,6 +996,7 @@ pub(crate) fn find_file_name_handler(interp: &Interpreter, env: &Env, file: &str
 pub(crate) fn ert_resource_directory(interp: &Interpreter) -> Option<String> {
     let testfile = interp
         .current_load_file()
+        .or(interp.ert_test_source_file.as_deref())
         .or(interp.buffer.file.as_deref())?;
     Some(ert_resource_directory_for(testfile))
 }

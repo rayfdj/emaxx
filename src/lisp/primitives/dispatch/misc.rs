@@ -368,6 +368,15 @@ pub(super) fn call(
                 interp.push_function_binding(&function, Value::BuiltinFunc(function.clone()));
                 return Ok(Value::Symbol(function));
             }
+            // GNU `autoload' does nothing when FUNCTION already has a real
+            // (non-autoload) definition; subrs count as definitions, so the
+            // cl-loaddefs autoloads must not shadow emaxx's native cl-*
+            // primitives either.
+            if let Ok(existing) = interp.lookup_function(&function, env)
+                && crate::lisp::primitives::autoload_parts(&existing).is_none()
+            {
+                return Ok(Value::Symbol(function));
+            }
             interp.push_function_binding(
                 &function,
                 Value::list([
@@ -1066,9 +1075,58 @@ pub(super) fn call(
             }
             let environment = args.get(1).filter(|value| value.is_truthy());
             if name == "macroexpand-all" {
-                interp.macroexpand_all_form_with_environment(&args[0], environment, env)
-            } else {
+                // GNU macroexpand-all dynamically binds
+                // `macroexpand-all-environment' around the expansion so env
+                // expanders like cl--labels-convert can read it back.  Only
+                // bind it for environments carrying a `function' expander
+                // (cl-flet/cl-labels): binding it unconditionally makes
+                // expander sets like bindat's re-read the variable from their
+                // helpers and re-expand already-processed type specs forever.
+                let has_function_expander = environment
+                    .and_then(|value| value.to_vec().ok())
+                    .is_some_and(|entries| {
+                        entries.iter().any(|entry| {
+                            matches!(
+                                entry.car(),
+                                Ok(Value::Symbol(head)) if head == "function"
+                            )
+                        })
+                    });
+                let previous = if has_function_expander {
+                    let previous = interp.global_binding_value("macroexpand-all-environment");
+                    interp.set_global_binding(
+                        "macroexpand-all-environment",
+                        environment.cloned().unwrap_or(Value::Nil),
+                    );
+                    Some(previous)
+                } else {
+                    None
+                };
+                let result =
+                    interp.macroexpand_all_form_with_environment(&args[0], environment, env);
+                if let Some(previous) = previous {
+                    match previous {
+                        Some(value) => {
+                            interp.set_global_binding("macroexpand-all-environment", value)
+                        }
+                        None => interp.remove_global_binding("macroexpand-all-environment"),
+                    }
+                }
+                result
+            } else if name == "macroexpand-1" {
                 interp.macroexpand_1_form_with_environment(&args[0], environment, env)
+            } else {
+                // `macroexpand' repeats until the head is no longer a macro.
+                let mut form = args[0].clone();
+                loop {
+                    let expanded =
+                        interp.macroexpand_1_form_with_environment(&form, environment, env)?;
+                    if expanded == form {
+                        break;
+                    }
+                    form = expanded;
+                }
+                Ok(form)
             }
         }
         "run-at-time" => {

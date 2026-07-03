@@ -230,9 +230,10 @@ impl Interpreter {
             // Timers a test scheduled but never reached firing conditions
             // for must not leak into later tests.
             self.pending_timers.clear();
-            let previous = self.set_current_load_file(test.source_file.clone());
+            let previous =
+                std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
             let result = self.call_function_value(test.body.clone(), None, &[], &mut env);
-            self.set_current_load_file(previous);
+            self.ert_test_source_file = previous;
             match result {
                 Ok(_) => {
                     summary.passed += 1;

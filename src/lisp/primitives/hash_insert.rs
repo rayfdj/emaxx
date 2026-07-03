@@ -496,14 +496,14 @@ pub(crate) fn insert_char_impl(
 ) -> Result<Value, LispError> {
     need_args("insert-char", args, 1)?;
     let ch = args[0].as_integer()?;
-    let count = if args.len() > 1 {
-        args[1].as_integer()?.max(0) as usize
-    } else {
-        1
+    let count = match args.get(1) {
+        Some(value) if !value.is_nil() => value.as_integer()?.max(0) as usize,
+        _ => 1,
     };
+    let inherit = args.get(2).is_some_and(Value::is_truthy);
     if let Some(c) = char::from_u32(ch as u32) {
         let text: String = std::iter::repeat_n(c, count).collect();
-        insert_text_with_hooks(interp, &text, &[], false, false, env)?;
+        insert_text_with_hooks(interp, &text, &[], inherit, false, env)?;
     } else if (0..=0x3F_FFFF).contains(&ch) {
         let text: String = std::iter::repeat_n(RAW_CHAR_SENTINEL, count).collect();
         let props = vec![TextPropertySpan {
@@ -511,7 +511,7 @@ pub(crate) fn insert_char_impl(
             end: count,
             props: vec![("emaxx-raw-char".into(), Value::Integer(ch))],
         }];
-        insert_text_with_hooks(interp, &text, &props, false, false, env)?;
+        insert_text_with_hooks(interp, &text, &props, inherit, false, env)?;
     } else {
         return Err(LispError::Signal(format!("Invalid character: {}", ch)));
     }

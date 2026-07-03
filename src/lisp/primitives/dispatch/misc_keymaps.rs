@@ -211,6 +211,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "type-of"
             | "cl-type-of"
             | "cl-find-class"
+            | "cl--find-class"
             | "cl--struct-get-class"
             | "cl-struct-define"
             | "cl-old-struct-compat-mode"
@@ -524,23 +525,37 @@ pub(super) fn call(
         }
         "map-keymap" => {
             need_args(name, args, 2)?;
-            let Some(id) = keymap_record_id(interp, &args[1]) else {
-                return Ok(Value::Nil);
-            };
-            let Some(record) = interp.find_record(id) else {
-                return Ok(Value::Nil);
-            };
-            let bindings = keymap_bindings(record)?;
-            for binding in bindings {
-                interp.call_function_value(
-                    args[0].clone(),
-                    None,
-                    &[
-                        keymap_entry_key_value(&binding_key_parts(&binding), &binding.key),
-                        binding.value,
-                    ],
-                    env,
-                )?;
+            // GNU map-keymap also reports bindings inherited from parent
+            // keymaps (the parent is spliced into the keymap's tail).
+            let mut keymap = args[1].clone();
+            let mut visited = std::collections::HashSet::new();
+            loop {
+                let Some(id) = keymap_record_id(interp, &keymap) else {
+                    break;
+                };
+                if !visited.insert(id) {
+                    break;
+                }
+                let Some(record) = interp.find_record(id) else {
+                    break;
+                };
+                let bindings = keymap_bindings(record)?;
+                let parent = record.slots.get(KEYMAP_PARENT_SLOT).cloned();
+                for binding in bindings {
+                    interp.call_function_value(
+                        args[0].clone(),
+                        None,
+                        &[
+                            keymap_entry_key_value(&binding_key_parts(&binding), &binding.key),
+                            binding.value,
+                        ],
+                        env,
+                    )?;
+                }
+                match parent {
+                    Some(parent) if parent.is_truthy() => keymap = parent,
+                    _ => break,
+                }
             }
             Ok(Value::Nil)
         }
@@ -2212,7 +2227,7 @@ pub(super) fn call(
                     env,
                 )?;
             }
-            interp.clear_buffer_local_state(buffer_id);
+            interp.clear_buffer_local_state_for_mode_change(buffer_id);
             for (name, value) in permanent {
                 interp.set_buffer_local_value(buffer_id, &name, value);
             }
@@ -2316,7 +2331,9 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(Value::Symbol(cl_type_name(interp, &args[0])?.into()))
         }
-        "cl-find-class" => {
+        // GNU cl-macs.el defines `cl--find-class' as `(get TYPE 'cl--class)',
+        // which projects to the same class storage as `cl-find-class' here.
+        "cl-find-class" | "cl--find-class" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(if let Some(class_value) = interp.class_value(symbol) {
@@ -8138,6 +8155,13 @@ fn byte_compile_file(
         LispError::SignalValue(file_error_value(&error.to_string(), &source_path))
     })?;
     if source_contains_truthy_file_local(&source, "no-byte-compile") {
+        // GNU byte-compile-file deletes a stale target when the source is
+        // marked `no-byte-compile: t'.
+        if let Ok((output_path, _)) = byte_compile_output_path(interp, env, &source_path)
+            && std::path::Path::new(&output_path).exists()
+        {
+            let _ = fs::remove_file(&output_path);
+        }
         return Ok(Value::Symbol("no-byte-compile".into()));
     }
     if !source_has_lexical_binding_cookie(&source) {
@@ -8743,18 +8767,23 @@ impl ByteCompileDiagnostics {
             "defvar" => self.scan_defvar(&items),
             "defcustom" => self.scan_defcustom(interp, &items),
             "defun" | "defsubst" => self.scan_defun(interp, &items),
+            "cl-defsubst" => self.scan_cl_defsubst(interp, &items),
+            "cl-defstruct" => self.scan_cl_defstruct(interp, &items),
             "defmacro" => self.scan_defmacro(interp, &items),
             "cl-defmethod" => self.scan_cl_defmethod(interp, &items),
             "lambda" => self.scan_lambda(interp, &items),
             "quote" | "function" => {}
-            "autoload" => self.scan_named_docstring_form(
-                interp,
-                "autoload",
-                &items,
-                1,
-                3,
-                ByteCompileNameForm::QuotedSymbol,
-            ),
+            "autoload" => {
+                self.scan_non_top_level_macro_autoload(interp, &items);
+                self.scan_named_docstring_form(
+                    interp,
+                    "autoload",
+                    &items,
+                    1,
+                    3,
+                    ByteCompileNameForm::QuotedSymbol,
+                )
+            }
             "custom-declare-variable" => self.scan_named_docstring_form(
                 interp,
                 "custom-declare-variable",
@@ -9259,6 +9288,83 @@ impl ByteCompileDiagnostics {
         }
         self.scan_call(interp, items[0].as_symbol().unwrap_or(form_name), items);
         self.scan_body(interp, &items[1..]);
+    }
+
+    /// GNU cl-defsubst expands through `cl-define-compiler-macro', whose
+    /// helper defun carries the generated docstring "Compiler macro for
+    /// `NAME'." -- an over-long function name makes that docstring wide.
+    fn scan_cl_defsubst(&mut self, interp: &Interpreter, items: &[Value]) {
+        if let Some(Ok(name)) = items.get(1).map(|value| value.as_symbol()) {
+            self.warn_if_wide_docstring(&format!("Compiler macro for `{name}'."));
+        }
+        self.scan_call(interp, items[0].as_symbol().unwrap_or("cl-defsubst"), items);
+        self.scan_body(interp, &items[1..]);
+    }
+
+    /// GNU cl-defstruct builds accessor/constructor docstrings with
+    /// `internal--format-docstring-line', which refills the text but cannot
+    /// break a single over-long word: a struct or slot name wider than the
+    /// limit survives the refill and triggers the wide-docstring warning.
+    fn scan_cl_defstruct(&mut self, interp: &Interpreter, items: &[Value]) {
+        let max_width = self.docstring_max_width();
+        for value in items.iter().skip(1) {
+            let name = match value {
+                Value::Symbol(name) => Some(name.clone()),
+                Value::Cons(_, _) => value
+                    .car()
+                    .ok()
+                    .and_then(|head| head.as_symbol().ok().map(str::to_string)),
+                _ => None,
+            };
+            if let Some(name) = name
+                && !name.starts_with(':')
+                && name.chars().count() > max_width
+            {
+                self.warn(
+                    "docstrings",
+                    None,
+                    format!("Warning: docstring wider than {max_width} characters"),
+                );
+            }
+        }
+        self.scan_call(
+            interp,
+            items[0].as_symbol().unwrap_or("cl-defstruct"),
+            items,
+        );
+        self.scan_body(interp, &items[1..]);
+    }
+
+    /// GNU byte-compile-autoload: warn when a macro autoload is compiled
+    /// away from top level and the target is not yet defined.
+    fn scan_non_top_level_macro_autoload(&mut self, interp: &Interpreter, items: &[Value]) {
+        if self.function_depth == 0 {
+            return;
+        }
+        let Some(symbol) = items.get(1).and_then(quoted_symbol_name) else {
+            return;
+        };
+        let is_macro_kind = matches!(items.get(5), Some(Value::T))
+            || items
+                .get(5)
+                .and_then(quoted_symbol_name)
+                .is_some_and(|kind| kind == "macro" || kind == "t");
+        if !is_macro_kind {
+            return;
+        }
+        if interp
+            .lookup_function(&symbol, &crate::lisp::types::Env::new())
+            .is_ok()
+        {
+            return;
+        }
+        self.warn(
+            "suspicious",
+            Some("autoload".to_string()),
+            format!(
+                "Warning: The compiler ignores `autoload' except at top level.  You should\n     probably put the autoload of the macro `{symbol}' at top-level."
+            ),
+        );
     }
 
     fn warn_if_wide_named_docstring(&mut self, form_name: &str, name: &str, docstring: &str) {
@@ -9831,10 +9937,25 @@ impl ByteCompileDiagnostics {
                 );
             }
         }
-        if let Some((_, required, maximum)) = self
+        let scanned_arity = self
             .function_arities
             .iter()
             .find(|(name, _, _)| name == head)
+            .map(|(_, required, maximum)| (*required, *maximum));
+        // Fall back to the builtin arity table so calls to primitives such
+        // as `remq' or `safe-length' get the same callargs warning GNU's
+        // byte-compiler emits for subrs.
+        let known_arity = scanned_arity.or_else(|| {
+            crate::lisp::primitives::builtin_arity_value(head).and_then(|arity| {
+                let min = arity.car().ok()?.as_integer().ok()? as usize;
+                let max = match arity.cdr().ok()? {
+                    Value::Integer(n) => Some(n as usize),
+                    _ => None,
+                };
+                Some((min, max))
+            })
+        });
+        if let Some((required, maximum)) = known_arity
             && maximum.is_some_and(|maximum| items.len() - 1 > maximum)
         {
             self.warn(

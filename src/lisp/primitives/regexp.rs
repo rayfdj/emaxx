@@ -129,6 +129,11 @@ fn translate_elisp_regex_with_point(
                 }
                 Some('{') => {
                     translated.push('{');
+                    // Emacs `\{,N\}' means `{0,N}'; the Rust regex parser
+                    // rejects an empty lower bound.
+                    if chars.peek() == Some(&',') {
+                        translated.push('0');
+                    }
                     at_branch_start = false;
                     can_repeat_previous = false;
                     last_was_quantifier = false;
@@ -963,7 +968,13 @@ pub(super) fn compile_elisp_regex(
         format!("(?m:{translated})")
     };
     let compiled = CompiledElispRegex {
-        regex: FancyRegex::new(&rendered)
+        // Bounded repetitions over Unicode classes (cc-mode uses
+        // `\{,1000\}' on symbol-char classes) overflow the delegate's
+        // default 10MB compiled-program budget; GNU regexps have no such
+        // limit, so give the delegate more room.
+        regex: fancy_regex::RegexBuilder::new(&rendered)
+            .delegate_size_limit(512 * 1024 * 1024)
+            .build()
             .map_err(|error| invalid_regexp_error(error.to_string()))?,
         capture_mapping: elisp_capture_mapping(&pattern.text)?,
     };

@@ -92,20 +92,12 @@ impl Interpreter {
     }
 
     pub(super) fn sf_while(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
-        let limit = 100_000; // safety valve
-        let mut iterations = 0;
         loop {
             let cond = self.eval(&items[1], env)?;
             if cond.is_nil() {
                 break;
             }
             self.sf_progn(&items[2..], env)?;
-            iterations += 1;
-            if iterations > limit {
-                return Err(LispError::Signal(
-                    "while loop exceeded iteration limit".into(),
-                ));
-            }
         }
         Ok(Value::Nil)
     }
@@ -2346,7 +2338,7 @@ impl Interpreter {
                 }
                 Ok(Value::list(resolved))
             }
-            Some(Value::Symbol(name)) if name == "aref" => {
+            Some(Value::Symbol(name)) if name == "aref" || name == "elt" => {
                 let Some(sequence_place) = items.get(1) else {
                     return Ok(place.clone());
                 };
@@ -2355,7 +2347,7 @@ impl Interpreter {
                 };
                 let index = self.eval(index_expr, env)?;
                 Ok(Value::list([
-                    Value::Symbol("aref".into()),
+                    Value::Symbol(name.clone()),
                     self.resolve_setf_place(sequence_place, env)?,
                     quoted_literal(&index),
                 ]))
