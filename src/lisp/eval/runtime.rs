@@ -420,6 +420,70 @@ impl Interpreter {
         }
     }
 
+    pub(crate) fn window_configuration_value(&mut self) -> Value {
+        let snapshot = self.snapshot_window_configuration();
+        self.create_record(
+            "window-configuration",
+            vec![
+                Value::Integer(snapshot.current_buffer_id as i64),
+                Value::Integer(snapshot.selected_window_id as i64),
+                Value::list(snapshot.selected_window_slots),
+                Value::Integer(snapshot.frame_width),
+                Value::Integer(snapshot.frame_height),
+            ],
+        )
+    }
+
+    pub(crate) fn apply_window_configuration_value(
+        &mut self,
+        value: &Value,
+    ) -> Result<bool, LispError> {
+        let Value::Record(id) = value else {
+            return Ok(false);
+        };
+        let Some(record) = self.find_record(*id) else {
+            return Ok(false);
+        };
+        if record.type_name != "window-configuration" {
+            return Ok(false);
+        }
+        let slots = record.slots.clone();
+        let snapshot = WindowConfigurationSnapshot {
+            current_buffer_id: slots
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or_default() as u64,
+            selected_window_id: slots
+                .get(1)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or_default() as u64,
+            selected_window_slots: slots
+                .get(2)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default(),
+            frame_width: slots
+                .get(3)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(80),
+            frame_height: slots
+                .get(4)
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(24),
+        };
+        self.restore_window_configuration(snapshot)?;
+        Ok(true)
+    }
+
+    pub(crate) fn is_window_configuration_value(&self, value: &Value) -> bool {
+        matches!(
+            value,
+            Value::Record(id)
+                if self
+                    .find_record(*id)
+                    .is_some_and(|record| record.type_name == "window-configuration")
+        )
+    }
+
     pub(super) fn restore_window_configuration(
         &mut self,
         snapshot: WindowConfigurationSnapshot,

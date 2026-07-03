@@ -2091,6 +2091,12 @@ impl Interpreter {
             return self.resolve_setf_place(&expanded, env);
         }
         match items.first() {
+            Some(Value::Symbol(name)) if name == "edebug-after" && items.len() == 4 => {
+                // Edebug's gv-expander notifies the stepper through the
+                // instrumented getter, then operates on the raw place.
+                self.eval(place, env)?;
+                self.resolve_setf_place(&items[3], env)
+            }
             Some(Value::Symbol(name)) if name == "cond" => {
                 for clause in &items[1..] {
                     let forms = clause.to_vec()?;

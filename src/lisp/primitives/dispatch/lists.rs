@@ -96,6 +96,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "end-kbd-macro"
             | "call-last-kbd-macro"
             | "execute-kbd-macro"
+            | "recursive-edit"
+            | "exit-recursive-edit"
+            | "abort-recursive-edit"
+            | "recursion-depth"
             | "this-command-keys"
             | "this-command-keys-vector"
             | "this-single-command-keys"
@@ -148,19 +152,63 @@ fn execute_kbd_macro(
     } else {
         vector_items(&args[0])?
     };
+    let previous_macro = interp
+        .lookup_var("executing-kbd-macro", env)
+        .unwrap_or(Value::Nil);
+    let previous_index = interp
+        .lookup_var("executing-kbd-macro-index", env)
+        .unwrap_or(Value::Nil);
+    interp.set_global_binding("executing-kbd-macro", args[0].clone());
+    interp.set_global_binding("executing-kbd-macro-index", Value::Integer(0));
+    interp
+        .kbd_macro_executions
+        .push(crate::lisp::eval::KbdMacroExecutionState { events, index: 0 });
+    let result = run_kbd_macro_events(interp, env);
+    interp.kbd_macro_executions.pop();
+    interp.set_global_binding("executing-kbd-macro", previous_macro);
+    interp.set_global_binding("executing-kbd-macro-index", previous_index);
+    interp.set_variable("this-command", Value::Nil, env);
+    result.map(|_| Value::Nil)
+}
+
+fn current_kbd_macro_event(interp: &Interpreter, offset: usize) -> Option<Value> {
+    let state = interp.kbd_macro_executions.last()?;
+    state.events.get(state.index + offset).cloned()
+}
+
+fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize) {
+    if let Some(state) = interp.kbd_macro_executions.last_mut() {
+        state.index += count;
+        let index = state.index;
+        interp.set_global_binding("executing-kbd-macro-index", Value::Integer(index as i64));
+    }
+}
+
+// Dispatch commands from the innermost keyboard macro until its events run
+// out.  `recursive-edit` re-enters this loop on the same shared cursor, so a
+// command that stops in a recursive edit (like Edebug) keeps consuming the
+// same macro until `exit-recursive-edit` throws back out.
+fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     let mut pending_keys: Vec<String> = Vec::new();
-    let mut index = 0;
-    while index < events.len() {
-        let event = events[index].clone();
+    loop {
+        let macro_active = interp
+            .lookup_var("executing-kbd-macro", env)
+            .is_some_and(|value| value.is_truthy());
+        if !macro_active {
+            return Ok(());
+        }
+        let Some(event) = current_kbd_macro_event(interp, 0) else {
+            return Ok(());
+        };
         let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
         let event_key = key_sequence_binding_text(&key)?;
         if pending_keys.is_empty() && event_key == "C-s" {
-            index += 1;
+            advance_kbd_macro_index(interp, 1);
             let mut search_text = String::new();
-            while index < events.len() {
-                if let Some(text) = keyboard_macro_self_insert_text(&events[index]) {
+            while let Some(next_event) = current_kbd_macro_event(interp, 0) {
+                if let Some(text) = keyboard_macro_self_insert_text(&next_event) {
                     search_text.push_str(&text);
-                    index += 1;
+                    advance_kbd_macro_index(interp, 1);
                 } else {
                     break;
                 }
@@ -197,19 +245,22 @@ fn execute_kbd_macro(
                 env,
             );
             pending_keys.clear();
-            index += 1;
+            advance_kbd_macro_index(interp, 1);
             continue;
         }
         let binding = key_binding(interp, &binding_key, env)?;
         if is_keymap_value(interp, &binding) {
-            index += 1;
+            advance_kbd_macro_index(interp, 1);
             continue;
         }
         if !binding.is_nil() {
+            advance_kbd_macro_index(interp, 1);
             execute_kbd_macro_command(interp, &binding, &event, env)?;
             interp.set_variable("current-prefix-arg", Value::Nil, env);
             pending_keys.clear();
-        } else if pending_keys.len() == 1
+            continue;
+        }
+        if pending_keys.len() == 1
             && let Some(text) = keyboard_macro_self_insert_text(&event)
         {
             interp.set_variable(
@@ -217,13 +268,36 @@ fn execute_kbd_macro(
                 Value::list([Value::Symbol("vector-literal".into()), event.clone()]),
                 env,
             );
+            advance_kbd_macro_index(interp, 1);
             execute_kbd_macro_self_insert(interp, &text, env)?;
             pending_keys.clear();
+            continue;
         }
-        index += 1;
+        pending_keys.clear();
+        advance_kbd_macro_index(interp, 1);
     }
-    interp.set_variable("this-command", Value::Nil, env);
-    Ok(Value::Nil)
+}
+
+// Batch recursive-edit: consume the remaining events of the innermost
+// executing keyboard macro until `exit-recursive-edit` throws `exit` or the
+// macro runs dry.
+fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    interp.command_loop_recursion_depth += 1;
+    let result = run_kbd_macro_events(interp, env);
+    interp.command_loop_recursion_depth -= 1;
+    match result {
+        Err(LispError::Throw(tag, value)) if matches!(&tag, Value::Symbol(symbol) if symbol == "exit") => {
+            if value.is_truthy() {
+                Err(LispError::SignalValue(Value::list([Value::Symbol(
+                    "quit".into(),
+                )])))
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        Err(error) => Err(error),
+        Ok(()) => Ok(Value::Nil),
+    }
 }
 
 fn execute_kbd_macro_command(
@@ -241,7 +315,7 @@ fn execute_kbd_macro_command(
     interp.set_variable("last-command-event", event.clone(), env);
     interp.set_variable("this-original-command", command.clone(), env);
     interp.set_variable("this-command", command.clone(), env);
-    run_named_hooks(
+    safe_run_named_hooks(
         interp,
         "pre-command-hook",
         env,
@@ -259,7 +333,7 @@ fn execute_kbd_macro_command(
     } else {
         call_interactively_impl(interp, std::slice::from_ref(command), env)?;
     }
-    run_named_hooks(
+    safe_run_named_hooks(
         interp,
         "post-command-hook",
         env,
@@ -278,14 +352,14 @@ fn execute_kbd_macro_self_insert(
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("this-original-command", command.clone(), env);
     interp.set_variable("this-command", command.clone(), env);
-    run_named_hooks(
+    safe_run_named_hooks(
         interp,
         "pre-command-hook",
         env,
         Some(interp.current_buffer_id()),
     )?;
     insert_text_with_hooks(interp, text, &[], false, false, env)?;
-    run_named_hooks(
+    safe_run_named_hooks(
         interp,
         "post-command-hook",
         env,
@@ -1487,6 +1561,28 @@ pub(super) fn call(
             }
         }
         "execute-kbd-macro" => execute_kbd_macro(interp, args, env),
+        "recursive-edit" => {
+            need_args(name, args, 0)?;
+            recursive_edit(interp, env)
+        }
+        "exit-recursive-edit" | "abort-recursive-edit" => {
+            need_args(name, args, 0)?;
+            if interp.command_loop_recursion_depth == 0 {
+                return Err(LispError::Signal("No recursive edit is in progress".into()));
+            }
+            Err(LispError::Throw(
+                Value::Symbol("exit".into()),
+                if name == "abort-recursive-edit" {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            ))
+        }
+        "recursion-depth" => {
+            need_args(name, args, 0)?;
+            Ok(Value::Integer(interp.command_loop_recursion_depth as i64))
+        }
         "this-command-keys"
         | "this-command-keys-vector"
         | "this-single-command-keys"

@@ -19,13 +19,79 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1916/7080 are verified locally against the current canonical
+- Tests through 1956/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1916/7080: support edebug backtrace macro replay`.
-- The next observed frontier is selector 1917,
-  `edebug-tests-break-in-lambda-out-of-defining-context` in
-  `test/lisp/emacs-lisp/edebug-tests.el`.
+  `Compat 1956/7080: run real edebug instrumentation and batch recursive edits`.
+- The next observed frontier is selector 1957,
+  `edebug-tests-writable-buffer-state-is-preserved` in
+  `test/lisp/emacs-lisp/edebug-tests.el` (oracle passed; emaxx failed with
+  condition type `void-variable`).
+- Environment note: this container verifies against a locally rebuilt
+  GNU Emacs 30.2 oracle (gnu/linux, native-compilation, built from the
+  Ubuntu `emacs_30.2+1.orig` source snapshot at `/home/user/emacs`); the
+  `compat/oracle.lock.json` repin for that oracle is intentionally left
+  uncommitted so the darwin pin in git history stays canonical.
+- Selector 1917, `edebug-tests-break-in-lambda-out-of-defining-context`,
+  passed after making `(eval-defun t)` run real Edebug instrumentation and
+  making Edebug's stop/step machinery work in batch: `beginning-of-defun`/
+  `end-of-defun` follow GNU lisp.el semantics instead of jumping to the
+  buffer limits, `def-edebug-spec`/`def-edebug-elem-spec`/`defmacro (declare
+  (debug ...))` store their spec properties, builtin macros carry the specs
+  GNU declares in preloaded Lisp, `cl-letf` binds special variables
+  dynamically like `let`, nested advice wrappers use unique capture names so
+  an inner wrapper cannot resolve an outer wrapper's original function,
+  `eval` enforces `max-lisp-eval-depth` (scaled for this evaluator's
+  per-subform recursion) instead of overflowing the Rust stack,
+  `load-read-function` exists/defaults to `read` and the preloaded
+  `eval-defun` reads through it so `edebug--read` can wrap forms,
+  a `simple_compat.el` prelude provides `eval-expression`,
+  `eval-expression-print-format`, `prin1-char`, `values--store-value`,
+  `event-modifiers`, `event-basic-type`, `eval-sexp-add-defvars`,
+  `syntax-ppss-toplevel-pos`, and `with-timeout-suspend`/`-unsuspend`,
+  `eventp` accepts integer/symbol/list events, special forms resolve through
+  function cells for `indirect-function`/`fboundp`/`macrop`, key lookup
+  honors `overriding-local-map`, `minor-mode-overriding-map-alist` and the
+  buffer local map in GNU order, keyboard macros maintain
+  `executing-kbd-macro`/`executing-kbd-macro-index` on a shared cursor, and
+  `recursive-edit`/`exit-recursive-edit`/`abort-recursive-edit`/
+  `recursion-depth` consume the innermost executing macro until `exit` is
+  thrown, with command hooks demoted through GNU's safe_run_hooks behavior,
+  batch window-configuration save/restore (`current-window-configuration`,
+  `set-window-configuration`, `window-configuration-p`, `select-window`,
+  `window-live-p`, `set-window-hscroll`), `read-kbd-macro`, and `setf`
+  support for Edebug's `edebug-after` generalized place. Selectors
+  1918..1956 passed in the same batch; grouped `check-all` file replay for
+  `test/lisp/emacs-lisp/edebug-tests.el` shows selector 1957 as the only
+  remaining mismatch. Exact replays run for this batch: selector
+  `edebug-tests-break-in-lambda-out-of-defining-context`, grouped
+  `check-all` replays for `edebug-tests.el`, `derived-tests.el`,
+  `easy-mmode-tests.el`, `cl-print-tests.el`; focused Rust regressions:
+  `cargo test defun_navigation_defaults_bracket_the_current_top_level_form`,
+  `cargo test defun_navigation_delegates_to_bound_mode_functions`,
+  `cargo test cl_letf_binds_special_variables_dynamically`,
+  `cargo test special_forms_resolve_through_function_cells`,
+  `cargo test temporary_file_directory_names_a_directory_with_trailing_separator`,
+  and `cargo test cl_defmethod_updates_generic_under_around_advice`.
+- Honesty caveat for the edebug batch: the interleaved keyboard-macro
+  assertions in `edebug-tests-run-kbd-macro` still do not execute because
+  `edebug-tests-prepare-macro`'s `cl-loop` shape (several sequential
+  `for VAR = EXPR` clauses with `while`, `vconcat ... into`,
+  `append ... into`, `finally return`, plus a nested
+  `for ... in ... until ... collect ... do` loop) is not supported by the
+  native `cl-loop` and currently yields an empty keyboard macro, so those
+  selectors match the oracle by status while the mid-macro `should` thunks
+  are skipped. Extending `cl-loop` for those shapes and re-verifying the
+  edebug file with live thunks is the highest-value next step after the
+  1957 frontier.
+- Observed pre-existing single-selector discrepancies in this Linux
+  environment (each fails identically on the parent commit's build, so they
+  are not regressions of this batch, but they contradict the recorded
+  verified-prefix state and deserve investigation):
+  `cl-macs-loop-until` (selector 1782) collects past its `until` clause,
+  `cl-generic-test-01-eql` fails its second-argument `eql` dispatch when run
+  as a single selector, and `cconv-tests-cl-defun-:documentation` fails in
+  the grouped `cconv-tests.el` replay.
 - Current verification cadence: for each batch, exact-replay the selectors
   touched by the batch and run impacted unit/regression tests; run full
   `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`,

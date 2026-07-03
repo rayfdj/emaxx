@@ -51,6 +51,126 @@ fn beginning_of_defun_raw_fallback(interp: &mut Interpreter, arg: i64) -> Result
     }
 }
 
+fn end_of_defun_call_end_function(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if let Some(function) = interp
+        .lookup_var("end-of-defun-function", env)
+        .filter(Value::is_truthy)
+    {
+        call_function_value(interp, &function, &[], env)?;
+    } else {
+        super::call(interp, "forward-sexp", &[Value::Integer(1)], env)?;
+    }
+    Ok(())
+}
+
+fn end_of_defun_skip_trailing(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    // GNU lisp.el treats point right after a close paren as still inside
+    // that defun: skip horizontal space and a trailing comment or newline.
+    if super::call(interp, "bolp", &[], env)?.is_truthy() {
+        return Ok(());
+    }
+    super::call(
+        interp,
+        "skip-chars-forward",
+        &[Value::String(" \t".into())],
+        env,
+    )?;
+    if super::call(
+        interp,
+        "looking-at",
+        &[Value::String("\\s<\\|\n".into())],
+        env,
+    )?
+    .is_truthy()
+    {
+        super::call(interp, "forward-line", &[Value::Integer(1)], env)?;
+    }
+    Ok(())
+}
+
+fn end_of_defun_impl(
+    interp: &mut Interpreter,
+    arg: i64,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut arg = if arg == 0 { 1 } else { arg };
+    let pos = interp.buffer.point();
+    let moves_to_eol = interp
+        .lookup_var("end-of-defun-moves-to-eol", env)
+        .map(|value| value.is_truthy())
+        .unwrap_or(true);
+    if moves_to_eol {
+        interp.buffer.end_of_line();
+    }
+    super::call(interp, "beginning-of-defun-raw", &[Value::Integer(1)], env)?;
+    let mut beg = interp.buffer.point();
+    end_of_defun_call_end_function(interp, env)?;
+    if arg <= 1 {
+        end_of_defun_skip_trailing(interp, env)?;
+    }
+    let mut success = false;
+    if arg > 0 {
+        if interp.buffer.point() > pos {
+            arg -= 1;
+        } else {
+            interp.buffer.goto_char(pos);
+        }
+        if arg != 0 {
+            success = super::call(
+                interp,
+                "beginning-of-defun-raw",
+                &[Value::Integer(-arg)],
+                env,
+            )?
+            .is_truthy();
+            if success {
+                end_of_defun_call_end_function(interp, env)?;
+            }
+        }
+    } else {
+        if interp.buffer.point() < pos {
+            arg += 1;
+        } else {
+            interp.buffer.goto_char(beg);
+        }
+        if arg != 0 {
+            success = super::call(
+                interp,
+                "beginning-of-defun-raw",
+                &[Value::Integer(-arg)],
+                env,
+            )?
+            .is_truthy();
+            if success {
+                beg = interp.buffer.point();
+                end_of_defun_call_end_function(interp, env)?;
+            }
+        }
+    }
+    end_of_defun_skip_trailing(interp, env)?;
+    while arg < 0 && interp.buffer.point() >= pos && success {
+        interp.buffer.goto_char(beg);
+        success = super::call(
+            interp,
+            "beginning-of-defun-raw",
+            &[Value::Integer(-arg)],
+            env,
+        )?
+        .is_truthy();
+        if interp.buffer.point() >= beg || !success {
+            arg = 0;
+        } else {
+            beg = interp.buffer.point();
+            end_of_defun_call_end_function(interp, env)?;
+            end_of_defun_skip_trailing(interp, env)?;
+        }
+    }
+    Ok(Value::Nil)
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -622,15 +742,18 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "beginning-of-defun" => {
-            let arg = args.first().cloned().unwrap_or(Value::Integer(1));
-            if let Some(function) = interp
-                .lookup_var("beginning-of-defun-function", env)
-                .filter(Value::is_truthy)
-            {
-                return call_function_value(interp, &function, &[arg], env);
+            let raw = super::call(
+                interp,
+                "beginning-of-defun-raw",
+                &[args.first().cloned().unwrap_or(Value::Nil)],
+                env,
+            )?;
+            if raw.is_truthy() {
+                interp.buffer.beginning_of_line();
+                Ok(Value::T)
+            } else {
+                Ok(Value::Nil)
             }
-            interp.buffer.goto_char(interp.buffer.point_min());
-            Ok(Value::T)
         }
         "beginning-of-defun-raw" => {
             need_arg_range(name, args, 0, 1)?;
@@ -649,15 +772,14 @@ pub(super) fn call(
             beginning_of_defun_raw_fallback(interp, arg)
         }
         "end-of-defun" => {
-            let arg = args.first().cloned().unwrap_or(Value::Integer(1));
-            if let Some(function) = interp
-                .lookup_var("end-of-defun-function", env)
-                .filter(Value::is_truthy)
-            {
-                return call_function_value(interp, &function, &[arg], env);
-            }
-            interp.buffer.goto_char(interp.buffer.point_max());
-            Ok(Value::T)
+            need_arg_range(name, args, 0, 2)?;
+            let arg = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
+            end_of_defun_impl(interp, arg, env)
         }
         "backward-sentence" => {
             need_arg_range(name, args, 0, 1)?;

@@ -186,11 +186,23 @@ impl Interpreter {
             "gc-cons-threshold" => Some(Value::Integer(800_000)),
             "auto-save-timeout" => Some(Value::Integer(30)),
             "auto-save-interval" => Some(Value::Integer(300)),
-            "temporary-file-directory" => {
-                Some(Value::String(std::env::temp_dir().display().to_string()))
-            }
+            "load-read-function" => Some(Value::Symbol("read".into())),
+            "debug-on-quit" => Some(Value::Nil),
+            "inhibit-redisplay" => Some(Value::Nil),
+            "inhibit-quit" => Some(Value::Nil),
+            "quit-flag" => Some(Value::Nil),
+            "overlay-arrow-position" => Some(Value::Nil),
+            "overlay-arrow-string" => Some(Value::Nil),
+            "track-mouse" => Some(Value::Nil),
+            "last-input-event" => Some(Value::Nil),
+            "last-event-frame" => Some(Value::Nil),
+            "last-nonmenu-event" => Some(Value::Nil),
+            "signal-hook-function" => Some(Value::Nil),
+            "minor-mode-overriding-map-alist" => Some(Value::Nil),
+            "standard-input" => Some(Value::T),
+            "temporary-file-directory" => Some(Value::String(temp_directory_name())),
             "ert-remote-temporary-file-directory" => {
-                let temporary = std::env::temp_dir().display().to_string();
+                let temporary = temp_directory_name();
                 Some(if self.has_feature("tramp") {
                     Value::String(format!("/mock::{temporary}"))
                 } else {
@@ -578,6 +590,12 @@ impl Interpreter {
         if primitives::is_builtin(name) {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
+        // Special forms live in function cells in GNU Emacs, so symbol
+        // indirection (indirect-function, fboundp, macrop) must resolve them
+        // instead of signaling a void-function error.
+        if primitives::is_special_form_name(name) {
+            return Some(Value::BuiltinFunc(name.to_string()));
+        }
         None
     }
 
@@ -819,4 +837,12 @@ impl Interpreter {
             current = next.clone();
         }
     }
+}
+
+fn temp_directory_name() -> String {
+    let mut directory = std::env::temp_dir().display().to_string();
+    if !directory.ends_with('/') {
+        directory.push('/');
+    }
+    directory
 }

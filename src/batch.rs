@@ -167,9 +167,11 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         let _ = interpreter.load_target(feature);
     }
 
-    let faces_compat = compat::project_root().join("src/lisp/faces_compat.el");
-    lisp::load_file_strict(interpreter, &faces_compat)
-        .map_err(|error| format!("load {}: {error}", faces_compat.display()))?;
+    for compat_library in ["src/lisp/faces_compat.el", "src/lisp/simple_compat.el"] {
+        let path = compat::project_root().join(compat_library);
+        lisp::load_file_strict(interpreter, &path)
+            .map_err(|error| format!("load {}: {error}", path.display()))?;
+    }
 
     Ok(())
 }

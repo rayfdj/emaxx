@@ -130,12 +130,13 @@ impl Interpreter {
         } else {
             3
         };
-        // Skip (declare ...) forms
+        // Process and skip (declare ...) forms.
         let body_start = if body_start < items.len() {
             if let Value::Cons(_, _) = &items[body_start] {
                 if let Ok(decl) = items[body_start].to_vec() {
                     if let Some(Value::Symbol(s)) = decl.first() {
                         if s == "declare" {
+                            self.record_defmacro_declarations(&name, &decl[1..]);
                             body_start + 1
                         } else {
                             body_start
@@ -155,6 +156,19 @@ impl Interpreter {
         let body: Vec<Value> = items[body_start..].to_vec();
         self.macros.push((name.clone(), params, body));
         Ok(Value::Symbol(name))
+    }
+
+    fn record_defmacro_declarations(&mut self, name: &str, declarations: &[Value]) {
+        for declaration in declarations {
+            let Ok(parts) = declaration.to_vec() else {
+                continue;
+            };
+            if let (Some(Value::Symbol(head)), Some(spec)) = (parts.first(), parts.get(1))
+                && head == "debug"
+            {
+                self.put_symbol_property(name, "edebug-form-spec", spec.clone());
+            }
+        }
     }
 
     pub(super) fn sf_easy_menu_define(

@@ -2785,6 +2785,34 @@ impl Interpreter {
         Ok(Value::Symbol(name))
     }
 
+    pub(super) fn sf_def_edebug_elem_spec(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if items.len() != 3 {
+            return Err(LispError::WrongNumberOfArgs(
+                "def-edebug-elem-spec".into(),
+                items.len().saturating_sub(1),
+            ));
+        }
+        let name_value = self.eval(&items[1], env)?;
+        let spec = self.eval(&items[2], env)?;
+        let name = name_value.as_symbol()?.to_string();
+        if name.starts_with('&') || name.starts_with(':') {
+            return Err(LispError::Signal(
+                "Edebug spec name cannot start with '&' or ':'".into(),
+            ));
+        }
+        if !matches!(spec, Value::Cons(_, _)) {
+            return Err(LispError::Signal(format!(
+                "Edebug spec has to be a list: {spec}"
+            )));
+        }
+        self.put_symbol_property(&name, "edebug-elem-spec", spec.clone());
+        Ok(spec)
+    }
+
     fn maybe_notify_edebug_new_definition(
         &mut self,
         name: &str,

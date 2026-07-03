@@ -74,6 +74,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "window-point"
             | "window-hscroll"
             | "window-vscroll"
+            | "set-window-hscroll"
             | "pos-visible-in-window-p"
             | "window-width"
             | "window-height"
@@ -96,6 +97,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "color-values"
             | "color-values-from-color-spec"
             | "selected-window"
+            | "select-window"
+            | "current-window-configuration"
+            | "set-window-configuration"
+            | "window-configuration-p"
             | "window-buffer"
             | "set-window-buffer"
             | "window-list"
@@ -118,6 +123,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "frame-list"
             | "face-set-after-frame-default"
             | "windowp"
+            | "window-live-p"
             | "window-minibuffer-p"
             | "window-at"
             | "split-window"
@@ -1065,6 +1071,10 @@ pub(super) fn call(
             need_arg_range(name, args, 0, 2)?;
             Ok(Value::Integer(0))
         }
+        "set-window-hscroll" => {
+            need_arg_range(name, args, 2, 3)?;
+            Ok(args.get(1).cloned().unwrap_or(Value::Integer(0)))
+        }
         "pos-visible-in-window-p" => {
             need_arg_range(name, args, 0, 3)?;
             if interp
@@ -1326,6 +1336,36 @@ pub(super) fn call(
                 .unwrap_or(Value::Nil))
         }
         "selected-window" => Ok(interp.selected_window_value()),
+        "select-window" => {
+            need_arg_range(name, args, 1, 2)?;
+            let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {
+                return Err(LispError::TypeError("window".into(), args[0].type_name()));
+            };
+            interp.set_selected_window_id(window_id);
+            if let Some(buffer_id) = window_buffer_id(interp, &args[0])
+                && interp.has_buffer_id(buffer_id)
+            {
+                interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
+            }
+            Ok(args[0].clone())
+        }
+        "current-window-configuration" => {
+            need_arg_range(name, args, 0, 1)?;
+            Ok(interp.window_configuration_value())
+        }
+        "set-window-configuration" => {
+            need_arg_range(name, args, 1, 3)?;
+            let restored = interp.apply_window_configuration_value(&args[0])?;
+            Ok(if restored { Value::T } else { Value::Nil })
+        }
+        "window-configuration-p" => {
+            need_args(name, args, 1)?;
+            Ok(if interp.is_window_configuration_value(&args[0]) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "window-buffer" => {
             need_arg_range(name, args, 0, 1)?;
             let window = args
@@ -1492,7 +1532,7 @@ pub(super) fn call(
             need_arg_range(name, args, 1, 2)?;
             Ok(Value::Nil)
         }
-        "windowp" => {
+        "windowp" | "window-live-p" => {
             need_args(name, args, 1)?;
             Ok(if is_window_value(interp, &args[0]) {
                 Value::T

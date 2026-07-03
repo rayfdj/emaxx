@@ -206,7 +206,14 @@ pub(super) fn call(
         }
         "eventp" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            let truthy = match &args[0] {
+                Value::Integer(_) => true,
+                Value::Symbol(symbol_name) => symbol_name != "nil" && !symbol_name.starts_with(':'),
+                Value::T => true,
+                Value::Cons(car, _) => matches!(&*car.borrow(), Value::Symbol(_) | Value::T),
+                _ => false,
+            };
+            Ok(if truthy { Value::T } else { Value::Nil })
         }
         "arrayp" => {
             need_args(name, args, 1)?;

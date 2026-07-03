@@ -491,6 +491,18 @@ fn make_temp_name_preserves_prefix_and_changes_across_calls() {
 }
 
 #[test]
+fn temporary_file_directory_names_a_directory_with_trailing_separator() {
+    assert_eq!(
+        eval_str(
+            r#"(list (string-suffix-p "/" temporary-file-directory)
+                     (equal temporary-file-directory
+                            (file-name-as-directory temporary-file-directory)))"#
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
 fn write_region_accepts_string_data_even_with_numeric_end_argument() {
     assert_eq!(
         eval_str(
@@ -3072,22 +3084,65 @@ fn derived_mode_all_parents_reports_parent_alias_and_extra_modes() {
 fn defun_navigation_delegates_to_bound_mode_functions() {
     assert_eq!(
         eval_str(
-            "(let (bod-param eod-param
+            "(let (bod-param (eod-calls 0)
                        (beginning-of-defun-function
                         (lambda (arg) (setq bod-param arg) 'bod-result))
                        (end-of-defun-function
-                        (lambda (arg) (setq eod-param arg) 'eod-result)))
-                   (list (beginning-of-defun 3)
-                         bod-param
-                         (end-of-defun 4)
-                         eod-param))"
+                        (lambda () (setq eod-calls (1+ eod-calls)))))
+                   (let ((bod-value (beginning-of-defun 3))
+                         (first-bod-param bod-param))
+                     (end-of-defun)
+                     (list bod-value first-bod-param bod-param eod-calls)))"
         ),
         Value::list([
-            Value::Symbol("bod-result".into()),
+            Value::T,
             Value::Integer(3),
-            Value::Symbol("eod-result".into()),
-            Value::Integer(4),
+            Value::Integer(-1),
+            Value::Integer(2),
         ])
+    );
+}
+
+#[test]
+fn cl_letf_binds_special_variables_dynamically() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defvar cl-letf-probe-var nil)
+                   (defun cl-letf-probe () cl-letf-probe-var)
+                   (list (cl-letf ((cl-letf-probe-var t))
+                           (let ((cl-letf-probe-var 'inner))
+                             (cl-letf-probe)))
+                         cl-letf-probe-var))"
+        ),
+        Value::list([Value::Symbol("inner".into()), Value::Nil])
+    );
+}
+
+#[test]
+fn special_forms_resolve_through_function_cells() {
+    assert_eq!(
+        eval_str("(list (fboundp 'while) (macrop 'while) (eventp 1) (eventp ?A) (eventp 'foo))"),
+        Value::list([Value::T, Value::Nil, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn defun_navigation_defaults_bracket_the_current_top_level_form() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+                   (insert \"(defun one ()\\n  1)\\n\\n(defun two ()\\n  2)\\n\\n(defun three ()\\n  3)\\n\")
+                   (goto-char (point-min))
+                   (search-forward \"defun two\")
+                   (let (positions)
+                     (end-of-defun)
+                     (push (point) positions)
+                     (beginning-of-defun)
+                     (push (point) positions)
+                     (nreverse positions)))"
+        ),
+        Value::list([Value::Integer(40), Value::Integer(21)])
     );
 }
 
