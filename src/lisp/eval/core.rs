@@ -6,7 +6,40 @@ fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
 }
 
 impl Interpreter {
+    // This evaluator recurses once per subform rather than once per
+    // funcall/eval level like GNU Emacs, so the same Lisp program nests
+    // several times deeper here.  Scale the user-visible limit so honest
+    // deep recursion still fits while runaway recursion keeps signaling
+    // the GNU error instead of exhausting the Rust stack.
+    const LISP_EVAL_DEPTH_SCALE: usize = 4;
+
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        if !matches!(expr, Value::Cons(_, _)) {
+            return self.eval_inner(expr, env);
+        }
+        self.lisp_eval_depth += 1;
+        if self.lisp_eval_depth > 800 * Self::LISP_EVAL_DEPTH_SCALE
+            && self.lisp_eval_depth > self.max_lisp_eval_depth()
+        {
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::Signal(
+                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
+            ));
+        }
+        let result = self.eval_inner(expr, env);
+        self.lisp_eval_depth -= 1;
+        result
+    }
+
+    fn max_lisp_eval_depth(&self) -> usize {
+        self.global_value("max-lisp-eval-depth")
+            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(1600)
+            .saturating_mul(Self::LISP_EVAL_DEPTH_SCALE)
+    }
+
+    fn eval_inner(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         match expr {
             Value::Nil
             | Value::T
@@ -326,13 +359,25 @@ impl Interpreter {
                             return self.sf_with_eval_after_load(&items, env);
                         }
                         "with-no-warnings" => return self.sf_progn(&items[1..], env),
-                        "declare"
-                        | "declare-function"
-                        | "cl-declaim"
-                        | "declaim"
-                        | "def-edebug-elem-spec"
-                        | "def-edebug-spec" => {
+                        "declare" | "declare-function" | "cl-declaim" | "declaim" => {
                             return Ok(Value::Nil);
+                        }
+                        "def-edebug-spec" => {
+                            // (def-edebug-spec SYMBOL SPEC), both unevaluated.
+                            if let (Some(symbol), Some(spec)) = (items.get(1), items.get(2))
+                                && let Ok(symbol_name) = symbol.as_symbol()
+                            {
+                                let symbol_name = symbol_name.to_string();
+                                self.put_symbol_property(
+                                    &symbol_name,
+                                    "edebug-form-spec",
+                                    spec.clone(),
+                                );
+                            }
+                            return Ok(Value::Nil);
+                        }
+                        "def-edebug-elem-spec" => {
+                            return self.sf_def_edebug_elem_spec(&items, env);
                         }
                         "cl-deftype" => return self.sf_cl_deftype(&items, env),
                         "eval-and-compile" | "eval-when-compile" => {

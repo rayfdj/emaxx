@@ -1140,6 +1140,7 @@ impl Interpreter {
         env.push(Vec::new());
         let mut rebound = Vec::new();
         let mut rebound_places = Vec::new();
+        let mut special_restores = Vec::new();
         let setup = (|| -> Result<(), LispError> {
             for binding in &bindings {
                 let parts = binding.to_vec()?;
@@ -1148,6 +1149,13 @@ impl Interpreter {
                 }
                 match &parts[0] {
                     Value::Symbol(name) => {
+                        // GNU cl-letf treats a plain symbol place like `let`:
+                        // special variables get a dynamic binding.
+                        if self.is_special_variable(name) {
+                            let value = self.eval(&parts[1], env)?;
+                            special_restores.push(self.bind_special_variable(name, value, env)?);
+                            continue;
+                        }
                         let value = Self::stored_value(self.eval(&parts[1], env)?);
                         let frame = env
                             .last_mut()
@@ -1193,6 +1201,13 @@ impl Interpreter {
         };
         env.pop();
         let mut restore_error = None;
+        for restore in special_restores.into_iter().rev() {
+            if let Err(error) = self.restore_special_binding(restore, env)
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
+            }
+        }
         for (place, value) in rebound_places.into_iter().rev() {
             if let Err(error) = self.set_setf_place_value(&place, value, env)
                 && restore_error.is_none()

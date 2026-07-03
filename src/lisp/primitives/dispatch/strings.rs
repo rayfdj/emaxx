@@ -57,6 +57,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "subst-char-in-string"
             | "replace-regexp-in-string"
             | "edmacro-parse-keys"
+            | "read-kbd-macro"
             | "string-trim-left"
             | "string-trim-right"
             | "string-trim"
@@ -1200,6 +1201,12 @@ pub(super) fn call(
             Ok(Value::String(result))
         }
         "edmacro-parse-keys" => {
+            need_arg_range(name, args, 1, 2)?;
+            parse_edmacro_key_sequence(&string_text(&args[0])?)
+        }
+        "read-kbd-macro" => {
+            // The Lisp calling convention with a string START returns the
+            // parsed macro instead of installing it.
             need_arg_range(name, args, 1, 2)?;
             parse_edmacro_key_sequence(&string_text(&args[0])?)
         }

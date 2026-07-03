@@ -35,8 +35,74 @@ mod ert;
 
 pub(crate) use rx::compile_rx_to_string;
 
-fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
+// Edebug specs that GNU Emacs registers through `declare (debug ...)` forms
+// in preloaded Lisp files for macros emaxx implements natively.
+fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
     [
+        (
+            "lambda",
+            "(&define lambda-list lambda-doc [&optional (\"interactive\" interactive)] def-body)",
+        ),
+        ("when", "t"),
+        ("unless", "t"),
+        ("dolist", "((symbolp form &optional form) body)"),
+        ("dotimes", "((symbolp form &optional form) body)"),
+        ("push", "(form gv-place)"),
+        ("pop", "(gv-place)"),
+        ("setq-default", "setq"),
+        ("setq-local", "setq"),
+        ("buffer-local-set-state", "setq"),
+        ("defvar-local", "defvar"),
+        ("ignore-errors", "t"),
+        ("ignore-error", "t"),
+        ("letrec", "let"),
+        ("dlet", "let"),
+        (
+            "if-let*",
+            "((&rest [&or symbolp (symbolp form) (form)]) body)",
+        ),
+        ("when-let*", "if-let*"),
+        ("and-let*", "if-let*"),
+        (
+            "if-let",
+            "([&or (symbolp form) (&rest [&or symbolp (symbolp form) (form)])] body)",
+        ),
+        ("when-let", "if-let"),
+        ("while-let", "if-let"),
+        ("with-current-buffer", "t"),
+        ("with-temp-buffer", "t"),
+        ("with-temp-message", "t"),
+        ("with-local-quit", "t"),
+        ("while-no-input", "t"),
+        ("save-window-excursion", "t"),
+        ("with-selected-window", "t"),
+        ("with-selected-frame", "t"),
+        ("atomic-change-group", "t"),
+        ("with-syntax-table", "t"),
+        ("with-demoted-errors", "t"),
+        ("condition-case-unless-debug", "condition-case"),
+        ("delay-mode-hooks", "t"),
+        ("track-mouse", "(def-body)"),
+        ("noreturn", "t"),
+        ("1value", "t"),
+    ]
+    .into_iter()
+    .filter_map(|(symbol, spec_text)| {
+        let spec = crate::lisp::reader::Reader::new(spec_text)
+            .read_all()
+            .ok()?
+            .into_iter()
+            .next()?;
+        Some((
+            symbol.to_string(),
+            vec![("edebug-form-spec".to_string(), spec)],
+        ))
+    })
+    .collect()
+}
+
+fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
+    let mut properties: Vec<(String, Vec<(String, Value)>)> = [
         ("autoload", 3),
         ("defadvice", 3),
         ("defalias", 3),
@@ -61,7 +127,17 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
             vec![("doc-string-elt".to_string(), Value::Integer(doc_index))],
         )
     })
-    .collect()
+    .collect();
+    properties.extend(builtin_edebug_form_specs());
+    properties
+}
+
+// One live keyboard-macro execution: recursive edits started while the macro
+// runs continue consuming events from the same shared cursor.
+#[derive(Clone, Debug)]
+pub(crate) struct KbdMacroExecutionState {
+    pub(crate) events: Vec<Value>,
+    pub(crate) index: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -341,6 +417,9 @@ pub struct Interpreter {
     variable_aliases: Vec<(String, String)>,
     /// Variables with dynamic binding semantics.
     special_variables: Vec<String>,
+    pub(crate) lisp_eval_depth: usize,
+    pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
+    pub(crate) command_loop_recursion_depth: usize,
     /// Symbol properties keyed by symbol name.
     symbol_properties: Vec<(String, Vec<(String, Value)>)>,
     /// Symbols explicitly interned into the standard obarray.
@@ -558,8 +637,33 @@ impl Interpreter {
                 ("emaxx-external-debugging-output-target".into(), Value::Nil),
             ],
             variable_aliases: Vec::new(),
+            lisp_eval_depth: 0,
+            kbd_macro_executions: Vec::new(),
+            command_loop_recursion_depth: 0,
             special_variables: vec![
                 "case-fold-search".into(),
+                "executing-kbd-macro".into(),
+                "executing-kbd-macro-index".into(),
+                "defining-kbd-macro".into(),
+                "track-mouse".into(),
+                "last-input-event".into(),
+                "last-command-event".into(),
+                "last-event-frame".into(),
+                "last-nonmenu-event".into(),
+                "signal-hook-function".into(),
+                "minor-mode-overriding-map-alist".into(),
+                "overriding-terminal-local-map".into(),
+                "overriding-local-map".into(),
+                "standard-input".into(),
+                "debug-on-error".into(),
+                "debug-on-quit".into(),
+                "inhibit-redisplay".into(),
+                "inhibit-quit".into(),
+                "quit-flag".into(),
+                "unread-command-events".into(),
+                "overlay-arrow-position".into(),
+                "overlay-arrow-string".into(),
+                "load-read-function".into(),
                 "byte-compile-log-buffer".into(),
                 "command-line-args".into(),
                 "command-line-args-left".into(),
@@ -584,6 +688,7 @@ impl Interpreter {
                 "left-margin".into(),
                 "last-command".into(),
                 "load-force-doc-strings".into(),
+                "load-read-function".into(),
                 "null-device".into(),
                 "overwrite-mode".into(),
                 "process-connection-type".into(),
@@ -2247,7 +2352,9 @@ fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, 
     };
     for frame in closure_env.borrow().iter() {
         for (name, value) in frame {
-            if name == "__emaxx-advice-around-original" || name == "__emaxx-advice-after-original" {
+            if name.starts_with("__emaxx-advice-around-original")
+                || name.starts_with("__emaxx-advice-after-original")
+            {
                 return Some((closure_env.clone(), name.clone(), value.clone()));
             }
         }

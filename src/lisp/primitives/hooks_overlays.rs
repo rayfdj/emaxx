@@ -74,6 +74,37 @@ pub(crate) fn run_named_hooks(
     Ok(())
 }
 
+// GNU runs the command-loop hooks through safe_run_hooks: an error in one
+// hook function is demoted to a message and the remaining functions still
+// run.  Nonlocal exits (throw) keep propagating.
+pub(crate) fn safe_run_named_hooks(
+    interp: &mut Interpreter,
+    hook_name: &str,
+    env: &mut crate::lisp::types::Env,
+    buffer_id: Option<u64>,
+) -> Result<(), LispError> {
+    for hook in hook_values(interp, hook_name, env, buffer_id) {
+        match call_function_value(interp, &hook, &[], env) {
+            Ok(_) => {}
+            Err(error @ LispError::Throw(_, _)) => return Err(error),
+            Err(error) => {
+                let function_name = match &hook {
+                    Value::Symbol(name) | Value::BuiltinFunc(name) => name.clone(),
+                    _ => "anonymous-function".to_string(),
+                };
+                let message = format!("Error in {hook_name} ({function_name}): {error}");
+                let _ = crate::lisp::primitives::call(
+                    interp,
+                    "message",
+                    &[Value::String(message)],
+                    env,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn ert_simulate_command(
     interp: &mut Interpreter,
     args: &[Value],

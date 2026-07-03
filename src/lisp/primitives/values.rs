@@ -2945,8 +2945,81 @@ pub(crate) fn command_remapping(
     Ok(Value::Nil)
 }
 
+// The keymaps consulted for command dispatch, in GNU order: the overriding
+// maps suppress minor-mode and local maps entirely; otherwise
+// minor-mode-overriding-map-alist entries replace the matching
+// minor-mode-map-alist entries, followed by the buffer's local map.
+pub(crate) fn active_command_keymaps(
+    interp: &Interpreter,
+    env: &Env,
+) -> Result<Vec<Value>, LispError> {
+    let mut maps = Vec::new();
+    let mut overriding = false;
+    for variable in ["overriding-terminal-local-map", "overriding-local-map"] {
+        if let Some(map) = interp.lookup_var(variable, env).filter(Value::is_truthy) {
+            if is_keymap_value(interp, &map) {
+                maps.push(map);
+            }
+            overriding = true;
+        }
+    }
+    if overriding {
+        return Ok(maps);
+    }
+    let mut overridden_modes = Vec::new();
+    if let Some(alist) = interp.lookup_var("minor-mode-overriding-map-alist", env) {
+        for entry in alist.to_vec().unwrap_or_default() {
+            let Value::Cons(mode, map) = entry else {
+                continue;
+            };
+            let Value::Symbol(mode_name) = mode.borrow().clone() else {
+                continue;
+            };
+            let map_value = map.borrow().clone();
+            if interp
+                .lookup_var(&mode_name, env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                if is_keymap_value(interp, &map_value) {
+                    maps.push(map_value);
+                }
+                overridden_modes.push(mode_name);
+            }
+        }
+    }
+    if let Some(alist) = interp.lookup_var("minor-mode-map-alist", env) {
+        for entry in alist.to_vec().unwrap_or_default() {
+            let Value::Cons(mode, map) = entry else {
+                continue;
+            };
+            let Value::Symbol(mode_name) = mode.borrow().clone() else {
+                continue;
+            };
+            if overridden_modes.contains(&mode_name) {
+                continue;
+            }
+            let map_value = map.borrow().clone();
+            if interp
+                .lookup_var(&mode_name, env)
+                .is_some_and(|value| value.is_truthy())
+                && is_keymap_value(interp, &map_value)
+            {
+                maps.push(map_value);
+            }
+        }
+    }
+    if let Some(map) = interp
+        .lookup_var("current-local-map", env)
+        .filter(Value::is_truthy)
+        && is_keymap_value(interp, &map)
+    {
+        maps.push(map);
+    }
+    Ok(maps)
+}
+
 pub(crate) fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<Value, LispError> {
-    let maps = active_minor_mode_maps(interp, env)?;
+    let maps = active_command_keymaps(interp, env)?;
     for map in &maps {
         let binding = keymap_lookup_binding(interp, map, key)?;
         if !binding.is_nil() {

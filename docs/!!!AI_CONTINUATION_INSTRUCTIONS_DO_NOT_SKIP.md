@@ -18,19 +18,54 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 1786/7080.
-- Latest pushed batch: `Compat 1786/7080: support cl-loop with groups`.
-- Next frontier: selector 1787, `cl-macs-test--symbol-macrolet` in
-  `test/lisp/emacs-lisp/cl-macs-tests.el`.
+- Verified through selector 1956/7080.
+- Latest pushed batch:
+  `Compat 1956/7080: run real edebug instrumentation and batch recursive edits`.
+- Next frontier: selector 1957, `edebug-tests-writable-buffer-state-is-preserved`
+  in `test/lisp/emacs-lisp/edebug-tests.el`.
 - Observed frontier mismatch:
   - Oracle GNU Emacs: passed.
-  - emaxx: failed with condition type `error`.
+  - emaxx: failed with condition type `void-variable`.
+- High-value follow-up alongside the frontier: extend the native `cl-loop`
+  so `edebug-tests-prepare-macro` works (several sequential `for VAR = EXPR`
+  clauses with `while`, `vconcat ... into`, `append ... into`,
+  `finally return`, plus a nested `for ... in ... until ... collect ... do`
+  loop). Until then the edebug keyboard-macro tests match the oracle by
+  status but their mid-macro assertions run against an empty macro. See the
+  honesty caveat in `docs/compatibility-goal.md`.
+- Known pre-existing single-selector discrepancies in this environment (fail
+  identically on the parent commit): `cl-macs-loop-until` (1782),
+  `cl-generic-test-01-eql`, `cconv-tests-cl-defun-:documentation`.
 
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector cl-macs-test--symbol-macrolet --file test/lisp/emacs-lisp/cl-macs-tests.el
+cargo run --bin compat-harness -- run --scope all --selector edebug-tests-writable-buffer-state-is-preserved --file test/lisp/emacs-lisp/edebug-tests.el
 ```
+
+## Oracle Setup In A Fresh Container
+
+If the sibling `../emacs` checkout is missing (fresh cloud container), rebuild
+the oracle before anything else. GNU/GitHub sources are blocked by the network
+policy, but `archive.ubuntu.com` is reachable:
+
+1. `curl -O http://archive.ubuntu.com/ubuntu/pool/universe/e/emacs/emacs_30.2+1.orig.tar.xz`,
+   extract to `../emacs`, `git init` + commit it.
+2. The Ubuntu `+1` repack strips GFDL docs and `admin/unidata/IVD_Sequences.txt`;
+   stub `doc/{emacs,lispintro,lispref,misc}/Makefile.in` with no-op targets
+   (include a `.SUFFIXES:` override so `org.texi` matches the catch-all rule)
+   plus minimal `emacs.texi`/`emacs-lisp-intro.texi`/`elisp.texi` files that
+   carry a `@direntry`, and `touch admin/unidata/IVD_Sequences.txt`.
+3. `apt-get install build-essential pkg-config texinfo autoconf libgnutls28-dev
+   libncurses-dev libgccjit-13-dev libgmp-dev libxml2-dev libsqlite3-dev
+   zlib1g-dev`, then `./autogen.sh && ./configure --with-native-compilation
+   --without-x && make -j$(nproc)`.
+4. Repin: `cargo run --bin compat-harness -- oracle pin --emacs
+   ../emacs/src/emacs --repo ../emacs`. Leave the resulting
+   `compat/oracle.lock.json` change uncommitted; the darwin pin in git history
+   stays canonical.
+5. Run the Rust test suite as a non-root user; several tests assert
+   unwritable-file behavior that is vacuous under root.
 
 ## Non-Negotiable Rules
 

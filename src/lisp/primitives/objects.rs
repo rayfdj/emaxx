@@ -1,9 +1,16 @@
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Nested advice wrappers execute with their caller's frames visible, so each
+// wrapper needs unique capture names or an inner wrapper resolves the outer
+// wrapper's captured original/advice values.
+static ADVICE_WRAPPER_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value {
-    let args_name = "__emaxx-advice-after-args".to_string();
-    let original_name = "__emaxx-advice-after-original".to_string();
-    let advice_name = "__emaxx-advice-after-function".to_string();
+    let unique = ADVICE_WRAPPER_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let args_name = format!("__emaxx-advice-after-args-{unique}");
+    let original_name = format!("__emaxx-advice-after-original-{unique}");
+    let advice_name = format!("__emaxx-advice-after-function-{unique}");
     Value::Lambda(
         vec!["&rest".into(), args_name.clone()],
         vec![Value::list([
@@ -17,9 +24,10 @@ pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value
 }
 
 pub(crate) fn make_advice_wrapper_around(original: Value, advice: Value) -> Value {
-    let args_name = "__emaxx-advice-around-args".to_string();
-    let original_name = "__emaxx-advice-around-original".to_string();
-    let advice_name = "__emaxx-advice-around-function".to_string();
+    let unique = ADVICE_WRAPPER_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let args_name = format!("__emaxx-advice-around-args-{unique}");
+    let original_name = format!("__emaxx-advice-around-original-{unique}");
+    let advice_name = format!("__emaxx-advice-around-function-{unique}");
     Value::Lambda(
         vec!["&rest".into(), args_name.clone()],
         vec![Value::list([

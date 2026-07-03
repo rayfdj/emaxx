@@ -91,7 +91,8 @@ pub(crate) fn preloaded_eval_defun() -> Value {
                     Value::list([
                         Value::Symbol("form".into()),
                         Value::list([
-                            Value::Symbol("read".into()),
+                            Value::Symbol("funcall".into()),
+                            Value::Symbol("load-read-function".into()),
                             Value::list([Value::Symbol("current-buffer".into())]),
                         ]),
                     ]),
