@@ -1229,15 +1229,46 @@ pub(crate) fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Resu
     let (text, coding, multibyte) = current_buffer_file_text(interp, env, &path)?;
     let current_id = interp.current_buffer_id();
     let related = interp.related_buffer_ids(current_id);
-    let name = interp.buffer.name.clone();
-    let file = interp.buffer.file.clone();
-    let file_truename = interp.buffer.file_truename.clone();
-    let inhibit_hooks = interp.buffer.inhibit_hooks;
-    interp.buffer = crate::buffer::Buffer::from_text(&name, &text);
+    // Like `insert-file-contents' with REPLACE: keep the common head and
+    // tail of the old and new contents, so markers outside the differing
+    // region keep pointing at the text they marked (arc-mode's
+    // `archive-proper-file-start' must collapse to the front of the raw
+    // image when the summary above it disappears on revert).
+    let old_text = interp.buffer.full_buffer_string();
+    if old_text != text {
+        let old_chars: Vec<char> = old_text.chars().collect();
+        let new_chars: Vec<char> = text.chars().collect();
+        let mut prefix = 0;
+        while prefix < old_chars.len()
+            && prefix < new_chars.len()
+            && old_chars[prefix] == new_chars[prefix]
+        {
+            prefix += 1;
+        }
+        let mut suffix = 0;
+        while suffix < old_chars.len() - prefix
+            && suffix < new_chars.len() - prefix
+            && old_chars[old_chars.len() - 1 - suffix] == new_chars[new_chars.len() - 1 - suffix]
+        {
+            suffix += 1;
+        }
+        let saved_point = interp.buffer.point();
+        interp.buffer.widen();
+        let delete_from = prefix + 1;
+        let delete_to = old_chars.len() - suffix + 1;
+        if delete_from < delete_to {
+            let _ = interp.delete_region_current_buffer(delete_from, delete_to);
+        }
+        if prefix < new_chars.len() - suffix {
+            let middle: String = new_chars[prefix..new_chars.len() - suffix].iter().collect();
+            interp.buffer.goto_char(delete_from);
+            interp.insert_current_buffer(&middle);
+        }
+        interp
+            .buffer
+            .goto_char(saved_point.min(new_chars.len() + 1));
+    }
     interp.buffer.set_multibyte(multibyte);
-    interp.buffer.file = file;
-    interp.buffer.file_truename = file_truename;
-    interp.buffer.inhibit_hooks = inhibit_hooks;
     interp.buffer.set_unmodified();
     interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
     interp.set_buffer_local_value(
@@ -1251,17 +1282,7 @@ pub(crate) fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Resu
             continue;
         }
         if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-            let name = buffer.name.clone();
-            let file = buffer.file.clone();
-            let file_truename = buffer.file_truename.clone();
-            let inhibit_hooks = buffer.inhibit_hooks;
-            let point = buffer.point().min(text.chars().count() + 1);
-            *buffer = crate::buffer::Buffer::from_text(&name, &text);
             buffer.set_multibyte(multibyte);
-            buffer.file = file;
-            buffer.file_truename = file_truename;
-            buffer.inhibit_hooks = inhibit_hooks;
-            buffer.goto_char(point);
             buffer.set_unmodified();
             buffer.set_visited_file_modtime(visited_file_modtime);
         }

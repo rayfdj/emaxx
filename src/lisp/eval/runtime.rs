@@ -170,6 +170,17 @@ impl Interpreter {
         let Some(path) = self.resolve_load_target(target) else {
             return Err(load_file_missing_error(target));
         };
+        // GNU cl-macs.el starts with `(require 'cl-lib)'.  emaxx treats
+        // cl-lib as preloaded, so that require is a no-op here; when the
+        // runtime environment lacks cl-lib's Lisp-level helpers (e.g. a bare
+        // interpreter that never loaded simple_compat.el), load the real
+        // cl-lib.el first so cl-macs macro expanders can call them.
+        if target == "cl-macs"
+            && self.lookup_function("cl-copy-list", &Env::new()).is_err()
+            && !self.loading_features.iter().any(|name| name == "cl-lib")
+        {
+            self.load_target("cl-lib")?;
+        }
         crate::lisp::load_file_strict(self, &path)?;
         Ok(path)
     }
@@ -184,6 +195,17 @@ impl Interpreter {
             return Ok(Value::Symbol(feature.to_string()));
         }
         if is_compat_preloaded_feature(feature) {
+            // GNU cl-lib.el ends with `(load "cl-loaddefs" ...)': the
+            // autoloads for the rest of the cl- namespace must still be
+            // registered even though the library itself is preloaded.
+            if matches!(feature, "cl-lib" | "cl-extra" | "cl-generic")
+                && !self.has_feature("cl-loaddefs")
+            {
+                if let Some(path) = self.resolve_load_target("cl-loaddefs") {
+                    crate::lisp::load_file_strict(self, &path)?;
+                }
+                self.provide_feature_with_after_load("cl-loaddefs")?;
+            }
             return self.provide_feature_with_after_load(feature);
         }
         if feature == "cus-edit" || target == Some("cus-edit") {
@@ -1252,6 +1274,12 @@ impl Interpreter {
             .cloned()
             .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
         Ok(self.create_record(&record.type_name, record.slots))
+    }
+
+    pub(crate) fn has_lisp_macro(&self, name: &str) -> bool {
+        self.macros
+            .iter()
+            .any(|(macro_name, _, _)| macro_name == name)
     }
 
     pub fn provide_feature(&mut self, feature: &str) {

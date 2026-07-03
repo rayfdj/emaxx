@@ -388,7 +388,17 @@ fn format_value(
             }
             write!(f, "]")
         }
-        Value::Cons(_, _) => {
+        Value::Cons(car, cdr) => {
+            // GNU prints reader shorthands: (quote X) as 'X and
+            // (function X) as #'X.
+            if let Value::Symbol(head) = &*car.borrow()
+                && (head == "quote" || head == "function")
+                && let Value::Cons(inner_car, inner_cdr) = &*cdr.borrow()
+                && matches!(&*inner_cdr.borrow(), Value::Nil)
+            {
+                write!(f, "{}", if head == "quote" { "'" } else { "#'" })?;
+                return format_value(&inner_car.borrow(), f, seen);
+            }
             write!(f, "(")?;
             let mut current = value.clone();
             let mut first = true;

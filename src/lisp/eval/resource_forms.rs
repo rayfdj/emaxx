@@ -862,6 +862,25 @@ impl Interpreter {
             "default".into()
         };
         let saved = (self.buffer.point_min(), self.buffer.point_max());
+        // The outer bounds must survive edits inside the body the way GNU's
+        // marker-based ZV does: if the buffer was wide, stay wide on exit;
+        // otherwise track the old bounds with markers so insertions inside
+        // the inner restriction don't push text out of the outer one.
+        let was_wide = saved.0 == 1 && saved.1 == self.buffer.size_total() + 1;
+        let saved_buffer_id = self.current_buffer_id();
+        let markers = if was_wide {
+            None
+        } else {
+            let beg_marker = self.make_marker();
+            let end_marker = self.make_marker();
+            let (Value::Marker(beg_id), Value::Marker(end_id)) = (beg_marker, end_marker) else {
+                unreachable!("make_marker returns a marker");
+            };
+            let _ = self.set_marker(beg_id, Some(saved.0), Some(saved_buffer_id));
+            let _ = self.set_marker(end_id, Some(saved.1), Some(saved_buffer_id));
+            self.set_marker_insertion_type(end_id, true);
+            Some((beg_id, end_id))
+        };
         let current = self
             .effective_labeled_restriction(self.current_buffer_id(), None)
             .unwrap_or(saved);
@@ -871,7 +890,14 @@ impl Interpreter {
         self.buffer.narrow_to_region(effective.0, effective.1);
         let result = self.sf_progn(&items[body_index..], env);
         self.labeled_restrictions.pop();
-        self.buffer.restore_restriction(saved.0, saved.1);
+        match markers {
+            None => self.buffer.widen(),
+            Some((beg_id, end_id)) => {
+                let restore_begv = self.marker_position(beg_id).unwrap_or(saved.0);
+                let restore_zv = self.marker_position(end_id).unwrap_or(saved.1);
+                self.buffer.restore_restriction(restore_begv, restore_zv);
+            }
+        }
         result
     }
 

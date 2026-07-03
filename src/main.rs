@@ -74,8 +74,12 @@ fn try_main() -> Result<u8, String> {
 }
 
 fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<i32, String> {
+    // Dropping an N-element list recurses N deep through the cons chain;
+    // upstream tests build 8-million-element lists (Bug#24264), so the
+    // batch thread needs stack for the teardown as well as evaluation.
+    // The stack is virtual memory: only touched pages ever commit.
     thread::Builder::new()
-        .stack_size(1024 * 1024 * 1024)
+        .stack_size(8 * 1024 * 1024 * 1024)
         .spawn(move || batch::run_batch(options))
         .map_err(|error| format!("start batch thread: {error}"))?
         .join()

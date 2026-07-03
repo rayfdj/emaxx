@@ -225,7 +225,10 @@ pub(crate) fn eieio_slot_value(
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?;
     let slots = eieio_slot_specs(interp, &record.type_name)?;
     let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
-        return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
+        return Err(LispError::Signal(format!(
+            "Invalid slot name: {slot_name} (class {})",
+            record.type_name
+        )));
     };
     if slots[slot_index].class_allocated
         && let Some(value) =
@@ -293,7 +296,9 @@ pub(crate) fn set_eieio_slot_value(
         .clone();
     let slots = eieio_slot_specs(interp, &type_name)?;
     let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
-        return Err(LispError::Signal(format!("Invalid slot name: {slot_name}")));
+        return Err(LispError::Signal(format!(
+            "Invalid slot name: {slot_name} (class {type_name})"
+        )));
     };
     if slots[slot_index].class_allocated {
         interp.put_symbol_property(

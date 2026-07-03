@@ -1169,6 +1169,24 @@ impl Interpreter {
         }
 
         let index = index_value.as_integer()? as usize;
+        // `(setf (elt LIST i) v)` mutates the list structure itself (GNU
+        // expands it to `setcar`), so aliases of the list see the change.
+        if matches!(current, Value::Cons(_, _))
+            && !matches!(
+                current.car(),
+                Ok(Value::Symbol(symbol)) if symbol == "vector-literal"
+            )
+        {
+            let mut cell = current;
+            for _ in 0..index {
+                cell = cell.cdr()?;
+            }
+            if !matches!(cell, Value::Cons(_, _)) {
+                return Err(LispError::Signal("Args out of range".into()));
+            }
+            cell.set_car(value.clone())?;
+            return Ok(value);
+        }
         let updated = if matches!(current, Value::String(_) | Value::StringObject(_)) {
             primitives::aset_string_value(&current, index, &value)?
         } else {
@@ -1427,7 +1445,8 @@ impl Interpreter {
                         current = current.cdr()?;
                     }
                     current.set_cdr(value)
-                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "aref") {
+                } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "aref" || name == "elt")
+                {
                     let value_expr = quoted_literal(&value);
                     self.sf_setf_aref(&items, &value_expr, env).map(|_| ())
                 } else if matches!(items.first(), Some(Value::Symbol(name)) if name == "image-property")
@@ -2087,6 +2106,20 @@ impl Interpreter {
             _ => return Ok(Value::Nil),
         };
 
+        // GNU cl--struct-name-p: reject nil, keywords, and built-in type
+        // names with the same wrong-type-argument signal as cl-defstruct.
+        if name == "nil"
+            || name.starts_with(':')
+            || crate::lisp::primitives::is_builtin_class_name(&name)
+        {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("wrong-type-argument".into()),
+                Value::Symbol("cl-struct-name-p".into()),
+                Value::Symbol(name),
+                Value::Symbol("name".into()),
+            ])));
+        }
+
         // `:include' prepends the parent's slots so accessor indexes stay
         // aligned across the inheritance chain.
         let mut slot_specs: Vec<(String, Value)> = Vec::new();
@@ -2155,7 +2188,17 @@ impl Interpreter {
                                     Vec::new(),
                                 )
                             });
-                        constructors.push((constructor_name.clone(), params, aux_bindings));
+                        let docstring = parts.get(3).and_then(|value| match value {
+                            Value::String(text) => Some(text.clone()),
+                            Value::StringObject(state) => Some(state.borrow().text.clone()),
+                            _ => None,
+                        });
+                        constructors.push((
+                            constructor_name.clone(),
+                            params,
+                            aux_bindings,
+                            docstring,
+                        ));
                     }
                     _ => {}
                 },
@@ -2183,7 +2226,7 @@ impl Interpreter {
         if !suppress_default_constructor
             && !constructors
                 .iter()
-                .any(|(constructor_name, _, _)| constructor_name == &default_constructor_name)
+                .any(|(constructor_name, _, _, _)| constructor_name == &default_constructor_name)
         {
             constructors.push((
                 default_constructor_name,
@@ -2191,6 +2234,7 @@ impl Interpreter {
                     .chain(slot_names.iter().cloned())
                     .collect::<Vec<_>>(),
                 Vec::new(),
+                None,
             ));
         }
 
@@ -2208,6 +2252,30 @@ impl Interpreter {
             Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
 
         self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
+        // GNU cl-struct-slot-info shape: ((cl-tag-slot) DESC...) where each
+        // DESC is the original (NAME DEFAULT OPTS...) slot spec; inherited
+        // slots come first.  Consumed by the Lisp cl-struct-slot-* helpers.
+        {
+            let mut descs = vec![Value::list([Value::Symbol("cl-tag-slot".into())])];
+            for parent in &parent_names {
+                if let Some(parent_descs) =
+                    self.get_symbol_property(parent, "emaxx-struct-slot-descs")
+                    && let Ok(parent_items) = parent_descs.to_vec()
+                {
+                    descs.extend(parent_items.into_iter().skip(1));
+                }
+            }
+            for slot in &items[2..] {
+                match slot {
+                    Value::Symbol(slot_name) => {
+                        descs.push(Value::list([Value::Symbol(slot_name.clone())]));
+                    }
+                    Value::Cons(_, _) => descs.push(slot.clone()),
+                    _ => {}
+                }
+            }
+            self.put_symbol_property(&name, "emaxx-struct-slot-descs", Value::list(descs));
+        }
         self.register_class(
             &name,
             parent_names,
@@ -2242,6 +2310,18 @@ impl Interpreter {
             )),
         );
 
+        let accessor_alist = Value::list(
+            slot_names
+                .iter()
+                .map(|slot_name| {
+                    Value::cons(
+                        Value::Symbol(slot_name.clone()),
+                        Value::Symbol(format!("{conc_name}{slot_name}")),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.put_symbol_property(&name, "emaxx-struct-accessors", accessor_alist);
         for (index, slot_name) in slot_names.iter().enumerate() {
             let accessor_name = format!("{conc_name}{slot_name}");
             self.put_symbol_property(
@@ -2268,9 +2348,27 @@ impl Interpreter {
                     shared_env(Vec::new()),
                 )),
             );
+            // GNU cl-defstruct also emits `(defun (setf ACCESSOR) (val cl-x)
+            // ...)' so gv's `(funcall #'(setf ACCESSOR) VAL X)' fallback
+            // works for struct slots.
+            self.set_function_binding(
+                &format!("(setf {accessor_name})"),
+                Some(Value::Lambda(
+                    vec!["val".into(), "cl-x".into()],
+                    vec![Value::list([
+                        Value::Symbol("setf".into()),
+                        Value::list([
+                            Value::Symbol(accessor_name.clone()),
+                            Value::Symbol("cl-x".into()),
+                        ]),
+                        Value::Symbol("val".into()),
+                    ])],
+                    shared_env(Vec::new()),
+                )),
+            );
         }
 
-        for (constructor_name, params, aux_bindings) in constructors {
+        for (constructor_name, params, aux_bindings, docstring) in constructors {
             self.put_symbol_property(
                 &constructor_name,
                 "emaxx-function-arglist",
@@ -2327,11 +2425,15 @@ impl Interpreter {
                 ));
                 Value::list([Value::Symbol("let*".into()), let_bindings, make_form])
             };
+            let lambda_body = match docstring {
+                Some(doc) => vec![Value::String(doc), body],
+                None => vec![body],
+            };
             self.set_function_binding(
                 &constructor_name,
                 Some(Value::Lambda(
                     vec!["&rest".into(), "args".into()],
-                    vec![body],
+                    lambda_body,
                     shared_env(Vec::new()),
                 )),
             );
@@ -2760,6 +2862,27 @@ impl Interpreter {
             .count();
         let mut lowered_body = original_body[..body_prefix_len].to_vec();
         let mut executable_body = original_body[body_prefix_len..].to_vec();
+        // GNU cl--transform-lambda: a leading `(:documentation EXPR)' form is
+        // evaluated at definition time and becomes the docstring.
+        if let Some(first) = executable_body.first().cloned()
+            && let Ok(parts) = first.to_vec()
+            && parts.len() == 2
+            && matches!(parts.first(), Some(Value::Symbol(head)) if head == ":documentation")
+        {
+            let doc = self.eval(&parts[1], env)?;
+            let doc_text = match doc {
+                Value::String(text) => Some(text),
+                Value::StringObject(state) => Some(state.borrow().text.clone()),
+                _ => None,
+            };
+            if let Some(text) = doc_text {
+                lowered_body.insert(0, Value::String(text));
+            }
+            executable_body.remove(0);
+            if executable_body.is_empty() {
+                executable_body.push(Value::Nil);
+            }
+        }
         if !lowered_cl_defun.keyword_bindings.is_empty() {
             let mut let_bindings = Vec::new();
             for binding in &lowered_cl_defun.keyword_bindings {
@@ -2805,6 +2928,18 @@ impl Interpreter {
                 }
             }
             let mut wrapped = vec![Value::Symbol("let*".into()), Value::list(let_bindings)];
+            wrapped.append(&mut executable_body);
+            executable_body = vec![Value::list(wrapped)];
+        }
+        for (pattern, init) in lowered_cl_defun.aux_bindings.into_iter().rev() {
+            let mut wrapped = if matches!(pattern, Value::Symbol(_)) {
+                vec![
+                    Value::Symbol("let*".into()),
+                    Value::list([Value::list([pattern, init])]),
+                ]
+            } else {
+                vec![Value::Symbol("cl-destructuring-bind".into()), pattern, init]
+            };
             wrapped.append(&mut executable_body);
             executable_body = vec![Value::list(wrapped)];
         }
@@ -2921,7 +3056,12 @@ impl Interpreter {
                 ":documentation" => {
                     if let Some(expression) = parts.get(1) {
                         let value = self.eval(expression, env)?;
-                        let doc = Value::String(value.as_string()?.to_string());
+                        let text = crate::lisp::primitives::string_like(&value)
+                            .map(|string| string.text)
+                            .ok_or_else(|| {
+                                LispError::TypeError("string".into(), value.type_name())
+                            })?;
+                        let doc = Value::String(text);
                         self.put_symbol_property(
                             &name,
                             "emaxx-cl-defgeneric-documentation",

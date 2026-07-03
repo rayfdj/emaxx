@@ -58,6 +58,27 @@ impl Interpreter {
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
     }
 
+    // `kill-all-local-variables' keeps buffer-local hook functions whose
+    // hook variable is marked `permanent-local', like `write-file-functions'
+    // in an archive member buffer surviving `normal-mode'.
+    pub fn clear_buffer_local_state_for_mode_change(&mut self, buffer_id: u64) {
+        let permanent_hooks = self
+            .buffer_local_hooks
+            .iter()
+            .filter(|(id, name, _)| {
+                *id == buffer_id
+                    && self
+                        .get_symbol_property(name, "permanent-local")
+                        .is_some_and(|value| value.is_truthy())
+            })
+            .map(|(_, name, _)| name.clone())
+            .collect::<Vec<_>>();
+        self.buffer_locals.retain(|(id, _, _)| *id != buffer_id);
+        self.buffer_local_hooks
+            .retain(|(id, name, _)| *id != buffer_id || permanent_hooks.contains(name));
+        self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+    }
+
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
         let locals = self
             .buffer_locals
@@ -436,6 +457,13 @@ impl Interpreter {
         if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == name) {
             self.globals.remove(index);
         }
+    }
+
+    pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
+        self.globals
+            .iter()
+            .rfind(|(symbol, _)| symbol == name)
+            .map(|(_, value)| value.clone())
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {

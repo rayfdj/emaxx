@@ -191,8 +191,15 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 1965/7080` batch (obsolete EIEIO methods on native cl-generic,
-eieio-test-methodinvoke.el green) is complete and delivered. The next agent
-should start with selector 1966 in
+The `Compat 1965/7080` repair batch is complete: an 81-file verified-prefix
+sweep drove fixes across cl-lib/cl-macs/cl-seq (GNU engines ported into
+`src/lisp/simple_compat.el` plus native fast paths for the cl-seq sequence
+functions), bookmark, dired (including `insert-char' INHERIT for bug27899),
+bytecomp (dodgy-args, wide docstrings, non-top-level autoload,
+no-byte-compile), backquote-aware `macroexpand-all', isolated
+macro-environment expander calls, and `cl--find-class'. Known-remaining
+mismatches are documented in `docs/compatibility-goal.md` (cedet cluster,
+autorevert, dabbrev order-dependence, one char-fold selector, cl-flet/edebug).
+The next agent should start with selector 1966 in
 `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (object
 persistence), then `eieio-tests.el` (loads now; 31 failures).

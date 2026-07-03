@@ -516,7 +516,8 @@ mod tests {
             .expect("read eval")
             .remove(0);
         let selector = extract_ert_batch_selector(&form).expect("selector");
-        assert_eq!(selector.to_string(), "(quote (not (tag :unstable)))");
+        // The printer renders (quote X) with reader shorthand, like GNU.
+        assert_eq!(selector.to_string(), "'(not (tag :unstable))");
     }
 
     #[test]

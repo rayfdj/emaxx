@@ -1723,10 +1723,54 @@ pub(super) fn call(
                 }));
             }
             let mut output = String::from_utf8_lossy(&process_output.stdout).into_owned();
+            // GNU insert-directory-clean: with "--dired" in the switches, ls
+            // appends //DIRED//, //DIRED-OPTIONS// (and possibly //SUBDIRED//)
+            // marker lines.  The //DIRED// offsets mark filename extents; the
+            // marker lines themselves must never remain in the buffer.
+            let mut filename_ranges: Vec<(usize, usize)> = Vec::new();
+            if switches
+                .split_whitespace()
+                .any(|switch| switch == "--dired")
+            {
+                let mut kept_lines = Vec::new();
+                for line in output.split_inclusive('\n') {
+                    if let Some(rest) = line.strip_prefix("//DIRED//") {
+                        let mut numbers = rest
+                            .split_whitespace()
+                            .filter_map(|token| token.parse::<usize>().ok());
+                        while let (Some(start), Some(end)) = (numbers.next(), numbers.next()) {
+                            filename_ranges.push((start, end));
+                        }
+                    } else if !line.starts_with("//DIRED-OPTIONS//")
+                        && !line.starts_with("//SUBDIRED//")
+                    {
+                        kept_lines.push(line);
+                    }
+                }
+                output = kept_lines.concat();
+            }
+            let mut free_space_offset = 0;
             if let Some(free_space_line) = insert_directory_free_space_line(interp, env, &file)? {
+                free_space_offset = free_space_line.chars().count();
                 output.insert_str(0, &free_space_line);
             }
+            let beg = super::call(interp, "point", &[], env)?.as_integer()? as usize;
             interp.insert_current_buffer(&output);
+            for (start, end) in filename_ranges {
+                let from = beg + free_space_offset + start;
+                let to = beg + free_space_offset + end;
+                super::call(
+                    interp,
+                    "put-text-property",
+                    &[
+                        Value::Integer(from as i64),
+                        Value::Integer(to as i64),
+                        Value::Symbol("dired-filename".into()),
+                        Value::T,
+                    ],
+                    env,
+                )?;
+            }
             Ok(Value::Nil)
         }
         "insert-file-contents" => insert_file_contents(interp, env, args, false),

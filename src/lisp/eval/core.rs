@@ -11,7 +11,11 @@ impl Interpreter {
     // several times deeper here.  Scale the user-visible limit so honest
     // deep recursion still fits while runaway recursion keeps signaling
     // the GNU error instead of exhausting the Rust stack.
-    const LISP_EVAL_DEPTH_SCALE: usize = 4;
+    // GNU 30 additionally grows `max-lisp-eval-depth' dynamically while C
+    // stack remains, so honest recursion tens of thousands of calls deep
+    // succeeds interpreted (cl-macs--labels recurses 42000 deep); the batch
+    // thread's large stack backs the same headroom here.
+    const LISP_EVAL_DEPTH_SCALE: usize = 384;
 
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         if !matches!(expr, Value::Cons(_, _)) {
@@ -46,8 +50,13 @@ impl Interpreter {
             | Value::Integer(_)
             | Value::BigInteger(_)
             | Value::Float(_)
-            | Value::String(_)
             | Value::StringObject(_) => Ok(expr.clone()),
+
+            // Evaluating a string literal yields a string object with its
+            // own identity, so `eq' distinguishes evaluations of distinct
+            // literals while `(memq (car l) l)' still finds the element the
+            // evaluation put there (GNU strings are always heap objects).
+            Value::String(_) => Ok(Self::stored_value(expr.clone())),
 
             Value::BuiltinFunc(_)
             | Value::Lambda(_, _, _)
@@ -269,7 +278,12 @@ impl Interpreter {
                         }
                         "pcase-dolist" => return self.sf_pcase_dolist(&items, env),
                         "dotimes" => return self.sf_dotimes(&items, env),
-                        "cl-loop" => return self.sf_cl_loop(&items, env),
+                        // The preloaded GNU `cl-loop' macro takes precedence;
+                        // the native special form remains as a bootstrap
+                        // fallback before simple_compat.el is loaded.
+                        "cl-loop" if !self.has_lisp_macro("cl-loop") => {
+                            return self.sf_cl_loop(&items, env);
+                        }
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "ignore-error" => return self.sf_ignore_error(&items, env),
                         "ignore-errors" => return self.sf_ignore_errors(&items, env),
@@ -331,8 +345,12 @@ impl Interpreter {
                         }
                         "cl-letf" => return self.sf_cl_letf(&items, env),
                         "aset" => return self.sf_aset(&items, env),
-                        "cl-flet" => return self.sf_cl_flet(&items, env),
-                        "cl-labels" => return self.sf_cl_labels(&items, env),
+                        "cl-flet" if !self.has_lisp_macro("cl-flet") => {
+                            return self.sf_cl_flet(&items, env);
+                        }
+                        "cl-labels" if !self.has_lisp_macro("cl-labels") => {
+                            return self.sf_cl_labels(&items, env);
+                        }
                         "cl-macrolet" => return self.sf_cl_macrolet(&items, env),
                         "cl-symbol-macrolet" => return self.sf_cl_symbol_macrolet(&items, env),
                         "push" => {

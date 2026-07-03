@@ -238,6 +238,21 @@ impl Interpreter {
         self.try_macroexpand_with_environment(name, args, None, env)
     }
 
+    /// Invoke a macro-environment expander (from cl-flet/cl-labels/
+    /// cl-macrolet and friends) in a fresh environment.  Expanders are
+    /// closures over their own captured bindings; running them inside the
+    /// caller's frames would let same-named caller locals (e.g. the `var'
+    /// bound by cl-labels' pcase-let*) shadow the captured ones.
+    fn call_macro_environment_expander(
+        &mut self,
+        expander: Value,
+        name: &str,
+        args: &[Value],
+    ) -> Result<Value, LispError> {
+        let mut expander_env = Env::new();
+        self.call_function_value(expander, Some(name), args, &mut expander_env)
+    }
+
     pub(super) fn try_macroexpand_with_environment(
         &mut self,
         name: &str,
@@ -247,8 +262,17 @@ impl Interpreter {
     ) -> Result<Option<Value>, LispError> {
         if let Some(expander) = macro_environment_expander(macro_environment, name) {
             return self
-                .call_function_value(expander, Some(name), args, env)
+                .call_macro_environment_expander(expander, name, args)
                 .map(Some);
+        }
+
+        // Backquote evaluation is native (the reader encodes unquotes as
+        // `comma'/`comma-at' markers that GNU backquote.el's `\`' macro does
+        // not recognize, so expanding through it would drop the unquotes).
+        // Treat backquote as a special form here; `eval' and
+        // `macroexpand-all' both handle it natively.
+        if is_backquote_head(name) {
+            return Ok(None);
         }
 
         let mut attempted_autoload = false;
@@ -335,6 +359,70 @@ impl Interpreter {
             .unwrap_or_else(|| form.clone()))
     }
 
+    /// Walk a backquote template, macro-expanding only the expressions under
+    /// `comma'/`comma-at' markers at the current backquote depth.  Nested
+    /// backquotes raise the depth; their unquotes stay untouched until the
+    /// matching level is reached, mirroring GNU backquote nesting.
+    fn macroexpand_all_backquote_template(
+        &mut self,
+        value: &Value,
+        macro_environment: Option<&Value>,
+        env: &mut Env,
+        depth: usize,
+    ) -> Result<Value, LispError> {
+        if let Some((_, inner)) = backquote_unquote_form(value) {
+            let marker = value.car()?;
+            let inner = if depth == 0 {
+                self.macroexpand_all_form_with_environment(&inner, macro_environment, env)?
+            } else {
+                self.macroexpand_all_backquote_template(&inner, macro_environment, env, depth - 1)?
+            };
+            return Ok(Value::list([marker, inner]));
+        }
+        if let Some(body) = nested_backquote_body(value) {
+            let head = value.car()?;
+            let body =
+                self.macroexpand_all_backquote_template(&body, macro_environment, env, depth + 1)?;
+            return Ok(Value::list([head, body]));
+        }
+        if value.cons_values().is_some() {
+            // Walk the list spine iteratively: templates can be arbitrarily
+            // long and per-cons recursion would exhaust the stack.
+            let mut fronts = Vec::new();
+            let mut tail = value.clone();
+            loop {
+                if backquote_unquote_form(&tail).is_some() || nested_backquote_body(&tail).is_some()
+                {
+                    tail = self.macroexpand_all_backquote_template(
+                        &tail,
+                        macro_environment,
+                        env,
+                        depth,
+                    )?;
+                    break;
+                }
+                match tail.cons_values() {
+                    Some((car, cdr)) => {
+                        fronts.push(self.macroexpand_all_backquote_template(
+                            &car,
+                            macro_environment,
+                            env,
+                            depth,
+                        )?);
+                        tail = cdr;
+                    }
+                    None => break,
+                }
+            }
+            let mut rebuilt = tail;
+            for front in fronts.into_iter().rev() {
+                rebuilt = Value::cons(front, rebuilt);
+            }
+            return Ok(rebuilt);
+        }
+        Ok(value.clone())
+    }
+
     pub(crate) fn macroexpand_all_form_with_environment(
         &mut self,
         form: &Value,
@@ -348,8 +436,56 @@ impl Interpreter {
             return Ok(Value::Nil);
         };
         if let Value::Symbol(name) = head {
+            // The macro environment takes precedence even over `function' and
+            // `quote': cl-flet/cl-labels bind `function' to cl--labels-convert
+            // so `#'local-fn' references get rewritten (GNU macroexpand-1
+            // consults ENVIRONMENT before anything else).
+            if matches!(name.as_str(), "quote" | "function")
+                && let Some(expander) = macro_environment_expander(macro_environment, name)
+            {
+                let expanded = self.call_macro_environment_expander(expander, name, &items[1..])?;
+                if &expanded != form {
+                    return self.macroexpand_all_form_with_environment(
+                        &expanded,
+                        macro_environment,
+                        env,
+                    );
+                }
+                // Unchanged (e.g. cl--labels-convert on a non-local
+                // function): fall through so `#'(lambda ...)' bodies still
+                // get descended into below.
+            }
             match name.as_str() {
-                "quote" | "function" => return Ok(form.clone()),
+                "quote" => return Ok(form.clone()),
+                "function" => {
+                    // GNU macroexp--expand-all descends into `#'(lambda ...)'
+                    // bodies; other function forms stay opaque.
+                    if let Some(func) = items.get(1)
+                        && let Ok(func_items) = func.to_vec()
+                        && matches!(
+                            func_items.first(),
+                            Some(Value::Symbol(symbol)) if symbol == "lambda"
+                        )
+                    {
+                        let mut expanded_lambda = Vec::with_capacity(func_items.len());
+                        expanded_lambda.push(func_items[0].clone());
+                        if let Some(params) = func_items.get(1) {
+                            expanded_lambda.push(params.clone());
+                        }
+                        for item in func_items.iter().skip(2) {
+                            expanded_lambda.push(self.macroexpand_all_form_with_environment(
+                                item,
+                                macro_environment,
+                                env,
+                            )?);
+                        }
+                        return Ok(Value::list([
+                            items[0].clone(),
+                            Value::list(expanded_lambda),
+                        ]));
+                    }
+                    return Ok(form.clone());
+                }
                 "eval-when-compile" => {
                     let value = if items.len() <= 1 {
                         Value::Nil
@@ -371,10 +507,23 @@ impl Interpreter {
                         env,
                     );
                 }
+                // Backquote templates stay in place; only the unquoted
+                // expressions inside them are macro-expanded (this is how the
+                // env expanders from cl-flet/cl-labels reach `,(local-fn ...)'
+                // calls while the template text survives verbatim).
+                other if is_backquote_head(other) && items.len() == 2 => {
+                    let template = self.macroexpand_all_backquote_template(
+                        &items[1],
+                        macro_environment,
+                        env,
+                        0,
+                    )?;
+                    return Ok(Value::list([items[0].clone(), template]));
+                }
                 _ => {}
             }
             if let Some(expander) = macro_environment_expander(macro_environment, name) {
-                let expanded = self.call_function_value(expander, Some(name), &items[1..], env)?;
+                let expanded = self.call_macro_environment_expander(expander, name, &items[1..])?;
                 return self.macroexpand_all_form_with_environment(
                     &expanded,
                     macro_environment,
@@ -484,14 +633,41 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
         match name {
-            "cl-case" => self.expand_cl_case(args, env).map(Some),
+            "cl-case" if !self.has_lisp_macro("cl-case") => {
+                self.expand_cl_case(args, env).map(Some)
+            }
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
             "ert-simulate-keys" => self.expand_ert_simulate_keys(args).map(Some),
             "c-lang-const" => self.expand_c_lang_const(args, env).map(Some),
             "c-lang-defconst-eval-immediately" => self
                 .expand_c_lang_defconst_eval_immediately(args, env)
                 .map(Some),
-            "letrec" => self.expand_letrec(args).map(Some),
+            "letrec" if !self.has_lisp_macro("letrec") => self.expand_letrec(args).map(Some),
+            "cl-defstruct" => {
+                // GNU cl-defstruct signals at expansion time when the name
+                // fails cl--struct-name-p (nil, keyword, or built-in type).
+                let struct_name = args.first().and_then(|spec| match spec {
+                    Value::Symbol(name) => Some(name.clone()),
+                    Value::Cons(_, _) => spec
+                        .car()
+                        .ok()
+                        .and_then(|head| head.as_symbol().ok().map(str::to_string)),
+                    _ => None,
+                });
+                if let Some(name) = struct_name
+                    && (name == "nil"
+                        || name.starts_with(':')
+                        || crate::lisp::primitives::is_builtin_class_name(&name))
+                {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("wrong-type-argument".into()),
+                        Value::Symbol("cl-struct-name-p".into()),
+                        Value::Symbol(name),
+                        Value::Symbol("name".into()),
+                    ])));
+                }
+                Ok(None)
+            }
             "named-let" => self.expand_named_let(args).map(Some),
             "with-wrapper-hook" => self.expand_with_wrapper_hook(args).map(Some),
             "subr--with-wrapper-hook-no-warnings" => {

@@ -2288,159 +2288,171 @@ fn cl_defgeneric_records_advertised_calling_convention() {
 
 #[test]
 fn bindat_pack_val_round_trips_integer_representation() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
-    )
-    .expect("load bindat tests");
-    assert_eq!(
-        eval_str_with(
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        crate::lisp::load_file_strict(
             &mut interp,
-            r#"
-                (cl-loop for n in '(0 42 125 126 127 128 150 255 5000 65535 65536 8769786876)
-                         always (equal (bindat-unpack bindat-test--int-websocket-type
-                                                      (bindat-pack bindat-test--int-websocket-type n))
-                                       n))
-                "#
-        ),
-        Value::T
-    );
+            &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+        )
+        .expect("load bindat tests");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                    (cl-loop for n in '(0 42 125 126 127 128 150 255 5000 65535 65536 8769786876)
+                             always (equal (bindat-unpack bindat-test--int-websocket-type
+                                                          (bindat-pack bindat-test--int-websocket-type n))
+                                           n))
+                    "#
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn bindat_recursive_leb128_round_trips_integers() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
-    )
-    .expect("load bindat tests");
-    assert_eq!(
-        eval_str_with(
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        crate::lisp::load_file_strict(
             &mut interp,
-            r#"
-                (cl-loop for n in '(0 1 42 127 128 255 256 16384 1048575)
-                         always (equal (bindat-unpack bindat-test--LEB128
-                                                      (bindat-pack bindat-test--LEB128 n))
-                                       n))
-                "#
-        ),
-        Value::T
-    );
+            &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+        )
+        .expect("load bindat tests");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                    (cl-loop for n in '(0 1 42 127 128 255 256 16384 1048575)
+                             always (equal (bindat-unpack bindat-test--LEB128
+                                                          (bindat-pack bindat-test--LEB128 n))
+                                           n))
+                    "#
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn bindat_signed_integer_types_round_trip_wide_values() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
-    )
-    .expect("load bindat tests");
-    assert_eq!(
-        eval_str_with(
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        crate::lisp::load_file_strict(
             &mut interp,
-            r#"
-                (let* ((bitlen 72)
-                       (stype (bindat-type sint bitlen nil))
-                       (values (list -1 0 42 (1- (ash 1 63)) (- (ash 1 63)))))
-                  (cl-loop for n in values
-                           always (equal (bindat-unpack stype (bindat-pack stype n)) n)))
-                "#
-        ),
-        Value::T
-    );
+            &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+        )
+        .expect("load bindat tests");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                    (let* ((bitlen 72)
+                           (stype (bindat-type sint bitlen nil))
+                           (values (list -1 0 42 (1- (ash 1 63)) (- (ash 1 63)))))
+                      (cl-loop for n in values
+                               always (equal (bindat-unpack stype (bindat-pack stype n)) n)))
+                    "#
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn bindat_str_fields_unpack_from_vector_bytes() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
-    )
-    .expect("load bindat tests");
-    assert_eq!(
-        eval_str_with(
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        crate::lisp::load_file_strict(
             &mut interp,
-            r#"
-                (let* ((spec (bindat-type
-                               (first u8)
-                               (string str 3)
-                               (last uint 16)))
-                       (unpacked (bindat-unpack spec [#xff #x63 #x62 #x61 #xff #xff])))
-                  (and (equal (bindat-get-field unpacked 'string) "cba")
-                       (equal (bindat-get-field unpacked 'first) 255)
-                       (equal (bindat-get-field unpacked 'last) 65535)))
-                "#
-        ),
-        Value::T
-    );
+            &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+        )
+        .expect("load bindat tests");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                    (let* ((spec (bindat-type
+                                   (first u8)
+                                   (string str 3)
+                                   (last uint 16)))
+                           (unpacked (bindat-unpack spec [#xff #x63 #x62 #x61 #xff #xff])))
+                      (and (equal (bindat-get-field unpacked 'string) "cba")
+                           (equal (bindat-get-field unpacked 'first) 255)
+                           (equal (bindat-get-field unpacked 'last) 65535)))
+                    "#
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn bindat_formats_vector_ip_addresses() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
-    )
-    .expect("load bindat tests");
-    assert_eq!(
-        eval_str_with(
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        crate::lisp::load_file_strict(
             &mut interp,
-            r#"(equal (bindat-ip-to-string [192 168 0 1]) "192.168.0.1")"#
-        ),
-        Value::T
-    );
+            &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+        )
+        .expect("load bindat tests");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(equal (bindat-ip-to-string [192 168 0 1]) "192.168.0.1")"#
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
 fn bindat_packet_spec_packs_to_expected_bytes() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
-    )
-    .expect("load bindat tests");
-    assert_eq!(
-        eval_str_with(
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        crate::lisp::load_file_strict(
             &mut interp,
-            r#"
-                (equal
-                 (append (bindat-pack packet-bindat-spec struct-bindat) nil)
-                 '(192 168 1 100 192 168 1 101 01 28 21 32 2 0 0 0
-                      2 3 5 0 ?A ?B ?C ?D ?E ?F 0 0 1 2 3 4 5 0 0 0
-                      1 4 7 0 ?B ?C ?D ?E ?F ?G 0 0 6 7 8 9 10 11 12 0))
-                "#
-        ),
-        Value::T
-    );
+            &upstream_emacs_repo().join("test/lisp/emacs-lisp/bindat-tests.el"),
+        )
+        .expect("load bindat tests");
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"
+                    (equal
+                     (append (bindat-pack packet-bindat-spec struct-bindat) nil)
+                     '(192 168 1 100 192 168 1 101 01 28 21 32 2 0 0 0
+                          2 3 5 0 ?A ?B ?C ?D ?E ?F 0 0 1 2 3 4 5 0 0 0
+                          1 4 7 0 ?B ?C ?D ?E ?F ?G 0 0 6 7 8 9 10 11 12 0))
+                    "#
+            ),
+            Value::T
+        );
+    });
 }
 
 #[test]
@@ -4004,28 +4016,30 @@ fn pop_supports_generalized_places() {
 
 #[test]
 fn pcase_seq_pattern_supports_seq_let_rest() {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
-            .expect("upstream load path"),
-    );
-    let _ = interp.load_target("seq");
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_load_path(
+            crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+        );
+        let _ = interp.load_target("seq");
 
-    assert_eq!(
-        eval_str_with(
-            &mut interp,
-            r#"(seq-let (beg end table &rest plist)
-                   '(1 4 ("foobarbaz") :display-sort-function identity)
-                 (list beg end table plist))"#
-        ),
-        Value::list([
-            Value::Integer(1),
-            Value::Integer(4),
-            Value::list([Value::String("foobarbaz".into())]),
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(seq-let (beg end table &rest plist)
+                       '(1 4 ("foobarbaz") :display-sort-function identity)
+                     (list beg end table plist))"#
+            ),
             Value::list([
-                Value::Symbol(":display-sort-function".into()),
-                Value::Symbol("identity".into()),
-            ]),
-        ])
-    );
+                Value::Integer(1),
+                Value::Integer(4),
+                Value::list([Value::String("foobarbaz".into())]),
+                Value::list([
+                    Value::Symbol(":display-sort-function".into()),
+                    Value::Symbol("identity".into()),
+                ]),
+            ])
+        );
+    });
 }
