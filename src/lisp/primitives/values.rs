@@ -2140,9 +2140,34 @@ pub(crate) fn key_parts_match(binding_parts: &[String], requested_parts: &[Strin
         if binding_canonical != requested_canonical {
             return false;
         }
+
+        // Plain letter keys are distinct events per case ("x" vs "X", "M-x"
+        // vs "M-X"); only control keys fold case (C-X and C-x are both code
+        // 24), and symbolic <...> names compare case-insensitively above.
+        if key_part_case_significant(binding)
+            && key_part_case_significant(requested)
+            && binding.rsplit('-').next() != requested.rsplit('-').next()
+        {
+            return false;
+        }
     }
 
     true
+}
+
+fn key_part_case_significant(part: &str) -> bool {
+    if part.starts_with('<') || part.ends_with('>') {
+        return false;
+    }
+    let mut segments: Vec<&str> = part.split('-').collect();
+    let Some(last) = segments.pop() else {
+        return false;
+    };
+    if segments.contains(&"C") {
+        return false;
+    }
+    let mut chars = last.chars();
+    matches!((chars.next(), chars.next()), (Some(ch), None) if ch.is_ascii_alphabetic())
 }
 
 pub(crate) enum KeyLookupResult {
@@ -2156,6 +2181,18 @@ pub(crate) fn keymap_lookup_binding_exact_parts(
     keymap: &Value,
     key_parts: &[String],
 ) -> Result<Value, LispError> {
+    keymap_lookup_binding_exact_parts_bounded(interp, keymap, key_parts, 32)
+}
+
+fn keymap_lookup_binding_exact_parts_bounded(
+    interp: &Interpreter,
+    keymap: &Value,
+    key_parts: &[String],
+    depth: usize,
+) -> Result<Value, LispError> {
+    let Some(depth) = depth.checked_sub(1) else {
+        return Ok(Value::Nil);
+    };
     let Some(id) = keymap_record_id(interp, keymap) else {
         return Ok(Value::Nil);
     };
@@ -2167,16 +2204,36 @@ pub(crate) fn keymap_lookup_binding_exact_parts(
             return Ok(binding.value);
         }
     }
-    if key_parts.len() == 1 {
+    // A shorter binding to a prefix keymap resolves the remaining events in
+    // that keymap ("C-x X" -> map, then "w" inside it).
+    for binding in keymap_bindings(record)?.into_iter() {
+        let binding_parts = binding_key_parts(&binding);
+        if !binding_parts.is_empty()
+            && binding_parts.len() < key_parts.len()
+            && key_parts_match(&binding_parts, &key_parts[..binding_parts.len()])
+            && is_keymap_value(interp, &binding.value)
+        {
+            let nested = keymap_lookup_binding_exact_parts_bounded(
+                interp,
+                &binding.value,
+                &key_parts[binding_parts.len()..],
+                depth,
+            )?;
+            if !nested.is_nil() {
+                return Ok(nested);
+            }
+        }
+    }
+    if key_parts.len() == 1 && key_parts != ["<t>".to_string()] {
         for binding in keymap_bindings(record)?.into_iter() {
-            if binding_key_parts(&binding) == ["t".to_string()] {
+            if binding_key_parts(&binding) == ["<t>".to_string()] {
                 return Ok(binding.value);
             }
         }
     }
     match record.slots.get(KEYMAP_PARENT_SLOT) {
         Some(Value::Nil) | None => Ok(Value::Nil),
-        Some(parent) => keymap_lookup_binding_exact_parts(interp, parent, key_parts),
+        Some(parent) => keymap_lookup_binding_exact_parts_bounded(interp, parent, key_parts, depth),
     }
 }
 
@@ -2744,9 +2801,14 @@ pub(crate) fn where_is_internal(
     .and_then(|value| command_name_for_remapping(&value));
     let target_command = remapped_command.as_deref().unwrap_or(command);
 
+    let target_keymap_id = interp
+        .lookup_function(target_command, env)
+        .ok()
+        .and_then(|function| keymap_record_id(interp, &function));
     let mut matches = Vec::<Vec<String>>::new();
     let mut collector = WhereIsCollector {
         target_command,
+        target_keymap_id,
         env,
         visited: HashSet::new(),
         seen: HashSet::new(),
@@ -2758,11 +2820,11 @@ pub(crate) fn where_is_internal(
 
     let active_maps = Value::list(keymaps.iter().cloned());
     matches.retain(|parts| {
-        keymap_lookup_sequence_value(interp, &active_maps, parts, env)
-            .ok()
-            .and_then(|value| command_name_for_remapping(&value))
-            .as_deref()
-            == Some(target_command)
+        let Ok(value) = keymap_lookup_sequence_value(interp, &active_maps, parts, env) else {
+            return false;
+        };
+        command_name_for_remapping(&value).as_deref() == Some(target_command)
+            || (target_keymap_id.is_some() && keymap_record_id(interp, &value) == target_keymap_id)
     });
 
     if remapped_command.is_none()
@@ -2831,6 +2893,7 @@ pub(crate) fn maybe_prefer_modifier_notation(
 
 pub(crate) struct WhereIsCollector<'a> {
     target_command: &'a str,
+    target_keymap_id: Option<u64>,
     env: &'a mut Env,
     visited: HashSet<(u64, String)>,
     seen: HashSet<String>,
@@ -2867,9 +2930,13 @@ pub(crate) fn collect_where_is_matches(
             .chain(parts.iter().cloned())
             .collect::<Vec<_>>();
         let resolved = keymap_get_keyelt(interp, &binding.value, true, collector.env)?;
-        if !key_parts_are_remap(&full_parts)
-            && command_name_for_remapping(&resolved).as_deref() == Some(collector.target_command)
-        {
+        // A prefix command matches through symbol function indirection: the
+        // binding may be the keymap that is the command's definition.
+        let matches_target = command_name_for_remapping(&resolved).as_deref()
+            == Some(collector.target_command)
+            || (collector.target_keymap_id.is_some()
+                && keymap_record_id(interp, &resolved) == collector.target_keymap_id);
+        if !key_parts_are_remap(&full_parts) && matches_target {
             let key = full_parts.join(" ");
             if collector.seen.insert(key) {
                 collector.matches.push(full_parts.clone());
@@ -2888,6 +2955,14 @@ pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> 
     match key {
         "C-s" => Some("isearch-forward"),
         "RET" => Some("newline"),
+        "C-n" => Some("next-line"),
+        "C-p" => Some("previous-line"),
+        "C-e" => Some("move-end-of-line"),
+        "C-a" => Some("move-beginning-of-line"),
+        "C-f" => Some("forward-char"),
+        "C-b" => Some("backward-char"),
+        "C-k" => Some("kill-line"),
+        "C-d" => Some("delete-char"),
         "M-a" => Some("backward-sentence"),
         "C-SPC" => Some("set-mark-command"),
         "M-}" => Some("forward-paragraph"),
@@ -3057,6 +3132,56 @@ pub(crate) fn key_binding(interp: &Interpreter, key: &str, env: &Env) -> Result<
     }
 
     Ok(Value::Symbol(command.into()))
+}
+
+fn keymap_has_prefix(
+    interp: &Interpreter,
+    keymap: &Value,
+    requested_parts: &[String],
+) -> Result<bool, LispError> {
+    let Some(id) = keymap_record_id(interp, keymap) else {
+        return Ok(false);
+    };
+    let Some(record) = interp.find_record(id) else {
+        return Ok(false);
+    };
+    for binding in keymap_bindings(record)?.into_iter() {
+        let binding_parts = binding_key_parts(&binding);
+        if binding_parts.len() > requested_parts.len()
+            && key_parts_match(&binding_parts[..requested_parts.len()], requested_parts)
+        {
+            return Ok(true);
+        }
+    }
+    match record.slots.get(KEYMAP_PARENT_SLOT) {
+        Some(Value::Nil) | None => Ok(false),
+        Some(parent) => keymap_has_prefix(interp, parent, requested_parts),
+    }
+}
+
+// Whether KEY is a proper prefix of a longer binding in the active keymaps,
+// so the command loop should keep reading events instead of dispatching.
+pub(crate) fn key_sequence_is_prefix(
+    interp: &Interpreter,
+    key: &str,
+    env: &Env,
+) -> Result<bool, LispError> {
+    let requested = approximate_key_parts(key);
+    if requested.is_empty() {
+        return Ok(false);
+    }
+    for map in active_command_keymaps(interp, env)? {
+        if keymap_has_prefix(interp, &map, &requested)? {
+            return Ok(true);
+        }
+    }
+    if let Some(global_map) = interp.lookup_var("global-map", env)
+        && is_keymap_value(interp, &global_map)
+        && keymap_has_prefix(interp, &global_map, &requested)?
+    {
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub(crate) fn keymap_binding_matches_command(binding: &Value, command: &str) -> bool {

@@ -21,6 +21,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         match self.sf_progn(&items[1..], env) {
             Ok(value) => Ok(value),
+            Err(error @ LispError::Throw(_, _)) => Err(error),
             Err(_) => Ok(Value::Nil),
         }
     }
@@ -99,6 +100,11 @@ impl Interpreter {
             }
             Err(e) => {
                 if self.take_condition_case_suspend() {
+                    return Err(e);
+                }
+                // `throw' passes through `condition-case' untouched; only
+                // signals are eligible for the handlers.
+                if matches!(e, LispError::Throw(_, _)) {
                     return Err(e);
                 }
                 let condition = e.condition_type();
@@ -297,15 +303,29 @@ impl Interpreter {
             ));
         }
         let name = items[1].as_symbol()?.to_string();
-        env.push(vec![(name.clone(), Value::String(String::new()))]);
-        self.message_capture_stack.push(String::new());
+        // Upstream expands to `(let* ((VAR "")) ...)`, so special variables
+        // get a live dynamic binding for the whole body.
+        let special_restore = if self.is_special_variable(&name) {
+            Some(self.bind_special_variable(&name, Value::String(String::new()), env)?)
+        } else {
+            env.push(vec![(name.clone(), Value::String(String::new()))]);
+            None
+        };
+        self.message_capture_stack.push(MessageCapture {
+            text: String::new(),
+            live_var: special_restore.is_some().then(|| name.clone()),
+        });
         let mut last = Value::Nil;
         let mut result = Ok(());
         for form in &items[2..] {
             match self.eval(form, env) {
                 Ok(value) => {
                     last = value;
-                    if let Some(captured) = self.message_capture_stack.last().cloned()
+                    if special_restore.is_none()
+                        && let Some(captured) = self
+                            .message_capture_stack
+                            .last()
+                            .map(|capture| capture.text.clone())
                         && let Some(frame) = env.last_mut()
                         && let Some((_, binding)) = frame.iter_mut().find(|(var, _)| var == &name)
                     {
@@ -319,7 +339,18 @@ impl Interpreter {
             }
         }
         self.message_capture_stack.pop();
-        env.pop();
+        match special_restore {
+            Some(restore) => {
+                if let Err(error) = self.restore_special_binding(restore, env)
+                    && result.is_ok()
+                {
+                    result = Err(error);
+                }
+            }
+            None => {
+                env.pop();
+            }
+        }
         result.map(|()| last)
     }
 
@@ -1427,7 +1458,7 @@ impl Interpreter {
         Ok(result)
     }
 
-    fn parse_cl_macrolet_bindings(
+    pub(super) fn parse_cl_macrolet_bindings(
         &mut self,
         bindings_value: &Value,
     ) -> Result<Vec<MacroBinding>, LispError> {

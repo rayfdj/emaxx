@@ -832,6 +832,32 @@ impl Interpreter {
             .map(|frame| frame.locals.clone())
     }
 
+    // The lexical context visible at an activation frame: that frame's own
+    // locals plus every older frame's, with inner bindings shadowing outer
+    // ones.  `backtrace-eval' evaluates expressions against this view.
+    pub fn backtrace_frame_context_locals(
+        &self,
+        index: usize,
+        base: Option<&Value>,
+    ) -> Vec<(String, Value)> {
+        let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
+        let start = base
+            .and_then(|base| frames.iter().position(|frame| &frame.function == base))
+            .unwrap_or(0);
+        let mut merged: Vec<(String, Value)> = Vec::new();
+        for frame in frames.into_iter().skip(start + index) {
+            for (name, value) in &frame.locals {
+                if !merged.iter().any(|(existing, _)| existing == name) {
+                    merged.push((name.clone(), value.clone()));
+                }
+            }
+        }
+        // Innermost bindings must win: binding lookup scans a frame back to
+        // front, so store outer entries first.
+        merged.reverse();
+        merged
+    }
+
     pub fn push_handler_bindings(&mut self, bindings: &[(String, Value)]) -> usize {
         let start = self.active_handlers.len();
         self.active_handlers.extend_from_slice(bindings);

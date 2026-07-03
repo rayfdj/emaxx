@@ -227,6 +227,9 @@ impl Interpreter {
 
         for test in &tests {
             let mut env: Env = Vec::new();
+            // Timers a test scheduled but never reached firing conditions
+            // for must not leak into later tests.
+            self.pending_timers.clear();
             let previous = self.set_current_load_file(test.source_file.clone());
             let result = self.call_function_value(test.body.clone(), None, &[], &mut env);
             self.set_current_load_file(previous);

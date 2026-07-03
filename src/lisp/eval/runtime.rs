@@ -1244,11 +1244,36 @@ impl Interpreter {
         }
     }
 
+    fn record_provide_in_load_history(&mut self, feature: &str) {
+        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
+            return;
+        };
+        if current_load_list.is_nil() {
+            return;
+        }
+        let entry = Value::cons(
+            Value::Symbol("provide".into()),
+            Value::Symbol(feature.to_string()),
+        );
+        let mut entries = current_load_list.to_vec().unwrap_or_default();
+        if entries.iter().any(|item| item == &entry) {
+            return;
+        }
+        entries.push(entry);
+        self.set_global_binding("current-load-list", Value::list(entries));
+    }
+
+    pub fn unprovide_feature(&mut self, feature: &str) {
+        self.provided_features.retain(|name| name != feature);
+        self.set_global_binding("features", self.features_value());
+    }
+
     pub(super) fn provide_feature_with_after_load(
         &mut self,
         feature: &str,
     ) -> Result<Value, LispError> {
         self.provide_feature(feature);
+        self.record_provide_in_load_history(feature);
         let mut pending = Vec::new();
         let mut index = 0usize;
         while index < self.after_load_forms.len() {

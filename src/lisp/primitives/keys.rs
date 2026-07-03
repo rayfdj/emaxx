@@ -123,7 +123,17 @@ pub(crate) fn key_sequence_binding_text(value: &Value) -> Result<String, LispErr
 }
 
 pub(crate) fn looks_like_textual_key_spec(text: &str) -> bool {
-    if text.contains(char::is_whitespace) || text.contains('<') || text.contains('>') {
+    // Whitespace separates keys in a textual spec, but a string that is
+    // nothing but whitespace is a raw key sequence (like `" "' for SPC).
+    if text.contains(char::is_whitespace) && !text.chars().all(char::is_whitespace) {
+        return true;
+    }
+    if text.contains('<') || text.contains('>') {
+        return true;
+    }
+    // Named keys parse as single events so stored bindings and lookups
+    // agree on parts like ["SPC"].
+    if matches!(text, "SPC" | "RET" | "TAB" | "DEL" | "ESC" | "LFD" | "NUL") {
         return true;
     }
     let (_, _, saw_prefix) = parse_kbd_prefixes(text);
@@ -147,7 +157,9 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
     {
         match event {
             Value::Symbol(symbol) => return Ok(vec![symbol.clone()]),
-            Value::T => return Ok(vec!["t".into()]),
+            // GNU renders the [t] default binding as "<t>", which also keeps
+            // it distinct from a binding on the letter t.
+            Value::T => return Ok(vec!["<t>".into()]),
             _ => {}
         }
     }

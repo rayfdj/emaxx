@@ -960,6 +960,19 @@ pub(crate) fn list_contains_with(
 }
 
 pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
+    if let Value::BuiltinFunc(name) = func {
+        return builtin_interactive_string(name).map(|spec| {
+            vec![
+                Value::Symbol("interactive".into()),
+                Value::String(spec.into()),
+            ]
+        });
+    }
+    // Advice wrappers keep the advised function interactive with the
+    // original's interactive form, like `advice--make-interactive-form'.
+    if let Some(original) = advice_wrapper_original(func) {
+        return interactive_form_items(&original);
+    }
     let Value::Lambda(_, body, _) = func else {
         return None;
     };
@@ -979,6 +992,48 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
         break;
     }
     None
+}
+
+fn advice_wrapper_original(func: &Value) -> Option<Value> {
+    let Value::Lambda(params, _, closure_env) = func else {
+        return None;
+    };
+    if params.first().map(String::as_str) != Some("&rest")
+        || !params.get(1).is_some_and(|name| {
+            name.starts_with("__emaxx-advice-around-args-")
+                || name.starts_with("__emaxx-advice-after-args-")
+        })
+    {
+        return None;
+    }
+    closure_env
+        .borrow()
+        .iter()
+        .flatten()
+        .find(|(name, _)| {
+            name.starts_with("__emaxx-advice-around-original-")
+                || name.starts_with("__emaxx-advice-after-original-")
+        })
+        .map(|(_, value)| value.clone())
+}
+
+// Interactive specs of the built-in commands keyboard macros dispatch to;
+// motion commands take the numeric prefix argument like their GNU C
+// counterparts.
+fn builtin_interactive_string(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "next-line" | "previous-line" => "^p\np",
+        "forward-char"
+        | "backward-char"
+        | "forward-line"
+        | "move-beginning-of-line"
+        | "move-end-of-line"
+        | "forward-sexp"
+        | "backward-sexp" => "^p",
+        "delete-char" => "p\nP",
+        "kill-line" | "eval-defun" => "P",
+        _ => return None,
+    })
 }
 
 pub(crate) fn interactive_spec_form(func: &Value) -> Option<Value> {

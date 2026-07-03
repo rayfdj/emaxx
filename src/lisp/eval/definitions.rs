@@ -787,6 +787,32 @@ impl Interpreter {
                 Ok(value)
             }
             Some(Value::Symbol(name)) => {
+                // Last resort before giving up: a `gv-expander' property
+                // registered by a `(declare (gv-expander ...))'.  `gv-get'
+                // calls the expander with a DO continuation and the
+                // unevaluated place arguments; DO's setter returns the store
+                // expression, which we then evaluate.  Native place handlers
+                // above take precedence.
+                if let Some(expander) = self.get_symbol_property(name, "gv-expander") {
+                    let do_form = Value::list([
+                        Value::Symbol("lambda".into()),
+                        Value::list([
+                            Value::Symbol("getter".into()),
+                            Value::Symbol("setter".into()),
+                        ]),
+                        Value::list([
+                            Value::Symbol("funcall".into()),
+                            Value::Symbol("setter".into()),
+                            Value::list([Value::Symbol("quote".into()), items[2].clone()]),
+                        ]),
+                    ]);
+                    let do_function = self.eval(&do_form, env)?;
+                    let mut expander_args = vec![do_function];
+                    expander_args.extend(place[1..].iter().cloned());
+                    let store_expression =
+                        self.call_function_value(expander, None, &expander_args, env)?;
+                    return self.eval(&store_expression, env);
+                }
                 let setter_name = format!("(setf {name})");
                 let Ok(setter) = self.lookup_function(&setter_name, env) else {
                     return Err(LispError::Signal(format!(
@@ -839,10 +865,14 @@ impl Interpreter {
         let Value::Record(id) = object.clone() else {
             return Err(wrong_type_argument(&predicate, object));
         };
+        let type_matches = self
+            .find_record(id)
+            .is_some_and(|record| record.type_name == expected_type)
+            || self.value_is_instance_of_class(&object, &expected_type);
         let record = self
             .find_record_mut(id)
             .ok_or_else(|| wrong_type_argument(&predicate, Value::Record(id)))?;
-        if record.type_name != expected_type {
+        if !type_matches {
             return Err(wrong_type_argument(&predicate, Value::Record(id)));
         }
         if slot_index >= record.slots.len() {
@@ -2015,20 +2045,34 @@ impl Interpreter {
             _ => return Ok(Value::Nil),
         };
 
-        let slot_specs = items[2..]
-            .iter()
-            .filter_map(|slot| match slot {
-                Value::Symbol(name) => Some((name.clone(), Value::Nil)),
-                Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
-                    let name = parts
-                        .first()
-                        .and_then(|value| value.as_symbol().ok().map(str::to_string))?;
-                    let default = parts.get(1).cloned().unwrap_or(Value::Nil);
-                    Some((name, default))
-                }),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        // `:include' prepends the parent's slots so accessor indexes stay
+        // aligned across the inheritance chain.
+        let mut slot_specs: Vec<(String, Value)> = Vec::new();
+        for option in &options {
+            if let Ok(parts) = option.to_vec()
+                && matches!(parts.first(), Some(Value::Symbol(keyword)) if keyword == ":include")
+                && let Some(Value::Symbol(parent)) = parts.get(1)
+                && let Some(parent_slots) = self.get_symbol_property(parent, "emaxx-struct-slots")
+                && let Ok(parent_names) = parent_slots.to_vec()
+            {
+                for slot in parent_names {
+                    if let Value::Symbol(slot_name) = slot {
+                        slot_specs.push((slot_name, Value::Nil));
+                    }
+                }
+            }
+        }
+        slot_specs.extend(items[2..].iter().filter_map(|slot| match slot {
+            Value::Symbol(name) => Some((name.clone(), Value::Nil)),
+            Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
+                let name = parts
+                    .first()
+                    .and_then(|value| value.as_symbol().ok().map(str::to_string))?;
+                let default = parts.get(1).cloned().unwrap_or(Value::Nil);
+                Some((name, default))
+            }),
+            _ => None,
+        }));
         let slot_names = slot_specs
             .iter()
             .map(|(name, _)| name.clone())
@@ -2143,6 +2187,18 @@ impl Interpreter {
                 )),
             );
         }
+
+        self.set_function_binding(
+            &format!("copy-{name}"),
+            Some(Value::Lambda(
+                vec!["object".into()],
+                vec![Value::list([
+                    Value::Symbol("copy-sequence".into()),
+                    Value::Symbol("object".into()),
+                ])],
+                shared_env(Vec::new()),
+            )),
+        );
 
         for (index, slot_name) in slot_names.iter().enumerate() {
             let accessor_name = format!("{conc_name}{slot_name}");
@@ -2463,15 +2519,100 @@ impl Interpreter {
         {
             self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter));
         }
+        if body_start < normalized_forms.len()
+            && let Some(handler) = function_declare_gv_expander(&normalized_forms[body_start])
+            && let Ok(handler_items) = handler.to_vec()
+            && handler_items.len() >= 3
+            && matches!(handler_items.first(), Some(Value::Symbol(head)) if head == "lambda")
+            && let Ok(handler_params) = handler_items[1].to_vec()
+        {
+            // `(declare (gv-expander (lambda (do) ...)))' becomes an expander
+            // taking DO plus the function's own arguments, like
+            // `gv--defun-declaration'.
+            let mut expander_params = handler_params;
+            for param in &params {
+                expander_params.push(Value::Symbol(param.clone()));
+            }
+            let expander_form = Value::list(
+                std::iter::once(Value::Symbol("lambda".into()))
+                    .chain(std::iter::once(Value::list(expander_params)))
+                    .chain(handler_items[2..].iter().cloned())
+                    .collect::<Vec<_>>(),
+            );
+            let expander = self.eval(&expander_form, env)?;
+            self.put_symbol_property(&name, "gv-expander", expander);
+        }
         let body: Vec<Value> = normalized_forms[body_start..].to_vec();
         if crate::lisp::primitives::prefer_builtin_override(&name) {
             self.functions
                 .push((name.clone(), Value::BuiltinFunc(name.clone())));
             return Ok(Value::Symbol(name));
         }
+        // GNU eagerly macroexpands top-level forms when they are loaded or
+        // eval-defun'ed, so an edebug-instrumented `cl-macrolet' runs its
+        // (instrumented) local macros while the defun itself is evaluated
+        // (Bug#29919). Replicate that for instrumented bodies.
+        let body = if body
+            .iter()
+            .any(|form| value_tree_contains_symbol(form, "edebug-enter"))
+            && body
+                .iter()
+                .any(|form| value_tree_contains_symbol(form, "cl-macrolet"))
+        {
+            body.iter()
+                .map(|form| self.eagerly_expand_cl_macrolet(form, env))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            body
+        };
         let lambda = Value::Lambda(params, body, shared_env(env.clone()));
         self.functions.push((name.clone(), lambda));
         Ok(Value::Symbol(name))
+    }
+
+    fn eagerly_expand_cl_macrolet(
+        &mut self,
+        form: &Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let Ok(items) = form.to_vec() else {
+            return Ok(form.clone());
+        };
+        if items.is_empty() {
+            return Ok(form.clone());
+        }
+        match items.first() {
+            Some(Value::Symbol(head)) if head == "quote" => return Ok(form.clone()),
+            Some(Value::Symbol(head)) if head == "cl-macrolet" && items.len() >= 3 => {
+                let local_macros = self.parse_cl_macrolet_bindings(&items[1])?;
+                let local_start = self.macros.len();
+                self.macros.extend(local_macros.iter().cloned());
+                let local_count = self.macros.len() - local_start;
+                let mut expanded_forms = Vec::with_capacity(items.len());
+                expanded_forms.push(Value::Symbol("progn".into()));
+                let mut failure = None;
+                for body_form in &items[2..] {
+                    match self.macroexpand_all_form_with_environment(body_form, None, env) {
+                        Ok(expanded) => expanded_forms.push(expanded),
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                }
+                self.macros.drain(local_start..local_start + local_count);
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                return Ok(Value::list(expanded_forms));
+            }
+            _ => {}
+        }
+        let expanded = items
+            .iter()
+            .map(|item| self.eagerly_expand_cl_macrolet(item, env))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Value::list(expanded))
     }
 
     pub(super) fn sf_cl_deftype(
@@ -2781,7 +2922,6 @@ impl Interpreter {
         } else if self.lookup_function(&name, env).is_err() {
             self.set_function_binding(&name, Some(Value::BuiltinFunc("ignore".into())));
         }
-        self.maybe_notify_edebug_new_definition(&name, env)?;
         Ok(Value::Symbol(name))
     }
 
@@ -2811,29 +2951,6 @@ impl Interpreter {
         }
         self.put_symbol_property(&name, "edebug-elem-spec", spec.clone());
         Ok(spec)
-    }
-
-    fn maybe_notify_edebug_new_definition(
-        &mut self,
-        name: &str,
-        env: &mut Env,
-    ) -> Result<(), LispError> {
-        if !self
-            .lookup_var("edebug-all-defs", env)
-            .is_some_and(|value| value.is_truthy())
-        {
-            return Ok(());
-        }
-        let arg = Value::Symbol(name.to_string());
-        if let Some(handler) = self
-            .lookup_var("edebug-new-definition-function", env)
-            .filter(Value::is_truthy)
-        {
-            self.call_function_value(handler, None, &[arg], env)?;
-        } else if let Ok(handler) = self.lookup_function("edebug-new-definition", env) {
-            self.call_function_value(handler, Some("edebug-new-definition"), &[arg], env)?;
-        }
-        Ok(())
     }
 
     pub(super) fn sf_cl_generic_define_generalizer(
@@ -2898,14 +3015,6 @@ impl Interpreter {
             &items[2..lambda_list_index],
             &items[lambda_list_index],
         );
-        let mut edebug_method_parts = vec![Value::Symbol(":method".into())];
-        edebug_method_parts.extend(items[2..lambda_list_index].iter().cloned());
-        edebug_method_parts.push(items[lambda_list_index].clone());
-        if let Some(edebug_name) =
-            cl_defgeneric_edebug_method_name(&method_name, &edebug_method_parts)?
-        {
-            self.maybe_notify_edebug_new_definition(&edebug_name, env)?;
-        }
         let is_before_method = items[2..lambda_list_index]
             .iter()
             .any(|value| matches!(value, Value::Symbol(name) if name == ":before"));
@@ -2916,6 +3025,17 @@ impl Interpreter {
         ordered_method_specializers.sort_by_key(|specializer| {
             cl_defmethod_argument_precedence_index(&specializer.variable, &precedence_order)
         });
+        // Methods defined with no surrounding lexical bindings (top-level
+        // definitions like edebug's spec-matching methods) capture nothing,
+        // so their dispatch wrappers can run on the caller's environment
+        // chain. That keeps lexical mutations made inside method bodies
+        // visible to the calling scope instead of dying in cloned frames.
+        // Methods that do close over locals keep the cloned-env model.
+        let transparent_dispatch = env.iter().all(|frame| frame.is_empty());
+        let mark_transparent = |mut body: Vec<Value>| {
+            body.insert(0, Value::Symbol(":closure-transparent-env".into()));
+            body
+        };
         if (is_before_method || is_after_method)
             && let Ok(previous) =
                 self.lookup_function(&function_name_from_binding_form(&items[1])?, env)
@@ -3002,6 +3122,11 @@ impl Interpreter {
                 qualified_body,
                 call_previous,
             ])];
+            let wrapper_body = if transparent_dispatch {
+                mark_transparent(wrapper_body)
+            } else {
+                wrapper_body
+            };
             let splice = is_before_method
                 .then(|| cl_defmethod_first_previous_binding(&previous))
                 .flatten();
@@ -3183,6 +3308,11 @@ impl Interpreter {
                 generic_rest_param.as_deref(),
                 method_body,
             );
+            let method_body = if transparent_dispatch {
+                mark_transparent(method_body)
+            } else {
+                method_body
+            };
             let mut dispatch_stop_variables = dispatch_method_specializers
                 .iter()
                 .map(|specializer| specializer.variable.clone())
@@ -3250,7 +3380,7 @@ impl Interpreter {
                 ]);
             }
             let dispatch_body = |condition: Value| {
-                vec![Value::list([
+                let body = vec![Value::list([
                     Value::Symbol("if".into()),
                     condition,
                     Value::list([
@@ -3263,7 +3393,12 @@ impl Interpreter {
                         Value::Symbol(previous_method_symbol.clone()),
                         forwarded_args.clone(),
                     ]),
-                ])]
+                ])];
+                if transparent_dispatch {
+                    mark_transparent(body)
+                } else {
+                    body
+                }
             };
             let wrapper_closure = |previous: Value| {
                 shared_env(
@@ -3523,14 +3658,11 @@ impl Interpreter {
         let (_, body) = self.normalize_function_body_documentation(&items[2..], env)?;
         let keep_full_context = body_closure_dont_trim_context(&body);
         let closure_env = if self.lambda_capture_override().unwrap_or(true) {
-            let captured = if keep_full_context {
-                env.clone()
-            } else if self.lambda_trim_override() {
-                trim_lambda_closure_env(env, &body)
+            if !keep_full_context && self.lambda_trim_override() {
+                shared_env(trim_lambda_closure_env(env, &body))
             } else {
-                env.clone()
-            };
-            shared_env(captured)
+                self.capture_closure_env(env.clone())
+            }
         } else {
             shared_env(Vec::new())
         };
@@ -3570,6 +3702,17 @@ fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
             Some(frame[..=last_used].to_vec())
         })
         .collect()
+}
+
+fn value_tree_contains_symbol(value: &Value, target: &str) -> bool {
+    match value {
+        Value::Symbol(symbol) => symbol == target,
+        Value::Cons(car, cdr) => {
+            value_tree_contains_symbol(&car.borrow(), target)
+                || value_tree_contains_symbol(&cdr.borrow(), target)
+        }
+        _ => false,
+    }
 }
 
 fn collect_referenced_symbols(value: &Value, referenced: &mut HashSet<String>) {

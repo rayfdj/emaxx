@@ -13,12 +13,15 @@ pub(crate) fn make_advice_wrapper_after(original: Value, advice: Value) -> Value
     let advice_name = format!("__emaxx-advice-after-function-{unique}");
     Value::Lambda(
         vec!["&rest".into(), args_name.clone()],
-        vec![Value::list([
-            Value::Symbol("emaxx-apply-after-advice".into()),
-            Value::Symbol(original_name.clone()),
-            Value::Symbol(advice_name.clone()),
-            Value::Symbol(args_name),
-        ])],
+        vec![
+            Value::Symbol(":closure-transparent-env".into()),
+            Value::list([
+                Value::Symbol("emaxx-apply-after-advice".into()),
+                Value::Symbol(original_name.clone()),
+                Value::Symbol(advice_name.clone()),
+                Value::Symbol(args_name),
+            ]),
+        ],
         shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
     )
 }
@@ -30,12 +33,15 @@ pub(crate) fn make_advice_wrapper_around(original: Value, advice: Value) -> Valu
     let advice_name = format!("__emaxx-advice-around-function-{unique}");
     Value::Lambda(
         vec!["&rest".into(), args_name.clone()],
-        vec![Value::list([
-            Value::Symbol("emaxx-apply-around-advice".into()),
-            Value::Symbol(original_name.clone()),
-            Value::Symbol(advice_name.clone()),
-            Value::Symbol(args_name),
-        ])],
+        vec![
+            Value::Symbol(":closure-transparent-env".into()),
+            Value::list([
+                Value::Symbol("emaxx-apply-around-advice".into()),
+                Value::Symbol(original_name.clone()),
+                Value::Symbol(advice_name.clone()),
+                Value::Symbol(args_name),
+            ]),
+        ],
         shared_env(vec![vec![(original_name, original), (advice_name, advice)]]),
     )
 }

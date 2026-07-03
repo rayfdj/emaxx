@@ -187,6 +187,9 @@ impl Interpreter {
             "auto-save-timeout" => Some(Value::Integer(30)),
             "auto-save-interval" => Some(Value::Integer(300)),
             "load-read-function" => Some(Value::Symbol("read".into())),
+            "read-circle" => Some(Value::T),
+            "gensym-counter" => Some(Value::Integer(0)),
+            "load-file-rep-suffixes" => Some(Value::list([Value::String(String::new())])),
             "debug-on-quit" => Some(Value::Nil),
             "inhibit-redisplay" => Some(Value::Nil),
             "inhibit-quit" => Some(Value::Nil),
@@ -798,6 +801,10 @@ impl Interpreter {
             return;
         }
         self.functions.push((name.to_string(), function));
+    }
+
+    pub fn remove_all_function_bindings(&mut self, name: &str) {
+        self.functions.retain(|(fname, _)| fname != name);
     }
 
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {

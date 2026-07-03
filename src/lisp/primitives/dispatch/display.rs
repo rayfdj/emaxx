@@ -297,9 +297,16 @@ pub(super) fn call(
                 buffer.goto_char(end);
                 buffer.insert(&(text.clone() + "\n"));
             }
-            if let Some(captured) = interp.message_capture_stack.last_mut() {
-                captured.push_str(&text);
-                captured.push('\n');
+            // The upstream capture advice ignores `(message nil)' and
+            // `(message "")', which edebug uses to clear the echo area.
+            let capturable = !args.is_empty()
+                && !args.first().is_some_and(Value::is_nil)
+                && args
+                    .first()
+                    .and_then(string_like)
+                    .is_none_or(|string| !string.text.is_empty());
+            if capturable {
+                interp.append_message_capture(&text, true);
             }
             if args.first().is_some_and(Value::is_nil) {
                 Ok(Value::Nil)

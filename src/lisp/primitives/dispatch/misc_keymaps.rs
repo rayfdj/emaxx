@@ -1830,8 +1830,14 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "backtrace-eval" => {
-            need_args(name, args, 3)?;
-            interp.lookup(args[0].as_symbol()?, env)
+            need_arg_range(name, args, 2, 3)?;
+            let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
+            let base = args.get(2).filter(|value| !value.is_nil());
+            let locals = interp.backtrace_frame_context_locals(index, base);
+            env.push(locals);
+            let result = interp.eval(&args[0], env);
+            env.pop();
+            result
         }
         "backtrace--locals" => {
             need_args(name, args, 2)?;

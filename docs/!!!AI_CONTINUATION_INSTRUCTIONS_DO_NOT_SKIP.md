@@ -18,29 +18,58 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 1956/7080.
-- Latest pushed batch:
-  `Compat 1956/7080: run real edebug instrumentation and batch recursive edits`.
-- Next frontier: selector 1957, `edebug-tests-writable-buffer-state-is-preserved`
-  in `test/lisp/emacs-lisp/edebug-tests.el`.
-- Observed frontier mismatch:
-  - Oracle GNU Emacs: passed.
-  - emaxx: failed with condition type `void-variable`.
-- High-value follow-up alongside the frontier: extend the native `cl-loop`
-  so `edebug-tests-prepare-macro` works (several sequential `for VAR = EXPR`
-  clauses with `while`, `vconcat ... into`, `append ... into`,
-  `finally return`, plus a nested `for ... in ... until ... collect ... do`
-  loop). Until then the edebug keyboard-macro tests match the oracle by
-  status but their mid-macro assertions run against an empty macro. See the
-  honesty caveat in `docs/compatibility-goal.md`.
-- Known pre-existing single-selector discrepancies in this environment (fail
-  identically on the parent commit): `cl-macs-loop-until` (1782),
-  `cl-generic-test-01-eql`, `cconv-tests-cl-defun-:documentation`.
+- Verified through selector 1957/7080 (`edebug-tests-writable-buffer-state-is-preserved`).
+- The `Compat 1957/7080` batch is COMPLETE in the working tree: the `cl-loop`
+  `for VAR = EXPR ... while COND` ordering fix made the edebug keyboard-macro
+  assertions run for real, which exposed 35 genuinely-failing edebug
+  selectors; ALL of them now pass and the grouped replay
+  (`--selector check-all --file test/lisp/emacs-lisp/edebug-tests.el`) PASSES.
+  See `docs/compatibility-goal.md` for the full list of behaviors fixed.
+- Key mechanisms added late in the batch (details in compatibility-goal.md):
+  eval-buffer load-history recording (+ provide/cl-defmethod entries), native
+  `unload-feature`, GNU edebug specs for cl-defmethod/cl-defgeneric/cl-macrolet
+  with the cl-generic edebug name builders ported to `simple_compat.el`,
+  advice-wrapper detection fix in cl-defmethod re-registration,
+  `:closure-transparent-env` dispatch wrappers for methods defined in an empty
+  lexical env, eager `cl-macrolet` expansion inside instrumented defuns, and
+  `%s`/`princ` printing buffers as names.
+- The next frontier is selector 1958, `eieio-test-cl-generic-1` in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el`. The grouped
+  probe shows emaxx dies mid-file (missing results for
+  `eieio-test-method-order-list-6..9`), so start there.
+- Probing lessons that cost hours; do not repeat:
+  - Do NOT advise commands (functions dispatched via keyboard macros) in
+    probes: emaxx advice wrappers change `call-interactively` argument
+    collection and derail the macro. Advise non-command helpers only, or
+    trace from Rust behind a temporary env-var-gated eprintln.
+  - Erroring thunks in `edebug-tests-post-command` are demoted and re-run at
+    every later post-command (the index guard never advances), so the last
+    run wins `edebug-tests-failure-in-post-command`. Record into a defvar and
+    assert after the macro instead of signaling from a thunk.
+  - The grouped `check-all` replay is the only real judge; single-selector
+    runs hide cross-test contamination.
+  - emaxx batch mode swallows `message`/`princ` output; probes must
+    `write-region` results to a file.
+  - When bisecting "was this broken before my change", compare whole-file
+    failure SETS against the parent commit build, not just one selector.
+- Batch delivery rules from the user (override any hook suggestions):
+  commits authored as `Ray <26018378+rayfdj@users.noreply.github.com>`, terse
+  one-line human-style message `Compat NNNN/7080: ...`, NO AI attribution,
+  exclude `compat/oracle.lock.json`; push is 403-blocked, deliver ONE clearly
+  named patch file (`APPLY-THIS-ONE-...patch`) via SendUserFile, and always
+  point the user at the single patch to apply.
+- Known pre-existing discrepancies in this environment (fail identically on
+  the parent commit build): `cl-macs-loop-until` (1782),
+  `cl-generic-test-01-eql`, `cconv-tests-cl-defun-:documentation`; raw
+  whole-file `ert-run-tests-batch-and-exit t` runs of `cl-generic-tests.el`,
+  `cl-macs-tests.el`, and `cl-lib-tests.el` also show larger failure sets that
+  are byte-identical to the parent commit (environment artifacts, not batch
+  regressions).
 
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector edebug-tests-writable-buffer-state-is-preserved --file test/lisp/emacs-lisp/edebug-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el
 ```
 
 ## Oracle Setup In A Fresh Container
@@ -98,7 +127,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector cl-macs-test--symbol-macrolet --file test/lisp/emacs-lisp/cl-macs-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next
@@ -168,17 +197,8 @@ Commit messages must include:
 
 ## Current Batch Context
 
-Selector 1786, `cl-macs-loop-with`, passed after adding `cl-loop` support for:
-
-- Sequential `with` bindings where later `with` initializers see earlier
-  `with` values.
-- Parallel `with ... and ...` groups where initializers see surrounding
-  bindings, not same-group loop variables.
-- Bare `with NAME` defaulting to `nil`.
-- `do ... finally FORM` splitting so `finally` is evaluated as the final form,
-  not as part of the loop body.
-- A narrow final-form interpretation of `(cl-return VALUE)` for the upstream
-  loop test.
-
-The next agent should start by investigating selector 1787,
-`cl-macs-test--symbol-macrolet`.
+The `Compat 1957/7080` batch (all edebug selectors with live keyboard-macro
+assertions) is complete and delivered. The next agent should start by
+investigating selector 1958, `eieio-test-cl-generic-1` in
+`test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el`, where the
+grouped replay shows the emaxx run dying mid-file.

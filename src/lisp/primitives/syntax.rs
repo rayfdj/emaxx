@@ -1646,14 +1646,45 @@ pub(super) fn down_list_impl(
     _env: &Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
-    if count < 0 {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unsupported negative down-list".into()),
-        ])));
-    }
     let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
+    if count < 0 {
+        // Move backward down a list level: stop just before the close paren
+        // of the previous list.
+        for _ in 0..count.unsigned_abs() {
+            let mut cursor = interp.buffer.point().checked_sub(2);
+            let mut found = None;
+            while let Some(idx) = cursor {
+                let ch = chars[idx];
+                let entry = syntax_entry_for_char(interp, table_id, ch);
+                match entry.class {
+                    SyntaxClass::StringQuote => {
+                        let mut scan = idx.checked_sub(1);
+                        while let Some(inner) = scan {
+                            if chars[inner] == ch && !(inner > 0 && chars[inner - 1] == '\\') {
+                                break;
+                            }
+                            scan = inner.checked_sub(1);
+                        }
+                        cursor = scan.and_then(|inner| inner.checked_sub(1));
+                    }
+                    SyntaxClass::CloseParen => {
+                        found = Some(idx + 1);
+                        break;
+                    }
+                    _ => cursor = idx.checked_sub(1),
+                }
+            }
+            let Some(position) = found else {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("scan-error".into()),
+                    Value::String("No containing expression".into()),
+                ])));
+            };
+            interp.buffer.goto_char(position);
+        }
+        return Ok(Value::Nil);
+    }
     for _ in 0..count {
         let mut idx = interp.buffer.point().saturating_sub(1);
         let mut found = None;
@@ -1766,7 +1797,9 @@ pub(super) fn forward_comment_impl(
             let candidate = skip_whitespace_forward(interp, table_id, &chars, point);
             let idx = candidate.saturating_sub(1);
             let Some(start) = comment_start_at(interp, table_id, &chars, idx) else {
-                interp.buffer.goto_char(original_point);
+                // GNU stops before the non-comment token, keeping the
+                // whitespace crossed so far behind point.
+                interp.buffer.goto_char(candidate);
                 return Ok(Value::Nil);
             };
             let (end, closed) = skip_comment_with_status(

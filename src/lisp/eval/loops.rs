@@ -401,6 +401,10 @@ impl Interpreter {
         let mut with_binding_groups = Vec::new();
         let mut while_expr = None;
         let mut until_expr = None;
+        // GNU cl-loop evaluates clauses in written order, so assignment
+        // clauses that appear before a while/until guard must update before
+        // the guard is tested each iteration.
+        let mut guard_assign_position: Option<usize> = None;
         let mut initially_body = Vec::new();
         let mut index = 1usize;
         let named_loop_tag = if matches!(items.get(index), Some(Value::Symbol(symbol)) if symbol == "named")
@@ -623,6 +627,19 @@ impl Interpreter {
                     }
                 }
                 Some(Value::Symbol(symbol)) if symbol == "while" => {
+                    if guard_assign_position.is_none() {
+                        guard_assign_position = Some(
+                            specs
+                                .iter()
+                                .filter(|spec| {
+                                    matches!(
+                                        spec,
+                                        LoopSpec::Assign { .. } | LoopSpec::AssignThen { .. }
+                                    )
+                                })
+                                .count(),
+                        );
+                    }
                     while_expr = Some(
                         items
                             .get(index + 1)
@@ -632,6 +649,19 @@ impl Interpreter {
                     index += 2;
                 }
                 Some(Value::Symbol(symbol)) if symbol == "until" => {
+                    if guard_assign_position.is_none() {
+                        guard_assign_position = Some(
+                            specs
+                                .iter()
+                                .filter(|spec| {
+                                    matches!(
+                                        spec,
+                                        LoopSpec::Assign { .. } | LoopSpec::AssignThen { .. }
+                                    )
+                                })
+                                .count(),
+                        );
+                    }
                     until_expr = Some(
                         items
                             .get(index + 1)
@@ -1581,6 +1611,31 @@ impl Interpreter {
                 }
             }
 
+            let guard_split = guard_assign_position.unwrap_or(0);
+            let mut assign_position = 0usize;
+            for spec in &specs {
+                match spec {
+                    LoopSpec::Assign { name, expr } => {
+                        if assign_position < guard_split {
+                            let value = Self::stored_value(self.eval(expr, env)?);
+                            let frame = env.last_mut().expect("env frame just pushed");
+                            Self::upsert_frame_binding(frame, name.clone(), value);
+                        }
+                        assign_position += 1;
+                    }
+                    LoopSpec::AssignThen { name, init, step } => {
+                        if assign_position < guard_split {
+                            let form = if iteration == 0 { init } else { step };
+                            let value = Self::stored_value(self.eval(form, env)?);
+                            let frame = env.last_mut().expect("env frame just pushed");
+                            Self::upsert_frame_binding(frame, name.clone(), value);
+                        }
+                        assign_position += 1;
+                    }
+                    _ => {}
+                }
+            }
+
             if let Some(expr) = while_expr.as_ref()
                 && !self.eval(expr, env)?.is_truthy()
             {
@@ -1592,18 +1647,25 @@ impl Interpreter {
                 break;
             }
 
+            assign_position = 0;
             for spec in &specs {
                 match spec {
                     LoopSpec::Assign { name, expr } => {
-                        let value = Self::stored_value(self.eval(expr, env)?);
-                        let frame = env.last_mut().expect("env frame just pushed");
-                        Self::upsert_frame_binding(frame, name.clone(), value);
+                        if assign_position >= guard_split {
+                            let value = Self::stored_value(self.eval(expr, env)?);
+                            let frame = env.last_mut().expect("env frame just pushed");
+                            Self::upsert_frame_binding(frame, name.clone(), value);
+                        }
+                        assign_position += 1;
                     }
                     LoopSpec::AssignThen { name, init, step } => {
-                        let form = if iteration == 0 { init } else { step };
-                        let value = Self::stored_value(self.eval(form, env)?);
-                        let frame = env.last_mut().expect("env frame just pushed");
-                        Self::upsert_frame_binding(frame, name.clone(), value);
+                        if assign_position >= guard_split {
+                            let form = if iteration == 0 { init } else { step };
+                            let value = Self::stored_value(self.eval(form, env)?);
+                            let frame = env.last_mut().expect("env frame just pushed");
+                            Self::upsert_frame_binding(frame, name.clone(), value);
+                        }
+                        assign_position += 1;
                     }
                     _ => {}
                 }
