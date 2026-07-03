@@ -3,6 +3,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq)]
 enum ClDefmethodStoredSpecializer {
     Class(String),
+    Subclass(String),
     Eql(Value),
     Head(Value),
 }
@@ -188,6 +189,9 @@ impl ClDefmethodStoredSpecializer {
                 [Value::Symbol(kind), Value::Symbol(class_name)] if kind == "class" => {
                     return Some(Self::Class(class_name.clone()));
                 }
+                [Value::Symbol(kind), Value::Symbol(class_name)] if kind == "subclass" => {
+                    return Some(Self::Subclass(class_name.clone()));
+                }
                 [Value::Symbol(kind), eql_value] if kind == "eql" => {
                     return Some(Self::Eql(eql_value.clone()));
                 }
@@ -206,6 +210,7 @@ impl ClDefmethodStoredSpecializer {
     fn key(&self) -> String {
         match self {
             Self::Class(class_name) => format!("class:{class_name}"),
+            Self::Subclass(class_name) => format!("subclass:{class_name}"),
             Self::Eql(value) => format!("eql:{value}"),
             Self::Head(value) => format!("head:{value}"),
         }
@@ -219,6 +224,10 @@ impl ClDefmethodStoredSpecializer {
         match self {
             Self::Class(class_name) => Value::list([
                 Value::Symbol("class".into()),
+                Value::Symbol(class_name.clone()),
+            ]),
+            Self::Subclass(class_name) => Value::list([
+                Value::Symbol("subclass".into()),
                 Value::Symbol(class_name.clone()),
             ]),
             Self::Eql(value) => Value::list([Value::Symbol("eql".into()), value.clone()]),
@@ -245,6 +254,17 @@ impl ClDefmethodStoredSpecializer {
                     Value::Symbol(class_name.clone()),
                 ]),
             ]),
+            Self::Subclass(class_name) => Value::list([
+                Value::Symbol("cl-typep".into()),
+                runtime_value,
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::list([
+                        Value::Symbol("subclass".into()),
+                        Value::Symbol(class_name.clone()),
+                    ]),
+                ]),
+            ]),
             Self::Eql(expected) => Value::list([
                 Value::Symbol("eql".into()),
                 runtime_value,
@@ -262,14 +282,22 @@ impl ClDefmethodStoredSpecializer {
         }
     }
 
+    fn is_default(&self) -> bool {
+        matches!(self, Self::Class(class_name) if class_name == "t")
+    }
+
     fn is_more_specific_than(&self, other: &Self, interp: &Interpreter) -> bool {
+        let inherits = |child: &str, ancestor: &str| {
+            interp
+                .class_allparents(child)
+                .iter()
+                .any(|parent| matches!(parent, Value::Symbol(parent) if parent == ancestor))
+        };
         match (self, other) {
             (Self::Class(left), Self::Class(right)) => {
                 left != right
-                    && interp
-                        .class_allparents(left)
-                        .iter()
-                        .any(|parent| matches!(parent, Value::Symbol(parent) if parent == right))
+                    && (inherits(left, right)
+                        || (!inherits(right, left) && interp.class_sibling_precedes(left, right)))
             }
             (Self::Eql(value), Self::Class(class_name)) => {
                 let Ok(actual) = primitives::cl_type_name(interp, value) else {
@@ -282,6 +310,13 @@ impl ClDefmethodStoredSpecializer {
                     )
             }
             (Self::Head(_), Self::Class(class_name)) => class_name == "t",
+            (Self::Subclass(left), Self::Subclass(right)) => {
+                left != right
+                    && (inherits(left, right)
+                        || (!inherits(right, left) && interp.class_sibling_precedes(left, right)))
+            }
+            (Self::Subclass(_), Self::Class(class_name)) => class_name == "t",
+            (Self::Eql(_), Self::Subclass(_)) => true,
             _ => false,
         }
     }
@@ -394,8 +429,15 @@ impl ClDefmethodStoredMethod {
             cl_defmethod_argument_precedence_index(variable, precedence_order)
         });
         for variable in variables {
-            let left = self.specializer_for(&variable);
-            let right = other.specializer_for(&variable);
+            // A class-`t' specializer is the default: it ranks like an
+            // unspecialized argument, so a method with a real specializer
+            // on a later argument still beats it.
+            let left = self
+                .specializer_for(&variable)
+                .filter(|specializer| !specializer.is_default());
+            let right = other
+                .specializer_for(&variable)
+                .filter(|specializer| !specializer.is_default());
             match (left, right) {
                 (Some(left), Some(right)) if left == right => {}
                 (Some(left), Some(right)) if left.is_more_specific_than(right, interp) => {
@@ -2653,12 +2695,19 @@ impl Interpreter {
         let options = items.get(4..).unwrap_or(&[]).to_vec();
         self.register_class(name, parents, slot_specs, options);
         classes::install_eieio_slot_accessors(self, name)?;
+        // Constructing through `make-instance' lets methods registered on
+        // the generic (eieio's static constructor methods) participate;
+        // without any methods the builtin constructs directly.
         self.set_function_binding(
             name,
             Some(Value::Lambda(
                 vec!["&rest".into(), "initargs".into()],
                 vec![Value::list([
-                    Value::Symbol("emaxx-class-make".into()),
+                    Value::Symbol("apply".into()),
+                    Value::list([
+                        Value::Symbol("function".into()),
+                        Value::Symbol("make-instance".into()),
+                    ]),
                     Value::list([
                         Value::Symbol("quote".into()),
                         Value::Symbol(name.to_string()),
@@ -3083,10 +3132,15 @@ impl Interpreter {
                 list_args.extend(fixed_call_args);
                 Value::list(list_args)
             };
+            // Include the specializer key: several :before/:after methods
+            // on one generic each capture their own previous chain, and a
+            // shared symbol would let a wrapper resolve to itself when the
+            // frames stack in one environment.
             let previous_symbol = format!(
-                "__emaxx_{}_method_{}",
+                "__emaxx_{}_method_{}_{}",
                 if is_before_method { "before" } else { "after" },
-                method_name.replace('-', "_")
+                method_name.replace('-', "_"),
+                current_stored_specializer.hidden_key()
             );
             let result_symbol = "__emaxx-cl-defmethod-result".to_string();
             let call_previous = Value::list([
@@ -3127,21 +3181,42 @@ impl Interpreter {
             } else {
                 wrapper_body
             };
-            let splice = is_before_method
-                .then(|| cl_defmethod_first_previous_binding(&previous))
-                .flatten();
-            let captured_previous = splice
-                .as_ref()
-                .map(|(_, _, value)| value.clone())
-                .unwrap_or_else(|| previous.clone());
+            // Keep the :before/:after wrapper stack ordered with the most
+            // specific method outermost: :before bodies then run
+            // most-specific-first on the way in, and :after bodies
+            // most-specific-last on the way out, like CLOS.
+            let mut insertion_parent: Option<(SharedEnv, String)> = None;
+            let mut captured_previous = previous.clone();
+            while let Some((wrapper_env, previous_name, previous_value, specializer)) =
+                cl_defmethod_qualifier_wrapper_parts(&captured_previous)
+            {
+                let more_specific = specializer
+                    .and_then(|metadata| ClDefmethodStoredMethod::parse(&metadata))
+                    .map(|stored| {
+                        stored.is_more_specific_than(
+                            &current_stored_specializer,
+                            &precedence_order,
+                            self,
+                        )
+                    })
+                    .unwrap_or(false);
+                if !more_specific {
+                    break;
+                }
+                insertion_parent = Some((wrapper_env, previous_name));
+                captured_previous = previous_value;
+            }
             let mut closure_env = Vec::with_capacity(env.len() + 1);
-            closure_env.push(vec![(
-                previous_symbol,
-                Self::stored_value(captured_previous),
-            )]);
+            closure_env.push(vec![
+                (previous_symbol, Self::stored_value(captured_previous)),
+                (
+                    "__emaxx-qualifier-specializer".into(),
+                    current_stored_specializer.metadata_value(),
+                ),
+            ]);
             closure_env.extend(env.iter().cloned());
             let wrapper = Value::Lambda(generic_params, wrapper_body, shared_env(closure_env));
-            if let Some((previous_env, previous_name, _)) = splice {
+            if let Some((previous_env, previous_name)) = insertion_parent {
                 let mut previous_env = previous_env.borrow_mut();
                 for frame in previous_env.iter_mut() {
                     if let Some((_, value)) =
@@ -3169,6 +3244,22 @@ impl Interpreter {
                 .as_ref()
                 .map(|(_, _, value)| value.clone())
                 .unwrap_or_else(|| previous.clone());
+            // Primary methods live below the :before/:after wrapper stack;
+            // descend to the boundary so the new wrapper is inserted there
+            // and the qualifier stack stays on top.
+            let mut qualifier_boundary: Option<(SharedEnv, String)> = None;
+            let mut dispatch_root = dispatch_root;
+            while let Some((wrapper_env, previous_name, previous_value, _)) =
+                cl_defmethod_qualifier_wrapper_parts(&dispatch_root)
+            {
+                qualifier_boundary = Some((wrapper_env, previous_name));
+                dispatch_root = previous_value;
+            }
+            let previous = if qualifier_boundary.is_some() {
+                dispatch_root.clone()
+            } else {
+                previous
+            };
             let is_around_method = items[2..lambda_list_index]
                 .iter()
                 .any(|value| matches!(value, Value::Symbol(name) if name == ":around"));
@@ -3242,9 +3333,12 @@ impl Interpreter {
             let generic_runtime_variables =
                 cl_defmethod_runtime_variables(&params, &generic_params, &method_specializers);
             let qualifier_key = cl_defmethod_qualifier_key(&items[2..lambda_list_index]);
+            // Use the canonical generic name: methods registered through an
+            // alias (old EIEIO's `constructor' -> `make-instance') must get
+            // symbols that later splices can reconstruct.
             let previous_method_symbol = format!(
                 "__emaxx_previous_method_{}_{}{}",
-                function_name_from_binding_form(&items[1])?.replace('-', "_"),
+                method_name.replace('-', "_"),
                 qualifier_key,
                 current_method_key
             );
@@ -3429,13 +3523,17 @@ impl Interpreter {
                 next_wrapper.clone()
             };
             if let Some((around_env, around_previous_name, _)) = around_splice {
+                // Splice below an existing :around method: the inserted
+                // wrapper must fall through to the around's OLD next chain
+                // (next_wrapper), not to the current top binding, which sits
+                // above the around and would make the chain cyclic.
                 let mut around_env = around_env.borrow_mut();
                 for frame in around_env.iter_mut() {
                     if let Some((_, value)) = frame
                         .iter_mut()
                         .find(|(name, _)| name == &around_previous_name)
                     {
-                        *value = Self::stored_value(wrapper.clone());
+                        *value = Self::stored_value(next_wrapper.clone());
                         break;
                     }
                 }
@@ -3465,6 +3563,16 @@ impl Interpreter {
                     }
                     drop(advice_env);
                     self.replace_next_function_binding(&method_name, top_wrapper);
+                } else if let Some((boundary_env, boundary_name)) = qualifier_boundary {
+                    let mut boundary_env = boundary_env.borrow_mut();
+                    for frame in boundary_env.iter_mut() {
+                        if let Some((_, value)) =
+                            frame.iter_mut().find(|(name, _)| name == &boundary_name)
+                        {
+                            *value = Self::stored_value(top_wrapper);
+                            break;
+                        }
+                    }
                 } else {
                     self.set_function_binding(&method_name, Some(top_wrapper));
                 }

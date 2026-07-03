@@ -2257,6 +2257,7 @@ fn cl_defmethod_dispatch_stop_variable(
 #[derive(Clone)]
 enum ClDefmethodSpecializerKind {
     Class(String),
+    Subclass(String),
     Eql(Value),
     Head(Value),
 }
@@ -2272,7 +2273,9 @@ impl ClDefmethodSpecializer {
     fn class_name(&self) -> Option<&str> {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => Some(class_name),
-            ClDefmethodSpecializerKind::Eql(_) | ClDefmethodSpecializerKind::Head(_) => None,
+            ClDefmethodSpecializerKind::Subclass(_)
+            | ClDefmethodSpecializerKind::Eql(_)
+            | ClDefmethodSpecializerKind::Head(_) => None,
         }
     }
 
@@ -2280,6 +2283,10 @@ impl ClDefmethodSpecializer {
         match &self.kind {
             ClDefmethodSpecializerKind::Class(class_name) => Value::list([
                 Value::Symbol("class".into()),
+                Value::Symbol(class_name.clone()),
+            ]),
+            ClDefmethodSpecializerKind::Subclass(class_name) => Value::list([
+                Value::Symbol("subclass".into()),
                 Value::Symbol(class_name.clone()),
             ]),
             ClDefmethodSpecializerKind::Eql(value) => {
@@ -2344,6 +2351,14 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
                     specializers.push(ClDefmethodSpecializer {
                         variable: variable.clone(),
                         kind: ClDefmethodSpecializerKind::Eql(value.clone()),
+                        is_context: next_is_context,
+                    });
+                } else if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "subclass")
+                    && let Some(Value::Symbol(class_name)) = specializer.get(1)
+                {
+                    specializers.push(ClDefmethodSpecializer {
+                        variable: variable.clone(),
+                        kind: ClDefmethodSpecializerKind::Subclass(class_name.clone()),
                         is_context: next_is_context,
                     });
                 } else if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "head")
@@ -2568,37 +2583,30 @@ fn cl_defmethod_replace_ignore_previous_bindings_inner(
     }
 }
 
-fn cl_defmethod_first_previous_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
-    let mut seen = HashSet::new();
-    cl_defmethod_first_previous_binding_inner(function, &mut seen)
-}
-
-fn cl_defmethod_first_previous_binding_inner(
+// A :before/:after wrapper's first closure frame binds the previous chain
+// under a `__emaxx_{before,after}_method_...' name plus its specializer
+// metadata, so registration can walk the qualifier stack and keep it
+// ordered most-specific-outermost with primaries below the whole stack.
+fn cl_defmethod_qualifier_wrapper_parts(
     function: &Value,
-    seen_envs: &mut HashSet<usize>,
-) -> Option<(SharedEnv, String, Value)> {
+) -> Option<(SharedEnv, String, Value, Option<Value>)> {
     let Value::Lambda(_, _, closure_env) = function else {
         return None;
     };
-    let env_id = closure_env.as_ptr() as usize;
-    if !seen_envs.insert(env_id) {
-        return None;
-    }
-    for frame in closure_env.borrow().iter() {
-        for (name, value) in frame {
-            if name.starts_with("__emaxx_") && name.contains("_method_") {
-                return Some((closure_env.clone(), name.clone(), value.clone()));
-            }
+    let borrowed = closure_env.borrow();
+    let frame = borrowed.first()?;
+    let mut previous = None;
+    let mut specializer = None;
+    for (name, value) in frame {
+        if name.starts_with("__emaxx_before_method_") || name.starts_with("__emaxx_after_method_") {
+            previous = Some((name.clone(), value.clone()));
+        } else if name == "__emaxx-qualifier-specializer" {
+            specializer = Some(value.clone());
         }
     }
-    for frame in closure_env.borrow().iter() {
-        for (_, value) in frame {
-            if let Some(found) = cl_defmethod_first_previous_binding_inner(value, seen_envs) {
-                return Some(found);
-            }
-        }
-    }
-    None
+    let (name, value) = previous?;
+    drop(borrowed);
+    Some((closure_env.clone(), name, value, specializer))
 }
 
 fn cl_defmethod_previous_binding_inner(

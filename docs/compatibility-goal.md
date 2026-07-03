@@ -19,15 +19,53 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1957/7080 are verified locally against the current canonical
+- Tests through 1965/7080 are verified locally against the current canonical
   manifest.
 - The latest compatibility batch is
-  `Compat 1957/7080: run edebug keyboard-macro assertions for real`.
-- The next observed frontier is selector 1958, `eieio-test-cl-generic-1` in
-  `test/lisp/emacs-lisp/eieio-tests/eieio-test-methodinvoke.el` (grouped
-  `check-all` replay shows missing emaxx results for several
-  `eieio-test-method-order-list-*` selectors, i.e. the emaxx run dies
-  mid-file).
+  `Compat 1965/7080: run obsolete eieio methods on native cl-generic`.
+- The next observed frontier is selector 1966,
+  `eieio-persist-hash-and-vector-backward-compatibility` in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (grouped
+  `check-all` replay shows all ten persistence selectors failing in emaxx;
+  the object serialization/`eieio-persistent-read` machinery is the next
+  sub-domain).
+- Selectors 1958..1965 (`eieio-test-methodinvoke.el`) passed in a batch that
+  runs the obsolete EIEIO `defmethod'/`defgeneric' API on the native
+  cl-generic machinery and repairs the dispatch-chain construction bugs the
+  file exposed. `simple_compat.el' replaces eieio-compat's runtime helpers
+  (`eieio--defgeneric-init-form', `eieio--defmethod') with lowerings onto
+  `cl-defmethod': qualifiers normalize case, `call-next-method'/
+  `next-method-p' rename to their cl-generic forms inside primary bodies,
+  :static methods register both a `(subclass CLASS)' and a `CLASS' method,
+  :before/:after methods get a pass-through primary when none exists, and
+  old EIEIO's `constructor' aliases `make-instance'. `defclass' constructors
+  now construct through the `make-instance' generic (methods participate;
+  the builtin constructs when no method matches; `make-instance' left the
+  prefer-builtin override list). `(subclass CLASS)' specializers work end to
+  end (`cl-typep', dispatch conditions, ranking). Dispatch-chain repairs:
+  a method registered below an existing :around splices in with the
+  around's old next chain instead of the current top (the top made the
+  chain cyclic: `cl-generic-test-02-struct' eval-depth failure);
+  a class-`t' specializer ranks like an unspecialized argument (second-
+  argument `eql' dispatch, `cl-generic-test-01-eql'); sibling classes order
+  through a common subclass's precedence list; :before/:after wrappers form
+  one stack ordered most-specific-outermost with unique per-specializer
+  capture names, and primary methods always splice below that stack;
+  registrations through an alias use the canonical generic name so later
+  splices can reconstruct wrapper symbols; `fmakunbound' clears the stored
+  cl-defmethod specializer metadata so a rebuilt generic does not rank
+  against the destroyed chain. This also fixed the previously-failing
+  grouped replay of `cl-generic-tests.el' (01-eql, 02-struct, 06..12): the
+  file now PASSES. Exact replays run for this batch: grouped `check-all'
+  for `eieio-tests/eieio-test-methodinvoke.el' (PASS),
+  `cl-generic-tests.el' (PASS), `edebug-tests.el' (PASS),
+  `cl-print-tests.el' (PASS), `derived-tests.el' (PASS),
+  `easy-mmode-tests.el' (PASS); `cl-lib-tests.el' failure set is
+  byte-identical to the parent commit (pre-existing environment
+  discrepancies); `eieio-test-persist.el' failures identical to parent;
+  `eieio-tests.el' improved from load-error to loading with test failures;
+  raw whole-file `seq-tests.el' timeout identical to parent. Full
+  `cargo test' (1119 lib tests) green.
 - Environment note: this container verifies against a locally rebuilt
   GNU Emacs 30.2 oracle (gnu/linux, native-compilation, built from the
   Ubuntu `emacs_30.2+1.orig` source snapshot at `/home/user/emacs`); the

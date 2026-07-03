@@ -5640,6 +5640,21 @@ fn cl_typep_matches(
                 .iter()
                 .any(|member| crate::lisp::primitives::values_equal(interp, value, member)));
         }
+        if operator == "subclass" && items.len() == 2 {
+            let Ok(target) = items[1].as_symbol() else {
+                return Ok(false);
+            };
+            let Some(class_name) = interp.class_name_from_value(value) else {
+                return Ok(false);
+            };
+            if interp.class_value(&class_name).is_none() {
+                return Ok(false);
+            }
+            return Ok(interp
+                .class_allparents(&class_name)
+                .iter()
+                .any(|parent| matches!(parent, Value::Symbol(parent) if parent == target)));
+        }
         if let Some(expanded) = cl_deftype_expansion(interp, env, operator, &items[1..])? {
             return cl_typep_matches(interp, env, value, &expanded);
         }
