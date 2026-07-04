@@ -18,52 +18,35 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 1975/7080 (`eieio-test-persist.el` fully
-  passing its grouped `check-all` replay; 82-file verified-prefix sweep
-  green 2026-07-04).
-- The `Compat 1975/7080` persist batch is COMPLETE: native
-  `eieio--class-slots'/`eieio--class-class-slots'/`eieio--class-initarg-
-  tuples' + `cl--slot-descriptor-*' accessors (cl-slot-descriptor records
-  built from stored slot specs; eieio-core.el's loaded defstruct accessors
-  mis-index emaxx class records), GNU element-wise `equal' on records,
-  `eieio-object-p' restricted to class-typed records, `read'/
-  `read-from-string' materializing `#s(hash-table ...)' literals, and GNU's
-  class-object record tag (every defclass stores a default-object cache on
-  the class record; instances made with `eieio-backward-compatibility' nil
-  print with the class expanded and the cache prints as a circular `#N'
-  marker `read' rejects — bug#29220's `invalid-read-syntax' expected
-  failures reproduce exactly). Details in `docs/compatibility-goal.md`.
-- The eieio-tests.el GROUNDWORK batch is also in (implicit
-  `eieio-default-superclass' parent activating eieio.el's real
-  make-instance/initialize-instance/clone/slot-missing/slot-unbound
-  generics, GNU slot-override merge + defclass-time validation,
-  defaults-filled object caches, class-allocated shared storage, typed
-  `oset', record `aset'/retag, native slot-makeunbound/slot-exists-p and
-  class accessors, method-based :accessor/:reader/:writer, batch
-  `current-message' nil), plus a follow-up repair: `file-attributes' time
-  fields are GNU `(HIGH LOW USEC PSEC)' lists now — the typed `oset' check
-  had exposed emaxx's bare-integer file times through srecode's
-  `(filedate :type cons)' slot and regressed three srecode files.  The full
-  82-file sweep is green on this tree (2026-07-04, second sweep).
-- The next frontier is
-  `test/lisp/emacs-lisp/eieio-tests/eieio-tests.el`: down to ~12 failing
-  selectors after the groundwork. Known remaining work:
-  - `cl-call-next-method' with no next method rewrites to a void `ignore'
-    variable (definitions.rs:3843 `rewrite_cl_next_method_p_forms'); it
-    must call `cl-no-next-method'/`cl-no-applicable-method' with
-    eieio-compat.el:164-196's bridging so obsolete `no-next-method'/
-    `no-applicable-method' defmethods dispatch (tests 08/09).
-  - Obsolete `defgeneric' over an existing non-generic function must error
-    (test 03); simple_compat's `eieio--defgeneric-init-form' returns the
-    existing function instead.
-  - `same-class-p' needs `eieio--object-class' to return the class OBJECT;
-    the naive native change regressed persist (object-write's
-    `eieio--class-constructor'/`eieio-object-name-string' path consumed the
-    symbol) and tests 04/05/18 — bisect that carefully (test 23).
-  - Static-method `oset-default' propagation (tests 04/05), slot-unbound
-    oset-default TypeError (test 18), instance-inheritor clone slot
-    unbinding details (tests 29/39, use-accessor), singleton constructor
-    (test 34), `eieio-build-class-alist' (test 36).
+- Verified through selector 2016/7080: `eieio-tests.el` (selectors
+  1976..2016) passes its grouped `check-all` replay, completing the whole
+  eieio-tests directory; the 83-file verified-prefix sweep (now including
+  eieio-tests.el) is green (2026-07-04, third sweep).
+- The `Compat 2016/7080` batch finished eieio-tests.el on top of the
+  groundwork+persist batches: `cl-no-next-method'/`cl-no-applicable-method'
+  hooks (runtime helper `emaxx--cl-generic-apply-next' routes the dispatch
+  chain's `ignore' sentinel to the hooks; single-method generics check
+  their specializers; simple_compat lowers obsolete `no-next-method'/
+  `no-applicable-method' defmethods per eieio-compat.el), in-place method
+  REPLACEMENT for same-qualifier+specializer re-registration (splicing a
+  duplicate wrapper made same-condition wrappers point at each other —
+  infinite condition loop / Rust stack overflow once nothing matched),
+  `defgeneric' over an existing non-generic errors (follows defalias
+  chains; `generic-p' defined), native exact `same-class-p' + GNU `NAME-p'
+  (exact) / `NAME--eieio-childp' (subclass) predicates,
+  `eieio--class-children' returns symbols, `oref-default'/`oset-default'
+  accept instances, class-allocated `oref-default' returns the
+  `eieio--unbound' marker unsignaled.  Sweep-demanded repairs: the
+  `(subclass CLASS)' dispatch condition resolves `eieio-defclass-autoload'
+  stubs via `autoload-do-load' like GNU's subclass generalizer, and slot
+  descriptors merge per GNU's storage model (each class's merged view is
+  copied parent-by-parent, so a parent's own redeclarations of ancestor
+  slots survive into subclasses — five cedet files depended on
+  semanticdb's `tracking-symbol' initform).  Details in
+  `docs/compatibility-goal.md`.
+- The next frontier is `test/lisp/emacs-lisp/ert-font-lock-tests.el`
+  (selectors 2017..2056, 40 selected) — not yet probed; run the exploratory
+  command below to get the mismatch list.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
@@ -93,7 +76,7 @@ counts as the progress denominator.
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-font-lock-tests.el
 ```
 
 ## Oracle Setup In A Fresh Container
@@ -151,7 +134,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-font-lock-tests.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next
@@ -221,27 +204,14 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 1975/7080` batch made `eieio-test-persist.el` (selectors
-1966..1975) pass its grouped `check-all' replay. It ports the EIEIO slot
-descriptor protocol natively (`eieio--class-slots',
-`eieio--class-class-slots', `eieio--class-initarg-tuples',
-`cl--slot-descriptor-name'/`-initform'/`-type'/`-props' — the eieio-core.el
-defstruct accessors loaded from the oracle tree mis-index emaxx's native
-class records), makes `equal' compare records element-wise like GNU,
-restricts `eieio-object-p' to records whose type names a registered class
-(hash tables are records internally), materializes `#s(hash-table ...)'
-literals into real hash tables in `read'/`read-from-string' (GNU's reader
-does this; emaxx's reader defers to eval-time, which never happens for
-data reads like `eieio-persistent-read'), and models GNU's class-object
-record tag: every `defclass' stores a default-object cache on the class
-record, instances created with `eieio-backward-compatibility' nil (and
-clones of such) are class-object-tagged, and prin1 renders tagged records
-with the class expanded so the cache prints as a circular `#N' marker that
-`read' rejects with `invalid-read-syntax' — reproducing GNU's bug#29220
-expected failures byte-compatibly at the status/condition level. The
-82-file verified-prefix sweep (now including eieio-test-persist.el) passes
-(2026-07-04). Details in `docs/compatibility-goal.md`. The next agent
-should continue with `eieio-tests.el` (selector 1976 onward; loads, ~31
-selectors fail: slot protection/virtual slots, class-allocated slots,
-`slot-makeunbound', typed slot checking, named/singleton objects,
-`eieio-build-class-alist').
+The `Compat 2016/7080` run completed the eieio-tests directory in three
+batches: the persist batch (slot descriptor protocol, record `equal',
+hash-table reads, class-object tags), the groundwork batch (implicit
+`eieio-default-superclass' parent activating eieio.el's real generic
+methods, GNU slot-override merge + defclass validation, class-allocated
+storage, typed `oset', record `aset', native slot machinery, plus the
+`file-attributes' GNU time-list repair), and the finish batch
+(cl-generic no-next/no-applicable hooks, in-place method re-registration,
+`defgeneric' collision errors, exact `NAME-p'/`same-class-p'). The
+83-file verified-prefix sweep is green. The next agent continues with
+`test/lisp/emacs-lisp/ert-font-lock-tests.el` (selectors 2017..2056).

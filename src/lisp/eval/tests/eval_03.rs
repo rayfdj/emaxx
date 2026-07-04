@@ -1866,6 +1866,52 @@ fn compat_nil_objects_print_unreadably_like_gnu() {
 }
 
 #[test]
+fn cl_defmethod_reregistration_replaces_in_place() {
+    // GNU replaces a re-registered method (same qualifiers/specializers);
+    // splicing a duplicate wrapper used to loop the dispatch chain.
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-replace-base nil nil)
+                   (defclass sample-replace-child (sample-replace-base) nil)
+                   (cl-defmethod sample-replace-fn ((_x sample-replace-base)) 'base)
+                   (cl-defmethod sample-replace-fn ((_x sample-replace-child)) 'child-1)
+                   (cl-defmethod sample-replace-fn ((_x sample-replace-child))
+                     (list 'child-2 (cl-call-next-method)))
+                   (sample-replace-fn (sample-replace-child)))"
+        ),
+        Value::list([
+            Value::Symbol("child-2".into()),
+            Value::Symbol("base".into()),
+        ])
+    );
+}
+
+#[test]
+fn cl_generic_exhausted_dispatch_signals_like_gnu() {
+    // A single-method generic checks its specializers (unmatched calls
+    // reach the no-applicable hook) and `cl-call-next-method' with no next
+    // method reaches the no-next hook; both error without the hooks'
+    // eieio-compat methods installed.
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-hooks-a nil nil)
+                   (cl-defmethod sample-hooks-fn ((_x sample-hooks-a))
+                     (cl-call-next-method))
+                   (list (condition-case nil (sample-hooks-fn 5)
+                           (error 'no-applicable))
+                         (condition-case nil (sample-hooks-fn (sample-hooks-a))
+                           (error 'no-next))))"
+        ),
+        Value::list([
+            Value::Symbol("no-applicable".into()),
+            Value::Symbol("no-next".into()),
+        ])
+    );
+}
+
+#[test]
 fn setf_updates_eieio_class_parent_metadata() {
     assert_eq!(
         eval_str(
@@ -1892,6 +1938,9 @@ fn setf_updates_eieio_class_parent_metadata() {
 
 #[test]
 fn defclass_registers_instance_predicate() {
+    // GNU's generated `NAME-p' matches the exact class only
+    // (`eieio-make-class-predicate'); `NAME--eieio-childp' accepts
+    // subclasses.
     assert_eq!(
         eval_str(
             "(progn
@@ -1900,9 +1949,10 @@ fn defclass_registers_instance_predicate() {
                    (let ((child (make-instance 'sample-child)))
                      (list (sample-child-p child)
                            (sample-parent-p child)
+                           (sample-parent--eieio-childp child)
                            (sample-child-p 'not-an-object))))"
         ),
-        Value::list([Value::T, Value::T, Value::Nil])
+        Value::list([Value::T, Value::Nil, Value::T, Value::Nil])
     );
 }
 

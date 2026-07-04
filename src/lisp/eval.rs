@@ -2559,6 +2559,55 @@ fn cl_defmethod_previous_binding(
     cl_defmethod_previous_binding_inner(function, previous_method_symbol, &mut seen, &mut seen_cons)
 }
 
+// Scan a generic function's closure graph for a binding with the given
+// name, returning its value (used to find a re-registered method's stored
+// body so it can be replaced in place like GNU).
+fn cl_defmethod_find_named_binding(function: &Value, name: &str) -> Option<Value> {
+    let mut seen_envs = HashSet::new();
+    cl_defmethod_named_binding_inner(function, name, None, &mut seen_envs)
+}
+
+fn cl_defmethod_set_named_binding(function: &Value, name: &str, replacement: &Value) -> bool {
+    let mut seen_envs = HashSet::new();
+    cl_defmethod_named_binding_inner(function, name, Some(replacement), &mut seen_envs).is_some()
+}
+
+fn cl_defmethod_named_binding_inner(
+    function: &Value,
+    name: &str,
+    replacement: Option<&Value>,
+    seen_envs: &mut HashSet<usize>,
+) -> Option<Value> {
+    let Value::Lambda(_, _, closure_env) = function else {
+        return None;
+    };
+    let env_id = closure_env.as_ptr() as usize;
+    if !seen_envs.insert(env_id) {
+        return None;
+    }
+    let mut nested = Vec::new();
+    {
+        let mut closure_env = closure_env.borrow_mut();
+        for frame in closure_env.iter_mut() {
+            for (binding_name, value) in frame.iter_mut() {
+                if binding_name == name {
+                    let found = value.clone();
+                    if let Some(replacement) = replacement {
+                        *value = replacement.clone();
+                    }
+                    return Some(found);
+                }
+                if binding_name.starts_with("__emaxx_") {
+                    nested.push(value.clone());
+                }
+            }
+        }
+    }
+    nested
+        .into_iter()
+        .find_map(|value| cl_defmethod_named_binding_inner(&value, name, replacement, seen_envs))
+}
+
 fn cl_defmethod_replace_ignore_previous_bindings(function: &Value, replacement: &Value) -> bool {
     let mut seen_envs = HashSet::new();
     let mut seen_cons = HashSet::new();
@@ -2715,6 +2764,7 @@ fn cl_defmethod_previous_binding_inner(
 
 fn rewrite_cl_call_next_method_forms(
     forms: &[Value],
+    generic_name: &str,
     previous_method_symbol: &str,
     default_args: &Value,
     next_method_p: Value,
@@ -2724,6 +2774,7 @@ fn rewrite_cl_call_next_method_forms(
         .map(|form| {
             rewrite_cl_call_next_method_form(
                 form,
+                generic_name,
                 previous_method_symbol,
                 default_args,
                 &next_method_p,
@@ -2734,16 +2785,27 @@ fn rewrite_cl_call_next_method_forms(
 
 fn rewrite_cl_next_method_p_forms(
     forms: &[Value],
+    generic_name: &str,
+    default_args: &Value,
     next_method_p: Value,
 ) -> Result<Vec<Value>, LispError> {
     forms
         .iter()
-        .map(|form| rewrite_cl_call_next_method_form(form, "ignore", &Value::Nil, &next_method_p))
+        .map(|form| {
+            rewrite_cl_call_next_method_form(
+                form,
+                generic_name,
+                "ignore",
+                default_args,
+                &next_method_p,
+            )
+        })
         .collect()
 }
 
 fn rewrite_cl_call_next_method_form(
     form: &Value,
+    generic_name: &str,
     previous_method_symbol: &str,
     default_args: &Value,
     next_method_p: &Value,
@@ -2757,6 +2819,7 @@ fn rewrite_cl_call_next_method_form(
             .map(|item| {
                 rewrite_cl_call_next_method_form(
                     item,
+                    generic_name,
                     previous_method_symbol,
                     default_args,
                     next_method_p,
@@ -2774,7 +2837,14 @@ fn rewrite_cl_call_next_method_form(
             if items.len() == 2
                 && matches!(&items[1], Value::Symbol(symbol) if symbol == "cl-call-next-method") =>
         {
-            Ok(Value::Symbol(previous_method_symbol.to_string()))
+            Ok(if previous_method_symbol == "ignore" {
+                Value::list([
+                    Value::Symbol("function".into()),
+                    Value::Symbol("ignore".into()),
+                ])
+            } else {
+                Value::Symbol(previous_method_symbol.to_string())
+            })
         }
         "quote" | "function" => Ok(form.clone()),
         "cl-next-method-p" if items.len() == 1 => Ok(next_method_p.clone()),
@@ -2787,9 +2857,28 @@ fn rewrite_cl_call_next_method_form(
                 list_form.extend(items[1..].iter().cloned());
                 Value::list(list_form)
             };
+            // The previous-method variable keeps the `ignore' sentinel until
+            // a later registration splices a method below this one; the
+            // runtime helper applies a real next method and routes the
+            // sentinel to `cl-no-next-method' like GNU.  A method installed
+            // directly as the generic function has no previous variable at
+            // all — pass nil so the helper always dispatches the hook.
+            let previous_reference = if previous_method_symbol == "ignore" {
+                Value::Nil
+            } else {
+                Value::Symbol(previous_method_symbol.to_string())
+            };
             Ok(Value::list([
-                Value::Symbol("apply".into()),
-                Value::Symbol(previous_method_symbol.to_string()),
+                Value::Symbol("emaxx--cl-generic-apply-next".into()),
+                previous_reference,
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol(generic_name.to_string()),
+                ]),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("no-next".into()),
+                ]),
                 args,
             ]))
         }
@@ -2798,6 +2887,7 @@ fn rewrite_cl_call_next_method_form(
             .map(|item| {
                 rewrite_cl_call_next_method_form(
                     item,
+                    generic_name,
                     previous_method_symbol,
                     default_args,
                     next_method_p,

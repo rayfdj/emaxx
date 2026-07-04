@@ -236,6 +236,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "slot-boundp"
             | "slot-makeunbound"
             | "slot-exists-p"
+            | "emaxx--cl-generic-apply-next"
+            | "same-class-p"
             | "eieio--class-parents"
             | "eieio--class-children"
             | "eieio--class-default-object-cache"
@@ -2469,9 +2471,42 @@ pub(super) fn call(
                 });
             Ok(if abstractp { Value::T } else { Value::Nil })
         }
+        "same-class-p" => {
+            need_args(name, args, 2)?;
+            let Value::Record(id) = &args[0] else {
+                return Err(LispError::TypeError(
+                    "eieio-object".into(),
+                    args[0].type_name(),
+                ));
+            };
+            let Some(record) = interp.find_record(*id) else {
+                return Err(LispError::TypeError(
+                    "eieio-object".into(),
+                    args[0].type_name(),
+                ));
+            };
+            let Some(class_name) = interp.class_name_from_value(&args[1]) else {
+                return Err(LispError::TypeError("class".into(), args[1].type_name()));
+            };
+            Ok(if record.type_name == class_name {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "eieio-oref-default" => {
             need_args(name, args, 2)?;
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+            // GNU accepts a class symbol, a class object, or an instance.
+            let Some(class_name) =
+                interp
+                    .class_name_from_value(&args[0])
+                    .or_else(|| match &args[0] {
+                        Value::Record(id) => interp
+                            .find_record(*id)
+                            .map(|record| record.type_name.clone()),
+                        _ => None,
+                    })
+            else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
             let slot_name = args[1].as_symbol()?;
@@ -2499,7 +2534,17 @@ pub(super) fn call(
         }
         "eieio-oset-default" => {
             need_args(name, args, 3)?;
-            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+            // GNU accepts a class symbol, a class object, or an instance.
+            let Some(class_name) =
+                interp
+                    .class_name_from_value(&args[0])
+                    .or_else(|| match &args[0] {
+                        Value::Record(id) => interp
+                            .find_record(*id)
+                            .map(|record| record.type_name.clone()),
+                        _ => None,
+                    })
+            else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
             let slot_name = args[1].as_symbol()?.to_string();
@@ -2551,13 +2596,9 @@ pub(super) fn call(
             let Some(symbol) = interp.class_name_from_value(&args[0]) else {
                 return Err(LispError::TypeError("class".into(), args[0].type_name()));
             };
-            // GNU stores child CLASS OBJECTS in the class record.
-            Ok(Value::list(interp.class_children(&symbol).into_iter().map(
-                |child| match &child {
-                    Value::Symbol(child_name) => interp.class_value(child_name).unwrap_or(child),
-                    _ => child,
-                },
-            )))
+            // GNU stores child class NAMES in the class record
+            // (`eieio-defclass-internal' pushes the symbol).
+            Ok(Value::list(interp.class_children(&symbol)))
         }
         "eieio--class-name" => {
             need_args(name, args, 1)?;
@@ -2859,6 +2900,36 @@ pub(super) fn call(
             } else {
                 Value::Nil
             })
+        }
+        "emaxx--cl-generic-apply-next" => {
+            need_args(name, args, 4)?;
+            let next = &args[0];
+            let generic = args[1].clone();
+            let kind = args[2].as_symbol()?.to_string();
+            let call_args = args[3].to_vec()?;
+            let exhausted = matches!(next, Value::Nil)
+                || matches!(next, Value::BuiltinFunc(next_name) if next_name == "ignore")
+                || matches!(next, Value::Symbol(next_name) if next_name == "ignore");
+            if !exhausted {
+                return invoke_function_value(interp, next, &call_args, env);
+            }
+            // GNU routes an exhausted chain through `cl-no-next-method' (a
+            // method ran out of next methods) or `cl-no-applicable-method'
+            // (no method matched at all).
+            let (hook, mut hook_args) = if kind == "no-applicable" {
+                ("cl-no-applicable-method", vec![generic.clone()])
+            } else {
+                ("cl-no-next-method", vec![generic.clone(), Value::Nil])
+            };
+            hook_args.extend(call_args.iter().cloned());
+            if let Ok(hook_function) = interp.lookup_function(hook, env) {
+                return invoke_function_value(interp, &hook_function, &hook_args, env);
+            }
+            Err(LispError::Signal(if kind == "no-applicable" {
+                format!("No applicable method: {generic}")
+            } else {
+                format!("cl-no-next-method: {generic}")
+            }))
         }
         "eieio--class-parents" => {
             need_args(name, args, 1)?;
@@ -6061,6 +6132,28 @@ fn cl_typep_matches(
             let Some(class_name) = interp.class_name_from_value(value) else {
                 return Ok(false);
             };
+            // GNU's subclass generalizer resolves autoload-stub classes
+            // before matching (`eieio--full-class-object' forces
+            // `autoload-do-load'); a stub has a `cl--class' record without
+            // registered class state.
+            if interp.class_value(&class_name).is_none()
+                && interp
+                    .get_symbol_property(&class_name, "cl--class")
+                    .is_some()
+                && let Ok(fundef) = super::call(
+                    interp,
+                    "symbol-function",
+                    &[Value::Symbol(class_name.clone())],
+                    env,
+                )
+            {
+                let _ = super::call(
+                    interp,
+                    "autoload-do-load",
+                    &[fundef, Value::Symbol(class_name.clone())],
+                    env,
+                );
+            }
             if interp.class_value(&class_name).is_none() {
                 return Ok(false);
             }

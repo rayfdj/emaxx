@@ -355,11 +355,48 @@ MET-NAME is as recorded in `load-history' for the method."
             (eieio-compat--rename-cnm (cdr form))))
      (t form)))
 
+  (defun generic-p (fname)
+    "Return non-nil if FNAME is a cl-generic function."
+    (and (symbolp fname)
+         (or (get fname 'eieio--generic)
+             (get fname 'emaxx-cl-defmethod-specializers)
+             (get fname 'emaxx-cl-defgeneric-lambda-list))
+         t))
+
   (defun eieio--defgeneric-init-form (method doc-string)
     (if doc-string (put method 'function-documentation doc-string))
-    (if (fboundp method)
-        (indirect-function method)
-      (symbol-function 'ignore)))
+    (if (memq method '(no-next-method no-applicable-method))
+        ;; GNU eieio-compat leaves these two alone: their cl-generic
+        ;; counterparts have different calling conventions.
+        (and (fboundp method) (indirect-function method))
+      ;; GNU's `cl-generic-ensure-function' refuses to convert an existing
+      ;; non-generic function into a generic; it follows defalias chains
+      ;; first (old EIEIO's `constructor' aliases `make-instance').
+      (let ((target method) (guard 0))
+        (while (and (fboundp target)
+                    (symbolp (symbol-function target))
+                    (not (generic-p target))
+                    (< guard 100))
+          (setq target (symbol-function target)
+                guard (1+ guard)))
+        (when (and (fboundp target)
+                   (not (generic-p target))
+                   (not (eq (indirect-function target) (symbol-function 'ignore))))
+          (error "Function %S is already defined as something else than a generic function"
+                 method)))
+      (put method 'eieio--generic t)
+      (if (fboundp method)
+          (indirect-function method)
+        (symbol-function 'ignore))))
+
+  ;; GNU cl-generic dispatches exhausted calls through these generics;
+  ;; their default methods signal like cl-generic.el's cl-defgenerics.
+  (cl-defgeneric cl-no-next-method (generic method &rest args))
+  (cl-defmethod cl-no-next-method (generic _method &rest args)
+    (error "cl-no-next-method: %S%S" generic args))
+  (cl-defgeneric cl-no-applicable-method (generic &rest args))
+  (cl-defmethod cl-no-applicable-method (generic &rest args)
+    (error "No applicable method: %S, %S" generic args))
 
   (defun eieio--defmethod (method kind argclass code)
     (setq kind (intern (downcase (symbol-name kind))))
@@ -374,21 +411,38 @@ MET-NAME is as recorded in `load-history' for the method."
            (body (if (memq kind '(:before :after))
                      body
                    (eieio-compat--rename-cnm body))))
-      ;; Old EIEIO did not require a primary method for :before/:after
-      ;; methods to run; give the dispatch chain a pass-through primary.
-      (when (and (memq kind '(:before :after))
-                 (or (not (fboundp method))
-                     (eq (symbol-function method) #'ignore)))
-        (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest)
-                 (when (cl-next-method-p) (cl-call-next-method)))
+      ;; Old EIEIO's `no-next-method' and `no-applicable-method' have
+      ;; different calling conventions than their cl-generic namesakes;
+      ;; register them as methods on the cl-generic hooks with the same
+      ;; argument shuffling GNU eieio-compat.el performs.
+      (cond
+       ((eq method 'no-next-method)
+        (eval `(cl-defmethod cl-no-next-method (_generic _method (,arg1 ,spec)
+                                                         &rest eieio-compat--rest)
+                 (apply (lambda ,args ,@body) ,arg1 eieio-compat--rest))
               t))
-      (if static
-          (progn
-            (eval `(cl-defmethod ,method ((,arg1 (subclass ,spec)) ,@rest) ,@body) t)
-            (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest) ,@body) t))
-        (eval `(cl-defmethod ,method ,@(if kind (list kind))
-                 ((,arg1 ,spec) ,@rest) ,@body)
+       ((eq method 'no-applicable-method)
+        (eval `(cl-defmethod cl-no-applicable-method (generic (,arg1 ,spec)
+                                                              &rest eieio-compat--rest)
+                 (apply (lambda ,args ,@body)
+                        ,arg1 generic (cons ,arg1 eieio-compat--rest)))
               t))
+       (t
+        ;; Old EIEIO did not require a primary method for :before/:after
+        ;; methods to run; give the dispatch chain a pass-through primary.
+        (when (and (memq kind '(:before :after))
+                   (or (not (fboundp method))
+                       (eq (symbol-function method) #'ignore)))
+          (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest)
+                   (when (cl-next-method-p) (cl-call-next-method)))
+                t))
+        (if static
+            (progn
+              (eval `(cl-defmethod ,method ((,arg1 (subclass ,spec)) ,@rest) ,@body) t)
+              (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest) ,@body) t))
+          (eval `(cl-defmethod ,method ,@(if kind (list kind))
+                   ((,arg1 ,spec) ,@rest) ,@body)
+                t))))
       method)))
 
 ;; GNU cl-loop, ported verbatim from lisp/emacs-lisp/cl-macs.el (with its

@@ -19,13 +19,62 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1975/7080 are verified locally against the current canonical
-  manifest (selectors 1966..1975, `eieio-test-persist.el`, pass their grouped
-  `check-all` replay; see the persist batch notes below).
-- The full 82-file verified-prefix sweep is GREEN on the current tree
-  (2026-07-04, second sweep of the day, run after the eieio-tests groundwork
-  batch below plus its follow-up repair).
+- Tests through 2016/7080 are verified locally against the current canonical
+  manifest: `eieio-tests.el` (selectors 1976..2016) passes its grouped
+  `check-all` replay, completing the whole eieio-tests directory.
+- The full 83-file verified-prefix sweep (now including `eieio-tests.el`)
+  is GREEN on the current tree (2026-07-04, third sweep of the day).
 - The latest batch is
+  `Compat 2016/7080: finish eieio-tests.el` — the remaining six mismatches
+  after the groundwork batch:
+  - `cl-call-next-method' with no next method now dispatches GNU's
+    `cl-no-next-method' hook, and a call that matches no method dispatches
+    `cl-no-applicable-method': the dispatch chain keeps the `ignore'
+    sentinel at its bottom (later registrations still splice by replacing
+    that binding), and a new runtime helper
+    (`emaxx--cl-generic-apply-next') applies a real next method or routes
+    the sentinel to the hook.  A single-method generic now checks its
+    specializers like GNU instead of accepting every argument
+    (non-matching calls reach `cl-no-applicable-method').
+    `simple_compat.el' defines the two hooks with GNU's default erroring
+    methods and lowers obsolete `(defmethod no-next-method ...)'/
+    `(defmethod no-applicable-method ...)' onto them with eieio-compat.el's
+    argument shuffling (tests 08/09).
+  - Re-registering a method with the same qualifiers and specializers now
+    REPLACES the stored method body in place (GNU semantics) instead of
+    splicing a duplicate wrapper.  The duplicate made the two
+    same-condition wrappers point at each other, so any dispatch where
+    neither matched looped forever — eieio-test-29 crashed with a stack
+    overflow once test-18's `slot-unbound' redefinition was reachable
+    (tests 18/29).
+  - Obsolete `defgeneric' over an existing non-generic function signals
+    like GNU's `cl-generic-ensure-function', following defalias chains
+    (old EIEIO's `constructor' aliases `make-instance') and exempting
+    `no-next-method'/`no-applicable-method'; `generic-p' is defined
+    (test 03).
+  - `same-class-p' is native (exact class match), the generated `NAME-p'
+    predicate matches the exact class per GNU's
+    `eieio-make-class-predicate' while the also-generated
+    `NAME--eieio-childp' accepts subclasses (test 23).
+  - `eieio--class-children' returns child class NAMES (symbols) like GNU's
+    class records; `eieio-build-class-alist' recurses over them (test 36).
+  - `eieio-oref-default'/`eieio-oset-default' accept instances (GNU
+    resolves them to their class), and a class-allocated `oref-default' of
+    an unbound cell returns the `eieio--unbound' marker without signaling
+    (eieio-base's singleton constructor compares against it).
+  - Two follow-up repairs the 83-file sweep demanded (the new specializer
+    checking made previously-unconditional dispatch honest): the
+    `(subclass CLASS)' condition resolves autoload-stub classes first
+    (GNU's subclass generalizer forces `autoload-do-load' through
+    `eieio--full-class-object'; semanticdb-project-database-file only
+    exists as an `eieio-defclass-autoload' stub until dispatched on), and
+    slot descriptors now merge per GNU's storage model — each class's own
+    redeclarations override slots inherited from its OWN ancestors, and a
+    subclass copies each parent's already-merged view first-parent-wins
+    (the old flat recursion lost semanticdb-project-database's
+    `tracking-symbol' initform override inside semanticdb's class-allocated
+    storage, breaking five cedet files).
+- The batch before it was
   `Compat 1975/7080: return GNU (HIGH LOW USEC PSEC) times from
   file-attributes` — a repair for the eieio-tests groundwork batch: the new
   GNU-faithful typed `oset' check exposed that emaxx's `file-attributes'
