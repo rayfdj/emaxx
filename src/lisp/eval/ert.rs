@@ -257,6 +257,9 @@ impl Interpreter {
         summary.total = tests.len();
 
         for test in &tests {
+            if std::env::var("EMAXX_DEBUG_ERT").is_ok() {
+                eprintln!("ERT running: {}", test.name);
+            }
             let mut env: Env = Vec::new();
             // Timers a test scheduled but never reached firing conditions
             // for must not leak into later tests.

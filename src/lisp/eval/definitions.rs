@@ -2898,8 +2898,33 @@ impl Interpreter {
                 )),
             );
         }
+        // GNU's generated `NAME-p' matches the exact class
+        // (`eieio-make-class-predicate'); `NAME--eieio-childp' accepts
+        // subclasses (`eieio-make-child-predicate').
         self.set_function_binding(
             &format!("{name}-p"),
+            Some(Value::Lambda(
+                vec!["object".into()],
+                vec![Value::list([
+                    Value::Symbol("and".into()),
+                    Value::list([
+                        Value::Symbol("eieio-object-p".into()),
+                        Value::Symbol("object".into()),
+                    ]),
+                    Value::list([
+                        Value::Symbol("same-class-p".into()),
+                        Value::Symbol("object".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(name.to_string()),
+                        ]),
+                    ]),
+                ])],
+                shared_env(Vec::new()),
+            )),
+        );
+        self.set_function_binding(
+            &format!("{name}--eieio-childp"),
             Some(Value::Lambda(
                 vec!["object".into()],
                 vec![Value::list([
@@ -3618,6 +3643,7 @@ impl Interpreter {
             };
             let method_body = rewrite_cl_call_next_method_forms(
                 &executable_method_forms,
+                &method_name,
                 &method_previous_symbol,
                 &next_default_form,
                 if dispatch_previous == Value::BuiltinFunc("ignore".into()) {
@@ -3638,6 +3664,50 @@ impl Interpreter {
             } else {
                 method_body
             };
+            // GNU replaces a re-registered method (same qualifiers and
+            // specializers) in place: swap the stored method body and keep
+            // the dispatch chain intact.  Splicing a duplicate wrapper
+            // instead makes the two same-condition wrappers point at each
+            // other and the chain loops forever once neither matches.
+            if let Ok(existing_generic) = self.lookup_function(&method_name, env)
+                && cl_defmethod_find_named_binding(&existing_generic, &current_method_symbol)
+                    .is_some()
+            {
+                let old_current =
+                    cl_defmethod_find_named_binding(&existing_generic, &current_method_symbol)
+                        .unwrap_or(Value::Nil);
+                let old_next = match &old_current {
+                    Value::Lambda(_, _, old_env) => old_env
+                        .borrow()
+                        .first()
+                        .and_then(|frame| {
+                            frame
+                                .iter()
+                                .find(|(binding, _)| binding == &method_previous_symbol)
+                                .map(|(_, value)| value.clone())
+                        })
+                        .unwrap_or(Value::BuiltinFunc("ignore".into())),
+                    _ => Value::BuiltinFunc("ignore".into()),
+                };
+                let replacement_env = std::iter::once(vec![(
+                    method_previous_symbol.clone(),
+                    Self::stored_value(old_next),
+                )])
+                .chain(env.iter().cloned())
+                .collect::<Vec<_>>();
+                let replacement = Value::Lambda(
+                    generic_params.clone(),
+                    method_body.clone(),
+                    shared_env(replacement_env),
+                );
+                if cl_defmethod_set_named_binding(
+                    &existing_generic,
+                    &current_method_symbol,
+                    &replacement,
+                ) {
+                    return Ok(items[1].clone());
+                }
+            }
             let mut dispatch_stop_variables = dispatch_method_specializers
                 .iter()
                 .map(|specializer| specializer.variable.clone())
@@ -3705,6 +3775,9 @@ impl Interpreter {
                 ]);
             }
             let dispatch_body = |condition: Value| {
+                // The bottom of the chain holds the `ignore' sentinel; the
+                // runtime helper applies a real next wrapper and routes the
+                // sentinel through `cl-no-applicable-method' like GNU.
                 let body = vec![Value::list([
                     Value::Symbol("if".into()),
                     condition,
@@ -3714,8 +3787,16 @@ impl Interpreter {
                         forwarded_args.clone(),
                     ]),
                     Value::list([
-                        Value::Symbol("apply".into()),
+                        Value::Symbol("emaxx--cl-generic-apply-next".into()),
                         Value::Symbol(previous_method_symbol.clone()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(method_name.clone()),
+                        ]),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol("no-applicable".into()),
+                        ]),
                         forwarded_args.clone(),
                     ]),
                 ])];
@@ -3839,10 +3920,66 @@ impl Interpreter {
             self.sf_cl_defun(&lowered, env)
         } else {
             let mut direct_lowered = lowered[..3].to_vec();
-            direct_lowered.extend(rewrite_cl_next_method_p_forms(
+            let direct_params = self.parse_params(&lowered_lambda_list)?;
+            let mut direct_default_args = vec![Value::Symbol("list".into())];
+            direct_default_args.extend(
+                direct_params
+                    .iter()
+                    .take_while(|param| !param.starts_with('&'))
+                    .map(|param| Value::Symbol(param.clone())),
+            );
+            let direct_rest_param = lambda_list_rest_param_from_params(&direct_params);
+            let direct_default_form = if let Some(rest_param) = &direct_rest_param {
+                Value::list([
+                    Value::Symbol("append".into()),
+                    Value::list(direct_default_args),
+                    Value::Symbol(rest_param.clone()),
+                ])
+            } else {
+                Value::list(direct_default_args)
+            };
+            let direct_body = rewrite_cl_next_method_p_forms(
                 &executable_method_forms,
+                &method_name,
+                &direct_default_form,
                 Value::Nil,
-            )?);
+            )?;
+            // GNU checks the specializers even when the generic has a
+            // single method; a non-matching call goes through
+            // `cl-no-applicable-method'.
+            let direct_dispatch_specializers = cl_defmethod_dispatch_specializers(
+                &method_specializers,
+                &direct_params,
+                &direct_params,
+            );
+            let direct_condition =
+                ClDefmethodStoredMethod::from_specializers(&direct_dispatch_specializers)
+                    .condition(&cl_defmethod_runtime_variables(
+                        &direct_params,
+                        &direct_params,
+                        &method_specializers,
+                    ));
+            let mut guarded_body = Vec::with_capacity(direct_body.len() + 1);
+            guarded_body.push(Value::Symbol("progn".into()));
+            guarded_body.extend(direct_body);
+            direct_lowered.push(Value::list([
+                Value::Symbol("if".into()),
+                direct_condition,
+                Value::list(guarded_body),
+                Value::list([
+                    Value::Symbol("emaxx--cl-generic-apply-next".into()),
+                    Value::Nil,
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(method_name.clone()),
+                    ]),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol("no-applicable".into()),
+                    ]),
+                    direct_default_form.clone(),
+                ]),
+            ]));
             self.sf_cl_defun(&direct_lowered, env)
         };
         if !method_specializers.is_empty() {

@@ -124,8 +124,45 @@ pub(crate) fn eieio_slot_descriptors(
     class_name: &str,
 ) -> Result<Vec<EieioSlotDescriptor>, LispError> {
     let mut descriptors = Vec::new();
-    collect_eieio_slot_descriptors(interp, class_name, &mut descriptors, true)?;
+    let mut seen = Vec::new();
+    collect_merged_eieio_slot_descriptors(interp, class_name, &mut descriptors, &mut seen)?;
     Ok(descriptors)
+}
+
+// GNU stores each class's slots already merged: a class's own
+// redeclarations override slots inherited from its OWN ancestors, and a
+// subclass copies each parent's merged view first-parent-wins (only
+// initargs accumulate across same-named slots from later parents).
+fn collect_merged_eieio_slot_descriptors(
+    interp: &Interpreter,
+    class_name: &str,
+    descriptors: &mut Vec<EieioSlotDescriptor>,
+    seen: &mut Vec<String>,
+) -> Result<(), LispError> {
+    if seen.iter().any(|name| name == class_name) {
+        return Ok(());
+    }
+    seen.push(class_name.to_string());
+    if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
+        && let Ok(parent_values) = parents.to_vec()
+    {
+        for parent in parent_values {
+            if let Ok(parent_name) = parent.as_symbol() {
+                let mut parent_descriptors = Vec::new();
+                let mut parent_seen = seen.clone();
+                collect_merged_eieio_slot_descriptors(
+                    interp,
+                    parent_name,
+                    &mut parent_descriptors,
+                    &mut parent_seen,
+                )?;
+                for descriptor in parent_descriptors {
+                    merge_eieio_slot_descriptor(descriptors, descriptor, false);
+                }
+            }
+        }
+    }
+    collect_eieio_slot_descriptors(interp, class_name, descriptors, true)
 }
 
 fn collect_eieio_slot_descriptors(
@@ -134,15 +171,6 @@ fn collect_eieio_slot_descriptors(
     descriptors: &mut Vec<EieioSlotDescriptor>,
     own_class: bool,
 ) -> Result<(), LispError> {
-    if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
-        && let Ok(parent_values) = parents.to_vec()
-    {
-        for parent in parent_values {
-            if let Ok(parent_name) = parent.as_symbol() {
-                collect_eieio_slot_descriptors(interp, parent_name, descriptors, false)?;
-            }
-        }
-    }
     let Some(raw_slots) = interp.get_symbol_property(class_name, "emaxx-class-slots") else {
         return Ok(());
     };
@@ -228,71 +256,78 @@ fn collect_eieio_slot_descriptors(
                 descriptor.props.push((key.to_string(), value));
             }
         }
-        if let Some(existing) = descriptors
-            .iter_mut()
-            .find(|existing| existing.name == descriptor.name)
-        {
-            // GNU pushes the redeclaration's initarg alongside the
-            // inherited ones in both phases, but only the class's OWN
-            // redeclarations override the inherited attributes
-            // (`eieio--slot-override'); a later parent's same-named slot
-            // leaves the first parent's definition in place.
-            for initarg in descriptor.initargs {
-                if !existing.initargs.contains(&initarg) {
-                    existing.initargs.push(initarg);
-                }
-            }
-            if own_class {
-                // A redeclared slot keeps its inherited allocation and,
-                // when the redeclaration has no initform, its inherited
-                // default; a `t' type keeps the inherited type.
-                if descriptor.initform.is_some() {
-                    existing.initform = descriptor.initform;
-                }
-                if !matches!(descriptor.slot_type, Value::T) {
-                    existing.slot_type = descriptor.slot_type;
-                }
-                for (key, value) in descriptor.props {
-                    if key == ":group" {
-                        // Custom groups combine across the hierarchy.
-                        let mut combined = value.to_vec().unwrap_or_default();
-                        if let Some((_, existing_group)) = existing
-                            .props
-                            .iter()
-                            .find(|(existing_key, _)| existing_key == ":group")
-                        {
-                            for member in existing_group.to_vec().unwrap_or_default() {
-                                if !combined.iter().any(|candidate| candidate == &member) {
-                                    combined.push(member);
-                                }
-                            }
-                        }
-                        let combined = Value::list(combined);
-                        match existing
-                            .props
-                            .iter_mut()
-                            .find(|(existing_key, _)| existing_key == ":group")
-                        {
-                            Some(slot) => slot.1 = combined,
-                            None => existing.props.push((key, combined)),
-                        }
-                    } else {
-                        match existing
-                            .props
-                            .iter_mut()
-                            .find(|(existing_key, _)| existing_key == &key)
-                        {
-                            Some(slot) => slot.1 = value,
-                            None => existing.props.push((key, value)),
+        merge_eieio_slot_descriptor(descriptors, descriptor, own_class);
+    }
+    Ok(())
+}
+
+fn merge_eieio_slot_descriptor(
+    descriptors: &mut Vec<EieioSlotDescriptor>,
+    descriptor: EieioSlotDescriptor,
+    with_override: bool,
+) {
+    let Some(existing) = descriptors
+        .iter_mut()
+        .find(|existing| existing.name == descriptor.name)
+    else {
+        descriptors.push(descriptor);
+        return;
+    };
+    // GNU pushes the redeclaration's initarg alongside the inherited ones
+    // in both phases, but only the class's OWN redeclarations override the
+    // inherited attributes (`eieio--slot-override'); a later parent's
+    // same-named slot leaves the first parent's definition in place.
+    for initarg in descriptor.initargs {
+        if !existing.initargs.contains(&initarg) {
+            existing.initargs.push(initarg);
+        }
+    }
+    if with_override {
+        // A redeclared slot keeps its inherited allocation and, when the
+        // redeclaration has no initform, its inherited default; a `t' type
+        // keeps the inherited type.
+        if descriptor.initform.is_some() {
+            existing.initform = descriptor.initform;
+        }
+        if !matches!(descriptor.slot_type, Value::T) {
+            existing.slot_type = descriptor.slot_type;
+        }
+        for (key, value) in descriptor.props {
+            if key == ":group" {
+                // Custom groups combine across the hierarchy.
+                let mut combined = value.to_vec().unwrap_or_default();
+                if let Some((_, existing_group)) = existing
+                    .props
+                    .iter()
+                    .find(|(existing_key, _)| existing_key == ":group")
+                {
+                    for member in existing_group.to_vec().unwrap_or_default() {
+                        if !combined.iter().any(|candidate| candidate == &member) {
+                            combined.push(member);
                         }
                     }
                 }
+                let combined = Value::list(combined);
+                match existing
+                    .props
+                    .iter_mut()
+                    .find(|(existing_key, _)| existing_key == ":group")
+                {
+                    Some(slot) => slot.1 = combined,
+                    None => existing.props.push((key, combined)),
+                }
+            } else {
+                match existing
+                    .props
+                    .iter_mut()
+                    .find(|(existing_key, _)| existing_key == &key)
+                {
+                    Some(slot) => slot.1 = value,
+                    None => existing.props.push((key, value)),
+                }
             }
-        } else {
-            descriptors.push(descriptor);
         }
     }
-    Ok(())
 }
 
 // GNU signals `invalid-slot-type' when a constant initform does not match
@@ -316,7 +351,17 @@ pub(crate) fn eieio_validate_class_slots(
     {
         for parent in parent_values {
             if let Ok(parent_name) = parent.as_symbol() {
-                collect_eieio_slot_descriptors(interp, parent_name, &mut inherited, false)?;
+                let mut parent_descriptors = Vec::new();
+                let mut parent_seen = vec![class_name.to_string()];
+                collect_merged_eieio_slot_descriptors(
+                    interp,
+                    parent_name,
+                    &mut parent_descriptors,
+                    &mut parent_seen,
+                )?;
+                for descriptor in parent_descriptors {
+                    merge_eieio_slot_descriptor(&mut inherited, descriptor, false);
+                }
             }
         }
     }
