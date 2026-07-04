@@ -601,6 +601,11 @@ pub struct Interpreter {
     process_states: Vec<ProcessState>,
     class_states: Vec<ClassState>,
     class_parent_overrides: Vec<(u64, Vec<String>)>,
+    // Object records whose GNU type tag is the class object rather than the
+    // class symbol (objects created with `eieio-backward-compatibility' nil
+    // and every class's default-object cache); they print with the class
+    // object expanded in place of the type symbol.
+    class_object_tagged_records: HashSet<u64>,
     generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
     pending_file_notifications: Vec<(String, String)>,
@@ -880,6 +885,7 @@ impl Interpreter {
             process_states: Vec::new(),
             class_states: Vec::new(),
             class_parent_overrides: Vec::new(),
+            class_object_tagged_records: HashSet::new(),
             generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
             pending_file_notifications: Vec::new(),

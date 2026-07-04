@@ -226,6 +226,13 @@ pub(super) fn handles(name: &str) -> bool {
             | "eieio--object-class"
             | "eieio--class-name"
             | "eieio-object-p"
+            | "eieio--class-slots"
+            | "eieio--class-class-slots"
+            | "eieio--class-initarg-tuples"
+            | "cl--slot-descriptor-name"
+            | "cl--slot-descriptor-initform"
+            | "cl--slot-descriptor-type"
+            | "cl--slot-descriptor-props"
             | "slot-boundp"
             | "make-instance"
             | "emaxx-class-make"
@@ -2516,8 +2523,13 @@ pub(super) fn call(
         }
         "eieio-object-p" => {
             need_args(name, args, 1)?;
+            // GNU requires the record's type to name a class; plain records
+            // (hash tables, defstruct-free record literals) are not objects.
             Ok(
-                if matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some()) {
+                if matches!(&args[0], Value::Record(id) if interp
+                    .find_record(*id)
+                    .is_some_and(|record| interp.class_value(&record.type_name).is_some()))
+                {
                     Value::T
                 } else {
                     Value::Nil
@@ -2540,6 +2552,66 @@ pub(super) fn call(
                 }
                 _ => Err(LispError::TypeError(
                     "eieio-object-p".into(),
+                    args[0].type_name(),
+                )),
+            }
+        }
+        "eieio--class-slots" | "eieio--class-class-slots" => {
+            need_args(name, args, 1)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            let want_class_allocated = name == "eieio--class-class-slots";
+            let descriptors = eieio_slot_descriptors(interp, &class_name)?;
+            let mut items = vec![Value::Symbol("vector-literal".into())];
+            for descriptor in &descriptors {
+                if descriptor.class_allocated == want_class_allocated {
+                    items.push(eieio_slot_descriptor_record(interp, env, descriptor));
+                }
+            }
+            Ok(Value::list(items))
+        }
+        "eieio--class-initarg-tuples" => {
+            need_args(name, args, 1)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(LispError::TypeError("class".into(), args[0].type_name()));
+            };
+            let descriptors = eieio_slot_descriptors(interp, &class_name)?;
+            let mut tuples: Vec<Value> = Vec::new();
+            for descriptor in &descriptors {
+                for initarg in &descriptor.initargs {
+                    tuples.push(Value::cons(
+                        Value::Symbol(initarg.clone()),
+                        Value::Symbol(descriptor.name.clone()),
+                    ));
+                }
+            }
+            Ok(Value::list(tuples))
+        }
+        "cl--slot-descriptor-name"
+        | "cl--slot-descriptor-initform"
+        | "cl--slot-descriptor-type"
+        | "cl--slot-descriptor-props" => {
+            need_args(name, args, 1)?;
+            let slot_index = match name {
+                "cl--slot-descriptor-name" => 0,
+                "cl--slot-descriptor-initform" => 1,
+                "cl--slot-descriptor-type" => 2,
+                _ => 3,
+            };
+            match &args[0] {
+                Value::Record(id)
+                    if interp
+                        .find_record(*id)
+                        .is_some_and(|record| record.type_name == "cl-slot-descriptor") =>
+                {
+                    Ok(interp
+                        .find_record(*id)
+                        .and_then(|record| record.slots.get(slot_index).cloned())
+                        .unwrap_or(Value::Nil))
+                }
+                _ => Err(LispError::TypeError(
+                    "cl-slot-descriptor".into(),
                     args[0].type_name(),
                 )),
             }

@@ -1289,11 +1289,26 @@ pub(crate) fn render_prin1_body(
                     "hash-table" => render_hash_table_prin1(interp, value, env, context, depth)?,
                     "process" | "obarray" => value.to_string(),
                     _ => {
-                        let Some(fields) =
+                        let Some(mut fields) =
                             record_prin1_fields(interp, *id, context.options.dialect)
                         else {
                             return Ok(value.to_string());
                         };
+                        // Records tagged with their class OBJECT (GNU eieio
+                        // objects created with `eieio-backward-compatibility'
+                        // nil, and every class's default-object cache) print
+                        // the class expanded in place of the type symbol;
+                        // the cache inside the class then hits the active-set
+                        // guard and prints as a circular `#N' marker.
+                        if context.options.dialect == PrintDialect::Emacs
+                            && interp.is_class_object_tagged_record(*id)
+                            && let Some(class_record) = interp
+                                .find_record(*id)
+                                .map(|record| record.type_name.clone())
+                                .and_then(|type_name| interp.class_value(&type_name))
+                        {
+                            fields[0] = class_record;
+                        }
                         let mut rendered_fields = Vec::new();
                         if context.options.dialect == PrintDialect::Cl
                             && fields.len() > 1
@@ -1728,6 +1743,127 @@ pub(crate) fn read_from_callable_source(
 }
 
 pub(crate) fn read_from_lisp_source(
+    interp: &mut Interpreter,
+    source: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let value = read_from_lisp_source_raw(interp, source, env)?;
+    materialize_read_hash_table_literals(interp, &value)
+}
+
+// GNU's reader constructs real hash tables for `#s(hash-table ...)' input;
+// emaxx's reader leaves a quoted literal form behind, which is fine for
+// loaded code but wrong for `read' consumers that treat the result as data
+// (e.g. `eieio-persistent-read').  Convert those literals into hash-table
+// records after reading.
+pub(crate) fn materialize_read_hash_table_literals(
+    interp: &mut Interpreter,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let mut seen = HashSet::new();
+    materialize_hash_table_literals_inner(interp, value, &mut seen)
+}
+
+fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
+    let items = value.to_vec().ok()?;
+    let [Value::Symbol(head), literal] = items.as_slice() else {
+        return None;
+    };
+    if head != "quote" {
+        return None;
+    }
+    let literal_items = literal.to_vec().ok()?;
+    match literal_items.split_first() {
+        Some((Value::Symbol(symbol), fields))
+            if symbol == crate::lisp::json::HASH_TABLE_LITERAL_SYMBOL =>
+        {
+            Some(fields.to_vec())
+        }
+        _ => None,
+    }
+}
+
+fn materialize_hash_table_literals_inner(
+    interp: &mut Interpreter,
+    value: &Value,
+    seen: &mut HashSet<usize>,
+) -> Result<Value, LispError> {
+    let Value::Cons(car_cell, cdr_cell) = value else {
+        return Ok(value.clone());
+    };
+    if let Some(fields) = quoted_hash_table_literal_fields(value) {
+        return hash_table_from_literal_fields(interp, &fields, seen);
+    }
+    let ptr = Rc::as_ptr(car_cell) as usize;
+    if !seen.insert(ptr) {
+        return Ok(value.clone());
+    }
+    let car = car_cell.borrow().clone();
+    let new_car = materialize_hash_table_literals_inner(interp, &car, seen)?;
+    *car_cell.borrow_mut() = new_car;
+    let cdr = cdr_cell.borrow().clone();
+    let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, seen)?;
+    *cdr_cell.borrow_mut() = new_cdr;
+    Ok(value.clone())
+}
+
+fn hash_table_from_literal_fields(
+    interp: &mut Interpreter,
+    fields: &[Value],
+    seen: &mut HashSet<usize>,
+) -> Result<Value, LispError> {
+    let mut test = "eql".to_string();
+    let mut size = Value::Integer(65);
+    let mut rehash_size = Value::Float(1.5);
+    let mut rehash_threshold = Value::Float(0.8125);
+    let mut weakness = Value::Nil;
+    let mut entries = Vec::new();
+    let mut index = 0usize;
+    while index + 1 < fields.len() {
+        let Ok(key) = fields[index].as_symbol() else {
+            index += 2;
+            continue;
+        };
+        let key = key.to_string();
+        let field_value = fields[index + 1].clone();
+        match key.as_str() {
+            "test" => test = field_value.as_symbol()?.to_string(),
+            "size" => size = field_value,
+            "rehash-size" => rehash_size = field_value,
+            "rehash-threshold" => rehash_threshold = field_value,
+            "weakness" => weakness = field_value,
+            "data" => {
+                let items = field_value.to_vec()?;
+                let mut cursor = 0usize;
+                while cursor + 1 < items.len() {
+                    let entry_key =
+                        materialize_hash_table_literals_inner(interp, &items[cursor], seen)?;
+                    let entry_value =
+                        materialize_hash_table_literals_inner(interp, &items[cursor + 1], seen)?;
+                    entries.push((entry_key, entry_value));
+                    cursor += 2;
+                }
+            }
+            _ => {}
+        }
+        index += 2;
+    }
+    let table = crate::lisp::json::make_hash_table(interp, &test, entries);
+    if let Value::Record(id) = &table
+        && let Some(record) = interp.find_record_mut(*id)
+    {
+        if record.slots.len() < 6 {
+            record.slots.resize(6, Value::Nil);
+        }
+        record.slots[2] = size;
+        record.slots[3] = rehash_size;
+        record.slots[4] = rehash_threshold;
+        record.slots[5] = weakness;
+    }
+    Ok(table)
+}
+
+fn read_from_lisp_source_raw(
     interp: &mut Interpreter,
     source: &Value,
     env: &mut Env,

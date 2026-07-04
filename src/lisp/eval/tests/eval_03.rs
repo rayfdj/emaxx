@@ -1769,6 +1769,103 @@ fn defclass_registers_runtime_class_metadata() {
 }
 
 #[test]
+fn eieio_class_slots_return_slot_descriptor_records() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-desc-parent nil
+                     ((base-slot :initarg :base-slot :initform 1)))
+                   (defclass sample-desc-child (sample-desc-parent)
+                     ((own-slot :initarg :own-slot :initform \"hi\"
+                                :documentation \"Own slot\")))
+                   (let ((slots (eieio--class-slots
+                                 (cl--find-class 'sample-desc-child))))
+                     (list (length slots)
+                           (cl--slot-descriptor-name (aref slots 0))
+                           (cl--slot-descriptor-initform (aref slots 0))
+                           (cl--slot-descriptor-name (aref slots 1))
+                           (cl--slot-descriptor-initform (aref slots 1))
+                           (cl--slot-descriptor-type (aref slots 1))
+                           (cdr (assq :documentation
+                                      (cl--slot-descriptor-props
+                                       (aref slots 1))))
+                           (eieio--class-initarg-tuples
+                            (cl--find-class 'sample-desc-child)))))"
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::Symbol("base-slot".into()),
+            Value::Integer(1),
+            Value::Symbol("own-slot".into()),
+            Value::String("hi".into()),
+            Value::T,
+            Value::String("Own slot".into()),
+            Value::list([
+                Value::cons(
+                    Value::Symbol(":base-slot".into()),
+                    Value::Symbol("base-slot".into()),
+                ),
+                Value::cons(
+                    Value::Symbol(":own-slot".into()),
+                    Value::Symbol("own-slot".into()),
+                ),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn equal_compares_records_element_wise() {
+    assert_eq!(
+        eval_str(
+            "(list (equal (record 'sample-rec 1 \"a\") (record 'sample-rec 1 \"a\"))
+                   (equal (record 'sample-rec 1) (record 'sample-rec 2))
+                   (equal (record 'sample-rec 1) (record 'other-rec 1)))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn read_materializes_hash_table_literals() {
+    assert_eq!(
+        eval_str(
+            "(let ((table (read \"#s(hash-table test equal data (\\\"a\\\" 1))\")))
+                   (list (hash-table-p table)
+                         (gethash \"a\" table)
+                         (hash-table-test table)))"
+        ),
+        Value::list([Value::T, Value::Integer(1), Value::Symbol("equal".into())])
+    );
+}
+
+#[test]
+fn compat_nil_objects_print_unreadably_like_gnu() {
+    // GNU tags objects with the class OBJECT unless
+    // `eieio-backward-compatibility' downgrades the tag to the class
+    // symbol; the class's circular default-object cache then prints as a
+    // `#N' marker that `read' rejects (bug#29220).
+    assert_eq!(
+        eval_str(
+            "(progn
+                   (defclass sample-tagged nil
+                     ((name :initarg :name)))
+                   (let* ((compat (make-instance 'sample-tagged :name \"a\"))
+                          (bare (let ((eieio-backward-compatibility nil))
+                                  (make-instance 'sample-tagged :name \"a\"))))
+                     (list (equal (prin1-to-string compat)
+                                  \"#s(sample-tagged \\\"a\\\")\")
+                           (not (equal (prin1-to-string bare)
+                                       \"#s(sample-tagged \\\"a\\\")\"))
+                           (condition-case err
+                               (progn (read (prin1-to-string bare)) nil)
+                             (invalid-read-syntax t)))))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn setf_updates_eieio_class_parent_metadata() {
     assert_eq!(
         eval_str(

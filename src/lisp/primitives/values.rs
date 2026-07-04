@@ -242,6 +242,28 @@ pub(crate) fn values_equal_recursive(
         {
             keymap_record_equals_list(interp, *right_id, left, seen)
         }
+        (Value::Record(left_id), Value::Record(right_id)) => {
+            if left_id == right_id {
+                return true;
+            }
+            // GNU `equal' compares records element-wise like vectors.
+            let pair = (*left_id as usize, *right_id as usize);
+            if !seen.insert(pair) {
+                return true;
+            }
+            let (Some(left_record), Some(right_record)) =
+                (interp.find_record(*left_id), interp.find_record(*right_id))
+            else {
+                return false;
+            };
+            left_record.type_name == right_record.type_name
+                && left_record.slots.len() == right_record.slots.len()
+                && left_record
+                    .slots
+                    .iter()
+                    .zip(right_record.slots.iter())
+                    .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+        }
         (Value::Record(left_id), _) if record_literal_items(right).is_some() => {
             record_equals_record_literal_form(interp, *left_id, right, seen)
         }
