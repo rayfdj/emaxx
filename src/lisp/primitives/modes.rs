@@ -69,10 +69,8 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
             );
             Ok(result)
         }
-        "javascript-mode" => {
-            derived_mode_set_parent(interp, "javascript-mode", Some("prog-mode"));
-            activate_c_family_mode_with_semantic(interp, "javascript-mode", "JavaScript", false)
-        }
+        // GNU js.el makes `javascript-mode' a defalias for `js-mode'.
+        "javascript-mode" => call_major_mode(interp, "js-mode"),
         "ruby-mode" => {
             derived_mode_set_parent(interp, "ruby-mode", Some("prog-mode"));
             activate_ruby_mode(interp)

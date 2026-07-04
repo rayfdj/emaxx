@@ -18,10 +18,36 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2016/7080: `eieio-tests.el` (selectors
-  1976..2016) passes its grouped `check-all` replay, completing the whole
-  eieio-tests directory; the 83-file verified-prefix sweep (now including
-  eieio-tests.el) is green (2026-07-04, third sweep).
+- Verified through selector 2056/7080: `ert-font-lock-tests.el` (selectors
+  2017..2056) passes its grouped `check-all` replay; the 84-file
+  verified-prefix sweep (now including ert-font-lock-tests.el) is green
+  (2026-07-04).
+- The `Compat 2056/7080` batch built the native fontification engine and
+  the repairs it exposed (see `docs/compatibility-goal.md` for the full
+  list): `font-lock-ensure' runs a syntactic pass (comments/strings from
+  `syntax-ppss') plus a full keyword pass (regexp/function matchers,
+  subexp highlights with OVERRIDE/LAXMATCH, anchored highlighters,
+  FACENAME expressions) over `font-lock-defaults' installed lazily for the
+  native modes (requiring lisp-mode.el/js.el for their keyword variables);
+  standard font-lock face variables are self-quoting defvars;
+  `font-lock-defaults' is auto-buffer-local (font-core.el defvar-local) —
+  sh-mode's plain `setq' used to leak globally and kill fontification
+  everywhere; `font-lock-ensure' + the native major modes (c/c++/java/js/
+  javascript) are in `prefer_builtin_override' because loading GNU
+  font-lock.el/cc-mode.el/js.el shadows them with redisplay-dependent
+  elisp (cc-mode's elisp `c-mode' dies on void `backtrace-frame');
+  `javascript-mode' delegates to `js-mode' (GNU defalias); `ert-pass'
+  throws `ert--pass' (native runner counts it a pass), `ert-fail' signals
+  `ert-test-failed', `ert-set-test' registers the ert-font-lock deftest
+  macros' tests; `\s<'/`\s>' resolve from the syntax table's explicit
+  comment-class entries; `regexp-opt' honors PAREN (a shy-group PAREN bug
+  silently killed every js keyword subexp match).
+- Fontification-debugging leverage for future frontiers:
+  `EMAXX_DEBUG_FONTLOCK=1' traces installer decisions, matcher attempts,
+  and highlight applications; cross-test contamination in a suite is
+  bisected fast with `(ert-run-tests-batch-and-exit '(member TEST-A ...
+  TARGET))' — alphabetical run order, so test the failing target behind
+  successive prefixes of its predecessors.
 - The `Compat 2016/7080` batch finished eieio-tests.el on top of the
   groundwork+persist batches: `cl-no-next-method'/`cl-no-applicable-method'
   hooks (runtime helper `emaxx--cl-generic-apply-next' routes the dispatch
@@ -44,24 +70,10 @@ counts as the progress denominator.
   slots survive into subclasses — five cedet files depended on
   semanticdb's `tracking-symbol' initform).  Details in
   `docs/compatibility-goal.md`.
-- The next frontier is `test/lisp/emacs-lisp/ert-font-lock-tests.el`
-  (selectors 2017..2056, 40 selected).  The file LOADS now (native
-  `map-elt'/`map-contains-key' were void; map.el is a preloaded feature so
-  it never loads).  Remaining mismatches from the grouped replay:
-  - Six `test-macro-test--*` selectors are NOT DISCOVERED: the
-    `ert-font-lock-deftest'/`ert-font-lock-deftest-file' macros
-    (lisp/emacs-lisp/ert-font-lock.el) don't register their tests.
-  - Most failures need REAL fontification: `js-mode' buffers must get
-    `font-lock-keyword-face'/`font-lock-variable-name-face' and
-    comment faces from `font-lock-ensure' in batch, and `c-mode'
-    multiline comments `font-lock-comment-face' (tests compare
-    `face' text properties at positions).  `test-font-lock-test-file--wrong'
-    and `--failing' style selectors fail in GNU too (expected failures) —
-    only the listed status mismatches need fixing.
-  - `test-line-comment-p--fundamental': fundamental-mode has no comment
-    syntax, `ert-font-lock--line-comment-p' must return nil (emaxx says t).
-  - `test-line-comment-p--shell-script': `shell-script-mode' is void
-    (sh-script.el autoload/alias missing).
+- The next frontier is `test/lisp/emacs-lisp/ert-x-tests.el` (selectors
+  2057..2084, 28 selected; manifest line 2142 of
+  `compat/oracle_tests_all.txt`).  Start with the grouped `check-all`
+  replay to enumerate the real mismatches.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
@@ -91,8 +103,57 @@ counts as the progress denominator.
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-font-lock-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-x-tests.el
 ```
+
+## Session Durability Guardrails (learned the hard way)
+
+1. THE CONTAINER ROLLS BACK. This has happened multiple times: local
+   commits, target/ builds, and /tmp state silently reverted to an old
+   snapshot mid-mission. The ONLY durable store is origin/main after the
+   user applies and pushes a delivered patch. Consequences:
+   - On EVERY session resume (and after any suspicious state), first run
+     `git fetch origin main`, compare `git rev-parse HEAD^{tree}
+     origin/main^{tree}`, and if local history looks older than what was
+     delivered, `git checkout -B claude/continuation-instructions-review-7ll2h7
+     origin/main`. Do not trust local HEAD, reflog, target/ binaries, or
+     /tmp/probes to have survived.
+   - After any reset/rollback: repin the oracle (`chmod 666
+     compat/oracle.lock.json`, then as dev `./target/release/compat-harness
+     oracle pin --emacs /home/user/emacs/src/emacs --repo /home/user/emacs`),
+     rebuild `cargo build --release`, and recreate /tmp/probes
+     (prefix-files.txt regenerates from compat/oracle_tests_all.txt by
+     taking every `^test/...: discovered=` line through the last verified
+     file; sweep.sh loops compat-harness check-all over it as dev).
+   - Commit and DELIVER the patch as soon as a batch is green. Unpushed
+     work is one rollback away from oblivion; the delivered
+     APPLY-THIS-ONE patch is the real backup.
+2. When several commits accumulate before the user applies anything,
+   regenerate ONE cumulative patch (`git format-patch origin/main..HEAD
+   --stdout`) and tell the user explicitly that it SUPERSEDES earlier
+   patch files. Never leave two live patches ambiguous.
+3. The stop hook complaining about uncommitted changes when `git status`
+   shows ONLY `compat/oracle.lock.json` is a false positive: that file is
+   the container-local repin and must never be committed.
+4. Cross-cutting changes (cl-generic dispatch, reader, printer, `equal',
+   records, file-attributes, time formats) REQUIRE a full prefix sweep
+   before committing, no matter how local they feel: the typed-oset work
+   regressed three srecode files through `file-attributes' time shapes,
+   and an eieio--object-class tweak broke persist. If the sweep is not
+   green, the batch is not done.
+5. Probe/debug hygiene that repeatedly wasted cycles:
+   - `cmd | head; echo exit=$?` reports HEAD's exit code. Redirect to a
+     file and echo the real code, then read the file.
+   - DELETE stale probe artifacts (result JSONs, error-capture files)
+     before reruns; a stale file has misdirected debugging twice.
+   - emaxx exiting 2 with an EMPTY log is a LOAD error whose message was
+     swallowed by batch; capture it with `(condition-case err (load ...)
+     (error (write-region (format "%S" err) ...)))`.
+   - Exit 134/SIGABRT with "stack overflow" during dispatch-heavy code is
+     almost always a cl-generic wrapper chain cycle; an env-gated
+     eprintln in the ERT runner loop (EMAXX_DEBUG_ERT) finds the test.
+   - Run emaxx probes as dev via `bash /home/user/asdev.sh "..."`, never
+     as root (root-owned /tmp lock files poison later oracle runs).
 
 ## Oracle Setup In A Fresh Container
 
@@ -149,7 +210,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-font-lock-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-x-tests.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next

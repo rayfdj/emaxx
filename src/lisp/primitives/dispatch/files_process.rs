@@ -67,6 +67,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "ert-resource-file"
             | "ert-gcc-is-clang-p"
             | "ert-fail"
+            | "ert-pass"
             | "locate-library"
             | "get-load-suffixes"
             | "load"
@@ -1134,7 +1135,14 @@ pub(super) fn call(
                 Value::StringObject(state) => state.borrow().text.clone(),
                 value => value.to_string(),
             };
-            Err(LispError::Signal(message))
+            Err(LispError::ErtTestFailed(message))
+        }
+        "ert-pass" => {
+            need_args(name, args, 0)?;
+            Err(LispError::Throw(
+                Value::Symbol("ert--pass".into()),
+                Value::Nil,
+            ))
         }
         "locate-library" => {
             if args.is_empty() || args.len() > 5 {

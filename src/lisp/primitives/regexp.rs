@@ -417,6 +417,75 @@ fn translate_zero_width_assertion(
     }
 }
 
+// Rewrite `\s<' / `\S<' / `\s>' / `\S>' atoms into bracket expressions
+// listing the characters the current syntax table assigns those classes;
+// an empty class becomes a never-matching / always-matching alternative.
+fn resolve_comment_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
+    if !pattern.contains("\\s<")
+        && !pattern.contains("\\S<")
+        && !pattern.contains("\\s>")
+        && !pattern.contains("\\S>")
+    {
+        return pattern.to_string();
+    }
+    let class_expansion = |class_char: char, negated: bool| -> String {
+        let chars = super::syntax::syntax_class_explicit_chars(interp, class_char);
+        if chars.is_empty() {
+            return if negated {
+                // Anything (GNU: no character has the class).
+                "\\(?:.\\|\n\\)".to_string()
+            } else {
+                // Nothing can match.
+                "\\`X\\`".to_string()
+            };
+        }
+        let mut set = String::new();
+        if negated {
+            set.push('^');
+        }
+        for ch in chars {
+            if matches!(ch, ']' | '^' | '-' | '\\') {
+                set.push('\\');
+            }
+            set.push(ch);
+        }
+        format!("[{set}]")
+    };
+    let mut result = String::new();
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            result.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('s') | Some('S') => {
+                let escape = *chars.peek().expect("peeked");
+                let mut lookahead = chars.clone();
+                lookahead.next();
+                match lookahead.peek() {
+                    Some('<') | Some('>') => {
+                        chars.next();
+                        let class_char = chars.next().expect("peeked class");
+                        result.push_str(&class_expansion(class_char, escape == 'S'));
+                    }
+                    _ => {
+                        result.push(ch);
+                    }
+                }
+            }
+            Some(_) => {
+                result.push(ch);
+                if let Some(next) = chars.next() {
+                    result.push(next);
+                }
+            }
+            None => result.push(ch),
+        }
+    }
+    result
+}
+
 fn regex_syntax_class(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     negated: bool,
@@ -936,11 +1005,16 @@ pub(super) fn compile_elisp_regex(
     at_absolute_start: bool,
 ) -> Result<CompiledElispRegex, LispError> {
     enforce_elisp_repeat_limit(&pattern.text)?;
+    // GNU resolves `\s<'/`\s>' against the current buffer's syntax table;
+    // rewrite them into explicit character classes before translation (the
+    // rewritten pattern doubles as the cache key, so different tables cache
+    // separately).
+    let pattern_text = resolve_comment_syntax_classes(interp, &pattern.text);
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());
     let key = CompiledElispRegexKey {
-        pattern: pattern.text.clone(),
+        pattern: pattern_text.clone(),
         point_assertion: point_assertion.to_string(),
         at_absolute_start,
         case_fold,
@@ -958,7 +1032,7 @@ pub(super) fn compile_elisp_regex(
     }
 
     let translated = translate_elisp_regex_with_point(
-        &pattern.text,
+        &pattern_text,
         point_assertion,
         if at_absolute_start { r"\A" } else { r"(?!)" },
     );

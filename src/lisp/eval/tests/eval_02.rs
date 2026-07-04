@@ -1805,12 +1805,15 @@ fn regexp_syntax_classes_match_standard_delimiters() {
                  (string-match-p "\\S(" "a"))
                 "#
         ),
+        // GNU's standard syntax table assigns no character the comment-end
+        // class (newline is whitespace there); `\s>' matches nothing and
+        // `\S>' matches anything outside a mode that sets up comments.
         Value::list([
             Value::Integer(0),
             Value::Integer(0),
             Value::Integer(0),
             Value::Integer(0),
-            Value::Integer(0),
+            Value::Nil,
             Value::Integer(0),
             Value::Integer(0),
         ])

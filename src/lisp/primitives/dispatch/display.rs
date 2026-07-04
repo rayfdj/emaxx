@@ -1001,10 +1001,24 @@ pub(super) fn call(
         }
         "font-lock-ensure" => {
             need_arg_range(name, args, 0, 2)?;
-            if !interp
-                .lookup_var("font-lock-mode", env)
-                .unwrap_or(Value::Nil)
-                .is_truthy()
+            // GNU fontifies whenever fontification is specified for the
+            // buffer (font-lock-specified-p), even with font-lock-mode off
+            // in batch.
+            if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+                eprintln!(
+                    "FONTLOCK ensure called buffer={}",
+                    interp.current_buffer_id()
+                );
+            }
+            font_lock_install_mode_defaults(interp, env)?;
+            let specified = interp
+                .lookup_var("font-lock-defaults", env)
+                .is_some_and(|value| value.is_truthy());
+            if !specified
+                && !interp
+                    .lookup_var("font-lock-mode", env)
+                    .unwrap_or(Value::Nil)
+                    .is_truthy()
             {
                 return Ok(Value::Nil);
             }

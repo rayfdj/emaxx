@@ -303,6 +303,29 @@ impl Interpreter {
             "buffer-auto-revert-by-notification" => Some(Value::Nil),
             "non-essential" => Some(Value::Nil),
             "remote-file-name-inhibit-cache" => Some(Value::Nil),
+            // files.el: derived modes consult this when setting
+            // `require-final-newline' buffer-locally.
+            "mode-require-final-newline" => Some(Value::T),
+            // syntax.el: propertize progress marker (defvar-local -1).
+            "syntax-propertize--done" => Some(Value::Integer(-1)),
+            // font-lock.el: defvar-local, nil until a mode installs defaults.
+            "font-lock-defaults" => Some(Value::Nil),
+            // font-lock.el: the standard face variables are self-quoting
+            // defvars that keyword FACENAME expressions evaluate.
+            "font-lock-comment-face" => Some(Value::Symbol("font-lock-comment-face".into())),
+            "font-lock-comment-delimiter-face" => Some(Value::Symbol("font-lock-comment-delimiter-face".into())),
+            "font-lock-string-face" => Some(Value::Symbol("font-lock-string-face".into())),
+            "font-lock-doc-face" => Some(Value::Symbol("font-lock-doc-face".into())),
+            "font-lock-doc-markup-face" => Some(Value::Symbol("font-lock-doc-markup-face".into())),
+            "font-lock-keyword-face" => Some(Value::Symbol("font-lock-keyword-face".into())),
+            "font-lock-builtin-face" => Some(Value::Symbol("font-lock-builtin-face".into())),
+            "font-lock-function-name-face" => Some(Value::Symbol("font-lock-function-name-face".into())),
+            "font-lock-variable-name-face" => Some(Value::Symbol("font-lock-variable-name-face".into())),
+            "font-lock-type-face" => Some(Value::Symbol("font-lock-type-face".into())),
+            "font-lock-constant-face" => Some(Value::Symbol("font-lock-constant-face".into())),
+            "font-lock-warning-face" => Some(Value::Symbol("font-lock-warning-face".into())),
+            "font-lock-negation-char-face" => Some(Value::Symbol("font-lock-negation-char-face".into())),
+            "font-lock-preprocessor-face" => Some(Value::Symbol("font-lock-preprocessor-face".into())),
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),
