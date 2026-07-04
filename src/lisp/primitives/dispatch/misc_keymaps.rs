@@ -1004,11 +1004,18 @@ pub(super) fn call(
                 return Ok(Value::Nil);
             }
             let current = file_modtime(&path)?;
-            Ok(if interp.buffer.visited_file_modtime() != current {
-                Value::T
+            let visited = interp.buffer.visited_file_modtime();
+            // Tramp reports remote modification times with one-second
+            // resolution; a same-second rewrite looks unchanged.
+            let unchanged = if interp
+                .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
+                .is_some_and(|value| value.is_truthy())
+            {
+                modtimes_equal_whole_seconds(&visited, &current)
             } else {
-                Value::Nil
-            })
+                visited == current
+            };
+            Ok(if unchanged { Value::Nil } else { Value::T })
         }
         "revert-buffer" => {
             if let Some(revert_function) = interp.lookup_var("revert-buffer-function", env)
@@ -2570,7 +2577,18 @@ pub(super) fn call(
         }
         "semantic-current-tag" => {
             need_arg_range(name, args, 0, 1)?;
-            semantic_current_tag_compat(interp, env)
+            let result = semantic_current_tag_compat(interp, env);
+            if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some()
+                && let Ok(tag) = &result
+            {
+                eprintln!(
+                    "[sem] current-tag buf={} point={} -> {}",
+                    interp.buffer.name,
+                    interp.buffer.point(),
+                    tag
+                );
+            }
+            result
         }
         "semantic-current-tag-of-class" => {
             need_args(name, args, 1)?;
@@ -2668,11 +2686,11 @@ pub(super) fn call(
         }
         "semantic-equivalent-tag-p" => {
             need_args(name, args, 2)?;
-            Ok(if semantic_tags_equivalent(&args[0], &args[1]) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            let matches = semantic_tags_equivalent(&args[0], &args[1]);
+            if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
+                eprintln!("[sem] equiv {} vs {} -> {}", args[0], args[1], matches);
+            }
+            Ok(if matches { Value::T } else { Value::Nil })
         }
         "semantic-go-to-tag" => {
             need_arg_range(name, args, 1, 2)?;
@@ -3328,6 +3346,15 @@ fn semantic_analyze_tag_references(
     // the same file (plus includes), so the same definition shows up twice.
     dedup_equal_semantic_tags(&mut impls);
     dedup_equal_semantic_tags(&mut protos);
+    if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
+        eprintln!(
+            "[sem] refs tag={} buf={} impls={} protos={}",
+            tag,
+            interp.buffer.name,
+            Value::list(impls.clone()),
+            Value::list(protos.clone())
+        );
+    }
     if protos.is_empty() && impls.len() > 1 {
         protos.push(impls.remove(0));
     } else if protos.is_empty() && impls.len() == 1 {
@@ -3867,17 +3894,50 @@ fn collect_semantic_function_references(
     impls: &mut Vec<Value>,
     protos: &mut Vec<Value>,
 ) {
+    collect_semantic_function_references_in(tags, None, key, impls, protos);
+}
+
+fn collect_semantic_function_references_in(
+    tags: &[Value],
+    enclosing_type: Option<&str>,
+    key: &SemanticFunctionSignatureKey,
+    impls: &mut Vec<Value>,
+    protos: &mut Vec<Value>,
+) {
     for tag in tags {
-        if semantic_tag_class(tag).as_deref() == Some("function")
-            && semantic_function_signature_matches(&semantic_function_signature_key(tag), key)
-        {
-            if semantic_tag_attr(tag, ":prototype-flag").is_some_and(|value| value.is_truthy()) {
-                protos.push(tag.clone());
-            } else {
-                impls.push(tag.clone());
+        if semantic_tag_class(tag).as_deref() == Some("function") {
+            let mut candidate = semantic_function_signature_key(tag);
+            // A method declared inside its class carries no `:parent';
+            // the enclosing type is its parent.
+            if candidate.parent.is_none() {
+                candidate.parent = enclosing_type.map(str::to_string);
+            }
+            if semantic_function_signature_matches(&candidate, key) {
+                if semantic_tag_attr(tag, ":prototype-flag").is_some_and(|value| value.is_truthy())
+                {
+                    protos.push(tag.clone());
+                } else {
+                    impls.push(tag.clone());
+                }
             }
         }
-        collect_semantic_function_references(&semantic_tag_members(tag), key, impls, protos);
+        let next_enclosing = if semantic_tag_class(tag).as_deref() == Some("type")
+            && semantic_tag_attr(tag, ":type")
+                .and_then(|value| string_text(&value).ok())
+                .as_deref()
+                != Some("namespace")
+        {
+            semantic_tag_name(tag)
+        } else {
+            enclosing_type.map(str::to_string)
+        };
+        collect_semantic_function_references_in(
+            &semantic_tag_members(tag),
+            next_enclosing.as_deref(),
+            key,
+            impls,
+            protos,
+        );
     }
 }
 
@@ -6116,23 +6176,26 @@ fn semantic_current_tag_compat(
     let text = interp
         .buffer
         .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
-    if let Some(tag) = semantic_current_function_tag_from_point(interp, env, &text)? {
-        interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
-        return Ok(tag);
-    }
-    if interp.buffer.point() != interp.buffer.point_min() {
-        // Fall back to the parsed tag tree: the innermost leaf containing
-        // point, like tags found through overlays in GNU.
+    // The parsed tree's innermost tag containing point is authoritative:
+    // same-named tags (overloads, per-class prototypes) can only be told
+    // apart by position, like GNU's overlay lookup.
+    {
         let tags = semantic_fetch_tags_compat(interp, env)?
             .to_vec()
             .unwrap_or_default();
         let point = interp.buffer.point() as i64;
         let mut chain = Vec::new();
         semantic_containment_chain(&tags, point, &mut chain);
-        if let Some(innermost) = chain.last() {
+        if let Some(innermost) = semantic_innermost_with_parent(&chain) {
             interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
-            return Ok(innermost.clone());
+            return Ok(innermost);
         }
+    }
+    if let Some(tag) = semantic_current_function_tag_from_point(interp, env, &text)? {
+        interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
+        return Ok(tag);
+    }
+    if interp.buffer.point() != interp.buffer.point_min() {
         interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
         return Ok(Value::Nil);
     }
@@ -6163,7 +6226,10 @@ fn semantic_current_function_tag_from_point(
         .next()
         .unwrap_or("")
         .trim();
-    let current = parse_cpp_function(line, false)
+    // Prototypes may carry block comments in their parameter lists
+    // (`char /* a */`); the tag keeps only the real tokens.
+    let line = strip_cpp_line_block_comments(line);
+    let current = parse_cpp_function(&line, false)
         .or_else(|| semantic_previous_cpp_function_line(&text[..line_start]));
     let Some(current) = current else {
         return Ok(None);
@@ -6177,6 +6243,20 @@ fn semantic_current_function_tag_from_point(
     let mut tags = semantic_tags_for_search(interp, &table)?;
     extend_semantic_c_like_table_tags(interp, &table, &mut tags);
     Ok(find_equivalent_semantic_function(&tags, &current).or(Some(current)))
+}
+
+fn strip_cpp_line_block_comments(line: &str) -> String {
+    let mut result = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find("/*") {
+        result.push_str(&rest[..open]);
+        match rest[open + 2..].find("*/") {
+            Some(close) => rest = &rest[open + 2 + close + 2..],
+            None => return result,
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 fn semantic_previous_cpp_function_line(text: &str) -> Option<Value> {
@@ -6677,9 +6757,10 @@ fn expand_cpp_spp_macros(source: &str) -> String {
 
     // Gather full logical lines (backslash continuations merged).
     let raw_lines: Vec<&str> = source.split('\n').collect();
-    let mut logical: Vec<(String, usize)> = Vec::new(); // (text, source line count)
+    let mut logical: Vec<(String, usize, usize)> = Vec::new(); // (text, line count, start line)
     let mut index = 0;
     while index < raw_lines.len() {
+        let start_line = index;
         let mut text = raw_lines[index].to_string();
         let mut count = 1;
         while text.trim_end().ends_with('\\') && index + count < raw_lines.len() {
@@ -6691,12 +6772,12 @@ fn expand_cpp_spp_macros(source: &str) -> String {
             );
             count += 1;
         }
-        logical.push((text, count));
+        logical.push((text, count, start_line));
         index += count;
     }
 
     let mut output = String::with_capacity(source.len());
-    for (line, count) in logical {
+    for (line, count, start_line) in logical {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix('#') {
             let rest = rest.trim_start();
@@ -6729,7 +6810,14 @@ fn expand_cpp_spp_macros(source: &str) -> String {
                         .collect();
                     macros.insert(name, SppMacro { params, body });
                 }
-                for _ in 0..count {
+                // Blank the consumed directive with matching whitespace so
+                // every later tag keeps its buffer-absolute position.
+                for line_index in start_line..start_line + count {
+                    if let Some(raw) = raw_lines.get(line_index) {
+                        for _ in 0..raw.len() {
+                            output.push(' ');
+                        }
+                    }
                     output.push('\n');
                 }
                 continue;
@@ -7751,8 +7839,20 @@ fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
         .next()
         .unwrap_or(raw_name)
         .trim_start_matches('~');
+    // A qualified definition (`ns::Class::method') records its class as
+    // `:parent', like GNU's parser.
+    let parent = raw_name
+        .strip_suffix(name)
+        .map(|qualifier| qualifier.trim_end_matches("::").trim_end_matches('~'))
+        .filter(|qualifier| !qualifier.is_empty())
+        .and_then(|qualifier| qualifier.rsplit("::").next())
+        .filter(|component| !component.is_empty())
+        .map(str::to_string);
     let return_type = parts.join(" ");
     let mut attrs = Vec::new();
+    if let Some(parent) = &parent {
+        attrs.push((":parent", Value::String(parent.clone())));
+    }
     if prototype {
         attrs.push((":prototype-flag", Value::T));
     }
@@ -8598,6 +8698,47 @@ fn shift_semantic_tag_bounds(tag: &Value, offset: i64) -> Value {
         items[2] = Value::list(new_attrs);
     }
     Value::list(items)
+}
+
+/// The innermost tag of CHAIN, with `:parent' filled in from the nearest
+/// enclosing class-like type when the tag itself has none.
+fn semantic_innermost_with_parent(chain: &[Value]) -> Option<Value> {
+    let innermost = chain.last()?;
+    if semantic_tag_class(innermost).as_deref() != Some("function")
+        || semantic_tag_attr(innermost, ":parent").is_some()
+    {
+        return Some(innermost.clone());
+    }
+    let parent = chain[..chain.len() - 1].iter().rev().find_map(|tag| {
+        (semantic_tag_class(tag).as_deref() == Some("type")
+            && semantic_tag_attr(tag, ":type")
+                .and_then(|value| string_text(&value).ok())
+                .as_deref()
+                != Some("namespace"))
+        .then(|| semantic_tag_name(tag))
+        .flatten()
+    });
+    let Some(parent) = parent else {
+        return Some(innermost.clone());
+    };
+    let Ok(mut items) = innermost.to_vec() else {
+        return Some(innermost.clone());
+    };
+    if let Ok(mut attrs) = items
+        .get(2)
+        .cloned()
+        .unwrap_or(Value::Nil)
+        .to_vec()
+        .or::<LispError>(Ok(Vec::new()))
+    {
+        attrs.insert(0, Value::String(parent));
+        attrs.insert(0, Value::Symbol(":parent".into()));
+        if items.len() < 3 {
+            items.resize(3, Value::Nil);
+        }
+        items[2] = Value::list(attrs);
+    }
+    Some(Value::list(items))
 }
 
 fn semantic_containment_chain(tags: &[Value], point: i64, chain: &mut Vec<Value>) {

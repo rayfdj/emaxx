@@ -121,12 +121,32 @@ counts as the progress denominator.
     tag tree, `semantic-fetch-tags' returns cached `eq'-stable tags per
     buffer fingerprint, and `semantic-go-to-tag' follows `:filename'
     annotations into other files' buffers.
-- Known remaining verified-prefix mismatches (sweep 2026-07-04: 79 of 81
-  files pass): `semantic-utest-ia.el` (doublens `^4^` overload
-  impl/proto pairing and subclass per-parent disambiguation in the
-  ANALYZER REF COUNTING subtest) and `autorevert-tests.el` (remote
-  selectors whose fidelity needs visited buffers to keep their Tramp
-  file names; emaxx resolves `/mock::' paths at visit time).
+- A fourth repair pass (2026-07-04) finished the last two files;
+  the 81-file verified-prefix sweep is fully passing:
+  - `semantic-utest-ia.el': stored cl-defmethod-style `:parent' on
+    qualified C++ definitions and enclosing-class parents during
+    reference collection disambiguate same-named methods across classes;
+    prototype/implementation search results dedup ignoring the
+    properties slot; `semantic-current-tag' prefers the parsed tree's
+    innermost containing tag (position separates overloads) with the
+    line parser as fallback; namespace members get buffer-absolute
+    bounds; block comments inside prototype parameter lists are
+    stripped; the SPP preprocessor blanks consumed `#define' lines with
+    equal-length whitespace so positions stay stable.
+  - `autorevert-tests.el': buffers visited (or written) through a
+    remote name record `emaxx--visited-remote-prefix';
+    `verify-visited-file-modtime'/`buffer-stale--default-function'
+    compare remote modification times at Tramp's one-second resolution,
+    remote watches model gio monitors (deletion does not invalidate),
+    remote dired stale checks read Tramp's file-name cache, and
+    `make-temp-file' expands relative prefixes against
+    `temporary-file-directory' and keeps the remote prefix in the
+    returned name.  `kill-buffer' runs the kill hooks with the dying
+    buffer current, and the compat harness captures runner output in
+    temporary files so chatty children or surviving Tramp shells cannot
+    deadlock the pipe reader.
+- No known remaining verified-prefix mismatches (all 81 files pass the
+  grouped `check-all' replay; sweep 2026-07-04).
 - The next observed frontier is selector 1966,
   `eieio-persist-hash-and-vector-backward-compatibility` in
   `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (grouped

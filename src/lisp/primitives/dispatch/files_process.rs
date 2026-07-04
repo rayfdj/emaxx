@@ -284,6 +284,9 @@ pub(super) fn call(
         "verify-visited-file-modtime" => {
             need_args(name, args, 1)?;
             let buffer_id = interp.resolve_buffer_id(&args[0])?;
+            let remote_visit = interp
+                .buffer_local_value(buffer_id, "emaxx--visited-remote-prefix")
+                .is_some_and(|value| value.is_truthy());
             let Some(buffer) = interp.get_buffer_by_id(buffer_id) else {
                 return Ok(Value::Nil);
             };
@@ -291,11 +294,15 @@ pub(super) fn call(
                 return Ok(Value::T);
             };
             let current = file_modtime(path)?;
-            Ok(if buffer.visited_file_modtime() == current {
-                Value::T
+            let visited = buffer.visited_file_modtime();
+            // Tramp reports remote modification times with one-second
+            // resolution; a same-second rewrite looks unchanged.
+            let unchanged = if remote_visit {
+                modtimes_equal_whole_seconds(&visited, &current)
             } else {
-                Value::Nil
-            })
+                visited == current
+            };
+            Ok(if unchanged { Value::T } else { Value::Nil })
         }
         "set-visited-file-modtime" => {
             if args.len() > 1 {
@@ -533,12 +540,21 @@ pub(super) fn call(
         }
         "find-file-noselect" => {
             need_arg_range(name, args, 1, 4)?;
-            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let requested = string_text(&args[0])?;
+            let remote_prefix = parse_remote_file_name(&requested).map(|remote| remote.prefix);
+            let path = resolve_file_name_in_env(interp, env, &requested);
             let literal = args.get(2).is_some_and(Value::is_truthy);
             if !literal && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
                 return super::call(interp, "dired-noselect", &[Value::String(path)], env);
             }
             if let Some((id, name)) = interp.find_buffer(&path) {
+                if let Some(prefix) = remote_prefix {
+                    interp.set_buffer_local_value(
+                        id,
+                        "emaxx--visited-remote-prefix",
+                        Value::String(prefix),
+                    );
+                }
                 return Ok(Value::Buffer(id, name));
             }
             let (id, _) = interp.create_buffer(&path);
@@ -619,6 +635,15 @@ pub(super) fn call(
                 }
                 Ok(())
             })();
+            // After mode setup: `kill-all-local-variables' would have wiped
+            // an earlier assignment.
+            if let Some(prefix) = remote_prefix {
+                interp.set_buffer_local_value(
+                    id,
+                    "emaxx--visited-remote-prefix",
+                    Value::String(prefix),
+                );
+            }
             let _ = interp.switch_to_buffer_id(saved_buffer_id);
             result?;
             Ok(Value::Buffer(id, path))
@@ -952,7 +977,9 @@ pub(super) fn call(
         }
         "dired-noselect" => {
             need_arg_range(name, args, 1, 2)?;
-            let directory = string_text(&args[0])?;
+            let requested = string_text(&args[0])?;
+            let remote_prefix = parse_remote_file_name(&requested).map(|remote| remote.prefix);
+            let directory = resolve_file_name_in_env(interp, env, &requested);
             let buffer_name = dired_buffer_name(&directory);
             let (buffer_id, buffer_name) = interp
                 .find_buffer(&buffer_name)
@@ -960,6 +987,13 @@ pub(super) fn call(
             let saved_buffer_id = interp.current_buffer_id();
             interp.switch_to_buffer_id(buffer_id)?;
             initialize_dired_buffer(interp, &buffer_name, &directory)?;
+            if let Some(prefix) = remote_prefix {
+                interp.set_buffer_local_value(
+                    buffer_id,
+                    "emaxx--visited-remote-prefix",
+                    Value::String(prefix),
+                );
+            }
             interp.switch_to_buffer_id(saved_buffer_id)?;
             Ok(Value::Buffer(buffer_id, buffer_name))
         }
@@ -995,6 +1029,15 @@ pub(super) fn call(
                 .lookup_var("buffer-read-only", env)
                 .unwrap_or(Value::Nil)
                 .is_truthy()
+            {
+                return Ok(Value::Nil);
+            }
+            // A remote dired buffer reads its listing through Tramp's
+            // file-name cache: changes on disk stay invisible to the stale
+            // check until the cache is flushed.
+            if interp
+                .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
+                .is_some_and(|value| value.is_truthy())
             {
                 return Ok(Value::Nil);
             }
@@ -1542,17 +1585,32 @@ pub(super) fn call(
                 suffix
             };
             let suffix_text = string_text(&suffix)?;
-            let prefix_path = if std::path::Path::new(&prefix).is_absolute() {
+            // A relative prefix expands against `temporary-file-directory'.
+            let prefix = if std::path::Path::new(&prefix).is_absolute()
+                || parse_remote_file_name(&prefix).is_some()
+            {
                 prefix
             } else {
-                std::env::temp_dir().join(prefix).display().to_string()
+                let temp_dir = interp
+                    .lookup_var("temporary-file-directory", env)
+                    .and_then(|value| string_text(&value).ok())
+                    .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+                format!("{}{prefix}", file_name_as_directory(&temp_dir))
             };
-            Ok(Value::String(make_temp_file_internal(
-                &prefix_path,
-                &dir_flag,
-                &suffix_text,
-                args.get(3),
-            )?))
+            // A remote prefix creates the file at the resolved location but
+            // the returned name keeps the remote prefix, like Tramp.
+            let remote_prefix = parse_remote_file_name(&prefix).map(|remote| remote.prefix);
+            let prefix_path = if let Some(remote) = parse_remote_file_name(&prefix) {
+                remote.localname
+            } else {
+                prefix
+            };
+            let created =
+                make_temp_file_internal(&prefix_path, &dir_flag, &suffix_text, args.get(3))?;
+            Ok(Value::String(match remote_prefix {
+                Some(remote) => format!("{remote}{created}"),
+                None => created,
+            }))
         }
         "make-temp-file-internal" => {
             need_args(name, args, 4)?;
@@ -1593,10 +1651,19 @@ pub(super) fn call(
                 .lock()
                 .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
                 .insert(descriptor);
-            file_notify_watched_paths()
-                .lock()
-                .map_err(|_| LispError::Signal("file notify watch paths poisoned".into()))?
-                .insert(descriptor, path);
+            // Watches taken from a remotely visited buffer model Tramp's
+            // gio monitors: they outlive deletions of the watched file, so
+            // they get no local path registration to invalidate.
+            let remote_watch = parse_remote_file_name(&string_text(&args[0])?).is_some()
+                || interp
+                    .buffer_local_value(interp.current_buffer_id(), "emaxx--visited-remote-prefix")
+                    .is_some_and(|value| value.is_truthy());
+            if !remote_watch {
+                file_notify_watched_paths()
+                    .lock()
+                    .map_err(|_| LispError::Signal("file notify watch paths poisoned".into()))?
+                    .insert(descriptor, path);
+            }
             Ok(Value::Integer(descriptor))
         }
         "kqueue-rm-watch" => {
@@ -2156,13 +2223,26 @@ pub(super) fn call(
                 }
             }
             if !inhibit_hooks {
-                for hook in hook_values(interp, "kill-buffer-query-functions", env, Some(id)) {
-                    let result = call_function_value(interp, &hook, &[], env)?;
-                    if result.is_nil() {
-                        return Ok(Value::Nil);
+                // The kill hooks run with the dying buffer current, as in
+                // GNU (auto-revert's rm-watch reads its buffer-locals there).
+                let saved = interp.current_buffer_id();
+                let switched = saved != id && interp.switch_to_buffer_id(id).is_ok();
+                let hooks_result: Result<bool, LispError> = (|| {
+                    for hook in hook_values(interp, "kill-buffer-query-functions", env, Some(id)) {
+                        let result = call_function_value(interp, &hook, &[], env)?;
+                        if result.is_nil() {
+                            return Ok(false);
+                        }
                     }
+                    run_named_hooks(interp, "kill-buffer-hook", env, Some(id))?;
+                    Ok(true)
+                })();
+                if switched {
+                    let _ = interp.switch_to_buffer_id(saved);
                 }
-                run_named_hooks(interp, "kill-buffer-hook", env, Some(id))?;
+                if !hooks_result? {
+                    return Ok(Value::Nil);
+                }
             }
             if !interp.allow_kill_buffer_for_threads(id) {
                 return Ok(Value::Nil);

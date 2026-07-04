@@ -207,11 +207,16 @@ for namespace members in the native C++ parser, destructor
 `:destructor-flag', `write-file' running `after-set-visited-file-name-hook'
 with a buffer rename, and native `semantic-current-tag-of-class'/
 `semantic-find-tag-by-overlay-prev'/`-next'/cross-file `semantic-go-to-tag'.
-Known-remaining mismatches: `autorevert-tests.el' (remote selectors need
-Tramp-path preservation in visited buffers) and
-`semantic-utest-ia.el' (doublens ^4^ overload pairing, subclass
-per-parent impl/proto disambiguation) — details in
-`docs/compatibility-goal.md`. The next agent should finish those two
-files, then continue with selector 1966 in
+A fourth pass finished `semantic-utest-ia.el' (per-class `:parent'
+disambiguation, position-first `semantic-current-tag', SPP
+length-preserving directive blanking) and `autorevert-tests.el'
+(remote-visit bookkeeping with Tramp-granularity modtimes, gio-style
+remote watches, cached remote dired stale checks, `make-temp-file'
+remote names, `kill-buffer' hooks in the dying buffer) plus a harness
+fix (file-backed runner output; pipes deadlocked on chatty children and
+surviving Tramp shells). ALL 81 verified-prefix files pass the grouped
+`check-all' replay (sweep 2026-07-04) — details in
+`docs/compatibility-goal.md`. The next agent should continue with
+selector 1966 in
 `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (object
 persistence), then `eieio-tests.el` (loads now; 31 failures).
