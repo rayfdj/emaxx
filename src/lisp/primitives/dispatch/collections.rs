@@ -551,6 +551,43 @@ pub(super) fn call(
                     aset_string_value(&args[0], idx, &args[2])?;
                     Ok(args[2].clone())
                 }
+                Value::Record(id) => {
+                    // GNU records are asettable; index 0 is the type tag
+                    // (eieio's `make-instance' downgrades the class-object
+                    // tag to the class symbol this way).
+                    if idx == 0 {
+                        let (type_name, tagged) = match &args[2] {
+                            Value::Symbol(symbol) => (symbol.clone(), false),
+                            Value::Record(class_id) => {
+                                let Some(class_name) =
+                                    interp.find_class_state_name_by_record_id(*class_id)
+                                else {
+                                    return Err(LispError::TypeError(
+                                        "symbol".into(),
+                                        args[2].type_name(),
+                                    ));
+                                };
+                                (class_name, true)
+                            }
+                            _ => {
+                                return Err(LispError::TypeError(
+                                    "symbol".into(),
+                                    args[2].type_name(),
+                                ));
+                            }
+                        };
+                        interp.retag_record(*id, &type_name, tagged)?;
+                        return Ok(args[2].clone());
+                    }
+                    let record = interp
+                        .find_record_mut(*id)
+                        .ok_or_else(|| args_out_of_range(&args[0], &args[1]))?;
+                    let Some(slot) = record.slots.get_mut(idx - 1) else {
+                        return Err(args_out_of_range(&args[0], &args[1]));
+                    };
+                    *slot = args[2].clone();
+                    Ok(args[2].clone())
+                }
                 _ => Err(LispError::TypeError("array".into(), args[0].type_name())),
             }
         }

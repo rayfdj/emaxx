@@ -2786,7 +2786,7 @@ impl Interpreter {
         let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
             return Ok(Value::Nil);
         };
-        let parents = items
+        let mut parents = items
             .get(2)
             .map(Value::to_vec)
             .transpose()?
@@ -2794,23 +2794,64 @@ impl Interpreter {
             .into_iter()
             .filter_map(|value| value.as_symbol().ok().map(str::to_string))
             .collect::<Vec<_>>();
+        // GNU adopts `eieio-default-superclass' as the implicit parent of
+        // parentless classes, which is what makes eieio's default generic
+        // methods (make-instance, initialize-instance, slot-missing, ...)
+        // applicable to every class.
+        if parents.is_empty()
+            && name != "eieio-default-superclass"
+            && self.class_value("eieio-default-superclass").is_some()
+        {
+            parents.push("eieio-default-superclass".to_string());
+        }
         let slot_specs = items
             .get(3)
             .map(Value::to_vec)
             .transpose()?
             .unwrap_or_default();
         let options = items.get(4..).unwrap_or(&[]).to_vec();
+        let abstract_class = options.windows(2).any(|pair| {
+            matches!(&pair[0], Value::Symbol(option) if option == ":abstract")
+                && pair[1].is_truthy()
+        });
         let class_record = self.register_class(name, parents, slot_specs, options);
         classes::install_eieio_slot_accessors(self, name)?;
+        // GNU validates slot declarations at class-definition time: a
+        // constant initform must match the slot :type, and a subclass may
+        // not change an inherited slot's type or protection.
+        primitives::eieio_validate_class_slots(self, name, &mut Env::new())?;
         // GNU eieio classes cache a default object whose record tag is the
         // class object itself, so raw-printing a class (or an object created
         // with `eieio-backward-compatibility' nil) emits a circular
         // reference marker.  Model that cache as an extra class-record slot
-        // holding an all-unbound instance tagged with the class object.
-        let cache_slot_count = primitives::eieio_slot_specs(self, name)
-            .map(|slots| slots.len())
-            .unwrap_or_default();
-        let cache = self.create_record(name, vec![Value::Unbound; cache_slot_count]);
+        // holding a default-initialized instance tagged with the class
+        // object (GNU's `eieio-set-defaults' fills the cache at defclass
+        // time, ignoring initform evaluation errors).
+        let slots = primitives::eieio_slot_specs(self, name).unwrap_or_default();
+        let mut cache_values = Vec::with_capacity(slots.len());
+        for slot in &slots {
+            let value = match (&slot.initform, slot.class_allocated) {
+                (Some(initform), false) => {
+                    self.eval(initform, &mut Env::new()).unwrap_or(Value::Nil)
+                }
+                _ => Value::Unbound,
+            };
+            cache_values.push(value);
+            if slot.class_allocated {
+                // Class-allocated slots evaluate their initform once, at
+                // class-definition time, into per-class shared storage.
+                let shared = match &slot.initform {
+                    Some(initform) => self.eval(initform, &mut Env::new()).unwrap_or(Value::Nil),
+                    None => Value::Unbound,
+                };
+                self.put_symbol_property(
+                    name,
+                    &primitives::eieio_class_allocation_property(&slot.name),
+                    shared,
+                );
+            }
+        }
+        let cache = self.create_record(name, cache_values);
         if let Value::Record(cache_id) = &cache {
             self.mark_class_object_tagged_record(*cache_id);
         }
@@ -2821,26 +2862,42 @@ impl Interpreter {
         }
         // Constructing through `make-instance' lets methods registered on
         // the generic (eieio's static constructor methods) participate;
-        // without any methods the builtin constructs directly.
-        self.set_function_binding(
-            name,
-            Some(Value::Lambda(
-                vec!["&rest".into(), "initargs".into()],
-                vec![Value::list([
-                    Value::Symbol("apply".into()),
-                    Value::list([
-                        Value::Symbol("function".into()),
-                        Value::Symbol("make-instance".into()),
-                    ]),
-                    Value::list([
-                        Value::Symbol("quote".into()),
-                        Value::Symbol(name.to_string()),
-                    ]),
-                    Value::Symbol("initargs".into()),
-                ])],
-                shared_env(Vec::new()),
-            )),
-        );
+        // without any methods the builtin constructs directly.  GNU's
+        // `defclass' generates an erroring constructor for :abstract
+        // classes instead.
+        if abstract_class {
+            self.set_function_binding(
+                name,
+                Some(Value::Lambda(
+                    vec!["&rest".into(), "_ignore".into()],
+                    vec![Value::list([
+                        Value::Symbol("error".into()),
+                        Value::String(format!("Class {name} is abstract")),
+                    ])],
+                    shared_env(Vec::new()),
+                )),
+            );
+        } else {
+            self.set_function_binding(
+                name,
+                Some(Value::Lambda(
+                    vec!["&rest".into(), "initargs".into()],
+                    vec![Value::list([
+                        Value::Symbol("apply".into()),
+                        Value::list([
+                            Value::Symbol("function".into()),
+                            Value::Symbol("make-instance".into()),
+                        ]),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(name.to_string()),
+                        ]),
+                        Value::Symbol("initargs".into()),
+                    ])],
+                    shared_env(Vec::new()),
+                )),
+            );
+        }
         self.set_function_binding(
             &format!("{name}-p"),
             Some(Value::Lambda(

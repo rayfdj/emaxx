@@ -1304,14 +1304,7 @@ impl Interpreter {
                 Value::Symbol("aset".into()),
                 vec![current.clone(), index_value.clone(), new_value.clone()],
             );
-            let result = if matches!(current, Value::CharTable(_))
-                || matches!(
-                    &current,
-                    Value::Record(id)
-                        if self
-                            .find_record(*id)
-                            .is_some_and(|record| record.type_name == "bool-vector")
-                )
+            let result = if matches!(current, Value::CharTable(_) | Value::Record(_))
                 || primitives::record_literal_items(&current).is_some()
                 || primitives::is_vector_value(&current)
             {
