@@ -410,6 +410,8 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "slot-boundp"
             | "slot-makeunbound"
             | "slot-exists-p"
+            | "map-elt"
+            | "map-contains-key"
             | "emaxx--cl-generic-apply-next"
             | "same-class-p"
             | "eieio--class-parents"

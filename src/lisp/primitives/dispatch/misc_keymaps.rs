@@ -236,6 +236,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "slot-boundp"
             | "slot-makeunbound"
             | "slot-exists-p"
+            | "map-elt"
+            | "map-contains-key"
             | "emaxx--cl-generic-apply-next"
             | "same-class-p"
             | "eieio--class-parents"
@@ -2899,6 +2901,85 @@ pub(super) fn call(
                 Value::T
             } else {
                 Value::Nil
+            })
+        }
+        "map-elt" | "map-contains-key" => {
+            // GNU map.el dispatches on the map's shape: a list is a plist
+            // when its first element is an atom, otherwise an alist;
+            // hash tables and arrays are supported directly.
+            need_arg_range(name, args, 2, 4)?;
+            let map = &args[0];
+            let key = &args[1];
+            let contains = name == "map-contains-key";
+            let (default, testfn) = if contains {
+                (Value::Nil, args.get(2).cloned())
+            } else {
+                (
+                    args.get(2).cloned().unwrap_or(Value::Nil),
+                    args.get(3).cloned(),
+                )
+            };
+            let found: Option<Value> = if json::is_hash_table(interp, map) {
+                let sentinel = Value::Unbound;
+                let result = super::call(
+                    interp,
+                    "gethash",
+                    &[key.clone(), map.clone(), sentinel.clone()],
+                    env,
+                )?;
+                if matches!(result, Value::Unbound) {
+                    None
+                } else {
+                    Some(result)
+                }
+            } else if is_vector_value(map) || map.is_string() {
+                let length = super::call(interp, "length", std::slice::from_ref(map), env)?
+                    .as_integer()
+                    .unwrap_or(0);
+                match key.as_integer() {
+                    Ok(index) if index >= 0 && index < length => Some(super::call(
+                        interp,
+                        "elt",
+                        &[map.clone(), key.clone()],
+                        env,
+                    )?),
+                    _ => None,
+                }
+            } else if map.is_nil() {
+                None
+            } else if map
+                .cons_values()
+                .is_some_and(|(car, _)| !matches!(car, Value::Cons(..)))
+            {
+                // Plist.
+                let mut member_args = vec![map.clone(), key.clone()];
+                if let Some(testfn) = &testfn {
+                    member_args.push(testfn.clone());
+                }
+                let member = super::call(interp, "plist-member", &member_args, env)?;
+                if member.is_nil() {
+                    None
+                } else {
+                    Some(member.cdr()?.car().unwrap_or(Value::Nil))
+                }
+            } else {
+                // Alist; GNU compares with `equal' by default.
+                let testfn = testfn.unwrap_or(Value::Symbol("equal".into()));
+                let entry = super::call(interp, "assoc", &[key.clone(), map.clone(), testfn], env)?;
+                if entry.is_nil() {
+                    None
+                } else {
+                    Some(entry.cdr()?)
+                }
+            };
+            Ok(if contains {
+                if found.is_some() {
+                    Value::T
+                } else {
+                    Value::Nil
+                }
+            } else {
+                found.unwrap_or(default)
             })
         }
         "emaxx--cl-generic-apply-next" => {

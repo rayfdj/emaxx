@@ -1208,6 +1208,8 @@ pub fn is_builtin(name: &str) -> bool {
             | "slot-boundp"
             | "slot-makeunbound"
             | "slot-exists-p"
+            | "map-elt"
+            | "map-contains-key"
             | "emaxx--cl-generic-apply-next"
             | "same-class-p"
             | "eieio--class-parents"
