@@ -139,8 +139,10 @@ pub(super) fn call(
             match reader.read()? {
                 Some(val) => {
                     let consumed = slice[..reader.position()].chars().count();
+                    let resolved = crate::lisp::reader::resolve_circular_read_syntax(val)?;
+                    let materialized = materialize_read_hash_table_literals(interp, &resolved)?;
                     Ok(Value::cons(
-                        crate::lisp::reader::resolve_circular_read_syntax(val)?,
+                        materialized,
                         Value::Integer((start + consumed) as i64),
                     ))
                 }

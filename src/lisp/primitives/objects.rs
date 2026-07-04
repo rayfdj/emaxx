@@ -147,6 +147,206 @@ fn eieio_class_default_property(slot_name: &str) -> String {
     format!("emaxx-class-default:{slot_name}")
 }
 
+// GNU eieio-core.el represents each class slot as a `cl-slot-descriptor'
+// record carrying the slot name, raw initform, type and an alist of the
+// remaining slot options.  Rebuild that view from the plain slot specs
+// stored on the class so `eieio--class-slots' consumers (object-write,
+// eieio-persistent) observe GNU's descriptor protocol.
+#[derive(Clone)]
+pub(crate) struct EieioSlotDescriptor {
+    pub(crate) name: String,
+    pub(crate) initform: Option<Value>,
+    pub(crate) slot_type: Value,
+    pub(crate) props: Vec<(String, Value)>,
+    pub(crate) initargs: Vec<String>,
+    pub(crate) class_allocated: bool,
+}
+
+pub(crate) fn eieio_slot_descriptors(
+    interp: &Interpreter,
+    class_name: &str,
+) -> Result<Vec<EieioSlotDescriptor>, LispError> {
+    let mut descriptors = Vec::new();
+    collect_eieio_slot_descriptors(interp, class_name, &mut descriptors)?;
+    Ok(descriptors)
+}
+
+fn collect_eieio_slot_descriptors(
+    interp: &Interpreter,
+    class_name: &str,
+    descriptors: &mut Vec<EieioSlotDescriptor>,
+) -> Result<(), LispError> {
+    if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
+        && let Ok(parent_values) = parents.to_vec()
+    {
+        for parent in parent_values {
+            if let Ok(parent_name) = parent.as_symbol() {
+                collect_eieio_slot_descriptors(interp, parent_name, descriptors)?;
+            }
+        }
+    }
+    let Some(raw_slots) = interp.get_symbol_property(class_name, "emaxx-class-slots") else {
+        return Ok(());
+    };
+    for raw_slot in raw_slots.to_vec()? {
+        let parts = raw_slot.to_vec()?;
+        let Some(slot_name) = parts
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let mut descriptor = EieioSlotDescriptor {
+            name: slot_name,
+            initform: None,
+            slot_type: Value::T,
+            props: Vec::new(),
+            initargs: Vec::new(),
+            class_allocated: false,
+        };
+        let mut documentation = None;
+        let mut custom = None;
+        let mut label = None;
+        let mut group = None;
+        let mut printer = None;
+        let mut protection = None;
+        let mut index = 1usize;
+        while index + 1 < parts.len() {
+            let Ok(keyword) = parts[index].as_symbol() else {
+                index += 1;
+                continue;
+            };
+            let option_value = parts[index + 1].clone();
+            match keyword {
+                ":initarg" => {
+                    if let Ok(initarg) = option_value.as_symbol() {
+                        descriptor.initargs.push(initarg.to_string());
+                    }
+                }
+                ":initform" => descriptor.initform = Some(option_value),
+                ":type" => descriptor.slot_type = option_value,
+                ":allocation" => {
+                    descriptor.class_allocated = matches!(&option_value, Value::Symbol(value) if value == ":class" || value == "class");
+                }
+                ":documentation" => documentation = Some(option_value),
+                ":custom" => custom = Some(option_value),
+                ":label" => label = Some(option_value),
+                ":group" => group = Some(option_value),
+                ":printer" => printer = Some(option_value),
+                ":protection" => protection = Some(option_value),
+                _ => {}
+            }
+            index += 2;
+        }
+        // GNU defaults the custom group to `(default)' and normalizes the
+        // protection symbol; public protection is dropped from the props.
+        if custom.is_some() && group.is_none() {
+            group = Some(Value::list([Value::Symbol("default".into())]));
+        }
+        if let Some(value) = &group
+            && !matches!(value, Value::Cons(..) | Value::Nil)
+        {
+            group = Some(Value::list([value.clone()]));
+        }
+        let protection = protection.and_then(|value| match value.as_symbol().ok() {
+            Some("protected" | ":protected") => Some(Value::Symbol("protected".into())),
+            Some("private" | ":private") => Some(Value::Symbol("private".into())),
+            _ => None,
+        });
+        for (key, value) in [
+            (":documentation", documentation),
+            (":custom", custom),
+            (":label", label),
+            (":group", group),
+            (":printer", printer),
+            (":protection", protection),
+        ] {
+            if let Some(value) = value {
+                descriptor.props.push((key.to_string(), value));
+            }
+        }
+        if let Some(existing) = descriptors
+            .iter_mut()
+            .find(|existing| existing.name == descriptor.name)
+        {
+            // A subclass re-declaring an inherited slot overrides its
+            // defaults in place (GNU's `defaultoverride') while any new
+            // initarg is added alongside the inherited ones.
+            existing.initform = descriptor.initform;
+            existing.slot_type = descriptor.slot_type;
+            existing.props = descriptor.props;
+            existing.class_allocated = descriptor.class_allocated;
+            for initarg in descriptor.initargs {
+                if !existing.initargs.contains(&initarg) {
+                    existing.initargs.push(initarg);
+                }
+            }
+        } else {
+            descriptors.push(descriptor);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn eieio_slot_descriptor_record(
+    interp: &mut Interpreter,
+    env: &Env,
+    descriptor: &EieioSlotDescriptor,
+) -> Value {
+    // GNU stores the raw initform, quoting it unless it is constant or a
+    // function call evaluated at instantiation time (`eieio--eval-default-p');
+    // a slot without an initform carries the quoted unbound marker.
+    let initform = match &descriptor.initform {
+        None => Value::list([
+            Value::Symbol("quote".into()),
+            Value::Symbol("eieio--unbound".into()),
+        ]),
+        Some(form) => {
+            let head = match form {
+                Value::Cons(car, _) => match &*car.borrow() {
+                    Value::Symbol(symbol) => Some(symbol.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let constant = match form {
+                Value::Cons(..) => matches!(
+                    head.as_deref(),
+                    Some("quote" | "function" | "vector-literal")
+                ),
+                Value::Symbol(symbol) => symbol.starts_with(':'),
+                _ => true,
+            };
+            let evaluated = !constant
+                && head.as_deref().is_some_and(|symbol| {
+                    is_builtin(symbol)
+                        || interp.lookup_function(symbol, env).is_ok()
+                        || is_special_form_name(symbol)
+                });
+            if constant || evaluated {
+                form.clone()
+            } else {
+                Value::list([Value::Symbol("quote".into()), form.clone()])
+            }
+        }
+    };
+    interp.create_record(
+        "cl-slot-descriptor",
+        vec![
+            Value::Symbol(descriptor.name.clone()),
+            initform,
+            descriptor.slot_type.clone(),
+            Value::list(
+                descriptor
+                    .props
+                    .iter()
+                    .map(|(key, value)| Value::cons(Value::Symbol(key.clone()), value.clone())),
+            ),
+        ],
+    )
+}
+
 pub(crate) fn make_eieio_instance(
     interp: &mut Interpreter,
     class_name: &str,
@@ -193,6 +393,18 @@ pub(crate) fn make_eieio_instance(
     }
 
     let record = interp.create_record(class_name, values.clone());
+    // GNU's `make-instance' only downgrades the record tag from the class
+    // object to the class symbol when `eieio-backward-compatibility' is
+    // non-nil; otherwise the object keeps the class object as its tag and
+    // raw-prints with the class expanded (and its circular default-object
+    // cache marked).
+    if interp
+        .lookup_var("eieio-backward-compatibility", env)
+        .is_some_and(|value| value.is_nil())
+        && let Value::Record(record_id) = &record
+    {
+        interp.mark_class_object_tagged_record(*record_id);
+    }
     if let Some(index) = slots
         .iter()
         .rposition(|slot| slot.name == "tracking-symbol")
@@ -259,6 +471,12 @@ pub(crate) fn clone_eieio_instance(
         ));
     };
     let clone = interp.copy_record(*record_id)?;
+    // GNU `clone' copies the record, so the class-object tag travels with it.
+    if interp.is_class_object_tagged_record(*record_id)
+        && let Value::Record(clone_id) = &clone
+    {
+        interp.mark_class_object_tagged_record(*clone_id);
+    }
     let mut index = 0usize;
     if matches!(
         params.first(),

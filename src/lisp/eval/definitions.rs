@@ -2800,8 +2800,25 @@ impl Interpreter {
             .transpose()?
             .unwrap_or_default();
         let options = items.get(4..).unwrap_or(&[]).to_vec();
-        self.register_class(name, parents, slot_specs, options);
+        let class_record = self.register_class(name, parents, slot_specs, options);
         classes::install_eieio_slot_accessors(self, name)?;
+        // GNU eieio classes cache a default object whose record tag is the
+        // class object itself, so raw-printing a class (or an object created
+        // with `eieio-backward-compatibility' nil) emits a circular
+        // reference marker.  Model that cache as an extra class-record slot
+        // holding an all-unbound instance tagged with the class object.
+        let cache_slot_count = primitives::eieio_slot_specs(self, name)
+            .map(|slots| slots.len())
+            .unwrap_or_default();
+        let cache = self.create_record(name, vec![Value::Unbound; cache_slot_count]);
+        if let Value::Record(cache_id) = &cache {
+            self.mark_class_object_tagged_record(*cache_id);
+        }
+        if let Value::Record(class_record_id) = &class_record
+            && let Some(record) = self.find_record_mut(*class_record_id)
+        {
+            record.slots.push(cache);
+        }
         // Constructing through `make-instance' lets methods registered on
         // the generic (eieio's static constructor methods) participate;
         // without any methods the builtin constructs directly.

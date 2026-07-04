@@ -19,9 +19,13 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 1965/7080 are verified locally against the current canonical
-  manifest.
+- Tests through 1975/7080 are verified locally against the current canonical
+  manifest (selectors 1966..1975, `eieio-test-persist.el`, pass their grouped
+  `check-all` replay; see the persist batch notes below).
 - The latest compatibility batch is
+  `Compat 1975/7080: port the eieio slot descriptor protocol and GNU object
+  print/read semantics for eieio-persistent`.
+- The batch before it was
   `Compat 1965/7080: repair verified-prefix regressions across cl-lib, dired,
   bookmark and friends` — a repair batch (no frontier advance) that fixed the
   verified-prefix files an 81-file sweep found failing: arc-mode, cl-seq,
@@ -145,14 +149,48 @@ counts as the progress denominator.
     buffer current, and the compat harness captures runner output in
     temporary files so chatty children or surviving Tramp shells cannot
     deadlock the pipe reader.
-- No known remaining verified-prefix mismatches (all 81 files pass the
-  grouped `check-all' replay; sweep 2026-07-04).
-- The next observed frontier is selector 1966,
-  `eieio-persist-hash-and-vector-backward-compatibility` in
-  `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (grouped
-  `check-all` replay shows all ten persistence selectors failing in emaxx;
-  the object serialization/`eieio-persistent-read` machinery is the next
-  sub-domain).
+- No known remaining verified-prefix mismatches (all 82 files pass the
+  grouped `check-all' replay; sweep 2026-07-04 after the persist batch).
+- Selector 1966 and the other nine persistence selectors in
+  `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` PASS the grouped
+  `check-all` replay (2026-07-04).  The batch ports the EIEIO slot
+  descriptor protocol and the GNU object print/read semantics the persist
+  machinery depends on:
+  - Native `eieio--class-slots'/`eieio--class-class-slots' build vectors of
+    `cl-slot-descriptor' records (name, raw initform quoted per GNU's
+    `macroexp-const-p'/`eieio--eval-default-p' rule, type, props alist from
+    `:documentation'/`:custom'/`:label'/`:group'/`:printer'/`:protection')
+    from the stored slot specs, parents first, with subclass re-declarations
+    overriding in place; `eieio--class-initarg-tuples' returns the
+    `(:initarg . slot)' alist; `cl--slot-descriptor-name'/`-initform'/
+    `-type'/`-props' read those records.  All are native because the
+    eieio-core.el defstruct accessors mis-index emaxx's class records.
+  - `equal' compares records element-wise like GNU (type and slots,
+    recursively, with a seen-pair guard); previously two structurally-equal
+    eieio objects compared `nil'.
+  - `eieio-object-p' requires the record's type to name a registered class
+    (hash tables and plain records are not objects), so
+    `eieio-override-prin1' takes its hash-table branch for hash slots.
+  - `read'/`read-from-string' materialize `#s(hash-table ...)' literals
+    into real hash tables like GNU's reader (`eieio-persistent-read' treats
+    the result as data, so eval-time conversion never runs).
+  - GNU tags eieio objects with the class OBJECT unless `make-instance'
+    downgrades the tag to the class symbol under
+    `eieio-backward-compatibility'; emaxx models this with class-object-
+    tagged records: every `defclass' now stores a default-object cache (an
+    all-unbound instance tagged with the class object) on the class record,
+    instances created with `eieio-backward-compatibility' nil are tagged
+    (clones inherit the tag), and prin1 renders tagged records with the
+    class expanded in place of the type symbol.  The cache inside the class
+    then hits the printer's active-set guard and prints as a circular `#N'
+    marker, which `read' rejects with `invalid-read-syntax' — exactly GNU's
+    bug#29220 behavior, so both `-no-backward-compatibility' selectors fail
+    identically to the oracle (expected failures).
+- The next observed frontier is `test/lisp/emacs-lisp/eieio-tests/
+  eieio-tests.el`: the file loads and most selectors run, but the grouped
+  `check-all` replay fails ~31 selectors (slot protection/virtual slots,
+  class-allocated slot semantics, `slot-makeunbound', typed slot checking,
+  named/singleton objects, `eieio-build-class-alist', ...).
 - Selectors 1958..1965 (`eieio-test-methodinvoke.el`) passed in a batch that
   runs the obsolete EIEIO `defmethod'/`defgeneric' API on the native
   cl-generic machinery and repairs the dispatch-chain construction bugs the

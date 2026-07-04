@@ -1309,6 +1309,18 @@ impl Interpreter {
         self.records.iter_mut().find(|record| record.id == id)
     }
 
+    // GNU eieio objects carry the class OBJECT as their record tag unless
+    // `make-instance' downgrades it to the class symbol for backward
+    // compatibility; such records print with the class object expanded in
+    // place of the type symbol.
+    pub(crate) fn mark_class_object_tagged_record(&mut self, id: u64) {
+        self.class_object_tagged_records.insert(id);
+    }
+
+    pub(crate) fn is_class_object_tagged_record(&self, id: u64) -> bool {
+        self.class_object_tagged_records.contains(&id)
+    }
+
     pub(crate) fn record_ids_by_type(&self, type_name: &str) -> Vec<u64> {
         self.records
             .iter()

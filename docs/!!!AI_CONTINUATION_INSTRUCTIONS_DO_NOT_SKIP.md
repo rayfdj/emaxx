@@ -18,22 +18,27 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 1965/7080 (`eieio-test-methodinvoke.el` fully
-  passing its grouped `check-all` replay).
-- The `Compat 1965/7080` batch is COMPLETE in the working tree: obsolete
-  EIEIO `defmethod'/`defgeneric' lowering in `simple_compat.el`, `(subclass
-  CLASS)` specializers, `make-instance'-routed defclass constructors, and a
-  set of dispatch-chain construction fixes (around-splice cycle, class-`t'
-  ranking, sibling ordering via common-subclass CPL, qualifier-stack
-  ordering, canonical alias naming, fmakunbound metadata clearing) that also
-  made `cl-generic-tests.el` pass its grouped replay for the first time in
-  this environment. Details in `docs/compatibility-goal.md`.
-- The next frontier is selector 1966,
-  `eieio-persist-hash-and-vector-backward-compatibility` in
-  `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el`: all ten persist
-  selectors fail (object serialization / `eieio-persistent-read`). The
-  larger `eieio-tests.el` now loads (was load-error) with 31 failing tests —
-  that is the file after persist.
+- Verified through selector 1975/7080 (`eieio-test-persist.el` fully
+  passing its grouped `check-all` replay; 82-file verified-prefix sweep
+  green 2026-07-04).
+- The `Compat 1975/7080` persist batch is COMPLETE: native
+  `eieio--class-slots'/`eieio--class-class-slots'/`eieio--class-initarg-
+  tuples' + `cl--slot-descriptor-*' accessors (cl-slot-descriptor records
+  built from stored slot specs; eieio-core.el's loaded defstruct accessors
+  mis-index emaxx class records), GNU element-wise `equal' on records,
+  `eieio-object-p' restricted to class-typed records, `read'/
+  `read-from-string' materializing `#s(hash-table ...)' literals, and GNU's
+  class-object record tag (every defclass stores a default-object cache on
+  the class record; instances made with `eieio-backward-compatibility' nil
+  print with the class expanded and the cache prints as a circular `#N'
+  marker `read' rejects — bug#29220's `invalid-read-syntax' expected
+  failures reproduce exactly). Details in `docs/compatibility-goal.md`.
+- The next frontier is
+  `test/lisp/emacs-lisp/eieio-tests/eieio-tests.el`: loads, ~31 selectors
+  fail the grouped replay (slot protection/virtual slots, class-allocated
+  slots, `slot-makeunbound', typed slot checking, named/singleton objects,
+  `eieio-build-class-alist', ...). Failure list: run the exploratory
+  command below.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
@@ -63,7 +68,7 @@ counts as the progress denominator.
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-tests.el
 ```
 
 ## Oracle Setup In A Fresh Container
@@ -121,7 +126,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/eieio-tests/eieio-tests.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next
@@ -191,32 +196,27 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 1965/7080` repair batches are complete: the 81-file
-verified-prefix sweep went from 63 (start of the repair effort) to 79
-passing files (sweep verified 2026-07-04). The third batch fixed:
-asynchronous file notifications delivered from the idle pump with
-per-watch path filtering, `kill-local-variable' discarding buffer-local
-hooks, ERT tests registered under the `ert--test' symbol property and run
-in alphabetical order (GNU's `apropos-internal' order), the `mock' Tramp
-method registration when ert-x is required after tramp,
-`cl-defmethod' dispatch unification of method parameter names through an
-implicit generic lambda list (sibling methods no longer shadow each
-other), `(satisfies PRED)' in `cl-typep', `#'cl-call-next-method' rewrite
-inside `apply', marker-safe c-family indentation, buffer-absolute bounds
-for namespace members in the native C++ parser, destructor
-`:destructor-flag', `write-file' running `after-set-visited-file-name-hook'
-with a buffer rename, and native `semantic-current-tag-of-class'/
-`semantic-find-tag-by-overlay-prev'/`-next'/cross-file `semantic-go-to-tag'.
-A fourth pass finished `semantic-utest-ia.el' (per-class `:parent'
-disambiguation, position-first `semantic-current-tag', SPP
-length-preserving directive blanking) and `autorevert-tests.el'
-(remote-visit bookkeeping with Tramp-granularity modtimes, gio-style
-remote watches, cached remote dired stale checks, `make-temp-file'
-remote names, `kill-buffer' hooks in the dying buffer) plus a harness
-fix (file-backed runner output; pipes deadlocked on chatty children and
-surviving Tramp shells). ALL 81 verified-prefix files pass the grouped
-`check-all' replay (sweep 2026-07-04) — details in
-`docs/compatibility-goal.md`. The next agent should continue with
-selector 1966 in
-`test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (object
-persistence), then `eieio-tests.el` (loads now; 31 failures).
+The `Compat 1975/7080` batch made `eieio-test-persist.el` (selectors
+1966..1975) pass its grouped `check-all' replay. It ports the EIEIO slot
+descriptor protocol natively (`eieio--class-slots',
+`eieio--class-class-slots', `eieio--class-initarg-tuples',
+`cl--slot-descriptor-name'/`-initform'/`-type'/`-props' — the eieio-core.el
+defstruct accessors loaded from the oracle tree mis-index emaxx's native
+class records), makes `equal' compare records element-wise like GNU,
+restricts `eieio-object-p' to records whose type names a registered class
+(hash tables are records internally), materializes `#s(hash-table ...)'
+literals into real hash tables in `read'/`read-from-string' (GNU's reader
+does this; emaxx's reader defers to eval-time, which never happens for
+data reads like `eieio-persistent-read'), and models GNU's class-object
+record tag: every `defclass' stores a default-object cache on the class
+record, instances created with `eieio-backward-compatibility' nil (and
+clones of such) are class-object-tagged, and prin1 renders tagged records
+with the class expanded so the cache prints as a circular `#N' marker that
+`read' rejects with `invalid-read-syntax' — reproducing GNU's bug#29220
+expected failures byte-compatibly at the status/condition level. The
+82-file verified-prefix sweep (now including eieio-test-persist.el) passes
+(2026-07-04). Details in `docs/compatibility-goal.md`. The next agent
+should continue with `eieio-tests.el` (selector 1976 onward; loads, ~31
+selectors fail: slot protection/virtual slots, class-allocated slots,
+`slot-makeunbound', typed slot checking, named/singleton objects,
+`eieio-build-class-alist').
