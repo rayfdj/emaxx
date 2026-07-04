@@ -67,6 +67,22 @@ pub(crate) fn system_time_seconds_value(time: SystemTime) -> Result<Value, LispE
     Ok(Value::Integer(duration.as_secs() as i64))
 }
 
+// GNU `file-attributes' time fields are (HIGH LOW USEC PSEC) lists.
+pub(crate) fn system_time_list_value(time: SystemTime) -> Result<Value, LispError> {
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
+    let seconds = duration.as_secs() as i64;
+    let micros = duration.subsec_micros() as i64;
+    let picos = (duration.subsec_nanos() as i64 % 1_000) * 1_000;
+    Ok(Value::list([
+        Value::Integer(seconds >> 16),
+        Value::Integer(seconds & 0xffff),
+        Value::Integer(micros),
+        Value::Integer(picos),
+    ]))
+}
+
 pub(crate) fn file_attribute_field(attributes: &Value, index: usize) -> Result<Value, LispError> {
     Ok(attributes
         .to_vec()?

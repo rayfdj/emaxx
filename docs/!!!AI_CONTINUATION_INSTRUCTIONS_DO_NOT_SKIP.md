@@ -33,12 +33,37 @@ counts as the progress denominator.
   print with the class expanded and the cache prints as a circular `#N'
   marker `read' rejects — bug#29220's `invalid-read-syntax' expected
   failures reproduce exactly). Details in `docs/compatibility-goal.md`.
+- The eieio-tests.el GROUNDWORK batch is also in (implicit
+  `eieio-default-superclass' parent activating eieio.el's real
+  make-instance/initialize-instance/clone/slot-missing/slot-unbound
+  generics, GNU slot-override merge + defclass-time validation,
+  defaults-filled object caches, class-allocated shared storage, typed
+  `oset', record `aset'/retag, native slot-makeunbound/slot-exists-p and
+  class accessors, method-based :accessor/:reader/:writer, batch
+  `current-message' nil), plus a follow-up repair: `file-attributes' time
+  fields are GNU `(HIGH LOW USEC PSEC)' lists now — the typed `oset' check
+  had exposed emaxx's bare-integer file times through srecode's
+  `(filedate :type cons)' slot and regressed three srecode files.  The full
+  82-file sweep is green on this tree (2026-07-04, second sweep).
 - The next frontier is
-  `test/lisp/emacs-lisp/eieio-tests/eieio-tests.el`: loads, ~31 selectors
-  fail the grouped replay (slot protection/virtual slots, class-allocated
-  slots, `slot-makeunbound', typed slot checking, named/singleton objects,
-  `eieio-build-class-alist', ...). Failure list: run the exploratory
-  command below.
+  `test/lisp/emacs-lisp/eieio-tests/eieio-tests.el`: down to ~12 failing
+  selectors after the groundwork. Known remaining work:
+  - `cl-call-next-method' with no next method rewrites to a void `ignore'
+    variable (definitions.rs:3843 `rewrite_cl_next_method_p_forms'); it
+    must call `cl-no-next-method'/`cl-no-applicable-method' with
+    eieio-compat.el:164-196's bridging so obsolete `no-next-method'/
+    `no-applicable-method' defmethods dispatch (tests 08/09).
+  - Obsolete `defgeneric' over an existing non-generic function must error
+    (test 03); simple_compat's `eieio--defgeneric-init-form' returns the
+    existing function instead.
+  - `same-class-p' needs `eieio--object-class' to return the class OBJECT;
+    the naive native change regressed persist (object-write's
+    `eieio--class-constructor'/`eieio-object-name-string' path consumed the
+    symbol) and tests 04/05/18 — bisect that carefully (test 23).
+  - Static-method `oset-default' propagation (tests 04/05), slot-unbound
+    oset-default TypeError (test 18), instance-inheritor clone slot
+    unbinding details (tests 29/39, use-accessor), singleton constructor
+    (test 34), `eieio-build-class-alist' (test 36).
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.

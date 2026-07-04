@@ -22,10 +22,53 @@ counts as the progress denominator.
 - Tests through 1975/7080 are verified locally against the current canonical
   manifest (selectors 1966..1975, `eieio-test-persist.el`, pass their grouped
   `check-all` replay; see the persist batch notes below).
-- The latest compatibility batch is
+- The full 82-file verified-prefix sweep is GREEN on the current tree
+  (2026-07-04, second sweep of the day, run after the eieio-tests groundwork
+  batch below plus its follow-up repair).
+- The latest batch is
+  `Compat 1975/7080: return GNU (HIGH LOW USEC PSEC) times from
+  file-attributes` — a repair for the eieio-tests groundwork batch: the new
+  GNU-faithful typed `oset' check exposed that emaxx's `file-attributes'
+  returned bare epoch-second integers for the three time fields where GNU
+  returns `(HIGH LOW USEC PSEC)' lists, so srecode's
+  `(filedate :type cons)' slot signaled `invalid-slot-type' during template
+  table construction (srecode-utest-getset.el, srecode-utest-template.el,
+  srecode/document-tests.el regressed).  `file-attributes' (and therefore
+  `file-attribute-modification-time'/`-access-time'/`-status-change-time')
+  now build GNU 4-list times; emaxx's native time functions already accept
+  that format.  Also adds `EMAXX_DEBUG_EIEIO'-gated traces to the two
+  `invalid-slot-type' signal sites.
+- The batch before it was
+  `Compat 1975/7080: ground eieio-tests.el on GNU slot semantics` — the
+  eieio-tests.el frontier groundwork (28 failing selectors down to ~12):
+  parentless `defclass' classes adopt `eieio-default-superclass' implicitly,
+  which activates eieio.el's real `make-instance'/`initialize-instance'/
+  `shared-initialize'/`clone'/`slot-missing'/`slot-unbound' generic methods
+  for every class; slot declarations merge with GNU's
+  `eieio--add-new-slot'/`eieio--slot-override' rules (parents first without
+  override, type/protection redeclaration errors, initform kept when the
+  redeclaration has none, `:group' union) and are validated at defclass time
+  (`invalid-slot-type' for constant initforms that miss the slot :type);
+  every class stores a defaults-filled default-object cache; class-allocated
+  slots live in shared per-class storage evaluated at defclass time and are
+  reachable through class symbols in `slot-value'/`slot-boundp'/
+  `slot-makeunbound'; `oset' type-checks against the slot :type
+  (`eieio-skip-typecheck' honored) and cl-defstruct `:read-only' slots
+  signal `eieio-read-only'; `aset' works on records including retagging the
+  type slot (symbol tag clears the class-object tag, class record sets it);
+  `slot-missing'/`slot-unbound' dispatch from the native `oref'/`oset'
+  paths; accessors from `:accessor'/`:reader'/`:writer' are cl-generic
+  methods with `(setf ACC)' methods and a `(subclass CLASS)' class-slot
+  reader; native `slot-makeunbound'/`slot-exists-p'/`eieio--class-parents'/
+  `eieio--class-children'/`eieio--class-options'/
+  `eieio--class-default-object-cache'; `clone' left the prefer-builtin list
+  so eieio-base's instance-inheritor/named clone methods dispatch;
+  `current-message' is nil in batch like GNU; `cl-typep' knows `hash-table'
+  and `function' accepts fbound symbols.
+- The batch before that was
   `Compat 1975/7080: port the eieio slot descriptor protocol and GNU object
   print/read semantics for eieio-persistent`.
-- The batch before it was
+- An earlier batch was
   `Compat 1965/7080: repair verified-prefix regressions across cl-lib, dired,
   bookmark and friends` — a repair batch (no frontier advance) that fixed the
   verified-prefix files an 81-file sweep found failing: arc-mode, cl-seq,
