@@ -397,6 +397,12 @@ fn eieio_validate_constant_initform(
     }
     let value = interp.eval(initform, env)?;
     if !eieio_value_matches_type(interp, &value, &descriptor.slot_type, env)? {
+        if std::env::var("EMAXX_DEBUG_EIEIO").is_ok() {
+            eprintln!(
+                "EIEIO defclass initform type fail: slot={} type={} value={}",
+                descriptor.name, descriptor.slot_type, value
+            );
+        }
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("invalid-slot-type".into()),
             Value::Symbol(descriptor.name.clone()),
@@ -749,6 +755,12 @@ pub(crate) fn eieio_oset_dispatch(
     if !skip_typecheck
         && !eieio_value_matches_type(interp, &value, &slots[slot_index].slot_type.clone(), env)?
     {
+        if std::env::var("EMAXX_DEBUG_EIEIO").is_ok() {
+            eprintln!(
+                "EIEIO oset type fail: class={type_name} slot={} type={} value={}",
+                slots[slot_index].name, slots[slot_index].slot_type, value
+            );
+        }
         return Err(LispError::SignalValue(Value::list([
             Value::Symbol("invalid-slot-type".into()),
             Value::Symbol(type_name.clone()),

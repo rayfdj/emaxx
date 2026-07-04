@@ -1354,19 +1354,19 @@ pub(super) fn call(
             let accessed = metadata
                 .accessed()
                 .ok()
-                .map(system_time_seconds_value)
+                .map(system_time_list_value)
                 .transpose()?
                 .unwrap_or(Value::Integer(0));
             let modified = metadata
                 .modified()
                 .ok()
-                .map(system_time_seconds_value)
+                .map(system_time_list_value)
                 .transpose()?
                 .unwrap_or(Value::Integer(0));
             let changed = metadata
                 .created()
                 .ok()
-                .map(system_time_seconds_value)
+                .map(system_time_list_value)
                 .transpose()?
                 .unwrap_or_else(|| modified.clone());
             Ok(Value::list([
