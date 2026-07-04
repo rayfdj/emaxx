@@ -42,6 +42,24 @@ pub(crate) fn file_modtime(path: &str) -> Result<Option<crate::buffer::FileModTi
     }
 }
 
+/// Compare modification times at whole-second resolution, like `stat'
+/// output read over a Tramp connection.
+pub(crate) fn modtimes_equal_whole_seconds(
+    left: &Option<crate::buffer::FileModTime>,
+    right: &Option<crate::buffer::FileModTime>,
+) -> bool {
+    fn whole_seconds(modtime: &Option<crate::buffer::FileModTime>) -> Option<u64> {
+        modtime.as_ref().map(|modtime| {
+            modtime
+                .modified
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0)
+        })
+    }
+    whole_seconds(left) == whole_seconds(right)
+}
+
 pub(crate) fn system_time_seconds_value(time: SystemTime) -> Result<Value, LispError> {
     let duration = time
         .duration_since(UNIX_EPOCH)
@@ -440,7 +458,15 @@ pub(crate) fn write_file_value(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let mut path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+    let requested = string_text(&args[0])?;
+    if let Some(remote) = parse_remote_file_name(&requested) {
+        interp.set_buffer_local_value(
+            interp.current_buffer_id(),
+            "emaxx--visited-remote-prefix",
+            Value::String(remote.prefix),
+        );
+    }
+    let mut path = resolve_file_name_in_env(interp, env, &requested);
     if directory_name_p(&path) {
         let base = interp
             .buffer

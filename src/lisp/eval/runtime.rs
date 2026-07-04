@@ -315,10 +315,15 @@ impl Interpreter {
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
         match value {
             Value::Buffer(id, _) if self.has_buffer_id(*id) => Ok(*id),
-            Value::Buffer(_, name) => self
-                .find_buffer(name)
-                .map(|(id, _)| id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer named {}", name))),
+            Value::Buffer(_, name) => self.find_buffer(name).map(|(id, _)| id).ok_or_else(|| {
+                if std::env::var_os("EMAXX_DEBUG_SEMANTIC").is_some() {
+                    eprintln!(
+                        "[buf] resolve failed for dead buffer {name} (current {})",
+                        self.buffer.name
+                    );
+                }
+                LispError::Signal(format!("No buffer named {}", name))
+            }),
             _ => Err(LispError::TypeError(
                 "string-or-buffer".into(),
                 value.type_name(),

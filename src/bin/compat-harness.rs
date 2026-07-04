@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -1104,25 +1103,52 @@ fn load_or_synthesize_report(
 }
 
 fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<ProcessResult, String> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Capture output through temporary files rather than pipes: a pipe fills
+    // up while we poll `try_wait' (deadlocking a chatty child), and any
+    // grandchild that outlives the child (Tramp's mock shells) would keep a
+    // pipe open past the exit we're waiting for.
+    let unique = format!(
+        "emaxx-harness-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("clock error: {error}"))?
+            .as_nanos()
+    );
+    let stdout_path = env::temp_dir().join(format!("{unique}.out"));
+    let stderr_path = env::temp_dir().join(format!("{unique}.err"));
+    let stdout_file = fs::File::create(&stdout_path)
+        .map_err(|error| format!("create {}: {error}", stdout_path.display()))?;
+    let stderr_file = fs::File::create(&stderr_path)
+        .map_err(|error| format!("create {}: {error}", stderr_path.display()))?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
     let mut child = command
         .spawn()
         .map_err(|error| format!("spawn command: {error}"))?;
     let started = Instant::now();
+
+    let collect = |timed_out: bool, exit_code: Option<i32>| -> Result<ProcessResult, String> {
+        let stdout = fs::read_to_string(&stdout_path).unwrap_or_default();
+        let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+        let _ = fs::remove_file(&stdout_path);
+        let _ = fs::remove_file(&stderr_path);
+        Ok(ProcessResult {
+            exit_code,
+            stdout,
+            stderr,
+            timed_out,
+        })
+    };
 
     loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("wait for command: {error}"))?
         {
-            let stdout = read_pipe(child.stdout.take())?;
-            let stderr = read_pipe(child.stderr.take())?;
-            return Ok(ProcessResult {
-                exit_code: status.code(),
-                stdout,
-                stderr,
-                timed_out: false,
-            });
+            return collect(false, status.code());
         }
 
         if timeout.is_some_and(|limit| started.elapsed() > limit) {
@@ -1132,28 +1158,11 @@ fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Proces
             let status = child
                 .wait()
                 .map_err(|error| format!("wait after kill: {error}"))?;
-            let stdout = read_pipe(child.stdout.take())?;
-            let stderr = read_pipe(child.stderr.take())?;
-            return Ok(ProcessResult {
-                exit_code: status.code(),
-                stdout,
-                stderr,
-                timed_out: true,
-            });
+            return collect(true, status.code());
         }
 
         thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn read_pipe(pipe: Option<impl Read>) -> Result<String, String> {
-    let Some(mut pipe) = pipe else {
-        return Ok(String::new());
-    };
-    let mut bytes = Vec::new();
-    pipe.read_to_end(&mut bytes)
-        .map_err(|error| format!("read process output: {error}"))?;
-    Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
 fn write_raw_log(path: &Path, process: &ProcessResult) -> Result<(), String> {
