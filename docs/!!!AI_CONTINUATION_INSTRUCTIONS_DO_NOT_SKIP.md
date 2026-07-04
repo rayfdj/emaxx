@@ -45,8 +45,23 @@ counts as the progress denominator.
   semanticdb's `tracking-symbol' initform).  Details in
   `docs/compatibility-goal.md`.
 - The next frontier is `test/lisp/emacs-lisp/ert-font-lock-tests.el`
-  (selectors 2017..2056, 40 selected) — not yet probed; run the exploratory
-  command below to get the mismatch list.
+  (selectors 2017..2056, 40 selected).  The file LOADS now (native
+  `map-elt'/`map-contains-key' were void; map.el is a preloaded feature so
+  it never loads).  Remaining mismatches from the grouped replay:
+  - Six `test-macro-test--*` selectors are NOT DISCOVERED: the
+    `ert-font-lock-deftest'/`ert-font-lock-deftest-file' macros
+    (lisp/emacs-lisp/ert-font-lock.el) don't register their tests.
+  - Most failures need REAL fontification: `js-mode' buffers must get
+    `font-lock-keyword-face'/`font-lock-variable-name-face' and
+    comment faces from `font-lock-ensure' in batch, and `c-mode'
+    multiline comments `font-lock-comment-face' (tests compare
+    `face' text properties at positions).  `test-font-lock-test-file--wrong'
+    and `--failing' style selectors fail in GNU too (expected failures) —
+    only the listed status mismatches need fixing.
+  - `test-line-comment-p--fundamental': fundamental-mode has no comment
+    syntax, `ert-font-lock--line-comment-p' must return nil (emaxx says t).
+  - `test-line-comment-p--shell-script': `shell-script-mode' is void
+    (sh-script.el autoload/alias missing).
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
