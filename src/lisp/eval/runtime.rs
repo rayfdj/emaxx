@@ -185,6 +185,70 @@ impl Interpreter {
         Ok(path)
     }
 
+    fn register_mock_tramp_method(&mut self) {
+        if !self.has_feature("tramp") {
+            return;
+        }
+        let methods = self
+            .lookup_var("tramp-methods", &Env::new())
+            .unwrap_or(Value::Nil);
+        let already_registered = methods.to_vec().is_ok_and(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .to_vec()
+                    .ok()
+                    .and_then(|parts| parts.first().cloned())
+                    .is_some_and(|head| matches!(&head, Value::String(text) if text == "mock"))
+            })
+        });
+        if already_registered {
+            return;
+        }
+        let mock_entry = Value::list([
+            Value::String("mock".into()),
+            Value::list([
+                Value::Symbol("tramp-login-program".into()),
+                Value::String("sh".into()),
+            ]),
+            Value::list([
+                Value::Symbol("tramp-login-args".into()),
+                Value::list([Value::list([Value::String("-i".into())])]),
+            ]),
+            Value::list([
+                Value::Symbol("tramp-direct-async".into()),
+                Value::list([Value::String("-c".into())]),
+            ]),
+            Value::list([
+                Value::Symbol("tramp-remote-shell".into()),
+                Value::String("/bin/sh".into()),
+            ]),
+            Value::list([
+                Value::Symbol("tramp-remote-shell-args".into()),
+                Value::list([Value::String("-c".into())]),
+            ]),
+            Value::list([
+                Value::Symbol("tramp-connection-timeout".into()),
+                Value::Integer(10),
+            ]),
+        ]);
+        self.set_variable(
+            "tramp-methods",
+            Value::cons(mock_entry, methods),
+            &mut Vec::new(),
+        );
+        let system_name = crate::lisp::primitives::call(self, "system-name", &[], &mut Vec::new())
+            .unwrap_or_else(|_| Value::String("localhost".into()));
+        let host_alist = self
+            .lookup_var("tramp-default-host-alist", &Env::new())
+            .unwrap_or(Value::Nil);
+        let host_entry = Value::list([Value::String("\\`mock\\'".into()), Value::Nil, system_name]);
+        self.set_variable(
+            "tramp-default-host-alist",
+            Value::cons(host_entry, host_alist),
+            &mut Vec::new(),
+        );
+    }
+
     pub(super) fn require_feature_with_target(
         &mut self,
         feature: &str,
@@ -205,6 +269,12 @@ impl Interpreter {
                     crate::lisp::load_file_strict(self, &path)?;
                 }
                 self.provide_feature_with_after_load("cl-loaddefs")?;
+            }
+            if feature == "ert-x" {
+                // GNU ert-x.el registers the `mock' Tramp method as a side
+                // effect of initializing `ert-remote-temporary-file-directory'
+                // when Tramp is already loaded.
+                self.register_mock_tramp_method();
             }
             return self.provide_feature_with_after_load(feature);
         }

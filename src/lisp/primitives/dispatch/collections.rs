@@ -884,19 +884,48 @@ pub(super) fn call(
                 .ok_or_else(|| LispError::TypeError("char-table".into(), args[1].type_name()))?
                 .entries
                 .clone();
-            for entry in entries {
-                if entry.value.is_nil() {
-                    continue;
+            // Entries are an append-only log where the newest write wins;
+            // map only the EFFECTIVE mapping (walk newest-first, keeping the
+            // sub-ranges not yet covered by a newer write).  A newer nil
+            // write masks older values without being reported itself.
+            let mut covered: Vec<(u32, u32)> = Vec::new();
+            let mut effective: Vec<(u32, u32, Value)> = Vec::new();
+            for entry in entries.iter().rev() {
+                let mut pieces = vec![(entry.start, entry.end)];
+                for &(covered_start, covered_end) in &covered {
+                    let mut remaining = Vec::with_capacity(pieces.len() + 1);
+                    for (piece_start, piece_end) in pieces {
+                        if covered_end < piece_start || covered_start > piece_end {
+                            remaining.push((piece_start, piece_end));
+                            continue;
+                        }
+                        if piece_start < covered_start {
+                            remaining.push((piece_start, covered_start - 1));
+                        }
+                        if piece_end > covered_end {
+                            remaining.push((covered_end + 1, piece_end));
+                        }
+                    }
+                    pieces = remaining;
+                    if pieces.is_empty() {
+                        break;
+                    }
                 }
-                let key = if entry.start == entry.end {
-                    Value::Integer(entry.start as i64)
+                for &(piece_start, piece_end) in &pieces {
+                    covered.push((piece_start, piece_end));
+                    if !entry.value.is_nil() {
+                        effective.push((piece_start, piece_end, entry.value.clone()));
+                    }
+                }
+            }
+            effective.sort_by_key(|(start, _, _)| *start);
+            for (start, end, value) in effective {
+                let key = if start == end {
+                    Value::Integer(start as i64)
                 } else {
-                    Value::cons(
-                        Value::Integer(entry.start as i64),
-                        Value::Integer(entry.end as i64),
-                    )
+                    Value::cons(Value::Integer(start as i64), Value::Integer(end as i64))
                 };
-                call_function_value(interp, &args[0], &[key, entry.value], env)?;
+                call_function_value(interp, &args[0], &[key, value], env)?;
             }
             Ok(Value::Nil)
         }

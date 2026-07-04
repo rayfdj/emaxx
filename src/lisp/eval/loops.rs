@@ -1,6 +1,12 @@
 use super::*;
 use std::collections::HashSet;
 
+/// Hidden binding stamped into lexical binding frames to give them an
+/// identity: frames are plain vectors, and without a marker two unrelated
+/// frames binding the same variable names are indistinguishable to the
+/// closure-environment alignment logic.
+pub(crate) const FRAME_IDENTITY_MARKER: &str = "--emaxx-frame-id--";
+
 impl Interpreter {
     fn dolist_items(value: &Value) -> Result<Vec<Value>, LispError> {
         let mut items = Vec::new();
@@ -109,21 +115,29 @@ impl Interpreter {
         let list_items = Self::dolist_items(&list_val)?;
 
         let frame_index = env.len();
-        env.push(vec![(var_name.clone(), Value::Nil)]);
+        Self::push_marked_frame(env, vec![(var_name.clone(), Value::Nil)]);
+        let mut outcome = Ok(());
         for item in list_items {
             let frame = env
                 .get_mut(frame_index)
                 .expect("dolist binding frame remains active during loop");
             Self::upsert_frame_binding(frame, var_name.clone(), item);
-            self.sf_progn(&items[2..], env)?;
+            if let Err(error) = self.sf_progn(&items[2..], env) {
+                outcome = Err(error);
+                break;
+            }
         }
-        let result = if spec.len() > 2 {
-            self.eval(&spec[2], env)?
-        } else {
-            Value::Nil
-        };
-        env.pop();
-        Ok(result)
+        let result = outcome.and_then(|()| {
+            if spec.len() > 2 {
+                self.eval(&spec[2], env)
+            } else {
+                Ok(Value::Nil)
+            }
+        });
+        // Truncate rather than pop: the binding frame must come off even if
+        // an error unwound out of the body mid-iteration.
+        env.truncate(frame_index);
+        result
     }
 
     pub(super) fn sf_dolist_with_progress_reporter(
@@ -166,9 +180,11 @@ impl Interpreter {
             if !pcase_pattern_bindings_lenient_list(self, env, pattern, &item, &mut bindings)? {
                 return Err(LispError::Signal("pcase-dolist: no matching clause".into()));
             }
-            env.push(bindings);
-            self.sf_progn(&items[2..], env)?;
-            env.pop();
+            let frame_index = env.len();
+            Self::push_marked_frame(env, bindings);
+            let result = self.sf_progn(&items[2..], env);
+            env.truncate(frame_index);
+            result?;
         }
 
         if spec.len() > 2 {
@@ -187,19 +203,28 @@ impl Interpreter {
         let var_name = spec[0].as_symbol()?.to_string();
         let count = self.eval(&spec[1], env)?.as_integer()?;
 
-        env.push(vec![(var_name.clone(), Value::Integer(0))]);
+        let frame_index = env.len();
+        Self::push_marked_frame(env, vec![(var_name.clone(), Value::Integer(0))]);
+        let mut outcome = Ok(());
         for i in 0..count {
-            let frame = env.last_mut().expect("env frame just pushed");
+            let frame = env
+                .get_mut(frame_index)
+                .expect("dotimes binding frame remains active during loop");
             frame[0] = (var_name.clone(), Value::Integer(i));
-            self.sf_progn(&items[2..], env)?;
+            if let Err(error) = self.sf_progn(&items[2..], env) {
+                outcome = Err(error);
+                break;
+            }
         }
-        let result = if spec.len() > 2 {
-            self.eval(&spec[2], env)?
-        } else {
-            Value::Nil
-        };
-        env.pop();
-        Ok(result)
+        let result = outcome.and_then(|()| {
+            if spec.len() > 2 {
+                self.eval(&spec[2], env)
+            } else {
+                Ok(Value::Nil)
+            }
+        });
+        env.truncate(frame_index);
+        result
     }
 
     pub(super) fn sf_cl_loop(
@@ -713,7 +738,7 @@ impl Interpreter {
                 self.collect_cl_pattern_names(pattern, &mut bindings)?;
             }
         }
-        env.push(bindings);
+        Self::push_marked_frame(env, bindings);
         for group in &with_binding_groups {
             let values = group
                 .iter()
@@ -2564,6 +2589,15 @@ impl Interpreter {
     }
 
     pub(super) fn same_frame_shape(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
+        // Frames stamped with an identity marker are the same frame exactly
+        // when the markers agree; a name-shape match between two DIFFERENT
+        // binding frames (e.g. two unrelated `let's binding the same
+        // variable) must not alias them.
+        match (Self::frame_identity(left), Self::frame_identity(right)) {
+            (Some(left_id), Some(right_id)) => return left_id == right_id,
+            (None, None) => {}
+            _ => return false,
+        }
         left.len() <= right.len()
             && left.iter().zip(right.iter()).all(
                 |((left_name, left_value), (right_name, right_value))| {
@@ -2575,6 +2609,35 @@ impl Interpreter {
                             ))
                 },
             )
+    }
+
+    pub(crate) fn frame_identity(frame: &[(String, Value)]) -> Option<i64> {
+        frame.iter().rev().find_map(|(name, value)| {
+            if name == FRAME_IDENTITY_MARKER
+                && let Value::Integer(id) = value
+            {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Push FRAME onto ENV with a fresh identity marker appended, so the
+    /// closure-environment alignment logic can tell it apart from other
+    /// frames that happen to bind the same names.
+    pub(crate) fn push_marked_frame(env: &mut Env, mut frame: Vec<(String, Value)>) {
+        frame.push(Self::fresh_frame_identity());
+        env.push(frame);
+    }
+
+    pub(crate) fn fresh_frame_identity() -> (String, Value) {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static NEXT_FRAME_IDENTITY: AtomicI64 = AtomicI64::new(1);
+        (
+            FRAME_IDENTITY_MARKER.to_string(),
+            Value::Integer(NEXT_FRAME_IDENTITY.fetch_add(1, Ordering::Relaxed)),
+        )
     }
 
     pub(super) fn align_captured_frames(captured: &Env, current: &Env) -> Vec<Option<usize>> {

@@ -110,6 +110,7 @@ static RANDOM_STATE: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FILE_CHANGE_CACHE: OnceLock<Mutex<FileChangeCache>> = OnceLock::new();
 static ACTIVE_FILE_NOTIFY_DESCRIPTORS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+static FILE_NOTIFY_WATCHED_PATHS: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
 const TREESIT_LINECOL_CACHE_VAR: &str = "emaxx--treesit-linecol-cache";
 const BUFFER_MENU_BUFFER_NAME: &str = "*Buffer List*";
 const BUFFER_MENU_ENTRIES_VAR: &str = "emaxx--buffer-menu-entries";
@@ -406,6 +407,9 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "semanticdb-find-tags-for-completion"
             | "semantic-fetch-tags"
             | "semantic-current-tag"
+            | "semantic-current-tag-of-class"
+            | "semantic-find-tag-by-overlay-prev"
+            | "semantic-find-tag-by-overlay-next"
             | "semantic-ctxt-current-symbol"
             | "semantic-ctxt-current-symbol-and-bounds"
             | "semantic-analyze-possible-completions"

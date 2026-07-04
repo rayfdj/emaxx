@@ -63,15 +63,70 @@ counts as the progress denominator.
   `\{,N\}' regexps translate to an explicit zero lower bound and the regex
   delegate gets a larger compiled-size budget (cc-mode's
   `[...]\{,1000\}' symbol matcher in semantic/format-tests).
-- Known remaining verified-prefix mismatches after this batch: the cedet
-  cluster (`semantic-utest-c/-ia/utest`, `srecode-utest-getset/-template`,
-  `srecode/document-tests` — an EIEIO slot mix-up puts a
-  `semantic-scope-cache' where `semanticdb-find-search-index' is expected),
-  `autorevert-tests.el` (five remote/deleted-file selectors),
-  `dabbrev-tests.el` (two order-dependent minibuffer selectors, pass solo),
-  `char-fold--test-with-customization` (char-fold-exclude not honored under
-  `char-fold-symmetric'), and `cl-flet/edebug` (edebug matcher loops on
-  destructuring lambda-lists inside cl-flet bindings).
+- A follow-up repair pass fixed most of the remaining mismatches with four
+  deep interpreter corrections plus targeted ports:
+  - Lexical binding frames now carry hidden identity markers
+    (`--emaxx-frame-id--'); closure-environment alignment and
+    captured-cell sharing compare frame identity instead of name-shape or
+    content, so a caller's same-named `let' can no longer shadow a
+    closure's captured variable, and content-identical captures from
+    different `let's no longer share one mutable cell (bug#51695's
+    interpreted lambda, cl-labels expander corruption, the cedet
+    `semantic-scope-cache' slot mix-up).
+  - Non-local exits now unwind lexical frames at their boundaries like
+    GNU's unbind_to: `catch', `condition-case', and every function-call
+    boundary truncate the environment back to entry depth, and the
+    binding forms that looped with `?' early-returns (dolist, dotimes,
+    pcase-dolist) rebalance on error (this fixed edebug's backtracking
+    matcher and `cl-flet/edebug').
+  - Macro-environment expanders run in a fresh environment, `eval' opens a
+    fresh activation, `map-char-table' iterates the effective mapping of
+    the append-only char-table log (char-fold exclusions under
+    `char-fold-symmetric'), and kill-region/kill-whole-line record
+    `this-command'/`last-command' like GNU simple.el (dabbrev's
+    order-dependent minibuffer expansions).
+  - The native C tag parser gained a lexical preprocessor
+    (`expand_cpp_spp_macros'): `#define' object and function-like macros,
+    `##' pasting, hide-set recursion prevention, continuations, and the
+    builtin symbol map with the G++/VC++ namespace hacks
+    (semantic-utest-c's testsppreplace.c now parses identically to its
+    hand-expanded counterpart), and function parameter lists end at the
+    first balanced close.
+- A third repair pass (2026-07-04) fixed the srecode trio and most of
+  autorevert/semantic-ia:
+  - File notifications are queued and delivered from the idle pump
+    (sleep-for/sit-for/read-event/accept-process-output) like GNU's
+    asynchronous notify events, filtered per watch to the watched path or
+    directory entries; `kill-local-variable' discards buffer-local hooks
+    with the local binding; deleting a watched file invalidates its kqueue
+    descriptors (auto-revert-test02-auto-revert-deleted-file and the
+    remote selectors 00/01/02/03/07 now match).
+  - `ert-deftest' also registers the test as an `ert-test' struct under
+    the `ert--test' symbol property (`ert-get-test'/`ert-test-body' work);
+    batch runs execute in alphabetical order like GNU's
+    `apropos-internal' enumeration (srecode-utest-project depended on it);
+    requiring `ert-x' after `tramp' registers the `mock' method.
+  - cl-generic: the first `cl-defmethod' registers an implicit generic
+    lambda list so sibling methods with different parameter names stop
+    shadowing each other's dispatch conditions; `cl-typep' understands
+    `(satisfies PRED)'; `#'cl-call-next-method' inside `apply' rewrites to
+    the previous-method variable (eieio-named constructors).
+  - The c-family `indent-according-to-mode' adjusts leading whitespace
+    through the marker-safe edit primitives (srecode template inserters
+    keep point markers across indentation); `~Class()' parses with
+    `:destructor-flag'; namespace members get buffer-absolute bounds;
+    `write-file' runs `after-set-visited-file-name-hook' and renames the
+    buffer; `semantic-current-tag-of-class',
+    `semantic-find-tag-by-overlay-prev'/`-next' are native over the parsed
+    tag tree, `semantic-fetch-tags' returns cached `eq'-stable tags per
+    buffer fingerprint, and `semantic-go-to-tag' follows `:filename'
+    annotations into other files' buffers.
+- Known remaining verified-prefix mismatches (sweep 2026-07-04: 79 of 81
+  files pass): `semantic-utest-ia.el` (doublens `^4^` overload
+  impl/proto pairing and subclass per-parent disambiguation in the
+  ANALYZER REF COUNTING subtest) and `autorevert-tests.el` (remote
+  selectors whose fidelity needs visited buffers to keep their Tramp
+  file names; emaxx resolves `/mock::' paths at visit time).
 - The next observed frontier is selector 1966,
   `eieio-persist-hash-and-vector-backward-compatibility` in
   `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (grouped

@@ -121,7 +121,12 @@ pub(crate) fn eval_impl(
             _ => (true, false, env.clone()),
         };
         interp.push_lambda_eval_context(capture_lexical, trim_context);
+        // A fresh `eval' is a fresh activation: closures it creates must not
+        // share captured-environment cells with content-identical captures
+        // from the caller's activation (bug#51695's interpreted lambda).
+        let previous_activation = interp.enter_activation();
         let result = interp.eval(&args[0], &mut eval_env);
+        interp.leave_activation(previous_activation);
         interp.pop_lambda_capture_override();
         result
     } else {

@@ -190,6 +190,19 @@ pub(crate) fn call_named_function(
 
 pub(crate) fn dispatch_file_notification(
     interp: &mut Interpreter,
+    _env: &mut Env,
+    path: &str,
+    action: &str,
+) -> Result<(), LispError> {
+    // File notifications are asynchronous in GNU Emacs: the file operation
+    // returns first, and the notification is processed later when the
+    // command loop goes idle.  Queue the event for the next idle pump.
+    interp.queue_file_notification(path, action);
+    Ok(())
+}
+
+pub(crate) fn deliver_file_notification(
+    interp: &mut Interpreter,
     env: &mut Env,
     path: &str,
     action: &str,
@@ -209,6 +222,15 @@ pub(crate) fn dispatch_file_notification(
         if !interp.has_buffer_id(buffer_id) {
             continue;
         }
+        // A watch only reports events for its own path, or for entries of a
+        // watched directory, like the real file-notify backends.
+        if let Ok(id) = descriptor.as_integer()
+            && let Ok(watched) = file_notify_watched_paths().lock()
+            && let Some(watched_path) = watched.get(&id)
+            && !file_notify_watch_covers(watched_path, path)
+        {
+            continue;
+        }
         let event = Value::list([
             descriptor,
             Value::Symbol(action.into()),
@@ -220,8 +242,45 @@ pub(crate) fn dispatch_file_notification(
     Ok(())
 }
 
+fn file_notify_watch_covers(watched_path: &str, event_path: &str) -> bool {
+    let watched = watched_path.trim_end_matches('/');
+    if watched == event_path.trim_end_matches('/') {
+        return true;
+    }
+    // Watching a directory reports events for its direct entries.
+    event_path
+        .rsplit_once('/')
+        .is_some_and(|(parent, _)| parent == watched)
+}
+
 pub(crate) fn active_file_notify_descriptors() -> &'static Mutex<HashSet<i64>> {
     ACTIVE_FILE_NOTIFY_DESCRIPTORS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(crate) fn file_notify_watched_paths() -> &'static Mutex<HashMap<i64, String>> {
+    FILE_NOTIFY_WATCHED_PATHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A kqueue watch tracks the file itself, so deleting the watched file
+/// leaves the descriptor dead.  Invalidate any descriptors watching PATH.
+pub(crate) fn invalidate_file_notify_watches_for_path(path: &str) {
+    let Ok(watched) = file_notify_watched_paths().lock() else {
+        return;
+    };
+    let dead: Vec<i64> = watched
+        .iter()
+        .filter(|(_, watched_path)| watched_path.as_str() == path)
+        .map(|(descriptor, _)| *descriptor)
+        .collect();
+    drop(watched);
+    if dead.is_empty() {
+        return;
+    }
+    if let Ok(mut active) = active_file_notify_descriptors().lock() {
+        for descriptor in &dead {
+            active.remove(descriptor);
+        }
+    }
 }
 
 pub(crate) fn callable_display_action_function(

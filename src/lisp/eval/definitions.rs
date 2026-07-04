@@ -534,7 +534,12 @@ impl Interpreter {
                 match items.as_slice() {
                     [Value::Symbol(head), expression] if head == ":documentation" => {
                         let value = self.eval(expression, env)?;
-                        Some(Value::String(value.as_string()?.to_string()))
+                        let text = crate::lisp::primitives::string_like(&value)
+                            .map(|string| string.text)
+                            .ok_or_else(|| {
+                                LispError::TypeError("string".into(), value.type_name())
+                            })?;
+                        Some(Value::String(text))
                     }
                     _ => None,
                 }
@@ -3197,6 +3202,18 @@ impl Interpreter {
         lowered.extend(executable_method_forms.iter().cloned());
         let requested_method_name = function_name_from_binding_form(&items[1])?;
         let method_name = self.canonical_function_name(&requested_method_name, env);
+        // Without an explicit `cl-defgeneric', the first method's formals
+        // become the generic's, as in GNU.  Later methods then rename their
+        // parameters onto these, so stored specializer variables, dispatch
+        // conditions, and wrapper parameters all agree even when each
+        // `cl-defmethod' picks different argument names.
+        if self.cl_defgeneric_lambda_list(&method_name).is_none() {
+            self.put_symbol_property(
+                &method_name,
+                "emaxx-cl-defgeneric-lambda-list",
+                lowered_lambda_list.clone(),
+            );
+        }
         let precedence_order = self.cl_defgeneric_argument_precedence_order(&method_name);
         let method_specializers = cl_defmethod_specializers(&items[lambda_list_index])?;
         self.add_cl_defmethod_load_history(

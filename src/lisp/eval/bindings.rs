@@ -301,6 +301,8 @@ impl Interpreter {
                 "buffer-stale--default-function".into(),
             )),
             "buffer-auto-revert-by-notification" => Some(Value::Nil),
+            "non-essential" => Some(Value::Nil),
+            "remote-file-name-inhibit-cache" => Some(Value::Nil),
             "overriding-local-map" => Some(Value::Nil),
             "overriding-terminal-local-map" => Some(Value::Nil),
             "menu-bar-final-items" => Some(Value::Nil),

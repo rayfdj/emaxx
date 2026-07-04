@@ -603,6 +603,7 @@ pub struct Interpreter {
     class_parent_overrides: Vec<(u64, Vec<String>)>,
     generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
+    pending_file_notifications: Vec<(String, String)>,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -881,6 +882,7 @@ impl Interpreter {
             class_parent_overrides: Vec::new(),
             generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
+            pending_file_notifications: Vec::new(),
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,
@@ -2758,6 +2760,16 @@ fn rewrite_cl_call_next_method_form(
             .map(Value::list);
     };
     match head.as_str() {
+        // `(apply #'cl-call-next-method ...)' captures the next method as a
+        // function value (eieio-base.el's `eieio-named' constructor).  The
+        // previous-method symbol is a variable holding that function, so the
+        // sharp-quote rewrites to a plain variable reference.
+        "function"
+            if items.len() == 2
+                && matches!(&items[1], Value::Symbol(symbol) if symbol == "cl-call-next-method") =>
+        {
+            Ok(Value::Symbol(previous_method_symbol.to_string()))
+        }
         "quote" | "function" => Ok(form.clone()),
         "cl-next-method-p" if items.len() == 1 => Ok(next_method_p.clone()),
         "cl-call-next-method" => {

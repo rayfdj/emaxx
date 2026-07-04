@@ -1405,6 +1405,7 @@ pub(super) fn call(
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
+            invalidate_file_notify_watches_for_path(&path);
             dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
@@ -1438,6 +1439,7 @@ pub(super) fn call(
                 return Err(LispError::Signal(format!("File already exists: {target}")));
             }
             fs::rename(&source, &target).map_err(|error| LispError::Signal(error.to_string()))?;
+            invalidate_file_notify_watches_for_path(&source);
             dispatch_file_notification(interp, env, &source, "deleted")?;
             dispatch_file_notification(interp, env, &target, "created")?;
             Ok(Value::Nil)
@@ -1451,6 +1453,7 @@ pub(super) fn call(
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(LispError::Signal(error.to_string())),
             }
+            invalidate_file_notify_watches_for_path(&path);
             dispatch_file_notification(interp, env, &path, "deleted")?;
             Ok(Value::Nil)
         }
@@ -1583,12 +1586,17 @@ pub(super) fn call(
         }
         "kqueue-add-watch" => {
             need_args(name, args, 3)?;
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
             let descriptor =
                 FILE_NOTIFY_DESCRIPTOR_COUNTER.fetch_add(1, AtomicOrdering::Relaxed) as i64;
             active_file_notify_descriptors()
                 .lock()
                 .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
                 .insert(descriptor);
+            file_notify_watched_paths()
+                .lock()
+                .map_err(|_| LispError::Signal("file notify watch paths poisoned".into()))?
+                .insert(descriptor, path);
             Ok(Value::Integer(descriptor))
         }
         "kqueue-rm-watch" => {
@@ -1597,6 +1605,10 @@ pub(super) fn call(
             active_file_notify_descriptors()
                 .lock()
                 .map_err(|_| LispError::Signal("file notify descriptor set poisoned".into()))?
+                .remove(&descriptor);
+            file_notify_watched_paths()
+                .lock()
+                .map_err(|_| LispError::Signal("file notify watch paths poisoned".into()))?
                 .remove(&descriptor);
             Ok(Value::Nil)
         }

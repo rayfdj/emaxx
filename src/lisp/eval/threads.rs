@@ -316,15 +316,78 @@ impl Interpreter {
         });
     }
 
+    pub fn queue_file_notification(&mut self, path: &str, action: &str) {
+        self.pending_file_notifications
+            .push((path.to_string(), action.to_string()));
+    }
+
+    pub fn run_pending_file_notifications(&mut self, env: &mut Env) -> Result<(), LispError> {
+        let pending = std::mem::take(&mut self.pending_file_notifications);
+        for (path, action) in pending {
+            let outcome = primitives::deliver_file_notification(self, env, &path, &action);
+            match outcome {
+                Ok(()) => {}
+                Err(error @ LispError::Throw(_, _)) => return Err(error),
+                Err(error) => {
+                    // The command loop demotes errors from special event
+                    // handlers to a message.
+                    if self
+                        .lookup_var("debug-on-error", env)
+                        .is_some_and(|value| value.is_truthy())
+                    {
+                        return Err(error);
+                    }
+                    let _ = primitives::call(
+                        self,
+                        "message",
+                        &[
+                            Value::String("Error in file notification: %S".into()),
+                            super::error_condition_value(&error),
+                        ],
+                        env,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn run_pending_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
         let pending = std::mem::take(&mut self.pending_timers);
         for timer in pending {
-            self.call_function_value(
+            let outcome = self.call_function_value(
                 timer.function,
                 timer.original_name.as_deref(),
                 &timer.args,
                 env,
-            )?;
+            );
+            match outcome {
+                Ok(_) => {}
+                Err(error @ LispError::Throw(_, _)) => return Err(error),
+                Err(error) => {
+                    // `timer-event-handler' demotes timer errors to a message
+                    // unless `debug-on-error' asks for the debugger.
+                    if self
+                        .lookup_var("debug-on-error", env)
+                        .is_some_and(|value| value.is_truthy())
+                    {
+                        return Err(error);
+                    }
+                    let label = timer
+                        .original_name
+                        .map(|name| format!(" `{name}'"))
+                        .unwrap_or_default();
+                    let _ = primitives::call(
+                        self,
+                        "message",
+                        &[
+                            Value::String(format!("Error running timer{label}: %S")),
+                            super::error_condition_value(&error),
+                        ],
+                        env,
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -631,6 +694,7 @@ impl Interpreter {
             }
         }
         if wake_sleepers {
+            self.run_pending_file_notifications(env)?;
             self.run_pending_timers(env)?;
             self.run_due_elisp_timers(env)?;
         }
