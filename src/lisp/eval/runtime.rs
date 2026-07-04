@@ -1360,7 +1360,43 @@ impl Interpreter {
             .find_record(id)
             .cloned()
             .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-        Ok(self.create_record(&record.type_name, record.slots))
+        let copy = self.create_record(&record.type_name, record.slots);
+        // GNU `copy-sequence' copies the record verbatim, including a
+        // class-object type tag.
+        if self.is_class_object_tagged_record(id)
+            && let Value::Record(copy_id) = &copy
+        {
+            self.mark_class_object_tagged_record(*copy_id);
+        }
+        Ok(copy)
+    }
+
+    pub(crate) fn find_class_state_name_by_record_id(&self, record_id: u64) -> Option<String> {
+        self.find_class_state_by_record_id(record_id)
+            .map(|state| state.name.clone())
+    }
+
+    // `aset' on a record's type slot: a symbol clears the class-object tag,
+    // a class record sets it (GNU stores the tag value directly).
+    pub(crate) fn retag_record(
+        &mut self,
+        id: u64,
+        type_name: &str,
+        class_object_tagged: bool,
+    ) -> Result<(), LispError> {
+        let Some(record) = self.find_record_mut(id) else {
+            return Err(LispError::TypeError(
+                "record".into(),
+                format!("record<{id}>"),
+            ));
+        };
+        record.type_name = type_name.to_string();
+        if class_object_tagged {
+            self.class_object_tagged_records.insert(id);
+        } else {
+            self.class_object_tagged_records.remove(&id);
+        }
+        Ok(())
     }
 
     pub(crate) fn has_lisp_macro(&self, name: &str) -> bool {

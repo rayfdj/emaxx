@@ -368,6 +368,13 @@ pub(super) fn call(
         }
         "current-message" => {
             need_args(name, args, 0)?;
+            // GNU batch mode has no echo area; `current-message' is nil.
+            if interp
+                .lookup_var("noninteractive", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                return Ok(Value::Nil);
+            }
             let buffer_name = interp
                 .lookup_var("messages-buffer-name", env)
                 .and_then(|value| string_like(&value).map(|string| string.text))

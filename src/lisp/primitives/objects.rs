@@ -74,6 +74,7 @@ pub(crate) struct EieioSlotSpec {
     pub(crate) name: String,
     pub(crate) initargs: Vec<String>,
     pub(crate) initform: Option<Value>,
+    pub(crate) slot_type: Value,
     pub(crate) class_allocated: bool,
 }
 
@@ -81,60 +82,16 @@ pub(crate) fn eieio_slot_specs(
     interp: &Interpreter,
     class_name: &str,
 ) -> Result<Vec<EieioSlotSpec>, LispError> {
-    let mut slots = Vec::new();
-    if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
-        && let Ok(parent_values) = parents.to_vec()
-    {
-        for parent in parent_values {
-            if let Ok(parent_name) = parent.as_symbol() {
-                slots.extend(eieio_slot_specs(interp, parent_name)?);
-            }
-        }
-    }
-
-    let Some(raw_slots) = interp.get_symbol_property(class_name, "emaxx-class-slots") else {
-        return Ok(slots);
-    };
-    for raw_slot in raw_slots.to_vec()? {
-        let parts = raw_slot.to_vec()?;
-        let Some(slot_name) = parts
-            .first()
-            .and_then(|value| value.as_symbol().ok())
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        let mut initargs = Vec::new();
-        let mut initform = None;
-        let mut class_allocated = false;
-        let mut index = 1usize;
-        while index + 1 < parts.len() {
-            let Some(keyword) = parts[index].as_symbol().ok() else {
-                index += 1;
-                continue;
-            };
-            match keyword {
-                ":initarg" => {
-                    if let Ok(initarg) = parts[index + 1].as_symbol() {
-                        initargs.push(initarg.to_string());
-                    }
-                }
-                ":initform" => initform = Some(parts[index + 1].clone()),
-                ":allocation" => {
-                    class_allocated = matches!(&parts[index + 1], Value::Symbol(value) if value == ":class" || value == "class");
-                }
-                _ => {}
-            }
-            index += 2;
-        }
-        slots.push(EieioSlotSpec {
-            name: slot_name,
-            initargs,
-            initform,
-            class_allocated,
-        });
-    }
-    Ok(slots)
+    Ok(eieio_slot_descriptors(interp, class_name)?
+        .into_iter()
+        .map(|descriptor| EieioSlotSpec {
+            name: descriptor.name,
+            initargs: descriptor.initargs,
+            initform: descriptor.initform,
+            slot_type: descriptor.slot_type,
+            class_allocated: descriptor.class_allocated,
+        })
+        .collect())
 }
 
 pub(crate) fn eieio_slot_index(slots: &[EieioSlotSpec], slot_name: &str) -> Option<usize> {
@@ -167,7 +124,7 @@ pub(crate) fn eieio_slot_descriptors(
     class_name: &str,
 ) -> Result<Vec<EieioSlotDescriptor>, LispError> {
     let mut descriptors = Vec::new();
-    collect_eieio_slot_descriptors(interp, class_name, &mut descriptors)?;
+    collect_eieio_slot_descriptors(interp, class_name, &mut descriptors, true)?;
     Ok(descriptors)
 }
 
@@ -175,13 +132,14 @@ fn collect_eieio_slot_descriptors(
     interp: &Interpreter,
     class_name: &str,
     descriptors: &mut Vec<EieioSlotDescriptor>,
+    own_class: bool,
 ) -> Result<(), LispError> {
     if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
         && let Ok(parent_values) = parents.to_vec()
     {
         for parent in parent_values {
             if let Ok(parent_name) = parent.as_symbol() {
-                collect_eieio_slot_descriptors(interp, parent_name, descriptors)?;
+                collect_eieio_slot_descriptors(interp, parent_name, descriptors, false)?;
             }
         }
     }
@@ -189,7 +147,11 @@ fn collect_eieio_slot_descriptors(
         return Ok(());
     };
     for raw_slot in raw_slots.to_vec()? {
-        let parts = raw_slot.to_vec()?;
+        // cl-defstruct classes store bare slot-name symbols.
+        let parts = match &raw_slot {
+            Value::Symbol(slot_name) => vec![Value::Symbol(slot_name.clone())],
+            _ => raw_slot.to_vec()?,
+        };
         let Some(slot_name) = parts
             .first()
             .and_then(|value| value.as_symbol().ok())
@@ -270,16 +232,60 @@ fn collect_eieio_slot_descriptors(
             .iter_mut()
             .find(|existing| existing.name == descriptor.name)
         {
-            // A subclass re-declaring an inherited slot overrides its
-            // defaults in place (GNU's `defaultoverride') while any new
-            // initarg is added alongside the inherited ones.
-            existing.initform = descriptor.initform;
-            existing.slot_type = descriptor.slot_type;
-            existing.props = descriptor.props;
-            existing.class_allocated = descriptor.class_allocated;
+            // GNU pushes the redeclaration's initarg alongside the
+            // inherited ones in both phases, but only the class's OWN
+            // redeclarations override the inherited attributes
+            // (`eieio--slot-override'); a later parent's same-named slot
+            // leaves the first parent's definition in place.
             for initarg in descriptor.initargs {
                 if !existing.initargs.contains(&initarg) {
                     existing.initargs.push(initarg);
+                }
+            }
+            if own_class {
+                // A redeclared slot keeps its inherited allocation and,
+                // when the redeclaration has no initform, its inherited
+                // default; a `t' type keeps the inherited type.
+                if descriptor.initform.is_some() {
+                    existing.initform = descriptor.initform;
+                }
+                if !matches!(descriptor.slot_type, Value::T) {
+                    existing.slot_type = descriptor.slot_type;
+                }
+                for (key, value) in descriptor.props {
+                    if key == ":group" {
+                        // Custom groups combine across the hierarchy.
+                        let mut combined = value.to_vec().unwrap_or_default();
+                        if let Some((_, existing_group)) = existing
+                            .props
+                            .iter()
+                            .find(|(existing_key, _)| existing_key == ":group")
+                        {
+                            for member in existing_group.to_vec().unwrap_or_default() {
+                                if !combined.iter().any(|candidate| candidate == &member) {
+                                    combined.push(member);
+                                }
+                            }
+                        }
+                        let combined = Value::list(combined);
+                        match existing
+                            .props
+                            .iter_mut()
+                            .find(|(existing_key, _)| existing_key == ":group")
+                        {
+                            Some(slot) => slot.1 = combined,
+                            None => existing.props.push((key, combined)),
+                        }
+                    } else {
+                        match existing
+                            .props
+                            .iter_mut()
+                            .find(|(existing_key, _)| existing_key == &key)
+                        {
+                            Some(slot) => slot.1 = value,
+                            None => existing.props.push((key, value)),
+                        }
+                    }
                 }
             }
         } else {
@@ -287,6 +293,141 @@ fn collect_eieio_slot_descriptors(
         }
     }
     Ok(())
+}
+
+// GNU signals `invalid-slot-type' when a constant initform does not match
+// the slot's :type, and plain errors when a subclass redeclares an
+// inherited slot with a different type or protection
+// (`eieio--perform-slot-validation-for-default' / `eieio--slot-override').
+pub(crate) fn eieio_validate_class_slots(
+    interp: &mut Interpreter,
+    class_name: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if interp
+        .lookup_var("eieio-skip-typecheck", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    let mut inherited: Vec<EieioSlotDescriptor> = Vec::new();
+    if let Some(parents) = interp.get_symbol_property(class_name, "emaxx-class-parents")
+        && let Ok(parent_values) = parents.to_vec()
+    {
+        for parent in parent_values {
+            if let Ok(parent_name) = parent.as_symbol() {
+                collect_eieio_slot_descriptors(interp, parent_name, &mut inherited, false)?;
+            }
+        }
+    }
+    let mut own: Vec<EieioSlotDescriptor> = Vec::new();
+    let mut merged = inherited.clone();
+    collect_eieio_slot_descriptors(interp, class_name, &mut own, true)?;
+    collect_eieio_slot_descriptors(interp, class_name, &mut merged, true)?;
+    for descriptor in &own {
+        if inherited
+            .iter()
+            .any(|parent_slot| parent_slot.name == descriptor.name)
+        {
+            continue;
+        }
+        eieio_validate_constant_initform(interp, descriptor, env)?;
+    }
+    for descriptor in &own {
+        let Some(old) = inherited
+            .iter()
+            .find(|parent_slot| parent_slot.name == descriptor.name)
+        else {
+            continue;
+        };
+        if !matches!(descriptor.slot_type, Value::T)
+            && !crate::lisp::primitives::values_equal(interp, &descriptor.slot_type, &old.slot_type)
+        {
+            return Err(LispError::Signal(format!(
+                "Child slot type `{}' does not match inherited type `{}' for `{}'",
+                descriptor.slot_type, old.slot_type, descriptor.name
+            )));
+        }
+        let old_protection = old.props.iter().find(|(key, _)| key == ":protection");
+        let new_protection = descriptor
+            .props
+            .iter()
+            .find(|(key, _)| key == ":protection");
+        if old_protection.map(|(_, value)| value) != new_protection.map(|(_, value)| value) {
+            return Err(LispError::Signal(format!(
+                "Child slot protection does not match inherited protection for `{}'",
+                descriptor.name
+            )));
+        }
+        if descriptor.initform.is_some() {
+            // Validate the override against the inherited (merged) type.
+            let merged_slot = merged
+                .iter()
+                .find(|candidate| candidate.name == descriptor.name);
+            let mut check = descriptor.clone();
+            if let Some(merged_slot) = merged_slot {
+                check.slot_type = merged_slot.slot_type.clone();
+            }
+            eieio_validate_constant_initform(interp, &check, env)?;
+        }
+    }
+    Ok(())
+}
+
+fn eieio_validate_constant_initform(
+    interp: &mut Interpreter,
+    descriptor: &EieioSlotDescriptor,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some(initform) = &descriptor.initform else {
+        return Ok(());
+    };
+    if matches!(descriptor.slot_type, Value::T) {
+        return Ok(());
+    }
+    let constant = match initform {
+        Value::Cons(car, _) => {
+            matches!(&*car.borrow(), Value::Symbol(head) if head == "quote" || head == "function" || head == "vector-literal")
+        }
+        Value::Symbol(symbol) => symbol.starts_with(':'),
+        _ => true,
+    };
+    if !constant {
+        return Ok(());
+    }
+    let value = interp.eval(initform, env)?;
+    if !eieio_value_matches_type(interp, &value, &descriptor.slot_type, env)? {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-slot-type".into()),
+            Value::Symbol(descriptor.name.clone()),
+            descriptor.slot_type.clone(),
+            value,
+        ])));
+    }
+    Ok(())
+}
+
+pub(crate) fn eieio_value_matches_type(
+    interp: &mut Interpreter,
+    value: &Value,
+    slot_type: &Value,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    if matches!(slot_type, Value::T) || matches!(value, Value::Unbound) {
+        return Ok(true);
+    }
+    // GNU `functionp' accepts fbound symbols.
+    if matches!(slot_type, Value::Symbol(type_name) if type_name == "function")
+        && matches!(value, Value::Symbol(fn_name)
+            if is_builtin(fn_name) || interp.lookup_function(fn_name, env).is_ok())
+    {
+        return Ok(true);
+    }
+    Ok(
+        crate::lisp::primitives::call(interp, "cl-typep", &[value.clone(), slot_type.clone()], env)
+            .map(|result| result.is_truthy())
+            .unwrap_or(false),
+    )
 }
 
 pub(crate) fn eieio_slot_descriptor_record(
@@ -419,6 +560,333 @@ pub(crate) fn make_eieio_instance(
         }
     }
     Ok(record)
+}
+
+// GNU stores class-allocated slot values once per class
+// (`eieio--class-class-allocation-values'); emaxx keeps them in the same
+// per-class property used by `oset-default'.
+pub(crate) fn eieio_class_allocation_property(slot_name: &str) -> String {
+    format!("emaxx-class-default:{slot_name}")
+}
+
+fn eieio_slot_missing_dispatch(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    object: &Value,
+    slot_name: &str,
+    operation: &str,
+    new_value: Option<&Value>,
+) -> Result<Value, LispError> {
+    // GNU funnels unknown slots through the `slot-missing' generic; its
+    // default method signals `invalid-slot-name'.
+    if let Ok(function) = interp.lookup_function("slot-missing", env) {
+        let mut args = vec![
+            object.clone(),
+            Value::Symbol(slot_name.into()),
+            Value::Symbol(operation.into()),
+        ];
+        if let Some(new_value) = new_value {
+            args.push(new_value.clone());
+        }
+        return invoke_function_value(interp, &function, &args, env);
+    }
+    Err(LispError::SignalValue(Value::list([
+        Value::Symbol("invalid-slot-name".into()),
+        object.clone(),
+        Value::Symbol(slot_name.into()),
+    ])))
+}
+
+fn eieio_slot_unbound_dispatch(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    object: &Value,
+    class_name: &str,
+    slot_name: &str,
+    function_name: &str,
+) -> Result<Value, LispError> {
+    // GNU funnels unbound reads through the `slot-unbound' generic; its
+    // default method signals `unbound-slot'.
+    if let Ok(function) = interp.lookup_function("slot-unbound", env) {
+        let class = interp
+            .class_value(class_name)
+            .unwrap_or_else(|| Value::Symbol(class_name.into()));
+        return invoke_function_value(
+            interp,
+            &function,
+            &[
+                object.clone(),
+                class,
+                Value::Symbol(slot_name.into()),
+                Value::Symbol(function_name.into()),
+            ],
+            env,
+        );
+    }
+    Err(LispError::SignalValue(Value::list([
+        Value::Symbol("unbound-slot".into()),
+        Value::String(format!("Unbound slot: {slot_name}")),
+        object.clone(),
+        Value::Symbol(slot_name.into()),
+    ])))
+}
+
+fn eieio_class_allocated_value(
+    interp: &mut Interpreter,
+    class_name: &str,
+    slot: &EieioSlotSpec,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if let Some(value) =
+        interp.get_symbol_property(class_name, &eieio_class_allocation_property(&slot.name))
+    {
+        return Ok(value);
+    }
+    match &slot.initform {
+        Some(initform) => interp.eval(initform, env),
+        None => Ok(Value::Unbound),
+    }
+}
+
+pub(crate) fn eieio_oref_dispatch(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    object: &Value,
+    slot_name: &str,
+) -> Result<Value, LispError> {
+    // A class symbol (or class record) reads its class-allocated storage.
+    if let Value::Symbol(_) = object {
+        let Some(class_name) = interp.class_name_from_value(object) else {
+            return Err(LispError::TypeError(
+                "eieio-object".into(),
+                object.type_name(),
+            ));
+        };
+        if interp.class_value(&class_name).is_none() {
+            return Err(LispError::TypeError(
+                "eieio-object".into(),
+                object.type_name(),
+            ));
+        }
+        let slots = eieio_slot_specs(interp, &class_name)?;
+        if let Some(index) = eieio_slot_index(&slots, slot_name)
+            && slots[index].class_allocated
+        {
+            let value = eieio_class_allocated_value(interp, &class_name, &slots[index], env)?;
+            if matches!(value, Value::Unbound) {
+                return eieio_slot_unbound_dispatch(
+                    interp,
+                    env,
+                    object,
+                    &class_name,
+                    slot_name,
+                    "oref",
+                );
+            }
+            return Ok(value);
+        }
+        return eieio_slot_missing_dispatch(interp, env, object, slot_name, "oref", None);
+    }
+    let Value::Record(record_id) = object else {
+        return Err(LispError::TypeError(
+            "eieio-object".into(),
+            object.type_name(),
+        ));
+    };
+    let (type_name, stored) = {
+        let record = interp
+            .find_record(*record_id)
+            .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?;
+        (record.type_name.clone(), record.slots.clone())
+    };
+    let slots = eieio_slot_specs(interp, &type_name)?;
+    let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
+        return eieio_slot_missing_dispatch(interp, env, object, slot_name, "oref", None);
+    };
+    let slot_name = slots[slot_index].name.clone();
+    if slots[slot_index].class_allocated {
+        let value = eieio_class_allocated_value(interp, &type_name, &slots[slot_index], env)?;
+        if matches!(value, Value::Unbound) {
+            return eieio_slot_unbound_dispatch(
+                interp, env, object, &type_name, &slot_name, "oref",
+            );
+        }
+        return Ok(value);
+    }
+    match stored.get(slot_index) {
+        Some(Value::Unbound) | None => {
+            eieio_slot_unbound_dispatch(interp, env, object, &type_name, &slot_name, "oref")
+        }
+        Some(value) => Ok(value.clone()),
+    }
+}
+
+pub(crate) fn eieio_oset_dispatch(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    object: &Value,
+    slot_name: &str,
+    value: Value,
+) -> Result<Value, LispError> {
+    let Value::Record(record_id) = object else {
+        return Err(LispError::TypeError(
+            "eieio-object".into(),
+            object.type_name(),
+        ));
+    };
+    let type_name = interp
+        .find_record(*record_id)
+        .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{record_id}>")))?
+        .type_name
+        .clone();
+    let slots = eieio_slot_specs(interp, &type_name)?;
+    let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
+        return eieio_slot_missing_dispatch(interp, env, object, slot_name, "oset", Some(&value));
+    };
+    let skip_typecheck = interp
+        .lookup_var("eieio-skip-typecheck", env)
+        .is_some_and(|setting| setting.is_truthy());
+    if !skip_typecheck
+        && !eieio_value_matches_type(interp, &value, &slots[slot_index].slot_type.clone(), env)?
+    {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-slot-type".into()),
+            Value::Symbol(type_name.clone()),
+            Value::Symbol(slots[slot_index].name.clone()),
+            slots[slot_index].slot_type.clone(),
+            value,
+        ])));
+    }
+    // cl-defstruct slots can be :read-only.
+    if let Some(descs) = interp.get_symbol_property(&type_name, "emaxx-struct-slot-descs")
+        && let Ok(descs) = descs.to_vec()
+    {
+        for desc in descs {
+            let Ok(parts) = desc.to_vec() else { continue };
+            if parts
+                .first()
+                .and_then(|part| part.as_symbol().ok())
+                .is_some_and(|name| name == slots[slot_index].name)
+            {
+                let mut cursor = 1usize;
+                while cursor + 1 < parts.len() {
+                    if matches!(&parts[cursor], Value::Symbol(key) if key == ":read-only")
+                        && parts[cursor + 1].is_truthy()
+                    {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("eieio-read-only".into()),
+                            Value::Symbol(type_name.clone()),
+                            Value::Symbol(slots[slot_index].name.clone()),
+                        ])));
+                    }
+                    cursor += 1;
+                }
+                break;
+            }
+        }
+    }
+    if slots[slot_index].class_allocated {
+        interp.put_symbol_property(
+            &type_name,
+            &eieio_class_allocation_property(&slots[slot_index].name),
+            value.clone(),
+        );
+        return Ok(value);
+    }
+    set_eieio_slot_value(interp, object, slot_name, value)
+}
+
+pub(crate) fn eieio_slot_makeunbound(
+    interp: &mut Interpreter,
+    object: &Value,
+    slot_name: &str,
+) -> Result<Value, LispError> {
+    let (class_name, record_id) = match object {
+        Value::Record(id) => (
+            interp
+                .find_record(*id)
+                .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?
+                .type_name
+                .clone(),
+            Some(*id),
+        ),
+        other => match interp.class_name_from_value(other) {
+            Some(class_name) if interp.class_value(&class_name).is_some() => (class_name, None),
+            _ => {
+                return Err(LispError::TypeError(
+                    "eieio-object".into(),
+                    object.type_name(),
+                ));
+            }
+        },
+    };
+    let slots = eieio_slot_specs(interp, &class_name)?;
+    let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
+        return Err(LispError::SignalValue(Value::list([
+            Value::Symbol("invalid-slot-name".into()),
+            object.clone(),
+            Value::Symbol(slot_name.into()),
+        ])));
+    };
+    if slots[slot_index].class_allocated {
+        interp.put_symbol_property(
+            &class_name,
+            &eieio_class_allocation_property(&slots[slot_index].name),
+            Value::Unbound,
+        );
+    } else if let Some(record_id) = record_id
+        && let Some(record) = interp.find_record_mut(record_id)
+        && let Some(slot) = record.slots.get_mut(slot_index)
+    {
+        *slot = Value::Unbound;
+    }
+    Ok(Value::Nil)
+}
+
+pub(crate) fn eieio_slot_boundp(
+    interp: &Interpreter,
+    object: &Value,
+    slot_name: &str,
+) -> Result<Value, LispError> {
+    let (class_name, record_id) = match object {
+        Value::Record(id) => (
+            interp
+                .find_record(*id)
+                .ok_or_else(|| LispError::TypeError("eieio-object-p".into(), object.type_name()))?
+                .type_name
+                .clone(),
+            Some(*id),
+        ),
+        other => match interp.class_name_from_value(other) {
+            Some(class_name) if interp.class_value(&class_name).is_some() => (class_name, None),
+            _ => {
+                return Err(LispError::TypeError(
+                    "eieio-object-p".into(),
+                    object.type_name(),
+                ));
+            }
+        },
+    };
+    let slots = eieio_slot_specs(interp, &class_name)?;
+    let Some(slot_index) = eieio_slot_index(&slots, slot_name) else {
+        return Ok(Value::Nil);
+    };
+    if slots[slot_index].class_allocated {
+        let bound = match interp.get_symbol_property(
+            &class_name,
+            &eieio_class_allocation_property(&slots[slot_index].name),
+        ) {
+            Some(Value::Unbound) => false,
+            Some(_) => true,
+            None => slots[slot_index].initform.is_some(),
+        };
+        return Ok(if bound { Value::T } else { Value::Nil });
+    }
+    let bound = record_id
+        .and_then(|record_id| interp.find_record(record_id))
+        .and_then(|record| record.slots.get(slot_index))
+        .is_some_and(|value| !matches!(value, Value::Unbound));
+    Ok(if bound { Value::T } else { Value::Nil })
 }
 
 pub(crate) fn eieio_slot_value(
