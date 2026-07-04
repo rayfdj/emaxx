@@ -122,7 +122,10 @@ impl Interpreter {
                         "not" => return self.sf_not(&items, env),
                         "progn" => return self.sf_progn(&items[1..], env),
                         "delay-mode-hooks" => {
-                            env.push(vec![("delay-mode-hooks".into(), Value::T)]);
+                            Self::push_marked_frame(
+                                env,
+                                vec![("delay-mode-hooks".into(), Value::T)],
+                            );
                             let result = self.sf_progn(&items[1..], env);
                             env.pop();
                             return result;
@@ -666,7 +669,6 @@ impl Interpreter {
                         arg_idx += 1;
                     }
                 }
-
                 let backtrace_function = original_name
                     .map(|name| Value::Symbol(name.to_string()))
                     .unwrap_or_else(|| func.clone());
@@ -676,12 +678,17 @@ impl Interpreter {
                     frame.clone(),
                     true,
                 );
+                frame.push(Self::fresh_frame_identity());
                 let previous_activation = self.enter_activation();
                 let result = if closure_env.borrow().is_empty() {
+                    // Truncate (not pop) at the call boundary: a non-local
+                    // exit can leave binding frames above the argument frame,
+                    // and those must not leak into the caller's environment.
+                    let caller_len = env.len();
                     let mut call_env = env.clone();
                     call_env.push(frame);
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
-                    call_env.pop();
+                    call_env.truncate(caller_len);
                     env.clear();
                     env.extend(call_env);
                     result
@@ -693,9 +700,10 @@ impl Interpreter {
                     let caller_len = env.len();
                     let mut call_env = env.clone();
                     call_env.extend(closure_env.borrow().iter().cloned());
+                    let captured_len = call_env.len();
                     call_env.push(frame);
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
-                    call_env.pop();
+                    call_env.truncate(captured_len);
                     let captured: Vec<_> = call_env.drain(caller_len..).collect();
                     env.clear();
                     env.extend(call_env);
@@ -707,17 +715,18 @@ impl Interpreter {
                     result
                 } else if body_has_marker(body, ":closure-isolated-current-env") {
                     let mut call_env = closure_env.borrow().clone();
+                    let captured_len = call_env.len();
                     call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)]);
                     call_env.push(frame);
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
-                    call_env.pop();
-                    call_env.pop();
+                    call_env.truncate(captured_len);
                     result
                 } else {
                     self.eval_with_closure_env(closure_env, env, |interp, call_env| {
+                        let depth = call_env.len();
                         call_env.push(frame);
                         let result = interp.sf_progn(function_executable_body(body), call_env);
-                        call_env.pop();
+                        call_env.truncate(depth);
                         result
                     })
                 };

@@ -191,15 +191,27 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 1965/7080` repair batch is complete: an 81-file verified-prefix
-sweep drove fixes across cl-lib/cl-macs/cl-seq (GNU engines ported into
-`src/lisp/simple_compat.el` plus native fast paths for the cl-seq sequence
-functions), bookmark, dired (including `insert-char' INHERIT for bug27899),
-bytecomp (dodgy-args, wide docstrings, non-top-level autoload,
-no-byte-compile), backquote-aware `macroexpand-all', isolated
-macro-environment expander calls, and `cl--find-class'. Known-remaining
-mismatches are documented in `docs/compatibility-goal.md` (cedet cluster,
-autorevert, dabbrev order-dependence, one char-fold selector, cl-flet/edebug).
-The next agent should start with selector 1966 in
+The `Compat 1965/7080` repair batches are complete: the 81-file
+verified-prefix sweep went from 63 (start of the repair effort) to 79
+passing files (sweep verified 2026-07-04). The third batch fixed:
+asynchronous file notifications delivered from the idle pump with
+per-watch path filtering, `kill-local-variable' discarding buffer-local
+hooks, ERT tests registered under the `ert--test' symbol property and run
+in alphabetical order (GNU's `apropos-internal' order), the `mock' Tramp
+method registration when ert-x is required after tramp,
+`cl-defmethod' dispatch unification of method parameter names through an
+implicit generic lambda list (sibling methods no longer shadow each
+other), `(satisfies PRED)' in `cl-typep', `#'cl-call-next-method' rewrite
+inside `apply', marker-safe c-family indentation, buffer-absolute bounds
+for namespace members in the native C++ parser, destructor
+`:destructor-flag', `write-file' running `after-set-visited-file-name-hook'
+with a buffer rename, and native `semantic-current-tag-of-class'/
+`semantic-find-tag-by-overlay-prev'/`-next'/cross-file `semantic-go-to-tag'.
+Known-remaining mismatches: `autorevert-tests.el' (remote selectors need
+Tramp-path preservation in visited buffers) and
+`semantic-utest-ia.el' (doublens ^4^ overload pairing, subclass
+per-parent impl/proto disambiguation) — details in
+`docs/compatibility-goal.md`. The next agent should finish those two
+files, then continue with selector 1966 in
 `test/lisp/emacs-lisp/eieio-tests/eieio-test-persist.el` (object
 persistence), then `eieio-tests.el` (loads now; 31 failures).

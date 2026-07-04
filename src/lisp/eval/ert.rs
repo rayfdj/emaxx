@@ -126,6 +126,34 @@ impl Interpreter {
             items[cursor..].to_vec(),
             shared_env(env.clone()),
         );
+        // Mirror `ert-set-test': tests are also reachable through the
+        // `ert--test' symbol property as an `ert-test' struct, which
+        // `ert-get-test' and the struct accessors read.
+        let docstring = items
+            .get(3)
+            .filter(|value| matches!(value, Value::String(_)))
+            .cloned()
+            .unwrap_or(Value::Nil);
+        let record = self.create_record(
+            "ert-test",
+            vec![
+                Value::Symbol(name.clone()),
+                docstring,
+                body.clone(),
+                Value::Nil,
+                Value::Symbol(expected_result.clone()),
+                Value::list(
+                    tags.iter()
+                        .map(|tag| Value::Symbol(tag.clone()))
+                        .collect::<Vec<_>>(),
+                ),
+                self.current_load_file
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ],
+        );
+        self.put_symbol_property(&name, "ert--test", record);
         self.ert_tests.push(ErtTestDefinition {
             name,
             body,
@@ -214,12 +242,15 @@ impl Interpreter {
     }
 
     pub fn run_ert_tests_with_selector(&mut self, selector: Option<&Value>) -> BatchSummary {
-        let tests: Vec<ErtTestDefinition> = self
+        let mut tests: Vec<ErtTestDefinition> = self
             .ert_tests
             .iter()
             .filter(|test| selector.is_none_or(|selector| selector_matches(selector, test)))
             .cloned()
             .collect();
+        // GNU's selector `t' enumerates tests through `apropos-internal',
+        // which yields symbols in alphabetical order.
+        tests.sort_by(|left, right| left.name.cmp(&right.name));
         let mut summary = BatchSummary::default();
         self.test_results.clear();
         self.last_selected_tests = tests.iter().map(|test| test.name.clone()).collect();

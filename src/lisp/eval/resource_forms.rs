@@ -72,8 +72,14 @@ impl Interpreter {
         };
 
         self.condition_case_depth += 1;
+        let depth = env.len();
         let body_result = self.eval(&items[2], env);
         self.condition_case_depth = self.condition_case_depth.saturating_sub(1);
+        // An error unwinds any binding frames the body pushed before
+        // signaling, like GNU's unbind_to at the handler point.
+        if env.len() > depth {
+            env.truncate(depth);
+        }
         match body_result {
             Ok(val) => {
                 for handler in &items[3..] {
@@ -83,7 +89,7 @@ impl Interpreter {
                         continue;
                     }
                     if let Some(ref var_name) = var {
-                        env.push(vec![(var_name.clone(), val.clone())]);
+                        Self::push_marked_frame(env, vec![(var_name.clone(), val.clone())]);
                     }
                     let result = self.sf_progn(&parts[1..], env);
                     if let (Some(var_name), Ok(value)) = (&var, &result)
@@ -127,7 +133,10 @@ impl Interpreter {
                         continue;
                     }
                     if let Some(ref var_name) = var {
-                        env.push(vec![(var_name.clone(), error_condition_value(&e))]);
+                        Self::push_marked_frame(
+                            env,
+                            vec![(var_name.clone(), error_condition_value(&e))],
+                        );
                     }
                     let result = self.sf_progn(&parts[1..], env);
                     if let (Some(var_name), Ok(value)) = (&var, &result)
@@ -308,7 +317,7 @@ impl Interpreter {
         let special_restore = if self.is_special_variable(&name) {
             Some(self.bind_special_variable(&name, Value::String(String::new()), env)?)
         } else {
-            env.push(vec![(name.clone(), Value::String(String::new()))]);
+            Self::push_marked_frame(env, vec![(name.clone(), Value::String(String::new()))]);
             None
         };
         self.message_capture_stack.push(MessageCapture {
@@ -492,7 +501,7 @@ impl Interpreter {
             )?;
             frame.push((buffer_name, Self::stored_value(buffer)));
         }
-        env.push(frame);
+        Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[index..], env);
         env.pop();
         let _ = if directory.is_truthy() {
@@ -1176,7 +1185,7 @@ impl Interpreter {
         let mut frame = Vec::new();
         self.bind_cl_pattern(&items[1], val, &mut frame)?;
 
-        env.push(frame);
+        Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[3..], env);
         env.pop();
         result
@@ -1194,7 +1203,7 @@ impl Interpreter {
             ));
         }
         let bindings = items[1].to_vec()?;
-        env.push(Vec::new());
+        Self::push_marked_frame(env, Vec::new());
         let mut rebound = Vec::new();
         let mut rebound_places = Vec::new();
         let mut special_restores = Vec::new();
@@ -1404,7 +1413,7 @@ impl Interpreter {
             let lambda = Value::Lambda(params, body, shared_env(env.clone()));
             frame.push((fname, lambda));
         }
-        env.push(frame);
+        Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         result
@@ -1445,7 +1454,7 @@ impl Interpreter {
         captured.push(frame.clone());
         *closure_env.borrow_mut() = captured;
 
-        env.push(frame);
+        Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         result

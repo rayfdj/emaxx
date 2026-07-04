@@ -454,15 +454,43 @@ pub(crate) fn write_file_value(
     let coding = current_write_coding(interp, env, &text, true)?;
     let bytes = encode_text_bytes(interp, &text, &coding)?;
     fs::write(&path, &bytes).map_err(|error| LispError::Signal(error.to_string()))?;
+    let visiting_new_file = interp.buffer.file.as_deref() != Some(path.as_str());
     interp.buffer.file = Some(path.clone());
     interp.buffer.file_truename = Some(path.clone());
     interp.buffer.set_unmodified();
+    let modtime = file_modtime(&path)?;
+    interp.buffer.set_visited_file_modtime(modtime);
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
         "buffer-file-coding-system",
         Value::Symbol(coding.clone()),
     );
     set_last_coding_system_used(interp, &coding, env);
+    if visiting_new_file {
+        // `write-file' goes through `set-visited-file-name': the buffer is
+        // renamed after the new file and the update hook runs (auto-revert
+        // re-watches the new name from it).
+        let new_name = file_name_nondirectory(&path);
+        if !new_name.is_empty() && interp.buffer.name != new_name && !interp.has_buffer(&new_name) {
+            let old_name = interp.buffer.name.clone();
+            if let Some(entry_position) = interp
+                .buffer_list
+                .iter()
+                .position(|(_, name)| *name == old_name)
+            {
+                interp.buffer_list[entry_position].1 = new_name.clone();
+            }
+            interp.buffer.last_name = Some(old_name);
+            interp.buffer.name = new_name;
+        }
+        let hook_buffer = Some(interp.current_buffer_id());
+        run_named_hooks(
+            interp,
+            "after-set-visited-file-name-hook",
+            &mut Env::new(),
+            hook_buffer,
+        )?;
+    }
     Ok(Value::String(path))
 }
 
@@ -1226,6 +1254,17 @@ pub(crate) fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Resu
     let Some(path) = interp.buffer.file.clone() else {
         return Ok(());
     };
+    // GNU revert-buffer--default runs `before-revert-hook' before rereading
+    // the file; a hook may delete it, making the reread below fail with the
+    // buffer contents untouched (auto-revert's deleted-file handling).
+    let hook_buffer = interp.current_buffer_id();
+    let mut hook_env = crate::lisp::types::Env::new();
+    crate::lisp::primitives::run_named_hooks(
+        interp,
+        "before-revert-hook",
+        &mut hook_env,
+        Some(hook_buffer),
+    )?;
     let (text, coding, multibyte) = current_buffer_file_text(interp, env, &path)?;
     let current_id = interp.current_buffer_id();
     let related = interp.related_buffer_ids(current_id);
@@ -1292,6 +1331,12 @@ pub(crate) fn revert_current_buffer(interp: &mut Interpreter, env: &Env) -> Resu
             Value::Symbol(coding.clone()),
         );
     }
+    crate::lisp::primitives::run_named_hooks(
+        interp,
+        "after-revert-hook",
+        &mut hook_env,
+        Some(hook_buffer),
+    )?;
     Ok(())
 }
 

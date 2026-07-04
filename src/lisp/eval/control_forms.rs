@@ -54,7 +54,7 @@ impl Interpreter {
             ));
         }
         let bindings = items[1].to_vec()?;
-        env.push(Vec::new());
+        Self::push_marked_frame(env, Vec::new());
         for binding in bindings {
             let value = match binding {
                 Value::Symbol(name) => self.lookup(&name, env)?,
@@ -125,7 +125,7 @@ impl Interpreter {
             ));
         }
         let bindings = items[1].to_vec()?;
-        env.push(Vec::new());
+        Self::push_marked_frame(env, Vec::new());
         let mut last_value = Value::T;
         for binding in bindings {
             let value = match binding {
@@ -337,7 +337,7 @@ impl Interpreter {
             }
             let mut bindings = Vec::new();
             if pcase_pattern_bindings(self, env, &clause_items[0], &value, &mut bindings)? {
-                env.push(bindings);
+                Self::push_marked_frame(env, bindings);
                 let result = self.sf_progn(&clause_items[1..], env);
                 env.pop();
                 return result;
@@ -409,7 +409,14 @@ impl Interpreter {
             return Err(LispError::WrongNumberOfArgs("catch".into(), 0));
         }
         let tag = self.eval(&items[1], env)?;
-        match self.sf_progn(&items[2..], env) {
+        let depth = env.len();
+        let result = self.sf_progn(&items[2..], env);
+        // A non-local exit unwinds any binding frames pushed between the
+        // catch and the throw, like GNU's unbind_to at the catch point.
+        if env.len() > depth {
+            env.truncate(depth);
+        }
+        match result {
             Ok(value) => Ok(value),
             Err(LispError::Throw(thrown_tag, value)) if thrown_tag == tag => Ok(value),
             Err(error) => Err(error),
@@ -557,7 +564,8 @@ impl Interpreter {
         for (name, value) in special_bindings {
             restores.push(self.bind_special_variable(&name, value, env)?);
         }
-        env.push(frame);
+        frame.push(Self::fresh_frame_identity());
+        Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         for restore in restores.into_iter().rev() {
@@ -599,7 +607,8 @@ impl Interpreter {
             }
         }
 
-        env.push(frame);
+        frame.push(Self::fresh_frame_identity());
+        Self::push_marked_frame(env, frame);
         for (name, initializer) in names.iter().zip(initializers.iter()) {
             let value = if let Some(initializer) = initializer {
                 self.eval(initializer, env)?
@@ -629,7 +638,7 @@ impl Interpreter {
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
         let bindings = items[1].to_vec()?;
-        env.push(Vec::new());
+        env.push(vec![Self::fresh_frame_identity()]);
         let mut restores = Vec::new();
 
         for binding in &bindings {
@@ -709,7 +718,7 @@ impl Interpreter {
         }
         let bindings = items[1].to_vec()?;
         if sequential {
-            env.push(Vec::new());
+            Self::push_marked_frame(env, Vec::new());
             for binding in &bindings {
                 let parts = binding.to_vec()?;
                 if parts.len() < 2 {
@@ -786,7 +795,7 @@ impl Interpreter {
             };
             frame.push((format!(".{symbol}"), Self::stored_value(value)));
         }
-        env.push(frame);
+        Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
         result

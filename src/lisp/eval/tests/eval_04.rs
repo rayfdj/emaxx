@@ -671,6 +671,9 @@ fn file_notifications_drive_global_auto_revert_without_polling() {
                          (global-auto-revert-mode 1)
                          (let ((desc auto-revert-notify-watch-descriptor))
                            (write-region "changed" nil "{path_text}" nil 'no-message)
+                           ;; Notifications are delivered when the command
+                           ;; loop goes idle, as in GNU Emacs.
+                           (sleep-for 0)
                            (list (eq file-notify--library 'kqueue)
                                  (file-notify-valid-p desc)
                                  (equal desc

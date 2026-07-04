@@ -385,7 +385,8 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     let result = entry_hooks
         .and_then(|()| run_kbd_macro_events(interp, env))
         // With no more events to dispatch the command loop goes idle, which
-        // fires due timers.
+        // processes queued file notifications and fires due timers.
+        .and_then(|()| interp.run_pending_file_notifications(env))
         .and_then(|()| interp.run_pending_timers(env));
     interp.command_loop_recursion_depth -= 1;
     match result {

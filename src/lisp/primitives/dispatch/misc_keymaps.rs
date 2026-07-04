@@ -235,6 +235,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "semanticdb-find-tags-for-completion"
             | "semantic-fetch-tags"
             | "semantic-current-tag"
+            | "semantic-current-tag-of-class"
+            | "semantic-find-tag-by-overlay-prev"
+            | "semantic-find-tag-by-overlay-next"
             | "semantic-ctxt-current-symbol"
             | "semantic-ctxt-current-symbol-and-bounds"
             | "bounds-of-thing-at-point"
@@ -2569,6 +2572,38 @@ pub(super) fn call(
             need_arg_range(name, args, 0, 1)?;
             semantic_current_tag_compat(interp, env)
         }
+        "semantic-current-tag-of-class" => {
+            need_args(name, args, 1)?;
+            let target_class = args[0].as_symbol()?.to_string();
+            semantic_current_tag_of_class_compat(interp, env, &target_class)
+        }
+        "semantic-find-tag-by-overlay-prev" | "semantic-find-tag-by-overlay-next" => {
+            need_arg_range(name, args, 0, 2)?;
+            let start = match args.first() {
+                Some(value) if value.is_truthy() => value.as_integer()?,
+                _ => interp.buffer.point() as i64,
+            };
+            let tags = semantic_fetch_tags_compat(interp, env)?
+                .to_vec()
+                .unwrap_or_default();
+            let mut flat = Vec::new();
+            semantic_flatten_tags(&tags, &mut flat);
+            let forward = name.ends_with("next");
+            let mut best: Option<(i64, Value)> = None;
+            for tag in flat {
+                let Some((tag_start, tag_end)) = semantic_tag_bounds(&tag) else {
+                    continue;
+                };
+                if forward {
+                    if tag_start > start && best.as_ref().is_none_or(|(pos, _)| tag_start < *pos) {
+                        best = Some((tag_start, tag));
+                    }
+                } else if tag_end <= start && best.as_ref().is_none_or(|(pos, _)| tag_end >= *pos) {
+                    best = Some((tag_end, tag));
+                }
+            }
+            Ok(best.map(|(_, tag)| tag).unwrap_or(Value::Nil))
+        }
         "semantic-ctxt-current-symbol" => {
             need_args(name, args, 0)?;
             Ok(semantic_ctxt_current_symbol(interp)
@@ -3289,6 +3324,10 @@ fn semantic_analyze_tag_references(
     let mut impls = Vec::new();
     let mut protos = Vec::new();
     collect_semantic_function_references(&tags, &key, &mut impls, &mut protos);
+    // The search tags concatenate the table's tag list with a fresh parse of
+    // the same file (plus includes), so the same definition shows up twice.
+    dedup_equal_semantic_tags(&mut impls);
+    dedup_equal_semantic_tags(&mut protos);
     if protos.is_empty() && impls.len() > 1 {
         protos.push(impls.remove(0));
     } else if protos.is_empty() && impls.len() == 1 {
@@ -3299,6 +3338,82 @@ fn semantic_analyze_tag_references(
         Value::list(impls),
         Value::list(protos),
     ]))
+}
+
+fn dedup_equal_semantic_tags(tags: &mut Vec<Value>) {
+    // Ignore the properties slot: the same definition may appear once bare
+    // (from the table) and once annotated with `:filename'.
+    fn dedup_key(tag: &Value) -> Value {
+        let Ok(mut items) = tag.to_vec() else {
+            return tag.clone();
+        };
+        if items.len() >= 4 {
+            items[3] = Value::Nil;
+        }
+        Value::list(items)
+    }
+    let mut seen: Vec<Value> = Vec::new();
+    tags.retain(|tag| {
+        let key = dedup_key(tag);
+        if seen.iter().any(|existing| existing == &key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
+}
+
+/// Stamp TAGS (and their members) with a `:filename' property so jumps can
+/// switch to the file the tag came from, like semanticdb tags in GNU.
+fn annotate_semantic_tags_with_filename(tags: Vec<Value>, path: &str) -> Vec<Value> {
+    fn annotate(tag: &Value, path: &str) -> Value {
+        let Ok(mut items) = tag.to_vec() else {
+            return tag.clone();
+        };
+        if items.len() < 5 {
+            items.resize(5, Value::Nil);
+        }
+        if items[3].is_nil() {
+            items[3] = Value::list([
+                Value::Symbol(":filename".into()),
+                Value::String(path.into()),
+            ]);
+        }
+        if let Ok(attrs) = items[2].to_vec() {
+            let mut new_attrs = attrs;
+            let mut index = 0usize;
+            while index + 1 < new_attrs.len() {
+                if matches!(&new_attrs[index], Value::Symbol(symbol) if symbol == ":members")
+                    && let Ok(members) = new_attrs[index + 1].to_vec()
+                {
+                    new_attrs[index + 1] = Value::list(
+                        members
+                            .iter()
+                            .map(|member| annotate(member, path))
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                index += 2;
+            }
+            items[2] = Value::list(new_attrs);
+        }
+        Value::list(items)
+    }
+    tags.iter().map(|tag| annotate(tag, path)).collect()
+}
+
+fn semantic_tag_filename(tag: &Value) -> Option<String> {
+    let items = tag.to_vec().ok()?;
+    let props = items.get(3)?.to_vec().ok()?;
+    let mut index = 0usize;
+    while index + 1 < props.len() {
+        if matches!(&props[index], Value::Symbol(symbol) if symbol == ":filename") {
+            return string_text(&props[index + 1]).ok();
+        }
+        index += 2;
+    }
+    None
 }
 
 fn semantic_analyze_refs_part(refs: &Value, index: usize) -> Result<Value, LispError> {
@@ -3662,6 +3777,13 @@ fn semantic_tags_equivalent(left: &Value, right: &Value) -> bool {
     {
         return false;
     }
+    // GNU compares positions whenever both tags carry them: a prototype and
+    // its implementation share a name but are NOT equivalent.
+    match (semantic_tag_bounds(left), semantic_tag_bounds(right)) {
+        (Some(left_bounds), Some(right_bounds)) => return left_bounds == right_bounds,
+        (None, None) => {}
+        _ => return false,
+    }
     if left_class.as_deref() == Some("function") {
         return semantic_function_signature_matches(
             &semantic_function_signature_key(left),
@@ -3680,10 +3802,28 @@ fn semantic_go_to_tag(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let items = tag.to_vec()?;
+    // Tags from other files carry a `:filename' property; the jump has to
+    // land in that file's buffer, as in GNU.
+    if let Some(filename) = semantic_tag_filename(tag)
+        && interp.buffer.file.as_deref() != Some(filename.as_str())
+    {
+        let buffer = super::call(
+            interp,
+            "find-file-noselect",
+            &[Value::String(filename)],
+            env,
+        )?;
+        super::call(interp, "set-buffer", &[buffer], env)?;
+    }
     if let Some(Value::Overlay(overlay_id)) = items.get(4)
         && let Some(overlay) = interp.find_overlay(*overlay_id)
     {
         interp.buffer.goto_char(overlay.beg);
+        interp.set_variable("__emaxx-semantic-current-tag-override", tag.clone(), env);
+        return Ok(tag.clone());
+    }
+    if let Some((start, _)) = semantic_tag_bounds(tag) {
+        interp.buffer.goto_char(start.max(1) as usize);
         interp.set_variable("__emaxx-semantic-current-tag-override", tag.clone(), env);
         return Ok(tag.clone());
     }
@@ -5120,6 +5260,26 @@ fn semanticdb_find_tags_for_completion(
 }
 
 fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result<Value, LispError> {
+    // GNU keeps a per-buffer tag cache and re-fetching returns the SAME tag
+    // objects while the buffer is unchanged (callers compare tags with `eq').
+    let buffer_id = interp.current_buffer_id();
+    let fingerprint = {
+        use std::hash::{Hash, Hasher};
+        let source = interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        source.hash(&mut hasher);
+        hasher.finish() as i64
+    };
+    if let Some(cache) = interp.buffer_local_value(buffer_id, "emaxx--semantic-tag-cache")
+        && let Some((stored, tags_value)) = cache.cons_values()
+        && stored == Value::Integer(fingerprint)
+    {
+        interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
+        return Ok(tags_value);
+    }
+    let mut cacheable = true;
     let tags = if let Some(path) = interp
         .buffer
         .file
@@ -5194,6 +5354,7 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
             .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())?;
         parse_semantic_html_tags(&source)
     } else {
+        cacheable = false;
         interp
             .lookup_var("semanticdb-current-table", env)
             .and_then(|table| eieio_slot_value(interp, &table, "tags").ok())
@@ -5201,14 +5362,22 @@ fn semantic_fetch_tags_compat(interp: &mut Interpreter, env: &mut Env) -> Result
             .unwrap_or_default()
     };
 
+    let result = Value::list(tags);
     if let Some(table) = interp
         .lookup_var("semanticdb-current-table", env)
         .filter(|table| !table.is_nil())
     {
-        let _ = set_eieio_slot_value(interp, &table, "tags", Value::list(tags.clone()));
+        let _ = set_eieio_slot_value(interp, &table, "tags", result.clone());
+    }
+    if cacheable {
+        interp.set_buffer_local_value(
+            buffer_id,
+            "emaxx--semantic-tag-cache",
+            Value::cons(Value::Integer(fingerprint), result.clone()),
+        );
     }
     interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
-    Ok(Value::list(tags))
+    Ok(result)
 }
 
 fn parse_semantic_html_tags(source: &str) -> Vec<Value> {
@@ -5657,6 +5826,16 @@ fn cl_typep_matches(
                 .iter()
                 .any(|member| crate::lisp::primitives::values_equal(interp, value, member)));
         }
+        if operator == "satisfies" && items.len() == 2 {
+            let predicate = items[1].clone();
+            return Ok(crate::lisp::primitives::call_function_value(
+                interp,
+                &predicate,
+                std::slice::from_ref(value),
+                env,
+            )?
+            .is_truthy());
+        }
         if operator == "subclass" && items.len() == 2 {
             let Ok(target) = items[1].as_symbol() else {
                 return Ok(false);
@@ -5942,6 +6121,18 @@ fn semantic_current_tag_compat(
         return Ok(tag);
     }
     if interp.buffer.point() != interp.buffer.point_min() {
+        // Fall back to the parsed tag tree: the innermost leaf containing
+        // point, like tags found through overlays in GNU.
+        let tags = semantic_fetch_tags_compat(interp, env)?
+            .to_vec()
+            .unwrap_or_default();
+        let point = interp.buffer.point() as i64;
+        let mut chain = Vec::new();
+        semantic_containment_chain(&tags, point, &mut chain);
+        if let Some(innermost) = chain.last() {
+            interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
+            return Ok(innermost.clone());
+        }
         interp.set_variable("__emaxx-semantic-current-tag-override", Value::Nil, env);
         return Ok(Value::Nil);
     }
@@ -6131,7 +6322,10 @@ fn semantic_tags_for_search(
         let Some(path) = semantic_include_path(interp, table, &include_tag) else {
             continue;
         };
-        tags.extend(cached_semantic_cpp_tags(&path));
+        tags.extend(annotate_semantic_tags_with_filename(
+            cached_semantic_cpp_tags(&path),
+            &path.to_string_lossy(),
+        ));
     }
     Ok(tags)
 }
@@ -6156,7 +6350,10 @@ fn extend_semantic_c_like_table_tags(
             base.join(&path)
         };
         let parsed = cached_semantic_cpp_tags(&parse_path);
-        append_semantic_search_tags(tags, parsed.clone());
+        append_semantic_search_tags(
+            tags,
+            annotate_semantic_tags_with_filename(parsed.clone(), &parse_path.to_string_lossy()),
+        );
         for tag in &parsed {
             if let Some(expanded) = expand_semantic_namespace_includes_for_search(tag, &base) {
                 tags.push(expanded);
@@ -6169,7 +6366,33 @@ fn extend_semantic_c_like_table_tags(
             let Some(include_path) = semantic_include_path_from_base(&base, include_tag) else {
                 continue;
             };
-            append_semantic_search_tags(tags, cached_semantic_cpp_tags(&include_path));
+            append_semantic_search_tags(
+                tags,
+                annotate_semantic_tags_with_filename(
+                    cached_semantic_cpp_tags(&include_path),
+                    &include_path.to_string_lossy(),
+                ),
+            );
+        }
+        // A header's implementations usually live in the same-stem source
+        // file next to it; GNU finds them through the directory's
+        // semanticdb.  Scan the sibling sources.
+        if matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("h" | "hh" | "hpp")
+        ) {
+            for source_ext in ["cpp", "cc", "cxx", "c"] {
+                let sibling = parse_path.with_extension(source_ext);
+                if sibling.is_file() {
+                    append_semantic_search_tags(
+                        tags,
+                        annotate_semantic_tags_with_filename(
+                            cached_semantic_cpp_tags(&sibling),
+                            &sibling.to_string_lossy(),
+                        ),
+                    );
+                }
+            }
         }
     }
 }
@@ -6323,9 +6546,412 @@ fn semantic_table_file_path(interp: &mut Interpreter, table: &Value) -> Option<P
 
 fn parse_semantic_cpp_tags_at_path(path: &Path, source: &str) -> Vec<Value> {
     let cleaned = strip_cpp_comments(source);
+    let cleaned = expand_cpp_spp_macros(&cleaned);
     let base_dir = path.parent().map(Path::to_path_buf);
     let mut parser = CppTagParser::new(&cleaned, base_dir);
     parser.parse_until(None)
+}
+
+/// A single preprocessor token plus the macro names whose expansions it came
+/// from (the CPP hide set, for recursion prevention).
+#[derive(Clone)]
+struct SppToken {
+    text: String,
+    hide: Vec<String>,
+}
+
+#[derive(Clone)]
+struct SppMacro {
+    params: Option<Vec<String>>,
+    body: Vec<String>,
+}
+
+/// Emulate semantic's lexical preprocessor: collect `#define' macros (plus
+/// the builtin symbol map from semantic/bovine/c.el and its G++/VC++
+/// namespace-hack analyzers) and substitute them through the rest of the
+/// text, so the parse of a macro-using file matches the parse of its
+/// hand-expanded counterpart.
+fn expand_cpp_spp_macros(source: &str) -> String {
+    let builtin_names = [
+        "__THROW",
+        "__const",
+        "__restrict",
+        "__attribute_pure__",
+        "__attribute_malloc__",
+        "__nonnull",
+        "__wur",
+        "_GLIBCXX_BEGIN_NAMESPACE",
+        "_GLIBCXX_END_NAMESPACE",
+        "_GLIBCXX_BEGIN_NESTED_NAMESPACE",
+        "_GLIBCXX_END_NESTED_NAMESPACE",
+        "_STD_BEGIN",
+        "_STD_END",
+    ];
+    if !source.contains("#define") && !builtin_names.iter().any(|name| source.contains(name)) {
+        return source.to_string();
+    }
+
+    let tokenize = |text: &str| -> Vec<String> {
+        let bytes = text.as_bytes();
+        let mut tokens = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if byte.is_ascii_alphabetic() || byte == b'_' {
+                let start = index;
+                while index < bytes.len()
+                    && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+                {
+                    index += 1;
+                }
+                tokens.push(text[start..index].to_string());
+            } else if byte == b'#' && bytes.get(index + 1) == Some(&b'#') {
+                tokens.push("##".to_string());
+                index += 2;
+            } else if byte == b'"' || byte == b'\'' {
+                let quote = byte;
+                let start = index;
+                index += 1;
+                while index < bytes.len() && bytes[index] != quote {
+                    if bytes[index] == b'\\' {
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                index = (index + 1).min(bytes.len());
+                tokens.push(text[start..index].to_string());
+            } else if byte == b' ' || byte == b'\t' {
+                let start = index;
+                while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b'\t') {
+                    index += 1;
+                }
+                tokens.push(text[start..index].to_string());
+            } else {
+                tokens.push((byte as char).to_string());
+                index += 1;
+            }
+        }
+        tokens
+    };
+
+    let mut macros: std::collections::HashMap<String, SppMacro> = std::collections::HashMap::new();
+    let simple = |body: &str| SppMacro {
+        params: None,
+        body: tokenize(body)
+            .into_iter()
+            .filter(|t| !t.trim().is_empty())
+            .collect(),
+    };
+    macros.insert("__THROW".into(), simple(""));
+    macros.insert("__const".into(), simple("const"));
+    macros.insert("__restrict".into(), simple(""));
+    macros.insert("__attribute_pure__".into(), simple(""));
+    macros.insert("__attribute_malloc__".into(), simple(""));
+    macros.insert("__nonnull".into(), simple(""));
+    macros.insert("__wur".into(), simple(""));
+    macros.insert("_STD_BEGIN".into(), simple("namespace std {"));
+    macros.insert("_STD_END".into(), simple("}"));
+    macros.insert("_GLIBCXX_END_NAMESPACE".into(), simple("}"));
+    macros.insert("_GLIBCXX_END_NESTED_NAMESPACE".into(), simple("} }"));
+    macros.insert(
+        "_GLIBCXX_BEGIN_NAMESPACE".into(),
+        SppMacro {
+            params: Some(vec!["X".into()]),
+            body: vec!["namespace".into(), "X".into(), "{".into()],
+        },
+    );
+    macros.insert(
+        "_GLIBCXX_BEGIN_NESTED_NAMESPACE".into(),
+        SppMacro {
+            params: Some(vec!["X".into(), "Y".into()]),
+            body: vec![
+                "namespace".into(),
+                "X".into(),
+                "{".into(),
+                "namespace".into(),
+                "Y".into(),
+                "{".into(),
+            ],
+        },
+    );
+
+    // Gather full logical lines (backslash continuations merged).
+    let raw_lines: Vec<&str> = source.split('\n').collect();
+    let mut logical: Vec<(String, usize)> = Vec::new(); // (text, source line count)
+    let mut index = 0;
+    while index < raw_lines.len() {
+        let mut text = raw_lines[index].to_string();
+        let mut count = 1;
+        while text.trim_end().ends_with('\\') && index + count < raw_lines.len() {
+            let trimmed = text.trim_end();
+            text = format!(
+                "{} {}",
+                &trimmed[..trimmed.len() - 1],
+                raw_lines[index + count]
+            );
+            count += 1;
+        }
+        logical.push((text, count));
+        index += count;
+    }
+
+    let mut output = String::with_capacity(source.len());
+    for (line, count) in logical {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let rest = rest.trim_start();
+            if let Some(def) = rest.strip_prefix("define") {
+                let def = def.trim_start();
+                let bytes = def.as_bytes();
+                let mut end = 0;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                if end > 0 {
+                    let name = def[..end].to_string();
+                    let after = &def[end..];
+                    let (params, body_text) = if after.starts_with('(') {
+                        let close = after.find(')').unwrap_or(after.len().saturating_sub(1));
+                        let params = after[1..close]
+                            .split(',')
+                            .map(|p| p.trim().to_string())
+                            .filter(|p| !p.is_empty())
+                            .collect::<Vec<_>>();
+                        (Some(params), after.get(close + 1..).unwrap_or(""))
+                    } else {
+                        (None, after)
+                    };
+                    let body = tokenize(body_text)
+                        .into_iter()
+                        .filter(|token| !token.trim().is_empty())
+                        .collect();
+                    macros.insert(name, SppMacro { params, body });
+                }
+                for _ in 0..count {
+                    output.push('\n');
+                }
+                continue;
+            }
+            // Other directives pass through untouched.
+            output.push_str(&line);
+            for _ in 0..count {
+                output.push('\n');
+            }
+            continue;
+        }
+
+        // Expand macros in this line with pushback and hide sets.
+        let mut queue: std::collections::VecDeque<SppToken> = tokenize(&line)
+            .into_iter()
+            .map(|text| SppToken {
+                text,
+                hide: Vec::new(),
+            })
+            .collect();
+        let mut expanded: Vec<SppToken> = Vec::new();
+        let mut budget = 10_000usize;
+        while let Some(token) = queue.pop_front() {
+            if budget == 0 {
+                expanded.push(token);
+                expanded.extend(queue.drain(..));
+                break;
+            }
+            budget -= 1;
+            let is_ident = token
+                .text
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_');
+            if !is_ident || token.hide.iter().any(|h| h == &token.text) {
+                expanded.push(token);
+                continue;
+            }
+            let Some(makro) = macros.get(&token.text).cloned() else {
+                expanded.push(token);
+                continue;
+            };
+            let substituted: Vec<Vec<SppToken>> = match &makro.params {
+                None => vec![
+                    makro
+                        .body
+                        .iter()
+                        .map(|text| SppToken {
+                            text: text.clone(),
+                            hide: {
+                                let mut hide = token.hide.clone();
+                                hide.push(token.text.clone());
+                                hide
+                            },
+                        })
+                        .collect(),
+                ],
+                Some(params) => {
+                    // Function-like: require an immediate `(' (skipping ws).
+                    let mut skipped_ws = Vec::new();
+                    while queue.front().is_some_and(|t| t.text.trim().is_empty()) {
+                        skipped_ws.push(queue.pop_front().expect("front checked"));
+                    }
+                    if queue.front().is_none_or(|t| t.text != "(") {
+                        expanded.push(token);
+                        for ws in skipped_ws.into_iter().rev() {
+                            queue.push_front(ws);
+                        }
+                        continue;
+                    }
+                    queue.pop_front();
+                    let mut depth = 1usize;
+                    let mut args: Vec<Vec<SppToken>> = vec![Vec::new()];
+                    while let Some(next) = queue.pop_front() {
+                        match next.text.as_str() {
+                            "(" => {
+                                depth += 1;
+                                args.last_mut().expect("arg bucket").push(next);
+                            }
+                            ")" => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                args.last_mut().expect("arg bucket").push(next);
+                            }
+                            "," if depth == 1 => args.push(Vec::new()),
+                            _ => args.last_mut().expect("arg bucket").push(next),
+                        }
+                    }
+                    for arg in &mut args {
+                        while arg.first().is_some_and(|t| t.text.trim().is_empty()) {
+                            arg.remove(0);
+                        }
+                        while arg.last().is_some_and(|t| t.text.trim().is_empty()) {
+                            arg.pop();
+                        }
+                    }
+                    let arg_for = |param: &str| -> Option<&Vec<SppToken>> {
+                        params
+                            .iter()
+                            .position(|p| p == param)
+                            .and_then(|i| args.get(i))
+                    };
+                    let mut hide = token.hide.clone();
+                    hide.push(token.text.clone());
+                    let mut result: Vec<SppToken> = Vec::new();
+                    for text in &makro.body {
+                        if let Some(arg) = arg_for(text) {
+                            result.extend(arg.iter().map(|t| SppToken {
+                                text: t.text.clone(),
+                                hide: {
+                                    let mut h = t.hide.clone();
+                                    h.extend(hide.iter().cloned());
+                                    h
+                                },
+                            }));
+                        } else {
+                            result.push(SppToken {
+                                text: text.clone(),
+                                hide: hide.clone(),
+                            });
+                        }
+                    }
+                    vec![result]
+                }
+            };
+            for tokens in substituted {
+                // Apply `##' pasting within the substituted body (skipping
+                // whitespace tokens on both sides of the operator).
+                let mut pasted: Vec<SppToken> = Vec::new();
+                let mut iter = tokens.into_iter().peekable();
+                while let Some(tok) = iter.next() {
+                    if tok.text == "##" {
+                        while pasted.last().is_some_and(|t| t.text.trim().is_empty()) {
+                            pasted.pop();
+                        }
+                        let mut right = iter.next();
+                        while right.as_ref().is_some_and(|t| t.text.trim().is_empty()) {
+                            right = iter.next();
+                        }
+                        if let (Some(left), Some(right)) = (pasted.pop(), right) {
+                            pasted.push(SppToken {
+                                text: format!("{}{}", left.text, right.text),
+                                hide: left.hide,
+                            });
+                        }
+                    } else {
+                        pasted.push(tok);
+                    }
+                }
+                // Push back with a separating space only where adjacent
+                // tokens would otherwise lex as one.
+                let ident_boundary = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+                let mut with_spaces: Vec<SppToken> = Vec::new();
+                for tok in pasted {
+                    if let Some(previous) = with_spaces.last()
+                        && previous.text.bytes().last().is_some_and(ident_boundary)
+                        && tok.text.bytes().next().is_some_and(ident_boundary)
+                    {
+                        with_spaces.push(SppToken {
+                            text: " ".into(),
+                            hide: Vec::new(),
+                        });
+                    }
+                    with_spaces.push(tok);
+                }
+                if let (Some(last), Some(front)) = (with_spaces.last(), queue.front())
+                    && last.text.bytes().last().is_some_and(ident_boundary)
+                    && front.text.bytes().next().is_some_and(ident_boundary)
+                {
+                    with_spaces.push(SppToken {
+                        text: " ".into(),
+                        hide: Vec::new(),
+                    });
+                }
+                // Punctuation glues across macro boundaries: an expansion
+                // starting (or ending) in punctuation joins the adjacent
+                // text like semantic's token-level replacement does, so
+                // `foo COLON COLON bar' renders as `foo::bar'.
+                let starts_punct = with_spaces
+                    .first()
+                    .is_some_and(|t| !t.text.bytes().next().is_some_and(ident_boundary));
+                let ends_punct = with_spaces
+                    .last()
+                    .is_some_and(|t| !t.text.bytes().last().is_some_and(ident_boundary));
+                if starts_punct {
+                    while expanded.last().is_some_and(|t| t.text.trim().is_empty()) {
+                        expanded.pop();
+                    }
+                }
+                if ends_punct {
+                    while queue.front().is_some_and(|t| t.text.trim().is_empty()) {
+                        queue.pop_front();
+                    }
+                }
+                if let Some(previous) = expanded.last()
+                    && previous.text.bytes().last().is_some_and(ident_boundary)
+                    && with_spaces
+                        .first()
+                        .is_some_and(|t| t.text.bytes().next().is_some_and(ident_boundary))
+                {
+                    expanded.push(SppToken {
+                        text: " ".into(),
+                        hide: Vec::new(),
+                    });
+                }
+                for tok in with_spaces.into_iter().rev() {
+                    queue.push_front(tok);
+                }
+            }
+        }
+        let mut line_out = String::new();
+        for token in expanded {
+            line_out.push_str(&token.text);
+        }
+        output.push_str(&line_out);
+        for _ in 0..count {
+            output.push('\n');
+        }
+    }
+    output
 }
 
 fn strip_cpp_comments(source: &str) -> String {
@@ -6468,7 +7094,13 @@ impl<'a> CppTagParser<'a> {
         let body_end = self.pos.saturating_sub(1);
         let mut parser =
             CppTagParser::new(&self.source[body_start..body_end], self.base_dir.clone());
-        let members = parser.parse_until(None);
+        // The body is parsed as a substring; rebase member positions so all
+        // tag bounds stay buffer-absolute like GNU's parser.
+        let members = parser
+            .parse_until(None)
+            .iter()
+            .map(|member| shift_semantic_tag_bounds(member, body_start as i64))
+            .collect::<Vec<_>>();
         let end = self.pos;
         semantic_type_tag_bounded(
             &name,
@@ -7088,12 +7720,37 @@ fn cpp_trailing_decl_name(decl: &str) -> Option<String> {
 
 fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
     let open = statement.find('(')?;
-    let close = statement.rfind(')')?;
+    // The parameter list ends at the FIRST balanced close: junk groups after
+    // the arglist (e.g. left over from preprocessor tricks) are not params.
+    let mut depth = 0usize;
+    let mut close = None;
+    for (index, byte) in statement.bytes().enumerate().skip(open) {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
     let head = statement[..open].trim();
     let args = statement[open + 1..close].trim();
     let mut parts = head.split_whitespace().collect::<Vec<_>>();
-    let raw_name = parts.pop()?.trim_start_matches('~');
-    let name = raw_name.rsplit("::").next().unwrap_or(raw_name);
+    let name_part = parts.pop()?;
+    // `~Class()' (and `Class::~Class()') is the destructor; the tag keeps
+    // the plain class name like GNU's parser.
+    let is_destructor = name_part.contains('~');
+    let raw_name = name_part.trim_start_matches('~');
+    let name = raw_name
+        .rsplit("::")
+        .next()
+        .unwrap_or(raw_name)
+        .trim_start_matches('~');
     let return_type = parts.join(" ");
     let mut attrs = Vec::new();
     if prototype {
@@ -7102,13 +7759,13 @@ fn parse_cpp_function(statement: &str, prototype: bool) -> Option<Value> {
     if let Some(modifiers) = semantic_c_like_typemodifiers(statement) {
         attrs.push((":typemodifiers", modifiers));
     }
-    if return_type.is_empty() || statement.contains(&format!("~{name}")) {
-        if return_type.is_empty() || raw_name == name {
-            attrs.push((":constructor-flag", Value::T));
-            attrs.push((":type", semantic_type_ref(name)));
-        } else {
+    if return_type.is_empty() || is_destructor {
+        if is_destructor {
             attrs.push((":destructor-flag", Value::T));
             attrs.push((":type", Value::String("void".into())));
+        } else {
+            attrs.push((":constructor-flag", Value::T));
+            attrs.push((":type", semantic_type_ref(name)));
         }
     } else {
         let arguments = parse_cpp_arguments(args);
@@ -7884,6 +8541,97 @@ fn point_is_on_plain_backtrace_ellipsis(interp: &Interpreter, pos: usize) -> boo
     }
     end.saturating_sub(start) + 1 >= 3
         && (start..=end).all(|cursor| interp.buffer.char_at(cursor) == Some('.'))
+}
+
+fn semantic_flatten_tags(tags: &[Value], out: &mut Vec<Value>) {
+    for tag in tags {
+        out.push(tag.clone());
+        semantic_flatten_tags(&semantic_tag_members(tag), out);
+    }
+}
+
+fn semantic_tag_bounds(tag: &Value) -> Option<(i64, i64)> {
+    let items = tag.to_vec().ok()?;
+    let slot = items.get(4)?;
+    if let Some((car, cdr)) = slot.cons_values()
+        && let (Ok(start), Ok(end)) = (car.as_integer(), cdr.as_integer())
+    {
+        return Some((start, end));
+    }
+    let parts = slot.to_vec().ok()?;
+    if parts.len() >= 3
+        && matches!(parts.first(), Some(Value::Symbol(symbol)) if symbol == "vector-literal")
+    {
+        return Some((parts[1].as_integer().ok()?, parts[2].as_integer().ok()?));
+    }
+    None
+}
+
+fn shift_semantic_tag_bounds(tag: &Value, offset: i64) -> Value {
+    let Ok(mut items) = tag.to_vec() else {
+        return tag.clone();
+    };
+    if items.len() >= 5
+        && let Some((start, end)) = semantic_tag_bounds(tag)
+    {
+        items[4] = semantic_bounds_vector(
+            (start - 1 + offset).max(0) as usize,
+            (end - 1 + offset).max(0) as usize,
+        );
+    }
+    if let Ok(attrs) = items.get(2).cloned().unwrap_or(Value::Nil).to_vec() {
+        let mut new_attrs = attrs;
+        let mut index = 0usize;
+        while index + 1 < new_attrs.len() {
+            if matches!(&new_attrs[index], Value::Symbol(symbol) if symbol == ":members")
+                && let Ok(members) = new_attrs[index + 1].to_vec()
+            {
+                new_attrs[index + 1] = Value::list(
+                    members
+                        .iter()
+                        .map(|member| shift_semantic_tag_bounds(member, offset))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            index += 2;
+        }
+        items[2] = Value::list(new_attrs);
+    }
+    Value::list(items)
+}
+
+fn semantic_containment_chain(tags: &[Value], point: i64, chain: &mut Vec<Value>) {
+    for tag in tags {
+        if let Some((start, end)) = semantic_tag_bounds(tag)
+            && start <= point
+            && point < end
+        {
+            chain.push(tag.clone());
+            semantic_containment_chain(&semantic_tag_members(tag), point, chain);
+            return;
+        }
+    }
+}
+
+/// `semantic-current-tag-of-class': the innermost tag of CLASS containing
+/// point, walking the freshly parsed tag tree instead of tag overlays.
+fn semantic_current_tag_of_class_compat(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    target_class: &str,
+) -> Result<Value, LispError> {
+    let tags = semantic_fetch_tags_compat(interp, env)?
+        .to_vec()
+        .unwrap_or_default();
+    let point = interp.buffer.point() as i64;
+    let mut chain = Vec::new();
+    semantic_containment_chain(&tags, point, &mut chain);
+    Ok(chain
+        .iter()
+        .rev()
+        .find(|tag| semantic_tag_class(tag).as_deref() == Some(target_class))
+        .cloned()
+        .unwrap_or(Value::Nil))
 }
 
 fn semantic_tag_name(tag: &Value) -> Option<String> {

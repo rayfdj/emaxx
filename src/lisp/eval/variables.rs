@@ -49,6 +49,10 @@ impl Interpreter {
         {
             self.buffer_locals.remove(index);
         }
+        // Buffer-local hooks are part of the local binding: killing the
+        // local variable discards them, as in GNU Emacs.
+        self.buffer_local_hooks
+            .retain(|(id, hook, _)| *id != buffer_id || hook != name);
     }
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {

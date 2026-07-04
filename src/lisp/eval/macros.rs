@@ -330,7 +330,7 @@ impl Interpreter {
             arg_idx += 1;
         }
 
-        env.push(frame);
+        Self::push_marked_frame(env, frame);
         let expanded = if body.len() == 1 {
             self.eval(&body[0], env)?
         } else {

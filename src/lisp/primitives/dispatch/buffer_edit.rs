@@ -1706,13 +1706,25 @@ pub(super) fn call(
                 Vec::new(),
             ))
         }
-        "kill-region" => super::call(interp, "delete-region", args, env),
+        "kill-region" => {
+            let result = super::call(interp, "delete-region", args, env)?;
+            // GNU kill-region records itself for kill-append chaining.
+            interp.set_variable("this-command", Value::Symbol("kill-region".into()), env);
+            Ok(result)
+        }
         "delete-line" | "kill-whole-line" => {
             need_arg_range(name, args, 0, 0)?;
             let start = interp.buffer.beginning_of_line();
             let end = move_lines_from(interp, start, 1).0;
             ensure_region_modifiable(interp, start, end, env)?;
             delete_region_with_hooks(interp, start, end, env)?;
+            if name == "kill-whole-line" {
+                // GNU kill-whole-line primes `last-command' so consecutive
+                // kills append, and kills through `kill-region' which sets
+                // `this-command'.
+                interp.set_variable("last-command", Value::Symbol("kill-region".into()), env);
+                interp.set_variable("this-command", Value::Symbol("kill-region".into()), env);
+            }
             Ok(Value::Nil)
         }
         "delete-horizontal-space" => {
@@ -3032,7 +3044,15 @@ fn simple_c_family_indent_line(interp: &mut Interpreter, env: &mut Env) -> Resul
         depth
     };
     let indent = " ".repeat(target_depth * offset);
-    replace_buffer_region_with_text(interp, line_start, content_start, &indent)?;
+    // Adjust the leading whitespace through the ordinary edit primitives so
+    // markers around the line stay valid (srecode's inserters keep point
+    // markers across `indent-according-to-mode').
+    if content_start > line_start {
+        ensure_region_modifiable(interp, line_start, content_start, env)?;
+        delete_region_with_hooks(interp, line_start, content_start, env)?;
+    }
+    interp.buffer.goto_char(line_start);
+    insert_text_with_hooks(interp, &indent, &[], false, false, env)?;
     let restored = if saved <= content_start {
         line_start + indent.len()
     } else {
