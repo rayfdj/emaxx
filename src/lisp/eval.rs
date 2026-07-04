@@ -822,6 +822,8 @@ impl Interpreter {
             buffer_syntax_tables: Vec::new(),
             auto_buffer_locals: vec![
                 "case-fold-search".into(),
+                // font-core.el: (defvar-local font-lock-defaults nil)
+                "font-lock-defaults".into(),
                 "cursor-in-non-selected-windows".into(),
                 "left-margin".into(),
                 "line-spacing".into(),

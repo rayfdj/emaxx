@@ -19,12 +19,43 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 2016/7080 are verified locally against the current canonical
-  manifest: `eieio-tests.el` (selectors 1976..2016) passes its grouped
-  `check-all` replay, completing the whole eieio-tests directory.
-- The full 83-file verified-prefix sweep (now including `eieio-tests.el`)
-  is GREEN on the current tree (2026-07-04, third sweep of the day).
-- The latest batch is
+- Tests through 2056/7080 are verified locally against the current canonical
+  manifest: `ert-font-lock-tests.el` (selectors 2017..2056) passes its
+  grouped `check-all` replay on top of the completed eieio-tests directory.
+- The full 84-file verified-prefix sweep (now including
+  `ert-font-lock-tests.el`) is GREEN on the current tree (2026-07-04).
+- The latest batch is `Compat 2056/7080: pass ert-font-lock-tests.el` —
+  a font-lock-defaults-driven fontification engine plus the runtime
+  repairs it exposed:
+  - `font-lock-ensure' fontifies natively: a lazy installer equips the
+    native major modes (emacs-lisp/lisp-interaction, lisp, js, c-family)
+    with their GNU `font-lock-defaults', loading the defining library
+    (lisp-mode.el, js.el) for its keyword variables; a syntactic pass
+    fontifies comments/strings from `syntax-ppss', and a keyword pass
+    runs the full MATCHER/HIGHLIGHT shapes (regexp and function matchers,
+    subexp highlights with OVERRIDE/LAXMATCH, anchored highlighters,
+    FACENAME expressions).
+  - The standard font-lock face variables (`font-lock-keyword-face' &c)
+    are self-quoting defvars like GNU font-core/font-lock, so FACENAME
+    expressions such as lisp-mode's `(let ((type ...)) (cond ...))'
+    evaluate.
+  - `font-lock-defaults' is automatically buffer-local (font-core.el
+    declares it with `defvar-local'); sh-mode's plain `setq' no longer
+    leaks a global value that suppressed fontification everywhere else.
+  - `font-lock-ensure' and the native major modes (`c-mode', `c++-mode',
+    `java-mode', `js-mode', `javascript-mode') prefer their builtins even
+    after GNU font-lock.el/cc-mode.el/js.el load and would shadow them
+    with redisplay-dependent elisp; `javascript-mode' is a `js-mode'
+    defalias like GNU js.el.
+  - `ert-pass' terminates a test by throwing GNU's `ert--pass' tag (the
+    native runner treats it as success) and `ert-fail' signals
+    `ert-test-failed' instead of a generic error; `ert-set-test' registers
+    tests built by `ert-font-lock-deftest'/`ert-font-lock-deftest-file'.
+  - `\s<'/`\s>' regexp atoms resolve from the current syntax table's
+    explicit comment-class entries (GNU's standard table maps no
+    character to the comment classes), and `regexp-opt' honors PAREN
+    (nil/shy, t/capturing, `words', `symbols', literal string).
+- The previous batch was
   `Compat 2016/7080: finish eieio-tests.el` — the remaining six mismatches
   after the groundwork batch:
   - `cl-call-next-method' with no next method now dispatches GNU's

@@ -4051,6 +4051,24 @@ Defaults to `error'."
 ;; GNU preloads lisp-mode.el; pp.el calls `lisp-mode-variables' assuming it.
 (autoload 'lisp-mode-variables "lisp-mode")
 
+;; files.el: interpreter-line matcher used by derived shell modes.
+(defvar auto-mode-interpreter-regexp
+  (concat
+   "#![ \t]*"
+   "\\("
+   "[^ \t\n]*/bin/env[ \t]*"
+   "\\(?:"
+   "\\(?:-[0a-z]*S[ \t]*\\|--split-string=\\)"
+   "\\(?:-[^ \t\n]+[ \t]+\\)*"
+   "\\(?:[^ \t\n]+=[^ \t\n]*[ \t]+\\)*"
+   "\\)?"
+   "\\)?"
+   "\\([^ \t\n]+\\)"))
+
+;; GNU loaddefs autoloads these major modes.
+(autoload 'sh-mode "sh-script" nil t)
+(autoload 'shell-script-mode "sh-script" nil t)
+
 ;; GNU preloads isearch.el; char-fold's symmetric mode reads these.
 (defvar isearch-regexp nil)
 (defvar isearch-lax-whitespace t)

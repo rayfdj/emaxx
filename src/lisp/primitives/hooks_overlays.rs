@@ -748,6 +748,7 @@ pub(crate) fn font_lock_ensure_region(
     }
 
     clear_font_lock_faces_in_current_buffer(interp, start, end)?;
+    font_lock_fontify_defaults_region(interp, start, end, env)?;
     let keywords = interp
         .lookup_var("hi-lock-interactive-patterns", env)
         .unwrap_or(Value::Nil)
@@ -758,6 +759,580 @@ pub(crate) fn font_lock_ensure_region(
     }
     interp.set_buffer_local_value(interp.current_buffer_id(), "font-lock-fontified", Value::T);
     font_lock_push_buffer_undo_entry(interp, interp.current_buffer_id())?;
+    Ok(())
+}
+
+// Native major modes do not carry GNU's `font-lock-defaults' from their
+// define-derived-mode bodies; install the same values those bodies set
+// (loading the defining library for its keyword variables) the first time
+// fontification is requested.
+fn font_lock_require_feature(interp: &mut Interpreter, feature: &str, env: &mut Env) {
+    // `require' is a special form; evaluate it as one.
+    let form = Value::list([
+        Value::Symbol("require".into()),
+        Value::list([Value::Symbol("quote".into()), Value::Symbol(feature.into())]),
+    ]);
+    let result = interp.eval(&form, env);
+    if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+        eprintln!("FONTLOCK require {feature}: {result:?}");
+    }
+}
+
+pub(crate) fn font_lock_install_mode_defaults(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // Native mode setups store a bare `t' placeholder; anything else
+    // truthy is a real specification we must not clobber.
+    if interp
+        .lookup_var("font-lock-defaults", env)
+        .is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
+    {
+        if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+            eprintln!(
+                "FONTLOCK install skip: defaults already set in buffer {}",
+                interp.current_buffer_id()
+            );
+        }
+        return Ok(());
+    }
+    let mode = interp
+        .lookup_var("major-mode", env)
+        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+        .unwrap_or_default();
+    if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+        eprintln!(
+            "FONTLOCK install considering mode={mode} buffer={}",
+            interp.current_buffer_id()
+        );
+    }
+    // Loading a mode's library below may leave another buffer current.
+    let buffer_id = interp.current_buffer_id();
+    let defaults = match mode.as_str() {
+        "emacs-lisp-mode" | "lisp-interaction-mode" => {
+            font_lock_require_feature(interp, "lisp-mode", env);
+            Value::list([
+                Value::list([
+                    Value::Symbol("lisp-el-font-lock-keywords".into()),
+                    Value::Symbol("lisp-el-font-lock-keywords-1".into()),
+                    Value::Symbol("lisp-el-font-lock-keywords-2".into()),
+                ]),
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ])
+        }
+        "lisp-mode" => {
+            font_lock_require_feature(interp, "lisp-mode", env);
+            Value::list([
+                Value::list([
+                    Value::Symbol("lisp-cl-font-lock-keywords".into()),
+                    Value::Symbol("lisp-cl-font-lock-keywords-1".into()),
+                    Value::Symbol("lisp-cl-font-lock-keywords-2".into()),
+                ]),
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+            ])
+        }
+        "js-mode" => {
+            font_lock_require_feature(interp, "js", env);
+            Value::list([
+                Value::Symbol("js--font-lock-keywords".into()),
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+            ])
+        }
+        // cc-mode's keyword machinery is not loadable here; comments and
+        // strings still fontify from the syntactic pass.
+        "c-mode" | "c++-mode" | "objc-mode" | "java-mode" => Value::list([Value::Nil, Value::Nil]),
+        _ => return Ok(()),
+    };
+    if interp.current_buffer_id() != buffer_id {
+        let _ = interp.switch_to_buffer_id(buffer_id);
+    }
+    if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+        eprintln!("FONTLOCK install defaults mode={mode} buffer={buffer_id} value={defaults}");
+    }
+    interp.set_buffer_local_value(buffer_id, "font-lock-defaults", defaults);
+    Ok(())
+}
+
+// GNU `font-lock-default-fontify-region': a syntactic pass fontifies
+// comments and strings from the buffer's syntax, then the keyword pass
+// applies `font-lock-keywords' resolved from `font-lock-defaults'.
+pub(crate) fn font_lock_fontify_defaults_region(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let defaults = interp
+        .lookup_var("font-lock-defaults", env)
+        .unwrap_or(Value::Nil);
+    if defaults.is_nil() {
+        return Ok(());
+    }
+    let defaults_items = defaults.to_vec().unwrap_or_default();
+    let keywords_only = defaults_items.get(1).is_some_and(|value| value.is_truthy());
+    if !keywords_only {
+        font_lock_syntactic_pass(interp, start, end, env)?;
+    }
+    let Some(keywords_spec) = defaults_items.first().cloned() else {
+        return Ok(());
+    };
+    let entries = font_lock_choose_keywords(interp, &keywords_spec, env)?;
+    for entry in entries {
+        font_lock_apply_keyword_entry(interp, &entry, start, end, env)?;
+    }
+    Ok(())
+}
+
+// Resolve the KEYWORDS position of `font-lock-defaults': a symbol names a
+// variable holding the keywords; a list of symbols offers decoration
+// levels (GNU's default `font-lock-maximum-decoration' t picks the last).
+fn font_lock_choose_keywords(
+    interp: &mut Interpreter,
+    spec: &Value,
+    env: &mut Env,
+) -> Result<Vec<Value>, LispError> {
+    let mut resolved = spec.clone();
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        if guard > 20 {
+            return Ok(Vec::new());
+        }
+        match &resolved {
+            Value::Symbol(name) => {
+                let Some(value) = interp.lookup_var(name, env) else {
+                    return Ok(Vec::new());
+                };
+                resolved = value;
+            }
+            Value::Cons(..) => {
+                let items = resolved.to_vec().unwrap_or_default();
+                if items
+                    .iter()
+                    .all(|item| matches!(item, Value::Symbol(_) | Value::Nil))
+                    && items.len() > 1
+                {
+                    resolved = items.last().cloned().unwrap_or(Value::Nil);
+                    continue;
+                }
+                return Ok(items);
+            }
+            _ => return Ok(Vec::new()),
+        }
+    }
+}
+
+fn font_lock_syntactic_pass(
+    interp: &mut Interpreter,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let saved_point = interp.buffer.point();
+    let mut pos = start;
+    let mut guard = 0usize;
+    while pos < end {
+        guard += 1;
+        if guard > 100_000 {
+            break;
+        }
+        // State AFTER the character at POS tells whether POS itself is
+        // inside (or starts) a comment or string.
+        let state = primitives_call_quiet(
+            interp,
+            "syntax-ppss",
+            &[Value::Integer((pos + 1) as i64)],
+            env,
+        )
+        .unwrap_or(Value::Nil);
+        let items = state.to_vec().unwrap_or_default();
+        let in_string = items.get(3).is_some_and(|value| value.is_truthy());
+        let in_comment = items.get(4).is_some_and(|value| value.is_truthy());
+        if !in_string && !in_comment {
+            pos += 1;
+            continue;
+        }
+        let construct_start = items
+            .get(8)
+            .and_then(|value| value.as_integer().ok())
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(pos);
+        let face = if in_string {
+            "font-lock-string-face"
+        } else {
+            "font-lock-comment-face"
+        };
+        // Find the end of the construct.
+        let construct_end = if in_comment {
+            interp.buffer.goto_char(construct_start);
+            let moved = primitives_call_quiet(interp, "forward-comment", &[Value::Integer(1)], env)
+                .unwrap_or(Value::Nil);
+            if moved.is_truthy() {
+                interp.buffer.point().min(end.max(pos + 1))
+            } else {
+                end
+            }
+        } else {
+            // Scan forward until the string state clears.
+            let mut cursor = pos + 1;
+            while cursor < end {
+                let state = primitives_call_quiet(
+                    interp,
+                    "syntax-ppss",
+                    &[Value::Integer((cursor + 1) as i64)],
+                    env,
+                )
+                .unwrap_or(Value::Nil);
+                let items = state.to_vec().unwrap_or_default();
+                if !items.get(3).is_some_and(|value| value.is_truthy()) {
+                    cursor += 1;
+                    break;
+                }
+                cursor += 1;
+            }
+            cursor
+        };
+        let span_end = construct_end.max(pos + 1).min(end);
+        font_lock_put_buffer_property(
+            interp,
+            interp.current_buffer_id(),
+            construct_start.max(start),
+            span_end,
+            "face",
+            Value::Symbol(face.into()),
+        )?;
+        pos = span_end;
+    }
+    interp.buffer.goto_char(saved_point);
+    Ok(())
+}
+
+fn primitives_call_quiet(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &mut Env,
+) -> Option<Value> {
+    super::call(interp, name, args, env).ok()
+}
+
+// One entry of `font-lock-keywords': MATCHER, (MATCHER . SUBEXP),
+// (MATCHER . FACENAME), (MATCHER . HIGHLIGHT) or (MATCHER HIGHLIGHT...),
+// where HIGHLIGHT is (SUBEXP FACENAME [OVERRIDE [LAXMATCH]]) or an
+// anchored (ANCHORED-MATCHER PRE-FORM POST-FORM HIGHLIGHT...).
+fn font_lock_apply_keyword_entry(
+    interp: &mut Interpreter,
+    entry: &Value,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let (matcher, highlights): (Value, Vec<Value>) = match entry {
+        Value::String(_) | Value::StringObject(_) | Value::Symbol(_) => (
+            entry.clone(),
+            vec![Value::list([
+                Value::Integer(0),
+                Value::Symbol("font-lock-keyword-face".into()),
+            ])],
+        ),
+        Value::Cons(..) => {
+            let Some((car, cdr)) = entry.cons_values() else {
+                return Ok(());
+            };
+            match &cdr {
+                Value::Integer(subexp) => (
+                    car,
+                    vec![Value::list([
+                        Value::Integer(*subexp),
+                        Value::Symbol("font-lock-keyword-face".into()),
+                    ])],
+                ),
+                Value::Symbol(_) if !matches!(cdr, Value::Nil) => {
+                    (car, vec![Value::list([Value::Integer(0), cdr.clone()])])
+                }
+                Value::Cons(..) => {
+                    let rest = cdr.to_vec().unwrap_or_default();
+                    if rest.is_empty() {
+                        // (MATCHER . (QUOTE FACE)) style or single highlight
+                        (car, vec![cdr.clone()])
+                    } else if rest
+                        .first()
+                        .is_some_and(|first| matches!(first, Value::Integer(_)))
+                        && cdr.cons_values().is_some_and(|(_, tail)| {
+                            !matches!(tail, Value::Cons(..) | Value::Nil)
+                                || tail.is_nil()
+                                || matches!(tail, Value::Cons(..))
+                        })
+                    {
+                        // Could be a single (SUBEXP FACE ...) highlight or a
+                        // list of highlights; a leading integer means the
+                        // former.
+                        (car, vec![cdr.clone()])
+                    } else {
+                        (car, rest)
+                    }
+                }
+                _ => (car, Vec::new()),
+            }
+        }
+        _ => return Ok(()),
+    };
+    let saved_point = interp.buffer.point();
+    interp.buffer.goto_char(start);
+    let mut guard = 0usize;
+    while interp.buffer.point() < end {
+        guard += 1;
+        if guard > 10_000 {
+            break;
+        }
+        let matched = match font_lock_run_matcher(interp, &matcher, end, env) {
+            Ok(matched) => matched,
+            Err(error) => {
+                if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+                    eprintln!("FONTLOCK matcher error: {matcher} -> {error}");
+                }
+                return Err(error);
+            }
+        };
+        if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+            eprintln!(
+                "FONTLOCK matcher highlights={} md0={:?} {} matched={matched} at {}",
+                highlights.len(),
+                interp
+                    .last_match_data
+                    .as_ref()
+                    .and_then(|data| data.first())
+                    .and_then(|entry| *entry),
+                crate::lisp::primitives::string_like(&matcher)
+                    .map(|text| text.text)
+                    .unwrap_or_else(|| "<fn>".into()),
+                interp.buffer.point()
+            );
+        }
+        if !matched {
+            break;
+        }
+        let match_end = interp
+            .last_match_data
+            .as_ref()
+            .and_then(|data| data.first())
+            .and_then(|entry| *entry)
+            .map(|(_, match_end)| match_end);
+        for highlight in &highlights {
+            font_lock_apply_highlight(interp, highlight, start, end, env)?;
+        }
+        // Continue after the match; guard against zero-width loops.
+        if let Some(match_end) = match_end {
+            if match_end <= interp.buffer.point() && match_end >= end {
+                break;
+            }
+            if match_end > interp.buffer.point() {
+                interp.buffer.goto_char(match_end.min(end));
+            } else {
+                let next = interp.buffer.point() + 1;
+                if next > end {
+                    break;
+                }
+                interp.buffer.goto_char(next);
+            }
+        } else {
+            break;
+        }
+    }
+    interp.buffer.goto_char(saved_point);
+    Ok(())
+}
+
+fn font_lock_run_matcher(
+    interp: &mut Interpreter,
+    matcher: &Value,
+    limit: usize,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    match matcher {
+        Value::String(_) | Value::StringObject(_) => {
+            let result = super::call(
+                interp,
+                "re-search-forward",
+                &[matcher.clone(), Value::Integer(limit as i64), Value::T],
+                env,
+            )?;
+            Ok(result.is_truthy())
+        }
+        _ => {
+            let mut matcher_env = Vec::new();
+            let result = call_function_value(
+                interp,
+                matcher,
+                &[Value::Integer(limit as i64)],
+                &mut matcher_env,
+            );
+            Ok(matches!(result, Ok(value) if value.is_truthy()))
+        }
+    }
+}
+
+fn font_lock_apply_highlight(
+    interp: &mut Interpreter,
+    highlight: &Value,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+        eprintln!("FONTLOCK raw-highlight {highlight}");
+    }
+    let parts = highlight.to_vec().unwrap_or_default();
+    let Some(first) = parts.first() else {
+        return Ok(());
+    };
+    if !matches!(first, Value::Integer(_)) {
+        // Anchored highlighter: (ANCHORED-MATCHER PRE POST HIGHLIGHT...).
+        let anchored_matcher = first.clone();
+        let pre = parts.get(1).cloned().unwrap_or(Value::Nil);
+        let post = parts.get(2).cloned().unwrap_or(Value::Nil);
+        let saved = interp.last_match_data.clone();
+        let anchor_point = interp.buffer.point();
+        let pre_result = if pre.is_nil() {
+            Value::Nil
+        } else {
+            interp.eval(&pre, env).unwrap_or(Value::Nil)
+        };
+        let anchored_limit = pre_result
+            .as_integer()
+            .ok()
+            .map(|value| (value.max(1) as usize).min(end))
+            .unwrap_or_else(|| {
+                // Default limit: end of the anchor line.
+                let point = interp.buffer.point();
+                let line_end = interp.buffer.end_of_line();
+                interp.buffer.goto_char(point);
+                line_end.min(end)
+            });
+        let mut guard = 0usize;
+        while interp.buffer.point() < anchored_limit {
+            guard += 1;
+            if guard > 1_000 {
+                break;
+            }
+            let matched = font_lock_run_matcher(interp, &anchored_matcher, anchored_limit, env)?;
+            if !matched {
+                break;
+            }
+            let match_end = interp
+                .last_match_data
+                .as_ref()
+                .and_then(|data| data.first())
+                .and_then(|entry| *entry)
+                .map(|(_, match_end)| match_end);
+            for sub in &parts[3..] {
+                font_lock_apply_highlight(interp, sub, start, end, env)?;
+            }
+            match match_end {
+                Some(match_end) if match_end > interp.buffer.point() => {
+                    interp.buffer.goto_char(match_end.min(anchored_limit));
+                }
+                _ => break,
+            }
+        }
+        if !post.is_nil() {
+            let _ = interp.eval(&post, env);
+        }
+        interp.buffer.goto_char(anchor_point);
+        interp.last_match_data = saved;
+        return Ok(());
+    }
+    let subexp = first.as_integer().unwrap_or(0).max(0) as usize;
+    let Some((match_start, match_end)) = interp
+        .last_match_data
+        .as_ref()
+        .and_then(|data| data.get(subexp))
+        .and_then(|entry| *entry)
+    else {
+        // LAXMATCH: a missing subexpression is not an error.
+        if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+            eprintln!("FONTLOCK highlight subexp={subexp} missing match data");
+        }
+        return Ok(());
+    };
+    if match_start >= match_end {
+        return Ok(());
+    }
+    let face_form = parts.get(1).cloned().unwrap_or(Value::Nil);
+    // FACENAME is an expression; GNU's font-lock.el defvars make the
+    // standard face symbols self-quoting, so an unbound face-name symbol
+    // stands for itself.
+    let face = match interp.eval(&face_form, env) {
+        Ok(value) => value,
+        Err(error) => {
+            if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+                eprintln!("FONTLOCK facename eval error: {error}");
+            }
+            match &face_form {
+                Value::Symbol(_) => face_form.clone(),
+                _ => Value::Nil,
+            }
+        }
+    };
+    if face.is_nil() {
+        if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+            eprintln!("FONTLOCK highlight subexp={subexp} face evaluated to nil");
+        }
+        return Ok(());
+    }
+    let override_mode = parts.get(2).cloned().unwrap_or(Value::Nil);
+    if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
+        eprintln!(
+            "FONTLOCK highlight subexp={subexp} span=[{match_start},{match_end}) face={face} override={override_mode}"
+        );
+    }
+    let clamp_start = match_start.max(start);
+    let clamp_end = match_end.min(end.max(clamp_start));
+    if clamp_start >= clamp_end {
+        return Ok(());
+    }
+    let existing = interp
+        .buffer
+        .text_property_at(clamp_start, "face")
+        .unwrap_or(Value::Nil);
+    let value = match &override_mode {
+        Value::Nil => {
+            // Only fontify unfontified text.
+            if !existing.is_nil() {
+                return Ok(());
+            }
+            face
+        }
+        Value::T => face,
+        Value::Symbol(mode) if mode == "keep" => {
+            if !existing.is_nil() {
+                return Ok(());
+            }
+            face
+        }
+        Value::Symbol(mode) if mode == "prepend" => {
+            combine_font_lock_property_value("face", existing, &face, false)
+        }
+        Value::Symbol(mode) if mode == "append" => {
+            combine_font_lock_property_value("face", existing, &face, true)
+        }
+        _ => face,
+    };
+    font_lock_put_buffer_property(
+        interp,
+        interp.current_buffer_id(),
+        clamp_start,
+        clamp_end,
+        "face",
+        value,
+    )?;
     Ok(())
 }
 

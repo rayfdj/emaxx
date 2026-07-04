@@ -164,6 +164,47 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
+    // GNU `ert-set-test' stores an `ert-test' struct under the symbol's
+    // `ert--test' property; ert-font-lock's deftest macros register tests
+    // this way (bypassing `ert-deftest'), so mirror the definition into the
+    // native test registry too.
+    pub(crate) fn ert_set_test(&mut self, name: &str, test: &Value) -> Result<Value, LispError> {
+        let Value::Record(record_id) = test else {
+            return Err(LispError::TypeError("ert-test".into(), test.type_name()));
+        };
+        let slots = self
+            .find_record(*record_id)
+            .filter(|record| record.type_name == "ert-test")
+            .map(|record| record.slots.clone())
+            .ok_or_else(|| LispError::TypeError("ert-test".into(), test.type_name()))?;
+        let body = slots.get(2).cloned().unwrap_or(Value::Nil);
+        let expected_result = slots
+            .get(4)
+            .and_then(|value| value.as_symbol().ok().map(str::to_string))
+            .unwrap_or_else(|| ":passed".to_string());
+        let tags = slots
+            .get(5)
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tag| tag.as_symbol().ok().map(str::to_string))
+            .collect::<Vec<_>>();
+        let source_file = slots
+            .get(6)
+            .and_then(|value| primitives::string_like(value).map(|text| text.text))
+            .or_else(|| self.current_load_file.clone());
+        self.put_symbol_property(name, "ert--test", test.clone());
+        self.ert_tests.retain(|existing| existing.name != name);
+        self.ert_tests.push(ErtTestDefinition {
+            name: name.to_string(),
+            body,
+            source_file,
+            tags,
+            expected_result,
+        });
+        Ok(test.clone())
+    }
+
     pub(super) fn sf_should(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs("should".into(), 0));
@@ -266,8 +307,15 @@ impl Interpreter {
             self.pending_timers.clear();
             let previous =
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
-            let result = self.call_function_value(test.body.clone(), None, &[], &mut env);
+            let mut result = self.call_function_value(test.body.clone(), None, &[], &mut env);
             self.ert_test_source_file = previous;
+            // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'
+            // terminates the test successfully by throwing to that tag.
+            if let Err(LispError::Throw(tag, _)) = &result
+                && matches!(tag, Value::Symbol(name) if name == "ert--pass")
+            {
+                result = Ok(Value::Nil);
+            }
             match result {
                 Ok(_) => {
                     summary.passed += 1;

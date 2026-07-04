@@ -238,6 +238,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "slot-exists-p"
             | "map-elt"
             | "map-contains-key"
+            | "ert-set-test"
             | "emaxx--cl-generic-apply-next"
             | "same-class-p"
             | "eieio--class-parents"
@@ -2113,11 +2114,22 @@ pub(super) fn call(
             }
             patterns.sort();
             patterns.dedup();
-            Ok(Value::String(if patterns.len() == 1 {
-                patterns[0].clone()
-            } else {
-                format!("\\(?:{}\\)", patterns.join("\\|"))
-            }))
+            // GNU's PAREN argument controls the group type: nil is shy,
+            // t (or any other value) capturing, `words'/`symbols' add the
+            // boundary assertions around a capturing group, and a string
+            // is used literally as the opening delimiter.
+            let paren = args.get(1).cloned().unwrap_or(Value::Nil);
+            let (open, close): (String, String) = match &paren {
+                Value::Nil => ("\\(?:".into(), "\\)".into()),
+                Value::Symbol(kind) if kind == "words" => ("\\<\\(".into(), "\\)\\>".into()),
+                Value::Symbol(kind) if kind == "symbols" => ("\\_<\\(".into(), "\\)\\_>".into()),
+                Value::String(_) | Value::StringObject(_) => (string_text(&paren)?, "\\)".into()),
+                _ => ("\\(".into(), "\\)".into()),
+            };
+            Ok(Value::String(format!(
+                "{open}{}{close}",
+                patterns.join("\\|")
+            )))
         }
         "regexp-opt-depth" => {
             need_args(name, args, 1)?;
@@ -2981,6 +2993,11 @@ pub(super) fn call(
             } else {
                 found.unwrap_or(default)
             })
+        }
+        "ert-set-test" => {
+            need_args(name, args, 2)?;
+            let symbol = args[0].as_symbol()?.to_string();
+            interp.ert_set_test(&symbol, &args[1])
         }
         "emaxx--cl-generic-apply-next" => {
             need_args(name, args, 4)?;

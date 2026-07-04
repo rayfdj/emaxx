@@ -222,6 +222,46 @@ fn default_syntax_entry(ch: char) -> SyntaxEntry {
     }
 }
 
+// Characters explicitly assigned CLASS in the buffer's current syntax
+// table (following the parent chain).  The standard table maps no
+// character to the comment classes, so `\s<'/`\s>' regexp atoms resolve
+// from these explicit entries like GNU.
+pub(crate) fn syntax_class_explicit_chars(interp: &Interpreter, class_char: char) -> Vec<char> {
+    let mut chars: Vec<char> = Vec::new();
+    let mut table_id = Some(interp.current_syntax_table_id());
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = table_id {
+        if !seen.insert(id) {
+            break;
+        }
+        let Some(table) = interp.find_char_table(id) else {
+            break;
+        };
+        for entry in &table.entries {
+            // Comment-class assignments are single characters in practice;
+            // ignore wide ranges to keep the expansion bounded.
+            if entry.end.saturating_sub(entry.start) > 8 {
+                continue;
+            }
+            let is_class = string_like(&entry.value)
+                .map(|spec| spec.text.starts_with(class_char))
+                .unwrap_or(false);
+            if !is_class {
+                continue;
+            }
+            for code in entry.start..=entry.end {
+                if let Some(ch) = char::from_u32(code)
+                    && !chars.contains(&ch)
+                {
+                    chars.push(ch);
+                }
+            }
+        }
+        table_id = table.parent;
+    }
+    chars
+}
+
 pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> SyntaxEntry {
     let Some(ch) = char::from_u32(code) else {
         return SyntaxEntry::default();

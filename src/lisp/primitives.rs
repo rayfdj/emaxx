@@ -368,6 +368,18 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
         name,
         "user-error"
             | "read-only-mode"
+            // GNU font-lock.el (loaded transitively by mode libraries such
+            // as js.el) would shadow the native fontification entry point
+            // with elisp that depends on redisplay-driven machinery.
+            | "font-lock-ensure"
+            // Native major modes are the supported activation path even
+            // after their GNU libraries (cc-mode.el, js.el) get loaded for
+            // keyword variables and would shadow them with elisp setups.
+            | "c-mode"
+            | "c++-mode"
+            | "java-mode"
+            | "js-mode"
+            | "javascript-mode"
             | "byte-compile"
             | "byte-compile-from-buffer"
             | "byte-compile-check-lambda-list"
@@ -412,6 +424,7 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "slot-exists-p"
             | "map-elt"
             | "map-contains-key"
+            | "ert-set-test"
             | "emaxx--cl-generic-apply-next"
             | "same-class-p"
             | "eieio--class-parents"
