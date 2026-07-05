@@ -19,12 +19,30 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 2084/7080 are verified locally against the current canonical
-  manifest: `ert-x-tests.el` (selectors 2057..2084) passes its grouped
-  `check-all` replay.
-- The full 85-file verified-prefix sweep (now including `ert-x-tests.el`)
-  is GREEN on the current tree (2026-07-05).
-- The latest batch is `Compat 2084/7080: pass ert-x-tests.el` — the
+- Tests through 2100/7080 are verified locally against the current canonical
+  manifest: `faceup-test-basics.el` (selectors 2085..2099) and
+  `faceup-test-files.el` (selector 2100) pass their grouped `check-all`
+  replays.
+- The full 87-file verified-prefix sweep (now including both faceup
+  files) is GREEN on the current tree (2026-07-05).
+- The latest batch is `Compat 2100/7080: pass the faceup test files` —
+  sexp scanning and syntax-propertize repairs:
+  - `forward-sexp'/`scan-sexps' honor `parse-sexp-ignore-comments'
+    (skipping comments before and inside sexps like GNU's
+    scan_sexps_forward); native `emacs-lisp-mode' sets it buffer-locally
+    like GNU lisp-mode-variables.  With nothing but ignorable text
+    between point and the buffer end, `forward-sexp' moves there instead
+    of signaling (GNU `(or (scan-sexps ...) (buffer-end arg))'), which
+    fixes the `eval-defun'+`forward-sexp' walk over a file with header
+    and trailing comments (faceup-directory).
+  - `syntax-propertize' is ported from syntax.el (high-water mark in the
+    now auto-buffer-local `syntax-propertize--done', property cleanup,
+    then `syntax-propertize-function'); the native fontification engine
+    runs it before its passes like GNU's syntax-ppss-driven
+    fontification, so `syntax-propertize-rules' modes stamp
+    `syntax-table' text properties that faceup can compare (faceup-files
+    checks face + syntax-table + help-echo properties byte-for-byte).
+- The previous batch was `Compat 2084/7080: pass ert-x-tests.el` — the
   ert-x helper set plus the runtime repairs the suite exposed:
   - simple_compat.el ports of the preloaded-ert-x helpers:
     `ert-with-buffer-selected'/`ert-with-test-buffer-selected',

@@ -876,6 +876,16 @@ pub(crate) fn font_lock_fontify_defaults_region(
         return Ok(());
     }
     let defaults_items = defaults.to_vec().unwrap_or_default();
+    // GNU fontification triggers `syntax-propertize' through syntax-ppss;
+    // run it up front so `syntax-table' text properties are in place.
+    if let Ok(function) = interp.lookup_function("syntax-propertize", env) {
+        let _ = interp.call_function_value(
+            function,
+            Some("syntax-propertize"),
+            &[Value::Integer(end as i64)],
+            env,
+        );
+    }
     let keywords_only = defaults_items.get(1).is_some_and(|value| value.is_truthy());
     if !keywords_only {
         font_lock_syntactic_pass(interp, start, end, env)?;

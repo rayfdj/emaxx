@@ -4225,6 +4225,24 @@ property list, or no properties if there is no plist before it."
 (defvar ert--test-buffers (make-hash-table :weakness t)
   "Table of all test buffers.  Keys are the buffer objects, values are t.")
 
+;; syntax.el: apply `syntax-propertize-function' up to POS once per
+;; region; fontification and `syntax-ppss' rely on the resulting
+;; `syntax-table' text properties.
+(defun syntax-propertize (pos)
+  "Ensure that syntax-table properties are set until POS in current buffer."
+  (when (and (boundp 'syntax-propertize-function)
+             syntax-propertize-function
+             (< syntax-propertize--done pos))
+    (save-excursion
+      (let ((start (max (min syntax-propertize--done (point-max)) (point-min)))
+            (end (max pos (point-min))))
+        ;; Advance the high-water mark first: the propertize function
+        ;; may itself trigger machinery that calls back into us.
+        (setq syntax-propertize--done (max (point-max) end))
+        (remove-text-properties start end
+                                '(syntax-table nil syntax-multiline nil))
+        (funcall syntax-propertize-function start end)))))
+
 ;; font-core.el: the default `font-lock-function'; the native
 ;; `font-lock-mode' has already recorded the mode state when a custom
 ;; function delegates here.

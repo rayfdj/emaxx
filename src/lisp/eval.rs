@@ -825,6 +825,8 @@ impl Interpreter {
                 "case-fold-search".into(),
                 // font-core.el: (defvar-local font-lock-defaults nil)
                 "font-lock-defaults".into(),
+                // syntax.el: (defvar-local syntax-propertize--done -1)
+                "syntax-propertize--done".into(),
                 "cursor-in-non-selected-windows".into(),
                 "left-margin".into(),
                 "line-spacing".into(),
