@@ -19,12 +19,46 @@ counts as the progress denominator.
 
 ## Current State
 
-- Tests through 2056/7080 are verified locally against the current canonical
-  manifest: `ert-font-lock-tests.el` (selectors 2017..2056) passes its
-  grouped `check-all` replay on top of the completed eieio-tests directory.
-- The full 84-file verified-prefix sweep (now including
-  `ert-font-lock-tests.el`) is GREEN on the current tree (2026-07-04).
-- The latest batch is `Compat 2056/7080: pass ert-font-lock-tests.el` —
+- Tests through 2084/7080 are verified locally against the current canonical
+  manifest: `ert-x-tests.el` (selectors 2057..2084) passes its grouped
+  `check-all` replay.
+- The full 85-file verified-prefix sweep (now including `ert-x-tests.el`)
+  is GREEN on the current tree (2026-07-05).
+- The latest batch is `Compat 2084/7080: pass ert-x-tests.el` — the
+  ert-x helper set plus the runtime repairs the suite exposed:
+  - simple_compat.el ports of the preloaded-ert-x helpers:
+    `ert-with-buffer-selected'/`ert-with-test-buffer-selected',
+    `ert-call-with-buffer-renamed'/`ert-with-buffer-renamed',
+    `ert-buffer-string-reindented', `ert-filter-string',
+    `ert-propertized-string', `ert--with-temp-file-generate-suffix',
+    `ert--force-message-log-buffer-truncation', plus `messages-buffer',
+    `indent-region' (drives the buffer's `indent-line-function'),
+    `with-help-window', `fill-region-as-paragraph' (no-op),
+    `font-lock-default-function', and a `message-log-max' defvar
+    (GNU default 1000, dynamically rebindable).
+  - `message' implements message_dolog(): nothing is logged for an empty
+    message or `message-log-max' nil, and a fixnum truncates *Messages*
+    to that many lines; `ert--test-buffers' registration/kill semantics
+    and GNU's `*Test buffer (TEST): NAME*' naming in the native
+    `ert-with-test-buffer' (the native runner records the top-level test
+    name for `ert-running-test'-style naming).
+  - `cl-defstruct' honors unnamed `(:type vector)' (plain-vector storage
+    with raw `aref'/`aset' access — GNU ewoc nodes and timers are such
+    vectors; `timerp' accepts 10-slot vectors); `handler-bind' accepts a
+    LIST of condition names per handler; `ert-info' dynamically binds
+    `ert--infos' so failure results carry the infos; `symbol-file' with
+    type `ert--test' resolves from the native test registry.
+  - The pcase family is shielded from macro shadowing (loading GNU
+    pcase.el registers the backquote pattern under `\`' while the native
+    reader encodes patterns as `backquote'); `equal-including-properties'
+    compares interval plists order-insensitively like intervals_equal;
+    `indent-rigidly' leaves a partial first line and empty lines alone;
+    `indent-line-to' is a no-op at the target column; native
+    `emacs-lisp-mode' installs `lisp-indent-line'; `font-lock-mode' runs
+    the buffer's `font-lock-function' (ERT's results buffer redraws its
+    ewoc there); `ert-with-temp-directory' rejects `:text';
+    `inhibit-modification-hooks' defaults to nil.
+- The previous batch was `Compat 2056/7080: pass ert-font-lock-tests.el` —
   a font-lock-defaults-driven fontification engine plus the runtime
   repairs it exposed:
   - `font-lock-ensure' fontifies natively: a lazy installer equips the

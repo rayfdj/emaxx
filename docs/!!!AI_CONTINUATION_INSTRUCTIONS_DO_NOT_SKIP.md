@@ -18,10 +18,32 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2056/7080: `ert-font-lock-tests.el` (selectors
-  2017..2056) passes its grouped `check-all` replay; the 84-file
-  verified-prefix sweep (now including ert-font-lock-tests.el) is green
-  (2026-07-04).
+- Verified through selector 2084/7080: `ert-x-tests.el` (selectors
+  2057..2084) passes its grouped `check-all` replay; the 85-file
+  verified-prefix sweep (now including ert-x-tests.el) is green
+  (2026-07-05).
+- The `Compat 2084/7080` batch (see `docs/compatibility-goal.md` for the
+  full list): simple_compat ports of the ert-x helpers (ert-x is a
+  preloaded feature; its macros were void), GNU message_dolog()
+  semantics for `message'/`message-log-max', `ert--test-buffers' +
+  GNU test-buffer naming in native `ert-with-test-buffer',
+  unnamed `(:type vector)' cl-defstructs stored as plain vectors (ewoc
+  nodes, timers — `timerp' accepts 10-slot vectors), handler-bind
+  condition lists, `ert-info' dynamic `ert--infos' binding, `symbol-file'
+  ert--test type, a macro-shadowing shield for the pcase family (GNU
+  pcase.el registers its backquote pattern under `\`' but the native
+  reader produces `backquote'), order-insensitive
+  `equal-including-properties', GNU `indent-rigidly'/`indent-line-to'
+  edge cases, `lisp-indent-line' as native elisp-mode's
+  `indent-line-function', and `font-lock-mode' running the buffer's
+  `font-lock-function'.
+- IMPORTANT probe-environment fact (cost an hour): the harness passes the
+  FULL oracle load-path (`emaxx_upstream_load_path`) plus `-l ert`, which
+  LOADS GNU ert.el/ert-x deps (pcase.el, ewoc.el...) on top of the native
+  preloads.  Probes must replicate that: build /tmp/probes/loadpath.txt
+  from the ORACLE's `load-path` (batch `--eval` printing `load-path`,
+  plus test/lisp dirs), not just the test directories, or `-l ert`
+  fails to resolve and probe behavior diverges from harness behavior.
 - The `Compat 2056/7080` batch built the native fontification engine and
   the repairs it exposed (see `docs/compatibility-goal.md` for the full
   list): `font-lock-ensure' runs a syntactic pass (comments/strings from
@@ -70,8 +92,9 @@ counts as the progress denominator.
   slots survive into subclasses — five cedet files depended on
   semanticdb's `tracking-symbol' initform).  Details in
   `docs/compatibility-goal.md`.
-- The next frontier is `test/lisp/emacs-lisp/ert-x-tests.el` (selectors
-  2057..2084, 28 selected; manifest line 2142 of
+- The next frontier is
+  `test/lisp/emacs-lisp/faceup-tests/faceup-test-basics.el` (selectors
+  2085..2099, 15 selected; manifest line 2171 of
   `compat/oracle_tests_all.txt`).  Start with the grouped `check-all`
   replay to enumerate the real mismatches.
 - Probing lessons that cost hours; do not repeat:
@@ -103,7 +126,7 @@ counts as the progress denominator.
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-x-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/faceup-tests/faceup-test-basics.el
 ```
 
 ## Session Durability Guardrails (learned the hard way)
@@ -210,7 +233,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/ert-x-tests.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/faceup-tests/faceup-test-basics.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next

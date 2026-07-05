@@ -462,6 +462,20 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
     }
 }
 
+fn text_property_plists_equal_including_properties(
+    left: &[(String, Value)],
+    right: &[(String, Value)],
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, left_value)| {
+            right.iter().any(|(right_key, right_value)| {
+                right_key == key
+                    && values_equal_including_properties_recursive(left_value, right_value, seen)
+            })
+        })
+}
+
 pub(crate) fn values_equal_including_properties(left: &Value, right: &Value) -> bool {
     values_equal_including_properties_recursive(left, right, &mut HashSet::new())
 }
@@ -472,7 +486,21 @@ pub(crate) fn values_equal_including_properties_recursive(
     seen: &mut HashSet<(usize, usize)>,
 ) -> bool {
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
-        return left_string.text == right_string.text && left_string.props == right_string.props;
+        // GNU compares interval plists as sets: property ORDER within a
+        // span is not significant (intervals_equal in intervals.c).
+        return left_string.text == right_string.text
+            && left_string.props.len() == right_string.props.len()
+            && left_string.props.iter().zip(right_string.props.iter()).all(
+                |(left_span, right_span)| {
+                    left_span.start == right_span.start
+                        && left_span.end == right_span.end
+                        && text_property_plists_equal_including_properties(
+                            &left_span.props,
+                            &right_span.props,
+                            seen,
+                        )
+                },
+            );
     }
     if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
         && matches!(left, Value::Cons(_, _))

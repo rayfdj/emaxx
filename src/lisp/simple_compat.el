@@ -4074,4 +4074,190 @@ Defaults to `error'."
 (defvar isearch-lax-whitespace t)
 (defvar isearch-regexp-lax-whitespace nil)
 
+;; simple.el: the *Messages* buffer accessor.
+(defun messages-buffer ()
+  "Return the \"*Messages*\" buffer.
+If it does not exist, create it and switch it to `messages-buffer-mode'."
+  (or (get-buffer "*Messages*")
+      (with-current-buffer (get-buffer-create "*Messages*")
+        (when (fboundp 'messages-buffer-mode)
+          (messages-buffer-mode))
+        (current-buffer))))
+
+;; indent.el: the default region indenter drives the buffer's
+;; `indent-line-function' over each nonblank line.
+(defun indent-region (start end &optional column)
+  "Indent each nonblank line in the region.
+With no argument, indent each line using the mode's
+`indent-line-function'."
+  (interactive "r")
+  (save-excursion
+    (goto-char end)
+    (setq end (point-marker))
+    (goto-char start)
+    (beginning-of-line)
+    (while (< (point) end)
+      (unless (and (bolp) (eolp))
+        (if column
+            (indent-line-to column)
+          (funcall indent-line-function)))
+      (forward-line 1))
+    (set-marker end nil))
+  nil)
+
+;; ert-x.el helpers: ert-x is a preloaded feature here, so GNU's file
+;; never loads; these are its portable definitions.
+(defmacro ert-with-buffer-selected (buffer-or-name &rest body)
+  "Display a buffer in a temporary selected window and run BODY.
+
+If BUFFER-OR-NAME is nil, the current buffer is used.
+
+The buffer is made the current buffer, and the temporary window
+becomes the `selected-window', before BODY is evaluated.  The
+window configuration is restored before returning, even if BODY
+exits nonlocally.  The return value is the last form in BODY."
+  (declare (indent 1))
+  `(save-window-excursion
+     (with-current-buffer (or ,buffer-or-name (current-buffer))
+       (with-selected-window (display-buffer (current-buffer))
+         ,@body))))
+
+(defmacro ert-with-test-buffer-selected (spec &rest body)
+  "Create a test buffer, switch to it, and run BODY.
+
+This combines `ert-with-test-buffer' and
+`ert-with-buffer-selected'.  The return value is the last form in
+BODY."
+  (declare (indent 1))
+  `(ert-with-test-buffer (:name ,(plist-get spec :name))
+     (ert-with-buffer-selected (current-buffer)
+       ,@body)))
+
+(defun ert-call-with-buffer-renamed (buffer-name thunk)
+  "Protect the buffer named BUFFER-NAME from side-effects and run THUNK.
+
+Renames the buffer BUFFER-NAME to a new temporary name, creates a
+new buffer named BUFFER-NAME, executes THUNK, kills the new
+buffer, and renames the original buffer back to BUFFER-NAME."
+  (let ((new-buffer-name (generate-new-buffer-name
+                          (format "%s orig buffer" buffer-name))))
+    (with-current-buffer (get-buffer-create buffer-name)
+      (rename-buffer new-buffer-name))
+    (unwind-protect
+        (progn
+          (get-buffer-create buffer-name)
+          (funcall thunk))
+      (when (get-buffer buffer-name)
+        (kill-buffer buffer-name))
+      (with-current-buffer new-buffer-name
+        (rename-buffer buffer-name)))))
+
+(defmacro ert-with-buffer-renamed (spec &rest body)
+  "Protect the buffer named by SPEC's form from side-effects and run BODY.
+
+See `ert-call-with-buffer-renamed' for details."
+  (declare (indent 1))
+  `(ert-call-with-buffer-renamed ,(car spec) (lambda () ,@body)))
+
+(defun ert-buffer-string-reindented (&optional buffer)
+  "Return the contents of BUFFER after reindentation.
+
+BUFFER defaults to current buffer.  Does not modify BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (let ((mode major-mode)
+          (contents (buffer-string)))
+      (with-temp-buffer
+        (insert contents)
+        (funcall mode)
+        (let ((inhibit-read-only t))
+          (indent-region (point-min) (point-max)))
+        (buffer-string)))))
+
+(defun ert-filter-string (s &rest regexps)
+  "Return a copy of S with all matches of REGEXPS removed.
+
+Elements of REGEXPS may also be two-element lists (REGEXP
+SUBEXP), where SUBEXP is the number of a subexpression in
+REGEXP.  In that case, only that subexpression will be removed
+rather than the entire match."
+  (with-temp-buffer
+    (insert s)
+    (dolist (x regexps)
+      (let ((regexp (if (listp x) (nth 0 x) x))
+            (subexp (if (listp x) (nth 1 x) nil)))
+        (goto-char (point-min))
+        (while (re-search-forward regexp nil t)
+          (replace-match "" t t nil subexp))))
+    (buffer-string)))
+
+(defun ert-propertized-string (&rest args)
+  "Return a string with properties as specified by ARGS.
+
+ARGS is a list of strings and plists.  The strings in ARGS are
+concatenated to produce an output string.  In the output string,
+each string from ARGS will have the preceding plist as its
+property list, or no properties if there is no plist before it."
+  (with-temp-buffer
+    (let ((current-plist nil))
+      (dolist (x args)
+        (cond
+         ((stringp x)
+          (let ((begin (point)))
+            (insert x)
+            (set-text-properties begin (point) current-plist)))
+         ((listp x)
+          (unless (zerop (mod (length x) 2))
+            (error "Odd number of args in plist: %S" x))
+          (setq current-plist x))
+         (t (signal 'wrong-type-argument (list '(or string list) x))))))
+    (buffer-string)))
+
+(defun ert--with-temp-file-generate-suffix (filename)
+  "Generate temp file suffix from FILENAME."
+  (concat "-"
+          (replace-regexp-in-string "\\`\\(.+?\\)-?tests?\\'" "\\1"
+                                    (file-name-base filename))))
+
+;; xdisp.c: the message log line limit is a special variable so tests
+;; can rebind it dynamically around `message' calls.
+(defvar message-log-max 1000)
+
+(defvar ert--test-buffers (make-hash-table :weakness t)
+  "Table of all test buffers.  Keys are the buffer objects, values are t.")
+
+;; font-core.el: the default `font-lock-function'; the native
+;; `font-lock-mode' has already recorded the mode state when a custom
+;; function delegates here.
+(defun font-lock-default-function (_mode) nil)
+
+;; help.el: run BODY with the help buffer erased, then display it.
+(defmacro with-help-window (buffer-or-name &rest body)
+  "Evaluate BODY, then display the help buffer BUFFER-OR-NAME."
+  (declare (indent 1))
+  `(let ((emaxx--help-window-buffer (get-buffer-create ,buffer-or-name)))
+     (with-current-buffer emaxx--help-window-buffer
+       (let ((inhibit-read-only t))
+         (erase-buffer)))
+     (prog1 (progn ,@body)
+       (display-buffer emaxx--help-window-buffer))))
+
+;; fill.el: paragraph filler; a no-op suffices while emaxx has no
+;; window-width-driven line breaking.
+(defun fill-region-as-paragraph (_from _to &optional _justify
+                                        _nosqueeze _squeeze-after)
+  nil)
+
+;; ert.el: lisp reimplementation of message_dolog()'s truncation.
+(defun ert--force-message-log-buffer-truncation ()
+  "Immediately truncate *Messages* buffer according to `message-log-max'."
+  (with-current-buffer (messages-buffer)
+    (when (natnump message-log-max)
+      (let ((begin (point-min))
+            (end (save-excursion
+                   (goto-char (point-max))
+                   (forward-line (- message-log-max))
+                   (point)))
+            (inhibit-read-only t))
+        (delete-region begin end)))))
+
 ;;; simple_compat.el ends here

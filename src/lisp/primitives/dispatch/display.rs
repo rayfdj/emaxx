@@ -288,14 +288,38 @@ pub(super) fn call(
                 .lookup_var("messages-buffer-name", env)
                 .and_then(|value| string_like(&value).map(|string| string.text))
                 .unwrap_or_else(|| "*Messages*".into());
-            let buffer_id = interp
-                .find_buffer(&buffer_name)
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
-            if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-                let end = buffer.point_max();
-                buffer.goto_char(end);
-                buffer.insert(&(text.clone() + "\n"));
+            // GNU message_dolog: nothing is logged for an empty message or
+            // with `message-log-max' nil; a fixnum keeps that many lines.
+            let log_max = interp
+                .lookup_var("message-log-max", env)
+                .unwrap_or(Value::T);
+            if !text.is_empty() && !log_max.is_nil() {
+                let buffer_id = interp
+                    .find_buffer(&buffer_name)
+                    .map(|(id, _)| id)
+                    .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
+                if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                    let end = buffer.point_max();
+                    buffer.goto_char(end);
+                    buffer.insert(&(text.clone() + "\n"));
+                    if let Ok(max_lines) = log_max.as_integer()
+                        && max_lines >= 0
+                    {
+                        let contents = buffer.full_buffer_string();
+                        let lines = contents.matches('\n').count();
+                        if lines > max_lines as usize {
+                            let drop = lines - max_lines as usize;
+                            let mut offset = 0usize;
+                            for _ in 0..drop {
+                                if let Some(next) = contents[offset..].find('\n') {
+                                    offset += next + 1;
+                                }
+                            }
+                            let char_end = contents[..offset].chars().count();
+                            let _ = buffer.delete_region(1, char_end + 1);
+                        }
+                    }
+                }
             }
             // The upstream capture advice ignores `(message nil)' and
             // `(message "")', which edebug uses to clear the echo area.
@@ -864,12 +888,14 @@ pub(super) fn call(
                     );
                 }
                 interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::T);
+                font_lock_mode_run_mode_function(interp, buffer_id, Value::T, env)?;
                 Ok(Value::T)
             } else {
                 interp.set_buffer_local_value(buffer_id, "font-lock-mode", Value::Nil);
                 interp.set_buffer_local_value(buffer_id, "jit-lock-mode", Value::Nil);
                 interp.set_buffer_local_value(buffer_id, "jit-lock-functions", Value::Nil);
                 interp.set_buffer_local_value(buffer_id, "font-lock-fontified", Value::Nil);
+                font_lock_mode_run_mode_function(interp, buffer_id, Value::Nil, env)?;
                 Ok(Value::Nil)
             }
         }
@@ -1892,4 +1918,25 @@ fn append_to_named_warnings_buffer(interp: &mut Interpreter, buffer_name: &str, 
         buffer.goto_char(end);
         buffer.insert(&(warning.to_string() + "\n"));
     }
+}
+
+// GNU font-core's `font-lock-mode' body runs the buffer's
+// `font-lock-function' with the new mode value; modes like ERT's results
+// buffer install a redraw hook there.
+fn font_lock_mode_run_mode_function(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    mode: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let Some(function) = interp.buffer_local_value(buffer_id, "font-lock-function") else {
+        return Ok(());
+    };
+    if matches!(&function, Value::Symbol(name) if name == "font-lock-default-function")
+        || function.is_nil()
+    {
+        return Ok(());
+    }
+    crate::lisp::primitives::call_function_value(interp, &function, &[mode], env)?;
+    Ok(())
 }

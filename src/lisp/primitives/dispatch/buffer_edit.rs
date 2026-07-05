@@ -1408,7 +1408,7 @@ pub(super) fn call(
             }
         }
         "emaxx-struct-make" => {
-            need_args(name, args, 5)?;
+            need_arg_range(name, args, 5, 6)?;
             let struct_name = args[0].as_symbol()?.to_string();
             let slot_names = args[1]
                 .to_vec()?
@@ -1465,6 +1465,12 @@ pub(super) fn call(
                     slots[index] = interp.eval(&default_form, env)?;
                 }
             }
+            // Unnamed `:type vector' structs are stored as plain vectors.
+            if args.get(5).and_then(|mode| mode.as_symbol().ok()) == Some("vector") {
+                let mut items = vec![Value::symbol("vector-literal")];
+                items.extend(slots);
+                return Ok(Value::list(items));
+            }
             Ok(interp.create_record(&struct_name, slots))
         }
         "emaxx-struct-p" => {
@@ -1495,6 +1501,16 @@ pub(super) fn call(
             need_arg_range(name, args, 3, 4)?;
             let struct_name = args[0].as_symbol()?;
             let slot_index = args[1].as_integer()?.max(0) as usize;
+            if args.get(3).and_then(|mode| mode.as_symbol().ok()) == Some("vector") {
+                // Unnamed vector struct: plain positional access, no tag.
+                return Ok(crate::lisp::primitives::vector_items(&args[2])
+                    .map_err(|_| {
+                        LispError::TypeError(format!("{struct_name}-p"), args[2].type_name())
+                    })?
+                    .get(slot_index)
+                    .cloned()
+                    .unwrap_or(Value::Nil));
+            }
             let list_backed = args.get(3).is_some_and(|value| !value.is_nil());
             if list_backed {
                 return match &args[2] {
@@ -1963,6 +1979,13 @@ pub(super) fn call(
                 let _ = interp.buffer.forward_char(1);
             }
             let indentation_end = interp.buffer.point();
+            // GNU indent-line-to leaves the existing whitespace untouched
+            // when the indentation is already at the requested column.
+            let current = super::call(interp, "current-column", &[], env)?.as_integer()?;
+            if current == column {
+                interp.buffer.goto_char(saved.max(indentation_end));
+                return Ok(Value::Integer(column));
+            }
             if indentation_end > bol {
                 ensure_region_modifiable(interp, bol, indentation_end, env)?;
                 delete_region_with_hooks(interp, bol, indentation_end, env)?;
@@ -2129,14 +2152,33 @@ pub(super) fn call(
                 .buffer
                 .buffer_substring(start, end)
                 .map_err(|error| LispError::Signal(error.to_string()))?;
+            // GNU only touches lines that BEGIN inside the region: a
+            // partial first line keeps its indentation, and empty lines
+            // are never padded.
+            let saved_point = interp.buffer.point();
+            interp.buffer.goto_char(start);
+            interp.buffer.beginning_of_line();
+            let first_line_partial = interp.buffer.point() < start;
+            interp.buffer.goto_char(saved_point);
             let adjusted = if count > 0 {
                 let prefix = " ".repeat(count as usize);
                 text.split_inclusive('\n')
-                    .map(|line| format!("{prefix}{line}"))
+                    .enumerate()
+                    .map(|(index, line)| {
+                        if (index == 0 && first_line_partial) || line == "\n" || line.is_empty() {
+                            line.to_string()
+                        } else {
+                            format!("{prefix}{line}")
+                        }
+                    })
                     .collect::<String>()
             } else if count < 0 {
                 let mut adjusted = String::new();
-                for line in text.split_inclusive('\n') {
+                for (index, line) in text.split_inclusive('\n').enumerate() {
+                    if index == 0 && first_line_partial {
+                        adjusted.push_str(line);
+                        continue;
+                    }
                     let mut remove = (-count) as usize;
                     let mut start_idx = 0usize;
                     for (index, ch) in line.char_indices() {

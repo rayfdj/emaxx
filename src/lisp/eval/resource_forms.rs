@@ -172,9 +172,18 @@ impl Interpreter {
             if parts.len() < 2 {
                 return Err(LispError::Signal("handler-bind: invalid binding".into()));
             }
-            let condition = parts[0].as_symbol()?.to_string();
+            // CONDITIONS is a condition name or a list of condition names.
+            let conditions: Vec<String> = match parts[0].to_vec() {
+                Ok(symbols) if !symbols.is_empty() => symbols
+                    .iter()
+                    .map(|symbol| symbol.as_symbol().map(str::to_string))
+                    .collect::<Result<_, _>>()?,
+                _ => vec![parts[0].as_symbol()?.to_string()],
+            };
             let handler = self.eval(&parts[1], env)?;
-            active.push((condition, handler));
+            for condition in conditions {
+                active.push((condition, handler.clone()));
+            }
         }
         let start = self.push_handler_bindings(&active);
         let result = self.sf_progn(&items[2..], env);
@@ -236,19 +245,44 @@ impl Interpreter {
             index += 2;
         }
 
-        let buffer_name = if let Some(form) = name_form {
+        let base_name = if let Some(form) = name_form {
             let value = self.eval(&form, env)?;
             if value.is_nil() {
-                " *ert test*".to_string()
+                None
             } else {
-                primitives::string_text(&value)?
+                Some(primitives::string_text(&value)?)
             }
         } else {
-            " *ert test*".to_string()
+            None
         };
         if let Some(form) = selected_form {
             let _ = self.eval(&form, env)?;
         }
+
+        // GNU ert--format-test-buffer-name uses `ert-running-test': the
+        // TOP-LEVEL test currently executing.  The native runner records
+        // that name; tests run recursively through GNU `ert-run-test'
+        // appear in `ert--running-tests' (outermost last).
+        let running_test_name = self.current_ert_test_name.clone().or_else(|| {
+            self.lookup_var("ert--running-tests", env)
+                .and_then(|tests| tests.to_vec().ok())
+                .and_then(|tests| tests.last().cloned())
+                .and_then(|test| match &test {
+                    Value::Record(record_id) => self
+                        .find_record(*record_id)
+                        .filter(|record| record.type_name == "ert-test")
+                        .and_then(|record| record.slots.first().cloned()),
+                    _ => None,
+                })
+                .and_then(|name| name.as_symbol().ok().map(str::to_string))
+        });
+        let buffer_name = format!(
+            "*Test buffer ({}){}*",
+            running_test_name.unwrap_or_else(|| "<anonymous test>".into()),
+            base_name
+                .map(|name| format!(": {name}"))
+                .unwrap_or_default()
+        );
 
         let buffer = crate::lisp::primitives::call(
             self,
@@ -257,6 +291,17 @@ impl Interpreter {
             env,
         )?;
         let temp_id = self.resolve_buffer_id(&buffer)?;
+        // GNU registers every test buffer in `ert--test-buffers' and only
+        // deregisters (and kills) it when the body finishes successfully.
+        let test_buffers = self.lookup_var("ert--test-buffers", env);
+        if let Some(table) = &test_buffers {
+            let _ = crate::lisp::primitives::call(
+                self,
+                "puthash",
+                &[buffer.clone(), Value::T, table.clone()],
+                env,
+            );
+        }
         let saved_buffer_id = self.current_buffer_id();
         self.switch_to_buffer_id(temp_id)?;
         let result = self.sf_progn(&items[2..], env);
@@ -265,6 +310,14 @@ impl Interpreter {
         }
         if result.is_ok() && self.has_buffer_id(temp_id) {
             self.kill_buffer_id(temp_id);
+            if let Some(table) = &test_buffers {
+                let _ = crate::lisp::primitives::call(
+                    self,
+                    "remhash",
+                    &[buffer.clone(), table.clone()],
+                    env,
+                );
+            }
         }
         result
     }
@@ -281,6 +334,19 @@ impl Interpreter {
             ));
         }
         let name = items[1].as_symbol()?.to_string();
+        // GNU rejects :text among the leading keywords at expansion time.
+        let mut keyword_index = 2usize;
+        while let Some(Value::Symbol(keyword)) = items.get(keyword_index) {
+            if !keyword.starts_with(':') {
+                break;
+            }
+            if keyword == ":text" {
+                return Err(LispError::Signal(
+                    "Invalid keyword for directory: :text".into(),
+                ));
+            }
+            keyword_index += 2;
+        }
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| LispError::Signal(error.to_string()))?

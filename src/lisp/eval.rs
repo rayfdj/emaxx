@@ -562,6 +562,7 @@ pub struct Interpreter {
     // `ert-resource-directory' without making `load-file-name' non-nil
     // during test bodies (it is nil there in GNU).
     pub(crate) ert_test_source_file: Option<String>,
+    pub(crate) current_ert_test_name: Option<String>,
     /// Collected ERT test definitions.
     pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
@@ -849,6 +850,7 @@ impl Interpreter {
             after_load_forms: Vec::new(),
             current_load_file: None,
             ert_test_source_file: None,
+            current_ert_test_name: None,
             ert_tests: Vec::new(),
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),

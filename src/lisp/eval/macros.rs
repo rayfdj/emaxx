@@ -275,6 +275,17 @@ impl Interpreter {
             return Ok(None);
         }
 
+        // The pcase family is evaluated natively; loading GNU pcase.el
+        // would otherwise shadow it with macros whose backquote-pattern
+        // expander is registered under the `\`' symbol while the native
+        // reader encodes patterns with `backquote'.
+        if matches!(
+            name,
+            "pcase" | "pcase-exhaustive" | "pcase-let" | "pcase-let*" | "pcase-dolist"
+        ) {
+            return Ok(None);
+        }
+
         let mut attempted_autoload = false;
         let (params, body) = loop {
             if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {

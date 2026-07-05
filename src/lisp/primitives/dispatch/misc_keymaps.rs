@@ -892,7 +892,19 @@ pub(super) fn call(
             })
         }
         "symbol-file" => {
-            need_arg_range(name, args, 1, 2)?;
+            need_arg_range(name, args, 1, 3)?;
+            // The `ert--test' type resolves from the native test registry.
+            if args.get(1).and_then(|t| t.as_symbol().ok()) == Some("ert--test")
+                && let Ok(symbol) = args[0].as_symbol()
+            {
+                return Ok(interp
+                    .ert_tests
+                    .iter()
+                    .find(|test| test.name == symbol)
+                    .and_then(|test| test.source_file.clone())
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil));
+            }
             Ok(Value::Nil)
         }
         "symbol-name" => {
