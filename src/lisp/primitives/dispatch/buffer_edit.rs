@@ -1080,6 +1080,23 @@ pub(super) fn call(
                     interp.buffer.goto_char(position);
                     Ok(Value::Nil)
                 }
+                // GNU: (goto-char (or (scan-sexps ...) (buffer-end arg)))
+                // — with nothing but ignorable text left, move to the
+                // buffer end instead of signaling.
+                None if count > 0
+                    && syntax::rest_of_buffer_is_ignorable(interp, interp.buffer.point()) =>
+                {
+                    let max = interp.buffer.point_max();
+                    interp.buffer.goto_char(max);
+                    Ok(Value::Nil)
+                }
+                None if count < 0
+                    && syntax::buffer_before_is_ignorable(interp, interp.buffer.point()) =>
+                {
+                    let min = interp.buffer.point_min();
+                    interp.buffer.goto_char(min);
+                    Ok(Value::Nil)
+                }
                 None => Err(scan_error()),
             }
         }

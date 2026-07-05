@@ -820,11 +820,8 @@ fn scan_one_sexp_forward_for_scan_sexps(
     from: usize,
     max: usize,
 ) -> Result<Option<usize>, LispError> {
-    let mut idx = from.saturating_sub(1);
     let end = max.saturating_sub(1).min(chars.len());
-    while idx < end && chars[idx].is_whitespace() {
-        idx += 1;
-    }
+    let idx = skip_ignored_forward(interp, chars, from.saturating_sub(1), end);
     if idx >= end {
         return Ok(None);
     }
@@ -854,8 +851,20 @@ fn scan_balanced_forward_for_scan_sexps(
     };
     let mut stack = vec![first_close];
     let mut saw_mismatch = false;
+    let ignore_comments = interp
+        .symbol_value_cell("parse-sexp-ignore-comments")
+        .map(|value| value.is_truthy())
+        .unwrap_or(false);
     let mut idx = open_idx + 1;
     while idx < end {
+        if ignore_comments && let Some(start) = comment_start_at(interp, table_id, chars, idx) {
+            let (next, _closed) =
+                skip_comment_with_status(interp, table_id, chars, idx, start, false);
+            if next > idx {
+                idx = next;
+                continue;
+            }
+        }
         let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
         match entry.class {
             SyntaxClass::StringQuote => {
@@ -921,17 +930,56 @@ fn scan_one_sexp_backward_for_scan_sexps(
     }
 }
 
+// Skip whitespace, and — when `parse-sexp-ignore-comments' is set, as
+// lisp modes do — comments, before sexp scanning (GNU scan_sexps_forward).
+fn skip_ignored_forward(interp: &Interpreter, chars: &[char], mut idx: usize, end: usize) -> usize {
+    let ignore_comments = interp
+        .symbol_value_cell("parse-sexp-ignore-comments")
+        .map(|value| value.is_truthy())
+        .unwrap_or(false);
+    let table_id = interp.current_syntax_table_id();
+    loop {
+        while idx < end && chars[idx].is_whitespace() {
+            idx += 1;
+        }
+        if !ignore_comments || idx >= end {
+            return idx;
+        }
+        let Some(start) = comment_start_at(interp, table_id, chars, idx) else {
+            return idx;
+        };
+        let (next, _closed) = skip_comment_with_status(interp, table_id, chars, idx, start, false);
+        if next <= idx {
+            return idx;
+        }
+        idx = next.min(chars.len());
+    }
+}
+
+// Whether [from, buffer end) holds only whitespace and (ignored) comments;
+// GNU forward-sexp then moves to the buffer end instead of signaling.
+pub(super) fn rest_of_buffer_is_ignorable(interp: &Interpreter, from: usize) -> bool {
+    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
+    let end = interp.buffer.point_max().saturating_sub(1).min(chars.len());
+    skip_ignored_forward(interp, &chars, from.saturating_sub(1), end) >= end
+}
+
+// Whether [buffer start, to) holds only whitespace and (ignored) comments.
+pub(super) fn buffer_before_is_ignorable(interp: &Interpreter, to: usize) -> bool {
+    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
+    let start = interp.buffer.point_min().saturating_sub(1);
+    let end = to.saturating_sub(1).min(chars.len());
+    skip_ignored_forward(interp, &chars, start, end) >= end
+}
+
 fn scan_one_sexp_forward(
     interp: &Interpreter,
     chars: &[char],
     from: usize,
     max: usize,
 ) -> Option<usize> {
-    let mut idx = from.saturating_sub(1);
     let end = max.saturating_sub(1).min(chars.len());
-    while idx < end && chars[idx].is_whitespace() {
-        idx += 1;
-    }
+    let mut idx = skip_ignored_forward(interp, chars, from.saturating_sub(1), end);
     if idx >= end {
         return None;
     }
@@ -973,8 +1021,20 @@ fn scan_balanced_forward(
     let open_entry =
         syntax_entry_at_buffer_position(interp, table_id, chars[open_idx], open_idx + 1);
     let mut stack = vec![matching_close_char(chars[open_idx], open_entry)?];
+    let ignore_comments = interp
+        .symbol_value_cell("parse-sexp-ignore-comments")
+        .map(|value| value.is_truthy())
+        .unwrap_or(false);
     let mut idx = open_idx + 1;
     while idx < end {
+        if ignore_comments && let Some(start) = comment_start_at(interp, table_id, chars, idx) {
+            let (next, _closed) =
+                skip_comment_with_status(interp, table_id, chars, idx, start, false);
+            if next > idx {
+                idx = next;
+                continue;
+            }
+        }
         let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
         match entry.class {
             SyntaxClass::StringQuote => idx = scan_string_forward(chars, idx, end)?,

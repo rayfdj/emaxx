@@ -18,10 +18,17 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2084/7080: `ert-x-tests.el` (selectors
-  2057..2084) passes its grouped `check-all` replay; the 85-file
-  verified-prefix sweep (now including ert-x-tests.el) is green
+- Verified through selector 2100/7080: `faceup-test-basics.el'
+  (2085..2099) and `faceup-test-files.el' (2100) pass their grouped
+  `check-all` replays; the 87-file verified-prefix sweep is green
   (2026-07-05).
+- The `Compat 2100/7080` batch: `forward-sexp'/`scan-sexps' honor
+  `parse-sexp-ignore-comments' (native emacs-lisp-mode sets it), reach
+  buffer end instead of signaling over trailing comments, and
+  `syntax-propertize' is ported (auto-buffer-local
+  `syntax-propertize--done'; the fontification engine runs it first, so
+  `syntax-propertize-rules' modes get their `syntax-table' text
+  properties).  Details in `docs/compatibility-goal.md`.
 - The `Compat 2084/7080` batch (see `docs/compatibility-goal.md` for the
   full list): simple_compat ports of the ert-x helpers (ert-x is a
   preloaded feature; its macros were void), GNU message_dolog()
@@ -92,11 +99,14 @@ counts as the progress denominator.
   slots survive into subclasses — five cedet files depended on
   semanticdb's `tracking-symbol' initform).  Details in
   `docs/compatibility-goal.md`.
-- The next frontier is
-  `test/lisp/emacs-lisp/faceup-tests/faceup-test-basics.el` (selectors
-  2085..2099, 15 selected; manifest line 2171 of
-  `compat/oracle_tests_all.txt`).  Start with the grouped `check-all`
-  replay to enumerate the real mismatches.
+- The next frontier is `test/lisp/emacs-lisp/find-func-tests.el`
+  (selectors 2101..2106, 6 selected; manifest line 2189 of
+  `compat/oracle_tests_all.txt`).  Known from a first replay: 4 real
+  failures needing find-function machinery —
+  `find-func-tests--locate-symbols' (void-variable),
+  `--locate-library' (void-function), `--locate-advised-symbols'
+  (wrong-type-argument), `--locate-macro-generated-symbols'
+  (ert-test-failed).
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
@@ -126,7 +136,7 @@ counts as the progress denominator.
 Exact command that identified the next frontier:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/faceup-tests/faceup-test-basics.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/find-func-tests.el
 ```
 
 ## Session Durability Guardrails (learned the hard way)
@@ -233,7 +243,7 @@ cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PAT
 For the next known frontier, run:
 
 ```sh
-cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/faceup-tests/faceup-test-basics.el
+cargo run --bin compat-harness -- run --scope all --selector check-all --file test/lisp/emacs-lisp/find-func-tests.el
 ```
 
 After fixing a selector, exact-replay that selector. Then probe the next
