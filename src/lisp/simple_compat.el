@@ -4314,6 +4314,35 @@ property list, or no properties if there is no plist before it."
 ;; loaddefs: thingatpt autoloads.
 (autoload 'thing-at-point "thingatpt")
 
+;; lread.c: completion table for library names under DIRS with SUFFIXES.
+;; Candidates carry any directory part of STRING so plain prefix
+;; completion over the returned list matches GNU's behavior.
+(defun locate-file-completion-table (dirs suffixes string pred action)
+  "Do completion for file names passed to `locate-file'."
+  (let* ((dirpart (or (file-name-directory string) ""))
+         (suffix-re (concat (regexp-opt (delete "" (copy-sequence suffixes)))
+                            "\\'"))
+         (names nil))
+    (dolist (dir dirs)
+      (let ((full (expand-file-name dirpart (or dir default-directory))))
+        (when (file-directory-p full)
+          (dolist (file (directory-files full))
+            (unless (member file '("." ".."))
+              (if (file-directory-p (expand-file-name file full))
+                  (push (concat dirpart file "/") names)
+                (when (string-match suffix-re file)
+                  (push (concat dirpart
+                                (substring file 0 (match-beginning 0)))
+                        names))))))))
+    (setq names (delete-dups (nreverse names)))
+    (cond
+     ((eq action t) (all-completions string names pred))
+     ((null action) (try-completion string names pred))
+     ((eq action 'lambda) (test-completion string names pred))
+     ((eq (car-safe action) 'boundaries)
+      `(boundaries ,(length dirpart) . ,(length (cdr action))))
+     (t nil))))
+
 ;; help.el: the function around point, or the one called by the list
 ;; containing point.
 (defun function-called-at-point ()

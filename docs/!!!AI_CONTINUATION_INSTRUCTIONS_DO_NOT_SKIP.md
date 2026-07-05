@@ -99,27 +99,29 @@ counts as the progress denominator.
   slots survive into subclasses — five cedet files depended on
   semanticdb's `tracking-symbol' initform).  Details in
   `docs/compatibility-goal.md`.
-- The frontier file `test/lisp/emacs-lisp/find-func-tests.el` (selectors
-  2101..2106) is 5/6 GREEN after the find-func groundwork batch:
-  ppss struct + `goto-line' + `delete-indentation'/`join-line' +
-  `function-called-at-point' + minimal `help-C-file-name' (reads the
-  oracle DOC via `doc-directory'/`internal-doc-file-name') in
-  simple_compat.el; native `symbol-file' falls back to scanning GNU's
-  preloaded lisp sources (static loadup list in misc_keymaps.rs);
-  `macroexpand-all' of `cl-defstruct'/`define-derived-mode' emits
-  GNU-shaped `defalias'/`defvar' stubs ahead of `emaxx--cl-defstruct'/
-  `emaxx--define-derived-mode' markers so find-func's macro-expanding
-  search finds generated symbols.
-  REMAINING (only `find-func-tests--library-completion'): the simulated
-  minibuffer completion `(ert-simulate-keys (kbd "o / o r g TAB RET")
-  (read-library-name))' must yield "org/org" — needs (a) the C
-  completion table `locate-file-completion-table' (lread.c) as a native
-  (function table over DIRS x SUFFIXES), (b) `completing-read'/TAB
-  accepting FUNCTION completion tables (currently signals
-  wrong-type-argument list on an `apply-partially' closure), and (c) the
-  `partial-completion' style expanding "o/org" across slash-separated
-  components.  Also `find-library-include-other-files' is t here, so the
-  function-table branch of `read-library-name' is the one that runs.
+- Verified through selector 2106/7080: `find-func-tests.el` passes its
+  grouped `check-all` replay.  The `Compat 2106/7080` batch finished the
+  file with a simulated-minibuffer completion engine: `completing-read'
+  consumes queued `unread-command-events' (ert-simulate-keys) as a key
+  loop — self-inserting chars, RET submits, TAB completes via
+  longest-common-prefix over the table, a trailing-slash retry (completes
+  the component before a final "/"), and a component-wise
+  partial-completion expander for "o/org"-style patterns;
+  `filtered_completion_matches' accepts FUNCTION completion tables
+  (calling (TABLE STRING PRED t)); `locate-file-completion-table' is
+  ported to simple_compat.el (candidates carry the directory part of
+  STRING so plain prefix matching reproduces GNU's boundaries behavior).
+- KNOWN ENVIRONMENT FLAKE (do not chase):
+  `auto-revert-test02-auto-revert-deleted-file-remote'
+  (autorevert-tests.el) flips between PASS and FAIL depending on
+  container state — it failed 3/3 on a PRISTINE parent-commit tree in the
+  same session where it had passed an earlier sweep.  Compare against the
+  parent commit before attributing it to your diff (an hour was lost
+  bisecting simple_compat.el for it; a nonsense stub "reproduced" the
+  failure because the test is simply unstable).  todo-mode-tests.el
+  remains the other known retry-flake.
+- The next frontier is `test/lisp/emacs-lisp/float-sup-tests.el`
+  (selector 2107; manifest line 2196), then onward per the manifest.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
