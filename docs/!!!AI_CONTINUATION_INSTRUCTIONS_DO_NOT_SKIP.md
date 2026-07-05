@@ -101,12 +101,30 @@ counts as the progress denominator.
   `docs/compatibility-goal.md`.
 - The next frontier is `test/lisp/emacs-lisp/find-func-tests.el`
   (selectors 2101..2106, 6 selected; manifest line 2189 of
-  `compat/oracle_tests_all.txt`).  Known from a first replay: 4 real
-  failures needing find-function machinery —
-  `find-func-tests--locate-symbols' (void-variable),
-  `--locate-library' (void-function), `--locate-advised-symbols'
-  (wrong-type-argument), `--locate-macro-generated-symbols'
-  (ert-test-failed).
+  `compat/oracle_tests_all.txt`).  4 real mismatches (the other two fail
+  in GNU too), investigated root causes:
+  - `--locate-symbols': void `ppss-comment-or-string-start' — syntax.el
+    never loads (native syntax), so its `(cl-defstruct (ppss (:type
+    list)) ...)' accessors are undefined; port that struct (list-backed
+    cl-defstruct support exists) to simple_compat.el.
+  - `--locate-library': `(find-function-library #'goto-line)' dies with
+    void `goto-line' — check the emaxx function cell for goto-line, and
+    `#'forward-char' must yield `(forward-char . "cmds.c")' via
+    find-func's subr branch: `help-C-file-name' (help-fns.el) reads the
+    oracle DOC file through `internal-doc-file-name'/`doc-directory' —
+    check what those resolve to in emaxx.
+  - `--locate-advised-symbols': `(string-match ... nil)' — after advice
+    unwrapping, `(symbol-file 'mark-sexp 'defun)' returns nil (native
+    fn, no load-history); expected library match is "lisp" (lisp.el).
+    emaxx `symbol-file' is a stub except for the ert--test type; it
+    needs load-history-backed resolution, or GNU-known-source answers
+    for natives.
+  - `--locate-macro-generated-symbols':
+    `(find-function-search-for-symbol #'compilation--message->loc nil
+    "compile")' must return a position via find-func's
+    `find-function--search-by-expanding-macros' fallback (macroexpands
+    top-level forms of compile.el looking for the defining
+    cl-defstruct).
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
