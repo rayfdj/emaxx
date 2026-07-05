@@ -677,7 +677,47 @@ impl Interpreter {
                         Value::Symbol("name".into()),
                     ])));
                 }
-                Ok(None)
+                // GNU's expansion ultimately defines every generated
+                // function through `defalias'; find-func's
+                // macro-expanding search looks for those subforms.  Emit
+                // GNU-shaped stubs ahead of the native definer.
+                Ok(Some(Self::cl_defstruct_expansion_with_stubs(args)))
+            }
+            "define-derived-mode" => {
+                // Same shape rationale as cl-defstruct: GNU's expansion
+                // carries the mode function `defalias' and the
+                // MODE-hook/-map/-syntax-table `defvar's that find-func's
+                // macro-expanding search looks for.
+                let Some(mode) = args.first().and_then(|m| m.as_symbol().ok()) else {
+                    return Ok(None);
+                };
+                let mut forms = vec![
+                    Value::Symbol("progn".into()),
+                    Value::list([
+                        Value::Symbol("defalias".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(mode.to_string()),
+                        ]),
+                        Value::list([
+                            Value::Symbol("function".into()),
+                            Value::Symbol("ignore".into()),
+                        ]),
+                    ]),
+                ];
+                for suffix in ["hook", "map", "syntax-table", "abbrev-table"] {
+                    forms.push(Value::list([
+                        Value::Symbol("defvar".into()),
+                        Value::Symbol(format!("{mode}-{suffix}")),
+                        Value::Nil,
+                    ]));
+                }
+                forms.push(Value::list(
+                    std::iter::once(Value::Symbol("emaxx--define-derived-mode".into()))
+                        .chain(args.iter().cloned())
+                        .collect::<Vec<_>>(),
+                ));
+                Ok(Some(Value::list(forms)))
             }
             "named-let" => self.expand_named_let(args).map(Some),
             "with-wrapper-hook" => self.expand_with_wrapper_hook(args).map(Some),
@@ -1364,4 +1404,96 @@ fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> 
         entries = entries.cdr().ok()?;
     }
     None
+}
+
+impl Interpreter {
+    // Compute the function names a cl-defstruct generates and wrap the
+    // native definition in a progn of `defalias' stubs so macro-expanded
+    // output has GNU's shape (the stubs are immediately overridden by the
+    // native definer that follows them).
+    pub(super) fn cl_defstruct_expansion_with_stubs(args: &[Value]) -> Value {
+        let (name, options) = match args.first() {
+            Some(Value::Symbol(name)) => (name.clone(), Vec::new()),
+            Some(spec @ Value::Cons(_, _)) => {
+                let parts = spec.to_vec().unwrap_or_default();
+                let name = parts
+                    .first()
+                    .and_then(|head| head.as_symbol().ok().map(str::to_string))
+                    .unwrap_or_default();
+                (name, parts[1..].to_vec())
+            }
+            _ => (String::new(), Vec::new()),
+        };
+        let mut conc_name = format!("{name}-");
+        let mut predicate = Some(format!("{name}-p"));
+        let mut copier = Some(format!("copy-{name}"));
+        let mut constructors: Vec<String> = Vec::new();
+        let mut suppress_default_constructor = false;
+        for option in &options {
+            let Ok(parts) = option.to_vec() else { continue };
+            match parts.first().and_then(|key| key.as_symbol().ok()) {
+                Some(":conc-name") => {
+                    conc_name = match parts.get(1) {
+                        Some(Value::Symbol(prefix)) => prefix.clone(),
+                        Some(Value::String(prefix)) => prefix.clone(),
+                        _ => String::new(),
+                    }
+                }
+                Some(":predicate") => {
+                    predicate = parts.get(1).and_then(|v| match v {
+                        Value::Symbol(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                }
+                Some(":copier") => {
+                    copier = parts.get(1).and_then(|v| match v {
+                        Value::Symbol(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                }
+                Some(":constructor") => match parts.get(1) {
+                    Some(Value::Symbol(ctor)) => constructors.push(ctor.clone()),
+                    Some(Value::Nil) | None => suppress_default_constructor = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        if !suppress_default_constructor {
+            constructors.push(format!("make-{name}"));
+        }
+        let mut generated = constructors;
+        generated.extend(predicate);
+        generated.extend(copier);
+        for slot in args.iter().skip(1) {
+            let slot_name = match slot {
+                Value::Symbol(slot_name) => Some(slot_name.clone()),
+                Value::Cons(_, _) => slot
+                    .car()
+                    .ok()
+                    .and_then(|head| head.as_symbol().ok().map(str::to_string)),
+                _ => None,
+            };
+            if let Some(slot_name) = slot_name {
+                generated.push(format!("{conc_name}{slot_name}"));
+            }
+        }
+        let mut forms = vec![Value::Symbol("progn".into())];
+        for function in generated {
+            forms.push(Value::list([
+                Value::Symbol("defalias".into()),
+                Value::list([Value::Symbol("quote".into()), Value::Symbol(function)]),
+                Value::list([
+                    Value::Symbol("function".into()),
+                    Value::Symbol("ignore".into()),
+                ]),
+            ]));
+        }
+        forms.push(Value::list(
+            std::iter::once(Value::Symbol("emaxx--cl-defstruct".into()))
+                .chain(args.iter().cloned())
+                .collect::<Vec<_>>(),
+        ));
+        Value::list(forms)
+    }
 }

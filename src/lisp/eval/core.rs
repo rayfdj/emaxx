@@ -206,7 +206,8 @@ impl Interpreter {
                         }
                         "define-minor-mode"
                         | "define-globalized-minor-mode"
-                        | "define-derived-mode" => {
+                        | "define-derived-mode"
+                        | "emaxx--define-derived-mode" => {
                             return self.sf_define_mode(&items);
                         }
                         "defclass" => return self.sf_defclass(&items),
@@ -226,7 +227,9 @@ impl Interpreter {
                         "defmacro" => return self.sf_defmacro(&items),
                         "with-memoization" => return self.sf_with_memoization(&items, env),
                         "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
-                        "cl-defstruct" => return self.sf_cl_defstruct(&items),
+                        "cl-defstruct" | "emaxx--cl-defstruct" => {
+                            return self.sf_cl_defstruct(&items);
+                        }
                         "defalias" => return self.sf_defalias(&items, env),
                         "backquote" | "`" => return self.eval_backquote(&items[1], env),
                         "comma" | "," => {

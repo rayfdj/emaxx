@@ -99,32 +99,27 @@ counts as the progress denominator.
   slots survive into subclasses — five cedet files depended on
   semanticdb's `tracking-symbol' initform).  Details in
   `docs/compatibility-goal.md`.
-- The next frontier is `test/lisp/emacs-lisp/find-func-tests.el`
-  (selectors 2101..2106, 6 selected; manifest line 2189 of
-  `compat/oracle_tests_all.txt`).  4 real mismatches (the other two fail
-  in GNU too), investigated root causes:
-  - `--locate-symbols': void `ppss-comment-or-string-start' — syntax.el
-    never loads (native syntax), so its `(cl-defstruct (ppss (:type
-    list)) ...)' accessors are undefined; port that struct (list-backed
-    cl-defstruct support exists) to simple_compat.el.
-  - `--locate-library': `(find-function-library #'goto-line)' dies with
-    void `goto-line' — check the emaxx function cell for goto-line, and
-    `#'forward-char' must yield `(forward-char . "cmds.c")' via
-    find-func's subr branch: `help-C-file-name' (help-fns.el) reads the
-    oracle DOC file through `internal-doc-file-name'/`doc-directory' —
-    check what those resolve to in emaxx.
-  - `--locate-advised-symbols': `(string-match ... nil)' — after advice
-    unwrapping, `(symbol-file 'mark-sexp 'defun)' returns nil (native
-    fn, no load-history); expected library match is "lisp" (lisp.el).
-    emaxx `symbol-file' is a stub except for the ert--test type; it
-    needs load-history-backed resolution, or GNU-known-source answers
-    for natives.
-  - `--locate-macro-generated-symbols':
-    `(find-function-search-for-symbol #'compilation--message->loc nil
-    "compile")' must return a position via find-func's
-    `find-function--search-by-expanding-macros' fallback (macroexpands
-    top-level forms of compile.el looking for the defining
-    cl-defstruct).
+- The frontier file `test/lisp/emacs-lisp/find-func-tests.el` (selectors
+  2101..2106) is 5/6 GREEN after the find-func groundwork batch:
+  ppss struct + `goto-line' + `delete-indentation'/`join-line' +
+  `function-called-at-point' + minimal `help-C-file-name' (reads the
+  oracle DOC via `doc-directory'/`internal-doc-file-name') in
+  simple_compat.el; native `symbol-file' falls back to scanning GNU's
+  preloaded lisp sources (static loadup list in misc_keymaps.rs);
+  `macroexpand-all' of `cl-defstruct'/`define-derived-mode' emits
+  GNU-shaped `defalias'/`defvar' stubs ahead of `emaxx--cl-defstruct'/
+  `emaxx--define-derived-mode' markers so find-func's macro-expanding
+  search finds generated symbols.
+  REMAINING (only `find-func-tests--library-completion'): the simulated
+  minibuffer completion `(ert-simulate-keys (kbd "o / o r g TAB RET")
+  (read-library-name))' must yield "org/org" — needs (a) the C
+  completion table `locate-file-completion-table' (lread.c) as a native
+  (function table over DIRS x SUFFIXES), (b) `completing-read'/TAB
+  accepting FUNCTION completion tables (currently signals
+  wrong-type-argument list on an `apply-partially' closure), and (c) the
+  `partial-completion' style expanding "o/org" across slash-separated
+  components.  Also `find-library-include-other-files' is t here, so the
+  function-table branch of `read-library-name' is the one that runs.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
