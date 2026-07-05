@@ -461,8 +461,32 @@ impl Interpreter {
                         }
                         "while-no-input" => return self.sf_progn(&items[1..], env),
                         "ert-info" => {
-                            // (ert-info (msg) body...) — just run the body
-                            return self.sf_progn(&items[2..], env);
+                            // (ert-info (MESSAGE-FORM &key ((:prefix P) "Info: "))
+                            //   BODY...): push (PREFIX . MESSAGE) onto the
+                            // `ert--infos' the failure reporter displays.
+                            let spec = items
+                                .get(1)
+                                .and_then(|value| value.to_vec().ok())
+                                .unwrap_or_default();
+                            let message_form = spec.first().cloned().unwrap_or(Value::Nil);
+                            let mut prefix_form = Value::String("Info: ".into());
+                            let mut index = 1usize;
+                            while index + 1 < spec.len() {
+                                if matches!(&spec[index], Value::Symbol(key) if key == ":prefix") {
+                                    prefix_form = spec[index + 1].clone();
+                                }
+                                index += 2;
+                            }
+                            let message = self.eval(&message_form, env)?;
+                            let prefix = self.eval(&prefix_form, env)?;
+                            let existing = self.lookup_var("ert--infos", env).unwrap_or(Value::Nil);
+                            let infos = Value::cons(Value::cons(prefix, message), existing);
+                            // `ert--infos' is a defvar; GNU's expansion is a
+                            // dynamic let so the failure handler sees it.
+                            let restore = self.bind_special_variable("ert--infos", infos, env)?;
+                            let result = self.sf_progn(&items[2..], env);
+                            self.restore_special_binding(restore, env)?;
+                            return result;
                         }
                         "minibuffer-with-setup-hook" => {
                             if items.len() < 3 {

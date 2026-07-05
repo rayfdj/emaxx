@@ -492,6 +492,12 @@ pub(super) fn call(
             interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
             interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::T);
             interp.set_buffer_local_value(buffer_id, "comment-add", Value::Integer(1));
+            // GNU lisp-mode-variables installs the lisp line indenter.
+            interp.set_buffer_local_value(
+                buffer_id,
+                "indent-line-function",
+                Value::Symbol("lisp-indent-line".into()),
+            );
             interp.set_buffer_local_value(buffer_id, "font-lock-defaults", Value::T);
             let Value::CharTable(syntax_table_id) =
                 interp.make_char_table(Some("syntax-table".into()), Value::Nil)

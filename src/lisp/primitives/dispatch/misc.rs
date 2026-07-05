@@ -1148,8 +1148,12 @@ pub(super) fn call(
         "cancel-timer" => Ok(Value::Nil),
         "timerp" => {
             need_args(name, args, 1)?;
+            // GNU timer.el: timers are plain 10-slot vectors.
+            let vector_timer = is_vector_value(&args[0])
+                && vector_items(&args[0]).is_ok_and(|items| items.len() == 10);
             Ok(
-                if matches!(&args[0], Value::String(text) if text == "#<timer>")
+                if vector_timer
+                    || matches!(&args[0], Value::String(text) if text == "#<timer>")
                     || matches!(&args[0], Value::StringObject(state) if state.borrow().text == "#<timer>")
                     || matches!(&args[0], Value::Record(id) if interp.find_record(*id).is_some_and(|record| record.type_name == "timer"))
                 {

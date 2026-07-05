@@ -909,6 +909,14 @@ impl Interpreter {
         let object = self.eval(target, env)?;
         let value = self.eval(value_expr, env)?;
         let predicate = format!("{expected_type}-p");
+        // Unnamed `:type vector' structs live in plain vectors.
+        if crate::lisp::primitives::is_vector_value(&object) {
+            crate::lisp::primitives::aset_vector_value(&object, slot_index, value.clone())
+                .map_err(|_| {
+                    LispError::Signal(format!("Struct slot out of range: {slot_index}"))
+                })?;
+            return Ok(value);
+        }
         let Value::Record(id) = object.clone() else {
             return Err(wrong_type_argument(&predicate, object));
         };
@@ -2168,6 +2176,12 @@ impl Interpreter {
         let mut predicate_name = format!("{name}-p");
         let mut parent_names = Vec::new();
         let mut list_backed = false;
+        let mut vector_backed = false;
+        // `:named' vector structs keep their tag slot and stay records;
+        // only unnamed `:type vector' structs become plain vectors.
+        let struct_named = options
+            .iter()
+            .any(|option| matches!(option, Value::Symbol(keyword) if keyword == ":named"));
         for option in options {
             let Some(parts) = option.to_vec().ok() else {
                 continue;
@@ -2215,6 +2229,13 @@ impl Interpreter {
                 Some(Value::Symbol(keyword)) if keyword == ":type" => {
                     if matches!(parts.get(1), Some(Value::Symbol(kind)) if kind == "list") {
                         list_backed = true;
+                    }
+                    // GNU stores unnamed vector structs as plain vectors
+                    // (ewoc's node type walks them with raw `aref').
+                    if matches!(parts.get(1), Some(Value::Symbol(kind)) if kind == "vector")
+                        && !struct_named
+                    {
+                        vector_backed = true;
                     }
                 }
                 Some(Value::Symbol(keyword)) if keyword == ":conc-name" => match parts.get(1) {
@@ -2348,7 +2369,16 @@ impl Interpreter {
                         struct_name.clone(),
                         Value::Integer(index as i64),
                         Value::Symbol("object".into()),
-                        if list_backed { Value::T } else { Value::Nil },
+                        if list_backed {
+                            Value::T
+                        } else if vector_backed {
+                            Value::list([
+                                Value::Symbol("quote".into()),
+                                Value::Symbol("vector".into()),
+                            ])
+                        } else {
+                            Value::Nil
+                        },
                     ])],
                     shared_env(Vec::new()),
                 )),
@@ -2413,14 +2443,21 @@ impl Interpreter {
                     ),
                 ])
             };
-            let make_form = Value::list([
+            let mut make_items = vec![
                 Value::Symbol("emaxx-struct-make".into()),
                 struct_name.clone(),
                 slot_names_value.clone(),
                 slot_defaults_value.clone(),
                 params_value,
                 call_args,
-            ]);
+            ];
+            if vector_backed {
+                make_items.push(Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("vector".into()),
+                ]));
+            }
+            let make_form = Value::list(make_items);
             let body = if aux_bindings.is_empty() {
                 make_form
             } else {

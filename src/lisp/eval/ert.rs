@@ -307,8 +307,10 @@ impl Interpreter {
             self.pending_timers.clear();
             let previous =
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
+            let previous_name = self.current_ert_test_name.replace(test.name.clone());
             let mut result = self.call_function_value(test.body.clone(), None, &[], &mut env);
             self.ert_test_source_file = previous;
+            self.current_ert_test_name = previous_name;
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'
             // terminates the test successfully by throwing to that tag.
             if let Err(LispError::Throw(tag, _)) = &result

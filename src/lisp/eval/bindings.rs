@@ -310,6 +310,8 @@ impl Interpreter {
             "syntax-propertize--done" => Some(Value::Integer(-1)),
             // font-lock.el: defvar-local, nil until a mode installs defaults.
             "font-lock-defaults" => Some(Value::Nil),
+            // insdel.c: change hooks run unless a primitive binds this.
+            "inhibit-modification-hooks" => Some(Value::Nil),
             // font-lock.el: the standard face variables are self-quoting
             // defvars that keyword FACENAME expressions evaluate.
             "font-lock-comment-face" => Some(Value::Symbol("font-lock-comment-face".into())),

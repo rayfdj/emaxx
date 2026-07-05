@@ -281,7 +281,12 @@ fn ert_with_test_buffer_kills_buffer_after_success() {
                         (buffer-name))
                       (buffer-live-p buf)))"#
         ),
-        Value::list([Value::String("jit-lock-test".into()), Value::Nil])
+        // GNU ert--format-test-buffer-name derives the buffer name from
+        // the running test (none here) and the :name form.
+        Value::list([
+            Value::String("*Test buffer (<anonymous test>): jit-lock-test*".into()),
+            Value::Nil,
+        ])
     );
 }
 
@@ -298,7 +303,10 @@ fn ert_with_test_buffer_keeps_buffer_after_error() {
                         (list (buffer-live-p buf)
                               (buffer-name buf)))))"#
         ),
-        Value::list([Value::T, Value::String("jit-lock-test".into())])
+        Value::list([
+            Value::T,
+            Value::String("*Test buffer (<anonymous test>): jit-lock-test*".into()),
+        ])
     );
 }
 
