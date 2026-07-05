@@ -4261,6 +4261,109 @@ property list, or no properties if there is no plist before it."
 
 ;; fill.el: paragraph filler; a no-op suffices while emaxx has no
 ;; window-width-driven line breaking.
+;; syntax.el: the parse-partial-sexp state accessors; syntax.el never
+;; loads (native syntax machinery), so define its list-backed struct.
+(cl-defstruct (ppss
+               (:constructor make-ppss)
+               (:copier nil)
+               (:type list))
+  depth
+  innermost-start
+  last-complete-sexp-start
+  string-terminator
+  comment-depth
+  quoted-p
+  min-depth
+  comment-style
+  comment-or-string-start
+  open-parens
+  two-character-syntax)
+
+;; simple.el: `goto-line', the batch-relevant core of GNU's command.
+(defun goto-line (line &optional buffer relative)
+  "Go to LINE, counting from line 1 at beginning of buffer."
+  (declare (interactive-only forward-line))
+  (interactive "NGoto line: ")
+  (when buffer
+    (switch-to-buffer buffer))
+  (or (region-active-p) (push-mark))
+  (let ((pos (save-restriction
+               (unless relative (widen))
+               (goto-char (point-min))
+               (forward-line (1- line))
+               (point))))
+    (goto-char pos)))
+
+;; simple.el: join the current line to the previous one.
+(defun delete-indentation (&optional arg)
+  "Join this line to previous and fix up whitespace at join."
+  (interactive "*P")
+  (beginning-of-line)
+  (when arg (forward-line 1))
+  (when (eq (preceding-char) ?\n)
+    (delete-region (point) (1- (point)))
+    (delete-horizontal-space)
+    (unless (or (bolp) (eolp)
+                (eq (char-after) ?\))
+                (eq (char-before) ?\())
+      (insert " "))))
+
+;; simple.el: `join-line' is the historical alias.
+(defalias 'join-line #'delete-indentation)
+
+;; loaddefs: thingatpt autoloads.
+(autoload 'thing-at-point "thingatpt")
+
+;; help.el: the function around point, or the one called by the list
+;; containing point.
+(defun function-called-at-point ()
+  "Return a function around point or else called by the list containing point.
+If that doesn't give a function, return nil."
+  (with-syntax-table emacs-lisp-mode-syntax-table
+    (or (condition-case ()
+            (save-excursion
+              (or (not (zerop (skip-syntax-backward "_w")))
+                  (eq (char-syntax (following-char)) ?w)
+                  (eq (char-syntax (following-char)) ?_)
+                  (forward-sexp -1))
+              (skip-chars-forward "'")
+              (let ((obj (read (current-buffer))))
+                (and (symbolp obj) (fboundp obj) obj)))
+          (error nil))
+        (condition-case ()
+            (save-excursion
+              (save-restriction
+                (narrow-to-region (max (point-min) (- (point) 1000))
+                                  (point-max))
+                (backward-up-list 1)
+                (forward-char 1)
+                (let ((obj (read (current-buffer))))
+                  (and (symbolp obj) (fboundp obj) obj))))
+          (error nil)))))
+
+;; help-fns.el: resolve a primitive's C source file from the DOC file.
+(defun help-C-file-name (subr-or-var kind)
+  "Return the name of the C file where SUBR-OR-VAR is defined.
+KIND should be `var' for a variable or `subr' for a subroutine."
+  (let ((docbuf (get-buffer-create " *DOC*"))
+        (name (if (eq 'var kind)
+                  (concat "V" (symbol-name subr-or-var))
+                (concat "F" (subr-name (advice--cd*r subr-or-var))))))
+    (with-current-buffer docbuf
+      (unless (eq (char-after (point-min)) ?)
+        (erase-buffer)
+        (insert-file-contents-literally
+         (expand-file-name internal-doc-file-name doc-directory)))
+      (goto-char (point-min))
+      (when (search-forward (concat "" name "
+") nil t)
+        (search-backward "S")
+        (let ((file (buffer-substring (+ (point) 2) (line-end-position))))
+          (setq file (replace-regexp-in-string "\\.o\\'" ".c" file))
+          (if (string-match "\\.\\(c\\|m\\)\\'" file)
+              (concat "src/" file)
+            file))))))
+
 (defun fill-region-as-paragraph (_from _to &optional _justify
                                         _nosqueeze _squeeze-after)
   nil)

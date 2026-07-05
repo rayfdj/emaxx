@@ -905,6 +905,16 @@ pub(super) fn call(
                     .map(Value::String)
                     .unwrap_or(Value::Nil));
             }
+            // GNU consults the dumped load-history; stand in for it with
+            // the preloaded sources for defun/defvar/typeless queries.
+            if matches!(
+                args.get(1).and_then(|t| t.as_symbol().ok()),
+                None | Some("defun") | Some("defvar")
+            ) && let Ok(symbol) = args[0].as_symbol()
+                && let Some(path) = symbol_file_from_preloaded_sources(symbol)
+            {
+                return Ok(Value::String(path));
+            }
             Ok(Value::Nil)
         }
         "symbol-name" => {
@@ -11749,4 +11759,148 @@ fn byte_code_usage_params(params: &[String]) -> String {
     } else {
         format!(" {}", rendered.join(" "))
     }
+}
+
+// GNU's 30.2 `preloaded-file-list' (loadup.el order, lisp/-relative).
+// `symbol-file' resolves natives that are preloaded elisp in GNU by
+// scanning these sources for the defining form, standing in for the
+// dumped load-history.
+const GNU_PRELOADED_LISP_FILES: &[&str] = &[
+    "emacs-lisp/rmc",
+    "international/iso-transl",
+    "tooltip",
+    "cus-start",
+    "emacs-lisp/cconv",
+    "emacs-lisp/eldoc",
+    "emacs-lisp/shorthands",
+    "paren",
+    "electric",
+    "uniquify",
+    "vc/ediff-hook",
+    "vc/vc-hooks",
+    "emacs-lisp/float-sup",
+    "progmodes/elisp-mode",
+    "buff-menu",
+    "emacs-lisp/tabulated-list",
+    "replace",
+    "newcomment",
+    "textmodes/fill",
+    "textmodes/text-mode",
+    "emacs-lisp/lisp-mode",
+    "progmodes/prog-mode",
+    "textmodes/paragraphs",
+    "register",
+    "textmodes/page",
+    "emacs-lisp/lisp",
+    "tab-bar",
+    "menu-bar",
+    "rfn-eshadow",
+    "isearch",
+    "emacs-lisp/easymenu",
+    "emacs-lisp/timer",
+    "select",
+    "mouse",
+    "jit-lock",
+    "font-lock",
+    "emacs-lisp/syntax",
+    "font-core",
+    "term/tty-colors",
+    "startup",
+    "frame",
+    "minibuffer",
+    "emacs-lisp/nadvice",
+    "emacs-lisp/seq",
+    "simple",
+    "emacs-lisp/cl-generic",
+    "indent",
+    "language/indonesian",
+    "language/philippine",
+    "language/cham",
+    "language/burmese",
+    "language/khmer",
+    "language/georgian",
+    "language/utf-8-lang",
+    "language/misc-lang",
+    "language/vietnamese",
+    "language/tibetan",
+    "language/thai",
+    "language/tai-viet",
+    "language/lao",
+    "language/korean",
+    "language/japanese",
+    "international/eucjp-ms",
+    "international/cp51932",
+    "language/hebrew",
+    "language/greek",
+    "language/romanian",
+    "language/slovak",
+    "language/czech",
+    "language/european",
+    "language/ethiopic",
+    "language/english",
+    "language/sinhala",
+    "language/indian",
+    "language/cyrillic",
+    "international/uni-special-lowercase.el",
+    "language/chinese",
+    "composite",
+    "international/emoji-zwj",
+    "international/charscript",
+    "international/uni-lowercase.el",
+    "international/uni-uppercase.el",
+    "international/uni-category.el",
+    "international/uni-brackets.el",
+    "international/uni-mirrored.el",
+    "international/uni-bidi.el",
+    "international/characters",
+    "international/charprop.el",
+    "case-table",
+    "international/mule-cmds",
+    "epa-hook",
+    "jka-cmpr-hook",
+    "help",
+    "abbrev",
+    "obarray",
+    "emacs-lisp/oclosure",
+    "emacs-lisp/cl-preloaded",
+    "button",
+    "theme-loaddefs.el",
+    "loaddefs",
+    "faces",
+    "cus-face",
+    "emacs-lisp/macroexp",
+    "files",
+    "window",
+    "bindings",
+    "format",
+    "env",
+    "international/mule-conf",
+    "international/mule",
+    "emacs-lisp/map-ynp",
+    "custom",
+    "widget",
+    "version",
+    "keymap",
+    "subr",
+    "emacs-lisp/backquote",
+    "emacs-lisp/byte-run",
+    "emacs-lisp/debug-early",
+    "loadup.el",
+];
+
+fn symbol_file_from_preloaded_sources(symbol: &str) -> Option<String> {
+    let repo_etc = crate::lisp::primitives::compat_data_directory()?;
+    let lisp_dir = std::path::Path::new(&repo_etc).parent()?.join("lisp");
+    let escaped = regex::escape(symbol);
+    let pattern = regex::Regex::new(&format!(r"(?m)^\(def\S*\s+'?{escaped}[\s)\n]")).ok()?;
+    for relative in GNU_PRELOADED_LISP_FILES {
+        let path = lisp_dir.join(format!("{relative}.el"));
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if pattern.is_match(&contents) {
+            return Some(path.display().to_string());
+        }
+    }
+    None
 }

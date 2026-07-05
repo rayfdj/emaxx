@@ -25,7 +25,18 @@ counts as the progress denominator.
   replays.
 - The full 87-file verified-prefix sweep (now including both faceup
   files) is GREEN on the current tree (2026-07-05).
-- The latest batch is `Compat 2100/7080: pass the faceup test files` —
+- find-func groundwork (frontier file 5/6 green, see the continuation
+  doc for the remaining `library-completion' analysis): simple_compat
+  ports of the ppss struct accessors, `goto-line',
+  `delete-indentation'/`join-line', `function-called-at-point', and a
+  minimal `help-C-file-name' reading the oracle DOC file
+  (`internal-doc-file-name' defaults to "DOC"); native `symbol-file'
+  falls back to scanning GNU's preloaded lisp sources; and
+  `macroexpand-all' of `cl-defstruct'/`define-derived-mode' emits
+  GNU-shaped `defalias'/`defvar' stubs so find-func's macro-expanding
+  search locates generated symbols.
+- The latest completed batch is
+  `Compat 2100/7080: pass the faceup test files` —
   sexp scanning and syntax-propertize repairs:
   - `forward-sexp'/`scan-sexps' honor `parse-sexp-ignore-comments'
     (skipping comments before and inside sexps like GNU's

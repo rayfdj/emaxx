@@ -312,6 +312,8 @@ impl Interpreter {
             "font-lock-defaults" => Some(Value::Nil),
             // insdel.c: change hooks run unless a primitive binds this.
             "inhibit-modification-hooks" => Some(Value::Nil),
+            // doc.c: name of the DOC file inside `doc-directory'.
+            "internal-doc-file-name" => Some(Value::String("DOC".into())),
             // font-lock.el: the standard face variables are self-quoting
             // defvars that keyword FACENAME expressions evaluate.
             "font-lock-comment-face" => Some(Value::Symbol("font-lock-comment-face".into())),
