@@ -719,6 +719,29 @@ pub(crate) fn filtered_completion_matches(
     let predicate = predicate.filter(|value| !value.is_nil()).cloned();
     let mut matches = Vec::new();
 
+    // A FUNCTION completion table answers (TABLE STRING PRED t) with the
+    // list of matching completions itself.
+    if completion_table_is_function(interp, collection) {
+        let all = call_function_value(
+            interp,
+            collection,
+            &[
+                Value::String(input.to_string()),
+                predicate.clone().unwrap_or(Value::Nil),
+                Value::T,
+            ],
+            env,
+        )?;
+        for name in all.to_vec().unwrap_or_default() {
+            let name = completion_display_name(&name)?;
+            matches.push(CompletionCandidate {
+                name,
+                predicate_args: Vec::new(),
+            });
+        }
+        return Ok(matches);
+    }
+
     for candidate in completion_candidates(interp, collection)? {
         if !completion_matches_prefix(input, &candidate.name, ignore_case) {
             continue;
@@ -904,6 +927,12 @@ pub(crate) fn completing_read(
     }
     ensure_interaction_allowed(interp, env)?;
 
+    // With simulated input queued (ert-simulate-keys), run a minibuffer
+    // key loop: self-inserting chars, TAB completion, RET submits.
+    if !crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
+        return simulated_completing_read(interp, args, env);
+    }
+
     let initial_input = args.get(4).and_then(|value| {
         let value = if matches!(value, Value::Cons(_, _)) {
             value.car().ok()?
@@ -1081,4 +1110,145 @@ pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
         }
     }
     overrides
+}
+
+// Whether COLLECTION is a programmed completion table (a function).
+pub(crate) fn completion_table_is_function(_interp: &Interpreter, collection: &Value) -> bool {
+    match collection {
+        Value::Lambda(_, _, _) | Value::BuiltinFunc(_) => true,
+        Value::Cons(_, _) => matches!(
+            collection.car(),
+            Ok(Value::Symbol(head)) if head == "lambda" || head == "closure"
+        ),
+        _ => false,
+    }
+}
+
+// Longest common prefix of candidate names.
+fn common_prefix(names: &[String]) -> String {
+    let Some(first) = names.first() else {
+        return String::new();
+    };
+    let mut prefix: Vec<char> = first.chars().collect();
+    for name in &names[1..] {
+        let chars: Vec<char> = name.chars().collect();
+        let mut len = 0usize;
+        while len < prefix.len() && len < chars.len() && prefix[len] == chars[len] {
+            len += 1;
+        }
+        prefix.truncate(len);
+    }
+    prefix.into_iter().collect()
+}
+
+// GNU partial-completion over '/'-separated components: expand each
+// component as a prefix against the table, one directory level at a time.
+fn partial_completion_expand(
+    interp: &mut Interpreter,
+    contents: &str,
+    collection: &Value,
+    predicate: Option<&Value>,
+    env: &mut Env,
+) -> Result<Option<String>, LispError> {
+    let components: Vec<&str> = contents.split('/').collect();
+    if components.len() < 2 {
+        return Ok(None);
+    }
+    let mut prefixes = vec![String::new()];
+    for (index, component) in components.iter().enumerate() {
+        let last = index + 1 == components.len();
+        let mut expanded = Vec::new();
+        for prefix in &prefixes {
+            let query = format!("{prefix}{component}");
+            for candidate in
+                filtered_completion_matches(interp, &query, collection, predicate, env)?
+            {
+                let component_dir = !last
+                    && candidate.name.ends_with('/')
+                    && candidate.name[prefix.len()..candidate.name.len() - 1]
+                        .starts_with(component)
+                    && !candidate.name[prefix.len()..candidate.name.len() - 1].contains('/');
+                if last || component_dir {
+                    expanded.push(candidate.name);
+                }
+            }
+        }
+        expanded.sort();
+        expanded.dedup();
+        if expanded.is_empty() {
+            return Ok(None);
+        }
+        prefixes = expanded;
+    }
+    Ok(Some(common_prefix(&prefixes)))
+}
+
+fn simulated_completing_read(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let collection = args.get(1).cloned().unwrap_or(Value::Nil);
+    let predicate = args.get(2).filter(|value| !value.is_nil()).cloned();
+    let mut contents = String::new();
+    loop {
+        let Ok(event) = crate::lisp::primitives::pop_unread_command_event_value(interp, env) else {
+            break;
+        };
+        let Some(ch) = crate::lisp::primitives::unread_event_char(&event) else {
+            continue;
+        };
+        match ch {
+            '\r' | '\n' => break,
+            '\t' => {
+                let matches = filtered_completion_matches(
+                    interp,
+                    &contents,
+                    &collection,
+                    predicate.as_ref(),
+                    env,
+                )?;
+                if !matches.is_empty() {
+                    let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
+                    let lcp = common_prefix(&names);
+                    if lcp.len() > contents.len() {
+                        contents = lcp;
+                    }
+                } else if let Some(trimmed) = contents.strip_suffix('/') {
+                    // "dir-prefix/" — complete the component before the
+                    // trailing slash (partial-completion's trailing case).
+                    let matches = filtered_completion_matches(
+                        interp,
+                        trimmed,
+                        &collection,
+                        predicate.as_ref(),
+                        env,
+                    )?;
+                    if !matches.is_empty() {
+                        let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
+                        let lcp = common_prefix(&names);
+                        if lcp.len() > trimmed.len() {
+                            contents = lcp;
+                        }
+                    }
+                } else if let Some(expanded) = partial_completion_expand(
+                    interp,
+                    &contents,
+                    &collection,
+                    predicate.as_ref(),
+                    env,
+                )? {
+                    contents = expanded;
+                }
+            }
+            _ => contents.push(ch),
+        }
+    }
+    if contents.is_empty()
+        && let Some(default) = args.get(6)
+        && let Some(string) = string_like(default)
+    {
+        return Ok(Value::String(string.text));
+    }
+    Ok(Value::String(contents))
 }

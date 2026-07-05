@@ -25,8 +25,14 @@ counts as the progress denominator.
   replays.
 - The full 87-file verified-prefix sweep (now including both faceup
   files) is GREEN on the current tree (2026-07-05).
-- find-func groundwork (frontier file 5/6 green, see the continuation
-  doc for the remaining `library-completion' analysis): simple_compat
+- Tests through 2106/7080 are verified: `find-func-tests.el` passes its
+  grouped replay.  The finishing batch built a simulated-minibuffer
+  completion engine (`completing-read' key loop over
+  `unread-command-events' with TAB longest-common-prefix, trailing-slash
+  and component-wise partial-completion expansion; FUNCTION completion
+  tables in the native matcher; `locate-file-completion-table' ported to
+  simple_compat.el).
+- find-func groundwork (previous batch): simple_compat
   ports of the ppss struct accessors, `goto-line',
   `delete-indentation'/`join-line', `function-called-at-point', and a
   minimal `help-C-file-name' reading the oracle DOC file
