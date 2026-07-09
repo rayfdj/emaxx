@@ -648,6 +648,31 @@ impl Interpreter {
                 self.expand_cl_case(args, env).map(Some)
             }
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+            // GNU cl-macrolet is a macro: its expansion is the body,
+            // macroexpanded with the local macros in effect (generator.el's
+            // CPS transformer relies on `macroexpand' doing this).
+            "cl-macrolet" if args.len() >= 2 => {
+                let local_macros = self.parse_cl_macrolet_bindings(&args[0])?;
+                let local_start = self.macros.len();
+                self.macros.extend(local_macros.iter().cloned());
+                let local_count = self.macros.len() - local_start;
+                let mut forms = vec![Value::Symbol("progn".into())];
+                let mut failure = None;
+                for body_form in &args[1..] {
+                    match self.macroexpand_all_form_with_environment(body_form, None, env) {
+                        Ok(expanded) => forms.push(expanded),
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                }
+                self.macros.drain(local_start..local_start + local_count);
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                Ok(Some(Value::list(forms)))
+            }
             "ert-simulate-keys" => self.expand_ert_simulate_keys(args).map(Some),
             "c-lang-const" => self.expand_c_lang_const(args, env).map(Some),
             "c-lang-defconst-eval-immediately" => self
