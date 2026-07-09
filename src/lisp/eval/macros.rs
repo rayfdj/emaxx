@@ -648,6 +648,55 @@ impl Interpreter {
                 self.expand_cl_case(args, env).map(Some)
             }
             "cl-with-gensyms" => self.expand_cl_with_gensyms(args, env).map(Some),
+            // GNU push/pop/cl-incf/cl-decf are macros; expand them for
+            // macroexpand-all consumers (generator.el's CPS transformer)
+            // while normal evaluation keeps hitting the native forms.
+            "push" if args.len() == 2 => {
+                let value = args[0].clone();
+                let place = args[1].clone();
+                let setter = if matches!(place, Value::Symbol(_)) {
+                    "setq"
+                } else {
+                    "setf"
+                };
+                Ok(Some(Value::list([
+                    Value::Symbol(setter.into()),
+                    place.clone(),
+                    Value::list([Value::Symbol("cons".into()), value, place]),
+                ])))
+            }
+            "pop" if args.len() == 1 => {
+                let place = args[0].clone();
+                let setter = if matches!(place, Value::Symbol(_)) {
+                    "setq"
+                } else {
+                    "setf"
+                };
+                Ok(Some(Value::list([
+                    Value::Symbol("prog1".into()),
+                    Value::list([Value::Symbol("car".into()), place.clone()]),
+                    Value::list([
+                        Value::Symbol(setter.into()),
+                        place.clone(),
+                        Value::list([Value::Symbol("cdr".into()), place]),
+                    ]),
+                ])))
+            }
+            "cl-incf" | "incf" | "cl-decf" | "decf" if !args.is_empty() && args.len() <= 2 => {
+                let place = args[0].clone();
+                let delta = args.get(1).cloned().unwrap_or(Value::Integer(1));
+                let operator = if name.ends_with("incf") { "+" } else { "-" };
+                let setter = if matches!(place, Value::Symbol(_)) {
+                    "setq"
+                } else {
+                    "setf"
+                };
+                Ok(Some(Value::list([
+                    Value::Symbol(setter.into()),
+                    place.clone(),
+                    Value::list([Value::Symbol(operator.into()), place, delta]),
+                ])))
+            }
             // GNU cl-macrolet is a macro: its expansion is the body,
             // macroexpanded with the local macros in effect (generator.el's
             // CPS transformer relies on `macroexpand' doing this).
