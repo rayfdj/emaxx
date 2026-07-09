@@ -272,9 +272,10 @@ impl Interpreter {
         // Treat backquote as a special form here; `eval' and
         // `macroexpand-all' both handle it natively.
         if is_backquote_head(name) {
-            if std::env::var("EMAXX_BQ_EXPAND").is_ok()
-                && let Some(template) = args.first()
-            {
+            // GNU's `\`' macro expands templates into list/append
+            // constructor code (generator.el's CPS transformer requires
+            // that shape).  Nested backquotes stay opaque.
+            if let Some(template) = args.first() {
                 return Ok(Some(backquote_template_code(template)));
             }
             return Ok(None);
@@ -577,10 +578,9 @@ impl Interpreter {
                         env,
                         0,
                     )?;
-                    if std::env::var("EMAXX_BQ_EXPAND").is_ok() {
-                        return Ok(backquote_template_code(&template));
-                    }
-                    return Ok(Value::list([items[0].clone(), template]));
+                    // GNU's `\`' is a macro: macroexpand-all yields the
+                    // constructor code.
+                    return Ok(backquote_template_code(&template));
                 }
                 _ => {}
             }
@@ -1820,7 +1820,13 @@ fn backquote_template_code(template: &Value) -> Value {
         // A top-level ,@ is invalid; keep it quoted.
         return quote_literal(template);
     }
-    if nested_backquote_body(template).is_some() || is_backquote_atomic_cons_tail(template) {
+    if nested_backquote_body(template).is_some() {
+        return quote_literal(template);
+    }
+    // A quoted form (or vector literal) is only opaque when nothing
+    // inside it unquotes: `',(f) reads as (quote (comma (f))) and must
+    // still evaluate the unquote.
+    if is_backquote_atomic_cons_tail(template) && !template_tree_unquotes(template) {
         return quote_literal(template);
     }
     if !matches!(template, Value::Cons(_, _)) {
@@ -1889,4 +1895,26 @@ fn backquote_template_code(template: &Value) -> Value {
                 .collect::<Vec<_>>(),
         ),
     }
+}
+
+// Whether a template subtree contains a comma/comma-at marker outside
+// nested backquotes.
+fn template_tree_unquotes(form: &Value) -> bool {
+    if backquote_unquote_form(form).is_some() {
+        return true;
+    }
+    if nested_backquote_body(form).is_some() {
+        return false;
+    }
+    let mut tail = form.clone();
+    while let Some((car, cdr)) = tail.cons_values() {
+        if template_tree_unquotes(&car) {
+            return true;
+        }
+        if backquote_unquote_form(&cdr).is_some() {
+            return true;
+        }
+        tail = cdr;
+    }
+    false
 }

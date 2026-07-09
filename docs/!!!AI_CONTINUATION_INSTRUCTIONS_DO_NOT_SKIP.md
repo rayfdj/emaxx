@@ -120,20 +120,24 @@ counts as the progress denominator.
   bisecting simple_compat.el for it; a nonsense stub "reproduced" the
   failure because the test is simply unstable).  todo-mode-tests.el
   remains the other known retry-flake.
-- Verified through selector 2107/7080 (`float-sup-tests.el' passed
-  as-is).  `generator-tests.el' (2108..2199) is 91/92: ONLY
-  `cps-loop-backquote-noopt' remains.  It needs backquote templates to
-  expand to list/append constructor code under macroexpand-all
-  (backquote_template_code in macros.rs, currently gated OFF behind
-  EMAXX_BQ_EXPAND): with the conversion ON, generator passes 92/92 and
-  3x-stable harness replays, but bytecomp-tests.el regresses
-  (`bytecomp-warn-dodgy-args-memq': the expected "literal ... may never
-  match" warnings stop being emitted even though the converted
-  constructor code EVALUATES to identical values — the mechanism was NOT
-  root-caused; start there).  pcase forms must keep their backquote
-  PATTERNS: macroexpand-all now walks only pcase clause bodies
-  (patterns/bindings verbatim) — full opacity breaks cl-labels
-  rewriting inside pcase bodies (ert-x-tests caught both mistakes).  The
+- Verified through selector 2199/7080: `float-sup-tests.el' (2107)
+  passed as-is and `generator-tests.el' (2108..2199) passes all 92.
+  Backquote templates now ALWAYS expand to list/append constructor code
+  under macroexpand-all (backquote_template_code).  Two regressions that
+  gate change caused and their fixes, for the record:
+  - `',(f)' reads as (quote (comma (f))); quoted forms are only opaque
+    to the converter when NO unquote appears inside
+    (template_tree_unquotes) — otherwise the unquote silently became a
+    literal `comma' form (bytecomp's dodgy-args warnings vanished
+    because the compiled args stopped being literals).
+  - Dotted unquote tails emit (append (list ...) TAIL); emaxx's `append'
+    flattened a STRING as the last argument instead of reusing it
+    verbatim as the tail — GNU: (append '(2) "b") => (2 . "b"); fixed in
+    the native append (last arg now verbatim even for strings/vectors).
+  - pcase forms keep their backquote PATTERNS: macroexpand-all walks
+    only pcase clause bodies (patterns/bindings verbatim) — full opacity
+    breaks cl-labels rewriting inside pcase bodies (ert-x-tests caught
+    both mistakes).  The
   generator batch, beyond the cl-macrolet groundwork:
   - `macroexpand-all' now yields GNU shapes for the whole macro family
     the CPS transformer consumes: `cl-symbol-macrolet' substitutes
@@ -158,6 +162,9 @@ counts as the progress denominator.
   - WARNING repeated from this batch's false trail: an EMPTY result JSON
     (load_error) makes "notpassed 0" look like success — always check
     the TOTAL, not just the failure count.
+- The next frontier is `test/lisp/emacs-lisp/gv-tests.el` (selectors
+  2200..2207, 8 selected; manifest line 2291).  Start with the grouped
+  `check-all` replay.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.

@@ -25,7 +25,22 @@ counts as the progress denominator.
   replays.
 - The full 87-file verified-prefix sweep (now including both faceup
   files) is GREEN on the current tree (2026-07-05).
-- Tests through 2106/7080 are verified: `find-func-tests.el` passes its
+- Tests through 2199/7080 are verified: `float-sup-tests.el` (2107)
+  passed as-is and `generator-tests.el` (2108..2199, all 92) passes its
+  grouped replay.  The generator batches taught `macroexpand-all' the
+  GNU shapes the CPS transformer consumes: `cl-macrolet' expands its
+  body with local macros in effect, `cl-symbol-macrolet' substitutes
+  variable references (shadowing-aware), `setf' with symbol places
+  becomes `setq', `push'/`pop'/`cl-incf'/`cl-decf'/`prog2' expand like
+  the GNU macros, and backquote templates become list/append
+  constructor code (with `',x' unquote-inside-quote handled and pcase
+  clause PATTERNS kept verbatim while clause bodies expand).  Runtime
+  repairs: `(signal SYM NON-LIST)' produces GNU's dotted condition value
+  and `condition-case' consults `error-conditions' properties; native
+  `append' reuses the last argument verbatim as the tail (GNU:
+  (append '(2) "b") => (2 . "b")); simple_compat adds the `inline'
+  macro and edebug autoloads.
+- Previous milestone: tests through 2106/7080 — `find-func-tests.el` passes its
   grouped replay.  The finishing batch built a simulated-minibuffer
   completion engine (`completing-read' key loop over
   `unread-command-events' with TAB longest-common-prefix, trailing-slash

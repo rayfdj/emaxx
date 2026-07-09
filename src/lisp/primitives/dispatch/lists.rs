@@ -629,6 +629,16 @@ pub(super) fn call(
             let mut items: Vec<Value> = Vec::new();
             for (i, a) in args.iter().enumerate() {
                 let is_last = i == args.len() - 1;
+                if is_last {
+                    // `append` copies all preceding args and reuses the
+                    // last one verbatim as the tail — even when it is a
+                    // string or vector: (append '(2) "b") => (2 . "b").
+                    let mut result = a.clone();
+                    for item in items.into_iter().rev() {
+                        result = Value::cons(item, result);
+                    }
+                    return Ok(result);
+                }
                 if let Some(string) = sequence_string_like(a) {
                     items.extend(string_sequence_values(&string));
                     continue;
@@ -637,16 +647,7 @@ pub(super) fn call(
                     items.extend(sequence_values(interp, a)?);
                     continue;
                 }
-                if is_last {
-                    // `append` copies all preceding args and reuses the last tail as-is.
-                    let mut result = a.clone();
-                    for item in items.into_iter().rev() {
-                        result = Value::cons(item, result);
-                    }
-                    return Ok(result);
-                } else {
-                    items.extend(a.to_vec()?);
-                }
+                items.extend(a.to_vec()?);
             }
             Ok(Value::list(items))
         }
