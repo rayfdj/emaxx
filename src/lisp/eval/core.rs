@@ -166,7 +166,15 @@ impl Interpreter {
                         "cl-progv" => return self.sf_cl_progv(&items, env),
                         "pcase-let" => return self.sf_pcase_let(&items, env, false),
                         "pcase-let*" => return self.sf_pcase_let(&items, env, true),
-                        "let-alist" => return self.sf_let_alist(&items, env),
+                        // GNU's let-alist.el macro handles nested
+                        // `.sublist.foo' fields and `..outer' escapes;
+                        // prefer it once loaded and keep the native form
+                        // as the no-file fallback.
+                        "let-alist"
+                            if !self.macros.iter().any(|(name, _, _)| name == "let-alist") =>
+                        {
+                            return self.sf_let_alist(&items, env);
+                        }
                         "setq" => {
                             self.push_backtrace_frame_with_evald(
                                 Value::Symbol("setq".into()),

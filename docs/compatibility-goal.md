@@ -19,6 +19,16 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2287/7080 are verified: `icons-tests.el` (2276..2277),
+  `let-alist-tests.el` (2278..2284) and `lisp-mnt-tests.el` (2285..2287)
+  pass their grouped replays.  `pcase-let`/`pcase-let*` now destructure
+  like GNU — membership tests on literal symbols inside backquote
+  patterns (icons.el's `(,parent ,spec _ _)) are dropped, not checked;
+  the `let-alist` native form defers to GNU let-alist.el's macro once it
+  loads (nested `.sublist.foo` fields, `..outer` escapes, exact
+  macroexpansion), keeping the native fallback for file-less runs; and
+  `gnutls-available-p` exists returning nil like a GNU build configured
+  without GnuTLS (package.el evaluates it at load).
 - Tests through 2275/7080 are verified: `hierarchy-tests.el` (2208..2275,
   all 68 selected) passes its grouped replay.  Three honest ports:
   `require 'map` now loads the real GNU map.el whenever it is on the
