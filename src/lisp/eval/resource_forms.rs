@@ -114,6 +114,26 @@ impl Interpreter {
                     return Err(e);
                 }
                 let condition = e.condition_type();
+                // GNU matches a handler when it is `memq' in the signaled
+                // symbol's `error-conditions'; fall back to the legacy
+                // condition-or-error rule when no property is defined.
+                let condition_list: Vec<String> = self
+                    .get_symbol_property(&condition, "error-conditions")
+                    .and_then(|value| value.to_vec().ok())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_symbol().ok().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let handler_matches = |symbol: &str| {
+                    if condition_list.is_empty() {
+                        symbol == condition || symbol == "error"
+                    } else {
+                        condition_list.iter().any(|entry| entry == symbol)
+                    }
+                };
                 // Try to find a matching handler
                 for handler in &items[3..] {
                     let parts = handler.to_vec()?;
@@ -121,12 +141,12 @@ impl Interpreter {
                         continue;
                     }
                     let matches = match &parts[0] {
-                        Value::Symbol(symbol) => symbol == &condition || symbol == "error",
+                        Value::Symbol(symbol) => handler_matches(symbol),
                         Value::Cons(_, _) => parts[0]
                             .to_vec()?
                             .iter()
                             .filter_map(symbol_name)
-                            .any(|symbol| symbol == condition || symbol == "error"),
+                            .any(|symbol| handler_matches(&symbol)),
                         _ => false,
                     };
                     if !matches {

@@ -244,7 +244,9 @@ pub(super) fn call(
             let value = if let Ok(items) = data.to_vec() {
                 Value::cons(condition, Value::list(items))
             } else {
-                Value::list([condition, data])
+                // GNU keeps non-list DATA as the cdr: (signal 'foo 4)
+                // is caught as the dotted pair (foo . 4).
+                Value::cons(condition, data)
             };
             Err(LispError::SignalValue(value))
         }
