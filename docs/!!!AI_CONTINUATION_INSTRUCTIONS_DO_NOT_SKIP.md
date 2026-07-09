@@ -120,8 +120,32 @@ counts as the progress denominator.
   bisecting simple_compat.el for it; a nonsense stub "reproduced" the
   failure because the test is simply unstable).  todo-mode-tests.el
   remains the other known retry-flake.
-- The next frontier is `test/lisp/emacs-lisp/float-sup-tests.el`
-  (selector 2107; manifest line 2196), then onward per the manifest.
+- `float-sup-tests.el` (2107) passes as-is.  The frontier is
+  `test/lisp/emacs-lisp/generator-tests.el` (selectors 2108..2199, 92
+  selected).  Generator groundwork landed: `macroexpand'/`macroexpand-all'
+  of `cl-macrolet' now expands the body with the local macros in effect
+  (GNU's cl-macrolet is a macro; generator.el's CPS transformer
+  cps--transform-1 macroexpands each form and errored on the unexpanded
+  special form) — that one change took the file from 91 failing to 24.
+  Remaining clusters (fresh analysis):
+  - `-noopt' variants fail with void lexical vars (i, a, b,
+    cps-argument-NNN): the unoptimized CPS transform wraps every subform
+    in closures that share mutably-captured `let' bindings across
+    yields; emaxx closure capture likely copies instead of sharing.
+    The optimized variants of the same tests PASS.
+  - The transformer needs more native special forms to be
+    macroexpandable like GNU macros: `push' ((push x --cl-var--)
+    unsupported), `cl-incf', and the backquote form in
+    cps-loop-backquote-noopt (emaxx deliberately shields backquote from
+    macroexpansion — the transformer needs `(a b ,x) expanded to a
+    (list ...) form; consider a targeted expansion when the macroexpand
+    caller is not the reader path).  `prog2' reaches the transformer's
+    function-call fallback (void variable prog2).
+  - cps-condition-case{,-noopt} fail with test-data (condition-case in
+    CPS); cps-generator-basic `(eql errored 4)'; void `inline'
+    (cps-inline-not-progn); `sub-iter' (iter-yield-from); `it'
+    (iter-lambda-variable-shadowing); `edebug-defun'
+    (generator-tests-edebug).
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
