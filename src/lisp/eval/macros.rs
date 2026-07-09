@@ -272,6 +272,11 @@ impl Interpreter {
         // Treat backquote as a special form here; `eval' and
         // `macroexpand-all' both handle it natively.
         if is_backquote_head(name) {
+            if std::env::var("EMAXX_BQ_EXPAND").is_ok()
+                && let Some(template) = args.first()
+            {
+                return Ok(Some(backquote_template_code(template)));
+            }
             return Ok(None);
         }
 
@@ -522,6 +527,49 @@ impl Interpreter {
                 // expressions inside them are macro-expanded (this is how the
                 // env expanders from cl-flet/cl-labels reach `,(local-fn ...)'
                 // calls while the template text survives verbatim).
+                // The pcase family is evaluated natively and its patterns
+                // use backquote SYNTAX; expand only the subject and clause
+                // bodies so patterns survive while cl-labels-style env
+                // expanders still reach the code inside.
+                "pcase" | "pcase-exhaustive" if items.len() >= 2 => {
+                    let mut rebuilt = vec![items[0].clone()];
+                    rebuilt.push(self.macroexpand_all_form_with_environment(
+                        &items[1],
+                        macro_environment,
+                        env,
+                    )?);
+                    for clause in &items[2..] {
+                        let Ok(parts) = clause.to_vec() else {
+                            rebuilt.push(clause.clone());
+                            continue;
+                        };
+                        if parts.is_empty() {
+                            rebuilt.push(clause.clone());
+                            continue;
+                        }
+                        let mut new_clause = vec![parts[0].clone()];
+                        for body in &parts[1..] {
+                            new_clause.push(self.macroexpand_all_form_with_environment(
+                                body,
+                                macro_environment,
+                                env,
+                            )?);
+                        }
+                        rebuilt.push(Value::list(new_clause));
+                    }
+                    return Ok(Value::list(rebuilt));
+                }
+                "pcase-let" | "pcase-let*" | "pcase-dolist" if items.len() >= 2 => {
+                    let mut rebuilt = vec![items[0].clone(), items[1].clone()];
+                    for body in &items[2..] {
+                        rebuilt.push(self.macroexpand_all_form_with_environment(
+                            body,
+                            macro_environment,
+                            env,
+                        )?);
+                    }
+                    return Ok(Value::list(rebuilt));
+                }
                 other if is_backquote_head(other) && items.len() == 2 => {
                     let template = self.macroexpand_all_backquote_template(
                         &items[1],
@@ -529,6 +577,9 @@ impl Interpreter {
                         env,
                         0,
                     )?;
+                    if std::env::var("EMAXX_BQ_EXPAND").is_ok() {
+                        return Ok(backquote_template_code(&template));
+                    }
                     return Ok(Value::list([items[0].clone(), template]));
                 }
                 _ => {}
@@ -696,6 +747,61 @@ impl Interpreter {
                     place.clone(),
                     Value::list([Value::Symbol(operator.into()), place, delta]),
                 ])))
+            }
+            // GNU setf is a macro; with plain symbol places it expands to
+            // setq (the CPS transformer only understands the expansion).
+            "setf"
+                if !args.is_empty()
+                    && args.len().is_multiple_of(2)
+                    && args
+                        .iter()
+                        .step_by(2)
+                        .all(|place| matches!(place, Value::Symbol(_))) =>
+            {
+                let mut rebuilt = vec![Value::Symbol("setq".into())];
+                rebuilt.extend(args.iter().cloned());
+                Ok(Some(Value::list(rebuilt)))
+            }
+            // prog2 reaches generator.el's CPS transformer, which only
+            // understands progn/prog1; give it the equivalent expansion.
+            "prog2" if args.len() >= 2 => {
+                let mut prog1_form = vec![Value::Symbol("prog1".into())];
+                prog1_form.extend(args[1..].iter().cloned());
+                Ok(Some(Value::list([
+                    Value::Symbol("progn".into()),
+                    args[0].clone(),
+                    Value::list(prog1_form),
+                ])))
+            }
+            // GNU cl-symbol-macrolet substitutes variable references in
+            // the body during macroexpansion (generator.el's variable
+            // renaming builds on it).
+            "cl-symbol-macrolet" if args.len() >= 2 => {
+                let mut substitutions = Vec::new();
+                for binding in args[0].to_vec().unwrap_or_default() {
+                    let parts = binding.to_vec().unwrap_or_default();
+                    if let (Some(Value::Symbol(name)), Some(expansion)) =
+                        (parts.first(), parts.get(1))
+                    {
+                        substitutions.push((name.clone(), expansion.clone()));
+                    }
+                }
+                let mut forms = vec![Value::Symbol("progn".into())];
+                let mut failure = None;
+                for body_form in &args[1..] {
+                    let substituted = substitute_symbol_macros(body_form, &substitutions);
+                    match self.macroexpand_all_form_with_environment(&substituted, None, env) {
+                        Ok(expanded) => forms.push(expanded),
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                }
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                Ok(Some(Value::list(forms)))
             }
             // GNU cl-macrolet is a macro: its expansion is the body,
             // macroexpanded with the local macros in effect (generator.el's
@@ -1569,5 +1675,218 @@ impl Interpreter {
                 .collect::<Vec<_>>(),
         ));
         Value::list(forms)
+    }
+}
+
+// Replace non-shadowed variable references to symbol-macro names with
+// their expansions (GNU cl-symbol-macrolet semantics, scoped to the
+// shapes generator.el produces: let/let*/lambda shadowing, quote
+// opacity, and setq name rewriting).
+fn substitute_symbol_macros(form: &Value, substitutions: &[(String, Value)]) -> Value {
+    if substitutions.is_empty() {
+        return form.clone();
+    }
+    match form {
+        Value::Symbol(name) => substitutions
+            .iter()
+            .find(|(macro_name, _)| macro_name == name)
+            .map(|(_, expansion)| expansion.clone())
+            .unwrap_or_else(|| form.clone()),
+        Value::Cons(_, _) => {
+            let Ok(items) = form.to_vec() else {
+                // Dotted pair: substitute both sides.
+                if let Some((car, cdr)) = form.cons_values() {
+                    return Value::cons(
+                        substitute_symbol_macros(&car, substitutions),
+                        substitute_symbol_macros(&cdr, substitutions),
+                    );
+                }
+                return form.clone();
+            };
+            match items.first() {
+                Some(Value::Symbol(head)) if head == "quote" => form.clone(),
+                Some(Value::Symbol(head)) if head == "lambda" && items.len() >= 2 => {
+                    let params: Vec<String> = items[1]
+                        .to_vec()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|p| p.as_symbol().ok().map(str::to_string))
+                        .collect();
+                    let inner: Vec<(String, Value)> = substitutions
+                        .iter()
+                        .filter(|(name, _)| !params.contains(name))
+                        .cloned()
+                        .collect();
+                    let mut rebuilt = vec![items[0].clone(), items[1].clone()];
+                    for body in &items[2..] {
+                        rebuilt.push(substitute_symbol_macros(body, &inner));
+                    }
+                    Value::list(rebuilt)
+                }
+                Some(Value::Symbol(head))
+                    if (head == "let" || head == "let*") && items.len() >= 2 =>
+                {
+                    let mut bound = Vec::new();
+                    let mut new_bindings = Vec::new();
+                    for binding in items[1].to_vec().unwrap_or_default() {
+                        match &binding {
+                            Value::Symbol(name) => {
+                                bound.push(name.clone());
+                                new_bindings.push(binding.clone());
+                            }
+                            Value::Cons(_, _) => {
+                                let parts = binding.to_vec().unwrap_or_default();
+                                let name = parts
+                                    .first()
+                                    .and_then(|n| n.as_symbol().ok())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                // In let* a later initform sees earlier
+                                // shadows; approximate with the outer set
+                                // for `let' and the progressive set for
+                                // `let*'.
+                                let active: Vec<(String, Value)> = if head == "let*" {
+                                    substitutions
+                                        .iter()
+                                        .filter(|(n, _)| !bound.contains(n))
+                                        .cloned()
+                                        .collect()
+                                } else {
+                                    substitutions.to_vec()
+                                };
+                                let mut rebuilt_binding = vec![parts[0].clone()];
+                                for init in &parts[1..] {
+                                    rebuilt_binding.push(substitute_symbol_macros(init, &active));
+                                }
+                                bound.push(name);
+                                new_bindings.push(Value::list(rebuilt_binding));
+                            }
+                            _ => new_bindings.push(binding.clone()),
+                        }
+                    }
+                    let inner: Vec<(String, Value)> = substitutions
+                        .iter()
+                        .filter(|(name, _)| !bound.contains(name))
+                        .cloned()
+                        .collect();
+                    let mut rebuilt = vec![items[0].clone(), Value::list(new_bindings)];
+                    for body in &items[2..] {
+                        rebuilt.push(substitute_symbol_macros(body, &inner));
+                    }
+                    Value::list(rebuilt)
+                }
+                Some(Value::Symbol(head)) if head == "setq" && items.len() >= 3 => {
+                    let mut rebuilt = vec![items[0].clone()];
+                    for pair in items[1..].chunks(2) {
+                        rebuilt.push(substitute_symbol_macros(&pair[0], substitutions));
+                        if let Some(value) = pair.get(1) {
+                            rebuilt.push(substitute_symbol_macros(value, substitutions));
+                        }
+                    }
+                    Value::list(rebuilt)
+                }
+                _ => Value::list(
+                    items
+                        .iter()
+                        .map(|item| substitute_symbol_macros(item, substitutions))
+                        .collect::<Vec<_>>(),
+                ),
+            }
+        }
+        _ => form.clone(),
+    }
+}
+
+// Turn a backquote template into constructor code, GNU bq_process style:
+// `(a b ,x ,@y . z) => (append (list 'a 'b x) y 'z).  Unquoted leaves
+// become quoted literals; self-evaluating atoms stay as-is.
+fn backquote_template_code(template: &Value) -> Value {
+    fn quote_literal(value: &Value) -> Value {
+        match value {
+            Value::Nil
+            | Value::T
+            | Value::Integer(_)
+            | Value::BigInteger(_)
+            | Value::Float(_)
+            | Value::String(_)
+            | Value::StringObject(_) => value.clone(),
+            _ => Value::list([Value::Symbol("quote".into()), value.clone()]),
+        }
+    }
+    if let Some((kind, inner)) = backquote_unquote_form(template) {
+        if kind == "comma" {
+            return inner;
+        }
+        // A top-level ,@ is invalid; keep it quoted.
+        return quote_literal(template);
+    }
+    if nested_backquote_body(template).is_some() || is_backquote_atomic_cons_tail(template) {
+        return quote_literal(template);
+    }
+    if !matches!(template, Value::Cons(_, _)) {
+        return quote_literal(template);
+    }
+    // Walk the list spine, batching plain elements into (list ...) chunks
+    // and splicing ,@ elements and dotted tails through (append ...).
+    let mut segments: Vec<Value> = Vec::new();
+    let mut chunk: Vec<Value> = Vec::new();
+    let mut tail = template.clone();
+    loop {
+        if let Some((kind, inner)) = backquote_unquote_form(&tail) {
+            // Dotted unquote tail: `(a . ,x)
+            if kind == "comma" {
+                if !chunk.is_empty() {
+                    segments.push(Value::list(
+                        std::iter::once(Value::Symbol("list".into()))
+                            .chain(chunk.drain(..))
+                            .collect::<Vec<_>>(),
+                    ));
+                }
+                segments.push(inner);
+                tail = Value::Nil;
+            }
+            break;
+        }
+        match tail.cons_values() {
+            Some((car, cdr)) => {
+                if let Some((kind, inner)) = backquote_unquote_form(&car) {
+                    if kind == "comma-at" {
+                        if !chunk.is_empty() {
+                            segments.push(Value::list(
+                                std::iter::once(Value::Symbol("list".into()))
+                                    .chain(chunk.drain(..))
+                                    .collect::<Vec<_>>(),
+                            ));
+                        }
+                        segments.push(inner);
+                    } else {
+                        chunk.push(inner);
+                    }
+                } else {
+                    chunk.push(backquote_template_code(&car));
+                }
+                tail = cdr;
+            }
+            None => break,
+        }
+    }
+    if !chunk.is_empty() {
+        segments.push(Value::list(
+            std::iter::once(Value::Symbol("list".into()))
+                .chain(chunk.drain(..))
+                .collect::<Vec<_>>(),
+        ));
+    }
+    if !tail.is_nil() {
+        segments.push(quote_literal(&tail));
+    }
+    match segments.len() {
+        0 => Value::Nil,
+        1 => segments.pop().expect("one segment"),
+        _ => Value::list(
+            std::iter::once(Value::Symbol("append".into()))
+                .chain(segments)
+                .collect::<Vec<_>>(),
+        ),
     }
 }

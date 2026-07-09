@@ -4294,6 +4294,12 @@ property list, or no properties if there is no plist before it."
                (point))))
     (goto-char pos)))
 
+;; byte-run.el: `inline' marks a form for inline expansion; at run
+;; time it is progn.
+(defmacro inline (&rest body)
+  "Like `progn', but when compiled inline top-level function calls in body."
+  (cons 'progn body))
+
 ;; simple.el: join the current line to the previous one.
 (defun delete-indentation (&optional arg)
   "Join this line to previous and fix up whitespace at join."
@@ -4313,6 +4319,10 @@ property list, or no properties if there is no plist before it."
 
 ;; loaddefs: thingatpt autoloads.
 (autoload 'thing-at-point "thingatpt")
+
+;; loaddefs: edebug autoloads.
+(autoload 'edebug-defun "edebug" nil t)
+(autoload 'edebug-eval-top-level-form "edebug" nil t)
 
 ;; lread.c: completion table for library names under DIRS with SUFFIXES.
 ;; Candidates carry any directory part of STRING so plain prefix
