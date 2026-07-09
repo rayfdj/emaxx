@@ -258,7 +258,15 @@ impl Interpreter {
         if self.has_feature(feature) || self.loading_features.iter().any(|name| name == feature) {
             return Ok(Value::Symbol(feature.to_string()));
         }
-        if is_compat_preloaded_feature(feature) {
+        // GNU does not preload map.el; its cl-generic definitions
+        // (map-put!, map-insert, ...) and the map-elt gv-expander only
+        // exist after the real library loads.  Prefer the real file over
+        // the native compat subset whenever it is on the load-path.
+        let compat_shim = is_compat_preloaded_feature(feature)
+            && !(feature == "map"
+                && crate::lisp::primitives::resolve_load_target_in_env(self, feature, env)
+                    .is_some());
+        if compat_shim {
             // GNU cl-lib.el ends with `(load "cl-loaddefs" ...)': the
             // autoloads for the rest of the cl- namespace must still be
             // registered even though the library itself is preloaded.

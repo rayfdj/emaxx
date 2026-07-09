@@ -479,6 +479,8 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),
+        // GNU preloads tabulated-list.el via buff-menu.el.
+        "tabulated-list-mode" => Some(builtin_file_autoload("tabulated-list", Value::Nil)),
         "syntax-propertize-precompile-rules" | "syntax-propertize-rules" => {
             Some(builtin_macro_autoload("syntax"))
         }

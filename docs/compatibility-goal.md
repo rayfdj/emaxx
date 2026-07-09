@@ -19,6 +19,22 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2275/7080 are verified: `hierarchy-tests.el` (2208..2275,
+  all 68 selected) passes its grouped replay.  Three honest ports:
+  `require 'map` now loads the real GNU map.el whenever it is on the
+  load-path (GNU does not preload map.el; its cl-generic definitions like
+  `map-put!` and the `map-elt` gv-expander only exist after the real
+  library loads), with the native compat subset kept as the fallback;
+  `cl-defgeneric` processes `(declare (gv-expander (lambda (do) ...)))`
+  like `gv--defun-declaration` (DO plus the generic's lambda list);
+  `setf` of `alist-get` mutates a found pair with `setcdr` so the list
+  stays `eq` (map-put! detects in-place updates that way) and only
+  assigns the place when prepending or removing.  Text properties now
+  follow GNU's interval-plist order: `add-text-properties` and
+  `put-text-property` replace existing entries in place and cons NEW
+  properties onto the front (later additions list first in
+  `text-properties-at`); `tabulated-list-mode` is autoloadable like
+  GNU's buff-menu preload chain.
 - Tests through 2207/7080 are verified: `gv-tests.el` (2200..2207, all 8
   selected) passes its grouped replay.  The fix ports GNU's generalized
   variable protocol honestly: the `gv-define-setter` special-form

@@ -997,34 +997,39 @@ impl Interpreter {
         };
         let value = self.eval(value_expr, env)?;
         let should_remove = remove.is_truthy() && value == default;
-        let mut updated = false;
-        let mut new_entries = Vec::new();
-
-        for entry in alist.to_vec()? {
-            let matches = if !updated {
-                if let Some((car, _)) = entry.cons_values() {
-                    primitives::value_matches_with_test(self, &key, &car, testfn.as_ref(), env)?
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if matches {
-                updated = true;
-                if !should_remove {
-                    new_entries.push(Value::cons(entry.car()?, value.clone()));
-                }
-            } else {
-                new_entries.push(entry);
+        // GNU's gv expander mutates a found pair with `setcdr' (the list
+        // itself stays `eq'; map-put! relies on that to detect in-place
+        // updates) and only assigns the place when prepending or removing.
+        let entries = alist.to_vec()?;
+        let mut found = None;
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some((car, _)) = entry.cons_values()
+                && primitives::value_matches_with_test(self, &key, &car, testfn.as_ref(), env)?
+            {
+                found = Some(index);
+                break;
             }
         }
-
-        if !updated && !should_remove {
-            new_entries.insert(0, Value::cons(key.clone(), value.clone()));
+        match found {
+            Some(index) => {
+                if should_remove {
+                    let mut remaining = entries;
+                    remaining.remove(index);
+                    self.set_setf_place_value(alist_place, Value::list(remaining), env)?;
+                } else {
+                    entries[index].set_cdr(value.clone())?;
+                }
+            }
+            None => {
+                if !should_remove {
+                    self.set_setf_place_value(
+                        alist_place,
+                        Value::cons(Value::cons(key.clone(), value.clone()), alist),
+                        env,
+                    )?;
+                }
+            }
         }
-
-        self.set_setf_place_value(alist_place, Value::list(new_entries), env)?;
         Ok(value)
     }
 
@@ -3208,6 +3213,34 @@ impl Interpreter {
                                 "advertised-calling-convention",
                                 convention.clone(),
                             );
+                        }
+                        // `(declare (gv-expander (lambda (do) ...)))' takes
+                        // DO plus the generic's own lambda list, like
+                        // `gv--defun-declaration' (map.el's map-elt).
+                        if matches!(
+                            declaration_parts.first(),
+                            Some(Value::Symbol(kind)) if kind == "gv-expander"
+                        ) && let Some(handler) = declaration_parts.get(1)
+                            && let Ok(handler_items) = handler.to_vec()
+                            && handler_items.len() >= 3
+                            && matches!(
+                                handler_items.first(),
+                                Some(Value::Symbol(head)) if head == "lambda"
+                            )
+                            && let Ok(handler_params) = handler_items[1].to_vec()
+                        {
+                            let mut expander_params = handler_params;
+                            if let Ok(generic_params) = items[2].to_vec() {
+                                expander_params.extend(generic_params);
+                            }
+                            let expander_form = Value::list(
+                                std::iter::once(Value::Symbol("lambda".into()))
+                                    .chain(std::iter::once(Value::list(expander_params)))
+                                    .chain(handler_items[2..].iter().cloned())
+                                    .collect::<Vec<_>>(),
+                            );
+                            let expander = self.eval(&expander_form, env)?;
+                            self.put_symbol_property(&name, "gv-expander", expander);
                         }
                     }
                     body_start += 1;
