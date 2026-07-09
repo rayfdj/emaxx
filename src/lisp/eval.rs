@@ -3406,11 +3406,14 @@ fn pcase_pattern_bindings_inner(
         && name != "nil"
         && name != "t"
     {
+        // GNU pcase-let only destructures: membership tests on literal
+        // symbols inside a backquote (like the `_ _' in icons.el's
+        // `(,parent ,spec _ _)) are dropped, not checked.
         if name.starts_with(':') {
-            return Ok(pattern == value);
+            return Ok((lenient_list_match && backquoted) || pattern == value);
         }
         if backquoted {
-            return Ok(pattern == value);
+            return Ok(lenient_list_match || pattern == value);
         }
         bindings.push((name.clone(), value.clone()));
         return Ok(true);
