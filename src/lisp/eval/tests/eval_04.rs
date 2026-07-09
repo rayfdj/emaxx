@@ -83,11 +83,13 @@ fn setf_plist_get_updates_and_adds_entries() {
                    (setf (plist-get plist :secret) \"pw\")
                    plist)"
         ),
+        // GNU's gv expander prepends missing keys rather than appending
+        // like plist-put.
         Value::list([
-            Value::Symbol(":host".into()),
-            Value::String("example.org".into()),
             Value::Symbol(":secret".into()),
             Value::String("pw".into()),
+            Value::Symbol(":host".into()),
+            Value::String("example.org".into()),
         ])
     );
     assert_eq!(
