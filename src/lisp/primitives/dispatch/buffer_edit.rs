@@ -2710,8 +2710,15 @@ pub(super) fn call(
                     let start = args[0].as_integer()?.max(0) as usize;
                     let end = args[1].as_integer()?.max(0) as usize;
                     modify_shared_string_properties(object, start, end, |mut current| {
-                        current.retain(|(key, _)| key != &prop);
-                        current.insert(0, (prop.clone(), prop_value.clone()));
+                        // GNU replaces an existing property in place and
+                        // conses a new one onto the plist head.
+                        if let Some((_, existing)) =
+                            current.iter_mut().find(|(key, _)| key == &prop)
+                        {
+                            *existing = prop_value.clone();
+                        } else {
+                            current.insert(0, (prop.clone(), prop_value.clone()));
+                        }
                         current
                     })?;
                 } else {
@@ -2752,13 +2759,15 @@ pub(super) fn call(
                     let start = args[0].as_integer()?.max(0) as usize;
                     let end = args[1].as_integer()?.max(0) as usize;
                     modify_shared_string_properties(object, start, end, |mut current| {
+                        // GNU replaces existing properties in place and
+                        // conses new ones onto the plist head.
                         for (name, value) in &props {
                             if let Some((_, existing)) =
                                 current.iter_mut().find(|(key, _)| key == name)
                             {
                                 *existing = value.clone();
                             } else {
-                                current.push((name.clone(), value.clone()));
+                                current.insert(0, (name.clone(), value.clone()));
                             }
                         }
                         current

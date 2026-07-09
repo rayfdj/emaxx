@@ -582,11 +582,14 @@ impl Buffer {
 
     pub fn add_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
         self.modify_text_properties(start, end, |mut current| {
+            // GNU replaces existing properties in place and CONSES new
+            // ones onto the front of the interval plist, so
+            // `text-properties-at' lists later additions first.
             for (name, value) in props {
                 if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
                     *existing = value.clone();
                 } else {
-                    current.push((name.clone(), value.clone()));
+                    current.insert(0, (name.clone(), value.clone()));
                 }
             }
             current
@@ -595,8 +598,11 @@ impl Buffer {
 
     pub fn put_text_property(&mut self, start: usize, end: usize, name: &str, value: Value) {
         self.modify_text_properties(start, end, |mut current| {
-            current.retain(|(key, _)| key != name);
-            current.push((name.to_string(), value.clone()));
+            if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
+                *existing = value.clone();
+            } else {
+                current.insert(0, (name.to_string(), value.clone()));
+            }
             current
         });
     }

@@ -187,9 +187,40 @@ counts as the progress denominator.
     ((setf (plist-get l :d) v) => (:d v . l)); plist-put appends.  A
     stale Rust unit test asserting append order had to be updated.
   - `(setf (get S P) V)' routes to `put' (sf_setf arm).
-- The next frontier is `test/lisp/emacs-lisp/hierarchy-tests.el`
-  (68 selected; manifest line 2300).  Start with the grouped `check-all`
-  replay.
+- Verified through selector 2275/7080: `hierarchy-tests.el' (2208..2275)
+  passes all 68.  Lessons from this batch:
+  - 56 of 57 initial failures shared ONE root cause: `(require 'map)'
+    no-oped because "map" sat in `is_compat_preloaded_feature', so GNU
+    map.el (cl-generic `map-put!'/`map-insert', the `map-elt'
+    gv-expander) never loaded.  GNU does NOT preload map.el (under `-l
+    ert' the oracle has it loaded via the dependency chain).  Fix:
+    require now prefers the real file when it resolves on the load-path
+    and keeps the compat shim as the no-file fallback.  When a compat
+    feature's tests fail with void-SOMETHING, check whether the shim is
+    eclipsing a real GNU library before porting functions one by one.
+  - `cl-defgeneric' now processes `(declare (gv-expander (lambda (do)
+    ...)))' like `gv--defun-declaration': the expander takes DO plus the
+    generic's own lambda list (map-elt's setf machinery needs it).
+  - `setf' of `alist-get' must mutate a FOUND pair with `setcdr' — the
+    alist stays `eq' and map-put! uses exactly that to detect in-place
+    updates — and only assign the place when prepending a missing key
+    (GNU prepends) or removing.
+  - GNU text-property order: `add-text-properties'/`put-text-property'
+    replace existing entries IN PLACE and cons NEW properties onto the
+    interval-plist head, so `text-properties-at' lists later additions
+    first ((add a b) then (add c) reads (c b a)); `propertize' and
+    `set-text-properties' preserve the given plist order verbatim.
+    hierarchy's make-text-button test asserts (car properties) eq
+    'action because of this.  Cross-cutting: swept clean.
+  - `tabulated-list-mode' autoloads tabulated-list.el (GNU preloads it
+    through buff-menu.el).
+  - `(kill-emacs 0)' is NOT defined in emaxx — probes using it as a
+    final `--eval' exit 2 after the load completes; harmless for probe
+    outputs written during load, but do not read that exit code as a
+    load failure.
+- The next frontier is `test/lisp/emacs-lisp/icons-tests.el` (2 selected;
+  manifest line 2369), then `let-alist-tests.el` (7; line 2372).  Start
+  with the grouped `check-all` replay.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.
