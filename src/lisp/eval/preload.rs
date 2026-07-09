@@ -476,7 +476,15 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "keymap-substitute" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "keymap-unset" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "define-keymap" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        // GNU preloads newcomment.el.
+        "comment-indent"
+        | "comment-indent-default"
+        | "indent-for-comment"
+        | "comment-normalize-vars"
+        | "comment-search-forward" => Some(builtin_file_autoload("newcomment", Value::Nil)),
+        "common-lisp-indent-function" => Some(builtin_file_autoload("cl-indent", Value::Nil)),
         "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
+        "prolog-mode" => Some(builtin_file_autoload("prolog", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),
         // GNU preloads tabulated-list.el via buff-menu.el.

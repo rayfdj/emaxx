@@ -218,9 +218,61 @@ counts as the progress denominator.
     final `--eval' exit 2 after the load completes; harmless for probe
     outputs written during load, but do not read that exit code as a
     load failure.
-- The next frontier is `test/lisp/emacs-lisp/icons-tests.el` (2 selected;
-  manifest line 2369), then `let-alist-tests.el` (7; line 2372).  Start
-  with the grouped `check-all` replay.
+- Verified through selector 2287/7080: `icons-tests.el' (2276..2277),
+  `let-alist-tests.el' (2278..2284), `lisp-mnt-tests.el' (2285..2287).
+  Lessons:
+  - GNU `pcase-let'/`pcase-let*' DESTRUCTURE ONLY — they never test.
+    icons.el binds with `(,parent ,spec _ _): inside a backquote pattern
+    a bare symbol (including `_') is a LITERAL eq-test in real pcase,
+    but pcase-let drops all such membership tests.  emaxx's lenient
+    binder (pcase_pattern_bindings_inner, eval.rs) now skips literal
+    symbol/keyword comparisons inside backquote when lenient.
+  - `let-alist' was ANOTHER special-form-shadows-GNU-macro case (same
+    disease as gv-define-setter): the native form can't do nested
+    `.sublist.foo' or `..outer' escapes and fails the exact
+    macroexpansion test.  The core.rs arm now defers to a Lisp macro
+    named let-alist when one is defined (the test file requires
+    let-alist), falling back to sf_let_alist for file-less runs (cargo
+    unit tests use it).  PATTERN: when adding a special-form arm for
+    something GNU implements in loadable elisp, gate it on the Lisp
+    definition being absent.
+  - `gnutls-available-p' returns nil (GNU --without-gnutls build);
+    package.el evaluates it at LOAD time so it must exist
+    (lisp-mnt's lm-package-requires requires package).
+- The next frontier is `test/lisp/emacs-lisp/lisp-mode-tests.el`
+  (21 selected; manifest line 2384).  In-progress groundwork took it
+  from 13 failing to 7: parse-partial-sexp now tracks element 2 (start
+  of last complete sexp, per-level; token STARTS record it), supports
+  STOPBEFORE (stop before any sexp start; open parens included —
+  lisp-indent-specform needs it), stops on TARGETDEPTH crossings in
+  BOTH directions, and honors COMMENTSTOP='syntax-table (stop after
+  string/comment boundaries — lisp-indent-calc-next crosses multi-line
+  strings with it); `backward-prefix-chars' is native; the native
+  emacs-lisp-mode installs GNU lisp-data syntax entries (non-alnum
+  ASCII = symbol constituent, `'``,#' prefix, `@' "_ p", `.' symbol)
+  plus comment-start-skip ";+ *", comment-indent-function
+  `lisp-comment-indent', comment-column 40; autoloads: newcomment.el
+  (comment-indent/indent-for-comment), prolog-mode, cl-indent
+  (common-lisp-indent-function); `up-list' accepts negative COUNT.
+  STILL FAILING (7): indent-sexp (trailing `;' column in the fixture),
+  lisp-fontify-confusables (listp error), lisp-indent-region ×4
+  (string=/equal diffs — re-diff after the comment fixes),
+  lisp-indent-with-read-only-field (fields).  The per-line
+  `calculate-lisp-indent' trace matched the oracle on the whole fixture
+  when last checked.
+- CONTAINER-ROLLBACK RECOVERY (2026-07-09, worked end-to-end): when the
+  filesystem reverts, the session transcript
+  (/root/.claude/projects/-home-user-emaxx/<session>.jsonl) usually
+  still holds every Edit/Write/python-heredoc tool call.  Recovery:
+  reset the branch to origin/main, extract ordered tool_use ops from
+  the jsonl (skip is_error results; include Bash heredocs matching
+  "p='src/|docs/'"; capture `-m "Compat ..."` commit points and `cargo
+  fmt` calls), replay them (on Edit old_string miss run cargo fmt and
+  retry once; run only the python-heredoc SEGMENTS of compound
+  commands, not their build/probe tails), re-commit at the markers with
+  the original messages, then repin the oracle, rebuild, and re-verify
+  every recovered frontier file with harness replays before trusting
+  the result.  All six recovered files passed on first try.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.

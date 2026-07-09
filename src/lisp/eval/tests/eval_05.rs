@@ -945,7 +945,9 @@ fn syntax_ppss_reports_negative_depth_for_extra_closing_parens() {
         Value::list([
             Value::Integer(-1),
             Value::Nil,
-            Value::Nil,
+            // GNU records the closed (()) list as the last complete sexp
+            // even after depth goes negative.
+            Value::Integer(2),
             Value::Nil,
             Value::Nil,
             Value::Nil,
