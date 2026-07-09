@@ -30,6 +30,7 @@ pub(super) struct SyntaxEntry {
     end_second: bool,
     nested: bool,
     style_b: bool,
+    pub(super) prefix: bool,
 }
 
 impl Default for SyntaxEntry {
@@ -43,6 +44,7 @@ impl Default for SyntaxEntry {
             end_second: false,
             nested: false,
             style_b: false,
+            prefix: false,
         }
     }
 }
@@ -82,6 +84,9 @@ struct StringState {
 struct ParseStackEntry {
     open_pos: usize,
     close_char: char,
+    // Start of the last complete sexp seen INSIDE this list (parse state
+    // element 2 when this is the innermost level).
+    last_sexp: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -91,11 +96,28 @@ struct ParseState {
     stack: Vec<ParseStackEntry>,
     comment: Option<CommentState>,
     string: Option<StringState>,
+    // Start of the last complete sexp at top level (element 2 when the
+    // stack is empty).
+    base_last_sexp: Option<usize>,
 }
 
 impl ParseState {
     fn depth(&self) -> i64 {
         self.base_depth + self.stack.len() as i64
+    }
+
+    fn last_sexp(&self) -> Option<usize> {
+        match self.stack.last() {
+            Some(entry) => entry.last_sexp,
+            None => self.base_last_sexp,
+        }
+    }
+
+    fn set_last_sexp(&mut self, position: usize) {
+        match self.stack.last_mut() {
+            Some(entry) => entry.last_sexp = Some(position),
+            None => self.base_last_sexp = Some(position),
+        }
     }
 }
 
@@ -162,6 +184,7 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
             '4' => entry.end_second = true,
             'n' => entry.nested = true,
             'b' => entry.style_b = true,
+            'p' => entry.prefix = true,
             _ => {}
         }
     }
@@ -181,6 +204,9 @@ fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
     }
     if entry.end_second {
         code |= 1 << 19;
+    }
+    if entry.prefix {
+        code |= 1 << 20;
     }
     if entry.style_b {
         code |= 1 << 21;
@@ -286,6 +312,7 @@ fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
                 start_second: code & (1 << 17) != 0,
                 end_first: code & (1 << 18) != 0,
                 end_second: code & (1 << 19) != 0,
+                prefix: code & (1 << 20) != 0,
                 style_b: code & (1 << 21) != 0,
                 nested: code & (1 << 22) != 0,
                 ..SyntaxEntry::default()
@@ -603,7 +630,10 @@ fn encode_parse_state(state: &ParseState) -> Value {
             .last()
             .map(|entry| Value::Integer(entry.open_pos as i64))
             .unwrap_or(Value::Nil),
-        Value::Nil,
+        state
+            .last_sexp()
+            .map(|position| Value::Integer(position as i64))
+            .unwrap_or(Value::Nil),
         state
             .string
             .map(|string| Value::Integer(string.quote as i64))
@@ -674,8 +704,18 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             state.stack.push(ParseStackEntry {
                 open_pos: open_pos.max(1) as usize,
                 close_char,
+                last_sexp: None,
             });
         }
+    }
+    // Element 2 carries the current level's last complete sexp; like GNU,
+    // outer levels' values are not recoverable from an old state.
+    if let Some(last_sexp) = items
+        .get(2)
+        .and_then(|value| value.as_integer().ok())
+        .filter(|position| *position > 0)
+    {
+        state.set_last_sexp(last_sexp as usize);
     }
     if let Some(comment_value) = hidden_items.get(1)
         && !comment_value.is_nil()
@@ -1165,13 +1205,35 @@ fn is_escaped(chars: &[char], idx: usize) -> bool {
     count % 2 == 1
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CommentStop {
+    No,
+    // Any other non-nil COMMENTSTOP: stop at comment boundaries.
+    Plain,
+    // The symbol `syntax-table': also stop after a string starts or ends.
+    SyntaxTable,
+}
+
+impl CommentStop {
+    pub(super) fn from_value(value: Option<&Value>) -> Self {
+        match value {
+            None | Some(Value::Nil) => CommentStop::No,
+            Some(Value::Symbol(name)) if name == "syntax-table" => CommentStop::SyntaxTable,
+            Some(other) if other.is_truthy() => CommentStop::Plain,
+            Some(_) => CommentStop::No,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn parse_forward(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
     target_depth: Option<i64>,
+    stopbefore: bool,
     oldstate: Option<&Value>,
-    commentstop: bool,
+    commentstop: CommentStop,
     env: &Env,
 ) -> Result<Value, LispError> {
     if from > to {
@@ -1185,6 +1247,9 @@ pub(super) fn parse_forward(
     let mut state = decode_parse_state(oldstate);
     let mut idx = from.saturating_sub(1);
     let end = to.saturating_sub(1).min(chars.len());
+    // Whether we are inside a word/symbol token; token STARTS record the
+    // level's last-sexp position (parse state element 2).
+    let mut in_symbol = false;
 
     while idx < end {
         if let Some(string) = state.string {
@@ -1195,6 +1260,12 @@ pub(super) fn parse_forward(
                 && !is_escaped(&chars, idx)
             {
                 state.string = None;
+                idx += 1;
+                if commentstop == CommentStop::SyntaxTable {
+                    interp.buffer.goto_char(idx + 1);
+                    return Ok(encode_parse_state(&state));
+                }
+                continue;
             }
             idx += 1;
             continue;
@@ -1215,7 +1286,7 @@ pub(super) fn parse_forward(
                         }
                         idx += 1;
                         state.comment = None;
-                        if commentstop {
+                        if commentstop != CommentStop::No {
                             interp.buffer.goto_char(idx + 1);
                             return Ok(encode_parse_state(&state));
                         }
@@ -1263,7 +1334,7 @@ pub(super) fn parse_forward(
                         }
                         idx += 2;
                         state.comment = None;
-                        if commentstop {
+                        if commentstop != CommentStop::No {
                             interp.buffer.goto_char(idx + 1);
                             return Ok(encode_parse_state(&state));
                         }
@@ -1282,7 +1353,7 @@ pub(super) fn parse_forward(
                 depth: 1,
             });
             idx += start.len;
-            if commentstop {
+            if commentstop != CommentStop::No {
                 interp.buffer.goto_char(idx + 1);
                 return Ok(encode_parse_state(&state));
             }
@@ -1291,14 +1362,40 @@ pub(super) fn parse_forward(
 
         let ch = chars[idx];
         let entry = syntax_entry_for_char(interp, table_id, ch);
+        // GNU's STOPBEFORE: stop with point before any character that
+        // begins a sexp (symbol continuations excluded).
+        if stopbefore
+            && match entry.class {
+                SyntaxClass::OpenParen | SyntaxClass::StringQuote | SyntaxClass::Quote => true,
+                SyntaxClass::Word
+                | SyntaxClass::Symbol
+                | SyntaxClass::Escape
+                | SyntaxClass::CharQuote => !in_symbol,
+                _ => false,
+            }
+        {
+            interp.buffer.goto_char(idx + 1);
+            return Ok(encode_parse_state(&state));
+        }
         match entry.class {
             SyntaxClass::StringQuote => {
                 if !is_escaped(&chars, idx) {
+                    // GNU records the string as the level's last sexp at
+                    // its opening quote.
+                    state.set_last_sexp(idx + 1);
                     state.string = Some(StringState {
                         quote: ch,
                         start_pos: idx + 1,
                     });
+                    in_symbol = false;
+                    idx += 1;
+                    if commentstop == CommentStop::SyntaxTable {
+                        interp.buffer.goto_char(idx + 1);
+                        return Ok(encode_parse_state(&state));
+                    }
+                    continue;
                 }
+                in_symbol = false;
                 idx += 1;
             }
             SyntaxClass::OpenParen => {
@@ -1307,10 +1404,19 @@ pub(super) fn parse_forward(
                 state.stack.push(ParseStackEntry {
                     open_pos: idx + 1,
                     close_char,
+                    last_sexp: None,
                 });
+                in_symbol = false;
                 idx += 1;
+                // GNU stops when the depth crossing reaches TARGETDEPTH in
+                // either direction.
+                if target_depth.is_some_and(|depth| depth == state.depth()) {
+                    interp.buffer.goto_char(idx + 1);
+                    return Ok(encode_parse_state(&state));
+                }
             }
             SyntaxClass::CloseParen => {
+                in_symbol = false;
                 let Some(open) = state.stack.last() else {
                     state.base_depth -= 1;
                     state.min_depth = state.min_depth.min(state.depth());
@@ -1321,19 +1427,43 @@ pub(super) fn parse_forward(
                     && matching_open_char(ch, entry)
                         .is_some_and(|open_char| open_char != chars[open.open_pos - 1])
                 {
-                    state.stack.pop();
+                    let closed = state.stack.pop().expect("stack non-empty");
+                    state.set_last_sexp(closed.open_pos);
                     state.min_depth = state.min_depth.min(state.depth());
                     idx += 1;
                     continue;
                 }
-                state.stack.pop();
+                let closed = state.stack.pop().expect("stack non-empty");
+                // The list just closed becomes the enclosing level's last
+                // complete sexp.
+                state.set_last_sexp(closed.open_pos);
                 idx += 1;
                 if target_depth.is_some_and(|depth| depth == state.depth()) {
                     interp.buffer.goto_char(idx + 1);
                     return Ok(encode_parse_state(&state));
                 }
             }
-            _ => idx += 1,
+            SyntaxClass::Word | SyntaxClass::Symbol => {
+                if !in_symbol {
+                    // A word/symbol token starts here; GNU records it as
+                    // the level's last sexp immediately.
+                    state.set_last_sexp(idx + 1);
+                    in_symbol = true;
+                }
+                idx += 1;
+            }
+            SyntaxClass::Escape | SyntaxClass::CharQuote => {
+                if !in_symbol {
+                    state.set_last_sexp(idx + 1);
+                    in_symbol = true;
+                }
+                // The escape consumes the following character too.
+                idx += 2;
+            }
+            _ => {
+                in_symbol = false;
+                idx += 1;
+            }
         }
     }
 
@@ -1537,9 +1667,11 @@ pub(super) fn scan_lists_impl(
             stack: vec![ParseStackEntry {
                 open_pos: start_pos,
                 close_char,
+                last_sexp: None,
             }],
             comment: None,
             string: None,
+            base_last_sexp: None,
         };
         let mut cursor = idx + 1;
         while cursor < chars.len() {
@@ -1631,6 +1763,7 @@ pub(super) fn scan_lists_impl(
                     state.stack.push(ParseStackEntry {
                         open_pos: cursor + 1,
                         close_char,
+                        last_sexp: None,
                     });
                     cursor += 1;
                 }
@@ -1821,15 +1954,9 @@ pub(super) fn up_list_impl(
     env: &Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
-    if count < 0 {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unsupported negative up-list".into()),
-        ])));
-    }
     let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
-    for _ in 0..count {
+    for _ in 0..count.unsigned_abs() {
         let point_idx = interp.buffer.point().saturating_sub(1).min(chars.len());
         let mut stack: Vec<usize> = Vec::new();
         let mut idx = 0;
@@ -1859,6 +1986,12 @@ pub(super) fn up_list_impl(
                 Value::String("No containing expression".into()),
             ])));
         };
+        if count < 0 {
+            // Negative COUNT moves backward out of the enclosing list,
+            // landing before its open paren like GNU.
+            interp.buffer.goto_char(open_pos);
+            continue;
+        }
         let close_pos = scan_lists_impl(
             interp,
             &[
@@ -1944,4 +2077,24 @@ pub(super) fn forward_comment_impl(
     }
     interp.buffer.goto_char(point);
     Ok(Value::T)
+}
+
+// GNU `backward-prefix-chars': move point backward over any number of
+// characters with quote or prefix syntax (', #, \` and , in Lisp).
+pub(super) fn backward_prefix_chars(interp: &mut Interpreter) -> Result<Value, LispError> {
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
+    let table_id = interp.current_syntax_table_id();
+    let minimum = interp.buffer.point_min();
+    let mut position = interp.buffer.point();
+    while position > minimum {
+        let ch = chars[position - 2];
+        let entry = syntax_entry_for_char(interp, table_id, ch);
+        if !(entry.class == SyntaxClass::Quote || entry.prefix) || is_escaped(&chars, position - 2)
+        {
+            break;
+        }
+        position -= 1;
+    }
+    interp.buffer.goto_char(position);
+    Ok(Value::Nil)
 }

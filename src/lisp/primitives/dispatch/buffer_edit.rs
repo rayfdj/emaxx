@@ -243,6 +243,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "ppss-depth"
             | "syntax-ppss-flush-cache"
             | "parse-partial-sexp"
+            | "backward-prefix-chars"
             | "buffer-string"
             | "minibuffer-contents"
             | "minibuffer-contents-no-properties"
@@ -1145,8 +1146,9 @@ pub(super) fn call(
                 interp.buffer.point_min(),
                 to,
                 None,
-                None,
                 false,
+                None,
+                syntax::CommentStop::No,
                 env,
             );
             interp.buffer.goto_char(saved);
@@ -1160,6 +1162,10 @@ pub(super) fn call(
             need_arg_range(name, args, 1, usize::MAX)?;
             Ok(Value::Nil)
         }
+        "backward-prefix-chars" => {
+            need_args(name, args, 0)?;
+            syntax::backward_prefix_chars(interp)
+        }
         "parse-partial-sexp" => {
             if args.len() < 2 || args.len() > 6 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1170,9 +1176,19 @@ pub(super) fn call(
                 Some(Value::Nil) | None => None,
                 Some(value) => Some(value.as_integer()?),
             };
+            let stopbefore = args.get(3).is_some_and(Value::is_truthy);
             let oldstate = args.get(4).filter(|value| !value.is_nil());
-            let commentstop = args.get(5).is_some_and(Value::is_truthy);
-            syntax::parse_forward(interp, from, to, target_depth, oldstate, commentstop, env)
+            let commentstop = syntax::CommentStop::from_value(args.get(5));
+            syntax::parse_forward(
+                interp,
+                from,
+                to,
+                target_depth,
+                stopbefore,
+                oldstate,
+                commentstop,
+                env,
+            )
         }
         "buffer-string" => Ok(string_like_value(
             interp.buffer.buffer_string(),

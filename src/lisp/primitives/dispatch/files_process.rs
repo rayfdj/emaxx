@@ -492,6 +492,18 @@ pub(super) fn call(
             interp.set_buffer_local_value(buffer_id, "comment-end", Value::String(String::new()));
             interp.set_buffer_local_value(buffer_id, "comment-use-syntax", Value::T);
             interp.set_buffer_local_value(buffer_id, "comment-add", Value::Integer(1));
+            // GNU lisp-mode-variables comment settings.
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-start-skip",
+                Value::String(";+ *".into()),
+            );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "comment-indent-function",
+                Value::Symbol("lisp-comment-indent".into()),
+            );
+            interp.set_buffer_local_value(buffer_id, "comment-column", Value::Integer(40));
             // GNU lisp-mode-variables installs the lisp line indenter
             // and makes sexp scanning skip comments.
             interp.set_buffer_local_value(
@@ -508,9 +520,31 @@ pub(super) fn call(
             };
             interp
                 .set_char_table_parent(syntax_table_id, Some(interp.standard_syntax_table_id()))?;
-            interp.char_table_set(syntax_table_id, ';' as u32, Value::String("<".into()))?;
+            // GNU lisp-data-mode-syntax-table: every non-alphanumeric
+            // ASCII character is a symbol constituent unless overridden
+            // below (Lisp symbols carry -, ., {, } and friends).
+            for code in 0u32..128 {
+                let ch = char::from_u32(code).expect("ASCII");
+                if ch.is_ascii_alphanumeric() {
+                    continue;
+                }
+                interp.char_table_set(syntax_table_id, code, Value::String("_".into()))?;
+            }
+            for ch in [' ', '\t', '\x0c', '\u{a0}'] {
+                interp.char_table_set(syntax_table_id, ch as u32, Value::String(" ".into()))?;
+            }
             interp.char_table_set(syntax_table_id, '\n' as u32, Value::String(">".into()))?;
+            interp.char_table_set(syntax_table_id, ';' as u32, Value::String("<".into()))?;
+            for ch in ['`', '\'', ',', '#'] {
+                interp.char_table_set(syntax_table_id, ch as u32, Value::String("'".into()))?;
+            }
+            interp.char_table_set(syntax_table_id, '@' as u32, Value::String("_ p".into()))?;
+            interp.char_table_set(syntax_table_id, '"' as u32, Value::String("\"".into()))?;
             interp.char_table_set(syntax_table_id, '\\' as u32, Value::String("\\".into()))?;
+            interp.char_table_set(syntax_table_id, '(' as u32, Value::String("()".into()))?;
+            interp.char_table_set(syntax_table_id, ')' as u32, Value::String(")(".into()))?;
+            interp.char_table_set(syntax_table_id, '[' as u32, Value::String("(]".into()))?;
+            interp.char_table_set(syntax_table_id, ']' as u32, Value::String(")[".into()))?;
             interp.set_current_syntax_table(syntax_table_id);
             Ok(Value::Nil)
         }
