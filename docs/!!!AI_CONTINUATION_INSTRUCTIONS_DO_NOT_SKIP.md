@@ -162,9 +162,34 @@ counts as the progress denominator.
   - WARNING repeated from this batch's false trail: an EMPTY result JSON
     (load_error) makes "notpassed 0" look like success — always check
     the TOTAL, not just the failure count.
-- The next frontier is `test/lisp/emacs-lisp/gv-tests.el` (selectors
-  2200..2207, 8 selected; manifest line 2291).  Start with the grouped
-  `check-all` replay.
+- Verified through selector 2207/7080: `gv-tests.el' (2200..2207, all 8
+  selected) passes its grouped replay.  Lessons from this batch:
+  - NEVER shadow a loadable GNU macro with a Rust special-form arm.  A
+    `gv-define-setter' special-form shortcut looked harmless but it also
+    intercepted gv.el's OWN internal registrations when gv.el loaded
+    (gv-define-simple-setter expands to gv-define-setter), so `car'/`cdr'
+    never got their `gv-expander' properties.  Downstream, GNU cl-macs'
+    `cl-callf cdr (car cursor)' in `edebug-move-cursor' could not expand
+    to `setcar' and silently fell back to a copying path — breaking the
+    cons IDENTITY (`eq') that edebug's `&name' spec matcher asserts on
+    (`gv-setter-edebug' failed in-suite with cl-assertion-failed only
+    after anything loaded gv.el).  The fix: remove the shortcut and give
+    `resolve_setf_place' a LAST-RESORT arm consuming the standard
+    `gv-expander' property via gv-get's DO protocol (loops.rs); preload.rs
+    already autoloads gv.el for the gv-define-* macros.  Place the arm
+    after all native place arms — gv.el registers expanders for car/cdr/
+    get/... that natives must outrank.
+  - `plist-get' and `cl-getf' have DIFFERENT third arguments: plist-get
+    takes a PREDICATE, cl-getf takes a DEFAULT (the setter evaluates but
+    ignores it).  Passing cl-getf's default as a testfn funcalls an
+    integer (caught by cargo test, not the compat suite).
+  - GNU's gv expander for plist-get/cl-getf PREPENDS missing keys
+    ((setf (plist-get l :d) v) => (:d v . l)); plist-put appends.  A
+    stale Rust unit test asserting append order had to be updated.
+  - `(setf (get S P) V)' routes to `put' (sf_setf arm).
+- The next frontier is `test/lisp/emacs-lisp/hierarchy-tests.el`
+  (68 selected; manifest line 2300).  Start with the grouped `check-all`
+  replay.
 - Probing lessons that cost hours; do not repeat:
   - Do NOT advise commands (functions dispatched via keyboard macros) in
     probes; advise non-command helpers only.

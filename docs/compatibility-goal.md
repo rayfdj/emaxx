@@ -19,6 +19,20 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2207/7080 are verified: `gv-tests.el` (2200..2207, all 8
+  selected) passes its grouped replay.  The fix ports GNU's generalized
+  variable protocol honestly: the `gv-define-setter` special-form
+  shortcut was REMOVED (it shadowed gv.el's real macro, so loading gv.el
+  never registered `gv-expander` properties and `cl-callf cdr (car
+  cursor)` in edebug could not expand to `setcar`, breaking the cons
+  identity that edebug's `&name` spec matcher asserts on).  Instead
+  `resolve_setf_place` gained a last-resort arm consuming the standard
+  `gv-expander` property via gv-get's DO protocol: the getter form comes
+  from calling the expander with a DO returning its getter argument, and
+  the setter is a function of the new value that re-invokes the expander
+  and evaluates the produced store form.  `setf` of `plist-get`/`cl-getf`
+  prepends missing keys (with optional TESTFN), and `(setf (get S P) V)`
+  routes to `put`.
 - Tests through 2100/7080 are verified locally against the current canonical
   manifest: `faceup-test-basics.el` (selectors 2085..2099) and
   `faceup-test-files.el` (selector 2100) pass their grouped `check-all`

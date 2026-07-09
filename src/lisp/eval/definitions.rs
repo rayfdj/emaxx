@@ -782,6 +782,14 @@ impl Interpreter {
             Some(Value::Symbol(name)) if name == "gethash" => {
                 self.sf_setf_gethash(&place, &items[2], env)
             }
+            Some(Value::Symbol(name)) if name == "get" && place.len() >= 3 => {
+                // (setf (get SYMBOL PROP) VAL) == (put SYMBOL PROP VAL)
+                let symbol = self.eval(&place[1], env)?;
+                let property = self.eval(&place[2], env)?;
+                let value = self.eval(&items[2], env)?;
+                primitives::call(self, "put", &[symbol, property, value.clone()], env)?;
+                Ok(value)
+            }
             Some(Value::Symbol(name)) if name == "slot-value" => {
                 let Some(object_expr) = place.get(1) else {
                     return Err(LispError::Signal(format!(
@@ -1035,17 +1043,20 @@ impl Interpreter {
         let plist = self.eval(plist_place, env)?;
         let key = self.eval(key_expr, env)?;
         let value = self.eval(value_expr, env)?;
-        let head = place.first().and_then(|value| value.as_symbol().ok());
-        let updated = if head == Some("cl-getf") {
-            self.cl_set_getf(plist, key, value.clone(), env)?
-        } else if head == Some("plist-get")
-            && let Some(testfn_expr) = place.get(3)
-        {
-            let testfn = self.eval(testfn_expr, env)?;
-            primitives::call(self, "plist-put", &[plist, key, value.clone(), testfn], env)?
-        } else {
-            primitives::call(self, "plist-put", &[plist, key, value.clone()], env)?
+        // GNU's gv expander for plist-get/cl-getf PREPENDS missing keys
+        // ((setf (plist-get l :d) v) => (:d v . l)); plist-put would
+        // append instead.  Only plist-get's third argument is a
+        // predicate; cl-getf's is a DEFAULT that the setter ignores.
+        let takes_testfn =
+            matches!(place.first(), Some(Value::Symbol(name)) if name == "plist-get");
+        let testfn = match place.get(3) {
+            Some(extra_expr) => {
+                let extra = self.eval(extra_expr, env)?;
+                (takes_testfn && !extra.is_nil()).then_some(extra)
+            }
+            None => None,
         };
+        let updated = self.cl_set_getf(plist, key, value.clone(), testfn, env)?;
         self.set_setf_place_value(plist_place, updated, env)?;
         Ok(value)
     }
@@ -1055,6 +1066,7 @@ impl Interpreter {
         plist: Value,
         key: Value,
         value: Value,
+        testfn: Option<Value>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let mut current = plist.clone();
@@ -1073,7 +1085,13 @@ impl Interpreter {
                         ])));
                     }
                     let property = car.borrow().clone();
-                    if primitives::value_matches_with_test(self, &property, &key, None, env)? {
+                    if primitives::value_matches_with_test(
+                        self,
+                        &property,
+                        &key,
+                        testfn.as_ref(),
+                        env,
+                    )? {
                         return match cdr.borrow().clone() {
                             Value::Cons(value_cell, _) => {
                                 *value_cell.borrow_mut() = value;

@@ -2406,6 +2406,68 @@ impl Interpreter {
                     quoted_literal(&table),
                 ]))
             }
+            // Last resort: a `gv-expander' property registered by gv.el's
+            // `gv-define-setter' and friends.  Follow `gv-get's protocol:
+            // the expander is called with a DO function plus the
+            // unevaluated place arguments and returns an expression built
+            // around DO's result.  Slot 1 carries the place's current
+            // value (DO returns the getter form); slot 2 a function of the
+            // new value returning the store FORM (DO hands the setter the
+            // quoted value).  Native place handlers above take precedence.
+            Some(Value::Symbol(name))
+                if self.get_symbol_property(name, "gv-expander").is_some() =>
+            {
+                let expander = self
+                    .get_symbol_property(name, "gv-expander")
+                    .expect("checked above");
+                let getter_do = Value::Lambda(
+                    vec!["--emaxx-gv-getter--".into(), "--emaxx-gv-setter--".into()],
+                    vec![Value::Symbol("--emaxx-gv-getter--".into())],
+                    shared_env(env.clone()),
+                );
+                let mut getter_args = vec![getter_do];
+                getter_args.extend(items[1..].iter().cloned());
+                let getter_form =
+                    self.call_function_value(expander.clone(), None, &getter_args, env)?;
+                let current = self.eval(&getter_form, env)?;
+                let setter_do = Value::list([
+                    Value::Symbol("lambda".into()),
+                    Value::list([
+                        Value::Symbol("--emaxx-gv-getter--".into()),
+                        Value::Symbol("--emaxx-gv-setter--".into()),
+                    ]),
+                    Value::list([
+                        Value::Symbol("funcall".into()),
+                        Value::Symbol("--emaxx-gv-setter--".into()),
+                        Value::list([
+                            Value::Symbol("list".into()),
+                            Value::list([
+                                Value::Symbol("quote".into()),
+                                Value::Symbol("quote".into()),
+                            ]),
+                            Value::Symbol("--emaxx-gv-value--".into()),
+                        ]),
+                    ]),
+                ]);
+                let mut funcall = vec![
+                    Value::Symbol("funcall".into()),
+                    Value::list([Value::Symbol("quote".into()), expander]),
+                    setter_do,
+                ];
+                for arg in &items[1..] {
+                    funcall.push(Value::list([Value::Symbol("quote".into()), arg.clone()]));
+                }
+                let setter = Value::Lambda(
+                    vec!["--emaxx-gv-value--".into()],
+                    vec![Value::list(funcall)],
+                    shared_env(env.clone()),
+                );
+                Ok(Value::list([
+                    Value::Symbol("--emaxx-setf-gv-synthetic-place".into()),
+                    current,
+                    setter,
+                ]))
+            }
             _ => Ok(place.clone()),
         }
     }
