@@ -500,11 +500,15 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         | "comment-search-forward" => Some(builtin_file_autoload("newcomment", Value::Nil)),
         "common-lisp-indent-function" => Some(builtin_file_autoload("cl-indent", Value::Nil)),
         // GNU preloads nadvice.el; the old advice.el is autoloaded.
-        // `add-function'/`remove-function' intentionally stay on the native
-        // arms for now: routing them through nadvice.el's gv-based macros
-        // regresses edebug-tests.el (instrumentation captures the gv-letplace
-        // expansion).  Revisit once edebug handles nadvice's macro output.
-        "advice-function-member-p"
+        "add-function" | "remove-function" => Some(builtin_macro_autoload("nadvice")),
+        // advice-add/remove/member-p defer to GNU nadvice.el when its file
+        // is loadable; the native registry arms remain the no-file fallback
+        // (call_function_value falls back to the builtin when the autoload
+        // target is missing).
+        "advice-add"
+        | "advice-remove"
+        | "advice-member-p"
+        | "advice-function-member-p"
         | "advice-function-mapc"
         | "advice--add-function"
         | "advice--remove-function"

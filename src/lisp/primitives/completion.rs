@@ -1002,9 +1002,21 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     if let Some(original) = advice_wrapper_original(func) {
         return interactive_form_items(&original);
     }
+    // A raw `(lambda ARGS . BODY)' LIST also has an interactive form (GNU
+    // interactive_form handles unevaluated lambda expressions; advice.el's
+    // ad-interactive-form probes stored advice bodies this way).
+    if let Ok(items) = func.to_vec()
+        && matches!(items.first(), Some(Value::Symbol(head)) if head == "lambda")
+    {
+        return items.get(2..).and_then(interactive_form_in_body);
+    }
     let Value::Lambda(_, body, _) = func else {
         return None;
     };
+    interactive_form_in_body(body)
+}
+
+fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     for form in body {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
             continue;

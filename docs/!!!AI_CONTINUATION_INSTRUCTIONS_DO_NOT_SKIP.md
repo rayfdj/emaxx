@@ -18,11 +18,36 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2432/7080: `nadvice-tests.el' (2420..2432)
+  passes the harness with ALL 13 selectors matching the oracle,
+  including the two the ORACLE fails as :expected-result :failed
+  (called-interactively-p-around/-filter-args — emaxx REPRODUCES those
+  failures: the strict excess-args lambda arity and the
+  called-interactively-p backtrace walk are what encode them).  The
+  102-file verified-prefix sweep (prefix-files7.txt) on frozen
+  binaries is the gate (2026-07-10 evening).  Batch details in
+  `docs/compatibility-goal.md` 2432 entry — READ IT before touching
+  oclosures, advice, macro/function cells, arity, or
+  called-interactively-p; several of these are load-bearing semantics
+  (identity-stamped slot frames, transparent oclosure env, macro
+  shadow-renaming, function-frame markers for cl-flet).
+- NEXT: `oclosure-tests.el' (2433..2437) — currently LoadError:
+  "(wrong-type-argument string symbol)" while loading the file.
+  sf_oclosure_define must handle the docstring + slot options
+  ((name :mutable t)), keyword-arg copiers ((oclosure-test-copy ocl1
+  :fst 7) — GNU copiers take &key when the :copier has no arglist),
+  positional copiers with explicit arglists, accessor `documentation',
+  and cl-defmethod dispatch on compiled-function/interpreted-function/
+  oclosure/oclosure-test type hierarchy.  After that: package-tests
+  (2438..2474).
+- Groundwork already banked for FUTURE files: oracle simple.el now
+  LOADS end-to-end (pre-redisplay-function + keyboard.c keymap defvar
+  defaults were the blockers) — simple-tests.el/subr-tests.el (far
+  beyond the current frontier, NOT in the verified prefix) get most of
+  their functions from it under the harness loadpath.
 - Verified through selector 2411/7080: `map-tests.el' (2350..2411)
   passes; the 99-file verified-prefix sweep on the frozen post-batch
-  binaries is the gate (2026-07-10).  Continue with the next file in
-  `compat/oracle_tests_all.txt' after map-tests.el toward the user's
-  standing 3000/7080 target.  Batch details in
+  binaries is the gate (2026-07-10).  Batch details in
   `docs/compatibility-goal.md` (hash-table literal materialization at
   quote time, pcase `app'/pcase-macroexpander support, cl-typep vs
   reader markers, cl-no-applicable-method conditions, should-error

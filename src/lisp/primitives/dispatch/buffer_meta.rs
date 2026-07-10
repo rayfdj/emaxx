@@ -638,12 +638,21 @@ pub(super) fn call(
         }
         "help-function-arglist" => {
             need_arg_range(name, args, 1, 2)?;
+            // GNU returns t when the arglist is unknown (nil, unbound
+            // symbols, opaque objects) — advice.el's ad-arglist feeds it
+            // nil for autoloaded functions and expects a non-list.
+            if args[0].is_nil() {
+                return Ok(Value::T);
+            }
             let function = if let Ok(symbol) = args[0].as_symbol() {
                 if let Some(arglist) = interp.get_symbol_property(symbol, "emaxx-function-arglist")
                 {
                     return Ok(arglist);
                 }
-                interp.lookup_function(symbol, env)?
+                match interp.lookup_function(symbol, env) {
+                    Ok(function) => function,
+                    Err(_) => return Ok(Value::T),
+                }
             } else {
                 args[0].clone()
             };

@@ -2862,6 +2862,8 @@ impl Interpreter {
             self.advice_note_new_definition(&name);
             return Ok(Value::Symbol(name));
         }
+        // A defun over a macro name erases the macro (GNU function cell).
+        self.shadow_macro_binding(&name);
         self.functions.push((name.clone(), lambda));
         self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
@@ -4436,17 +4438,21 @@ impl Interpreter {
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("lambda".into()));
         lowered.push(items[2].clone());
-        // Nested advice objects share slot names (car/cdr/...); isolate the
-        // call env so each body resolves its OWN slot frame instead of a
-        // caller's look-alike (the frame-merge machinery would unify the
-        // identically-shaped slot frames and self-recurse).  Single marker:
-        // `body_has_marker' only inspects the first body form.
-        lowered.push(Value::Symbol(":closure-isolated-current-env".into()));
+        // Inert identification marker: oclosure recognizers require it as
+        // the first body form so closures that merely CAPTURED an
+        // oclosure's frames are not mistaken for oclosures.
+        lowered.push(Value::Symbol(":closure-oclosure".into()));
         lowered.extend(items[3..].iter().cloned());
         let lambda = self.sf_lambda(&lowered, env)?;
         let Value::Lambda(params, body, closure_env) = lambda else {
             return Err(LispError::Signal("oclosure-lambda lowering failed".into()));
         };
+        // Nested advice objects share slot names (car/cdr/...); the identity
+        // stamp keeps the frame-merge machinery from unifying two DIFFERENT
+        // objects' identically-shaped slot frames (which would self-recurse),
+        // while callees invoked from the body still see the caller's lexical
+        // frames (dynamic bindings and shared-cell mutation keep working).
+        frame.push(Self::fresh_frame_identity());
         // Each oclosure owns its slot frame (copiers replace slot values
         // per object), so never share the captured env Rc.
         let mut contents = closure_env.borrow().clone();

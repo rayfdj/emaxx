@@ -9,6 +9,8 @@ mod lists;
 mod misc;
 mod misc_keymaps;
 mod numeric;
+
+pub(crate) use misc_keymaps::oclosure_type_of;
 mod overlays;
 mod predicates;
 mod search_coding;

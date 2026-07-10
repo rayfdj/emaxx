@@ -1222,6 +1222,24 @@ pub(crate) fn render_prin1_body(
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
+            // cl-prin1 dispatches oclosures through the `cl-print-object'
+            // generic (nadvice prints advice objects as "#f(advice ...)").
+            if context.options.dialect == PrintDialect::Cl
+                && crate::lisp::primitives::dispatch::oclosure_type_of(value).is_some()
+                && interp.has_lisp_function("cl-print-object")
+            {
+                let form = Value::list([
+                    Value::Symbol("with-output-to-string".into()),
+                    Value::list([
+                        Value::Symbol("cl-print-object".into()),
+                        Value::list([Value::Symbol("quote".into()), value.clone()]),
+                        Value::Symbol("standard-output".into()),
+                    ]),
+                ]);
+                if let Ok(rendered) = interp.eval(&form, env) {
+                    return string_text(&rendered);
+                }
+            }
             let captured = closure_env.borrow().clone();
             let prints_closure_env = body.len() > 1
                 && matches!(

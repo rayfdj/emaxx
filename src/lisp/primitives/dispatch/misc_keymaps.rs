@@ -878,6 +878,10 @@ pub(super) fn call(
                 && let Some(macro_function) = interp.macro_binding_as_function(symbol)
             {
                 // GNU's function cell for a macro holds (macro . EXPANDER).
+                // Materialize the synthesized cell as the function binding so
+                // in-place mutation of the SAME cons (nadvice's setcdr-based
+                // macro advice) is visible to later reads and expansion.
+                interp.set_function_binding(symbol, Some(macro_function.clone()));
                 return Ok(macro_function);
             }
             Ok(match interp.raw_function_binding(symbol, env) {
@@ -1089,8 +1093,12 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(Value::T)
         }
-        // File-less fallback; GNU nadvice.el owns advice once loaded.
-        "advice-add" if !interp.has_lisp_function("advice-add") => {
+        // File-less fallback; GNU nadvice.el owns advice once loaded (direct
+        // dispatch, e.g. define-advice's lowering, must delegate to it).
+        "advice-add" => {
+            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                return Ok(delegated);
+            }
             if args.len() < 3 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
@@ -1129,7 +1137,10 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         // File-less fallback; GNU nadvice.el owns advice once loaded.
-        "advice-member-p" if !interp.has_lisp_function("advice-member-p") => {
+        "advice-member-p" => {
+            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                return Ok(delegated);
+            }
             need_args(name, args, 2)?;
             let Some(function_name) = symbol_designator_name(&args[1]) else {
                 return Ok(Value::Nil);
@@ -1150,7 +1161,10 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         // File-less fallback; GNU nadvice.el owns advice once loaded.
-        "advice-remove" if !interp.has_lisp_function("advice-remove") => {
+        "advice-remove" => {
+            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                return Ok(delegated);
+            }
             need_args(name, args, 2)?;
             let function_name = symbol_designator_name(&args[0])
                 .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
@@ -2321,7 +2335,7 @@ pub(super) fn call(
         }
         "called-interactively-p" => {
             need_arg_range(name, args, 0, 1)?;
-            Ok(if interp.in_interactive_call() {
+            Ok(if interp.called_interactively_by_backtrace() {
                 Value::T
             } else {
                 Value::Nil
@@ -2445,6 +2459,7 @@ pub(super) fn call(
                         entry.1 = value.clone();
                     }
                 }
+                crate::lisp::eval::Interpreter::restamp_frame_identity(frame);
                 break;
             }
             Ok(Value::Lambda(
@@ -6365,16 +6380,40 @@ pub(crate) fn oclosure_value_matches_type(
     }
 }
 
+// Call NAME's elisp definition (GNU nadvice.el's advice-add and friends)
+// when one is loaded, so direct primitive dispatch (define-advice's
+// lowering) reaches it too.  None -> no elisp definition; use the native
+// file-less fallback.
+fn delegate_to_lisp_function(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    if !interp.has_lisp_function(name) {
+        return Ok(None);
+    }
+    let Ok(function) = interp.lookup_function(name, env) else {
+        return Ok(None);
+    };
+    if matches!(&function, Value::BuiltinFunc(builtin) if builtin == name) {
+        return Ok(None);
+    }
+    interp
+        .call_function_value(function, Some(name), args, env)
+        .map(Some)
+}
+
 pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
     let Value::Lambda(_, body, closure_env) = value else {
         return None;
     };
-    // Real oclosures carry the isolation marker as their first executable
+    // Real oclosures carry the oclosure marker as their first executable
     // body form; closures that merely captured an oclosure's frames don't.
     let first = body
         .iter()
         .find(|form| !matches!(form, Value::String(_) | Value::StringObject(_)))?;
-    if !matches!(first, Value::Symbol(marker) if marker == ":closure-isolated-current-env") {
+    if !matches!(first, Value::Symbol(marker) if marker == ":closure-oclosure") {
         return None;
     }
     let contents = closure_env.borrow();
@@ -12133,4 +12172,22 @@ fn symbol_file_from_preloaded_sources(symbol: &str) -> Option<String> {
         }
     }
     None
+}
+
+// True when NAME is a native emaxx builtin that GNU defines in PRELOADED
+// LISP (simple.el, lisp.el, subr.el...): such a function is NOT a subr in
+// GNU (`subrp' nil; find-func resolves it through `symbol-file').
+// Memoized — the answer only depends on the oracle tree.
+pub(crate) fn builtin_is_gnu_preloaded_lisp(name: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().expect("preloaded-lisp cache lock");
+    let map = cache.get_or_insert_with(HashMap::new);
+    if let Some(&known) = map.get(name) {
+        return known;
+    }
+    let found = symbol_file_from_preloaded_sources(name).is_some();
+    map.insert(name.to_string(), found);
+    found
 }
