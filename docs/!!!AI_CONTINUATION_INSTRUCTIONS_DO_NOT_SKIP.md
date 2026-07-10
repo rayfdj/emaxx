@@ -25,16 +25,41 @@ counts as the progress denominator.
   frames, keyword copiers, emaxx--oclosure-set-slot + :mutable +
   setting-constant, eieio-oref/oset oclosure integration, macroexpand
   duplicate-slot validation, byte-compile immutable-setq error).
-- NEXT: `package-tests.el' (2438..2474, 37 selected).  Scouted
-  2026-07-10 late: 2/38 pass; the failures cluster on a few missing
-  pieces — void variable `inhibit-message' (21 tests; it is a C defvar,
-  add a builtin nil default), void FUNCTION `cd' (11 tests; files.el
-  defun — decide whether to define natively or ensure files.el is
-  loaded in the harness env like simple.el now is), void
-  `search-default-mode' (isearch defvar, nil default), void
-  `package--builtin-versions' (package.el load-time defvar — check why
-  package.el load did not set it), void `with-file-modes' (subr.el
-  macro), and one "Wrong type argument: number, nil".
+- IN PROGRESS: `package-tests.el' (2438..2474, 37 selected) — 11/38
+  pass on emaxx (UNCOMMITTED work beyond the 2437 commit; verify
+  before building on it).  Already fixed: inhibit-message +
+  search-default-mode builtin nil defaults (bindings.rs);
+  simple_compat.el verbatim ports of cd/cd-absolute/parse-colon-path
+  (files.el; cd's interactive spec simplified), with-file-modes /
+  with-existing-directory / buffer-local-set-state family /
+  version-list-< / version-list-= / version-list-<= /
+  version-list-not-zero / package--builtin-versions /
+  package--description-file (subr.el), custom-quote (custom.el),
+  customize-save-variable (cus-edit.el, theme machinery guarded),
+  isearch-fold-quotes-mode (isearch.el); truncate-string-to-width
+  accepts GNU's sixth ELLIPSIS-TEXT-PROPERTY argument (strings.rs).
+  Also done since: native `set-visited-file-name'
+  (files_process.rs; sets buffer file+truename, renames buffer
+  uniquely, marks modified unless ALONG-WITH-FILE).
+  REMAINING failure clusters (run the file to refresh):
+  - "integer, nil" (7 tests) — root cause is `package-buffer-info'
+    failing on simple-single-1.3.el (REPRODUCER:
+    /tmp/probes/probe-pib.el — with-temp-buffer + insert-file-contents
+    + (package-buffer-info)); it goes through lisp-mnt's
+    lm-package-requires / narrow-to-region — bisect inside
+    package-buffer-info (package.el:1165).
+  - void `loaddefs-generate' (4 tests) — package install generates
+    autoloads via loaddefs-gen.el; decide port vs load.
+  - void `tar-mode' (2) — multi-file (.tar) package installs.
+  - "^ +simple-single" regex misses in *Packages* listing (3) —
+    package-menu listing format/alignment.
+  - describe-package "string-or-buffer, symbol" (3).
+  - "integer, nil" (4: desc-from-buffer, install-single, upload-*) and
+    assorted singles (dired-mode, byte-recompile-directory,
+    update-archives-async "number, nil", ignore-nil-entry).
+  NOTE: the simple_compat function ports SHADOW any native
+  counterparts; run the full 103-file sweep before committing this
+  batch (version-list-*/cd could affect prefix files).
 - Verified through selector 2432/7080: `nadvice-tests.el' (2420..2432)
   passes the harness with ALL 13 selectors matching the oracle,
   including the two the ORACLE fails as :expected-result :failed

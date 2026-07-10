@@ -833,6 +833,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "file-attribute-device-number"
             | "file-attribute-file-identifier"
             | "get-free-disk-space"
+            | "set-visited-file-name"
             | "file-symlink-p"
             | "make-symbolic-link"
             | "copy-file"
