@@ -489,6 +489,16 @@ fn record_defun_attributes(interp: &mut Interpreter, name: &str, forms: &[Value]
                                 parts[1].clone(),
                             );
                         }
+                        // GNU defun-declarations-alist: (obsolete NEW WHEN)
+                        // runs `make-obsolete', storing (NEW nil WHEN).
+                        Some("obsolete") if parts.len() >= 2 => {
+                            let when = parts.get(2).cloned().unwrap_or(Value::Nil);
+                            interp.put_symbol_property(
+                                name,
+                                "byte-obsolete-info",
+                                Value::list([parts[1].clone(), Value::Nil, when]),
+                            );
+                        }
                         _ => {}
                     }
                 }
@@ -2061,6 +2071,22 @@ impl Interpreter {
                 delayed_body.push(Value::list([
                     Value::Symbol("use-local-map".into()),
                     Value::Symbol(map_name.clone()),
+                ]));
+                // GNU define-derived-mode installs MODE-syntax-table.
+                let syntax_table_name = format!("{name}-syntax-table");
+                delayed_body.push(Value::list([
+                    Value::Symbol("if".into()),
+                    Value::list([
+                        Value::Symbol("boundp".into()),
+                        Value::list([
+                            Value::Symbol("quote".into()),
+                            Value::Symbol(syntax_table_name.clone()),
+                        ]),
+                    ]),
+                    Value::list([
+                        Value::Symbol("set-syntax-table".into()),
+                        Value::Symbol(syntax_table_name),
+                    ]),
                 ]));
                 delayed_body.push(Value::list([
                     Value::Symbol("setq-local".into()),
@@ -4166,9 +4192,9 @@ impl Interpreter {
         {
             return;
         }
-        let mut entries = current_load_list.to_vec().unwrap_or_default();
-        entries.push(entry);
-        current_load_list = Value::list(entries);
+        // GNU LOADHIST_ATTACH conses onto the front (the load-file name
+        // stays LAST; `macroexp-file-name' depends on that).
+        current_load_list = Value::cons(entry, current_load_list);
         self.set_global_binding("current-load-list", current_load_list);
     }
 

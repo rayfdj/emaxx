@@ -337,7 +337,8 @@ impl Interpreter {
             "mode-line-modes" => Some(Value::Nil),
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
-            "text-mode-syntax-table" | "emacs-lisp-mode-syntax-table" | "prog-mode-syntax-table" => {
+            "text-mode-syntax-table" => Some(Value::CharTable(2)),
+            "emacs-lisp-mode-syntax-table" | "prog-mode-syntax-table" => {
                 Some(Value::CharTable(self.standard_syntax_table_id()))
             }
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),

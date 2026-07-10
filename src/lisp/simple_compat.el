@@ -4085,6 +4085,615 @@ If it does not exist, create it and switch it to `messages-buffer-mode'."
         (current-buffer))))
 
 
+(defun beginning-of-defun-comments (&optional arg)
+  "Move to the beginning of ARGth defun, including comments."
+  (interactive "^p")
+  (unless arg (setq arg 1))
+  (beginning-of-defun arg)
+  (let (first-line-p)
+    (while (let ((ppss (progn (setq first-line-p (= (forward-line -1) -1))
+                              (syntax-ppss (line-end-position)))))
+             (while (and (nth 4 ppss) ; If eol is in a line-spanning comment,
+                         (< (nth 8 ppss) (line-beginning-position)))
+               (goto-char (nth 8 ppss)) ; skip to comment start.
+               (setq ppss (syntax-ppss (line-end-position))))
+             (and (not first-line-p)
+                  (progn (skip-syntax-backward
+                          "-" (line-beginning-position))
+                         (not (bolp))) ; Check for blank line.
+                  (beginning-of-defun--in-emptyish-line-p)))) ; Check for non-comment text.
+    (forward-line (if first-line-p 0 1))))
+
+(defvar forward-sexp-function nil
+  ;; FIXME:
+  ;; - for some uses, we may want a "sexp-only" version, which only
+  ;;   jumps over a well-formed sexp, rather than some dwimish thing
+  ;;   like jumping from an "else" back up to its "if".
+  ;; - for up-list, we could use the "sexp-only" behavior as well
+  ;;   to treat the dwimish halfsexp as a form of "up-list" step.
+  "If non-nil, `forward-sexp' delegates to this function.
+Should take the same arguments and behave similarly to `forward-sexp'.")
+
+(defvar insert-pair-alist
+  '((40 41) (91 93) (123 125) (60 62) (34 34) (39 39) (96 39))
+  "Alist of paired characters inserted by `insert-pair'.")
+
+(defvar delete-pair-blink-delay 1
+  "Time in seconds to delay after showing a paired character to delete.
+It's used by the command `delete-pair'.  The value 0 disables blinking.")
+
+(defun activate-mark (&optional no-tmm)
+  "Activate the mark.
+If NO-TMM is non-nil, leave `transient-mark-mode' alone."
+  (when (mark t)
+    (unless (region-active-p)
+      (force-mode-line-update) ;Refresh toolbar (bug#16382).
+      (setq mark-active t)
+      (unless (or transient-mark-mode no-tmm)
+        (setq-local transient-mark-mode 'lambda))
+      (run-hooks 'activate-mark-hook))))
+
+(defmacro with-buffer-unmodified-if-unchanged (&rest body)
+  "Like `progn', but change buffer-modified status only if buffer text changes.
+If the buffer was unmodified before execution of BODY, and
+buffer text after execution of BODY is identical to what it was
+before, ensure that buffer is still marked unmodified afterwards.
+For example, the following won't change the buffer's modification
+status:
+
+  (with-buffer-unmodified-if-unchanged
+    (insert \"a\")
+    (delete-char -1))
+
+Note that only changes in the raw byte sequence of the buffer text,
+as stored in the internal representation, are monitored for the
+purpose of detecting the lack of changes in buffer text.  Any other
+changes that are normally perceived as \"buffer modifications\", such
+as changes in text properties, `buffer-file-coding-system', buffer
+multibyteness, etc. -- will not be noticed, and the buffer will still
+be marked unmodified, effectively ignoring those changes."
+  (declare (debug t) (indent 0))
+  (let ((hash (gensym))
+        (buffer (gensym)))
+    `(let ((,hash (and (not (buffer-modified-p))
+                       (buffer-hash)))
+           (,buffer (current-buffer)))
+       (prog1
+           (progn
+             ,@body)
+         ;; If we didn't change anything in the buffer (and the buffer
+         ;; was previously unmodified), then flip the modification status
+         ;; back to "unchanged".
+         (when (and ,hash (buffer-live-p ,buffer))
+           (with-current-buffer ,buffer
+             (when (and (buffer-modified-p)
+                        (equal ,hash (buffer-hash)))
+               (restore-buffer-modified-p nil))))))))
+
+
+
+;; python.el syntax-propertize (simplified GNU port): mark the opening
+;; and closing quote of a triple-quote run as generic string fences so
+;; sexp motion treats the whole docstring as one string.
+(defun emaxx--python-syntax-stringify ()
+  (let* ((ppss (save-excursion (backward-char 3) (syntax-ppss)))
+         (string-start (and (eq t (nth 3 ppss)) (nth 8 ppss)))
+         (quote-starting-pos (- (point) 3))
+         (quote-ending-pos (point)))
+    (cond ((or (nth 4 ppss)
+               (and string-start
+                    (not (eql (char-after string-start)
+                              (char-after quote-starting-pos)))))
+           nil)
+          ((not string-start)
+           (put-text-property quote-starting-pos (1+ quote-starting-pos)
+                              'syntax-table (string-to-syntax "|")))
+          (t
+           (put-text-property (1- quote-ending-pos) quote-ending-pos
+                              'syntax-table (string-to-syntax "|"))))))
+
+(defun emaxx--python-syntax-propertize (start end)
+  (goto-char start)
+  (while (re-search-forward "\\(?:\"\"\"\\|'''\\)" end t)
+    (emaxx--python-syntax-stringify)))
+
+;; paragraphs.el forward/backward-paragraph (verbatim): the native
+;; forward-paragraph only finds blank lines and ignores the let-bound
+;; `paragraph-start'/`paragraph-separate' that lisp-fill-paragraph
+;; installs (Bug#7751).
+(defvar use-hard-newlines nil
+  "Non-nil means to distinguish hard and soft newlines.")
+(defvar paragraph-ignore-fill-prefix nil
+  "Non-nil means the paragraph commands are not affected by `fill-prefix'.")
+
+(defun forward-paragraph (&optional arg)
+  "Move forward to end of paragraph.
+With argument ARG, do it ARG times;
+a negative argument ARG = -N means move backward N paragraphs.
+
+A line which `paragraph-start' matches either separates paragraphs
+\(if `paragraph-separate' matches it also) or is the first line of a paragraph.
+A paragraph end is the beginning of a line which is not part of the paragraph
+to which the end of the previous line belongs, or the end of the buffer.
+Returns the count of paragraphs left to move."
+  (interactive "^p")
+  (or arg (setq arg 1))
+  (let* ((opoint (point))
+	 (fill-prefix-regexp
+	  (and fill-prefix (not (equal fill-prefix ""))
+	       (not paragraph-ignore-fill-prefix)
+	       (regexp-quote fill-prefix)))
+	 ;; Remove ^ from paragraph-start and paragraph-sep if they are there.
+	 ;; These regexps shouldn't be anchored, because we look for them
+	 ;; starting at the left-margin.  This allows paragraph commands to
+	 ;; work normally with indented text.
+	 ;; This hack will not find problem cases like "whatever\\|^something".
+	 (parstart (if (and (not (equal "" paragraph-start))
+			    (equal ?^ (aref paragraph-start 0)))
+		       (substring paragraph-start 1)
+		     paragraph-start))
+	 (parsep (if (and (not (equal "" paragraph-separate))
+			  (equal ?^ (aref paragraph-separate 0)))
+		     (substring paragraph-separate 1)
+		   paragraph-separate))
+	 (parsep
+	  (if fill-prefix-regexp
+	      (concat parsep "\\|"
+		      fill-prefix-regexp "[ \t]*$")
+	    parsep))
+	 ;; This is used for searching.
+	 (sp-parstart (concat "^[ \t]*\\(?:" parstart "\\|" parsep "\\)"))
+	 start found-start)
+    (while (and (< arg 0) (not (bobp)))
+      (if (and (not (looking-at parsep))
+	       (re-search-backward "^\n" (max (1- (point)) (point-min)) t)
+	       (looking-at parsep))
+	  (setq arg (1+ arg))
+	(setq start (point))
+	;; Move back over paragraph-separating lines.
+	(forward-char -1) (beginning-of-line)
+	(while (and (not (bobp))
+		    (progn (move-to-left-margin)
+			   (looking-at parsep)))
+	  (forward-line -1))
+	(if (bobp)
+	    nil
+	  (setq arg (1+ arg))
+	  ;; Go to end of the previous (non-separating) line.
+	  (end-of-line)
+	  ;; Search back for line that starts or separates paragraphs.
+	  (if (if fill-prefix-regexp
+		  ;; There is a fill prefix; it overrides parstart.
+		  (let () ;; multiple-lines
+		    (while (and (progn (beginning-of-line) (not (bobp)))
+				(progn (move-to-left-margin)
+				       (not (looking-at parsep)))
+				(looking-at fill-prefix-regexp))
+		      ;; (unless (= (point) start)
+		      ;;   (setq multiple-lines t))
+		      (forward-line -1))
+		    (move-to-left-margin)
+		    ;; This deleted code caused a long hanging-indent line
+		    ;; not to be filled together with the following lines.
+		    ;; ;; Don't move back over a line before the paragraph
+		    ;; ;; which doesn't start with fill-prefix
+		    ;; ;; unless that is the only line we've moved over.
+		    ;; (and (not (looking-at fill-prefix-regexp))
+		    ;;      multiple-lines
+		    ;;      (forward-line 1))
+		    (not (bobp)))
+		(while (and (re-search-backward sp-parstart nil 1)
+			    (setq found-start t)
+			    ;; Found a candidate, but need to check if it is a
+			    ;; REAL parstart.
+			    (progn (setq start (point))
+				   (move-to-left-margin)
+				   (not (looking-at parsep)))
+			    (not (and (looking-at parstart)
+				      (or (not use-hard-newlines)
+					  (bobp)
+					  (get-text-property
+					   (1- start) 'hard)))))
+		  (setq found-start nil)
+		  (goto-char start))
+		found-start)
+	      ;; Found one.
+	      (progn
+		;; Move forward over paragraph separators.
+		;; We know this cannot reach the place we started
+		;; because we know we moved back over a non-separator.
+		(while (and (not (eobp))
+			    (progn (move-to-left-margin)
+				   (looking-at parsep)))
+		  (forward-line 1))
+		;; If line before paragraph is just margin, back up to there.
+		(end-of-line 0)
+		(if (> (current-column) (current-left-margin))
+		    (forward-char 1)
+		  (skip-chars-backward " \t")
+		  (if (not (bolp))
+		      (forward-line 1))))
+	    ;; No starter or separator line => use buffer beg.
+	    (goto-char (point-min))))))
+
+    (while (and (> arg 0) (not (eobp)))
+      ;; Move forward over separator lines...
+      (while (and (not (eobp))
+		  (progn (move-to-left-margin) (not (eobp)))
+		  (looking-at parsep))
+	(forward-line 1))
+      (unless (eobp) (setq arg (1- arg)))
+      ;; ... and one more line.
+      (forward-line 1)
+      (if fill-prefix-regexp
+	  ;; There is a fill prefix; it overrides parstart.
+	  (while (and (not (eobp))
+		      (progn (move-to-left-margin) (not (eobp)))
+		      (not (looking-at parsep))
+		      (looking-at fill-prefix-regexp))
+	    (forward-line 1))
+	(while (and (re-search-forward sp-parstart nil 1)
+		    (progn (setq start (match-beginning 0))
+			   (goto-char start)
+			   (not (eobp)))
+		    (progn (move-to-left-margin)
+			   (not (looking-at parsep)))
+		    (or (not (looking-at parstart))
+			(and use-hard-newlines
+			     (not (get-text-property (1- start) 'hard)))))
+	  (forward-char 1))
+	(if (< (point) (point-max))
+	    (goto-char start))))
+    (constrain-to-field nil opoint t)
+    ;; Return the number of steps that could not be done.
+    arg))
+
+(defun backward-paragraph (&optional arg)
+  "Move backward to start of paragraph.
+With argument ARG, do it ARG times;
+a negative argument ARG = -N means move forward N paragraphs.
+
+A paragraph start is the beginning of a line which is a
+`paragraph-start' or which is ordinary text and follows a
+`paragraph-separate'ing line; except: if the first real line of a
+paragraph is preceded by a blank line, the paragraph starts at that
+blank line.
+
+See `forward-paragraph' for more information."
+  (interactive "^p")
+  (or arg (setq arg 1))
+  (forward-paragraph (- arg)))
+
+;; C defvars (buffer.c/indent.c) that fill.el and paragraphs.el read.
+(defvar fill-prefix nil
+  "String for filling to insert at front of new line, or nil for none.")
+(defvar left-margin 0
+  "Column for the default `indent-line-function' to indent to.")
+(defvar sentence-end-double-space t
+  "Non-nil means a single space does not end a sentence.")
+(defvar colon-double-space nil
+  "Non-nil means put two spaces after a colon when filling.")
+(defvar sentence-end nil
+  "Regexp describing the end of a sentence, or nil to use the default.")
+(defvar sentence-end-without-period nil
+  "Non-nil means a sentence will end without a period.")
+
+(defvar sentence-end-without-space
+  "\u3002\uff61\uff0e\uff1f\uff01"
+  "String of characters that end sentence without following spaces.")
+
+(defvar sentence-end-base "[.?!…‽][]\"'”’)}»›]*")
+
+(defun sentence-end ()
+  "Return the regexp describing the end of a sentence.
+
+This function returns either the value of the variable `sentence-end'
+if it is non-nil, or the default value constructed from the
+variables `sentence-end-base', `sentence-end-double-space',
+`sentence-end-without-period' and `sentence-end-without-space'.
+
+The default value specifies that in order to be recognized as the
+end of a sentence, the ending period, question mark, or exclamation point
+must be followed by two spaces, with perhaps some closing delimiters
+in between.  See Info node `(elisp)Standard Regexps'."
+  (or sentence-end
+      ;; We accept non-break space along with space.
+      (concat (if sentence-end-without-period "\\w[ \u00a0][ \u00a0]\\|")
+	      "\\("
+	      sentence-end-base
+              (if sentence-end-double-space
+                  "\\($\\|[ \u00a0]$\\|\t\\|[ \u00a0][ \u00a0]\\)" "\\($\\|[\t \u00a0]\\)")
+              "\\|[" sentence-end-without-space "]+"
+	      "\\)"
+              "[ \u00a0\t\n]*")))
+
+;; indent.el (preloaded in GNU): fill.el moves to the left margin.
+(defun current-left-margin ()
+  "Return the left margin to use for this line.
+This is the value of the buffer-local variable `left-margin' plus the value
+of the `left-margin' text-property at the start of the line."
+  (save-excursion
+    (back-to-indentation)
+    (max 0
+	 (+ left-margin (or (get-text-property
+			     (if (and (eobp) (not (bobp)))
+				 (1- (point)) (point))
+			     'left-margin) 0)))))
+
+(defun move-to-left-margin (&optional n force)
+  "Move to the left margin of the current line.
+With optional argument, move forward N-1 lines first.
+The column moved to is the one given by the `current-left-margin' function.
+If the line's indentation appears to be wrong, and this command is called
+interactively or with optional argument FORCE, it will be fixed."
+  (interactive (list (prefix-numeric-value current-prefix-arg) t))
+  (beginning-of-line n)
+  (skip-chars-forward " \t")
+  (if (minibufferp (current-buffer))
+      (if (save-excursion (beginning-of-line) (bobp))
+	  (goto-char (minibuffer-prompt-end))
+	(beginning-of-line))
+    (let ((lm (current-left-margin))
+	  (cc (current-column)))
+      (cond ((> cc lm)
+	     (if (> (move-to-column lm force) lm)
+		 ;; If lm is in a tab and we are not forcing, move before tab
+		 (backward-char 1)))
+	    ((and force (< cc lm))
+	     (indent-to-left-margin))))))
+
+;; This used to be the default indent-line-function,
+;; used in Fundamental Mode, Text Mode, etc.
+(defun indent-to-left-margin ()
+  "Indent current line to the column given by `current-left-margin'."
+  (save-excursion (indent-line-to (current-left-margin)))
+  ;; If we are within the indentation, move past it.
+  (when (save-excursion
+	  (skip-chars-backward " \t")
+	  (bolp))
+    (skip-chars-forward " \t")))
+
+;; paragraphs.el (preloaded in GNU): the paragraph boundary regexps
+;; fill.el consults.
+(defvar paragraph-start "\f\\|[ \t]*$"
+  "Regexp for beginning of a line that starts OR separates paragraphs.")
+(defvar paragraph-separate "[ \t\f]*$"
+  "Regexp for beginning of a line that separates paragraphs.")
+
+;; lisp.el (preloaded in GNU): list motion with escape-strings, pair
+;; deletion and defun marking.  These are verbatim GNU ports; the
+;; native up-list arm was removed in favor of this definition.
+
+(defun up-list (&optional arg escape-strings no-syntax-crossing)
+  "Move forward out of one level of parentheses.
+This command will also work on other parentheses-like expressions
+defined by the current language mode.  With ARG, do this that
+many times.  A negative argument means move backward but still to
+a less deep spot.
+
+If ESCAPE-STRINGS is non-nil (as it is interactively), move out
+of enclosing strings as well.
+
+If NO-SYNTAX-CROSSING is non-nil (as it is interactively), prefer
+to break out of any enclosing string instead of moving to the
+end of a list broken across multiple strings.
+
+On error, location of point is unspecified."
+  (interactive "^p\nd\nd")
+  (or arg (setq arg 1))
+  (let ((inc (if (> arg 0) 1 -1))
+        (pos nil))
+    (while (/= arg 0)
+      (condition-case err
+          (save-restriction
+            ;; If we've been asked not to cross string boundaries
+            ;; and we're inside a string, narrow to that string so
+            ;; that scan-lists doesn't find a match in a different
+            ;; string.
+            (when no-syntax-crossing
+              (let* ((syntax (syntax-ppss))
+                     (string-comment-start (nth 8 syntax)))
+                (when string-comment-start
+                  (save-excursion
+                    (goto-char string-comment-start)
+                    (narrow-to-region
+                     (point)
+                     (if (nth 3 syntax) ; in string
+                         (condition-case nil
+                             (progn (forward-sexp) (point))
+                           (scan-error (point-max)))
+                       (forward-comment 1)
+                       (point)))))))
+            (if (null forward-sexp-function)
+                (goto-char (or (scan-lists (point) inc 1)
+                               (buffer-end arg)))
+              (condition-case err
+                  (while (progn (setq pos (point))
+                                (forward-sexp inc)
+                                (/= (point) pos)))
+                (scan-error (goto-char (nth (if (> arg 0) 3 2) err))))
+              (if (= (point) pos)
+                  (signal 'scan-error
+                          (list "Unbalanced parentheses" (point) (point))))))
+        (scan-error
+         (let ((syntax nil))
+           (or
+            ;; If we bumped up against the end of a list, see whether
+            ;; we're inside a string: if so, just go to the beginning
+            ;; or end of that string.
+            (and escape-strings
+                 (or syntax (setf syntax (syntax-ppss)))
+                 (nth 3 syntax)
+                 (goto-char (nth 8 syntax))
+                 (progn (when (> inc 0)
+                          (forward-sexp))
+                        t))
+            ;; If we narrowed to a comment above and failed to escape
+            ;; it, the error might be our fault, not an indication
+            ;; that we're out of syntax.  Try again from beginning or
+            ;; end of the comment.
+            (and no-syntax-crossing
+                 (or syntax (setf syntax (syntax-ppss)))
+                 (nth 4 syntax)
+                 (goto-char (nth 8 syntax))
+                 (or (< inc 0)
+                     (forward-comment 1))
+                 (setf arg (+ arg inc)))
+            (if no-syntax-crossing
+                ;; Assume called interactively; don't signal an error.
+                (user-error "At top level")
+              (signal (car err) (cdr err)))))))
+      (setq arg (- arg inc)))))
+
+(defun backward-up-list (&optional arg escape-strings no-syntax-crossing)
+  "Move backward out of one level of parentheses.
+This command will also work on other parentheses-like expressions
+defined by the current language mode.  With ARG, do this that
+many times.  A negative argument means move forward but still to
+a less deep spot.
+
+If ESCAPE-STRINGS is non-nil (as it is interactively), move out
+of enclosing strings as well.
+
+If NO-SYNTAX-CROSSING is non-nil (as it is interactively), prefer
+to break out of any enclosing string instead of moving to the
+start of a list broken across multiple strings.
+
+On error, location of point is unspecified."
+  (interactive "^p\nd\nd")
+  (up-list (- (or arg 1)) escape-strings no-syntax-crossing))
+
+(defun delete-pair (&optional arg)
+  "Delete a pair of characters enclosing ARG sexps that follow point.
+A negative ARG deletes a pair around the preceding ARG sexps instead.
+The option `delete-pair-blink-delay' can disable blinking."
+  (interactive "P")
+  (if arg
+      (setq arg (prefix-numeric-value arg))
+    (setq arg 1))
+  (if (< arg 0)
+      (save-excursion
+	(skip-chars-backward " \t")
+	(save-excursion
+	  (let ((close-char (char-before)))
+	    (forward-sexp arg)
+	    (unless (member (list (char-after) close-char)
+			    (mapcar (lambda (p)
+				      (if (= (length p) 3) (cdr p) p))
+				    insert-pair-alist))
+	      (error "Not after matching pair"))
+	    (when (and (numberp delete-pair-blink-delay)
+		       (> delete-pair-blink-delay 0))
+	      (sit-for delete-pair-blink-delay))
+	    (delete-char 1)))
+	(delete-char -1))
+    (save-excursion
+      (skip-chars-forward " \t")
+      (save-excursion
+	(let ((open-char (char-after)))
+	  (forward-sexp arg)
+	  (unless (member (list open-char (char-before))
+			  (mapcar (lambda (p)
+				    (if (= (length p) 3) (cdr p) p))
+				  insert-pair-alist))
+	    (error "Not before matching pair"))
+	  (when (and (numberp delete-pair-blink-delay)
+		     (> delete-pair-blink-delay 0))
+	    (sit-for delete-pair-blink-delay))
+	  (delete-char -1)))
+      (delete-char 1))))
+
+(defun mark-defun (&optional arg interactive)
+  "Put mark at end of this defun, point at beginning.
+The defun marked is the one that contains point or follows point.
+With positive ARG, mark this and that many next defuns; with negative
+ARG, change the direction of marking.
+
+If the mark is active, it marks the next or previous defun(s) after
+the one(s) already marked.
+
+If INTERACTIVE is non-nil, as it is interactively,
+report errors as appropriate for this kind of usage."
+  (interactive "p\nd")
+  (if interactive
+      (condition-case e
+          (mark-defun arg nil)
+        (scan-error (user-error (cadr e))))
+    (setq arg (or arg 1))
+    ;; There is no `mark-defun-back' function - see
+    ;; https://lists.gnu.org/r/bug-gnu-emacs/2016-11/msg00079.html
+    ;; for explanation
+    (when (eq last-command 'mark-defun-back)
+      (setq arg (- arg)))
+    (when (< arg 0)
+      (setq this-command 'mark-defun-back))
+    (cond ((use-region-p)
+           (if (>= arg 0)
+               (set-mark
+                (save-excursion
+                  (goto-char (mark))
+                  ;; change the dotimes below to (end-of-defun arg)
+                  ;; once bug #24427 is fixed
+                  (dotimes (_ignore arg)
+                    (end-of-defun))
+                  (point)))
+             (beginning-of-defun-comments (- arg))))
+          (t
+           (let ((opoint (point))
+                 beg end)
+             (push-mark opoint)
+             ;; Try first in this order for the sake of languages with nested
+             ;; functions where several can end at the same place as with the
+             ;; offside rule, e.g. Python.
+             (beginning-of-defun-comments)
+             (setq beg (point))
+             (end-of-defun)
+             (setq end (point))
+             (when (or (and (<= (point) opoint)
+                            (> arg 0))
+                       (= beg (point-min))) ; we were before the first defun!
+               ;; beginning-of-defun moved back one defun so we got the wrong
+               ;; one.  If ARG < 0, however, we actually want to go back.
+               (goto-char opoint)
+               (end-of-defun)
+               (setq end (point))
+               (beginning-of-defun-comments)
+               (setq beg (point)))
+             (goto-char beg)
+             (cond ((> arg 0)
+                    ;; change the dotimes below to (end-of-defun arg)
+                    ;; once bug #24427 is fixed
+                    (dotimes (_ignore arg)
+                      (end-of-defun))
+                    (setq end (point))
+                    (push-mark end nil t)
+                    (goto-char beg))
+                   (t
+                    (goto-char beg)
+                    (unless (= arg -1)
+                      ;; beginning-of-defun behaves strange with zero arg - see
+                      ;; lists.gnu.org/r/bug-gnu-emacs/2017-02/msg00196.html
+                      (beginning-of-defun (1- (- arg))))
+                    (push-mark end nil t))))))
+    (skip-chars-backward "[:space:]\n")
+    (unless (bobp)
+      (forward-line 1))))
+
+(defun beginning-of-defun--in-emptyish-line-p ()
+  "Return non-nil if the point is in an \"emptyish\" line.
+This means a line that consists entirely of comments and/or
+whitespace."
+;; See https://lists.gnu.org/r/help-gnu-emacs/2016-08/msg00141.html
+  (save-excursion
+    (forward-line 0)
+    (let ((ppss (syntax-ppss)))
+      (and (null (nth 3 ppss))
+           (< (line-end-position)
+              (progn (when (nth 4 ppss)
+                       (goto-char (nth 8 ppss)))
+                     (forward-comment (point-max))
+                     (point)))))))
+
 ;; help.el (preloaded in GNU): confusable-character hints.  lisp-mode's
 ;; `lisp--match-confusable-symbol-character' fontifier consults the regexp.
 (defconst help-uni-confusables

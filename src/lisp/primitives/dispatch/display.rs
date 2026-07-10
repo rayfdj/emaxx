@@ -98,6 +98,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "color-values"
             | "color-values-from-color-spec"
             | "selected-window"
+            | "frame-selected-window"
             | "select-window"
             | "current-window-configuration"
             | "set-window-configuration"
@@ -1410,6 +1411,8 @@ pub(super) fn call(
                 .unwrap_or(Value::Nil))
         }
         "selected-window" => Ok(interp.selected_window_value()),
+        // Batch has a single frame whose selected window is THE window.
+        "frame-selected-window" => Ok(interp.selected_window_value()),
         "select-window" => {
             need_arg_range(name, args, 1, 2)?;
             let Some(window_id) = window_record_id_from_value(interp, &args[0]) else {

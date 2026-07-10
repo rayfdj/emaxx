@@ -504,6 +504,11 @@ pub(super) fn call(
                 Value::Symbol("lisp-comment-indent".into()),
             );
             interp.set_buffer_local_value(buffer_id, "comment-column", Value::Integer(40));
+            interp.set_buffer_local_value(
+                buffer_id,
+                "fill-paragraph-function",
+                Value::Symbol("lisp-fill-paragraph".into()),
+            );
             // GNU lisp-mode-variables installs the lisp line indenter
             // and makes sexp scanning skip comments.
             interp.set_buffer_local_value(

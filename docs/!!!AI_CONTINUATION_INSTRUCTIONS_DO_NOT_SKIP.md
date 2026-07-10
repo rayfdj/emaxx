@@ -18,10 +18,47 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2100/7080: `faceup-test-basics.el'
-  (2085..2099) and `faceup-test-files.el' (2100) pass their grouped
-  `check-all` replays; the 87-file verified-prefix sweep is green
-  (2026-07-05).
+- Verified through selector 2349/7080: `macroexp-tests.el' (2346..2349)
+  passes; the 98-file verified-prefix sweep on the frozen post-batch
+  binaries is the gate (2026-07-10).  Next file:
+  `test/lisp/emacs-lisp/map-tests.el' (62 selectors).  Known map-tests
+  blockers from scouting: quoted reader literals leak internal marker
+  forms (`(vector-literal ...)'/`(emaxx--hash-table-literal ...)') to
+  GNU map.el instead of real vectors/hash-tables read at READ time;
+  pcase `(map ...)' patterns (pcase-defmacro extensions) unsupported;
+  several map-put!/map-delete error-type mismatches.
+- SWEEP HYGIENE (learned 2026-07-10): freeze the binaries before a
+  long sweep (`cp target/release/{emaxx,compat-harness} /tmp/probes/bin/`
+  and run the frozen harness — it resolves the emaxx binary as a
+  SIBLING of its own path), because rebuilding mid-sweep swaps the
+  binary under the harness.  The harness still runs `cargo build
+  --quiet --bin emaxx` per file AS DEV; a concurrent root build takes
+  the cargo lock and shows up as spurious `TIMEOUT/NONE` sweep lines —
+  re-run those files individually before treating them as failures.
+  Do NOT edit `src/lisp/*.el` while a sweep runs either: even a frozen
+  binary reads simple_compat.el from the source tree at runtime.
+- ORACLE TREE HYGIENE (cost the macroexp arc an hour): never let root
+  write into /home/user/emacs — a root-owned
+  `macroexp-resources/vk.elc` (from a direct root oracle probe) made
+  the dev-user oracle's `batch-byte-compile` exit 1 under the harness,
+  which read as "oracle fails this test".  Probe the oracle as dev, and
+  when in doubt run `find /home/user/emacs -user root` and delete the
+  turds.
+- `eval-buffer' now performs GNU readevalloop EAGER top-level
+  macroexpansion (macroexpand → top-level progn recursion →
+  macroexpand-all → eval, falling back to the unexpanded form on
+  expansion errors).  `load'/`load_file_strict' do NOT eager-expand
+  yet — if a future test needs `macroexp-file-name' correct for macros
+  expanded from a `load'ed defun body, port the same shape there.
+- `provide' and the cl-defmethod recorder PREPEND their entries to
+  `current-load-list' (GNU LOADHIST_ATTACH conses; the load-file name
+  must stay LAST — `macroexp-file-name' reads
+  `(car (last current-load-list))`, and preloaded-shim features like
+  ert-x provide into the OUTER file's list).  Because of that,
+  recording into `load-history' NREVERSES the list first (GNU
+  build_load_history), keeping each history element (FILE . ENTRIES) —
+  cl--generic-method-files and edebug read it that way.  If you add a
+  new definition recorder, cons onto the front, never append.
 - The `Compat 2100/7080` batch: `forward-sexp'/`scan-sexps' honor
   `parse-sexp-ignore-comments' (native emacs-lisp-mode sets it), reach
   buffer end instead of signaling over trailing comments, and
@@ -293,9 +330,133 @@ counts as the progress denominator.
   - Inserting a PROPERTIZED STRING grafts its plist verbatim
     (set_text_properties); the interval prepend rule applies only to
     add-text-properties/put-text-property on EXISTING text.
-- The next frontier is `test/lisp/emacs-lisp/lisp-tests.el`
-  (37 selected; manifest line 2406).  Start with the grouped
-  `check-all` replay.
+- The next frontier per the manifest is whatever follows
+  `lisp-tests.el` (check compat/oracle_tests_all.txt after line 2444).
+- lisp-tests.el FINISHED (selector 2345/7080; all 37 pass the grouped
+  replay and the harness).  Final round of fixes beyond the earlier
+  notes: `(end-of-line 0)'/`(beginning-of-line N)' honor COUNT (the
+  ported forward-paragraph's backward loop does (end-of-line 0));
+  python triple-quote fences via `emaxx--python-syntax-propertize'
+  (native python-mode sets syntax-propertize-function; parse_forward
+  honors syntax-table TEXT PROPERTIES; GenericStringDelimiter opens/
+  closes fence strings with nth 3 = t; the sexp scanner's
+  lisp-prefix shortcut must EXCLUDE fence-classed `'''` quotes);
+  forward-sexp runs syntax-propertize like GNU scan primitives.
+  HISTORICAL (in-progress notes, superseded):
+  MAJOR FIXES SINCE THE 22/37 NOTE (all uncommitted):
+  - scan-lists depth-crossing NEVER MOVES POINT (parse_forward does;
+    save/restore around it — up-list's scan-error handler reads
+    syntax-ppss AT POINT, so a moved point broke string escape).
+  - forward-sexp/backward-sexp rebuilt on the scan-sexps contract,
+    ONE SEXP PER STEP: Ok(Some)→move; on None/Err find the obstacle
+    (next/previous_code_position helpers in syntax.rs): no obstacle →
+    buffer-end + nil (Bug#13994); obstacle → scan-error
+    ("Containing expression ends prematurely" LEFT RIGHT) — up-list's
+    forward-sexp-function path needs (nth 3 err).
+  - syntax-ppss MOVES POINT to POS like GNU (not excursion-saving!) —
+    beginning-of-defun-comments depends on it; fixed all mark-defun
+    tests.
+  - scan_one_sexp_forward: GNU symbol runs are Word|Symbol|Quote (+
+    Escape/CharQuote consuming 2); PUNCTUATION never joins a run and
+    never starts a sexp (skip+recurse); PairedDelimiter ($) scans to
+    the matching character like a string.
+  - text-mode-syntax-table is a REAL table now (char-table id 2 at
+    interpreter init, parent standard): `"' and `\' punctuation, `''
+    "w p" (Bug#15014); define-derived-mode's expansion now does
+    (set-syntax-table MODE-syntax-table) when bound.
+  - simple_compat: +paragraph-start/paragraph-separate defvars,
+    +move-to-left-margin/current-left-margin (indent.el ports).
+  REMAINING 3 FAILURES (updated):
+  - lisp-fill-paragraph-colon: REAL FILLING NOW WORKS at the
+    fill-region-as-paragraph level (verified: fill-column 10 wraps
+    correctly).  Fixes so far: simple_compat gained fill-prefix/
+    left-margin/sentence-end*/colon-double-space defvars, paragraphs.el
+    `sentence-end' defun + sentence-end-base port, indent.el
+    move-to-left-margin/current-left-margin ports; native
+    char-category-set returns a 128-slot BOOL-VECTOR (was "" — fill.el
+    does (aref (char-category-set next) ?|)); native emacs-lisp-mode
+    sets fill-paragraph-function = lisp-fill-paragraph.  REMAINING
+    PROBLEM: lisp-fill-paragraph's docstring branch reaches the
+    narrowed-docstring fill but nothing changes; ppss accessors are
+    correct (probe fp10), fill-comment-paragraph correctly nil (fp9).
+    DONE SINCE: paragraphs.el forward/backward-paragraph PORTED
+    verbatim to simple_compat (+use-hard-newlines/
+    paragraph-ignore-fill-prefix defvars); the native blank-line
+    forward-paragraph arm is gated on
+    !interp.has_lisp_function("forward-paragraph") (new helper in
+    runtime.rs); constrain-to-field accepts GNU's 5-arg form.  RESULT:
+    the second test block (docstring keywords, Bug#7751) fills
+    EXACTLY like the oracle now (probe fp1).  REMAINING: the FIRST
+    block (defcustom with keywords below, Bug#24622) signals "End of
+    buffer": trace (probe fp12) shows (forward-paragraph -1) →
+    (forward-char 1) at eob inside the ported backward loop — some
+    primitive divergence (suspects: re-search-backward "^\n" within
+    the docstring narrowing, or looking-at with the let-bound
+    paragraph regexps using \s- atoms) puts point at point-max where
+    GNU does not.  Compare each step of forward-paragraph -1 in the
+    narrowed docstring against the oracle.
+    ALSO: fill machinery groundwork landed: char-category-set returns
+    a 128-slot bool-vector (was ""), sentence-end defun +
+    sentence-end-base/without-space ports, fill-prefix/left-margin/
+    colon-double-space/sentence-end* defvars,
+    fill-paragraph-function=lisp-fill-paragraph in native
+    emacs-lisp-mode.  fill-region-as-paragraph verified filling
+    correctly at fill-column 10.
+  - lisp-forward-sexp-python-triple-quoted/quotes-string: forward-sexp
+    over python """...""" needs python syntax-propertize fences;
+    check whether syntax_entry_at_buffer_position honors syntax-table
+    TEXT PROPERTIES and whether native python-mode sets
+    syntax-propertize-function; GNU's scan primitives run
+    syntax-propertize implicitly.
+  ORIGINAL note (kept for context):
+  - simple_compat.el: verbatim GNU lisp.el ports of `up-list' (full
+    escape-strings/no-syntax-crossing signature), `backward-up-list',
+    `delete-pair', `mark-defun', `beginning-of-defun-comments', plus
+    `forward-sexp-function'/`insert-pair-alist'/`delete-pair-blink-delay'
+    defvars, simple.el `activate-mark', subr-x
+    `with-buffer-unmodified-if-unchanged'.  READER GOTCHAS that cost an
+    hour: emaxx's reader rejects `?\`'-style char literals (use
+    integer codes) and a truncated defcustom→defvar conversion left an
+    UNBALANCED form — emaxx then fails at STARTUP with "End of file
+    during parsing" on every invocation (simple_compat.el is read from
+    the source path at runtime; no rebuild needed for elisp edits, and
+    the oracle's reader accepts the file, so bisect with emaxx itself
+    form-by-form).
+  - The native `up-list' dispatch arm was REMOVED (buffer_edit.rs +
+    dispatch.rs name lists) so the elisp port takes effect; `down-list'
+    still native.  SWEEP REQUIRED before committing.
+  - Native `frame-selected-window' (= selected-window) in display.rs;
+    `fill-paragraph' autoloads fill.el in preload.rs.
+  REMAINING FAILURES and leads:
+  - DONE since first note: scan_lists_impl supports (scan-lists POS ±1
+    DEPTH) depth-crossing (forward via parse_forward with
+    target_depth=-DEPTH — the unmatched-close and mismatched-close
+    branches must ALSO check target_depth; backward via the enclosing
+    open-paren stack scan).  up-list-basic, up-list-no-cross-string and
+    backward-up-list-basic pass now.
+  - up-list-cross-string / up-list-out-of-string: "Unbalanced
+    parentheses" — point starts INSIDE a string; the forward parse
+    starts with a fresh state so the string's closing quote reads as a
+    string START (regions inverted).  The elisp up-list exits strings
+    first only with escape-strings; for the crossing variants GNU
+    scan-lists itself tolerates starting mid-string.  Probe GNU
+    scan-lists semantics from inside strings before coding
+    (/tmp/probes/ul1.el pattern; compare oracle).
+  - mark-defun-*: point should be RESTORED on the (= point before)
+    checks — likely push-mark/save-excursion or
+    beginning-of-defun-comments interplay.
+  - lisp-forward/backward-sexp-2-*: expect scan-error signaling at
+    eobp/bobp with COUNT 2 (check GNU forward-sexp error contract).
+  - lisp-fill-paragraph-colon: `paragraph-start'/`paragraph-separate'
+    defvars missing (C defvars in GNU; add to bindings or
+    simple_compat).
+  - python triple-quoted forward-sexp: needs python-mode string
+    scanning (syntax-propertize for triple quotes).
+  - lisp-delete-pair-quotes-in-text-mode: expects delete-pair to ERROR
+    (mismatched pair in text-mode syntax) — port exact GNU behavior.
+  Batch protocol reminder: full sweep + cargo test + fmt/clippy +
+  docs before committing; deliver ONE cumulative patch superseding
+  APPLY-THIS-ONE-compat-2308-lisp-mode.patch.
 - CONTAINER-ROLLBACK RECOVERY (2026-07-09, worked end-to-end): when the
   filesystem reverts, the session transcript
   (/root/.claude/projects/-home-user-emaxx/<session>.jsonl) usually

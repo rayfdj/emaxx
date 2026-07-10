@@ -969,6 +969,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "set-frame-height"
             | "frame-char-width"
             | "selected-window"
+            | "frame-selected-window"
             | "window-buffer"
             | "set-window-buffer"
             | "window-list"

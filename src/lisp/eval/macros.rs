@@ -163,10 +163,21 @@ impl Interpreter {
             let Ok(parts) = declaration.to_vec() else {
                 continue;
             };
-            if let (Some(Value::Symbol(head)), Some(spec)) = (parts.first(), parts.get(1))
-                && head == "debug"
-            {
-                self.put_symbol_property(name, "edebug-form-spec", spec.clone());
+            match (parts.first(), parts.get(1)) {
+                (Some(Value::Symbol(head)), Some(spec)) if head == "debug" => {
+                    self.put_symbol_property(name, "edebug-form-spec", spec.clone());
+                }
+                // GNU macro-declarations-alist: (obsolete NEW WHEN) runs
+                // `make-obsolete', which stores (NEW nil WHEN).
+                (Some(Value::Symbol(head)), Some(new)) if head == "obsolete" => {
+                    let when = parts.get(2).cloned().unwrap_or(Value::Nil);
+                    self.put_symbol_property(
+                        name,
+                        "byte-obsolete-info",
+                        Value::list([new.clone(), Value::Nil, when]),
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -440,6 +451,57 @@ impl Interpreter {
         Ok(value.clone())
     }
 
+    // GNU macroexp-macroexpand warns when macroexpand-all expands a macro
+    // carrying `byte-obsolete-info' (macroexp-warn-and-return sends the
+    // warning through `message', so cl-letf interception reaches it).
+    fn warn_when_expanding_obsolete_macro(
+        &mut self,
+        name: &str,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        if self
+            .get_symbol_property(name, "byte-obsolete-info")
+            .is_none_or(|info| !info.is_truthy())
+            || !self.has_lisp_function("macroexp-warn-and-return")
+            || !self.has_lisp_function("macroexp--obsolete-warning")
+        {
+            return Ok(());
+        }
+        let quoted_name = Value::list([
+            Value::Symbol("quote".into()),
+            Value::Symbol(name.to_string()),
+        ]);
+        let warn = Value::list([
+            Value::Symbol("macroexp-warn-and-return".into()),
+            Value::list([
+                Value::Symbol("macroexp--obsolete-warning".into()),
+                quoted_name.clone(),
+                Value::list([
+                    Value::Symbol("get".into()),
+                    quoted_name.clone(),
+                    Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol("byte-obsolete-info".into()),
+                    ]),
+                ]),
+                Value::String("macro".into()),
+            ]),
+            Value::Nil,
+            Value::list([
+                Value::Symbol("list".into()),
+                Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("obsolete".into()),
+                ]),
+                quoted_name.clone(),
+            ]),
+            Value::Nil,
+            quoted_name,
+        ]);
+        self.eval(&warn, env)?;
+        Ok(())
+    }
+
     pub(crate) fn macroexpand_all_form_with_environment(
         &mut self,
         form: &Value,
@@ -560,6 +622,34 @@ impl Interpreter {
                     }
                     return Ok(Value::list(rebuilt));
                 }
+                // GNU's defun/defmacro are macros expanding to a lambda whose
+                // body gets macro-expanded while the name, arglist, docstring
+                // and declare/interactive forms stay untouched.  emaxx keeps
+                // them as special forms, so descend the same way.
+                "defun" | "defmacro" | "defsubst" if items.len() >= 3 => {
+                    let mut rebuilt = vec![items[0].clone(), items[1].clone(), items[2].clone()];
+                    for form in &items[3..] {
+                        let head = form
+                            .to_vec()
+                            .ok()
+                            .and_then(|parts| parts.first().cloned())
+                            .and_then(|head| head.as_symbol().ok().map(str::to_string));
+                        let verbatim = matches!(form, Value::String(_) | Value::StringObject(_))
+                            || head
+                                .as_deref()
+                                .is_some_and(|head| head == "declare" || head == "interactive");
+                        if verbatim {
+                            rebuilt.push(form.clone());
+                        } else {
+                            rebuilt.push(self.macroexpand_all_form_with_environment(
+                                form,
+                                macro_environment,
+                                env,
+                            )?);
+                        }
+                    }
+                    return Ok(Value::list(rebuilt));
+                }
                 "pcase-let" | "pcase-let*" | "pcase-dolist" if items.len() >= 2 => {
                     let mut rebuilt = vec![items[0].clone(), items[1].clone()];
                     for body in &items[2..] {
@@ -594,6 +684,7 @@ impl Interpreter {
             } else if let Some(expanded) =
                 self.try_macroexpand_with_environment(name, &items[1..], None, env)?
             {
+                self.warn_when_expanding_obsolete_macro(name, env)?;
                 return self.macroexpand_all_form_with_environment(
                     &expanded,
                     macro_environment,

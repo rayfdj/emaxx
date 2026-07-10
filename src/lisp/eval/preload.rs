@@ -131,11 +131,24 @@ pub(crate) fn preloaded_eval_defun() -> Value {
                                 ]),
                             ]),
                         ]),
+                        // GNU eval-defun evaluates through `eval-region',
+                        // whose readevalloop binds `current-load-list' to
+                        // (BUFFER-FILE-NAME) — `macroexp-file-name' reads it.
                         Value::list([
                             Value::Symbol("result".into()),
                             Value::list([
-                                Value::Symbol("eval".into()),
-                                Value::Symbol("form".into()),
+                                Value::Symbol("let".into()),
+                                Value::list([Value::list([
+                                    Value::Symbol("current-load-list".into()),
+                                    Value::list([
+                                        Value::Symbol("list".into()),
+                                        Value::Symbol("buffer-file-name".into()),
+                                    ]),
+                                ])]),
+                                Value::list([
+                                    Value::Symbol("eval".into()),
+                                    Value::Symbol("form".into()),
+                                ]),
                             ]),
                         ]),
                     ]),
@@ -454,6 +467,7 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "dired" => Some(builtin_file_autoload("dired", Value::T)),
         "define-skeleton" => Some(builtin_macro_autoload("skeleton")),
         "eval-defun" => Some(preloaded_eval_defun()),
+        "fill-paragraph" => Some(builtin_file_autoload("fill", Value::Nil)),
         "fill-region" => Some(builtin_file_autoload("fill", Value::Nil)),
         "find-lisp-object-file-name" => Some(builtin_file_autoload("help-fns", Value::Nil)),
         "gv-define-expander" => Some(builtin_macro_autoload("gv")),

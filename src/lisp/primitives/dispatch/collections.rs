@@ -1240,9 +1240,24 @@ pub(super) fn call(
                     _ => None,
                 })
                 .unwrap_or_else(|| interp.ensure_standard_category_table());
-            Ok(interp
-                .char_table_get(table_id, character)
-                .unwrap_or_else(|| Value::String(String::new())))
+            // GNU returns a 128-slot bool-vector category set; entries
+            // may be stored as category-character strings.
+            let entry = interp.char_table_get(table_id, character);
+            let mut slots = vec![Value::Nil; 128];
+            if let Some(value) = entry {
+                match &value {
+                    Value::String(text) => {
+                        for ch in text.chars() {
+                            if (ch as usize) < 128 {
+                                slots[ch as usize] = Value::T;
+                            }
+                        }
+                    }
+                    Value::Record(_) => return Ok(value),
+                    _ => {}
+                }
+            }
+            Ok(interp.create_record("bool-vector", slots))
         }
 
         "copy-category-table" => {

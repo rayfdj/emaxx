@@ -19,6 +19,65 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2349/7080 are verified: `macroexp-tests.el` (2346..2349,
+  all 4 selected) passes.  The batch is in two parts.  Scan rewrite:
+  `scan-lists'/`scan-sexps' are now a verbatim port of GNU syntax.c
+  scan_lists (depth/min-depth tracking, `last_good' obstacle positions,
+  forw_comment/back_comment, math delimiters, string and comment
+  fences), `forward-sexp'/`backward-sexp' are GNU's default function
+  ((goto-char (or (scan-sexps (point) arg) (buffer-end arg))) plus
+  `backward-prefix-chars' and the `forward-sexp-function' funcall), and
+  the fallback syntax classes for characters a table leaves unset now
+  match GNU's standard table (`&*+-/<=>|_' symbol constituents, `$%'
+  word) — the old ad-hoc scanners split symbols like `gv-test-foo' at
+  hyphens, which broke pp-fill once the 196-entry lisp-indent table
+  landed, and returned nil where GNU returns EOB (unterminated comment
+  at depth 0) or scan-error (unterminated string).  macroexp batch:
+  `(declare (obsolete NEW WHEN))' on defun/defmacro stores
+  `byte-obsolete-info' and macroexpand-all warns through `message' via
+  macroexp-warn-and-return (cl-letf-interceptable); `eval-buffer' does
+  GNU readevalloop's EAGER top-level macroexpansion (macros in defun
+  bodies expand while `current-load-list' still names the buffer's
+  file; expansion failures fall back to the unexpanded form; note:
+  `load' does NOT eager-expand yet); `provide' PREPENDS its entry to
+  `current-load-list' like LOADHIST_ATTACH (the file name must stay
+  last for `macroexp-file-name'); `eval-defun' binds `current-load-list'
+  to (buffer-file-name); `byte-compile-file' binds
+  `byte-compile-current-file' to the source and `current-load-list' to
+  (nil) so files compiled from another file's load resolve their own
+  name.  Because entries now cons onto the front, recording into
+  `load-history' nreverses the list like GNU build_load_history (the
+  cl-defmethod recorder prepends too) — cl--generic-method-files and
+  edebug's load-history readers expect (FILE . ENTRIES).  Regressions
+  the full-prefix sweep caught in the uncommitted 2345 scan work (all
+  fixed by the rewrite): lisp-mode-tests indent-sexp-in-string,
+  faceup-directory, checkdoc cl-defun scans, semantic-utest-ia load,
+  gv-dont-define-expander-other-file (pp-fill symbol splitting).
+- Tests through 2345/7080 are verified: `lisp-tests.el` (2309..2345,
+  all 37 selected) passes its grouped replay.  The batch ported GNU
+  lisp.el (`up-list' with escape-strings/no-syntax-crossing,
+  `backward-up-list', `delete-pair', `mark-defun',
+  `beginning-of-defun-comments'), paragraphs.el (forward/
+  backward-paragraph, `sentence-end'), indent.el
+  (move-to-left-margin/current-left-margin) and python triple-quote
+  syntax-propertize into simple_compat, with the native blank-line
+  forward-paragraph and simple up-list arms gated behind
+  has_lisp_function.  Primitive repairs: `scan-lists' supports
+  (POS ±1 DEPTH) depth-crossing without moving point; forward/
+  backward-sexp follow the scan-sexps contract one sexp per step
+  (buffer end → nil per Bug#13994; obstacles signal scan-error with
+  GNU positions); `syntax-ppss' MOVES POINT to POS like GNU; symbol
+  runs cover word/symbol/quote only (punctuation skips, `$' paired
+  delimiters scan to their match); text-mode gets a real syntax table
+  (`"' punctuation, Bug#15014) and derived modes install
+  MODE-syntax-table; `beginning-of-line'/`end-of-line' honor their
+  COUNT argument ((end-of-line 0) = previous line's end);
+  `char-category-set' returns a 128-slot bool-vector;
+  `constrain-to-field' accepts GNU's 5-arg form; parse-partial-sexp
+  honors syntax-table TEXT PROPERTIES and generic string fences
+  (nth 3 = t, fence closes at the next fence-classed char), and
+  forward-sexp runs syntax-propertize first like GNU's scan
+  primitives.
 - Tests through 2308/7080 are verified: `lisp-mode-tests.el` (2288..2308,
   all 21 selected) passes its grouped replay.  The batch ported GNU's
   lisp indentation stack end to end: `indent-region` dispatches to the

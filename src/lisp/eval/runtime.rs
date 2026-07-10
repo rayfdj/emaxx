@@ -1434,12 +1434,13 @@ impl Interpreter {
             Value::Symbol("provide".into()),
             Value::Symbol(feature.to_string()),
         );
-        let mut entries = current_load_list.to_vec().unwrap_or_default();
+        let entries = current_load_list.to_vec().unwrap_or_default();
         if entries.iter().any(|item| item == &entry) {
             return;
         }
-        entries.push(entry);
-        self.set_global_binding("current-load-list", Value::list(entries));
+        // GNU LOADHIST_ATTACH conses onto the front: the source file name
+        // stays the LAST element (`macroexp-file-name' reads it there).
+        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
     }
 
     pub fn unprovide_feature(&mut self, feature: &str) {
@@ -1467,6 +1468,12 @@ impl Interpreter {
             self.sf_progn(&body, &mut env)?;
         }
         Ok(Value::Symbol(feature.to_string()))
+    }
+
+    // Whether NAME has an interpreted (Lisp-defined) function binding,
+    // as opposed to only a native dispatch arm.
+    pub(crate) fn has_lisp_function(&self, name: &str) -> bool {
+        self.functions.iter().any(|(fname, _)| fname == name)
     }
 
     pub fn has_feature(&self, feature: &str) -> bool {
