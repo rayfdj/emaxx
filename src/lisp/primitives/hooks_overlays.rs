@@ -1297,6 +1297,35 @@ fn font_lock_apply_highlight(
         }
         return Ok(());
     }
+    // GNU: a FACENAME list `(face FACE PROP VAL ...)' adds the extra
+    // plist as text properties (unconditionally, before the override
+    // logic) and fontifies with FACE.
+    let face = if let Ok(items) = face.to_vec()
+        && items.len() >= 2
+        && matches!(items.first(), Some(Value::Symbol(head)) if head == "face")
+    {
+        let clamp_start = match_start.max(start);
+        let clamp_end = match_end.min(end.max(clamp_start));
+        let mut index = 2;
+        while index + 1 < items.len() {
+            if let Ok(property) = items[index].as_symbol()
+                && clamp_start < clamp_end
+            {
+                font_lock_put_buffer_property(
+                    interp,
+                    interp.current_buffer_id(),
+                    clamp_start,
+                    clamp_end,
+                    property,
+                    items[index + 1].clone(),
+                )?;
+            }
+            index += 2;
+        }
+        items[1].clone()
+    } else {
+        face
+    };
     let override_mode = parts.get(2).cloned().unwrap_or(Value::Nil);
     if std::env::var("EMAXX_DEBUG_FONTLOCK").is_ok() {
         eprintln!(

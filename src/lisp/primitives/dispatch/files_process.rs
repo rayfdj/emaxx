@@ -511,6 +511,11 @@ pub(super) fn call(
                 "indent-line-function",
                 Value::Symbol("lisp-indent-line".into()),
             );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "indent-region-function",
+                Value::Symbol("lisp-indent-region".into()),
+            );
             interp.set_buffer_local_value(buffer_id, "parse-sexp-ignore-comments", Value::T);
             interp.set_buffer_local_value(buffer_id, "font-lock-defaults", Value::T);
             let Value::CharTable(syntax_table_id) =

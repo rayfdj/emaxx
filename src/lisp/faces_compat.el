@@ -222,10 +222,10 @@
 (defun background-color-at-point ()
   (emaxx--attribute-at-point :background))
 
-(defun font-lock-fontify-region (&optional beg end)
-  (setq beg (or beg (point-min)))
-  (setq end (or end (point-max)))
-  (font-lock-ensure beg end)
+;; The native `font-lock-fontify-region' arm calls this after its
+;; ensure pass (the definition here would otherwise be shadowed by GNU
+;; font-lock.el whenever a mode library loads it).
+(defun emaxx--font-lock-fontify-region-extras (beg end)
   (when (eq major-mode 'emacs-lisp-mode)
     (save-excursion
       (goto-char beg)

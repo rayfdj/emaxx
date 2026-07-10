@@ -254,12 +254,48 @@ counts as the progress denominator.
   `lisp-comment-indent', comment-column 40; autoloads: newcomment.el
   (comment-indent/indent-for-comment), prolog-mode, cl-indent
   (common-lisp-indent-function); `up-list' accepts negative COUNT.
-  STILL FAILING (7): indent-sexp (trailing `;' column in the fixture),
-  lisp-fontify-confusables (listp error), lisp-indent-region ×4
-  (string=/equal diffs — re-diff after the comment fixes),
-  lisp-indent-with-read-only-field (fields).  The per-line
-  `calculate-lisp-indent' trace matched the oracle on the whole fixture
-  when last checked.
+  FINISHED (selector 2308/7080; all 21 pass the grouped replay).  The
+  closing batch's lessons:
+  - `indent-region' must dispatch to the buffer-local
+    `indent-region-function' (lisp-indent-region); the native
+    emacs-lisp-mode sets it.
+  - GNU's PRELOADED `(declare (indent N))' properties (196 symbols:
+    when 1, defun 2, with-eval-after-load 1, ...) are registered
+    natively at startup — enumerate them from the oracle with mapatoms
+    over `lisp-indent-function' props, do not hand-pick.
+  - `indent-according-to-mode' funcalls the buffer's
+    `indent-line-function' (newcomment's comment-indent delegates
+    comment-only lines through it).
+  - `comment-column' is 40 in lisp modes (lisp-mode-variables), not the
+    global 32.
+  - REGRESSION CLASS TO REMEMBER: forward regexp search converted the
+    char START position into `captures_from_pos''s BYTE offset — with
+    multibyte text before point `re-search-forward' returned matches
+    BEFORE point, and GNU skip-and-retry matcher loops
+    (lisp--match-confusable-symbol-character) inflooped.  If an elisp
+    while/re-search loop hangs, CHECK THE SEARCH-START OFFSET UNITS
+    FIRST.
+  - `(face FACE PROP VAL ...)' font-lock FACENAMEs add the extra plist
+    as text properties (GNU font-lock-apply-highlight) then fontify
+    with FACE.
+  - prolog.el's load chain pulls GNU font-lock.el over the compat
+    `font-lock-fontify-region'; it is now in prefer_builtin_override
+    with a native arm (ensure + `emaxx--font-lock-fontify-region-extras'
+    from faces_compat.el).  When a previously-passing fontification
+    test breaks after a NEW MODE's library loads, suspect font-lock.el
+    shadowing before anything else.
+  - Field-constrained line motion: beginning-of-line/
+    line-beginning-position/back-to-indentation/indent-line-to
+    constrain to the current field when the buffer has any `field'
+    property (Bug#32014's read-only prompt).  The check is gated on
+    buffer_has_field_property to keep field-less buffers on the fast
+    path.
+  - Inserting a PROPERTIZED STRING grafts its plist verbatim
+    (set_text_properties); the interval prepend rule applies only to
+    add-text-properties/put-text-property on EXISTING text.
+- The next frontier is `test/lisp/emacs-lisp/lisp-tests.el`
+  (37 selected; manifest line 2406).  Start with the grouped
+  `check-all` replay.
 - CONTAINER-ROLLBACK RECOVERY (2026-07-09, worked end-to-end): when the
   filesystem reverts, the session transcript
   (/root/.claude/projects/-home-user-emaxx/<session>.jsonl) usually

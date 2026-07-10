@@ -385,7 +385,7 @@ pub(super) fn call(
                     buffer.set_mark(mark);
                 }
                 for span in props {
-                    buffer.add_text_properties(span.start + 1, span.end + 1, &span.props);
+                    buffer.set_text_properties(span.start + 1, span.end + 1, &span.props);
                 }
                 buffer.overlays = overlays;
             }

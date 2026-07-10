@@ -19,6 +19,32 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2308/7080 are verified: `lisp-mode-tests.el` (2288..2308,
+  all 21 selected) passes its grouped replay.  The batch ported GNU's
+  lisp indentation stack end to end: `indent-region` dispatches to the
+  buffer-local `indent-region-function` (`lisp-indent-region`), every
+  symbol carrying a preloaded `(declare (indent N))` property at oracle
+  startup is registered natively (196 entries; `when`, `defun`,
+  `with-eval-after-load`...), `indent-according-to-mode` funcalls the
+  buffer's `indent-line-function`, the native emacs-lisp-mode sets
+  lisp-mode-variables' comment settings (`comment-indent-function',
+  `comment-start-skip', `comment-column' 40) and `indent-line-to'/
+  line-motion primitives constrain to fields like GNU (read-only prompt
+  prefixes are not indentation; Bug#32014).  Deep primitive repairs the
+  suite exposed: forward regexp searches converted the char-position
+  start to a BYTE offset for `captures_from_pos' — with multibyte text
+  before point, `re-search-forward' matched BEFORE point and elisp
+  skip-and-retry loops (lisp--match-confusable-symbol-character)
+  inflooped; font-lock FACENAME lists `(face FACE PROP VAL ...)' apply
+  the extra plist as text properties like GNU; `font-lock-fontify-region'
+  joined `prefer_builtin_override' with a native arm (loading prolog.el
+  pulled GNU font-lock.el over it, which chokes on the native defaults
+  sentinel) delegating compat extras to
+  `emaxx--font-lock-fontify-region-extras'; inserting propertized
+  strings grafts the plist verbatim (the interval-plist prepend rule is
+  for property ADDITION, not fresh text); help-uni-confusables ported
+  from help.el; `up-list' supports negative COUNT; newcomment/prolog/
+  cl-indent autoload like GNU's preloads.
 - Tests through 2287/7080 are verified: `icons-tests.el` (2276..2277),
   `let-alist-tests.el` (2278..2284) and `lisp-mnt-tests.el` (2285..2287)
   pass their grouped replays.  `pcase-let`/`pcase-let*` now destructure

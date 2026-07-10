@@ -552,9 +552,11 @@ pub(crate) fn insert_text_with_hooks(
         interp.insert_current_buffer(text);
     }
     for span in props {
+        // Freshly inserted text: graft the string's plist verbatim so the
+        // stored order matches GNU (add_text_properties would reverse it).
         interp
             .buffer
-            .add_text_properties(start + span.start, start + span.end, &span.props);
+            .set_text_properties(start + span.start, start + span.end, &span.props);
     }
     let end = start + text.chars().count();
     run_change_hooks(

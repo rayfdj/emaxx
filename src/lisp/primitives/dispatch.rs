@@ -1021,6 +1021,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "font-lock-remove-keywords"
             | "font-lock-flush"
             | "font-lock-ensure"
+            | "font-lock-fontify-region"
             | "find-image"
             | "image-size"
             | "image-mask-p"

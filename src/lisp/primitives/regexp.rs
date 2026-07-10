@@ -1782,7 +1782,13 @@ pub(super) fn buffer_regex_search(
             .buffer
             .buffer_substring(haystack_start, limit)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let mut search_offset = start.saturating_sub(haystack_start);
+        // `captures_from_pos' takes a BYTE offset; positions are chars.
+        let start_chars = start.saturating_sub(haystack_start);
+        let mut search_offset = haystack
+            .char_indices()
+            .nth(start_chars)
+            .map(|(byte, _)| byte)
+            .unwrap_or(haystack.len());
         for _ in 0..count {
             let Some(captures) = regex
                 .captures_from_pos(&haystack, search_offset)
