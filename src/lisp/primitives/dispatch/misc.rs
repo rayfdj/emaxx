@@ -502,10 +502,15 @@ pub(super) fn call(
             };
             // GNU's C interactive_form consults `oclosure-interactive-form'
             // for OClosures (nadvice's advice objects compose their spec);
-            // it outranks the defun-recorded property for advised symbols.
+            // it outranks the defun-recorded property for advised symbols,
+            // but an (interactive ...) form IN THE BODY outranks the
+            // generic (oclosure-lambda bodies may carry their own spec).
             if super::misc_keymaps::oclosure_type_of(&value).is_some()
                 && interp.has_lisp_function("oclosure-interactive-form")
             {
+                if let Some(items) = interactive_form_items(&value) {
+                    return Ok(Value::list(items));
+                }
                 return interp.call_function_value(
                     Value::Symbol("oclosure-interactive-form".into()),
                     Some("oclosure-interactive-form"),

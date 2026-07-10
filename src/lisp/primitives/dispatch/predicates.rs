@@ -471,13 +471,25 @@ pub(super) fn call(
                 return Ok(Value::T);
             }
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
-            Ok(
-                if autoload_command_p(&value) || interactive_form_items(&value).is_some() {
-                    Value::T
-                } else {
-                    Value::Nil
-                },
-            )
+            if autoload_command_p(&value) || interactive_form_items(&value).is_some() {
+                return Ok(Value::T);
+            }
+            // OClosures may get their interactive form from the
+            // `oclosure-interactive-form' generic (like GNU's commandp).
+            if super::misc_keymaps::oclosure_type_of(&value).is_some()
+                && interp.has_lisp_function("oclosure-interactive-form")
+                && interp
+                    .call_function_value(
+                        Value::Symbol("oclosure-interactive-form".into()),
+                        Some("oclosure-interactive-form"),
+                        std::slice::from_ref(&value),
+                        env,
+                    )?
+                    .is_truthy()
+            {
+                return Ok(Value::T);
+            }
+            Ok(Value::Nil)
         }
         "boundp" => {
             need_args(name, args, 1)?;

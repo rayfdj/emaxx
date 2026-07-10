@@ -18,6 +18,23 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2437/7080: `oclosure-tests.el' (2433..2437)
+  passes; 103-file prefix sweep (prefix-files8.txt) on frozen binaries
+  is the gate.  Batch details in docs/compatibility-goal.md 2437 entry
+  (oclosure feature, transparent-branch identity dedup for live caller
+  frames, keyword copiers, emaxx--oclosure-set-slot + :mutable +
+  setting-constant, eieio-oref/oset oclosure integration, macroexpand
+  duplicate-slot validation, byte-compile immutable-setq error).
+- NEXT: `package-tests.el' (2438..2474, 37 selected).  Scouted
+  2026-07-10 late: 2/38 pass; the failures cluster on a few missing
+  pieces — void variable `inhibit-message' (21 tests; it is a C defvar,
+  add a builtin nil default), void FUNCTION `cd' (11 tests; files.el
+  defun — decide whether to define natively or ensure files.el is
+  loaded in the harness env like simple.el now is), void
+  `search-default-mode' (isearch defvar, nil default), void
+  `package--builtin-versions' (package.el load-time defvar — check why
+  package.el load did not set it), void `with-file-modes' (subr.el
+  macro), and one "Wrong type argument: number, nil".
 - Verified through selector 2432/7080: `nadvice-tests.el' (2420..2432)
   passes the harness with ALL 13 selectors matching the oracle,
   including the two the ORACLE fails as :expected-result :failed

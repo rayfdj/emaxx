@@ -19,6 +19,33 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2437/7080 are verified: `oclosure-tests.el`
+  (2433..2437, all 5 selectors) passes.  The batch:
+  - 'oclosure is a builtin-provided FEATURE (GNU preloads oclosure.el;
+    the native implementation must not be shadowed by loading it).
+  - The `:closure-oclosure'/transparent call branch now DEDUPES
+    captured frames whose IDENTITY is live in the caller env: the
+    caller's frame is current (captures are snapshots), so oclosures
+    created in a scope see later mutations of captured variables
+    (oclosure-test's `(funcall ocl1)' after `cl-incf i') and the
+    refreshed frames are written back to the closure's stored env.
+  - Default `(:copier NAME)' generates GNU's KEYWORD copier (only
+    provided :slot keys are replaced); explicit-arglist copiers stay
+    positional.  Accessors carry docstrings and register setf places
+    (emaxx-gv-setter) through `emaxx--oclosure-set-slot', which
+    enforces `:mutable' (setting-constant otherwise, walking parent
+    types).  `eieio-oref'/`slot-value'/`eieio-oset' read and write
+    oclosure slots like GNU's eieio integration.
+  - `interactive-form'/commandp/call-interactively order: a body
+    (interactive ...) form outranks the `oclosure-interactive-form'
+    generic; the generic is the fallback (and commandp consults it).
+  - cl-typep: every oclosure matches the abstract root type
+    `oclosure'.
+  - Duplicate-slot validation at macroexpansion time (oclosure-define
+    "Duplicate slot name: X" incl. inherited slots; oclosure-lambda
+    "Duplicate slot: X"), and byte-compile signals "Slot X should not
+    be mutated" when compiled code setqs a slot not declared
+    :mutable (GNU cconv integration), scanning nested lambdas.
 - Tests through 2432/7080 are verified: `nadvice-tests.el` (2420..2432,
   all 13 selectors including the two the oracle itself fails as
   expected) passes.  The batch is deep GNU-advice semantics:

@@ -207,6 +207,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "garbage-collect"
             | "emaxx--oclosure-type-p"
             | "emaxx--oclosure-slot"
+            | "emaxx--oclosure-set-slot"
             | "emaxx--oclosure-copy"
             | "num-processors"
             | "current-cpu-time"
@@ -1807,6 +1808,9 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let (compile_target, suppressions) = byte_compile_target_and_suppressions(&args[0]);
             let compile_target = byte_compile_function_quoted_lambda_target(compile_target);
+            // GNU oclosure.el's cconv integration errors when compiled code
+            // setqs an oclosure slot not declared :mutable.
+            check_oclosure_slot_mutation(interp, &compile_target)?;
             byte_compile_emit_warnings(interp, &compile_target, &suppressions, env)?;
             if let Ok(symbol) = compile_target.as_symbol() {
                 let callable = resolve_callable(interp, &compile_target, env)?;
@@ -2436,6 +2440,55 @@ pub(super) fn call(
             }
             Err(wrong_type_argument("oclosure", args[0].clone()))
         }
+        "emaxx--oclosure-set-slot" => {
+            need_args(name, args, 3)?;
+            let slot = args[1].as_symbol()?.to_string();
+            let Some(type_name) = oclosure_type_of(&args[0]) else {
+                return Err(wrong_type_argument("oclosure", args[0].clone()));
+            };
+            // Only slots declared (SLOT :mutable t) may be written; GNU
+            // signals setting-constant for the rest (oclosure--set).
+            let mut current: Option<String> = Some(type_name);
+            let mut mutable = false;
+            while let Some(type_name) = current {
+                if interp
+                    .get_symbol_property(&type_name, "emaxx-oclosure-mutable-slots")
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|value| matches!(value, Value::Symbol(name) if name == &slot))
+                {
+                    mutable = true;
+                    break;
+                }
+                current = interp
+                    .get_symbol_property(&type_name, "emaxx-oclosure-parent")
+                    .and_then(|value| value.as_symbol().ok().map(String::from));
+            }
+            if !mutable {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::Symbol("setting-constant".into()),
+                    Value::Symbol(slot),
+                ])));
+            }
+            let Value::Lambda(_, _, closure_env) = &args[0] else {
+                return Err(wrong_type_argument("oclosure", args[0].clone()));
+            };
+            let mut env_contents = closure_env.borrow_mut();
+            for frame in env_contents.iter_mut().rev() {
+                if !frame
+                    .iter()
+                    .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                {
+                    continue;
+                }
+                if let Some(entry) = frame.iter_mut().find(|(key, _)| key == &slot) {
+                    entry.1 = args[2].clone();
+                    return Ok(args[2].clone());
+                }
+            }
+            Err(wrong_type_argument("oclosure", args[0].clone()))
+        }
         "emaxx--oclosure-copy" => {
             need_args(name, args, 2)?;
             let Value::Lambda(params, body, closure_env) = &args[0] else {
@@ -3060,11 +3113,30 @@ pub(super) fn call(
         "eieio-oref" | "slot-value" => {
             need_args(name, args, 2)?;
             let slot_name = args[1].as_symbol()?.to_string();
+            // GNU's eieio-oref also reads OClosure slots.
+            if oclosure_type_of(&args[0]).is_some() {
+                return super::call(
+                    interp,
+                    "emaxx--oclosure-slot",
+                    &[args[0].clone(), Value::Symbol(slot_name)],
+                    env,
+                );
+            }
             eieio_oref_dispatch(interp, env, &args[0], &slot_name)
         }
         "eieio-oset" => {
             need_args(name, args, 3)?;
             let slot_name = args[1].as_symbol()?.to_string();
+            // GNU's eieio-oset writes OClosure slots (setting-constant for
+            // slots not declared :mutable).
+            if oclosure_type_of(&args[0]).is_some() {
+                return super::call(
+                    interp,
+                    "emaxx--oclosure-set-slot",
+                    &[args[0].clone(), Value::Symbol(slot_name), args[2].clone()],
+                    env,
+                );
+            }
             eieio_oset_dispatch(interp, env, &args[0], &slot_name, args[2].clone())
         }
         "slot-makeunbound" => {
@@ -6358,6 +6430,77 @@ fn semantic_srecode_variable_tag(name: &str, value: Vec<Value>) -> Value {
     )
 }
 
+// GNU oclosure.el errors at compile time when a form setqs an oclosure
+// slot that is not declared :mutable ("Slot fst should not be mutated"),
+// including from lambdas nested in the oclosure body.
+fn check_oclosure_slot_mutation(interp: &Interpreter, form: &Value) -> Result<(), LispError> {
+    let Ok(items) = form.to_vec() else {
+        return Ok(());
+    };
+    if matches!(items.first(), Some(Value::Symbol(head)) if head == "quote") {
+        return Ok(());
+    }
+    if matches!(items.first(), Some(Value::Symbol(head)) if head == "oclosure-lambda")
+        && let Some(spec) = items.get(1)
+        && let Ok(spec_items) = spec.to_vec()
+        && let Some(type_name) = spec_items
+            .first()
+            .and_then(|value| value.as_symbol().ok().map(String::from))
+    {
+        let collect = |property: &str| -> Vec<String> {
+            let mut names = Vec::new();
+            let mut current = Some(type_name.clone());
+            while let Some(current_type) = current {
+                names.extend(
+                    interp
+                        .get_symbol_property(&current_type, property)
+                        .and_then(|value| value.to_vec().ok())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|value| value.as_symbol().ok().map(String::from)),
+                );
+                current = interp
+                    .get_symbol_property(&current_type, "emaxx-oclosure-parent")
+                    .and_then(|value| value.as_symbol().ok().map(String::from));
+            }
+            names
+        };
+        let mutable = collect("emaxx-oclosure-mutable-slots");
+        let immutable: Vec<String> = collect("emaxx-oclosure-slots")
+            .into_iter()
+            .filter(|slot| !mutable.contains(slot))
+            .collect();
+        for body_form in items.get(3..).unwrap_or(&[]) {
+            check_setq_of_slots(body_form, &immutable)?;
+        }
+    }
+    for sub in &items {
+        check_oclosure_slot_mutation(interp, sub)?;
+    }
+    Ok(())
+}
+
+fn check_setq_of_slots(form: &Value, immutable: &[String]) -> Result<(), LispError> {
+    let Ok(items) = form.to_vec() else {
+        return Ok(());
+    };
+    if matches!(items.first(), Some(Value::Symbol(head)) if head == "quote") {
+        return Ok(());
+    }
+    if matches!(items.first(), Some(Value::Symbol(head)) if head == "setq")
+        && let Some(Value::Symbol(target)) = items.get(1)
+        && immutable.iter().any(|slot| slot == target)
+    {
+        return Err(LispError::Signal(format!(
+            "Slot {target} should not be mutated"
+        )));
+    }
+    for sub in &items {
+        check_setq_of_slots(sub, immutable)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn oclosure_value_matches_type(
     interp: &Interpreter,
     value: &Value,
@@ -6366,6 +6509,10 @@ pub(crate) fn oclosure_value_matches_type(
     let Some(mut current) = oclosure_type_of(value) else {
         return false;
     };
+    // Every oclosure is an `oclosure' (the abstract root type).
+    if target == "oclosure" {
+        return true;
+    }
     loop {
         if current == target {
             return true;
