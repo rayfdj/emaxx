@@ -4287,7 +4287,7 @@ impl Interpreter {
         };
         let mut parent: Option<String> = None;
         let mut predicate: Option<String> = None;
-        let mut copiers: Vec<(String, Vec<String>)> = Vec::new();
+        let mut copiers: Vec<(String, Option<Vec<String>>)> = Vec::new();
         for option in &options {
             let Ok(parts) = option.to_vec() else { continue };
             match parts.first().and_then(|value| value.as_symbol().ok()) {
@@ -4311,22 +4311,36 @@ impl Interpreter {
                     else {
                         continue;
                     };
-                    let slots = parts
-                        .get(2)
-                        .and_then(|value| value.to_vec().ok())
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|value| value.as_symbol().ok().map(String::from))
-                        .collect();
-                    copiers.push((copier_name, slots));
+                    // No arglist -> GNU generates a KEYWORD copier over all
+                    // slots ((:copier NAME) -> (NAME obj &key fst snd ...)).
+                    let arglist =
+                        parts
+                            .get(2)
+                            .and_then(|value| value.to_vec().ok())
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(|value| value.as_symbol().ok().map(String::from))
+                                    .collect::<Vec<_>>()
+                            });
+                    copiers.push((copier_name, arglist));
                 }
                 _ => {}
             }
         }
-        // Slot names follow (docstrings are skipped); inherit parent slots.
+        // Slot names follow (docstrings are skipped); inherit parent slots
+        // and their mutability.
         let mut slots: Vec<String> = parent
             .as_ref()
             .and_then(|parent| self.get_symbol_property(parent, "emaxx-oclosure-slots"))
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|value| value.as_symbol().ok().map(String::from))
+            .collect();
+        let mut mutable_slots: Vec<String> = parent
+            .as_ref()
+            .and_then(|parent| self.get_symbol_property(parent, "emaxx-oclosure-mutable-slots"))
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .iter()
@@ -4340,6 +4354,14 @@ impl Interpreter {
                         && let Some(Value::Symbol(slot_name)) = parts.first()
                     {
                         slots.push(slot_name.clone());
+                        // (SLOT :mutable t) marks the slot settable.
+                        let mutable = parts.windows(2).any(|window| {
+                            matches!(&window[0], Value::Symbol(key) if key == ":mutable")
+                                && window[1].is_truthy()
+                        });
+                        if mutable {
+                            mutable_slots.push(slot_name.clone());
+                        }
                     }
                 }
                 _ => {}
@@ -4349,6 +4371,11 @@ impl Interpreter {
             &type_name,
             "emaxx-oclosure-slots",
             Value::list(slots.iter().map(|slot| Value::Symbol(slot.clone()))),
+        );
+        self.put_symbol_property(
+            &type_name,
+            "emaxx-oclosure-mutable-slots",
+            Value::list(mutable_slots.iter().map(|slot| Value::Symbol(slot.clone()))),
         );
         if let Some(parent) = &parent {
             self.put_symbol_property(
@@ -4366,19 +4393,47 @@ impl Interpreter {
         }
         for slot in &slots {
             defs.push_str(&format!(
-                "(defalias '{type_name}--{slot} (lambda (obj) (emaxx--oclosure-slot obj '{slot})))\n"
+                "(defalias '{type_name}--{slot} (lambda (obj) \"Access slot \\\"{slot}\\\" of OBJ of type `{type_name}'.\" (emaxx--oclosure-slot obj '{slot})))\n"
+            ));
+            // setf place for the accessor; emaxx--oclosure-set-slot enforces
+            // :mutable (setting-constant otherwise), like GNU's oclosure--set.
+            defs.push_str(&format!(
+                "(defalias '{type_name}--{slot}--emaxx-set (lambda (obj value) (emaxx--oclosure-set-slot obj '{slot} value)))\n\
+                 (put '{type_name}--{slot} 'emaxx-gv-setter '{type_name}--{slot}--emaxx-set)\n"
             ));
         }
         for (copier_name, copier_slots) in &copiers {
-            let params = copier_slots.join(" ");
-            let pairs = copier_slots
-                .iter()
-                .map(|slot| format!("(cons '{slot} {slot})"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            defs.push_str(&format!(
-                "(defalias '{copier_name} (lambda (obj {params}) (emaxx--oclosure-copy obj (list {pairs}))))\n"
-            ));
+            match copier_slots {
+                Some(copier_slots) => {
+                    let params = copier_slots.join(" ");
+                    let pairs = copier_slots
+                        .iter()
+                        .map(|slot| format!("(cons '{slot} {slot})"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    defs.push_str(&format!(
+                        "(defalias '{copier_name} (lambda (obj {params}) \"Copier for objects of type `{type_name}'.\" (emaxx--oclosure-copy obj (list {pairs}))))\n"
+                    ));
+                }
+                None => {
+                    // GNU's default copier takes keyword arguments naming
+                    // the slots; only the PROVIDED keys are replaced.
+                    defs.push_str(&format!(
+                        "(defalias '{copier_name} \
+                           (lambda (obj &rest emaxx--kv) \
+                             \"Copier for objects of type `{type_name}'.\" \
+                             (let (emaxx--repl) \
+                               (while emaxx--kv \
+                                 (let ((emaxx--key (pop emaxx--kv))) \
+                                   (unless (keywordp emaxx--key) \
+                                     (error \"Keyword argument %s not one of nil\" emaxx--key)) \
+                                   (push (cons (intern (substring (symbol-name emaxx--key) 1)) \
+                                               (pop emaxx--kv)) \
+                                         emaxx--repl))) \
+                               (emaxx--oclosure-copy obj emaxx--repl))))\n"
+                    ));
+                }
+            }
         }
         for form in crate::lisp::reader::Reader::new(&defs).read_all()? {
             self.eval(&form, env)?;

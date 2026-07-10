@@ -340,6 +340,18 @@ impl Interpreter {
             return Ok(None);
         }
 
+        // GNU oclosure.el signals duplicate-slot errors at macroexpansion
+        // time (oclosure-tests macroexpands invalid forms and expects the
+        // error); the forms themselves stay native special forms.
+        if name == "oclosure-define" {
+            self.validate_oclosure_define_slots(args)?;
+            return Ok(None);
+        }
+        if name == "oclosure-lambda" {
+            validate_oclosure_lambda_slots(args)?;
+            return Ok(None);
+        }
+
         let mut attempted_autoload = false;
         let (params, body) = loop {
             if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
@@ -1731,6 +1743,83 @@ impl Interpreter {
             }
         }
         result
+    }
+}
+
+// GNU oclosure-lambda rejects duplicate slot INITIALIZERS at expansion
+// time ("Duplicate slot: fst").
+fn validate_oclosure_lambda_slots(args: &[Value]) -> Result<(), LispError> {
+    let Some(spec) = args.first() else {
+        return Ok(());
+    };
+    let Ok(spec_items) = spec.to_vec() else {
+        return Ok(());
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for binding in spec_items.get(1..).unwrap_or(&[]) {
+        let slot = match binding {
+            Value::Symbol(name) => Some(name.clone()),
+            other => other.to_vec().ok().and_then(|parts| {
+                parts
+                    .first()
+                    .and_then(|v| v.as_symbol().ok().map(String::from))
+            }),
+        };
+        let Some(slot) = slot else { continue };
+        if seen.contains(&slot) {
+            return Err(LispError::Signal(format!("Duplicate slot: {slot}")));
+        }
+        seen.push(slot);
+    }
+    Ok(())
+}
+
+impl Interpreter {
+    // GNU oclosure-define rejects duplicate slot NAMES — within the new
+    // slots and against inherited parent slots ("Duplicate slot name: a").
+    pub(super) fn validate_oclosure_define_slots(&self, args: &[Value]) -> Result<(), LispError> {
+        let Some(name_form) = args.first() else {
+            return Ok(());
+        };
+        let mut parent: Option<String> = None;
+        if let Ok(parts) = name_form.to_vec() {
+            for option in parts.get(1..).unwrap_or(&[]) {
+                if let Ok(option_parts) = option.to_vec()
+                    && matches!(option_parts.first(), Some(Value::Symbol(key)) if key == ":parent")
+                {
+                    parent = option_parts
+                        .get(1)
+                        .and_then(|v| v.as_symbol().ok().map(String::from));
+                }
+            }
+        }
+        let mut seen: Vec<String> = parent
+            .as_ref()
+            .and_then(|parent| self.get_symbol_property(parent, "emaxx-oclosure-slots"))
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|value| value.as_symbol().ok().map(String::from))
+            .collect();
+        for slot in args.get(1..).unwrap_or(&[]) {
+            let slot_name = match slot {
+                Value::Symbol(name) => Some(name.clone()),
+                Value::Cons(_, _) => slot.to_vec().ok().and_then(|parts| {
+                    parts
+                        .first()
+                        .and_then(|v| v.as_symbol().ok().map(String::from))
+                }),
+                _ => None,
+            };
+            let Some(slot_name) = slot_name else { continue };
+            if seen.contains(&slot_name) {
+                return Err(LispError::Signal(format!(
+                    "Duplicate slot name: {slot_name}"
+                )));
+            }
+            seen.push(slot_name);
+        }
+        Ok(())
     }
 }
 

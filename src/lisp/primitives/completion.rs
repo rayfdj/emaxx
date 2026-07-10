@@ -1021,6 +1021,11 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
             continue;
         }
+        // Internal closure markers (:closure-oclosure & friends) precede
+        // the interactive form in lowered bodies.
+        if matches!(form, Value::Symbol(marker) if marker.starts_with(":closure-")) {
+            continue;
+        }
         if is_declare_form(form) {
             continue;
         }

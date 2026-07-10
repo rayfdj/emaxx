@@ -781,18 +781,41 @@ impl Interpreter {
                     // look-alike slot frames from unifying.
                     let caller_len = env.len();
                     let mut call_env = env.clone();
-                    call_env.extend(closure_env.borrow().iter().cloned());
+                    // A captured frame whose IDENTITY is live in the caller
+                    // env is the same binding frame: the caller's version is
+                    // current (the capture is a snapshot), so skip the stale
+                    // copy and let the live frame be seen and mutated.
+                    let captured_frames = closure_env.borrow().clone();
+                    let mut frame_sources: Vec<usize> = Vec::with_capacity(captured_frames.len());
+                    for captured_frame in &captured_frames {
+                        let live_position = Self::frame_identity(captured_frame).and_then(|id| {
+                            call_env[..caller_len]
+                                .iter()
+                                .position(|frame| Self::frame_identity(frame) == Some(id))
+                        });
+                        match live_position {
+                            Some(position) => frame_sources.push(position),
+                            None => {
+                                call_env.push(captured_frame.clone());
+                                frame_sources.push(call_env.len() - 1);
+                            }
+                        }
+                    }
                     let captured_len = call_env.len();
                     call_env.push(frame);
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
                     call_env.truncate(captured_len);
-                    let captured: Vec<_> = call_env.drain(caller_len..).collect();
+                    let refreshed: Vec<_> = frame_sources
+                        .iter()
+                        .map(|&position| call_env[position].clone())
+                        .collect();
+                    call_env.truncate(caller_len);
                     env.clear();
                     env.extend(call_env);
                     {
                         let mut stored = closure_env.borrow_mut();
                         stored.clear();
-                        stored.extend(captured);
+                        stored.extend(refreshed);
                     }
                     result
                 } else if body_has_marker(body, ":closure-isolated-current-env") {

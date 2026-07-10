@@ -964,6 +964,10 @@ impl Interpreter {
                 "kqueue".into(),
                 "lcms2".into(),
                 "native-compile".into(),
+                // GNU preloads oclosure.el (loadup.el); emaxx implements
+                // oclosures natively, so (require 'oclosure) must not load
+                // the GNU file over them.
+                "oclosure".into(),
                 "threads".into(),
             ],
             after_load_forms: Vec::new(),

@@ -60,6 +60,7 @@ pub(crate) fn collect_interactive_args(
     // body and instead COMPOSE the advised function's spec.
     let oclosure_spec = if crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
         && interp.has_lisp_function("oclosure-interactive-form")
+        && interactive_spec_form(&func).is_none()
     {
         interp
             .call_function_value(

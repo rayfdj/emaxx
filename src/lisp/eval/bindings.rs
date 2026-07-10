@@ -200,6 +200,8 @@ impl Interpreter {
             // GNU xdisp.c defvar; simple.el reads it at load time
             // ((when (eq pre-redisplay-function #'ignore) ...)).
             "pre-redisplay-function" => Some(Value::Symbol("ignore".into())),
+            // GNU startup.el defvar; bytecomp reads it.
+            "startup-redirect-eln-cache" => Some(Value::Nil),
             // GNU keyboard.c keymaps; simple.el define-keys them at load
             // time (event-apply-*-modifier bindings).
             "function-key-map" | "key-translation-map" | "input-decode-map"
