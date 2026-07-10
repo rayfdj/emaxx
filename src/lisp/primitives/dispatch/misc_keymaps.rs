@@ -9425,33 +9425,59 @@ fn byte_compile_file(
         }
         return Ok(Value::Symbol("no-byte-compile".into()));
     }
-    if !source_has_lexical_binding_cookie(&source) {
+    // GNU byte-compile-file binds `byte-compile-current-file' to the source
+    // and `current-load-list' to (nil) so `macroexp-file-name' resolves to
+    // the file being compiled rather than the file doing the compiling.
+    let previous_load_list = interp
+        .lookup_var("current-load-list", env)
+        .unwrap_or(Value::Nil);
+    let previous_current_file = interp
+        .lookup_var("byte-compile-current-file", env)
+        .unwrap_or(Value::Nil);
+    interp.set_global_binding("current-load-list", Value::list([Value::Nil]));
+    interp.set_global_binding(
+        "byte-compile-current-file",
+        Value::String(source_path.clone()),
+    );
+    let result = byte_compile_file_body(interp, env, &source, &source_path);
+    interp.set_global_binding("current-load-list", previous_load_list);
+    interp.set_global_binding("byte-compile-current-file", previous_current_file);
+    result
+}
+
+fn byte_compile_file_body(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    source: &str,
+    source_path: &str,
+) -> Result<Value, LispError> {
+    if !source_has_lexical_binding_cookie(source) {
         byte_compile_log_warning(
             interp,
             env,
             "Warning: file has no `lexical-binding' directive on its first line",
         )?;
     }
-    if let Some(warning) = crate::lisp::byte_compile_unescaped_char_literal_warning(&source) {
+    if let Some(warning) = crate::lisp::byte_compile_unescaped_char_literal_warning(source) {
         byte_compile_log_warning(interp, env, &warning)?;
     }
 
-    let forms = crate::lisp::reader::Reader::new(&source).read_all()?;
+    let forms = crate::lisp::reader::Reader::new(source).read_all()?;
     let mut diagnostics = ByteCompileDiagnostics {
-        docstring_max_width: byte_compile_source_docstring_max_width(&source),
+        docstring_max_width: byte_compile_source_docstring_max_width(source),
         ..Default::default()
     };
     for form in &forms {
         diagnostics.scan(interp, form, false);
     }
     byte_compile_log_diagnostics(interp, env, &[], diagnostics)?;
-    byte_compile_log_source_attribute_warnings(interp, env, &source)?;
+    byte_compile_log_source_attribute_warnings(interp, env, source)?;
 
-    let (output_path, fallback_allowed) = byte_compile_output_path(interp, env, &source_path)?;
-    let compiled_stub = byte_compile_stub_contents(interp, env, &source_path, &forms)?;
+    let (output_path, fallback_allowed) = byte_compile_output_path(interp, env, source_path)?;
+    let compiled_stub = byte_compile_stub_contents(interp, env, source_path, &forms)?;
     if let Err(error) = fs::write(&output_path, compiled_stub.as_bytes()) {
         if fallback_allowed && byte_compile_output_fallback_allowed(&error) {
-            let fallback_path = byte_compile_fallback_output_path(&source_path);
+            let fallback_path = byte_compile_fallback_output_path(source_path);
             fs::write(&fallback_path, compiled_stub.as_bytes())
                 .map_err(|error| byte_compile_output_error(&fallback_path, &error))?;
             return Ok(Value::String(fallback_path));

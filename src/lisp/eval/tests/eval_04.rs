@@ -2301,7 +2301,9 @@ fn forward_and_backward_sexp_move_over_balanced_lists() {
 }
 
 #[test]
-fn syntax_ppss_returns_parse_state_without_moving_point() {
+fn syntax_ppss_moves_point_to_pos_like_gnu() {
+    // GNU syntax-ppss is NOT excursion-saving: point ends at POS
+    // (beginning-of-defun-comments depends on this).
     assert_eq!(
         eval_str(
             r#"
@@ -2313,7 +2315,7 @@ fn syntax_ppss_returns_parse_state_without_moving_point() {
                     (list (car state) after)))
                 "#
         ),
-        Value::list([Value::Integer(1), Value::Integer(14)])
+        Value::list([Value::Integer(1), Value::Integer(8)])
     );
 }
 
@@ -2692,18 +2694,27 @@ fn skip_syntax_backward_supports_negated_word_class() {
 }
 
 #[test]
-fn skip_syntax_forward_uses_active_table_punctuation_class() {
+fn skip_syntax_forward_symbol_class_covers_standard_table_equals() {
+    // GNU's standard syntax table classes `=' as a symbol constituent, so
+    // the punctuation class does not move but the symbol class does.
     assert_eq!(
         eval_str(
             r#"
                 (with-temp-buffer
                   (insert "= a")
                   (goto-char (point-min))
-                  (skip-syntax-forward ".")
-                  (point))
+                  (list (skip-syntax-forward ".")
+                        (point)
+                        (skip-syntax-forward "_")
+                        (point)))
                 "#
         ),
-        Value::Integer(2)
+        Value::list([
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(2),
+        ])
     );
 }
 

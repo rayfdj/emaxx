@@ -739,6 +739,13 @@ pub(super) fn call(
             // GNU constrains bol motion to the current field (fields are
             // rare; skip the work when the buffer has none).
             let old_pos = interp.buffer.point();
+            let n = args
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1);
+            if n != 1 {
+                interp.buffer.forward_line((n - 1) as isize);
+            }
             interp.buffer.beginning_of_line();
             if buffer_has_field_property(interp) {
                 let new_pos = interp.buffer.point();
@@ -785,6 +792,15 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "end-of-line" => {
+            // (end-of-line N): end of the Nth line counting from the
+            // current one (0 = previous line's end).
+            let n = args
+                .first()
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1);
+            if n != 1 {
+                interp.buffer.forward_line((n - 1) as isize);
+            }
             interp.buffer.end_of_line();
             Ok(Value::Nil)
         }
@@ -842,7 +858,9 @@ pub(super) fn call(
             interp.buffer.goto_char(pos);
             Ok(Value::Nil)
         }
-        "forward-paragraph" => {
+        // The blank-line fallback only runs when the paragraphs.el port
+        // is absent (file-less unit-test interpreters).
+        "forward-paragraph" if !interp.has_lisp_function("forward-paragraph") => {
             need_arg_range(name, args, 0, 1)?;
             let point = interp.buffer.point();
             let suffix = interp
@@ -1093,7 +1111,9 @@ pub(super) fn call(
             need_arg_range(name, args, 0, 1)?;
             syntax::down_list_impl(interp, args.first(), env)
         }
-        "up-list" => {
+        // File-less fallback; GNU lisp.el's port (simple_compat) handles
+        // escape-strings/no-syntax-crossing when loaded.
+        "up-list" if !interp.has_lisp_function("up-list") => {
             need_arg_range(name, args, 0, 1)?;
             syntax::up_list_impl(interp, args.first(), env)
         }
@@ -1109,30 +1129,29 @@ pub(super) fn call(
             if name == "backward-sexp" {
                 count = -count;
             }
-            match syntax::scan_sexps_position(interp, interp.buffer.point(), count) {
-                Some(position) => {
-                    interp.buffer.goto_char(position);
-                    Ok(Value::Nil)
-                }
-                // GNU: (goto-char (or (scan-sexps ...) (buffer-end arg)))
-                // — with nothing but ignorable text left, move to the
-                // buffer end instead of signaling.
-                None if count > 0
-                    && syntax::rest_of_buffer_is_ignorable(interp, interp.buffer.point()) =>
-                {
-                    let max = interp.buffer.point_max();
-                    interp.buffer.goto_char(max);
-                    Ok(Value::Nil)
-                }
-                None if count < 0
-                    && syntax::buffer_before_is_ignorable(interp, interp.buffer.point()) =>
-                {
-                    let min = interp.buffer.point_min();
-                    interp.buffer.goto_char(min);
-                    Ok(Value::Nil)
-                }
-                None => Err(scan_error()),
+            // GNU forward-sexp funcalls `forward-sexp-function' when set.
+            if let Some(function) = interp
+                .lookup_var("forward-sexp-function", env)
+                .filter(|value| value.is_truthy())
+            {
+                interp.call_function_value(function, None, &[Value::Integer(count)], env)?;
+                return Ok(Value::Nil);
             }
+            // GNU forward-sexp-default-function:
+            // (goto-char (or (scan-sexps (point) arg) (buffer-end arg)))
+            // (if (< arg 0) (backward-prefix-chars))
+            let from = interp.buffer.point();
+            let target = match syntax::scan_sexps_position_for_scan_sexps(interp, env, from, count)?
+            {
+                Some(position) => position,
+                None if count < 0 => interp.buffer.point_min(),
+                None => interp.buffer.point_max(),
+            };
+            interp.buffer.goto_char(target);
+            if count < 0 {
+                syntax::backward_prefix_chars(interp)?;
+            }
+            Ok(Value::Nil)
         }
         "mark-sexp" => {
             need_arg_range(name, args, 0, 1)?;
@@ -1141,8 +1160,8 @@ pub(super) fn call(
                 .map(Value::as_integer)
                 .transpose()?
                 .unwrap_or(1);
-            let Some(position) = syntax::scan_sexps_position(interp, interp.buffer.point(), count)
-            else {
+            let point = interp.buffer.point();
+            let Some(position) = syntax::scan_sexps_position(interp, env, point, count) else {
                 return Err(scan_error());
             };
             interp.buffer.set_mark(position);
@@ -1160,7 +1179,7 @@ pub(super) fn call(
             let from = position_from_value(interp, &args[0])?;
             let count = args[1].as_integer()?;
             Ok(
-                syntax::scan_sexps_position_for_scan_sexps(interp, from, count)?
+                syntax::scan_sexps_position_for_scan_sexps(interp, env, from, count)?
                     .map(|position| Value::Integer(position as i64))
                     .unwrap_or(Value::Nil),
             )
@@ -1173,7 +1192,8 @@ pub(super) fn call(
                 Some(value) if !value.is_nil() => position_from_value(interp, value)?,
                 _ => interp.buffer.point(),
             };
-            let saved = interp.buffer.point();
+            // GNU syntax-ppss is NOT excursion-saving: point ends up at
+            // POS (beginning-of-defun-comments depends on it).
             let state = syntax::parse_forward(
                 interp,
                 interp.buffer.point_min(),
@@ -1184,7 +1204,7 @@ pub(super) fn call(
                 syntax::CommentStop::No,
                 env,
             );
-            interp.buffer.goto_char(saved);
+            interp.buffer.goto_char(to);
             state
         }
         "ppss-depth" => {

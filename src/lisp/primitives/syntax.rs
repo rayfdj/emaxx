@@ -78,6 +78,9 @@ struct CommentState {
 struct StringState {
     quote: char,
     start_pos: usize,
+    // Generic string fence (syntax class `|'): closes at the next
+    // fence-classed character, and nth 3 reports `t' like GNU.
+    fence: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,15 +238,33 @@ pub(super) fn char_table_public_value(interp: &Interpreter, table_id: u64, value
     value
 }
 
+// GNU standard-syntax-table classes for characters a syntax table leaves
+// unset: `$'/`%' are word constituents, `&*+-/<=>|_' symbol constituents,
+// alongside the usual delimiter/escape assignments.
 fn default_syntax_entry(ch: char) -> SyntaxEntry {
     let class = match ch {
         ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}' => SyntaxClass::Whitespace,
-        '_' => SyntaxClass::Symbol,
+        '_' | '&' | '*' | '+' | '-' | '/' | '<' | '=' | '>' | '|' => SyntaxClass::Symbol,
+        '$' | '%' => SyntaxClass::Word,
+        '"' => SyntaxClass::StringQuote,
+        '\\' => SyntaxClass::Escape,
+        '(' | '[' | '{' => SyntaxClass::OpenParen,
+        ')' | ']' | '}' => SyntaxClass::CloseParen,
         ch if ch.is_alphanumeric() => SyntaxClass::Word,
         _ => SyntaxClass::Punctuation,
     };
+    let matching = match ch {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        ')' => Some('('),
+        ']' => Some('['),
+        '}' => Some('{'),
+        _ => None,
+    };
     SyntaxEntry {
         class,
+        matching,
         ..SyntaxEntry::default()
     }
 }
@@ -636,7 +657,13 @@ fn encode_parse_state(state: &ParseState) -> Value {
             .unwrap_or(Value::Nil),
         state
             .string
-            .map(|string| Value::Integer(string.quote as i64))
+            .map(|string| {
+                if string.fence {
+                    Value::T
+                } else {
+                    Value::Integer(string.quote as i64)
+                }
+            })
             .unwrap_or(Value::Nil),
         state.comment.map(comment_state_value).unwrap_or(Value::Nil),
         Value::Nil,
@@ -794,306 +821,584 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             .unwrap_or(1)
             .max(1) as usize;
         if let Some(quote) = quote {
-            state.string = Some(StringState { quote, start_pos });
+            state.string = Some(StringState {
+                quote,
+                start_pos,
+                fence: false,
+            });
         }
     }
     state
 }
 
-pub(super) fn scan_sexps_position(interp: &Interpreter, from: usize, count: i64) -> Option<usize> {
-    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
-    let min = interp.buffer.point_min();
-    let max = interp.buffer.point_max();
-    let mut pos = from.clamp(min, max);
-    if count >= 0 {
-        for _ in 0..count {
-            pos = scan_one_sexp_forward(interp, &chars, pos, max)?;
-        }
-    } else {
-        for _ in 0..(-count) {
-            pos = scan_one_sexp_backward(interp, &chars, pos, min)?;
-        }
-    }
-    Some(pos)
-}
+// ── GNU syntax.c scan_lists port ──
 
-pub(super) fn scan_sexps_position_for_scan_sexps(
-    interp: &Interpreter,
-    from: usize,
-    count: i64,
-) -> Result<Option<usize>, LispError> {
-    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
-    let min = interp.buffer.point_min();
-    let max = interp.buffer.point_max();
-    let mut pos = from.clamp(min, max);
-    if count >= 0 {
-        for _ in 0..count {
-            match scan_one_sexp_forward_for_scan_sexps(interp, &chars, pos, max)? {
-                Some(next) => pos = next,
-                None => return Ok(None),
-            }
-        }
-    } else {
-        for _ in 0..(-count) {
-            match scan_one_sexp_backward_for_scan_sexps(interp, &chars, pos, min)? {
-                Some(next) => pos = next,
-                None => return Ok(None),
-            }
-        }
-    }
-    Ok(Some(pos))
-}
-
-fn scan_sexps_premature_error(position: usize) -> LispError {
-    let start = position.saturating_sub(1).max(1);
+fn scan_signal(message: &str, last_good: i64, from: i64) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("scan-error".into()),
-        Value::String("Containing expression ends prematurely".into()),
-        Value::Integer(start as i64),
-        Value::Integer(position as i64),
+        Value::String(message.into()),
+        Value::Integer(last_good),
+        Value::Integer(from),
     ]))
 }
 
-fn scan_one_sexp_forward_for_scan_sexps(
-    interp: &Interpreter,
-    chars: &[char],
-    from: usize,
-    max: usize,
-) -> Result<Option<usize>, LispError> {
-    let end = max.saturating_sub(1).min(chars.len());
-    let idx = skip_ignored_forward(interp, chars, from.saturating_sub(1), end);
-    if idx >= end {
-        return Ok(None);
+fn scan_char(chars: &[char], pos: i64) -> char {
+    if pos < 1 {
+        return '\0';
     }
-    let table_id = interp.current_syntax_table_id();
-    let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
-    if entry.class != SyntaxClass::StringQuote && is_lisp_expression_prefix(chars[idx]) {
-        return scan_one_sexp_forward_for_scan_sexps(interp, chars, idx + 2, max);
+    chars.get((pos - 1) as usize).copied().unwrap_or('\0')
+}
+
+fn scan_entry(interp: &Interpreter, table_id: u64, chars: &[char], pos: i64) -> SyntaxEntry {
+    if pos < 1 {
+        return SyntaxEntry::default();
     }
-    match entry.class {
-        SyntaxClass::CloseParen => Err(scan_sexps_premature_error(idx + 2)),
-        SyntaxClass::OpenParen => scan_balanced_forward_for_scan_sexps(interp, chars, idx, end),
-        _ => Ok(scan_one_sexp_forward(interp, chars, from, max)),
+    match chars.get((pos - 1) as usize) {
+        Some(&ch) => syntax_entry_at_buffer_position(interp, table_id, ch, pos as usize),
+        None => SyntaxEntry::default(),
     }
 }
 
-fn scan_balanced_forward_for_scan_sexps(
+// GNU SYNTAX_FLAGS_COMMENT_STYLE over a one- or two-char sequence; 2 is
+// ST_COMMENT_STYLE (generic comment fences).
+fn scan_comment_style(first: &SyntaxEntry, second: Option<&SyntaxEntry>) -> u8 {
+    if first.style_b || second.is_some_and(|entry| entry.style_b) {
+        1
+    } else {
+        0
+    }
+}
+
+// GNU syntax.c char_quoted: whether the char at POS is preceded by an odd
+// number of escape/char-quote characters.
+fn scan_char_quoted(
     interp: &Interpreter,
+    table_id: u64,
     chars: &[char],
-    open_idx: usize,
-    end: usize,
-) -> Result<Option<usize>, LispError> {
-    let table_id = interp.current_syntax_table_id();
-    let open_entry =
-        syntax_entry_at_buffer_position(interp, table_id, chars[open_idx], open_idx + 1);
-    let Some(first_close) = matching_close_char(chars[open_idx], open_entry) else {
-        return Ok(None);
-    };
-    let mut stack = vec![first_close];
-    let mut saw_mismatch = false;
-    let ignore_comments = interp
-        .symbol_value_cell("parse-sexp-ignore-comments")
-        .map(|value| value.is_truthy())
-        .unwrap_or(false);
-    let mut idx = open_idx + 1;
-    while idx < end {
-        if ignore_comments && let Some(start) = comment_start_at(interp, table_id, chars, idx) {
-            let (next, _closed) =
-                skip_comment_with_status(interp, table_id, chars, idx, start, false);
-            if next > idx {
-                idx = next;
+    pos: i64,
+    beg: i64,
+) -> bool {
+    let mut quoted = false;
+    let mut cursor = pos;
+    while cursor > beg {
+        cursor -= 1;
+        let entry = scan_entry(interp, table_id, chars, cursor);
+        if !matches!(entry.class, SyntaxClass::Escape | SyntaxClass::CharQuote) {
+            break;
+        }
+        quoted = !quoted;
+    }
+    quoted
+}
+
+// GNU syntax.c forw_comment: FROM is just past the comment starter.  On
+// success returns (true, position of the last comment-ender char); when the
+// comment never ends returns (false, STOP).
+fn scan_forw_comment(
+    interp: &Interpreter,
+    table_id: u64,
+    chars: &[char],
+    mut from: i64,
+    stop: i64,
+    comnested: bool,
+    style: u8,
+) -> (bool, i64) {
+    let mut nesting: i64 = if comnested { 1 } else { -1 };
+    loop {
+        if from >= stop {
+            return (false, stop);
+        }
+        let entry = scan_entry(interp, table_id, chars, from);
+        let code = entry.class;
+        if code == SyntaxClass::CommentEnd && scan_comment_style(&entry, None) == style {
+            let ends = if entry.nested {
+                if nesting > 0 {
+                    nesting -= 1;
+                    nesting == 0
+                } else {
+                    false
+                }
+            } else {
+                nesting < 0
+            };
+            if ends {
+                return (true, from);
+            }
+        }
+        if code == SyntaxClass::GenericCommentDelimiter && style == 2 {
+            return (true, from);
+        }
+        if nesting > 0
+            && code == SyntaxClass::CommentStart
+            && entry.nested
+            && scan_comment_style(&entry, None) == style
+        {
+            nesting += 1;
+        }
+        from += 1;
+        // Two-char comment ender.
+        if from < stop && entry.end_first {
+            let second = scan_entry(interp, table_id, chars, from);
+            if second.end_second
+                && scan_comment_style(&entry, Some(&second)) == style
+                && (if entry.nested || second.nested {
+                    nesting > 0
+                } else {
+                    nesting < 0
+                })
+            {
+                nesting -= 1;
+                if nesting <= 0 {
+                    return (true, from);
+                }
+                from += 1;
                 continue;
             }
         }
-        let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
-        match entry.class {
-            SyntaxClass::StringQuote => {
-                let Some(next) = scan_string_forward(chars, idx, end) else {
-                    return Ok(None);
-                };
-                idx = next;
+        // Two-char nested comment starter inside a nestable comment.
+        if nesting > 0 && from < stop && entry.start_first {
+            let second = scan_entry(interp, table_id, chars, from);
+            if second.start_second
+                && scan_comment_style(&entry, Some(&second)) == style
+                && (entry.nested || second.nested)
+            {
+                from += 1;
+                nesting += 1;
             }
-            SyntaxClass::OpenParen => {
-                if let Some(close) = matching_close_char(chars[idx], entry) {
-                    stack.push(close);
-                }
-            }
-            SyntaxClass::CloseParen => {
-                let Some(expected) = stack.last().copied() else {
-                    return Err(scan_sexps_premature_error(idx + 2));
-                };
-                let Some(actual) = matching_open_char(chars[idx], entry).map(|_| chars[idx]) else {
-                    return Err(scan_sexps_premature_error(idx + 2));
-                };
-                if expected == actual {
-                    stack.pop();
-                    if stack.is_empty() {
-                        return if saw_mismatch {
-                            Err(scan_sexps_premature_error(idx + 2))
-                        } else {
-                            Ok(Some(idx + 2))
-                        };
-                    }
-                } else {
-                    saw_mismatch = true;
-                }
-            }
-            _ => {}
         }
-        idx += 1;
-    }
-    Ok(None)
-}
-
-fn scan_one_sexp_backward_for_scan_sexps(
-    interp: &Interpreter,
-    chars: &[char],
-    from: usize,
-    min: usize,
-) -> Result<Option<usize>, LispError> {
-    let mut idx = from.saturating_sub(2);
-    let min_idx = min.saturating_sub(1);
-    while idx >= min_idx && chars.get(idx).is_some_and(|ch| ch.is_whitespace()) {
-        if idx == 0 {
-            return Ok(None);
-        }
-        idx -= 1;
-    }
-    let table_id = interp.current_syntax_table_id();
-    let Some(&ch) = chars.get(idx) else {
-        return Ok(None);
-    };
-    let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
-    match entry.class {
-        SyntaxClass::OpenParen => Err(scan_sexps_premature_error(idx + 1)),
-        _ => Ok(scan_one_sexp_backward(interp, chars, from, min)),
     }
 }
 
-// Skip whitespace, and — when `parse-sexp-ignore-comments' is set, as
-// lisp modes do — comments, before sexp scanning (GNU scan_sexps_forward).
-fn skip_ignored_forward(interp: &Interpreter, chars: &[char], mut idx: usize, end: usize) -> usize {
-    let ignore_comments = interp
-        .symbol_value_cell("parse-sexp-ignore-comments")
-        .map(|value| value.is_truthy())
-        .unwrap_or(false);
-    let table_id = interp.current_syntax_table_id();
-    loop {
-        while idx < end && chars[idx].is_whitespace() {
-            idx += 1;
-        }
-        if !ignore_comments || idx >= end {
-            return idx;
-        }
-        let Some(start) = comment_start_at(interp, table_id, chars, idx) else {
-            return idx;
-        };
-        let (next, _closed) = skip_comment_with_status(interp, table_id, chars, idx, start, false);
-        if next <= idx {
-            return idx;
-        }
-        idx = next.min(chars.len());
-    }
-}
-
-// Whether [from, buffer end) holds only whitespace and (ignored) comments;
-// GNU forward-sexp then moves to the buffer end instead of signaling.
-pub(super) fn rest_of_buffer_is_ignorable(interp: &Interpreter, from: usize) -> bool {
-    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
-    let end = interp.buffer.point_max().saturating_sub(1).min(chars.len());
-    skip_ignored_forward(interp, &chars, from.saturating_sub(1), end) >= end
-}
-
-// Whether [buffer start, to) holds only whitespace and (ignored) comments.
-pub(super) fn buffer_before_is_ignorable(interp: &Interpreter, to: usize) -> bool {
-    let chars = interp.buffer.buffer_string().chars().collect::<Vec<_>>();
-    let start = interp.buffer.point_min().saturating_sub(1);
-    let end = to.saturating_sub(1).min(chars.len());
-    skip_ignored_forward(interp, &chars, start, end) >= end
-}
-
-fn scan_one_sexp_forward(
-    interp: &Interpreter,
-    chars: &[char],
-    from: usize,
-    max: usize,
-) -> Option<usize> {
-    let end = max.saturating_sub(1).min(chars.len());
-    let mut idx = skip_ignored_forward(interp, chars, from.saturating_sub(1), end);
-    if idx >= end {
+// GNU syntax.c back_comment, answered through the parse-partial-sexp
+// engine: FROM sits on a comment-ender char; when that position really is
+// inside a comment, return the position of the comment starter.
+fn scan_back_comment(interp: &mut Interpreter, env: &Env, from: i64) -> Option<i64> {
+    let begv = interp.buffer.point_min() as i64;
+    if from <= begv {
         return None;
     }
-    let table_id = interp.current_syntax_table_id();
-    let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
-    if entry.class != SyntaxClass::StringQuote && is_lisp_expression_prefix(chars[idx]) {
-        return scan_one_sexp_forward(interp, chars, idx + 2, max);
+    let saved_point = interp.buffer.point();
+    let state = parse_forward(
+        interp,
+        begv as usize,
+        from as usize,
+        None,
+        false,
+        None,
+        CommentStop::No,
+        env,
+    );
+    interp.buffer.goto_char(saved_point);
+    let items = state.ok()?.to_vec().ok()?;
+    let in_string = items.get(3).is_some_and(|value| value.is_truthy());
+    let in_comment = items.get(4).is_some_and(|value| value.is_truthy());
+    if in_string || !in_comment {
+        return None;
     }
-    match entry.class {
-        SyntaxClass::OpenParen => scan_balanced_forward(interp, chars, idx, end).map(|idx| idx + 1),
-        SyntaxClass::StringQuote => scan_string_forward(chars, idx, end).map(|idx| idx + 2),
-        SyntaxClass::CloseParen => None,
-        _ => {
-            while idx < end
-                && !chars[idx].is_whitespace()
-                && !matches!(
-                    syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1).class,
-                    SyntaxClass::OpenParen | SyntaxClass::CloseParen | SyntaxClass::StringQuote
-                )
-            {
-                idx += 1;
-            }
-            Some(idx + 1)
-        }
+    items.get(8).and_then(|value| value.as_integer().ok())
+}
+
+// GNU scan primitives propertize lazily via UPDATE_SYNTAX_TABLE; run
+// `syntax-propertize' up front when the buffer defines one.
+pub(super) fn ensure_syntax_propertized(interp: &mut Interpreter, env: &mut Env) {
+    if interp
+        .lookup_var("syntax-propertize-function", env)
+        .is_some_and(|value| value.is_truthy())
+        && interp.has_lisp_function("syntax-propertize")
+    {
+        let max = interp.buffer.point_max();
+        let _ = interp.call_function_value(
+            Value::Symbol("syntax-propertize".into()),
+            Some("syntax-propertize"),
+            &[Value::Integer(max as i64)],
+            env,
+        );
     }
 }
 
-fn is_lisp_expression_prefix(ch: char) -> bool {
-    matches!(ch, '\'' | '`' | ',')
-}
-
-fn scan_balanced_forward(
-    interp: &Interpreter,
-    chars: &[char],
-    open_idx: usize,
-    end: usize,
-) -> Option<usize> {
+// Verbatim port of GNU syntax.c scan_lists: returns the position past the
+// COUNTth object, nil when the scan ran off the buffer end at depth 0, and
+// signals scan-error with GNU's obstacle positions otherwise.
+pub(super) fn scan_lists_gnu(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    from0: i64,
+    count0: i64,
+    depth0: i64,
+    sexpflag: bool,
+) -> Result<Option<usize>, LispError> {
+    ensure_syntax_propertized(interp, env);
+    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
-    let open_entry =
-        syntax_entry_at_buffer_position(interp, table_id, chars[open_idx], open_idx + 1);
-    let mut stack = vec![matching_close_char(chars[open_idx], open_entry)?];
+    let begv = interp.buffer.point_min() as i64;
+    let zv = interp.buffer.point_max() as i64;
     let ignore_comments = interp
-        .symbol_value_cell("parse-sexp-ignore-comments")
-        .map(|value| value.is_truthy())
-        .unwrap_or(false);
-    let mut idx = open_idx + 1;
-    while idx < end {
-        if ignore_comments && let Some(start) = comment_start_at(interp, table_id, chars, idx) {
-            let (next, _closed) =
-                skip_comment_with_status(interp, table_id, chars, idx, start, false);
-            if next > idx {
-                idx = next;
+        .lookup_var("parse-sexp-ignore-comments", env)
+        .is_some_and(|value| value.is_truthy());
+
+    let mut count = count0;
+    let mut depth = depth0;
+    let min_depth = depth.min(0);
+    let mut last_good = from0;
+    let mut from = from0.clamp(begv, zv);
+    let mut mathexit = false;
+
+    while count > 0 {
+        let stop = zv;
+        let mut done = false;
+        'forward: while from < stop {
+            let c = scan_char(&chars, from);
+            let entry = scan_entry(interp, table_id, &chars, from);
+            let mut code = entry.class;
+            let mut comstyle = scan_comment_style(&entry, None);
+            let mut comnested = entry.nested;
+            if depth == min_depth {
+                last_good = from;
+            }
+            from += 1;
+            if from < stop && entry.start_first && ignore_comments {
+                let second = scan_entry(interp, table_id, &chars, from);
+                if second.start_second {
+                    code = SyntaxClass::CommentStart;
+                    comstyle = scan_comment_style(&second, Some(&entry));
+                    comnested = comnested || second.nested;
+                    from += 1;
+                }
+            }
+            if entry.prefix {
                 continue;
             }
-        }
-        let entry = syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
-        match entry.class {
-            SyntaxClass::StringQuote => idx = scan_string_forward(chars, idx, end)?,
-            SyntaxClass::OpenParen => stack.push(matching_close_char(chars[idx], entry)?),
-            SyntaxClass::CloseParen => {
-                let expected = stack.pop()?;
-                let actual = matching_open_char(chars[idx], entry).map(|_| chars[idx])?;
-                if expected != actual {
-                    return None;
+            match code {
+                SyntaxClass::Escape
+                | SyntaxClass::CharQuote
+                | SyntaxClass::Word
+                | SyntaxClass::Symbol => {
+                    if matches!(code, SyntaxClass::Escape | SyntaxClass::CharQuote) {
+                        if from == stop {
+                            return Err(scan_signal("Unbalanced parentheses", last_good, from));
+                        }
+                        // The escaped char counts as a word constituent.
+                        from += 1;
+                    }
+                    if depth != 0 || !sexpflag {
+                        continue;
+                    }
+                    // This word counts as a sexp; stop at its end.
+                    while from < stop {
+                        let inner = scan_entry(interp, table_id, &chars, from);
+                        match inner.class {
+                            SyntaxClass::CharQuote | SyntaxClass::Escape => {
+                                from += 1;
+                                if from == stop {
+                                    return Err(scan_signal(
+                                        "Unbalanced parentheses",
+                                        last_good,
+                                        from,
+                                    ));
+                                }
+                            }
+                            SyntaxClass::Word | SyntaxClass::Symbol | SyntaxClass::Quote => {}
+                            _ => break,
+                        }
+                        from += 1;
+                    }
+                    done = true;
+                    break 'forward;
                 }
-                if stack.is_empty() {
-                    return Some(idx + 1);
+                SyntaxClass::GenericCommentDelimiter | SyntaxClass::CommentStart => {
+                    if code == SyntaxClass::GenericCommentDelimiter {
+                        comstyle = 2;
+                    }
+                    if !ignore_comments {
+                        continue;
+                    }
+                    let (found, out) = scan_forw_comment(
+                        interp, table_id, &chars, from, stop, comnested, comstyle,
+                    );
+                    from = out;
+                    if !found {
+                        // Unterminated comment: end of sexp at depth 0
+                        // (GNU returns the position), unbalanced otherwise.
+                        if depth == 0 {
+                            done = true;
+                            break 'forward;
+                        }
+                        return Err(scan_signal("Unbalanced parentheses", last_good, from));
+                    }
+                    from += 1;
+                }
+                SyntaxClass::PairedDelimiter if sexpflag => {
+                    if from != stop && c == scan_char(&chars, from) {
+                        from += 1;
+                    }
+                    if mathexit {
+                        mathexit = false;
+                        depth -= 1;
+                        if depth == 0 {
+                            done = true;
+                            break 'forward;
+                        }
+                        if depth < min_depth {
+                            return Err(scan_signal(
+                                "Containing expression ends prematurely",
+                                last_good,
+                                from,
+                            ));
+                        }
+                    } else {
+                        mathexit = true;
+                        depth += 1;
+                        if depth == 0 {
+                            done = true;
+                            break 'forward;
+                        }
+                    }
+                }
+                SyntaxClass::OpenParen => {
+                    depth += 1;
+                    if depth == 0 {
+                        done = true;
+                        break 'forward;
+                    }
+                }
+                SyntaxClass::CloseParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        done = true;
+                        break 'forward;
+                    }
+                    if depth < min_depth {
+                        return Err(scan_signal(
+                            "Containing expression ends prematurely",
+                            last_good,
+                            from,
+                        ));
+                    }
+                }
+                SyntaxClass::StringQuote | SyntaxClass::GenericStringDelimiter => {
+                    let stringterm = c;
+                    loop {
+                        if from >= stop {
+                            return Err(scan_signal("Unbalanced parentheses", last_good, from));
+                        }
+                        let inner = scan_entry(interp, table_id, &chars, from);
+                        let terminates = if code == SyntaxClass::StringQuote {
+                            scan_char(&chars, from) == stringterm
+                                && inner.class == SyntaxClass::StringQuote
+                        } else {
+                            inner.class == SyntaxClass::GenericStringDelimiter
+                        };
+                        if terminates {
+                            break;
+                        }
+                        if matches!(inner.class, SyntaxClass::CharQuote | SyntaxClass::Escape) {
+                            from += 1;
+                        }
+                        from += 1;
+                    }
+                    from += 1;
+                    if depth == 0 && sexpflag {
+                        done = true;
+                        break 'forward;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !done {
+            // Reached end of buffer: error if within an object, nil between.
+            if depth != 0 {
+                return Err(scan_signal("Unbalanced parentheses", last_good, from));
+            }
+            return Ok(None);
+        }
+        count -= 1;
+    }
+
+    while count < 0 {
+        let stop = begv;
+        let mut done = false;
+        'backward: while from > stop {
+            from -= 1;
+            let c = scan_char(&chars, from);
+            let entry = scan_entry(interp, table_id, &chars, from);
+            let mut code = entry.class;
+            if depth == min_depth {
+                last_good = from;
+            }
+            if from > stop && entry.end_second && ignore_comments {
+                let prev = scan_entry(interp, table_id, &chars, from - 1);
+                if prev.end_first {
+                    from -= 1;
+                    code = SyntaxClass::CommentEnd;
                 }
             }
-            _ => {}
+            // Quoting turns anything except a comment-ender into a word
+            // character (cannot hold if FROM was decremented above).
+            if code != SyntaxClass::CommentEnd
+                && scan_char_quoted(interp, table_id, &chars, from, stop)
+            {
+                from -= 1;
+                code = SyntaxClass::Word;
+            } else if entry.prefix {
+                continue;
+            }
+            match code {
+                SyntaxClass::Word
+                | SyntaxClass::Symbol
+                | SyntaxClass::Escape
+                | SyntaxClass::CharQuote => {
+                    if depth != 0 || !sexpflag {
+                        continue;
+                    }
+                    // This word counts as a sexp; stop after passing it.
+                    while from > stop {
+                        let before = scan_entry(interp, table_id, &chars, from - 1);
+                        // Don't allow a comment-end to be quoted.
+                        if before.class == SyntaxClass::CommentEnd {
+                            break;
+                        }
+                        let quoted = scan_char_quoted(interp, table_id, &chars, from - 1, stop);
+                        if quoted {
+                            from -= 1;
+                        }
+                        if !quoted {
+                            match scan_entry(interp, table_id, &chars, from - 1).class {
+                                SyntaxClass::Word | SyntaxClass::Symbol | SyntaxClass::Quote => {}
+                                _ => break,
+                            }
+                        }
+                        from -= 1;
+                    }
+                    done = true;
+                    break 'backward;
+                }
+                SyntaxClass::PairedDelimiter if sexpflag => {
+                    if from > begv && from != stop && c == scan_char(&chars, from - 1) {
+                        from -= 1;
+                    }
+                    if mathexit {
+                        mathexit = false;
+                        depth -= 1;
+                        if depth == 0 {
+                            done = true;
+                            break 'backward;
+                        }
+                        if depth < min_depth {
+                            return Err(scan_signal(
+                                "Containing expression ends prematurely",
+                                last_good,
+                                from,
+                            ));
+                        }
+                    } else {
+                        mathexit = true;
+                        depth += 1;
+                        if depth == 0 {
+                            done = true;
+                            break 'backward;
+                        }
+                    }
+                }
+                SyntaxClass::CloseParen => {
+                    depth += 1;
+                    if depth == 0 {
+                        done = true;
+                        break 'backward;
+                    }
+                }
+                SyntaxClass::OpenParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        done = true;
+                        break 'backward;
+                    }
+                    if depth < min_depth {
+                        return Err(scan_signal(
+                            "Containing expression ends prematurely",
+                            last_good,
+                            from,
+                        ));
+                    }
+                }
+                SyntaxClass::CommentEnd => {
+                    if ignore_comments && let Some(start) = scan_back_comment(interp, env, from) {
+                        from = start;
+                    }
+                }
+                SyntaxClass::GenericCommentDelimiter | SyntaxClass::GenericStringDelimiter => {
+                    let fence_class = code;
+                    loop {
+                        if from == stop {
+                            return Err(scan_signal("Unbalanced parentheses", last_good, from));
+                        }
+                        from -= 1;
+                        if !scan_char_quoted(interp, table_id, &chars, from, stop)
+                            && scan_entry(interp, table_id, &chars, from).class == fence_class
+                        {
+                            break;
+                        }
+                    }
+                    if fence_class == SyntaxClass::GenericStringDelimiter && depth == 0 && sexpflag
+                    {
+                        done = true;
+                        break 'backward;
+                    }
+                }
+                SyntaxClass::StringQuote => {
+                    let stringterm = c;
+                    loop {
+                        if from == stop {
+                            return Err(scan_signal("Unbalanced parentheses", last_good, from));
+                        }
+                        from -= 1;
+                        if !scan_char_quoted(interp, table_id, &chars, from, stop)
+                            && scan_char(&chars, from) == stringterm
+                            && scan_entry(interp, table_id, &chars, from).class
+                                == SyntaxClass::StringQuote
+                        {
+                            break;
+                        }
+                    }
+                    if depth == 0 && sexpflag {
+                        done = true;
+                        break 'backward;
+                    }
+                }
+                _ => {}
+            }
         }
-        idx += 1;
+        if !done {
+            // Reached start of buffer: error if within an object, nil between.
+            if depth != 0 {
+                return Err(scan_signal("Unbalanced parentheses", last_good, from));
+            }
+            return Ok(None);
+        }
+        count += 1;
     }
-    None
+
+    Ok(Some(from as usize))
+}
+
+pub(super) fn scan_sexps_position(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    from: usize,
+    count: i64,
+) -> Option<usize> {
+    scan_lists_gnu(interp, env, from as i64, count, 0, true)
+        .ok()
+        .flatten()
+}
+
+pub(super) fn scan_sexps_position_for_scan_sexps(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    from: usize,
+    count: i64,
+) -> Result<Option<usize>, LispError> {
+    scan_lists_gnu(interp, env, from as i64, count, 0, true)
 }
 
 fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<usize> {
@@ -1112,87 +1417,6 @@ fn scan_string_forward(chars: &[char], quote_idx: usize, end: usize) -> Option<u
         idx += 1;
     }
     None
-}
-
-fn scan_one_sexp_backward(
-    interp: &Interpreter,
-    chars: &[char],
-    from: usize,
-    min: usize,
-) -> Option<usize> {
-    let mut idx = from.saturating_sub(2);
-    let min_idx = min.saturating_sub(1);
-    while idx >= min_idx && chars.get(idx).is_some_and(|ch| ch.is_whitespace()) {
-        if idx == 0 {
-            return None;
-        }
-        idx -= 1;
-    }
-    let table_id = interp.current_syntax_table_id();
-    let entry = syntax_entry_at_buffer_position(interp, table_id, *chars.get(idx)?, idx + 1);
-    match entry.class {
-        SyntaxClass::CloseParen => scan_balanced_backward(chars, idx, min_idx).map(|idx| idx + 1),
-        SyntaxClass::StringQuote => scan_string_backward(chars, idx, min_idx).map(|idx| idx + 1),
-        SyntaxClass::OpenParen => None,
-        _ => {
-            while idx > min_idx
-                && chars.get(idx - 1).is_some_and(|ch| !ch.is_whitespace())
-                && matches!(
-                    syntax_entry_at_buffer_position(interp, table_id, chars[idx - 1], idx).class,
-                    SyntaxClass::Word | SyntaxClass::Symbol
-                )
-            {
-                idx -= 1;
-            }
-            Some(idx + 1)
-        }
-    }
-}
-
-fn scan_balanced_backward(chars: &[char], close_idx: usize, min_idx: usize) -> Option<usize> {
-    let mut stack = vec![matching_delimiter(chars[close_idx])?];
-    let mut idx = close_idx;
-    while idx > min_idx {
-        idx -= 1;
-        match chars[idx] {
-            '"' => idx = scan_string_backward(chars, idx, min_idx)?,
-            ')' | ']' | '}' => stack.push(matching_delimiter(chars[idx])?),
-            '(' | '[' | '{' => {
-                if stack.pop()? != chars[idx] {
-                    return None;
-                }
-                if stack.is_empty() {
-                    return Some(idx);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn scan_string_backward(chars: &[char], quote_idx: usize, min_idx: usize) -> Option<usize> {
-    let quote = *chars.get(quote_idx)?;
-    let mut idx = quote_idx;
-    while idx > min_idx {
-        idx -= 1;
-        if chars[idx] == quote && !is_escaped(chars, idx) {
-            return Some(idx);
-        }
-    }
-    None
-}
-
-fn matching_delimiter(ch: char) -> Option<char> {
-    match ch {
-        '(' => Some(')'),
-        '[' => Some(']'),
-        '{' => Some('}'),
-        ')' => Some('('),
-        ']' => Some('['),
-        '}' => Some('{'),
-        _ => None,
-    }
 }
 
 fn is_escaped(chars: &[char], idx: usize) -> bool {
@@ -1254,7 +1478,20 @@ pub(super) fn parse_forward(
     while idx < end {
         if let Some(string) = state.string {
             let ch = chars[idx];
-            let entry = syntax_entry_for_char(interp, table_id, ch);
+            let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+            if string.fence {
+                if entry.class == SyntaxClass::GenericStringDelimiter && !is_escaped(&chars, idx) {
+                    state.string = None;
+                    idx += 1;
+                    if commentstop == CommentStop::SyntaxTable {
+                        interp.buffer.goto_char(idx + 1);
+                        return Ok(encode_parse_state(&state));
+                    }
+                    continue;
+                }
+                idx += 1;
+                continue;
+            }
             if entry.class == SyntaxClass::StringQuote
                 && ch == string.quote
                 && !is_escaped(&chars, idx)
@@ -1361,7 +1598,24 @@ pub(super) fn parse_forward(
         }
 
         let ch = chars[idx];
-        let entry = syntax_entry_for_char(interp, table_id, ch);
+        // syntax-table TEXT PROPERTIES override the char table (generic
+        // string fences from syntax-propertize live there).
+        let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
+        if entry.class == SyntaxClass::GenericStringDelimiter {
+            state.set_last_sexp(idx + 1);
+            state.string = Some(StringState {
+                quote: ch,
+                start_pos: idx + 1,
+                fence: true,
+            });
+            in_symbol = false;
+            idx += 1;
+            if commentstop == CommentStop::SyntaxTable {
+                interp.buffer.goto_char(idx + 1);
+                return Ok(encode_parse_state(&state));
+            }
+            continue;
+        }
         // GNU's STOPBEFORE: stop with point before any character that
         // begins a sexp (symbol continuations excluded).
         if stopbefore
@@ -1386,6 +1640,7 @@ pub(super) fn parse_forward(
                     state.string = Some(StringState {
                         quote: ch,
                         start_pos: idx + 1,
+                        fence: false,
                     });
                     in_symbol = false;
                     idx += 1;
@@ -1421,6 +1676,10 @@ pub(super) fn parse_forward(
                     state.base_depth -= 1;
                     state.min_depth = state.min_depth.min(state.depth());
                     idx += 1;
+                    if target_depth.is_some_and(|depth| depth == state.depth()) {
+                        interp.buffer.goto_char(idx + 1);
+                        return Ok(encode_parse_state(&state));
+                    }
                     continue;
                 };
                 if open.close_char != ch
@@ -1431,6 +1690,10 @@ pub(super) fn parse_forward(
                     state.set_last_sexp(closed.open_pos);
                     state.min_depth = state.min_depth.min(state.depth());
                     idx += 1;
+                    if target_depth.is_some_and(|depth| depth == state.depth()) {
+                        interp.buffer.goto_char(idx + 1);
+                        return Ok(encode_parse_state(&state));
+                    }
                     continue;
                 }
                 let closed = state.stack.pop().expect("stack non-empty");
@@ -1621,256 +1884,15 @@ pub(super) fn skip_syntax_impl(
 pub(super) fn scan_lists_impl(
     interp: &mut Interpreter,
     args: &[Value],
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     need_args("scan-lists", args, 3)?;
-    let start_pos = position_from_value(interp, &args[0])?;
+    let from = args[0].as_integer()?;
     let count = args[1].as_integer()?;
     let depth = args[2].as_integer()?;
-    if depth != 0 || !matches!(count, -1 | 1) {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unsupported scan-lists request".into()),
-        ])));
-    }
-
-    let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
-    let table_id = interp.current_syntax_table_id();
-    let comment_end_can_be_escaped = interp
-        .lookup_var("comment-end-can-be-escaped", env)
-        .is_some_and(|value| value.is_truthy());
-
-    if count > 0 {
-        let idx = start_pos.saturating_sub(1);
-        let Some(&ch) = chars.get(idx) else {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("scan-error".into()),
-                Value::String("Unbalanced parentheses".into()),
-            ])));
-        };
-        let entry = syntax_entry_for_char(interp, table_id, ch);
-        if entry.class != SyntaxClass::OpenParen {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("scan-error".into()),
-                Value::String("Unbalanced parentheses".into()),
-            ])));
-        }
-        let close_char = matching_close_char(ch, entry).ok_or_else(|| {
-            LispError::SignalValue(Value::list([
-                Value::Symbol("scan-error".into()),
-                Value::String("Unbalanced parentheses".into()),
-            ]))
-        })?;
-        let mut state = ParseState {
-            base_depth: 0,
-            min_depth: 0,
-            stack: vec![ParseStackEntry {
-                open_pos: start_pos,
-                close_char,
-                last_sexp: None,
-            }],
-            comment: None,
-            string: None,
-            base_last_sexp: None,
-        };
-        let mut cursor = idx + 1;
-        while cursor < chars.len() {
-            if let Some(comment) = state.comment {
-                match comment.kind {
-                    CommentKind::Single { line } => {
-                        let entry = syntax_entry_for_char(interp, table_id, chars[cursor]);
-                        if entry.class == SyntaxClass::CommentEnd {
-                            if line
-                                && chars[cursor] == '\n'
-                                && comment_end_can_be_escaped
-                                && preceded_by_odd_backslashes(&chars, cursor)
-                            {
-                                cursor += 1;
-                                continue;
-                            }
-                            state.comment = None;
-                        }
-                        cursor += 1;
-                        continue;
-                    }
-                    CommentKind::Block {
-                        end_first,
-                        end_second,
-                        nested,
-                    } => {
-                        if nested
-                            && let Some(start) = comment_start_at(interp, table_id, &chars, cursor)
-                            && matches!(
-                                start.kind,
-                                CommentKind::Block {
-                                    end_first: nested_end_first,
-                                    end_second: nested_end_second,
-                                    ..
-                                } if nested_end_first == end_first && nested_end_second == end_second
-                            )
-                        {
-                            if let Some(comment) = state.comment.as_mut() {
-                                comment.depth += 1;
-                            }
-                            cursor += start.len;
-                            continue;
-                        }
-                        if cursor + 1 < chars.len()
-                            && chars[cursor] == end_first
-                            && chars[cursor + 1] == end_second
-                        {
-                            if comment_end_can_be_escaped
-                                && preceded_by_odd_backslashes(&chars, cursor)
-                            {
-                                cursor += 1;
-                                continue;
-                            }
-                            if let Some(comment) = state.comment.as_mut()
-                                && comment.depth > 1
-                            {
-                                comment.depth -= 1;
-                                cursor += 2;
-                                continue;
-                            }
-                            state.comment = None;
-                            cursor += 2;
-                            continue;
-                        }
-                        cursor += 1;
-                        continue;
-                    }
-                }
-            }
-            if let Some(start) = comment_start_at(interp, table_id, &chars, cursor) {
-                state.comment = Some(CommentState {
-                    kind: start.kind,
-                    start_pos: cursor + 1,
-                    depth: 1,
-                });
-                cursor += start.len;
-                continue;
-            }
-            let ch = chars[cursor];
-            let entry = syntax_entry_for_char(interp, table_id, ch);
-            match entry.class {
-                SyntaxClass::OpenParen => {
-                    let close_char = matching_close_char(ch, entry).ok_or_else(|| {
-                        LispError::SignalValue(Value::list([
-                            Value::Symbol("scan-error".into()),
-                            Value::String("Unbalanced parentheses".into()),
-                        ]))
-                    })?;
-                    state.stack.push(ParseStackEntry {
-                        open_pos: cursor + 1,
-                        close_char,
-                        last_sexp: None,
-                    });
-                    cursor += 1;
-                }
-                SyntaxClass::CloseParen => {
-                    let Some(open) = state.stack.pop() else {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("scan-error".into()),
-                            Value::String("Unbalanced parentheses".into()),
-                        ])));
-                    };
-                    if open.close_char != ch {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("scan-error".into()),
-                            Value::String("Unbalanced parentheses".into()),
-                        ])));
-                    }
-                    cursor += 1;
-                    if state.stack.is_empty() {
-                        return Ok(Value::Integer((cursor + 1) as i64));
-                    }
-                }
-                _ => cursor += 1,
-            }
-        }
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unbalanced parentheses".into()),
-        ])));
-    }
-
-    if start_pos <= 1 {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unbalanced parentheses".into()),
-        ])));
-    }
-    let close_idx = start_pos - 2;
-    let Some(&close_char) = chars.get(close_idx) else {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unbalanced parentheses".into()),
-        ])));
-    };
-    let close_entry = syntax_entry_for_char(interp, table_id, close_char);
-    if close_entry.class != SyntaxClass::CloseParen {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unbalanced parentheses".into()),
-        ])));
-    }
-    let expected_open = matching_open_char(close_char, close_entry).ok_or_else(|| {
-        LispError::SignalValue(Value::list([
-            Value::Symbol("scan-error".into()),
-            Value::String("Unbalanced parentheses".into()),
-        ]))
-    })?;
-    let mut stack = vec![expected_open];
-    let mut cursor = close_idx;
-    while cursor > 0 {
-        if let Some(comment_start) = find_comment_ending_at(
-            interp,
-            table_id,
-            &chars,
-            cursor + 2,
-            comment_end_can_be_escaped,
-        ) {
-            cursor = comment_start.saturating_sub(1);
-            continue;
-        }
-        cursor -= 1;
-        let ch = chars[cursor];
-        let entry = syntax_entry_for_char(interp, table_id, ch);
-        match entry.class {
-            SyntaxClass::CloseParen => {
-                let expected = matching_open_char(ch, entry).ok_or_else(|| {
-                    LispError::SignalValue(Value::list([
-                        Value::Symbol("scan-error".into()),
-                        Value::String("Unbalanced parentheses".into()),
-                    ]))
-                })?;
-                stack.push(expected);
-            }
-            SyntaxClass::OpenParen => {
-                let Some(expected) = stack.pop() else {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("scan-error".into()),
-                        Value::String("Unbalanced parentheses".into()),
-                    ])));
-                };
-                if ch != expected {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::Symbol("scan-error".into()),
-                        Value::String("Unbalanced parentheses".into()),
-                    ])));
-                }
-                if stack.is_empty() {
-                    return Ok(Value::Integer((cursor + 1) as i64));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Err(LispError::SignalValue(Value::list([
-        Value::Symbol("scan-error".into()),
-        Value::String("Unbalanced parentheses".into()),
-    ])))
+    Ok(scan_lists_gnu(interp, env, from, count, depth, false)?
+        .map(|position| Value::Integer(position as i64))
+        .unwrap_or(Value::Nil))
 }
 
 pub(super) fn down_list_impl(
@@ -1951,7 +1973,7 @@ pub(super) fn down_list_impl(
 pub(super) fn up_list_impl(
     interp: &mut Interpreter,
     count_value: Option<&Value>,
-    env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
     let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();

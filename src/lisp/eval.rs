@@ -787,15 +787,45 @@ impl Interpreter {
             next_overlay_id: 1,
             next_marker_id: 1,
             markers: Vec::new(),
-            char_tables: vec![CharTableState {
-                id: standard_syntax_table_id,
-                subtype: Some("syntax-table".into()),
-                default: Value::Nil,
-                parent: None,
-                extra_slots: Vec::new(),
-                entries: standard_syntax_table_entries(),
-                category_docs: Vec::new(),
-            }],
+            char_tables: vec![
+                CharTableState {
+                    id: standard_syntax_table_id,
+                    subtype: Some("syntax-table".into()),
+                    default: Value::Nil,
+                    parent: None,
+                    extra_slots: Vec::new(),
+                    entries: standard_syntax_table_entries(),
+                    category_docs: Vec::new(),
+                },
+                // GNU text-mode-syntax-table: `"' and `\' are
+                // punctuation, `'' is a word constituent with the prefix
+                // flag (Bug#15014 hinges on `"' NOT being a string quote).
+                CharTableState {
+                    id: 2,
+                    subtype: Some("syntax-table".into()),
+                    default: Value::Nil,
+                    parent: Some(standard_syntax_table_id),
+                    extra_slots: Vec::new(),
+                    entries: vec![
+                        CharTableEntry {
+                            start: '"' as u32,
+                            end: '"' as u32,
+                            value: Value::String(".".into()),
+                        },
+                        CharTableEntry {
+                            start: '\\' as u32,
+                            end: '\\' as u32,
+                            value: Value::String(".".into()),
+                        },
+                        CharTableEntry {
+                            start: '\'' as u32,
+                            end: '\'' as u32,
+                            value: Value::String("w p".into()),
+                        },
+                    ],
+                    category_docs: Vec::new(),
+                },
+            ],
             charset_aliases: Vec::new(),
             charset_plists: Vec::new(),
             charset_priority: vec!["unicode".into(), "ascii".into(), "eight-bit".into()],
@@ -808,7 +838,7 @@ impl Interpreter {
             standard_category_table_id: None,
             standard_case_table_id: None,
             buffer_case_tables: Vec::new(),
-            next_char_table_id: 2,
+            next_char_table_id: 3,
             records: vec![RecordState {
                 id: main_thread_id,
                 type_name: "thread".into(),

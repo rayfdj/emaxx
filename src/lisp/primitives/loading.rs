@@ -280,7 +280,10 @@ pub(crate) fn eval_buffer_impl(
             .unwrap_or(Value::Nil);
         if result.is_ok() && current.to_vec().is_ok_and(|items| items.len() > 1) {
             let history = interp.lookup_var("load-history", env).unwrap_or(Value::Nil);
-            interp.set_global_binding("load-history", Value::cons(current, history));
+            // GNU build_load_history nreverses `current-load-list' so the
+            // history element leads with the file name.
+            let entry = Value::list(current.to_vec().unwrap_or_default().into_iter().rev());
+            interp.set_global_binding("load-history", Value::cons(entry, history));
         }
         interp.set_global_binding("current-load-list", previous);
     }
@@ -307,9 +310,38 @@ fn eval_buffer_forms(
     let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
     let mut result = Value::Nil;
     for form in forms {
-        result = interp.eval(&form, env)?;
+        result = eager_expand_eval(interp, &form, env)?;
     }
     Ok(result)
+}
+
+// GNU readevalloop eagerly macroexpands each top-level form read from
+// source (`internal-macroexpand-for-load'), so macros in function bodies
+// expand while `current-load-list' still names the file being evaluated.
+// Expansion failures fall back to the unexpanded form like GNU.
+fn eager_expand_eval(
+    interp: &mut Interpreter,
+    form: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let expanded =
+        crate::lisp::primitives::call(interp, "macroexpand", std::slice::from_ref(form), env)
+            .unwrap_or_else(|_| form.clone());
+    if let Ok(items) = expanded.to_vec()
+        && matches!(items.first(), Some(Value::Symbol(head)) if head == "progn")
+    {
+        // A top-level progn is expanded form by form so a macro defined by
+        // one subform is live while expanding the rest.
+        let mut result = Value::Nil;
+        for subform in &items[1..] {
+            result = eager_expand_eval(interp, subform, env)?;
+        }
+        return Ok(result);
+    }
+    let full = interp
+        .macroexpand_all_form_with_environment(&expanded, None, env)
+        .unwrap_or_else(|_| expanded.clone());
+    interp.eval(&full, env)
 }
 
 fn eval_buffer_via_load_read_function(

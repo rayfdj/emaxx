@@ -154,7 +154,16 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
         }
         "python-mode" => {
             derived_mode_set_parent(interp, "python-mode", Some("python-base-mode"));
-            activate_hash_comment_mode_with_semantic(interp, "python-mode", "Python", false)
+            let result =
+                activate_hash_comment_mode_with_semantic(interp, "python-mode", "Python", false);
+            // GNU python.el marks triple-quote fences via
+            // syntax-propertize; sexp motion needs them.
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "syntax-propertize-function",
+                Value::Symbol("emaxx--python-syntax-propertize".into()),
+            );
+            result
         }
         "conf-toml-mode" => {
             derived_mode_set_parent(interp, "conf-toml-mode", Some("conf-mode"));

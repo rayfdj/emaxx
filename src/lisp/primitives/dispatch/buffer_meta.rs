@@ -214,7 +214,10 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "constrain-to-field" => {
-            if args.is_empty() || args.len() > 2 {
+            // (NEW-POS OLD-POS &optional ESCAPE-FROM-EDGE ONLY-IN-LINE
+            //  INHIBIT-CAPTURE-PROPERTY); the optional flags only matter
+            // for edge stickiness, which the span model doesn't track.
+            if args.is_empty() || args.len() > 5 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let new_pos = if args[0].is_nil() {
