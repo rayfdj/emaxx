@@ -249,10 +249,26 @@ impl Interpreter {
         }
         match self.eval(&items[1], env) {
             Err(e) => {
+                // GNU matches when the expected type is memq in the
+                // signaled condition's `error-conditions' (every error
+                // derives from `error').
+                let condition = e.condition_type();
+                let condition_names = self
+                    .get_symbol_property(&condition, "error-conditions")
+                    .and_then(|value| value.to_vec().ok())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_symbol().ok().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 if let Some(expected_types) = should_error_types(items)
-                    && !expected_types
-                        .iter()
-                        .any(|expected| expected == &e.condition_type())
+                    && !expected_types.iter().any(|expected| {
+                        expected == &condition
+                            || condition_names.iter().any(|name| name == expected)
+                            || (expected == "error" && condition_names.is_empty())
+                    })
                 {
                     return Err(LispError::ErtTestFailed(format!(
                         "Test failed: expected error type {} but got {}",

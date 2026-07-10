@@ -3045,11 +3045,11 @@ pub(super) fn call(
             if let Ok(hook_function) = interp.lookup_function(hook, env) {
                 return invoke_function_value(interp, &hook_function, &hook_args, env);
             }
-            Err(LispError::Signal(if kind == "no-applicable" {
-                format!("No applicable method: {generic}")
-            } else {
-                format!("cl-no-next-method: {generic}")
-            }))
+            // GNU's default methods signal the dedicated conditions
+            // (cl-no-applicable-method GENERIC . ARGS).
+            Err(LispError::SignalValue(Value::list(
+                std::iter::once(Value::Symbol(hook.into())).chain(hook_args),
+            )))
         }
         "eieio--class-parents" => {
             need_args(name, args, 1)?;
@@ -6293,7 +6293,10 @@ fn cl_typep_matches(
     }
     let actual = cl_type_name(interp, value)?;
     let matches = target == "t"
-        || (target == "list" && value.is_list())
+        // Reader vector/hash-table markers are conses structurally but
+        // vectors/hash-tables semantically (cl-generic must not dispatch
+        // their `list' methods on them).
+        || (target == "list" && value.is_list() && !is_vector_like_value(interp, value))
         || (target == "eieio-object" && matches!(value, Value::Record(_)))
         || (target == "hash-table" && crate::lisp::json::is_hash_table(interp, value))
         || (target == "class"

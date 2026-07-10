@@ -3629,6 +3629,36 @@ fn pcase_pattern_bindings_with_mode(
     )
 }
 
+// GNU pcase--funcall for `app' patterns: a call form may name the object
+// with `_'; without a placeholder the object becomes the last argument.
+fn pcase_apply_app_function(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    function: &Value,
+    value: &Value,
+) -> Result<Value, LispError> {
+    if let Ok(items) = function.to_vec()
+        && !items.is_empty()
+        && !matches!(items.first(), Some(Value::Symbol(head)) if head == "lambda" || head == "closure")
+    {
+        let mut call_form = Vec::with_capacity(items.len() + 1);
+        let mut saw_placeholder = false;
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 && matches!(item, Value::Symbol(name) if name == "_") {
+                saw_placeholder = true;
+                call_form.push(quoted_literal(value));
+            } else {
+                call_form.push(item.clone());
+            }
+        }
+        if !saw_placeholder {
+            call_form.push(quoted_literal(value));
+        }
+        return interp.eval(&Value::list(call_form), env);
+    }
+    interp.call_function_value(function.clone(), None, std::slice::from_ref(value), env)
+}
+
 fn pcase_pattern_bindings_inner(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -3893,6 +3923,43 @@ fn pcase_pattern_bindings_inner(
             {
                 bindings.push((name.clone(), value.clone()));
                 return Ok(true);
+            }
+            // GNU (app FUN PAT): apply FUN to the object (`_' in a call
+            // form stands for the object; otherwise it is appended as the
+            // last argument) and match PAT against the result.
+            if !backquoted
+                && matches!(parts.first(), Some(Value::Symbol(name)) if name == "app")
+                && parts.len() >= 3
+            {
+                let result = pcase_apply_app_function(interp, env, &parts[1], value)?;
+                return pcase_pattern_bindings_inner(
+                    interp,
+                    env,
+                    &parts[2],
+                    &result,
+                    bindings,
+                    lenient_list_match,
+                    backquoted,
+                );
+            }
+            // pcase-defmacro extensions (map.el's `(map ...)', ...):
+            // expand through the head symbol's `pcase-macroexpander' and
+            // match the expansion.
+            if !backquoted
+                && let Some(Value::Symbol(head)) = parts.first()
+                && let Some(expander) = interp.get_symbol_property(head, "pcase-macroexpander")
+                && expander.is_truthy()
+            {
+                let expanded = interp.call_function_value(expander, None, &parts[1..], env)?;
+                return pcase_pattern_bindings_inner(
+                    interp,
+                    env,
+                    &expanded,
+                    value,
+                    bindings,
+                    lenient_list_match,
+                    backquoted,
+                );
             }
         }
     }
