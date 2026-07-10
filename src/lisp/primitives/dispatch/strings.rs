@@ -441,7 +441,9 @@ pub(super) fn call(
             Ok(Value::Integer(width as i64))
         }
         "truncate-string-to-width" => {
-            need_arg_range(name, args, 2, 5)?;
+            // GNU takes a sixth ELLIPSIS-TEXT-PROPERTY argument (it only
+            // affects display properties on the ellipsis).
+            need_arg_range(name, args, 2, 6)?;
             let text = string_text(&args[0])?;
             let end_column = args[1].as_integer()?.max(0) as usize;
             let start_column = args

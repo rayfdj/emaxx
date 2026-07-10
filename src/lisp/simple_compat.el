@@ -5142,3 +5142,288 @@ OBJECT if it is readable."
 ;; GNU cl.el aliases (advice.el preactivation uses them).
 (defalias 'rplaca #'setcar)
 (defalias 'rplacd #'setcdr)
+
+;; GNU files.el: package-tests et al. `cd' into scratch dirs.  Bodies
+;; verbatim; `cd's interactive spec is simplified to plain "D" (the GNU
+;; one builds a cd-path completion table; batch tests never use it).
+(defvar cd-path nil
+  "Value of the CDPATH environment variable, as a list.
+Not actually set up until the first time you use it.")
+
+(defun cd-absolute (dir)
+  "Change current directory to given absolute file name DIR."
+  ;; Put the name into directory syntax now,
+  ;; because otherwise expand-file-name may give some bad results.
+  (setq dir (file-name-as-directory dir))
+  ;; We used to additionally call abbreviate-file-name here, for an
+  ;; unknown reason.  Problem is that most buffers are setup
+  ;; without going through cd-absolute and don't call
+  ;; abbreviate-file-name on their default-directory, so the few that
+  ;; do end up using a superficially different directory.
+  (setq dir (expand-file-name dir))
+  (if (not (file-directory-p dir))
+      (error (if (file-exists-p dir)
+	         "%s is not a directory"
+               "%s: no such directory")
+             dir)
+    (unless (file-accessible-directory-p dir)
+      (error "Cannot cd to %s:  Permission denied" dir))
+    (setq default-directory dir)
+    (setq list-buffers-directory dir)))
+
+(defun cd (dir)
+  "Make DIR become the current buffer's default directory.
+If your environment includes a `CDPATH' variable, try each one of
+that list of directories (separated by occurrences of
+`path-separator') when resolving a relative directory name.
+The path separator is colon in GNU and GNU-like systems."
+  (interactive "DChange default directory: ")
+  (unless cd-path
+    (setq cd-path (or (parse-colon-path (getenv "CDPATH"))
+                      (list "./"))))
+  (cd-absolute
+   (or
+    ;; locate-file doesn't support remote file names, so detect them
+    ;; and support them here by hand.
+    (and (file-remote-p (expand-file-name dir))
+         (file-accessible-directory-p (expand-file-name dir))
+         (expand-file-name dir))
+    (locate-file dir cd-path nil
+                 (lambda (f) (and (file-directory-p f) 'dir-ok)))
+    (if (getenv "CDPATH")
+        (error "No such directory found via CDPATH environment variable: %s" dir)
+      (error "No such directory: %s" dir)))))
+
+;; GNU subr.el (verbatim).
+(defmacro with-file-modes (modes &rest body)
+  "Execute BODY with default file permissions temporarily set to MODES.
+MODES is as for `set-default-file-modes'."
+  (declare (indent 1) (debug t))
+  (let ((umask (make-symbol "umask")))
+    `(let ((,umask (default-file-modes)))
+       (unwind-protect
+           (progn
+             (set-default-file-modes ,modes)
+             ,@body)
+         (set-default-file-modes ,umask)))))
+
+;; GNU subr.el (verbatim; loaddefs.el pushes more entries in GNU).
+(defvar package--builtin-versions
+  ;; Mostly populated by loaddefs.el.
+  (purecopy `((emacs . ,(version-to-list emacs-version))))
+  "Alist giving the version of each versioned builtin package.
+I.e. each element of the list is of the form (NAME . VERSION) where
+NAME is the package name as a symbol, and VERSION is its version
+as a list.")
+
+;; GNU files.el (verbatim).
+(defun parse-colon-path (search-path)
+  "Explode a search path into a list of directory names.
+Directories are separated by `path-separator' (which is colon in
+GNU and Unix systems).  Substitute environment variables into the
+resulting list of directory names.  For an empty path element (i.e.,
+a leading or trailing separator, or two adjacent separators), return
+nil (meaning `default-directory') as the associated list element."
+  (declare (ftype (function (string) list)))
+  (when (stringp search-path)
+    (let ((spath (substitute-env-vars search-path))
+          (double-slash-special-p
+           (memq system-type '(windows-nt cygwin ms-dos))))
+      (mapcar (lambda (f)
+                (if (equal "" f) nil
+                  (let ((dir (file-name-as-directory f)))
+                    ;; Previous implementation used `substitute-in-file-name'
+                    ;; which collapses multiple "/" in front, while
+                    ;; preserving double slash where it matters.  Do
+                    ;; the same for backward compatibility.
+                    (if (string-match "\\`//+" dir)
+                        (substring dir (- (match-end 0)
+                                          (if double-slash-special-p 2 1)))
+                      dir))))
+              (split-string spath path-separator)))))
+
+;; GNU subr.el (verbatim).
+(defun version-list-< (l1 l2)
+  "Return t if L1, a list specification of a version, is lower than L2.
+
+Note that a version specified by the list (1) is equal to (1 0),
+\(1 0 0), (1 0 0 0), etc.  That is, the trailing zeros are insignificant.
+Also, a version given by the list (1) is higher than (1 -1), which in
+turn is higher than (1 -2), which is higher than (1 -3)."
+  (declare (pure t) (side-effect-free t))
+  (while (and l1 l2 (= (car l1) (car l2)))
+    (setq l1 (cdr l1)
+	  l2 (cdr l2)))
+  (cond
+   ;; l1 not null and l2 not null
+   ((and l1 l2) (< (car l1) (car l2)))
+   ;; l1 null and l2 null         ==> l1 length = l2 length
+   ((and (null l1) (null l2)) nil)
+   ;; l1 not null and l2 null     ==> l1 length > l2 length
+   (l1 (< (version-list-not-zero l1) 0))
+   ;; l1 null and l2 not null     ==> l2 length > l1 length
+   (t  (< 0 (version-list-not-zero l2)))))
+
+(defun version-list-= (l1 l2)
+  "Return t if L1, a list specification of a version, is equal to L2.
+
+Note that a version specified by the list (1) is equal to (1 0),
+\(1 0 0), (1 0 0 0), etc.  That is, the trailing zeros are insignificant.
+Also, a version given by the list (1) is higher than (1 -1), which in
+turn is higher than (1 -2), which is higher than (1 -3)."
+  (declare (pure t) (side-effect-free t))
+  (while (and l1 l2 (= (car l1) (car l2)))
+    (setq l1 (cdr l1)
+	  l2 (cdr l2)))
+  (cond
+   ;; l1 not null and l2 not null
+   ((and l1 l2) nil)
+   ;; l1 null and l2 null     ==> l1 length = l2 length
+   ((and (null l1) (null l2)))
+   ;; l1 not null and l2 null ==> l1 length > l2 length
+   (l1 (zerop (version-list-not-zero l1)))
+   ;; l1 null and l2 not null ==> l2 length > l1 length
+   (t  (zerop (version-list-not-zero l2)))))
+
+(defun version-list-<= (l1 l2)
+  "Return t if L1, a list specification of a version, is lower or equal to L2.
+
+Note that integer list (1) is equal to (1 0), (1 0 0), (1 0 0 0),
+etc.  That is, the trailing zeroes are insignificant.  Also, integer
+list (1) is greater than (1 -1) which is greater than (1 -2)
+which is greater than (1 -3)."
+  (declare (pure t) (side-effect-free t))
+  (while (and l1 l2 (= (car l1) (car l2)))
+    (setq l1 (cdr l1)
+	  l2 (cdr l2)))
+  (cond
+   ;; l1 not null and l2 not null
+   ((and l1 l2) (< (car l1) (car l2)))
+   ;; l1 null and l2 null     ==> l1 length = l2 length
+   ((and (null l1) (null l2)))
+   ;; l1 not null and l2 null ==> l1 length > l2 length
+   (l1 (<= (version-list-not-zero l1) 0))
+   ;; l1 null and l2 not null ==> l2 length > l1 length
+   (t  (<= 0 (version-list-not-zero l2)))))
+
+(defun version-list-not-zero (lst)
+  "Return the first non-zero element of LST, which is a list of integers.
+
+If all LST elements are zeros or LST is nil, return zero."
+  (declare (pure t) (side-effect-free t))
+  (while (and lst (zerop (car lst)))
+    (setq lst (cdr lst)))
+  (if lst
+      (car lst)
+    ;; there is no element different of zero
+    0))
+
+;; GNU cus-edit.el customize-save-variable, with the theme/custom-file
+;; machinery guarded (cus-edit.el itself is not loaded; batch tests have
+;; no custom-file so GNU takes the message branch anyway).
+(defun customize-save-variable (variable value &optional comment)
+  "Set the default for VARIABLE to VALUE, and save it for future sessions.
+Return VALUE."
+  (funcall (or (get variable 'custom-set) 'set-default) variable value)
+  (put variable 'saved-value (list (custom-quote value)))
+  (when (fboundp 'custom-push-theme)
+    (custom-push-theme 'theme-value variable 'user 'set (custom-quote value)))
+  (cond ((string= comment "")
+	 (put variable 'variable-comment nil)
+	 (put variable 'saved-variable-comment nil))
+	(comment
+	 (put variable 'variable-comment comment)
+	 (put variable 'saved-variable-comment comment)))
+  (put variable 'customized-value nil)
+  (put variable 'customized-variable-comment nil)
+  (when (and (fboundp 'custom-file) (custom-file t) (fboundp 'custom-save-all))
+    (custom-save-all))
+  value)
+
+;; GNU isearch.el (verbatim).
+(defvar isearch-fold-quotes-mode--state)
+(define-minor-mode isearch-fold-quotes-mode
+  "Minor mode to aid searching for \\=` characters in help modes."
+  :lighter ""
+  (if isearch-fold-quotes-mode
+      (setq-local isearch-fold-quotes-mode--state
+                  (buffer-local-set-state
+                   search-default-mode
+                   (lambda (string &optional _lax)
+                     (thread-last
+                       (regexp-quote string)
+                       (replace-regexp-in-string "`" "[`‘]")
+                       (replace-regexp-in-string "'" "['’]")
+                       (replace-regexp-in-string "\"" "[\"“”]")))))
+    (buffer-local-restore-state isearch-fold-quotes-mode--state)))
+
+;; GNU custom.el (verbatim).
+(defun custom-quote (sexp)
+  "Quote SEXP if it is not self quoting."
+  ;; Can't use `macroexp-quote' because it is loaded after `custom.el'
+  ;; during bootstrap.  See `loadup.el'.
+  (if (and (not (consp sexp))
+           (or (keywordp sexp)
+               (not (symbolp sexp))
+               (booleanp sexp)))
+      sexp
+    (list 'quote sexp)))
+
+;; GNU subr.el (verbatim).
+(defmacro buffer-local-set-state (&rest pairs)
+  "Like `setq-local', but allow restoring the previous state of locals later.
+This macro returns an object that can be passed to `buffer-local-restore-state'
+in order to restore the state of the local variables set via this macro.
+
+\(fn [VARIABLE VALUE]...)"
+  (declare (debug setq))
+  (unless (zerop (mod (length pairs) 2))
+    (error "PAIRS must have an even number of variable/value members"))
+  `(prog1
+       (buffer-local-set-state--get ',pairs)
+     (setq-local ,@pairs)))
+
+(defun buffer-local-set-state--get (pairs)
+  (let ((states nil))
+    (while pairs
+      (push (list (car pairs)
+                  (and (boundp (car pairs))
+                       (local-variable-p (car pairs)))
+                  (and (boundp (car pairs))
+                       (symbol-value (car pairs))))
+            states)
+      (setq pairs (cddr pairs)))
+    (nreverse states)))
+
+(defun buffer-local-restore-state (states)
+  "Restore values of buffer-local variables recorded in STATES.
+STATES should be an object returned by `buffer-local-set-state'."
+  (pcase-dolist (`(,variable ,local ,value) states)
+    (if local
+        (set variable value)
+      (kill-local-variable variable))))
+
+;; GNU subr.el (verbatim).
+(defun package--description-file (dir)
+  "Return package description file name for package DIR."
+  (concat (let ((subdir (file-name-nondirectory
+                         (directory-file-name dir))))
+            (if (string-match "\\([^.].*?\\)-\\([0-9]+\\(?:[.][0-9]+\\|\\(?:pre\\|beta\\|alpha\\)[0-9]+\\)*\\)" subdir)
+                (match-string 1 subdir) subdir))
+          "-pkg.el"))
+
+;; GNU subr.el (verbatim).
+(defmacro with-existing-directory (&rest body)
+  "Execute BODY with `default-directory' bound to an existing directory.
+If `default-directory' is already an existing directory, it's not changed."
+  (declare (indent 0) (debug t))
+  `(let ((default-directory (seq-find (lambda (dir)
+                                        (and dir
+                                             (file-exists-p dir)))
+                                      (list default-directory
+                                            (expand-file-name "~/")
+                                            temporary-file-directory
+                                            (getenv "TMPDIR")
+                                            "/tmp/")
+                                      "/")))
+     ,@body))

@@ -202,6 +202,10 @@ impl Interpreter {
             "pre-redisplay-function" => Some(Value::Symbol("ignore".into())),
             // GNU startup.el defvar; bytecomp reads it.
             "startup-redirect-eln-cache" => Some(Value::Nil),
+            // GNU xdisp.c defvar; tests let-bind it around noisy calls.
+            "inhibit-message" => Some(Value::Nil),
+            // GNU isearch.el defcustom; package.el's quick-help reads it.
+            "search-default-mode" => Some(Value::Nil),
             // GNU keyboard.c keymaps; simple.el define-keys them at load
             // time (event-apply-*-modifier bindings).
             "function-key-map" | "key-translation-map" | "input-decode-map"

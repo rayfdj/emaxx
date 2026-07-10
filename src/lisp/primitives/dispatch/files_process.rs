@@ -125,6 +125,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "insert-file-contents"
             | "insert-file-contents-literally"
             | "get-free-disk-space"
+            | "set-visited-file-name"
             | "file-symlink-p"
             | "make-symbolic-link"
             | "call-process"
@@ -1817,6 +1818,37 @@ pub(super) fn call(
                 permissions.set_mode(mode as u32);
                 fs::set_permissions(&path, permissions)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+            Ok(Value::Nil)
+        }
+        "set-visited-file-name" => {
+            need_arg_range(name, args, 1, 3)?;
+            if args[0].is_nil() {
+                interp.buffer.file = None;
+                interp.buffer.file_truename = None;
+                return Ok(Value::Nil);
+            }
+            let path = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            validate_file_name(&path)?;
+            let truename = std::fs::canonicalize(&path)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.clone());
+            interp.buffer.file = Some(path.clone());
+            interp.buffer.file_truename = Some(truename);
+            // GNU renames the buffer to the file's base name (uniquely) and
+            // marks it modified unless ALONG-WITH-FILE.
+            let base = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let _ = super::call(
+                interp,
+                "rename-buffer",
+                &[Value::String(base), Value::T],
+                env,
+            );
+            if !args.get(2).is_some_and(Value::is_truthy) {
+                interp.buffer.set_modified();
             }
             Ok(Value::Nil)
         }
