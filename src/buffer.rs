@@ -701,7 +701,8 @@ impl Buffer {
         if let Some(props) = props
             && !props.is_empty()
         {
-            self.add_text_properties(insert_at, insert_at + nchars, &props);
+            // Fresh text: keep the given plist order (GNU grafts intervals).
+            self.set_text_properties(insert_at, insert_at + nchars, &props);
         }
 
         self.modiff += 1;

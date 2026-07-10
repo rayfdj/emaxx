@@ -301,7 +301,7 @@ impl Interpreter {
                 let insert_at = self.buffer.point();
                 self.insert_current_buffer(text);
                 for span in props {
-                    self.buffer.add_text_properties(
+                    self.buffer.set_text_properties(
                         insert_at + span.start,
                         insert_at + span.end,
                         &span.props,

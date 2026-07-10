@@ -4084,25 +4084,50 @@ If it does not exist, create it and switch it to `messages-buffer-mode'."
           (messages-buffer-mode))
         (current-buffer))))
 
+
+;; help.el (preloaded in GNU): confusable-character hints.  lisp-mode's
+;; `lisp--match-confusable-symbol-character' fontifier consults the regexp.
+(defconst help-uni-confusables
+  '((#x2018 . "'") ;; LEFT SINGLE QUOTATION MARK
+    (#x2019 . "'") ;; RIGHT SINGLE QUOTATION MARK
+    (#x201B . "'") ;; SINGLE HIGH-REVERSED-9 QUOTATION MARK
+    (#x201C . "\"") ;; LEFT DOUBLE QUOTATION MARK
+    (#x201D . "\"") ;; RIGHT DOUBLE QUOTATION MARK
+    (#x201F . "\"") ;; DOUBLE HIGH-REVERSED-9 QUOTATION MARK
+    (#x301E . "\"") ;; DOUBLE PRIME QUOTATION MARK
+    (#xFF02 . "'") ;; FULLWIDTH QUOTATION MARK
+    (#xFF07 . "'") ;; FULLWIDTH APOSTROPHE
+    )
+  "An alist of confusable characters to give hints about.")
+
+(defconst help-uni-confusables-regexp
+  (concat "[" (mapcar #'car help-uni-confusables) "]")
+  "Regexp matching any character listed in `help-uni-confusables'.")
+
 ;; indent.el: the default region indenter drives the buffer's
 ;; `indent-line-function' over each nonblank line.
 (defun indent-region (start end &optional column)
   "Indent each nonblank line in the region.
 With no argument, indent each line using the mode's
-`indent-line-function'."
+`indent-line-function', or the mode's `indent-region-function'
+when one is set."
   (interactive "r")
-  (save-excursion
-    (goto-char end)
-    (setq end (point-marker))
-    (goto-char start)
-    (beginning-of-line)
-    (while (< (point) end)
-      (unless (and (bolp) (eolp))
-        (if column
-            (indent-line-to column)
-          (funcall indent-line-function)))
-      (forward-line 1))
-    (set-marker end nil))
+  (if (and (null column)
+           (boundp 'indent-region-function)
+           indent-region-function)
+      (funcall indent-region-function start end)
+    (save-excursion
+      (goto-char end)
+      (setq end (point-marker))
+      (goto-char start)
+      (beginning-of-line)
+      (while (< (point) end)
+        (unless (and (bolp) (eolp))
+          (if column
+              (indent-line-to column)
+            (funcall indent-line-function)))
+        (forward-line 1))
+      (set-marker end nil)))
   nil)
 
 ;; ert-x.el helpers: ert-x is a preloaded feature here, so GNU's file

@@ -372,6 +372,9 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             // as js.el) would shadow the native fontification entry point
             // with elisp that depends on redisplay-driven machinery.
             | "font-lock-ensure"
+            // Same shadowing concern for the region entry point faceup's
+            // test helpers call directly.
+            | "font-lock-fontify-region"
             // Native major modes are the supported activation path even
             // after their GNU libraries (cc-mode.el, js.el) get loaded for
             // keyword variables and would shadow them with elisp setups.

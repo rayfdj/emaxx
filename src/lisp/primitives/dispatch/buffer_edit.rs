@@ -736,13 +736,46 @@ pub(super) fn call(
             }
         }
         "beginning-of-line" => {
+            // GNU constrains bol motion to the current field (fields are
+            // rare; skip the work when the buffer has none).
+            let old_pos = interp.buffer.point();
             interp.buffer.beginning_of_line();
+            if buffer_has_field_property(interp) {
+                let new_pos = interp.buffer.point();
+                let constrained = super::call(
+                    interp,
+                    "constrain-to-field",
+                    &[
+                        Value::Integer(new_pos as i64),
+                        Value::Integer(old_pos as i64),
+                    ],
+                    env,
+                )?
+                .as_integer()? as usize;
+                interp.buffer.goto_char(constrained);
+            }
             Ok(Value::Nil)
         }
         "back-to-indentation" => {
+            let old_pos = interp.buffer.point();
             interp.buffer.beginning_of_line();
+            if buffer_has_field_property(interp) {
+                let new_pos = interp.buffer.point();
+                let constrained = super::call(
+                    interp,
+                    "constrain-to-field",
+                    &[
+                        Value::Integer(new_pos as i64),
+                        Value::Integer(old_pos as i64),
+                    ],
+                    env,
+                )?
+                .as_integer()? as usize;
+                interp.buffer.goto_char(constrained);
+            }
+            let bol = interp.buffer.point();
             let limit = interp.buffer.end_of_line();
-            interp.buffer.beginning_of_line();
+            interp.buffer.goto_char(bol);
             let _ = syntax::skip_syntax_impl(
                 interp,
                 &Value::String(" ".into()),
@@ -1966,6 +1999,29 @@ pub(super) fn call(
             if simple_c_family_indent_line(interp, env)? {
                 return Ok(Value::Nil);
             }
+            // GNU funcalls the buffer's `indent-line-function' (tabbing-only
+            // functions excepted; newcomment relies on this for comment-only
+            // lines).
+            let indent_function = interp
+                .lookup_var("indent-line-function", env)
+                .unwrap_or(Value::Nil);
+            let function_name = indent_function.as_symbol().ok().map(str::to_string);
+            if !matches!(
+                function_name.as_deref(),
+                None | Some(
+                    "indent-relative"
+                        | "indent-relative-maybe"
+                        | "indent-relative-first-indent-point"
+                        | "indent-according-to-mode"
+                )
+            ) {
+                interp.call_function_value(
+                    indent_function.clone(),
+                    function_name.as_deref(),
+                    &[],
+                    env,
+                )?;
+            }
             Ok(Value::Nil)
         }
         "current-indentation" => {
@@ -2004,6 +2060,19 @@ pub(super) fn call(
             let column = args[0].as_integer()?.max(0);
             let saved = interp.buffer.point();
             interp.buffer.beginning_of_line();
+            // GNU's backward-to-indentation constrains to the current
+            // field: a read-only prompt prefix is not indentation.
+            if buffer_has_field_property(interp) {
+                let new_pos = interp.buffer.point();
+                let constrained = super::call(
+                    interp,
+                    "constrain-to-field",
+                    &[Value::Integer(new_pos as i64), Value::Integer(saved as i64)],
+                    env,
+                )?
+                .as_integer()? as usize;
+                interp.buffer.goto_char(constrained);
+            }
             let bol = interp.buffer.point();
             while matches!(
                 interp.buffer.char_at(interp.buffer.point()),
@@ -2290,8 +2359,17 @@ pub(super) fn call(
             if shortage == 0 || (count > 0 && interp.buffer.point() < interp.buffer.point_max()) {
                 interp.buffer.beginning_of_line();
             }
-            let result = interp.buffer.point();
+            let mut result = interp.buffer.point();
             interp.buffer.goto_char(saved);
+            if buffer_has_field_property(interp) {
+                result = super::call(
+                    interp,
+                    "constrain-to-field",
+                    &[Value::Integer(result as i64), Value::Integer(saved as i64)],
+                    env,
+                )?
+                .as_integer()? as usize;
+            }
             Ok(Value::Integer(result as i64))
         }
         "count-lines" => {
@@ -3146,4 +3224,12 @@ fn simple_c_family_indent_line(interp: &mut Interpreter, env: &mut Env) -> Resul
         .buffer
         .goto_char(restored.clamp(interp.buffer.point_min(), interp.buffer.point_max()));
     Ok(true)
+}
+
+fn buffer_has_field_property(interp: &Interpreter) -> bool {
+    interp
+        .buffer
+        .full_property_spans()
+        .iter()
+        .any(|span| span.props.iter().any(|(name, _)| name == "field"))
 }

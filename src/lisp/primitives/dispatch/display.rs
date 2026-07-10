@@ -63,6 +63,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "font-lock-remove-keywords"
             | "font-lock-flush"
             | "font-lock-ensure"
+            | "font-lock-fontify-region"
             | "find-image"
             | "image-size"
             | "image-mask-p"
@@ -1025,8 +1026,9 @@ pub(super) fn call(
             font_lock_ensure_region(interp, start, end, env)?;
             Ok(Value::Nil)
         }
-        "font-lock-ensure" => {
-            need_arg_range(name, args, 0, 2)?;
+        "font-lock-ensure" | "font-lock-fontify-region" => {
+            // font-lock-fontify-region also takes GNU's optional LOUDLY.
+            need_arg_range(name, args, 0, 3)?;
             // GNU fontifies whenever fontification is specified for the
             // buffer (font-lock-specified-p), even with font-lock-mode off
             // in batch.
@@ -1059,6 +1061,24 @@ pub(super) fn call(
                 .transpose()?
                 .unwrap_or_else(|| interp.buffer.point_max());
             font_lock_ensure_region(interp, start, end, env)?;
+            if name == "font-lock-fontify-region"
+                && super::call(
+                    interp,
+                    "fboundp",
+                    &[Value::Symbol(
+                        "emaxx--font-lock-fontify-region-extras".into(),
+                    )],
+                    env,
+                )?
+                .is_truthy()
+            {
+                interp.call_function_value(
+                    Value::Symbol("emaxx--font-lock-fontify-region-extras".into()),
+                    Some("emaxx--font-lock-fontify-region-extras"),
+                    &[Value::Integer(start as i64), Value::Integer(end as i64)],
+                    env,
+                )?;
+            }
             Ok(Value::Nil)
         }
         "find-image" => {
