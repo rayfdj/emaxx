@@ -1848,7 +1848,9 @@ pub(super) fn call(
         "fmakunbound" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            interp.set_function_binding(symbol, None);
+            // GNU voids the function cell outright; shadowed stale entries
+            // (repeated defuns push duplicates) must not resurface.
+            interp.remove_all_function_bindings(symbol);
             // The dispatch-chain metadata describes the (now removed)
             // function binding; a fresh generic must not rank its methods
             // against specializers of the destroyed chain.

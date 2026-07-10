@@ -432,7 +432,8 @@ MET-NAME is as recorded in `load-history' for the method."
         ;; methods to run; give the dispatch chain a pass-through primary.
         (when (and (memq kind '(:before :after))
                    (or (not (fboundp method))
-                       (eq (symbol-function method) #'ignore)))
+                       (eq (indirect-function method)
+                           (symbol-function 'ignore))))
           (eval `(cl-defmethod ,method ((,arg1 ,spec) ,@rest)
                    (when (cl-next-method-p) (cl-call-next-method)))
                 t))
@@ -5055,3 +5056,79 @@ KIND should be `var' for a variable or `subr' for a subroutine."
         (delete-region begin end)))))
 
 ;;; simple_compat.el ends here
+
+;; GNU files.el (verbatim): memory-report--format needs it.
+(defun file-size-human-readable (file-size &optional flavor space unit)
+  "Produce a string showing FILE-SIZE in human-readable form.
+
+Optional second argument FLAVOR controls the units and the display format:
+
+ If FLAVOR is nil or omitted, each kilobyte is 1024 bytes and the produced
+    suffixes are \"k\", \"M\", \"G\", \"T\", etc.
+ If FLAVOR is `si', each kilobyte is 1000 bytes and the produced suffixes
+    are \"k\", \"M\", \"G\", \"T\", etc.
+ If FLAVOR is `iec', each kilobyte is 1024 bytes and the produced suffixes
+    are \"KiB\", \"MiB\", \"GiB\", \"TiB\", etc.
+
+Optional third argument SPACE is a string put between the number and unit.
+It defaults to the empty string.  We recommend a single space or
+non-breaking space, unless other constraints prohibit a space in that
+position.
+
+Optional fourth argument UNIT is the unit to use.  It defaults to \"B\"
+when FLAVOR is `iec' and the empty string otherwise.  We recommend \"B\"
+in all cases, since that is the standard symbol for byte."
+  (let ((power (if (or (null flavor) (eq flavor 'iec))
+		   1024.0
+		 1000.0))
+	(prefixes '("" "k" "M" "G" "T" "P" "E" "Z" "Y" "R" "Q")))
+    (while (and (>= file-size power) (cdr prefixes))
+      (setq file-size (/ file-size power)
+	    prefixes (cdr prefixes)))
+    (let* ((prefix (car prefixes))
+           (prefixed-unit (if (eq flavor 'iec)
+                              (concat
+                               (if (string= prefix "k") "K" prefix)
+                               (if (string= prefix "") "" "i")
+                               (or unit "B"))
+                            (concat prefix unit))))
+      ;; Mimic what GNU "ls -lh" does:
+      ;; If the formatted size will have just one digit before the decimal...
+      (format (if (and (< file-size 10)
+                       ;; ...and its fractional part is not too small...
+                       (>= (mod file-size 1.0) 0.05)
+                       (< (mod file-size 1.0) 0.95))
+                  ;; ...then emit one digit after the decimal.
+		  "%.1f%s%s"
+	        "%.0f%s%s")
+	      file-size
+              (if (string= prefixed-unit "") "" (or space ""))
+              prefixed-unit))))
+
+;; GNU files.el (verbatim): `byte-count-to-string-function's default.
+(defun file-size-human-readable-iec (size)
+  "Human-readable string for SIZE bytes, using IEC prefixes."
+  (file-size-human-readable size 'iec " "))
+
+(defvar byte-count-to-string-function #'file-size-human-readable-iec
+  "Function that turns a number of bytes into a human-readable string.
+It is for use when displaying file sizes and disk space where other
+constraints do not force a specific format.")
+
+;; GNU subr.el (verbatim).
+(defun readablep (object)
+  "Say whether OBJECT has a readable syntax.
+This means that OBJECT can be printed out and then read back
+again by the Lisp reader.  This function returns nil if OBJECT is
+unreadable, and the printed representation (from `prin1') of
+OBJECT if it is readable."
+  (declare (side-effect-free error-free))
+  (catch 'unreadable
+    (let ((print-unreadable-function
+           (lambda (_object _escape)
+             (throw 'unreadable nil))))
+      (prin1-to-string object))))
+
+;; GNU cl.el aliases (advice.el preactivation uses them).
+(defalias 'rplaca #'setcar)
+(defalias 'rplacd #'setcdr)

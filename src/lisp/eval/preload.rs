@@ -471,6 +471,8 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "fill-region" => Some(builtin_file_autoload("fill", Value::Nil)),
         "find-lisp-object-file-name" => Some(builtin_file_autoload("help-fns", Value::Nil)),
         "gv-define-expander" => Some(builtin_macro_autoload("gv")),
+        "gv-ref" => Some(builtin_macro_autoload("gv")),
+        "gv-deref" => Some(builtin_file_autoload("gv", Value::Nil)),
         "gv-define-setter" => Some(builtin_macro_autoload("gv")),
         "gv-define-simple-setter" => Some(builtin_macro_autoload("gv")),
         "gv-letplace" => Some(builtin_macro_autoload("gv")),
@@ -497,6 +499,20 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         | "comment-normalize-vars"
         | "comment-search-forward" => Some(builtin_file_autoload("newcomment", Value::Nil)),
         "common-lisp-indent-function" => Some(builtin_file_autoload("cl-indent", Value::Nil)),
+        // GNU preloads nadvice.el; the old advice.el is autoloaded.
+        // `add-function'/`remove-function' intentionally stay on the native
+        // arms for now: routing them through nadvice.el's gv-based macros
+        // regresses edebug-tests.el (instrumentation captures the gv-letplace
+        // expansion).  Revisit once edebug handles nadvice's macro output.
+        "advice-function-member-p"
+        | "advice-function-mapc"
+        | "advice--add-function"
+        | "advice--remove-function"
+        | "advice-eval-interactive-spec" => Some(builtin_file_autoload("nadvice", Value::Nil)),
+        "defadvice" => Some(builtin_macro_autoload("advice")),
+        "ad-activate" | "ad-deactivate" | "ad-add-advice" | "ad-is-active" => {
+            Some(builtin_file_autoload("advice", Value::Nil))
+        }
         "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
         "prolog-mode" => Some(builtin_file_autoload("prolog", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),

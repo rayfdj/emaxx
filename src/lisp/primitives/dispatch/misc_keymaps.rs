@@ -205,6 +205,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "hack-dir-local-variables-non-file-buffer"
             | "force-mode-line-update"
             | "garbage-collect"
+            | "emaxx--oclosure-type-p"
+            | "emaxx--oclosure-slot"
+            | "emaxx--oclosure-copy"
             | "num-processors"
             | "current-cpu-time"
             | "emacs-pid"
@@ -871,6 +874,12 @@ pub(super) fn call(
         "symbol-function" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
+            if interp.raw_function_binding(symbol, env).is_none()
+                && let Some(macro_function) = interp.macro_binding_as_function(symbol)
+            {
+                // GNU's function cell for a macro holds (macro . EXPANDER).
+                return Ok(macro_function);
+            }
             Ok(match interp.raw_function_binding(symbol, env) {
                 Some(value) => value,
                 None if is_special_form_name(symbol) => Value::BuiltinFunc(symbol.to_string()),
@@ -888,7 +897,9 @@ pub(super) fn call(
                     Value::T,
                     Value::Nil,
                 ]),
-                None => Value::String(format!("#<function {}>", symbol)),
+                // GNU returns nil for an unbound function cell (nadvice's
+                // pending-advice path reads it).
+                None => Value::Nil,
             })
         }
         "symbol-file" => {
@@ -1078,44 +1089,93 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             Ok(Value::T)
         }
-        "advice-add" => {
+        // File-less fallback; GNU nadvice.el owns advice once loaded.
+        "advice-add" if !interp.has_lisp_function("advice-add") => {
             if args.len() < 3 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let function_name = symbol_designator_name(&args[0])
                 .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
-            let where_sym = args[1].as_symbol()?;
-            let Ok(original) = interp.lookup_function(&function_name, env) else {
+            let where_kind = args[1].as_symbol()?.to_string();
+            // Keep the advice value unresolved (a symbol stays a symbol,
+            // like GNU) so later redefinitions of a symbol advice apply.
+            let advice = args[2].clone();
+            let advice_name = args
+                .get(3)
+                .and_then(|props| props.to_vec().ok())
+                .and_then(|props| {
+                    props.iter().find_map(|prop| {
+                        let (key, value) = prop.cons_values()?;
+                        matches!(&key, Value::Symbol(key) if key == "name").then_some(value)
+                    })
+                });
+            let base = interp.lookup_function(&function_name, env).ok();
+            let state = interp
+                .advice_registry
+                .entry(function_name.clone())
+                .or_default();
+            if state.base.is_none() {
+                state.base = base;
+            }
+            state.entries.insert(
+                0,
+                crate::lisp::eval::AdviceEntry {
+                    where_kind,
+                    function: advice,
+                    name: advice_name,
+                },
+            );
+            interp.advice_reapply(&function_name);
+            Ok(Value::Nil)
+        }
+        // File-less fallback; GNU nadvice.el owns advice once loaded.
+        "advice-member-p" if !interp.has_lisp_function("advice-member-p") => {
+            need_args(name, args, 2)?;
+            let Some(function_name) = symbol_designator_name(&args[1]) else {
                 return Ok(Value::Nil);
             };
-            let advice = match &args[2] {
-                Value::Symbol(symbol) => interp
-                    .lookup_function(symbol, env)
-                    .unwrap_or_else(|_| Value::Symbol(symbol.clone())),
-                value => match symbol_designator_name(value) {
-                    Some(symbol) => interp
-                        .lookup_function(&symbol, env)
-                        .unwrap_or(Value::Symbol(symbol)),
-                    None => value.clone(),
-                },
-            };
-            let wrapped = match where_sym {
-                ":override" => advice,
-                ":after" => make_advice_wrapper_after(original, advice),
-                ":around" => make_advice_wrapper_around(original, advice),
-                _ => return Ok(Value::Nil),
-            };
-            interp.push_function_binding(&function_name, wrapped);
+            let entries = interp
+                .advice_registry
+                .get(&function_name)
+                .map(|state| state.entries.clone())
+                .unwrap_or_default();
+            let target = args[0].clone();
+            for entry in &entries {
+                if interp.advice_functions_match(&entry.function, &target)
+                    || entry.name.as_ref() == Some(&target)
+                {
+                    return Ok(Value::T);
+                }
+            }
             Ok(Value::Nil)
         }
-        "advice-member-p" => {
+        // File-less fallback; GNU nadvice.el owns advice once loaded.
+        "advice-remove" if !interp.has_lisp_function("advice-remove") => {
             need_args(name, args, 2)?;
-            Ok(Value::Nil)
-        }
-        "advice-remove" => {
-            need_args(name, args, 2)?;
-            let function_name = args[0].as_symbol()?.to_string();
-            interp.pop_function_binding(&function_name);
+            let function_name = symbol_designator_name(&args[0])
+                .ok_or_else(|| LispError::TypeError("symbol".into(), args[0].type_name()))?;
+            let target = args[1].clone();
+            let entries = interp
+                .advice_registry
+                .get(&function_name)
+                .map(|state| state.entries.clone())
+                .unwrap_or_default();
+            let mut kept = Vec::with_capacity(entries.len());
+            let mut removed = false;
+            for entry in entries {
+                if !removed
+                    && (interp.advice_functions_match(&entry.function, &target)
+                        || entry.name.as_ref() == Some(&target))
+                {
+                    removed = true;
+                    continue;
+                }
+                kept.push(entry);
+            }
+            if removed && let Some(state) = interp.advice_registry.get_mut(&function_name) {
+                state.entries = kept;
+                interp.advice_reapply(&function_name);
+            }
             Ok(Value::Nil)
         }
         "emaxx-apply-around-advice" => {
@@ -1136,7 +1196,8 @@ pub(super) fn call(
             interp.call_function_value(advice, None, &original_args, env)?;
             Ok(result)
         }
-        "remove-function" => {
+        // File-less fallback; GNU nadvice.el's macro takes over once loaded.
+        "remove-function" if !interp.has_lisp_macro("remove-function") => {
             need_args(name, args, 2)?;
             Ok(Value::Nil)
         }
@@ -2331,10 +2392,90 @@ pub(super) fn call(
             need_arg_range(name, args, 0, 1)?;
             Ok(Value::Nil)
         }
+        "emaxx--oclosure-type-p" => {
+            need_args(name, args, 2)?;
+            let target = args[1].as_symbol()?;
+            Ok(if oclosure_value_matches_type(interp, &args[0], target) {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
+        "emaxx--oclosure-slot" => {
+            need_args(name, args, 2)?;
+            let slot = args[1].as_symbol()?;
+            let Value::Lambda(_, _, closure_env) = &args[0] else {
+                return Err(wrong_type_argument("oclosure", args[0].clone()));
+            };
+            let env_contents = closure_env.borrow();
+            for frame in env_contents.iter().rev() {
+                if frame
+                    .iter()
+                    .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                {
+                    return Ok(frame
+                        .iter()
+                        .find(|(key, _)| key == slot)
+                        .map(|(_, value)| value.clone())
+                        .unwrap_or(Value::Nil));
+                }
+            }
+            Err(wrong_type_argument("oclosure", args[0].clone()))
+        }
+        "emaxx--oclosure-copy" => {
+            need_args(name, args, 2)?;
+            let Value::Lambda(params, body, closure_env) = &args[0] else {
+                return Err(wrong_type_argument("oclosure", args[0].clone()));
+            };
+            let replacements = args[1].to_vec()?;
+            let mut contents = closure_env.borrow().clone();
+            for frame in contents.iter_mut().rev() {
+                if !frame
+                    .iter()
+                    .any(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                {
+                    continue;
+                }
+                for replacement in &replacements {
+                    let Some((key, value)) = replacement.cons_values() else {
+                        continue;
+                    };
+                    let Ok(slot) = key.as_symbol() else { continue };
+                    if let Some(entry) = frame.iter_mut().find(|(name, _)| name == slot) {
+                        entry.1 = value.clone();
+                    }
+                }
+                break;
+            }
+            Ok(Value::Lambda(
+                params.clone(),
+                body.clone(),
+                crate::lisp::types::shared_env(contents),
+            ))
+        }
         "garbage-collect" => {
             need_args(name, args, 0)?;
             collect_weak_hash_tables(interp)?;
-            Ok(Value::Nil)
+            // GNU returns ((TYPE SIZE USED FREE) ...); the SIZE column is
+            // the 64-bit object layout constant (memory-report.el computes
+            // object sizes from it).  Counts are approximations.
+            let entry = |name: &str, rest: &[i64]| {
+                Value::list(
+                    std::iter::once(Value::Symbol(name.into()))
+                        .chain(rest.iter().map(|n| Value::Integer(*n))),
+                )
+            };
+            Ok(Value::list([
+                entry("conses", &[16, 0, 0]),
+                entry("symbols", &[48, 0, 0]),
+                entry("strings", &[32, 0, 0]),
+                entry("string-bytes", &[1, 0]),
+                entry("vectors", &[16, 0]),
+                entry("vector-slots", &[8, 0, 0]),
+                entry("floats", &[8, 0, 0]),
+                entry("intervals", &[56, 0, 0]),
+                entry("buffers", &[984, 0]),
+            ]))
         }
         "num-processors" => {
             need_args(name, args, 0)?;
@@ -6202,6 +6343,61 @@ fn semantic_srecode_variable_tag(name: &str, value: Vec<Value>) -> Value {
     )
 }
 
+pub(crate) fn oclosure_value_matches_type(
+    interp: &Interpreter,
+    value: &Value,
+    target: &str,
+) -> bool {
+    let Some(mut current) = oclosure_type_of(value) else {
+        return false;
+    };
+    loop {
+        if current == target {
+            return true;
+        }
+        match interp
+            .get_symbol_property(&current, "emaxx-oclosure-parent")
+            .and_then(|value| value.as_symbol().ok().map(String::from))
+        {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
+pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
+    let Value::Lambda(_, body, closure_env) = value else {
+        return None;
+    };
+    // Real oclosures carry the isolation marker as their first executable
+    // body form; closures that merely captured an oclosure's frames don't.
+    let first = body
+        .iter()
+        .find(|form| !matches!(form, Value::String(_) | Value::StringObject(_)))?;
+    if !matches!(first, Value::Symbol(marker) if marker == ":closure-isolated-current-env") {
+        return None;
+    }
+    let contents = closure_env.borrow();
+    contents.iter().rev().find_map(|frame| {
+        frame
+            .iter()
+            .find(|(key, _)| key == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+            .and_then(|(_, value)| value.as_symbol().ok().map(String::from))
+    })
+}
+
+fn value_is_cl_struct_record(interp: &Interpreter, value: &Value) -> bool {
+    let Value::Record(id) = value else {
+        return false;
+    };
+    let Some(record) = interp.find_record(*id) else {
+        return false;
+    };
+    interp
+        .get_symbol_property(&record.type_name, "emaxx-struct-slots")
+        .is_some()
+}
+
 fn cl_typep_matches(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -6298,6 +6494,11 @@ fn cl_typep_matches(
         // their `list' methods on them).
         || (target == "list" && value.is_list() && !is_vector_like_value(interp, value))
         || (target == "eieio-object" && matches!(value, Value::Record(_)))
+        // Every cl-defstruct inherits cl-structure-object in GNU.
+        || (target == "cl-structure-object" && value_is_cl_struct_record(interp, value))
+        // Oclosure types (nadvice's `advice' objects) dispatch by their
+        // registered type and parent chain.
+        || oclosure_value_matches_type(interp, value, target)
         || (target == "hash-table" && crate::lisp::json::is_hash_table(interp, value))
         || (target == "class"
             && interp
