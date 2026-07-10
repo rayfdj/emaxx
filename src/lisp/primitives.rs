@@ -136,6 +136,7 @@ fn is_sqlite_builtin(name: &str) -> bool {
             | "sqlite-finalize"
             | "sqlite-version"
             | "sqlitep"
+            | "sqlite-pragma"
             | "sqlite-available-p"
     )
 }

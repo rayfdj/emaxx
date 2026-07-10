@@ -154,7 +154,22 @@ impl Interpreter {
             body_start
         };
         let body: Vec<Value> = items[body_start..].to_vec();
-        self.macros.push((name.clone(), params, body));
+        self.macros
+            .push((name.clone(), params.clone(), body.clone()));
+        // Pending advice on a macro: GNU defalias hands the fresh
+        // (macro . EXPANDER) cell to `defalias-fset-function', and nadvice
+        // fsets the advised cell back (the cell wins over the macro table).
+        if self
+            .get_symbol_property(&name, "defalias-fset-function")
+            .is_some_and(|value| value.is_truthy())
+        {
+            let cell = Value::cons(
+                Value::Symbol("macro".into()),
+                Value::Lambda(params, body, shared_env(Vec::new())),
+            );
+            let mut env = Env::new();
+            self.defalias_fset_function_handles(&name, &cell, &mut env);
+        }
         Ok(Value::Symbol(name))
     }
 
@@ -227,16 +242,29 @@ impl Interpreter {
                 items.len().saturating_sub(1),
             ));
         }
-        let name = quoted_symbol_name(&items[1])
-            .or_else(|| items[1].as_symbol().ok().map(str::to_string))
-            .ok_or_else(|| LispError::TypeError("symbol".into(), items[1].type_name()))?;
+        // GNU defalias is a FUNCTION: a bare-symbol first argument is an
+        // expression evaluating to the symbol to define (uninterned symbols
+        // held in variables — Bug#61179's `(defalias sym ...)').
+        let name = match &items[1] {
+            Value::Symbol(_) => {
+                let value = self.eval(&items[1], env)?;
+                value.as_symbol()?.to_string()
+            }
+            other => quoted_symbol_name(other)
+                .ok_or_else(|| LispError::TypeError("symbol".into(), other.type_name()))?,
+        };
         let function = self.eval(&items[2], env)?;
         self.validate_function_binding(&name, &function)?;
         if crate::lisp::primitives::prefer_builtin_override(&name) {
             self.set_function_binding(&name, Some(Value::BuiltinFunc(name.clone())));
             return Ok(Value::Symbol(name));
         }
+        if self.defalias_fset_function_handles(&name, &function, env) {
+            self.advice_note_new_definition(&name);
+            return Ok(Value::Symbol(name));
+        }
         self.set_function_binding(&name, Some(function));
+        self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
 
@@ -309,6 +337,14 @@ impl Interpreter {
                 return Ok(Some(expanded));
             }
 
+            // GNU keeps macros in the function cell as (macro . EXPANDER);
+            // nadvice fsets advised macros (and advised macro ALIASES) that
+            // way, so the cell wins over the native macro table.
+            if let Some(expander) = self.function_cell_macro_expander(name, env) {
+                let expanded = self.call_function_value(expander, Some(name), args, env)?;
+                return Ok(Some(expanded));
+            }
+
             if let Some(binding) = self.resolve_macro_binding(name) {
                 break binding;
             }
@@ -316,9 +352,18 @@ impl Interpreter {
             if attempted_autoload {
                 return Ok(None);
             }
-            let Ok(function) = self.lookup_function(name, env) else {
-                return Ok(None);
+            let mut function = match self.lookup_function(name, env) {
+                Ok(function) => function,
+                Err(_) => return Ok(None),
             };
+            // A native fallback arm can shadow a preloaded macro autoload
+            // (add-function before nadvice.el loads): honor the autoload.
+            if crate::lisp::primitives::autoload_parts(&function).is_none()
+                && let Some(stub) = preload::builtin_autoload_function(name)
+                && crate::lisp::primitives::autoload_parts(&stub).is_some()
+            {
+                function = stub;
+            }
             let Some((file, _, _kind)) = crate::lisp::primitives::autoload_parts(&function) else {
                 return Ok(None);
             };
@@ -327,9 +372,27 @@ impl Interpreter {
             if !loads_macro {
                 return Ok(None);
             }
-            self.load_target(&file)?;
+            // A file-less environment (unit tests) falls back to whatever
+            // native arm handles the name.
+            if self.load_target(&file).is_err() {
+                return Ok(None);
+            }
             attempted_autoload = true;
         };
+
+        // Advised macros expand through the advice chain: the expander
+        // (resolved now, so redefinitions are seen) is the innermost
+        // function and receives the unevaluated argument forms.
+        if self
+            .advice_registry
+            .get(name)
+            .is_some_and(|state| !state.entries.is_empty())
+        {
+            let expander = Value::Lambda(params.clone(), body.clone(), shared_env(Vec::new()));
+            let composed = self.compose_advice_chain(name, expander);
+            let expanded = self.call_function_value(composed, Some(name), args, env)?;
+            return Ok(Some(expanded));
+        }
 
         // Bind params to unevaluated args
         let mut frame = Vec::new();

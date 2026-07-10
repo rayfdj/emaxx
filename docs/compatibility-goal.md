@@ -19,6 +19,50 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2419/7080 are verified: `memory-report-tests.el`
+  (2412..2414) and `multisession-tests.el` (2415..2419) pass.  The
+  batch: GNU-shaped `garbage-collect' output (fixed 64-bit layout size
+  constants; counts approximate), `cl-typep' recognizes every
+  cl-defstruct record as `cl-structure-object' (memory-report's struct
+  sizing dispatch), native `sqlite-pragma', and verbatim
+  simple_compat ports of `file-size-human-readable' (files.el) and
+  `readablep' (subr.el).  It also carries the nadvice groundwork the
+  next file (nadvice-tests.el) needs: REAL oclosures
+  (`oclosure-define' registers slots/predicate/accessors/copiers,
+  `oclosure-lambda' builds a closure whose slot frame is a marker
+  frame in its captured env; bodies carry
+  `:closure-isolated-current-env' — body_has_marker only inspects the
+  FIRST body form, so exactly one marker), GNU nadvice.el/advice.el
+  load and run (autoloads for add-function/defadvice families, gv-ref/
+  gv-deref), the macro↔function-cell bridge (`symbol-function' of a
+  macro synthesizes (macro . EXPANDER), a (macro . FN) function cell
+  wins over the native macro table in macroexpansion, nil for unbound
+  cells), defun/defalias/defmacro honor `defalias-fset-function'
+  (nadvice pending advice + redefinition-preserves-advice), `defalias'
+  evaluates a bare-symbol name argument (it is a function in GNU;
+  Bug#61179's uninterned symbols), `equal' compares lambdas
+  structurally (params+body; emaxx lambdas over-capture so environments
+  are ignored), function-position lookup skips oclosure slot frames
+  (`(car x)' inside an advice body must not resolve the `car' SLOT),
+  `interactive-form' returns nil for unbound symbols, consults
+  `oclosure-interactive-form' for oclosures, and cl-typep dispatches
+  oclosure types through their parent chain.  nadvice-tests.el itself
+  is NOT yet passing (7 of 13 remain: interactive-form composition
+  through ad-Advice-* assembled definitions, call-interactively spec
+  composition, cl-print of advice objects, called-interactively-p, and
+  cross-test contamination in the full-file run).  Regressions the
+  groundwork exposed in the verified prefix are fixed alongside:
+  `add-function'/`remove-function' stay native (nadvice's gv-letplace
+  output breaks edebug instrumentation), eieio--defmethod's
+  pass-through-primary gate compares `indirect-function' against
+  `(symbol-function 'ignore)' (a BuiltinFunc is never `eq' the SYMBOL
+  `ignore'; the old gate only "worked" because the old defalias bug
+  left the generic unbound), the native insert-directory free-space
+  line and a real `get-free-disk-space' port funcall GNU's
+  `byte-count-to-string-function' (default
+  `file-size-human-readable-iec', "10 B" not "10"), and `fmakunbound'
+  purges ALL stacked function-cell entries so stale definitions cannot
+  resurface (cl-generic-tests' fmakunbound-between-tests pattern).
 - Tests through 2411/7080 are verified: `map-tests.el` (2350..2411, all
   62 selected) passes.  The batch: quoted `#s(hash-table ...)' literals
   MATERIALIZE into real hash-table records at `quote' time (GNU's

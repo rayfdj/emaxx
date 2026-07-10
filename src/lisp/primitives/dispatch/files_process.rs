@@ -416,7 +416,8 @@ pub(super) fn call(
                 args[0].clone(),
             ]))
         }
-        "add-function" => {
+        // File-less fallback; GNU nadvice.el's macro takes over once loaded.
+        "add-function" if !interp.has_lisp_macro("add-function") => {
             need_arg_range(name, args, 3, 4)?;
             let where_sym = args[0].as_symbol()?;
             let advice = match &args[2] {
@@ -1916,7 +1917,29 @@ pub(super) fn call(
         "insert-file-contents-literally" => insert_file_contents(interp, env, args, true),
         "get-free-disk-space" => {
             need_args(name, args, 1)?;
-            Ok(Value::Nil)
+            // GNU files.el: format (nth 2 (file-system-info dir)) through
+            // `byte-count-to-string-function', nil when unavailable.
+            let Ok(info_function) = interp.lookup_function("file-system-info", env) else {
+                return Ok(Value::Nil);
+            };
+            let target = resolve_file_name_in_env(interp, env, &string_text(&args[0])?);
+            let info = interp.call_function_value(
+                info_function,
+                Some("file-system-info"),
+                &[Value::String(target)],
+                env,
+            )?;
+            let Some(available_bytes) = nth_list_item(&info, 2) else {
+                return Ok(Value::Nil);
+            };
+            if available_bytes.is_nil() {
+                return Ok(Value::Nil);
+            }
+            Ok(Value::String(file_size_human_readable(
+                interp,
+                env,
+                &available_bytes,
+            )?))
         }
         "file-symlink-p" => {
             need_args(name, args, 1)?;
@@ -2575,11 +2598,26 @@ fn file_size_human_readable(
     env: &mut Env,
     size: &Value,
 ) -> Result<String, LispError> {
+    // GNU get-free-disk-space funcalls `byte-count-to-string-function',
+    // whose default is file-size-human-readable-iec (IEC prefixes with a
+    // space separator, e.g. "10 B").
+    if let Some(function) = interp
+        .lookup_var("byte-count-to-string-function", env)
+        .filter(|value| value.is_truthy())
+    {
+        let rendered =
+            interp.call_function_value(function, None, std::slice::from_ref(size), env)?;
+        return string_text(&rendered);
+    }
     if let Ok(function) = interp.lookup_function("file-size-human-readable", env) {
         let rendered = interp.call_function_value(
             function,
             Some("file-size-human-readable"),
-            std::slice::from_ref(size),
+            &[
+                size.clone(),
+                Value::Symbol("iec".into()),
+                Value::String(" ".into()),
+            ],
             env,
         )?;
         return string_text(&rendered);

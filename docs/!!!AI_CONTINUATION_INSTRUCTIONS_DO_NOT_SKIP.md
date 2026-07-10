@@ -28,6 +28,67 @@ counts as the progress denominator.
   reader markers, cl-no-applicable-method conditions, should-error
   error-conditions matching, eq-preserving alist-get removal, cXr setf
   places).
+- Verified through 2419 pending sweep6 (2026-07-10): memory-report +
+  multisession pass; big nadvice groundwork included (see
+  docs/compatibility-goal.md 2419 entry for the full list: real
+  oclosures, GNU nadvice.el/advice.el loading, macro↔function-cell
+  bridge, defalias-fset-function protocol, structural lambda `equal',
+  oclosure-frame-skipping function lookup).  nadvice-tests.el itself
+  still has 7 mismatches — resume there: (a) `interactive-form' of the
+  ad-Advice-* ASSEMBLED definitions returns nil (the (interactive "P")
+  sits deeper in the assembled body than the native scanner looks) —
+  fix that and interactive/preactivate/bug61179 likely follow;
+  (b) call-interactively must evaluate the COMPOSED advice interactive
+  spec (advice-eval-interactive-spec); (c) cl-print of advice objects
+  "#f(advice car :after cdr)" via nadvice's cl-print-object method
+  (needs cl-prin1 dispatch on oclosure types — cl-typep side is done);
+  (d) advice-tests-advice/nadvice fail ONLY in the full-file run
+  (cross-test contamination; use the member-prefix bisect);
+  (e) called-interactively-p: oracle FAILS the -around and -filter-args
+  variants — emaxx must MATCH those failures, not fix them.
+  KEY GOTCHAS learned: body_has_marker inspects only the FIRST body
+  form (stack exactly ONE closure marker); eval's frame-merge machinery
+  unifies identically-shaped frames across closures (why oclosure
+  bodies need :closure-isolated-current-env); the native
+  add-function/advice-add arms are gated behind GNU nadvice once
+  loaded; try_macroexpand honors preloaded macro autoload stubs that a
+  native recognizer would shadow (add-function's stub).
+- SWEEP7 REGRESSIONS — ALL RESOLVED (2026-07-10 afternoon):
+  (1) edebug-tests.el = the add-function/remove-function MACRO
+  AUTOLOADS to nadvice; they stay on the native arms (permanent,
+  commented in preload.rs builtin_autoload_function) until edebug can
+  instrument nadvice's gv-letplace output.
+  (2) eieio-test-methodinvoke.el + eieio-tests.el = simple_compat.el's
+  eieio--defmethod pass-through-primary gate compared
+  `(eq (symbol-function method) #'ignore)` — a BuiltinFunc never eq a
+  Symbol; it only ever "worked" because the old sf_defalias bug left
+  the generic UNBOUND (fboundp nil).  Once the WIP defalias fix bound
+  the generic to #<builtin ignore>, the gate failed, no pass-through
+  primary was created, and the first :before wrapper was built WITHOUT
+  its __emaxx_before_method_* qualifier frame — later registrations
+  then grafted primaries ABOVE it (before/after ran out of order).
+  Fix: gate on `(eq (indirect-function method) (symbol-function
+  'ignore))`.  NOTE the oclosure graft in
+  cl_defmethod_advice_original_binding was exonerated and is RESTORED.
+  (3) dired-tests.el free-space tests = adding the verbatim elisp
+  file-size-human-readable made the native insert-directory free-space
+  line call it 1-arg (flavor nil → "10", no unit) instead of GNU's
+  byte-count-to-string-function default file-size-human-readable-iec
+  ("10 B").  Fix: simple_compat.el now defines
+  file-size-human-readable-iec + byte-count-to-string-function, and the
+  native free-space/get-free-disk-space paths funcall the variable like
+  GNU files.el (get-free-disk-space also ported for real, formatting
+  (nth 2 (file-system-info dir))).
+  (4) cl-generic-tests.el test-11 (contaminated by test-09) =
+  fmakunbound only removed the NEWEST functions-list entry; repeated
+  defuns push duplicates, so the advice/method churn of test-09 left a
+  stale dispatch lambda that resurfaced after fmakunbound.  Fix:
+  fmakunbound now purges ALL entries (remove_all_function_bindings),
+  like GNU voiding the function cell.
+  DEBUGGING TECHNIQUE that cracked it: temporary eprintln! in the
+  cl_defmethod qualifier walk + EMAXX_DBG_QUAL env-gated dump of the
+  first closure frame names — decode the actual chain shape instead of
+  bisecting blind.
 - SWEEP HYGIENE (learned 2026-07-10): freeze the binaries before a
   long sweep (`cp target/release/{emaxx,compat-harness} /tmp/probes/bin/`
   and run the frozen harness — it resolves the emaxx binary as a

@@ -1023,7 +1023,15 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     None
 }
 
-fn advice_wrapper_original(func: &Value) -> Option<Value> {
+pub(crate) fn strip_advice_wrappers(func: &Value) -> Value {
+    let mut current = func.clone();
+    while let Some(inner) = advice_wrapper_original(&current) {
+        current = inner;
+    }
+    current
+}
+
+pub(crate) fn advice_wrapper_original(func: &Value) -> Option<Value> {
     let Value::Lambda(params, _, closure_env) = func else {
         return None;
     };

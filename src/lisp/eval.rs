@@ -526,6 +526,10 @@ pub struct Interpreter {
     records: Vec<RecordState>,
     /// SQLite objects keyed by record ID.
     sqlite_handles: Vec<(u64, SqliteHandleState)>,
+    // nadvice state: per-symbol advice entries (newest first = outermost)
+    // plus the unadvised base definition; entries added before the symbol
+    // is defined stay pending until a defun/defalias installs a base.
+    pub(crate) advice_registry: std::collections::HashMap<String, AdviceState>,
     /// Next record ID for identity tracking.
     next_record_id: u64,
     /// Next finalizer ID for identity tracking.
@@ -845,6 +849,7 @@ impl Interpreter {
                 slots: Vec::new(),
             }],
             sqlite_handles: Vec::new(),
+            advice_registry: std::collections::HashMap::new(),
             next_record_id: 2,
             next_finalizer_id: 1,
             next_generated_symbol_id: 1,
@@ -1598,6 +1603,21 @@ fn unquote(value: &Value) -> Value {
         }
         _ => value.clone(),
     }
+}
+
+pub(crate) const OCLOSURE_TYPE_MARKER: &str = "--emaxx-oclosure-type";
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AdviceState {
+    pub(crate) entries: Vec<AdviceEntry>,
+    pub(crate) base: Option<Value>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AdviceEntry {
+    pub(crate) where_kind: String,
+    pub(crate) function: Value,
+    pub(crate) name: Option<Value>,
 }
 
 fn quoted_literal(value: &Value) -> Value {
@@ -2768,6 +2788,38 @@ fn cl_defmethod_around_previous_binding(
 }
 
 fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, String, Value)> {
+    // GNU nadvice advice OBJECTS (oclosures): the dispatch root is the
+    // chain's innermost `cdr' slot; method registration grafts the rebuilt
+    // dispatch back by mutating that slot in place (advice--subst-main).
+    if oclosure_lambda_type(function).is_some_and(|type_name| type_name == "advice") {
+        let mut current = function.clone();
+        loop {
+            let Value::Lambda(_, _, closure_env) = &current else {
+                return None;
+            };
+            let closure_env = closure_env.clone();
+            let cdr = {
+                let contents = closure_env.borrow();
+                contents.iter().rev().find_map(|frame| {
+                    frame
+                        .iter()
+                        .any(|(key, _)| key == OCLOSURE_TYPE_MARKER)
+                        .then(|| {
+                            frame
+                                .iter()
+                                .find(|(key, _)| key == "cdr")
+                                .map(|(_, value)| value.clone())
+                                .unwrap_or(Value::Nil)
+                        })
+                })?
+            };
+            if oclosure_lambda_type(&cdr).is_some_and(|type_name| type_name == "advice") {
+                current = cdr;
+                continue;
+            }
+            return Some((closure_env, "cdr".to_string(), cdr));
+        }
+    }
     let Value::Lambda(params, _, closure_env) = function else {
         return None;
     };
@@ -2793,6 +2845,28 @@ fn cl_defmethod_advice_original_binding(function: &Value) -> Option<(SharedEnv, 
         }
     }
     None
+}
+
+fn oclosure_lambda_type(value: &Value) -> Option<String> {
+    let Value::Lambda(_, body, closure_env) = value else {
+        return None;
+    };
+    // Real oclosures carry the isolation marker as their first executable
+    // body form; a dispatch wrapper that merely CAPTURED an oclosure's
+    // frames must not be mistaken for one.
+    let first = body
+        .iter()
+        .find(|form| !matches!(form, Value::String(_) | Value::StringObject(_)))?;
+    if !matches!(first, Value::Symbol(marker) if marker == ":closure-isolated-current-env") {
+        return None;
+    }
+    let contents = closure_env.borrow();
+    contents.iter().rev().find_map(|frame| {
+        frame
+            .iter()
+            .find(|(key, _)| key == OCLOSURE_TYPE_MARKER)
+            .and_then(|(_, value)| value.as_symbol().ok().map(String::from))
+    })
 }
 
 fn cl_defmethod_previous_binding(

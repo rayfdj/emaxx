@@ -229,7 +229,7 @@ impl Interpreter {
                         "cl-defgeneric" => return self.sf_cl_defgeneric(&items, env),
                         "cl-defmethod" => return self.sf_cl_defmethod(&items, env),
                         "cl-generic-define-context-rewriter" => return Ok(Value::Nil),
-                        "oclosure-define" => return self.sf_oclosure_define(&items),
+                        "oclosure-define" => return self.sf_oclosure_define(&items, env),
                         "oclosure-lambda" => return self.sf_oclosure_lambda(&items, env),
                         "define-inline" => return self.sf_define_inline(&items, env),
                         "defmacro" => return self.sf_defmacro(&items),
@@ -331,7 +331,17 @@ impl Interpreter {
                         }
                         "with-restriction" => return self.sf_with_restriction(&items, env),
                         "without-restriction" => return self.sf_without_restriction(&items, env),
-                        "add-function" => return self.sf_add_function(&items, env),
+                        // GNU nadvice.el's macro handles this (autoloading
+                        // it if needed); the native arm is the file-less
+                        // fallback.
+                        "add-function" => {
+                            if let Ok(Some(expanded)) =
+                                self.try_macroexpand("add-function", &items[1..], env)
+                            {
+                                return self.eval(&expanded, env);
+                            }
+                            return self.sf_add_function(&items, env);
+                        }
                         "with-selected-window" => return self.sf_with_selected_window(&items, env),
                         "with-syntax-table" => return self.sf_with_syntax_table(&items, env),
                         "save-match-data" => return self.sf_save_match_data(&items, env),
@@ -597,8 +607,18 @@ impl Interpreter {
                             func,
                         ])));
                     };
-                    self.load_target(&file)?;
-                    self.lookup_function(name, env)?
+                    match self.load_target(&file) {
+                        Ok(_) => self.lookup_function(name, env)?,
+                        // A file-less environment (unit tests) falls back to
+                        // the native arm when one exists.
+                        Err(error) => {
+                            if crate::lisp::primitives::is_builtin(name) {
+                                Value::BuiltinFunc(name.to_string())
+                            } else {
+                                return Err(error);
+                            }
+                        }
+                    }
                 } else {
                     func
                 }
@@ -750,6 +770,28 @@ impl Interpreter {
                     result
                 } else if body_has_marker(body, ":closure-isolated-current-env") {
                     let mut call_env = closure_env.borrow().clone();
+                    if std::env::var_os("EMAXX_DEBUG_OCLOSURE").is_some() {
+                        for frame in call_env.iter().rev() {
+                            if frame
+                                .iter()
+                                .any(|(k, _)| k == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+                            {
+                                let how = frame
+                                    .iter()
+                                    .find(|(k, _)| k == "how")
+                                    .map(|(_, v)| format!("{v}"));
+                                let cdr = frame
+                                    .iter()
+                                    .find(|(k, _)| k == "cdr")
+                                    .map(|(_, v)| format!("{:.30}", format!("{v}")));
+                                eprintln!(
+                                    "[oclosure] invoke how={how:?} cdr={cdr:?} frames={}",
+                                    call_env.len()
+                                );
+                                break;
+                            }
+                        }
+                    }
                     let captured_len = call_env.len();
                     call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)]);
                     call_env.push(frame);

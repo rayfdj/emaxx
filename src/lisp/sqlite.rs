@@ -45,6 +45,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "sqlite-finalize"
             | "sqlite-version"
             | "sqlitep"
+            | "sqlite-pragma"
             | "sqlite-available-p"
     )
 }
@@ -70,6 +71,7 @@ pub fn call(
         "sqlite-finalize" => sqlite_finalize(interp, args),
         "sqlite-version" => sqlite_version(args),
         "sqlitep" => sqlitep(interp, args),
+        "sqlite-pragma" => sqlite_pragma(interp, args),
         "sqlite-available-p" => sqlite_available_p(args),
         _ => Err(LispError::Void(name.to_string())),
     }
@@ -185,6 +187,18 @@ fn sqlite_execute_batch(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let id = sqlite_id(&args[0])?;
     let statements = string_text(&args[1])?;
     sqlite_exec(database_connection(interp, id)?, &statements)
+}
+
+// GNU Fsqlite_pragma: execute "PRAGMA <string>", t on success, nil on
+// failure.
+fn sqlite_pragma(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    need_args("sqlite-pragma", args, 2, 2)?;
+    let id = sqlite_id(&args[0])?;
+    let pragma = string_text(&args[1])?;
+    match database_connection(interp, id)?.execute_batch(&format!("PRAGMA {pragma}")) {
+        Ok(()) => Ok(Value::T),
+        Err(_) => Ok(Value::Nil),
+    }
 }
 
 fn sqlite_transaction(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {

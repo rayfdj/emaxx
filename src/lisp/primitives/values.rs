@@ -293,6 +293,14 @@ pub(crate) fn values_equal_recursive(
             values_equal_recursive(interp, &a_car, &b_car, seen)
                 && values_equal_recursive(interp, &a_cdr, &b_cdr, seen)
         }
+        // GNU compares closures structurally, and its lexical closures
+        // capture nothing unless referenced; emaxx lambdas over-capture, so
+        // `equal' ignores the environment (two textually identical lambdas
+        // evaluated separately compare equal — nadvice's advice--member-p
+        // relies on it).
+        (Value::Lambda(left_params, left_body, _), Value::Lambda(right_params, right_body, _)) => {
+            left_params == right_params && left_body == right_body
+        }
         _ => left == right,
     }
 }

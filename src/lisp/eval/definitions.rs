@@ -2794,7 +2794,19 @@ impl Interpreter {
         if body_start < normalized_forms.len()
             && let Some(setter) = function_declare_gv_setter(&normalized_forms[body_start])
         {
-            self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter));
+            self.put_symbol_property(&name, "emaxx-gv-setter", Value::Symbol(setter.clone()));
+            // GNU's defun-declarations-alist also registers the gv-expander
+            // through gv.el, so GNU elisp places (gv-letplace in nadvice's
+            // advice--add-function) find it instead of the void
+            // `(setf NAME)' fallback.  Only when gv.el is loadable.
+            if self.resolve_load_target("gv").is_some() {
+                let form = format!("(gv-define-simple-setter {name} {setter})");
+                if let Ok(forms) = crate::lisp::reader::Reader::new(&form).read_all() {
+                    for form in forms {
+                        let _ = self.eval(&form, env);
+                    }
+                }
+            }
         }
         if body_start < normalized_forms.len()
             && let Some(handler) = function_declare_gv_expander(&normalized_forms[body_start])
@@ -2843,7 +2855,15 @@ impl Interpreter {
             body
         };
         let lambda = Value::Lambda(params, body, shared_env(env.clone()));
+        // GNU defalias routes advised names through the symbol's
+        // `defalias-fset-function' (nadvice's advice--defalias-fset), which
+        // re-applies pending or existing advice around the new definition.
+        if self.defalias_fset_function_handles(&name, &lambda, env) {
+            self.advice_note_new_definition(&name);
+            return Ok(Value::Symbol(name));
+        }
         self.functions.push((name.clone(), lambda));
+        self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
 
@@ -4240,11 +4260,128 @@ impl Interpreter {
         self.set_global_binding("current-load-list", current_load_list);
     }
 
-    pub(super) fn sf_oclosure_define(&mut self, items: &[Value]) -> Result<Value, LispError> {
+    // Oclosures are closures with named slots visible as lexical bindings
+    // in the body (GNU oclosure.el).  emaxx represents one as a Lambda whose
+    // captured env leads with a marker frame holding the type and slots.
+    pub(super) fn sf_oclosure_define(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         let Some(name_form) = items.get(1) else {
             return Err(LispError::Signal("oclosure-define needs a name".into()));
         };
-        Ok(Value::Symbol(function_name_from_binding_form(name_form)?))
+        let (type_name, options) = match name_form {
+            Value::Symbol(name) => (name.clone(), Vec::new()),
+            other => {
+                let parts = other.to_vec()?;
+                let name = parts
+                    .first()
+                    .and_then(|value| value.as_symbol().ok())
+                    .ok_or_else(|| LispError::Signal("oclosure-define needs a name".into()))?
+                    .to_string();
+                (name, parts[1..].to_vec())
+            }
+        };
+        let mut parent: Option<String> = None;
+        let mut predicate: Option<String> = None;
+        let mut copiers: Vec<(String, Vec<String>)> = Vec::new();
+        for option in &options {
+            let Ok(parts) = option.to_vec() else { continue };
+            match parts.first().and_then(|value| value.as_symbol().ok()) {
+                Some(":predicate") => {
+                    predicate = parts
+                        .get(1)
+                        .and_then(|v| v.as_symbol().ok())
+                        .map(String::from);
+                }
+                Some(":parent") => {
+                    parent = parts
+                        .get(1)
+                        .and_then(|v| v.as_symbol().ok())
+                        .map(String::from);
+                }
+                Some(":copier") => {
+                    let Some(copier_name) = parts
+                        .get(1)
+                        .and_then(|v| v.as_symbol().ok())
+                        .map(String::from)
+                    else {
+                        continue;
+                    };
+                    let slots = parts
+                        .get(2)
+                        .and_then(|value| value.to_vec().ok())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|value| value.as_symbol().ok().map(String::from))
+                        .collect();
+                    copiers.push((copier_name, slots));
+                }
+                _ => {}
+            }
+        }
+        // Slot names follow (docstrings are skipped); inherit parent slots.
+        let mut slots: Vec<String> = parent
+            .as_ref()
+            .and_then(|parent| self.get_symbol_property(parent, "emaxx-oclosure-slots"))
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|value| value.as_symbol().ok().map(String::from))
+            .collect();
+        for slot in &items[2..] {
+            match slot {
+                Value::Symbol(slot_name) => slots.push(slot_name.clone()),
+                Value::Cons(_, _) => {
+                    if let Ok(parts) = slot.to_vec()
+                        && let Some(Value::Symbol(slot_name)) = parts.first()
+                    {
+                        slots.push(slot_name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.put_symbol_property(
+            &type_name,
+            "emaxx-oclosure-slots",
+            Value::list(slots.iter().map(|slot| Value::Symbol(slot.clone()))),
+        );
+        if let Some(parent) = &parent {
+            self.put_symbol_property(
+                &type_name,
+                "emaxx-oclosure-parent",
+                Value::Symbol(parent.clone()),
+            );
+        }
+        // Generated helpers: predicate, per-slot accessors, copiers.
+        let mut defs = String::new();
+        if let Some(predicate) = &predicate {
+            defs.push_str(&format!(
+                "(defalias '{predicate} (lambda (obj) (emaxx--oclosure-type-p obj '{type_name})))\n"
+            ));
+        }
+        for slot in &slots {
+            defs.push_str(&format!(
+                "(defalias '{type_name}--{slot} (lambda (obj) (emaxx--oclosure-slot obj '{slot})))\n"
+            ));
+        }
+        for (copier_name, copier_slots) in &copiers {
+            let params = copier_slots.join(" ");
+            let pairs = copier_slots
+                .iter()
+                .map(|slot| format!("(cons '{slot} {slot})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            defs.push_str(&format!(
+                "(defalias '{copier_name} (lambda (obj {params}) (emaxx--oclosure-copy obj (list {pairs}))))\n"
+            ));
+        }
+        for form in crate::lisp::reader::Reader::new(&defs).read_all()? {
+            self.eval(&form, env)?;
+        }
+        Ok(Value::Symbol(type_name))
     }
 
     pub(super) fn sf_oclosure_lambda(
@@ -4257,11 +4394,64 @@ impl Interpreter {
                 "oclosure-lambda needs slots, args, and body".into(),
             ));
         }
+        let spec = items[1].to_vec()?;
+        let type_name = spec
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .ok_or_else(|| LispError::Signal("oclosure-lambda needs a type".into()))?
+            .to_string();
+        let declared: Vec<String> = self
+            .get_symbol_property(&type_name, "emaxx-oclosure-slots")
+            .and_then(|value| value.to_vec().ok())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|value| value.as_symbol().ok().map(String::from))
+            .collect();
+        let mut frame: Vec<(String, Value)> = vec![(
+            crate::lisp::eval::OCLOSURE_TYPE_MARKER.to_string(),
+            Value::Symbol(type_name),
+        )];
+        let mut initialized: Vec<(String, Value)> = Vec::new();
+        for binding in &spec[1..] {
+            let Ok(parts) = binding.to_vec() else {
+                continue;
+            };
+            let Some(slot_name) = parts.first().and_then(|v| v.as_symbol().ok()) else {
+                continue;
+            };
+            let value = match parts.get(1) {
+                Some(expr) => self.eval(expr, env)?,
+                None => Value::Nil,
+            };
+            initialized.push((slot_name.to_string(), value));
+        }
+        for slot in &declared {
+            let value = initialized
+                .iter()
+                .find(|(name, _)| name == slot)
+                .map(|(_, value)| value.clone())
+                .unwrap_or(Value::Nil);
+            frame.push((slot.clone(), value));
+        }
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("lambda".into()));
         lowered.push(items[2].clone());
+        // Nested advice objects share slot names (car/cdr/...); isolate the
+        // call env so each body resolves its OWN slot frame instead of a
+        // caller's look-alike (the frame-merge machinery would unify the
+        // identically-shaped slot frames and self-recurse).  Single marker:
+        // `body_has_marker' only inspects the first body form.
+        lowered.push(Value::Symbol(":closure-isolated-current-env".into()));
         lowered.extend(items[3..].iter().cloned());
-        self.sf_lambda(&lowered, env)
+        let lambda = self.sf_lambda(&lowered, env)?;
+        let Value::Lambda(params, body, closure_env) = lambda else {
+            return Err(LispError::Signal("oclosure-lambda lowering failed".into()));
+        };
+        // Each oclosure owns its slot frame (copiers replace slot values
+        // per object), so never share the captured env Rc.
+        let mut contents = closure_env.borrow().clone();
+        contents.push(frame);
+        Ok(Value::Lambda(params, body, shared_env(contents)))
     }
 
     pub(super) fn sf_define_inline(

@@ -495,12 +495,29 @@ pub(super) fn call(
         }
         "interactive-form" => {
             need_args(name, args, 1)?;
+            // GNU returns nil for an unbound symbol (advice.el probes the
+            // interactive form of not-yet-defined advice functions).
+            let Ok(mut value) = resolve_callable(interp, &args[0], env) else {
+                return Ok(Value::Nil);
+            };
+            // GNU's C interactive_form consults `oclosure-interactive-form'
+            // for OClosures (nadvice's advice objects compose their spec);
+            // it outranks the defun-recorded property for advised symbols.
+            if super::misc_keymaps::oclosure_type_of(&value).is_some()
+                && interp.has_lisp_function("oclosure-interactive-form")
+            {
+                return interp.call_function_value(
+                    Value::Symbol("oclosure-interactive-form".into()),
+                    Some("oclosure-interactive-form"),
+                    std::slice::from_ref(&value),
+                    env,
+                );
+            }
             if let Ok(symbol) = args[0].as_symbol()
                 && let Some(form) = interp.get_symbol_property(symbol, "interactive-form")
             {
                 return Ok(form);
             }
-            let mut value = resolve_callable(interp, &args[0], env)?;
             if let (Some(symbol), Some((file, _, _))) =
                 (args[0].as_symbol().ok(), autoload_parts(&value))
             {

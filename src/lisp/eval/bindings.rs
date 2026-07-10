@@ -603,6 +603,14 @@ impl Interpreter {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
         for frame in env.iter().rev() {
+            // Oclosure slot frames bind names like `car'/`cdr' as VALUES;
+            // GNU never resolves the function position through them.
+            if frame
+                .iter()
+                .any(|(k, _)| k == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
+            {
+                continue;
+            }
             for (k, v) in frame.iter().rev() {
                 if k == name && matches!(v, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
                     return Some(v.clone());
@@ -793,6 +801,163 @@ impl Interpreter {
             }
         }
         self.globals.push((resolved, value));
+    }
+
+    // Two advice functions match when `equal' (GNU advice--member-p) or,
+    // for separately evaluated lambdas, when their code is identical
+    // (captured environments are not compared).
+    pub(crate) fn advice_functions_match(&mut self, a: &Value, b: &Value) -> bool {
+        if let (Value::Lambda(params_a, body_a, _), Value::Lambda(params_b, body_b, _)) = (a, b) {
+            return params_a == params_b && body_a == body_b;
+        }
+        crate::lisp::primitives::values_equal(self, a, b)
+    }
+
+    // Compose BASE with the symbol's advice entries (newest entry ends up
+    // outermost, like add-function at depth 0).
+    pub(crate) fn compose_advice_chain(&self, name: &str, base: Value) -> Value {
+        let Some(state) = self.advice_registry.get(name) else {
+            return base;
+        };
+        let mut composed = base;
+        for entry in state.entries.iter().rev() {
+            if let Some(wrapped) = crate::lisp::primitives::wrap_advice(
+                &entry.where_kind,
+                composed.clone(),
+                entry.function.clone(),
+            ) {
+                composed = wrapped;
+            }
+        }
+        composed
+    }
+
+    // Rebuild the advised function binding from the registry.  Called after
+    // advice-add/-remove and after defun/defalias redefine an advised name.
+    pub(crate) fn advice_reapply(&mut self, name: &str) {
+        // Refresh the base from the live binding first: cl-defmethod
+        // re-registration mutates the definition captured under our
+        // wrapper, so the stored snapshot can go stale.
+        if let Ok(current) = self.lookup_function(name, &Env::new()) {
+            let stripped = crate::lisp::primitives::strip_advice_wrappers(&current);
+            if !matches!(stripped, Value::Lambda(_, _, _)) || stripped != current {
+                if let Some(state) = self.advice_registry.get_mut(name)
+                    && state.base.is_some()
+                {
+                    state.base = Some(stripped);
+                }
+            } else if let Some(state) = self.advice_registry.get_mut(name)
+                && state.base.is_some()
+                && state.entries.is_empty()
+            {
+                // Nothing wrapped (all advice removed elsewhere): the live
+                // binding IS the base.
+                state.base = Some(current);
+            }
+        }
+        let Some(state) = self.advice_registry.get(name) else {
+            return;
+        };
+        if state.entries.is_empty() {
+            let base = state.base.clone();
+            self.advice_registry.remove(name);
+            if let Some(base) = base {
+                self.set_function_binding(name, Some(base));
+            }
+            self.put_symbol_property(name, "defalias-fset-function", Value::Nil);
+            return;
+        }
+        let Some(base) = state.base.clone() else {
+            // Pending: no definition yet; defun/defalias will call back.
+            return;
+        };
+        let composed = self.compose_advice_chain(name, base);
+        self.set_function_binding(name, Some(composed));
+        // GNU marks advised symbols so defalias routes through the advice
+        // machinery; the tests observe the property's presence.
+        self.put_symbol_property(
+            name,
+            "defalias-fset-function",
+            Value::Symbol("advice--defalias-fset".into()),
+        );
+    }
+
+    // A (re)definition of NAME becomes the new advice base; the composed
+    // wrapper is reinstalled on top of it (GNU advice--defalias-fset).
+    pub(crate) fn advice_note_new_definition(&mut self, name: &str) {
+        let has_entries = self
+            .advice_registry
+            .get(name)
+            .is_some_and(|state| !state.entries.is_empty());
+        if !has_entries {
+            return;
+        }
+        if let Ok(definition) = self.lookup_function(name, &Env::new())
+            && let Some(state) = self.advice_registry.get_mut(name)
+        {
+            state.base = Some(definition);
+        }
+        self.advice_reapply(name);
+    }
+
+    // GNU stores a macro in the function cell as (macro . EXPANDER); emaxx
+    // keeps a native macro table, so synthesize the GNU shape on demand
+    // (nadvice reads and rewrites it when advising macros).
+    pub(crate) fn macro_binding_as_function(&self, name: &str) -> Option<Value> {
+        self.macros
+            .iter()
+            .rev()
+            .find(|(mname, _, _)| mname == name)
+            .map(|(_, params, body)| {
+                Value::cons(
+                    Value::Symbol("macro".into()),
+                    Value::Lambda(params.clone(), body.clone(), shared_env(Vec::new())),
+                )
+            })
+    }
+
+    // Follow the function cell (through symbol aliases) to a
+    // (macro . EXPANDER) cons; nadvice installs advised macros that way.
+    pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
+        let mut current = name.to_string();
+        for _ in 0..10 {
+            let binding = self.raw_function_binding(&current, env)?;
+            match binding {
+                Value::Symbol(next) => current = next,
+                Value::Cons(car, cdr) => {
+                    return match &*car.borrow() {
+                        Value::Symbol(head) if head == "macro" => Some(cdr.borrow().clone()),
+                        _ => None,
+                    };
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    // GNU defalias consults the symbol's `defalias-fset-function' (nadvice
+    // sets advice--defalias-fset there) instead of writing the cell
+    // directly.  Returns true when the property handled the definition.
+    pub(crate) fn defalias_fset_function_handles(
+        &mut self,
+        name: &str,
+        definition: &Value,
+        env: &mut Env,
+    ) -> bool {
+        let Some(fsetfun) = self.get_symbol_property(name, "defalias-fset-function") else {
+            return false;
+        };
+        if !fsetfun.is_truthy() {
+            return false;
+        }
+        let handled = self.call_function_value(
+            fsetfun,
+            None,
+            &[Value::Symbol(name.to_string()), definition.clone()],
+            env,
+        );
+        handled.is_ok()
     }
 
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
