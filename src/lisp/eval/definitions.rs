@@ -463,6 +463,16 @@ impl ClDefmethodStoredMethod {
     }
 }
 
+// caar/cadr/.../cddddr accessors usable as setf places ("car"/"cdr"
+// themselves take the resolve_setf_place path).
+fn is_cxr_accessor_name(name: &str) -> bool {
+    let letters = name
+        .strip_prefix('c')
+        .and_then(|rest| rest.strip_suffix('r'))
+        .unwrap_or("");
+    (2..=4).contains(&letters.len()) && letters.chars().all(|ch| ch == 'a' || ch == 'd')
+}
+
 fn record_defun_attributes(interp: &mut Interpreter, name: &str, forms: &[Value]) {
     interp.remove_symbol_property(name, "interactive-form");
     for form in forms {
@@ -833,6 +843,28 @@ impl Interpreter {
                 self.set_resolved_setf_place_value(&resolved, value.clone(), env)?;
                 Ok(value)
             }
+            // (setf (cXY..r P) V) = (set{car,cdr} (cY..r P) V): the first
+            // a/d picks the cell mutator, the rest re-derive the cell.
+            Some(Value::Symbol(name)) if is_cxr_accessor_name(name) => {
+                let Some(target_expr) = place.get(1) else {
+                    return Err(LispError::Signal("Unsupported setf place".into()));
+                };
+                let letters = &name[1..name.len() - 1];
+                let rest = &letters[1..];
+                let inner_expr = if rest.is_empty() {
+                    target_expr.clone()
+                } else {
+                    Value::list([Value::Symbol(format!("c{rest}r")), target_expr.clone()])
+                };
+                let cell = self.eval(&inner_expr, env)?;
+                let value = self.eval(&items[2], env)?;
+                if letters.starts_with('a') {
+                    cell.set_car(value.clone())?;
+                } else {
+                    cell.set_cdr(value.clone())?;
+                }
+                Ok(value)
+            }
             Some(Value::Symbol(name)) if name == "nth" => self.sf_setf_nth(&place, &items[2], env),
             Some(Value::Symbol(name)) if name == "elt" => self.sf_setf_aref(&place, &items[2], env),
             Some(Value::Symbol(name)) if name == "nthcdr" => {
@@ -1023,9 +1055,19 @@ impl Interpreter {
         match found {
             Some(index) => {
                 if should_remove {
-                    let mut remaining = entries;
-                    remaining.remove(index);
-                    self.set_setf_place_value(alist_place, Value::list(remaining), env)?;
+                    if index == 0 {
+                        // Removing the head entry reassigns the place to
+                        // the tail; deeper entries splice out with
+                        // `setcdr' so the list stays `eq' (GNU gv).
+                        self.set_setf_place_value(alist_place, alist.cdr()?, env)?;
+                    } else {
+                        let mut spine = alist.clone();
+                        for _ in 0..index - 1 {
+                            spine = spine.cdr()?;
+                        }
+                        let removed = spine.cdr()?;
+                        spine.set_cdr(removed.cdr()?)?;
+                    }
                 } else {
                     entries[index].set_cdr(value.clone())?;
                 }

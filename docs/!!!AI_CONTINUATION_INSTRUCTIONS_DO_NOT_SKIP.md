@@ -18,15 +18,16 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2349/7080: `macroexp-tests.el' (2346..2349)
-  passes; the 98-file verified-prefix sweep on the frozen post-batch
-  binaries is the gate (2026-07-10).  Next file:
-  `test/lisp/emacs-lisp/map-tests.el' (62 selectors).  Known map-tests
-  blockers from scouting: quoted reader literals leak internal marker
-  forms (`(vector-literal ...)'/`(emaxx--hash-table-literal ...)') to
-  GNU map.el instead of real vectors/hash-tables read at READ time;
-  pcase `(map ...)' patterns (pcase-defmacro extensions) unsupported;
-  several map-put!/map-delete error-type mismatches.
+- Verified through selector 2411/7080: `map-tests.el' (2350..2411)
+  passes; the 99-file verified-prefix sweep on the frozen post-batch
+  binaries is the gate (2026-07-10).  Continue with the next file in
+  `compat/oracle_tests_all.txt' after map-tests.el toward the user's
+  standing 3000/7080 target.  Batch details in
+  `docs/compatibility-goal.md` (hash-table literal materialization at
+  quote time, pcase `app'/pcase-macroexpander support, cl-typep vs
+  reader markers, cl-no-applicable-method conditions, should-error
+  error-conditions matching, eq-preserving alist-get removal, cXr setf
+  places).
 - SWEEP HYGIENE (learned 2026-07-10): freeze the binaries before a
   long sweep (`cp target/release/{emaxx,compat-harness} /tmp/probes/bin/`
   and run the frozen harness — it resolves the emaxx binary as a

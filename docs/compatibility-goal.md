@@ -19,6 +19,23 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2411/7080 are verified: `map-tests.el` (2350..2411, all
+  62 selected) passes.  The batch: quoted `#s(hash-table ...)' literals
+  MATERIALIZE into real hash-table records at `quote' time (GNU's
+  reader builds them at read time; the marker list leaked into GNU
+  map.el as an alist), pcase gained GNU `app' patterns (`_' in a call
+  form stands for the object, otherwise it is appended as the last
+  argument) and a `pcase-macroexpander' fallback so pcase-defmacro
+  extensions like map.el's `(map ...)' work, `cl-typep' no longer
+  classifies reader vector/hash markers as `list' (cl-generic must not
+  dispatch list methods on vectors), an exhausted generic dispatch
+  signals the real `cl-no-applicable-method'/`cl-no-next-method'
+  conditions, `should-error' matches :type through the signaled
+  condition's `error-conditions' (args-out-of-range IS an `error'),
+  `(setf (alist-get K PLACE nil t) nil)' splices the entry out with
+  `setcdr' so the list stays `eq' (map-delete's contract), and
+  caar/cadr/.../cddddr work as setf places ((setf (cddr last) ...) in
+  map.el's plist delete).
 - Tests through 2349/7080 are verified: `macroexp-tests.el` (2346..2349,
   all 4 selected) passes.  The batch is in two parts.  Scan rewrite:
   `scan-lists'/`scan-sexps' are now a verbatim port of GNU syntax.c

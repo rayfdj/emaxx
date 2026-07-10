@@ -1783,6 +1783,18 @@ fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
     }
 }
 
+fn bare_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
+    let items = value.to_vec().ok()?;
+    match items.split_first() {
+        Some((Value::Symbol(symbol), fields))
+            if symbol == crate::lisp::json::HASH_TABLE_LITERAL_SYMBOL =>
+        {
+            Some(fields.to_vec())
+        }
+        _ => None,
+    }
+}
+
 fn materialize_hash_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
@@ -1792,6 +1804,9 @@ fn materialize_hash_table_literals_inner(
         return Ok(value.clone());
     };
     if let Some(fields) = quoted_hash_table_literal_fields(value) {
+        return hash_table_from_literal_fields(interp, &fields, seen);
+    }
+    if let Some(fields) = bare_hash_table_literal_fields(value) {
         return hash_table_from_literal_fields(interp, &fields, seen);
     }
     let ptr = Rc::as_ptr(car_cell) as usize;

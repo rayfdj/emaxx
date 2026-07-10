@@ -2,11 +2,15 @@ use super::*;
 use crate::lisp::reader;
 
 impl Interpreter {
-    pub(super) fn sf_quote(&self, items: &[Value]) -> Result<Value, LispError> {
+    pub(super) fn sf_quote(&mut self, items: &[Value]) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        reader::resolve_circular_read_syntax(items[1].clone())
+        let value = reader::resolve_circular_read_syntax(items[1].clone())?;
+        // GNU's reader creates real hash tables for `#s(hash-table ...)'
+        // literals at READ time; emaxx's reader leaves a marker form, so
+        // quoted data materializes it here (in place, like a constant).
+        crate::lisp::primitives::materialize_read_hash_table_literals(self, &value)
     }
 
     pub(super) fn sf_if(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
