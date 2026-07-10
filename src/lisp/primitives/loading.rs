@@ -55,7 +55,26 @@ pub(crate) fn collect_interactive_args(
     env: &mut Env,
 ) -> Result<Vec<Value>, LispError> {
     let func = resolve_callable_aliases(interp, func, env)?;
-    let Some(spec) = interactive_spec_form(&func) else {
+    // GNU's C interactive_form consults `oclosure-interactive-form' for
+    // OClosures: nadvice's advice objects have no (interactive ...) in their
+    // body and instead COMPOSE the advised function's spec.
+    let oclosure_spec = if crate::lisp::primitives::dispatch::oclosure_type_of(&func).is_some()
+        && interp.has_lisp_function("oclosure-interactive-form")
+    {
+        interp
+            .call_function_value(
+                Value::Symbol("oclosure-interactive-form".into()),
+                Some("oclosure-interactive-form"),
+                std::slice::from_ref(&func),
+                env,
+            )?
+            .to_vec()
+            .ok()
+            .and_then(|items| items.get(1).cloned())
+    } else {
+        None
+    };
+    let Some(spec) = oclosure_spec.or_else(|| interactive_spec_form(&func)) else {
         return Ok(Vec::new());
     };
     match spec {
@@ -90,7 +109,16 @@ pub(crate) fn call_interactively_impl(
     }
     let interactive_args = collect_interactive_args(interp, &func, env)?;
     interp.push_interactive_call();
+    // The interactive dispatch frame is what `called-interactively-p's
+    // backtrace walk stops at (GNU stops at funcall-interactively); the
+    // native dispatch paths (special form, command loop) don't otherwise
+    // leave one.
+    interp.push_backtrace_frame(
+        Value::Symbol("funcall-interactively".into()),
+        interactive_args.clone(),
+    );
     let result = invoke_function_value(interp, &func, &interactive_args, env);
+    interp.pop_backtrace_frame();
     interp.pop_interactive_call();
     let result = result?;
     if args.get(1).is_some_and(Value::is_truthy)

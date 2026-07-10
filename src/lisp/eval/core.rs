@@ -682,10 +682,32 @@ impl Interpreter {
                         .position(|p| p == "&optional" || p == "&rest")
                         .unwrap_or(params.len());
                     if args.len() < min_params {
+                        if std::env::var_os("EMAXX_DBG_ARITY").is_some() {
+                            eprintln!(
+                                "EMAXX-DBG arity: params={params:?} args={args:?} name={original_name:?} body_head={:?}",
+                                body.first()
+                            );
+                        }
                         return Err(LispError::WrongNumberOfArgs(
                             "lambda".to_string(),
                             args.len(),
                         ));
+                    }
+                    // GNU also signals on EXCESS arguments (no &rest and more
+                    // args than fixed + optional parameters).
+                    if !params.iter().any(|p| p == "&rest") {
+                        let max_params = params.iter().filter(|p| *p != "&optional").count();
+                        if args.len() > max_params {
+                            if std::env::var_os("EMAXX_DBG_ARITY").is_some() {
+                                eprintln!(
+                                    "EMAXX-DBG arity-excess: params={params:?} args={args:?} name={original_name:?}",
+                                );
+                            }
+                            return Err(LispError::WrongNumberOfArgs(
+                                "lambda".to_string(),
+                                args.len(),
+                            ));
+                        }
                     }
                 }
 
@@ -747,11 +769,16 @@ impl Interpreter {
                     env.clear();
                     env.extend(call_env);
                     result
-                } else if body_has_marker(body, ":closure-transparent-env") {
+                } else if body_has_marker(body, ":closure-transparent-env")
+                    || body_has_marker(body, ":closure-oclosure")
+                {
                     // Advice wrappers are plumbing: run them on the caller's
                     // environment chain with the wrapper's captured frames
                     // appended, so lexical mutations made below the wrapper
-                    // still reach the calling scope.
+                    // still reach the calling scope.  Oclosures (nadvice's
+                    // advice objects) are the same plumbing; their
+                    // identity-stamped slot frames keep two objects'
+                    // look-alike slot frames from unifying.
                     let caller_len = env.len();
                     let mut call_env = env.clone();
                     call_env.extend(closure_env.borrow().iter().cloned());

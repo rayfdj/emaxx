@@ -19,6 +19,68 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2432/7080 are verified: `nadvice-tests.el` (2420..2432,
+  all 13 selectors including the two the oracle itself fails as
+  expected) passes.  The batch is deep GNU-advice semantics:
+  - OClosures became TRANSPARENT plumbing: the old
+    `:closure-isolated-current-env' body marker is replaced by an inert
+    `:closure-oclosure' identification marker plus an IDENTITY-STAMPED
+    slot frame (frame-merge only unifies identity frames with
+    themselves, so two advice objects' look-alike car/cdr slot frames
+    can no longer alias and self-recurse), and oclosure bodies run on
+    the caller's env chain (`:closure-transparent-env' branch) so
+    lexical mutations (`setq' in a hook lambda) and dynamic bindings
+    made outside an advice chain survive through it.  `advice--copy'
+    restamps the copy's slot frame.
+  - advice-add/advice-remove/advice-member-p now AUTOLOAD nadvice.el
+    (the native registry remains the no-file unit-test fallback; the
+    primitive arms delegate to the elisp definitions when loaded).
+  - `symbol-function' of a native-table macro MATERIALIZES the
+    synthesized (macro . EXPANDER) cell into the function binding so
+    nadvice's setcdr-based macro advice mutates the real cell.
+  - GNU function-cell semantics: `fset'/`defalias'/`defun' of a plain
+    function over a macro name ERASES the macro (macro-table entries
+    are shadow-renamed, not removed — cl-macrolet drains index ranges);
+    `fmakunbound' does too.
+  - `raw_function_binding's env scan no longer lets a plain `let' of a
+    variable named `car' hijack the function position of a builtin:
+    only cl-flet/cl-labels frames (now marked with
+    `--emaxx-function-frame--') may shadow builtins.
+  - Lambdas now signal wrong-number-of-arguments on EXCESS args (GNU
+    always did; nadvice-tests' :filter-args #'list case depends on it).
+  - `called-interactively-p' walks the native backtrace like GNU's
+    subr.el + advice--called-interactively-skip: apply/funcall and
+    advice objects are skipped, an :around advice's user lambda is
+    skipped only when its `apply' dispatched to another ADVICE object
+    (the innermost :around wrapping the plain original is GNU's
+    documented broken case and now correctly reports nil), and
+    `call-interactively' leaves a synthetic funcall-interactively
+    frame for the walk to stop at.
+  - `special-form-p' returns GNU's fixed C set only (emaxx's broad
+    native-form list must not leak; nadvice refuses to advise special
+    forms and `call-interactively' is not one).
+  - `interactive-form' also reads raw `(lambda ...)' LIST expressions
+    (advice.el probes stored advice bodies that way), and
+    call-interactively's arg collection consults
+    `oclosure-interactive-form' for advice objects (composed specs).
+  - cl-prin1 dispatches oclosures through the `cl-print-object'
+    generic; simple_compat.el defines the generic + default method
+    (cl-print.el is not loaded) and nadvice's method prints
+    "#f(advice ...)".
+  - `help-function-arglist' returns t for nil/unbound (advice.el feeds
+    it nil for autoloaded functions); cl-macs.el's def-edebug-elem-spec
+    set (cl-lambda-list etc.) and gv.el's gv-place are registered as
+    builtin `edebug-elem-spec' properties so edebug can instrument
+    cl-defun-family specs with nadvice loaded (the add-function
+    autoload no longer breaks edebug-tests.el).
+  - GNU keyboard.c/xdisp.c defvar defaults (pre-redisplay-function,
+    function-key-map, key-translation-map, input-decode-map,
+    local-function-key-map) so oracle simple.el now LOADS fully.
+  - `subrp' is nil for native emaxx builtins that GNU defines in
+    PRELOADED LISP (mark-sexp, zap-to-char... — memoized scan of the
+    loadup.el file set): find-func's subr-primitive-p check must fall
+    through to `symbol-file' for them, which resolves via the same
+    preloaded-sources scan (find-func-tests' advised-symbol lookup).
 - Tests through 2419/7080 are verified: `memory-report-tests.el`
   (2412..2414) and `multisession-tests.el` (2415..2419) pass.  The
   batch: GNU-shaped `garbage-collect' output (fixed 64-bit layout size

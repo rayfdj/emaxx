@@ -1837,10 +1837,21 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let symbol = args[0].as_symbol()?;
             if args[1].is_nil() {
+                interp.shadow_macro_binding(symbol);
                 interp.set_function_binding(symbol, None);
                 Ok(Value::Nil)
             } else {
                 interp.validate_function_binding(symbol, &args[1])?;
+                // GNU macro-ness lives in the function cell: only a
+                // (macro . EXPANDER) cell or a symbol alias keeps it; any
+                // other definition erases the macro.
+                let keeps_macro = matches!(&args[1], Value::Symbol(_))
+                    || args[1]
+                        .cons_values()
+                        .is_some_and(|(car, _)| matches!(&car, Value::Symbol(s) if s == "macro"));
+                if !keeps_macro {
+                    interp.shadow_macro_binding(symbol);
+                }
                 interp.set_function_binding(symbol, Some(args[1].clone()));
                 Ok(args[1].clone())
             }
@@ -1851,6 +1862,7 @@ pub(super) fn call(
             // GNU voids the function cell outright; shadowed stale entries
             // (repeated defuns push duplicates) must not resurface.
             interp.remove_all_function_bindings(symbol);
+            interp.shadow_macro_binding(symbol);
             // The dispatch-chain metadata describes the (now removed)
             // function binding; a fresh generic must not rank its methods
             // against specializers of the destroyed chain.

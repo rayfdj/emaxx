@@ -388,16 +388,54 @@ pub(super) fn call(
         }
         "subrp" => {
             need_args(name, args, 1)?;
-            Ok(if matches!(args[0], Value::BuiltinFunc(_)) {
-                Value::T
-            } else {
-                Value::Nil
+            // Native emaxx builtins that GNU defines in preloaded LISP
+            // (mark-sexp, zap-to-char...) are NOT subrs in GNU; find-func
+            // relies on subr-primitive-p being nil to consult symbol-file.
+            Ok(match &args[0] {
+                Value::BuiltinFunc(builtin)
+                    if !super::misc_keymaps::builtin_is_gnu_preloaded_lisp(builtin) =>
+                {
+                    Value::T
+                }
+                _ => Value::Nil,
             })
         }
         "special-form-p" => {
             need_args(name, args, 1)?;
+            // GNU's fixed C set (enumerated from the oracle).  emaxx's
+            // native-form list is far broader (native macros and commands)
+            // and must not leak here: nadvice refuses to advise special
+            // forms, and GNU's `when'/`call-interactively' are not ones.
+            let gnu_special = |name: &str| {
+                matches!(
+                    name,
+                    "and"
+                        | "catch"
+                        | "cond"
+                        | "condition-case"
+                        | "defconst"
+                        | "defvar"
+                        | "function"
+                        | "if"
+                        | "inline"
+                        | "interactive"
+                        | "let"
+                        | "let*"
+                        | "or"
+                        | "prog1"
+                        | "progn"
+                        | "quote"
+                        | "save-current-buffer"
+                        | "save-excursion"
+                        | "save-restriction"
+                        | "setq"
+                        | "unwind-protect"
+                        | "while"
+                )
+            };
             Ok(match &args[0] {
-                Value::BuiltinFunc(name) if is_special_form_name(name) => Value::T,
+                Value::BuiltinFunc(name) if gnu_special(name) => Value::T,
+                Value::Symbol(name) if gnu_special(name) => Value::T,
                 _ => Value::Nil,
             })
         }

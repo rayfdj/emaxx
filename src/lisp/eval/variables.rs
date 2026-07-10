@@ -808,6 +808,110 @@ impl Interpreter {
         self.backtrace_frames.pop();
     }
 
+    // GNU `called-interactively-p' walks the backtrace and only skips
+    // frames it recognizes: nadvice's advice OBJECTS, apply/funcall
+    // plumbing, and the interactive dispatch itself.  A USER advice lambda
+    // (the body of an :around advice) is not skippable, so the function it
+    // wraps does not count as called interactively even under
+    // `call-interactively' (nadvice-tests encodes this as expected
+    // failures).
+    pub(crate) fn called_interactively_by_backtrace(&self) -> bool {
+        if !self.in_interactive_call() {
+            return false;
+        }
+        let frame_is_oclosure = |function: &Value| -> bool {
+            match function {
+                Value::Lambda(_, _, _) => {
+                    crate::lisp::primitives::oclosure_type_of(function).is_some()
+                }
+                Value::Symbol(symbol) => self
+                    .functions
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == symbol)
+                    .is_some_and(|(_, value)| {
+                        crate::lisp::primitives::oclosure_type_of(value).is_some()
+                    }),
+                _ => false,
+            }
+        };
+        let frame_name = |function: &Value| -> Option<String> {
+            match function {
+                Value::Symbol(name) | Value::BuiltinFunc(name) => Some(name.clone()),
+                _ => None,
+            }
+        };
+        if std::env::var_os("EMAXX_DBG_CIP").is_some() {
+            for (index, frame) in self.backtrace_frames.iter().rev().enumerate().take(14) {
+                eprintln!(
+                    "EMAXX-DBG cip frame[{index}] evald={} fn={:.60}",
+                    frame.evald,
+                    format!("{:?}", frame.function)
+                );
+            }
+        }
+        let mut frames = self.backtrace_frames.iter().rev().peekable();
+        // Drop this call's own frames (the called-interactively-p builtin
+        // plus the unevald list frame recording it).
+        while frames.peek().is_some_and(|frame| {
+            frame_name(&frame.function).as_deref() == Some("called-interactively-p")
+        }) {
+            frames.next();
+        }
+        // Skip the current function's in-progress body forms (unevald list
+        // frames whose applications have not happened yet).
+        while frames.peek().is_some_and(|frame| !frame.evald) {
+            frames.next();
+        }
+        // Drop the current function's frame(s): the evald application and,
+        // when it was called by name, the unevald list frame for the call.
+        let Some(current) = frames.next() else {
+            return true;
+        };
+        if let Some(next) = frames.peek()
+            && !next.evald
+            && next.function == current.function
+        {
+            frames.next();
+        }
+        // GNU's advice--called-interactively-skip pairs an :around advice's
+        // user lambda with the (apply INNER-ADVICE args) call in its body:
+        // the lambda frame is skippable exactly when control continued DOWN
+        // the advice chain through it.  The innermost :around (whose apply
+        // dispatches the plain original function) is not skippable — that
+        // is nadvice's documented broken case.
+        let mut descended_through_advice = false;
+        for frame in frames {
+            let name = frame_name(&frame.function);
+            match name.as_deref() {
+                Some("apply") | Some("funcall") => {
+                    descended_through_advice = frame.args.first().is_some_and(&frame_is_oclosure);
+                    continue;
+                }
+                Some("call-interactively")
+                | Some("funcall-interactively")
+                | Some("command-execute") => return true,
+                _ => {}
+            }
+            if frame_is_oclosure(&frame.function) {
+                continue;
+            }
+            // An unevald list frame duplicates the evald application that
+            // follows it; judge on the evald one.
+            if !frame.evald {
+                continue;
+            }
+            if descended_through_advice {
+                descended_through_advice = false;
+                continue;
+            }
+            return false;
+        }
+        // The interactive dispatch (native command loop, kmacro) may invoke
+        // commands without a visible call-interactively frame.
+        true
+    }
+
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.debug_on_exit = enabled;

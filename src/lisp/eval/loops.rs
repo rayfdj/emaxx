@@ -2693,6 +2693,14 @@ impl Interpreter {
         env.push(frame);
     }
 
+    // Give FRAME a brand-new identity stamp (replacing any existing one):
+    // an oclosure copy is a DIFFERENT object, so its slot frame must never
+    // unify with the original's under the frame-merge machinery.
+    pub(crate) fn restamp_frame_identity(frame: &mut Vec<(String, Value)>) {
+        frame.retain(|(name, _)| name != FRAME_IDENTITY_MARKER);
+        frame.push(Self::fresh_frame_identity());
+    }
+
     pub(crate) fn fresh_frame_identity() -> (String, Value) {
         use std::sync::atomic::{AtomicI64, Ordering};
         static NEXT_FRAME_IDENTITY: AtomicI64 = AtomicI64::new(1);

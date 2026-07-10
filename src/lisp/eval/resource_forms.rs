@@ -1492,6 +1492,10 @@ impl Interpreter {
             let lambda = Value::Lambda(params, body, shared_env(env.clone()));
             frame.push((fname, lambda));
         }
+        frame.push((
+            crate::lisp::eval::bindings::FUNCTION_FRAME_MARKER.to_string(),
+            Value::T,
+        ));
         Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
@@ -1529,6 +1533,10 @@ impl Interpreter {
             frame.push((fname, Value::Lambda(params, body, closure_env.clone())));
         }
 
+        frame.push((
+            crate::lisp::eval::bindings::FUNCTION_FRAME_MARKER.to_string(),
+            Value::T,
+        ));
         let mut captured = env.clone();
         captured.push(frame.clone());
         *closure_env.borrow_mut() = captured;

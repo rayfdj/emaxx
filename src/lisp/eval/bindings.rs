@@ -1,5 +1,15 @@
 use super::*;
 
+// Prefix a macro-table entry is renamed to when a function definition
+// shadows it (see `shadow_macro_binding').
+pub(crate) const MACRO_SHADOW_PREFIX: &str = "--emaxx-shadowed-macro--";
+
+// Marks an env frame whose bindings are FUNCTION bindings (cl-flet /
+// cl-labels).  Only such frames may shadow a builtin in the function
+// position: a plain `let' of a variable named `car' to a lambda must not
+// hijack `(car x)' (GNU separates value and function cells).
+pub(crate) const FUNCTION_FRAME_MARKER: &str = "--emaxx-function-frame--";
+
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         for frame in env.iter().rev() {
@@ -187,6 +197,13 @@ impl Interpreter {
             "auto-save-timeout" => Some(Value::Integer(30)),
             "auto-save-interval" => Some(Value::Integer(300)),
             "load-read-function" => Some(Value::Symbol("read".into())),
+            // GNU xdisp.c defvar; simple.el reads it at load time
+            // ((when (eq pre-redisplay-function #'ignore) ...)).
+            "pre-redisplay-function" => Some(Value::Symbol("ignore".into())),
+            // GNU keyboard.c keymaps; simple.el define-keys them at load
+            // time (event-apply-*-modifier bindings).
+            "function-key-map" | "key-translation-map" | "input-decode-map"
+            | "local-function-key-map" => Some(Value::list([Value::Symbol("keymap".into())])),
             "read-circle" => Some(Value::T),
             "gensym-counter" => Some(Value::Integer(0)),
             "load-file-rep-suffixes" => Some(Value::list([Value::String(String::new())])),
@@ -602,6 +619,8 @@ impl Interpreter {
         if primitives::prefer_builtin_override(name) {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
+        let name_is_builtin =
+            primitives::is_builtin(name) || primitives::is_special_form_name(name);
         for frame in env.iter().rev() {
             // Oclosure slot frames bind names like `car'/`cdr' as VALUES;
             // GNU never resolves the function position through them.
@@ -609,6 +628,12 @@ impl Interpreter {
                 .iter()
                 .any(|(k, _)| k == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
             {
+                continue;
+            }
+            // A builtin's function position can only be shadowed by a real
+            // function frame (cl-flet/cl-labels); a plain `let' binding a
+            // VARIABLE named `car' to a lambda must not hijack `(car x)'.
+            if name_is_builtin && !frame.iter().any(|(k, _)| k == FUNCTION_FRAME_MARKER) {
                 continue;
             }
             for (k, v) in frame.iter().rev() {
@@ -693,7 +718,9 @@ impl Interpreter {
             push_name(name);
         }
         for (name, _, _) in &self.macros {
-            push_name(name);
+            if !name.starts_with(MACRO_SHADOW_PREFIX) {
+                push_name(name);
+            }
         }
         for (name, _) in &self.symbol_properties {
             push_name(name);
@@ -958,6 +985,18 @@ impl Interpreter {
             env,
         );
         handled.is_ok()
+    }
+
+    // GNU keeps macro-ness in the function cell: fsetting a plain function
+    // over a macro name (or voiding the cell) erases the macro definition.
+    // The macro table is positional (cl-macrolet drains index ranges), so
+    // entries are renamed out of resolution instead of removed.
+    pub(crate) fn shadow_macro_binding(&mut self, name: &str) {
+        for entry in self.macros.iter_mut() {
+            if entry.0 == name {
+                entry.0 = format!("{MACRO_SHADOW_PREFIX}{name}");
+            }
+        }
     }
 
     pub fn push_function_binding(&mut self, name: &str, function: Value) {

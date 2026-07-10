@@ -263,6 +263,15 @@ impl Interpreter {
             self.advice_note_new_definition(&name);
             return Ok(Value::Symbol(name));
         }
+        // Like fset: only a (macro . EXPANDER) cell or a symbol alias keeps
+        // macro-ness; any other definition erases the macro.
+        let keeps_macro = matches!(&function, Value::Symbol(_))
+            || function
+                .cons_values()
+                .is_some_and(|(car, _)| matches!(&car, Value::Symbol(s) if s == "macro"));
+        if !keeps_macro {
+            self.shadow_macro_binding(&name);
+        }
         self.set_function_binding(&name, Some(function));
         self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))

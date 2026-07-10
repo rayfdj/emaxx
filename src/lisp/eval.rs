@@ -134,6 +134,87 @@ fn builtin_edebug_declaration_specs() -> Vec<(String, Vec<(String, Value)>)> {
         .collect()
 }
 
+// Element specs GNU registers with `def-edebug-elem-spec' in cl-macs.el
+// (and gv.el's `gv-place').  cl-lib is native in emaxx so cl-macs.el never
+// loads; without these, instrumenting any spec that references
+// `cl-lambda-list' (cl-defun, cl-defmethod, nadvice's macros...) fails with
+// "cl-lambda-list is not a form-spec or function".
+fn builtin_edebug_elem_specs() -> Vec<(String, Vec<(String, Value)>)> {
+    [
+        ("cl-declarations", "(&rest (\"cl-declare\" &rest sexp))"),
+        (
+            "cl-declarations-or-string",
+            "(lambda-doc &or (\"declare\" def-declarations) cl-declarations)",
+        ),
+        (
+            "cl-lambda-list",
+            "(([&rest cl-lambda-arg]
+               [&optional [\"&optional\" cl-&optional-arg &rest cl-&optional-arg]]
+               [&optional [\"&rest\" cl-lambda-arg]]
+               [&optional [\"&key\" [cl-&key-arg &rest cl-&key-arg]
+                           &optional \"&allow-other-keys\"]]
+               [&optional [\"&aux\" &rest
+                           &or (cl-lambda-arg &optional def-form) arg]]
+               . [&or arg nil]))",
+        ),
+        (
+            "cl-&optional-arg",
+            "(&or (cl-lambda-arg &optional def-form arg) arg)",
+        ),
+        (
+            "cl-&key-arg",
+            "(&or ([&or (symbolp cl-lambda-arg) arg] &optional def-form arg) arg)",
+        ),
+        ("cl-lambda-arg", "(&or arg cl-lambda-list1)"),
+        (
+            "cl-lambda-list1",
+            "(([&optional [\"&whole\" arg]]
+               [&rest cl-lambda-arg]
+               [&optional [\"&optional\" cl-&optional-arg &rest cl-&optional-arg]]
+               [&optional [\"&rest\" cl-lambda-arg]]
+               [&optional [\"&key\" cl-&key-arg &rest cl-&key-arg
+                           &optional \"&allow-other-keys\"]]
+               [&optional [\"&aux\" &rest
+                           &or (cl-lambda-arg &optional def-form) arg]]
+               . [&or arg nil]))",
+        ),
+        ("cl-type-spec", "(sexp)"),
+        (
+            "cl-macro-list",
+            "(([&optional \"&whole\" arg]
+               [&optional \"&environment\" arg]
+               [&rest cl-macro-arg]
+               [&optional [\"&optional\" &rest
+                           &or (cl-macro-arg &optional def-form cl-macro-arg) arg]]
+               [&optional [[&or \"&rest\" \"&body\"] cl-macro-arg]]
+               [&optional [\"&key\" [&rest
+                                     [&or ([&or (symbolp cl-macro-arg) arg]
+                                           &optional def-form cl-macro-arg)
+                                          arg]]
+                           &optional \"&allow-other-keys\"]]
+               [&optional [\"&aux\" &rest
+                           &or (cl-macro-arg &optional def-form) arg]]
+               [&optional \"&environment\" arg]
+               . [&or arg nil]))",
+        ),
+        ("cl-macro-arg", "(&or arg cl-macro-list)"),
+        ("gv-place", "(form)"),
+    ]
+    .into_iter()
+    .filter_map(|(symbol, spec_text)| {
+        let spec = crate::lisp::reader::Reader::new(spec_text)
+            .read_all()
+            .ok()?
+            .into_iter()
+            .next()?;
+        Some((
+            symbol.to_string(),
+            vec![("edebug-elem-spec".to_string(), spec)],
+        ))
+    })
+    .collect()
+}
+
 fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     let mut properties: Vec<(String, Vec<(String, Value)>)> = [
         ("autoload", 3),
@@ -163,6 +244,7 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     .collect();
     properties.extend(builtin_edebug_form_specs());
     properties.extend(builtin_edebug_declaration_specs());
+    properties.extend(builtin_edebug_elem_specs());
     properties
 }
 
@@ -1882,6 +1964,7 @@ fn function_executable_body(body: &[Value]) -> &[Value] {
             Some(Value::Symbol(marker)) if marker == ":closure-dont-trim-context"
                 || marker == ":closure-isolated-current-env"
                 || marker == ":closure-transparent-env"
+                || marker == ":closure-oclosure"
         )
     {
         start += 1;
@@ -2851,13 +2934,13 @@ fn oclosure_lambda_type(value: &Value) -> Option<String> {
     let Value::Lambda(_, body, closure_env) = value else {
         return None;
     };
-    // Real oclosures carry the isolation marker as their first executable
+    // Real oclosures carry the oclosure marker as their first executable
     // body form; a dispatch wrapper that merely CAPTURED an oclosure's
     // frames must not be mistaken for one.
     let first = body
         .iter()
         .find(|form| !matches!(form, Value::String(_) | Value::StringObject(_)))?;
-    if !matches!(first, Value::Symbol(marker) if marker == ":closure-isolated-current-env") {
+    if !matches!(first, Value::Symbol(marker) if marker == ":closure-oclosure") {
         return None;
     }
     let contents = closure_env.borrow();

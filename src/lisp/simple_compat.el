@@ -5057,6 +5057,16 @@ KIND should be `var' for a variable or `subr' for a subroutine."
 
 ;;; simple_compat.el ends here
 
+;; GNU cl-print.el's generic and its default method (cl-print.el itself is
+;; not loaded; the native cl-prin1 renderer dispatches oclosures here, and
+;; nadvice.el adds its own `advice' method for "#f(advice ...)").
+(cl-defgeneric cl-print-object (object stream)
+  "Dispatcher to print OBJECT on STREAM according to its type.")
+(cl-defmethod cl-print-object (object stream)
+  ;; The base method (cl-print.el prints strings/conses itself; everything
+  ;; else falls back to `prin1').
+  (prin1 object stream))
+
 ;; GNU files.el (verbatim): memory-report--format needs it.
 (defun file-size-human-readable (file-size &optional flavor space unit)
   "Produce a string showing FILE-SIZE in human-readable form.
