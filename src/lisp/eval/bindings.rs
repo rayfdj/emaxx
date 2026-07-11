@@ -222,6 +222,8 @@ impl Interpreter {
             "path-separator" => Some(Value::String(":".into())),
             // GNU callproc.c defvar (paths.h).
             "configure-info-directory" => Some(Value::String("/usr/share/info".into())),
+            // GNU files.el defconst; shadow.el's shadow-tests read it.
+            "dir-locals-file" => Some(Value::String(".dir-locals.el".into())),
             // GNU xdisp.c defvar; tests let-bind it around noisy calls.
             "inhibit-message" => Some(Value::Nil),
             // GNU isearch.el defcustom; package.el's quick-help reads it.

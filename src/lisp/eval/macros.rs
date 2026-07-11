@@ -676,6 +676,24 @@ impl Interpreter {
                     };
                     return Ok(quoted_literal(&value));
                 }
+                "eval-and-compile" => {
+                    // GNU macroexpand-all evaluates eval-and-compile bodies
+                    // at expansion time (compile-time side effects, e.g.
+                    // rx-define's `(put ... 'rx-definition ...)') AND keeps
+                    // the forms so they also run at load/runtime.
+                    for item in &items[1..] {
+                        self.eval(item, env)?;
+                    }
+                    let mut expanded = vec![items[0].clone()];
+                    for item in &items[1..] {
+                        expanded.push(self.macroexpand_all_form_with_environment(
+                            item,
+                            macro_environment,
+                            env,
+                        )?);
+                    }
+                    return Ok(Value::list(expanded));
+                }
                 "let" | "let*" | "letrec" => {
                     return self.macroexpand_all_let_form_with_environment(
                         &items,

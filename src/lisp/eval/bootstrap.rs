@@ -334,6 +334,43 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             eol_type: Some(2),
             plist: coding_plist('u', std::iter::empty()),
         },
+        // UTF-16 variants: `utf-16' is big-endian with a BOM; the -le/-be
+        // forms are explicit-endian, BOM-less (mule-conf.el).
+        CodingSystemState {
+            name: "utf-16".into(),
+            base: "utf-16".into(),
+            kind: "utf-16".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-16le".into(),
+            base: "utf-16le".into(),
+            kind: "utf-16le".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-16be".into(),
+            base: "utf-16be".into(),
+            kind: "utf-16be".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-16-le".into(),
+            base: "utf-16le".into(),
+            kind: "utf-16le".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "utf-16-be".into(),
+            base: "utf-16be".into(),
+            kind: "utf-16be".into(),
+            eol_type: None,
+            plist: coding_plist('u', std::iter::empty()),
+        },
         CodingSystemState {
             name: "utf-8-auto".into(),
             base: "utf-8-auto".into(),

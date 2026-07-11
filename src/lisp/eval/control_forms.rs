@@ -639,6 +639,18 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         Ok(result)
     }
 
+    /// GNU signals `setting-constant' when a let/let* binding variable is
+    /// nil, t, or a keyword (subr-x's and-let* expands to such a let*).
+    fn check_let_binding_name(name: &str) -> Result<(), LispError> {
+        if matches!(name, "nil" | "t") || name.starts_with(':') {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("setting-constant".into()),
+                Value::Symbol(name.to_string()),
+            ])));
+        }
+        Ok(())
+    }
+
     pub(super) fn sf_let(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         if is_vector_literal(&items[1]) {
             return Err(wrong_type_argument("listp", items[1].clone()));
@@ -650,6 +662,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         for binding in &bindings {
             match binding {
                 Value::Symbol(name) => {
+                    Self::check_let_binding_name(name)?;
                     if self.is_special_variable(name) {
                         special_bindings.push((name.clone(), Value::Nil));
                     } else {
@@ -662,6 +675,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                         return Err(LispError::ReadError("bad let binding".into()));
                     };
                     let name = name_value.as_symbol()?.to_string();
+                    Self::check_let_binding_name(&name)?;
                     let val = if parts.len() > 1 {
                         self.eval(&parts[1], env)?
                     } else {
@@ -761,6 +775,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         for binding in &bindings {
             match binding {
                 Value::Symbol(name) => {
+                    Self::check_let_binding_name(name)?;
                     if self.is_special_variable(name) {
                         restores.push(self.bind_special_variable(name, Value::Nil, env)?);
                     } else {
@@ -774,6 +789,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                         return Err(LispError::ReadError("bad let* binding".into()));
                     };
                     let name = name_value.as_symbol()?.to_string();
+                    Self::check_let_binding_name(&name)?;
                     let val = if parts.len() > 1 {
                         self.eval(&parts[1], env)?
                     } else {

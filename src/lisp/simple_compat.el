@@ -6148,3 +6148,96 @@ The variable `tab-width' controls the spacing of tab stops."
                     (consp last-input-event))
                from--tty-menu-p)            ; invoked via TTY menu
            use-dialog-box)))
+
+;; subr.el (verbatim): if-let*/when-let*/and-let* MACROS.  emaxx
+;; evaluates these via native special forms (checked first in the eval
+;; dispatch, so they stay fast), but `macroexpand' consults the macro
+;; table, and subr-x-tests checks the exact GNU `let*' expansion.
+(defun internal--build-binding (binding prev-var)
+  "Check and build a single BINDING with PREV-VAR."
+  (setq binding
+        (cond
+         ((symbolp binding)
+          (list binding binding))
+         ((null (cdr binding))
+          (list (make-symbol "s") (car binding)))
+         ((eq '_ (car binding))
+          (list (make-symbol "s") (cadr binding)))
+         (t binding)))
+  (when (> (length binding) 2)
+    (signal 'error
+            (cons "`let' bindings can have only one value-form" binding)))
+  (let ((var (car binding)))
+    `(,var (and ,prev-var ,(cadr binding)))))
+
+(defun internal--build-bindings (bindings)
+  "Check and build conditional value forms for BINDINGS."
+  (let ((prev-var t))
+    (mapcar (lambda (binding)
+              (let ((binding (internal--build-binding binding prev-var)))
+                (setq prev-var (car binding))
+                binding))
+            bindings)))
+
+(defmacro if-let* (varlist then &rest else)
+  "Bind variables according to VARLIST and evaluate THEN or ELSE."
+  (declare (indent 2)
+           (debug ((&rest [&or symbolp (symbolp form) (form)])
+                   body)))
+  (if varlist
+      `(let* ,(setq varlist (internal--build-bindings varlist))
+         (if ,(caar (last varlist))
+             ,then
+           ,@else))
+    `(let* () ,then)))
+
+(defmacro when-let* (varlist &rest body)
+  "Bind variables according to VARLIST and conditionally evaluate BODY."
+  (declare (indent 1) (debug if-let*))
+  (list 'if-let* varlist (macroexp-progn body)))
+
+(defmacro and-let* (varlist &rest body)
+  "Bind variables according to VARLIST and conditionally evaluate BODY."
+  (declare (indent 1) (debug if-let*))
+  (let (res)
+    (if varlist
+        `(let* ,(setq varlist (internal--build-bindings varlist))
+           (when ,(setq res (caar (last varlist)))
+             ,@(or body `(,res))))
+      `(let* () ,@(or body '(t))))))
+
+;; subr.el (verbatim): split a string into lines (subr-x-tests, and used
+;; by string-limit's tests).
+(defun string-lines (string &optional omit-nulls keep-newlines)
+  "Split STRING into a list of lines.
+If OMIT-NULLS, empty lines will be removed from the results.
+If KEEP-NEWLINES, don't strip trailing newlines from the result
+lines."
+  (declare (side-effect-free t))
+  (if (equal string "")
+      (if omit-nulls
+          nil
+        (list ""))
+    (let ((lines nil)
+          (start 0))
+      (while (< start (length string))
+        (let ((newline (string-search "\n" string start)))
+          (if newline
+              (progn
+                (when (or (not omit-nulls)
+                          (not (= start newline)))
+                  (let ((line (substring string start
+                                         (if keep-newlines
+                                             (1+ newline)
+                                           newline))))
+                    (when (not (and keep-newlines omit-nulls
+                                    (equal line "\n")))
+                      (push line lines))))
+                (setq start (1+ newline)))
+            ;; No newline in the remaining part.
+            (if (zerop start)
+                ;; Avoid a string copy if there are no newlines at all.
+                (push string lines)
+              (push (substring string start) lines))
+            (setq start (length string)))))
+      (nreverse lines))))

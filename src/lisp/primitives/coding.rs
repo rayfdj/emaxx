@@ -636,12 +636,57 @@ pub(crate) fn encode_text_bytes(
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" => encode_utf8_bytes(&text, false),
         "utf-8-with-signature" => encode_utf8_bytes(&text, true),
+        "utf-16" => encode_utf16_bytes(&text, true, true),
+        "utf-16be" => encode_utf16_bytes(&text, true, false),
+        "utf-16le" => encode_utf16_bytes(&text, false, false),
         "iso-latin-1" => encode_iso_latin_bytes(&text),
         "us-ascii" => encode_ascii_bytes(&text),
         "raw-text" | "no-conversion" => encode_raw_text_bytes(&text),
         "euc-jp" => encode_euc_jp_bytes(&text),
         _ => encode_raw_text_bytes(&text),
     }
+}
+
+/// Encode TEXT as UTF-16 (big- or little-endian), optionally prefixing a
+/// byte-order mark.  Raw-byte marker chars encode as their byte value.
+fn encode_utf16_bytes(text: &str, big_endian: bool, bom: bool) -> Result<Vec<u8>, LispError> {
+    let mut out = Vec::new();
+    if bom {
+        // U+FEFF
+        if big_endian {
+            out.extend_from_slice(&[0xFE, 0xFF]);
+        } else {
+            out.extend_from_slice(&[0xFF, 0xFE]);
+        }
+    }
+    for ch in text.chars() {
+        let scalar = if let Some(byte) = raw_byte_from_regex_char(ch) {
+            byte as u32
+        } else {
+            ch as u32
+        };
+        if scalar <= 0xFFFF {
+            let unit = scalar as u16;
+            if big_endian {
+                out.extend_from_slice(&unit.to_be_bytes());
+            } else {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+        } else {
+            // Surrogate pair for astral codepoints.
+            let v = scalar - 0x1_0000;
+            let hi = 0xD800 + ((v >> 10) as u16);
+            let lo = 0xDC00 + ((v & 0x3FF) as u16);
+            for unit in [hi, lo] {
+                if big_endian {
+                    out.extend_from_slice(&unit.to_be_bytes());
+                } else {
+                    out.extend_from_slice(&unit.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str) -> String {

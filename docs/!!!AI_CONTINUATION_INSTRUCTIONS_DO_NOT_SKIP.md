@@ -18,6 +18,38 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2612/7080: `rx-tests.el' (2524..2559,
+  36/36), `seq-tests.el' (2560..2611, 52/52), `shadow-tests.el' (2612)
+  all pass; 117-file prefix sweep (prefix-files12.txt) on frozen
+  binaries is the gate (autorevert-tests.el is a known flake — retry
+  it standalone).  Load-bearing for this batch:
+  - GNU rx.el fully adopted via ensure_gnu_rx_loaded; the reader's
+    `\xNNNN' string hex-escape maps the #x3FFF00..#x3FFFFF raw-byte
+    range to emaxx's internal raw-byte char (0xE000+byte) so
+    constructed regexp strings round-trip as the oracle's unibyte
+    bytes (rx-char-any-raw-byte, rx-charset-or).
+  - macroexpand-all now evaluates `eval-and-compile' bodies at
+    expansion time AND keeps the forms, so rx-define's
+    `(put ... 'rx-definition ...)' side effect is visible to a later
+    `(rx ...)' in the same rx-let (rx-let-define).
+  - char-to-string/`string'/unibyte-char-to-multibyte map the
+    #x3FFF00 range consistently to 0xE000+byte; find-composition-internal
+    added (unicode-segmentation grapheme clusters).
+  - subr-x adopted as the real GNU file (dropped from
+    is_compat_preloaded_feature); mapconcat treats a nil separator as
+    "" and string-join delegates through it; let/let* signal
+    setting-constant when binding nil/t/keywords (and-let*).
+  - utf-16/-le/-be coding systems (BOM = FE FF big-endian).
+  - dir-locals-file builtin var (shadow-tests).
+  - NEXT WALL: `shortdoc-tests.el' (2613..2617) — needs the real
+    shortdoc.el groups populated (guard native
+    define-short-documentation-group behind has_macro_binding),
+    `documentation' to fall back to the version's etc/DOC file for
+    C builtins, make-separator-line, and ~36 group functions to be
+    fboundp (17 with :eval examples must eval without error; the rest
+    are :no-eval and only need fboundp).  Non-fboundp functions are
+    SKIPPED in display, so all 36 must be defined for
+    shortdoc-all-functions-fboundp.  See docs/compatibility-goal.md.
 - Verified through selector 2523/7080: `pp-tests.el' (2488..2491),
   `range-tests.el' (2492), `regexp-opt-tests.el' (2493..2494),
   `ring-tests.el' (2495..2518), `rmc-tests.el' (2519..2523) all pass;

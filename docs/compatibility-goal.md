@@ -19,11 +19,45 @@ counts as the progress denominator.
 
 ## Current State
 
-- IN PROGRESS: `rx-tests.el` (2524..2559, 36 selected) — 33/36 on
-  emaxx (UNCOMMITTED groundwork beyond the 2523 commit; verify before
-  building on it).  Frontier stays at 2523 until all 36 pass the
-  harness.  The batch adopts GNU rx.el and fixes several cross-cutting
-  primitives:
+- Verified through selector 2612/7080: `rx-tests.el` (2524..2559,
+  36/36), `seq-tests.el` (2560..2611, 52/52), `shadow-tests.el`
+  (2612) all pass the harness.  The 117-file prefix sweep
+  (prefix-files12.txt) on frozen binaries is the gate; autorevert-tests
+  is a known flake, retry it standalone.  This batch completed the rx
+  groundwork below and added:
+  - Reader `\xNNNN` string hex-escape maps the #x3FFF00..#x3FFFFF
+    raw-byte range to emaxx's internal raw-byte char (0xE000+byte),
+    so rx's constructed regexp strings round-trip as the oracle's
+    unibyte bytes (rx-char-any-raw-byte, rx-charset-or).
+  - `macroexpand-all` evaluates `eval-and-compile` bodies at expansion
+    time and keeps the forms (rx-define's `put 'rx-definition` side
+    effect is visible to a later `rx` in the same rx-let — rx-let-define).
+  - `char-to-string`/`string`/`unibyte-char-to-multibyte` map the
+    #x3FFF00 range to 0xE000+byte; `find-composition-internal` added
+    via the unicode-segmentation crate.
+  - subr-x is the real GNU file now (removed from
+    is_compat_preloaded_feature); `mapconcat` treats a nil separator as
+    "" and `string-join` delegates through it; `let`/`let*` signal
+    setting-constant when binding nil/t/keywords (and-let*).
+  - utf-16/-le/-be coding systems (utf-16 = big-endian, BOM FE FF);
+    `dir-locals-file` builtin var (shadow-tests).
+  - seq-tests passed with no code change (already supported).
+- NEXT WALL: `shortdoc-tests.el` (2613..2617).  Currently 3/5 pass
+  VACUOUSLY because emaxx routes `define-short-documentation-group`
+  to sf_defgroup (custom defgroup), leaving `shortdoc--groups` empty.
+  To reach 5/5: guard the native form behind
+  `!has_macro_binding("define-short-documentation-group")` so the real
+  shortdoc.el macro populates the groups; make `documentation` fall
+  back to the version's etc/DOC file (compat_data_directory()/DOC,
+  name-keyed `\x1fF<name>\n<doc>` entries) for C builtins that carry
+  no native docstring; add `make-separator-line`; and define the ~36
+  group functions that are not yet fboundp (shortdoc-all-functions-fboundp
+  checks every listed function).  Non-fboundp functions are SKIPPED in
+  display, so the 17 with `:eval` examples must eval without error once
+  defined (values are NOT checked), while the 21 `:no-eval` ones only
+  need fboundp.  `buffer-text-pixel-size` is needed by the string
+  group's string-pixel-width `:eval` example.
+- rx groundwork detail (folded into the 2612 batch above):
   - `ensure_gnu_rx_loaded' (like ensure_gnu_pcase_loaded): the first
     rx/rx-let/rx-define/rx-let-eval form loads GNU rx.el when the
     load-path resolves it; native sf_rx* stay the no-file fallback,
