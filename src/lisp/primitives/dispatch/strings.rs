@@ -870,14 +870,28 @@ pub(super) fn call(
                 let (mut formatted, mut formatted_props) = match conv {
                     's' => format_s_conversion(interp, arg, precision, env)?,
                     'S' => (render_prin1_ephemeral(interp, arg, env)?, Vec::new()),
-                    'd' | 'o' | 'x' | 'X' | 'b' | 'B' => (
+                    // GNU accepts %i as a synonym for %d (erc-backend's
+                    // define-erc-response-handler formats "%03i").
+                    'd' | 'i' | 'o' | 'x' | 'X' | 'b' | 'B' => (
                         format_numeric_conversion(
-                            interp, arg, conv, flag_hash, flag_plus, flag_space, precision,
+                            interp,
+                            arg,
+                            if conv == 'i' { 'd' } else { conv },
+                            flag_hash,
+                            flag_plus,
+                            flag_space,
+                            precision,
                         )?,
                         Vec::new(),
                     ),
                     'f' => (
                         format_float_conversion(interp, arg, flag_plus, flag_space, precision)?,
+                        Vec::new(),
+                    ),
+                    'e' | 'g' => (
+                        format_exponential_conversion(
+                            interp, arg, conv, flag_plus, flag_space, precision,
+                        )?,
                         Vec::new(),
                     ),
                     'c' => (format_char_conversion(arg)?, Vec::new()),

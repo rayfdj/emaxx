@@ -52,9 +52,42 @@ counts as the progress denominator.
     shell-command-to-string port (epg's gnupg-version skip check —
     gpg 2.4.4 is "buggy" upstream so epg-roundtrip-1/2 SKIP to match
     the oracle).
-  - NEXT: erc series (2766+): erc-button-tests loads fail on
-    void `emacs-build-time'; many erc files ahead — 3000 sits inside
-    the erc series.
+  - IN PROGRESS: erc series groundwork (UNCOMMITTED VALIDATION —
+    sweep25 pending; frontier stays 2765 until an erc file passes).
+    Landed so far:
+    - format supports %i (= %d) and %e/%g (erc-backend's
+      define-erc-response-handler uses "%03i" — it rendered "0%i").
+    - emacs-build-time (nil = not recorded) in builtin vars.
+    - simple_compat: while-let, ascii-case-table (mule.el port),
+      with-case-table, custom-load-symbol + custom-load-recursion,
+      custom-variable-p.
+    - cl-generic-define-context-rewriter WORKS now: stored as a macro
+      named cl-generic--context-rewriter--NAME; sf_cl_defmethod
+      pre-expands &context entries with registered heads
+      (expand_generic_context_rewriters); ClDefmethodSpecializer grew
+      context_expr (expression contexts evaluated at dispatch) —
+      erc-networks' erc-obsolete-var rewriter.
+    - require honors NOERROR (returns nil on file-missing/file-error)
+      — erc--find-mode's module fallback.
+    - erc/erc-button/erc-loaddefs load cleanly; module autoloads
+      registered via erc.el's (load "erc-loaddefs").
+    CURRENT erc-button-tests state (5 selectors, 2766..2770):
+    - erc-button-alist--nil-form/-url/erc-button-next fail an erc
+      prompt-machinery assert: `(= (field-end erc-insert-marker)
+      erc-input-marker)' — erc-tests-common-prep-for-insertion sets up
+      the prompt via erc--initialize-markers; investigate field-end
+      over the prompt's field text property vs marker positions.
+    - erc-button-alist--function-as-form: wrong-type marker, nil.
+    - erc-button--display-error-notice-with-keys: substitute-command-keys
+      style key substitution (\\[erc-bol] → C-a) mismatch.
+    NEXT STEPS: fix the marker/field prompt setup first (it gates 4 of
+    5 selectors and likely the whole erc series), then rerun
+    erc-button/erc-dcc/erc-goodies/erc-networks; erc-networks-tests
+    already has 6/43 passing and needs the context-rewriter path
+    (landed) — recheck it.  Milestone 3000 sits inside the erc series.
+    BEFORE COMMITTING more: run the full 130-file sweep
+    (prefix-files15.txt pattern; create sweep25 from sweep24.sh) — the
+    require-NOERROR and context-rewriter changes are cross-cutting.
 - Verified through selector 2746/7080: `testcover-tests.el' (2670..2700,
   31/31), `text-property-search-tests.el' (2701..2720),
   `thunk-tests.el' (2721..2729), `timer-tests.el' (2730..2734),

@@ -266,7 +266,27 @@ impl Interpreter {
                         }
                         "cl-defgeneric" => return self.sf_cl_defgeneric(&items, env),
                         "cl-defmethod" => return self.sf_cl_defmethod(&items, env),
-                        "cl-generic-define-context-rewriter" => return Ok(Value::Nil),
+                        "cl-generic-define-context-rewriter" => {
+                            // (cl-generic-define-context-rewriter NAME ARGS &rest
+                            // BODY): store the expander macro-style so
+                            // cl-defmethod &context entries can expand
+                            // (erc-obsolete-var VAR SPEC) into ((EXPR) SPEC).
+                            if let (Some(Value::Symbol(name)), Some(args)) =
+                                (items.get(1), items.get(2))
+                                && let Ok(param_values) = args.to_vec()
+                                && let Ok(params) = param_values
+                                    .iter()
+                                    .map(|p| p.as_symbol().map(str::to_string))
+                                    .collect::<Result<Vec<_>, _>>()
+                            {
+                                self.macros.push((
+                                    format!("cl-generic--context-rewriter--{name}"),
+                                    params,
+                                    items[3..].to_vec(),
+                                ));
+                            }
+                            return Ok(Value::Nil);
+                        }
                         "oclosure-define" => return self.sf_oclosure_define(&items, env),
                         "oclosure-lambda" => return self.sf_oclosure_lambda(&items, env),
                         "define-inline" => return self.sf_define_inline(&items, env),
@@ -510,11 +530,24 @@ impl Interpreter {
                                     }
                                     None => None,
                                 };
-                                return self.require_feature_with_target(
+                                let noerror = match items.get(3) {
+                                    Some(expr) => self.eval(expr, env)?.is_truthy(),
+                                    None => false,
+                                };
+                                let result = self.require_feature_with_target(
                                     &feature,
                                     target.as_deref(),
                                     env,
                                 );
+                                // GNU: with NOERROR, a missing file yields nil.
+                                if noerror
+                                    && let Err(LispError::SignalValue(condition)) = &result
+                                    && matches!(condition.car(), Ok(Value::Symbol(kind))
+                                        if kind == "file-missing" || kind == "file-error")
+                                {
+                                    return Ok(Value::Nil);
+                                }
+                                return result;
                             }
                             return Ok(Value::Nil);
                         }
