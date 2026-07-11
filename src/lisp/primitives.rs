@@ -467,6 +467,9 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "built-in-class-p"
             | "cl-functionp"
             | "url-scheme-get-property"
+            // url-handlers.el's url-insert dissects MIME via mm-decode;
+            // native url-retrieve buffers hold raw responses instead.
+            | "url-insert"
             | "macroexpand-1"
             | "macroexpand-all"
             | "cl-parse-integer"

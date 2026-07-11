@@ -126,6 +126,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "insert-file-contents-literally"
             | "get-free-disk-space"
             | "set-visited-file-name"
+            | "file-name-all-completions"
             | "file-symlink-p"
             | "make-symbolic-link"
             | "call-process"
@@ -145,6 +146,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "delete-process"
             | "set-process-query-on-exit-flag"
             | "process-send-string"
+            | "process-send-eof"
+            | "url-retrieve"
+            | "url-retrieve-synchronously"
+            | "url-http-file-exists-p"
+            | "url-insert"
             | "process-lines"
             | "get-locale-names"
             | "zlib-decompress-region"
@@ -525,43 +531,39 @@ pub(super) fn call(
             );
             interp.set_buffer_local_value(buffer_id, "parse-sexp-ignore-comments", Value::T);
             interp.set_buffer_local_value(buffer_id, "font-lock-defaults", Value::T);
+            // GNU lisp-mode-variables outline settings (lisp-mnt.el's
+            // lm-section-end relies on these in emacs-lisp-mode buffers).
+            interp.set_buffer_local_value(
+                buffer_id,
+                "outline-regexp",
+                Value::String(
+                    ";;;;* [^ \t\n]\\|(\\|\\(^;;;###\\(\\([-[:alnum:]]+?\\)-\\)?\\(autoload\\)\\)"
+                        .into(),
+                ),
+            );
+            interp.set_buffer_local_value(
+                buffer_id,
+                "outline-level",
+                Value::Symbol("lisp-outline-level".into()),
+            );
             let Value::CharTable(syntax_table_id) =
                 interp.make_char_table(Some("syntax-table".into()), Value::Nil)
             else {
                 unreachable!("make_char_table returns a char-table");
             };
+            // A fresh per-buffer table inheriting the static GNU
+            // lisp-data-mode-syntax-table (built in Interpreter::new).
             interp
-                .set_char_table_parent(syntax_table_id, Some(interp.standard_syntax_table_id()))?;
-            // GNU lisp-data-mode-syntax-table: every non-alphanumeric
-            // ASCII character is a symbol constituent unless overridden
-            // below (Lisp symbols carry -, ., {, } and friends).
-            for code in 0u32..128 {
-                let ch = char::from_u32(code).expect("ASCII");
-                if ch.is_ascii_alphanumeric() {
-                    continue;
-                }
-                interp.char_table_set(syntax_table_id, code, Value::String("_".into()))?;
-            }
-            for ch in [' ', '\t', '\x0c', '\u{a0}'] {
-                interp.char_table_set(syntax_table_id, ch as u32, Value::String(" ".into()))?;
-            }
-            interp.char_table_set(syntax_table_id, '\n' as u32, Value::String(">".into()))?;
-            interp.char_table_set(syntax_table_id, ';' as u32, Value::String("<".into()))?;
-            for ch in ['`', '\'', ',', '#'] {
-                interp.char_table_set(syntax_table_id, ch as u32, Value::String("'".into()))?;
-            }
-            interp.char_table_set(syntax_table_id, '@' as u32, Value::String("_ p".into()))?;
-            interp.char_table_set(syntax_table_id, '"' as u32, Value::String("\"".into()))?;
-            interp.char_table_set(syntax_table_id, '\\' as u32, Value::String("\\".into()))?;
-            interp.char_table_set(syntax_table_id, '(' as u32, Value::String("()".into()))?;
-            interp.char_table_set(syntax_table_id, ')' as u32, Value::String(")(".into()))?;
-            interp.char_table_set(syntax_table_id, '[' as u32, Value::String("(]".into()))?;
-            interp.char_table_set(syntax_table_id, ']' as u32, Value::String(")[".into()))?;
+                .set_char_table_parent(syntax_table_id, Some(interp.lisp_data_syntax_table_id()))?;
             interp.set_current_syntax_table(syntax_table_id);
             Ok(Value::Nil)
         }
         "special-mode" => {
             need_args(name, args, 0)?;
+            // GNU special-mode derives from nil, so its body starts with
+            // kill-all-local-variables (running change-major-mode-hook;
+            // tar-mode re-entry relies on this to unswap its data buffer).
+            let _ = call_named_function(interp, "kill-all-local-variables", &[], env)?;
             interp.set_buffer_local_value(
                 interp.current_buffer_id(),
                 "major-mode",
@@ -1821,6 +1823,36 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
+        "file-name-all-completions" => {
+            need_args(name, args, 2)?;
+            let prefix = string_text(&args[0])?;
+            let directory = resolve_file_name_in_env(interp, env, &string_text(&args[1])?);
+            let mut names: Vec<String> = Vec::new();
+            for special in ["./", "../"] {
+                if special.starts_with(&prefix) {
+                    names.push(special.to_string());
+                }
+            }
+            if let Ok(entries) = std::fs::read_dir(&directory) {
+                for entry in entries.flatten() {
+                    let file_name = entry.file_name().to_string_lossy().into_owned();
+                    if !file_name.starts_with(&prefix) {
+                        continue;
+                    }
+                    // Directories (following symlinks) get a trailing slash.
+                    let is_directory = std::fs::metadata(entry.path())
+                        .map(|metadata| metadata.is_dir())
+                        .unwrap_or(false);
+                    names.push(if is_directory {
+                        format!("{file_name}/")
+                    } else {
+                        file_name
+                    });
+                }
+            }
+            names.sort();
+            Ok(Value::list(names.into_iter().map(Value::String)))
+        }
         "set-visited-file-name" => {
             need_arg_range(name, args, 1, 3)?;
             if args[0].is_nil() {
@@ -2014,10 +2046,19 @@ pub(super) fn call(
             let input = match args.get(1) {
                 Some(value) if !value.is_nil() => match value {
                     Value::Integer(0) => None,
-                    _ => Some(
-                        fs::read(string_text(value)?)
-                            .map_err(|error| LispError::Signal(error.to_string()))?,
-                    ),
+                    _ => {
+                        let infile = string_text(value)?;
+                        // GNU report_file_error: an unreadable INFILE is a
+                        // `file-error' (epg's tty probe catches those).
+                        Some(fs::read(&infile).map_err(|error| {
+                            LispError::SignalValue(
+                                crate::lisp::primitives::file_io::file_error_value(
+                                    &error.to_string(),
+                                    &infile,
+                                ),
+                            )
+                        })?)
+                    }
                 },
                 _ => None,
             };
@@ -2144,6 +2185,112 @@ pub(super) fn call(
             let process_id = interp.resolve_process_id(&args[0])?;
             interp.set_process_query_on_exit_flag(process_id, args[1].is_truthy())?;
             Ok(args[1].clone())
+        }
+        "url-retrieve" => {
+            need_arg_range(name, args, 2, 5)?;
+            let url = string_text(&args[0])?;
+            let callback = args[1].clone();
+            let cbargs = args
+                .get(2)
+                .map(|value| value.to_vec())
+                .transpose()?
+                .unwrap_or_default();
+            crate::lisp::primitives::processes::start_url_retrieval(
+                interp, env, &url, callback, cbargs,
+            )
+        }
+        "url-retrieve-synchronously" => {
+            need_arg_range(name, args, 1, 4)?;
+            let url = string_text(&args[0])?;
+            let buffer = super::call(
+                interp,
+                "generate-new-buffer",
+                &[Value::String(format!(" *http {url}*"))],
+                env,
+            )?;
+            let buffer_id = interp.resolve_buffer_id(&buffer)?;
+            match crate::lisp::primitives::processes::http_fetch_raw(&url) {
+                Ok(bytes) => {
+                    let saved = interp.current_buffer_id();
+                    interp.switch_to_buffer_id(buffer_id)?;
+                    let text: String = bytes.iter().map(|byte| char::from(*byte)).collect();
+                    interp.insert_current_buffer(&text);
+                    let _ = interp.switch_to_buffer_id(saved);
+                    Ok(buffer)
+                }
+                Err(_) => Ok(Value::Nil),
+            }
+        }
+        "url-insert" => {
+            // GNU url-handlers.el extracts the body via mm-dissect-buffer;
+            // the native url-retrieve buffers hold the raw response, so
+            // split at the header/body boundary directly.
+            need_arg_range(name, args, 1, 4)?;
+            let buffer_id = interp.resolve_buffer_id(&args[0])?;
+            let saved = interp.current_buffer_id();
+            interp.switch_to_buffer_id(buffer_id)?;
+            let text = interp.buffer.full_buffer_string();
+            interp.switch_to_buffer_id(saved)?;
+            let body_start = text
+                .find("\r\n\r\n")
+                .map(|index| index + 4)
+                .or_else(|| text.find("\n\n").map(|index| index + 2))
+                .unwrap_or(0);
+            let body = &text[body_start..];
+            let begin = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .map(|value| value.as_integer())
+                .transpose()?
+                .unwrap_or(0)
+                .max(0) as usize;
+            let end = args
+                .get(2)
+                .filter(|value| !value.is_nil())
+                .map(|value| value.as_integer())
+                .transpose()?
+                .map(|value| (value.max(0) as usize).min(body.chars().count()));
+            let body: String = match end {
+                Some(end) => body.chars().take(end).skip(begin).collect(),
+                None => body.chars().skip(begin).collect(),
+            };
+            let size = body.chars().count() as i64;
+            interp.insert_current_buffer(&body);
+            Ok(Value::list([Value::Integer(size), Value::Nil]))
+        }
+        "url-http-file-exists-p" => {
+            need_arg_range(name, args, 1, 1)?;
+            let url = string_text(&args[0])?;
+            Ok(
+                match crate::lisp::primitives::processes::http_fetch_raw(&url) {
+                    Ok(bytes) => {
+                        let head: String = bytes
+                            .iter()
+                            .take(64)
+                            .map(|byte| char::from(*byte))
+                            .collect();
+                        let ok = head
+                            .split_whitespace()
+                            .nth(1)
+                            .is_some_and(|code| code.starts_with('2'));
+                        if ok { Value::T } else { Value::Nil }
+                    }
+                    Err(_) => Value::Nil,
+                },
+            )
+        }
+        "process-send-eof" => {
+            need_arg_range(name, args, 0, 1)?;
+            let process = match args.first() {
+                Some(value) if !value.is_nil() => value.clone(),
+                _ => call(interp, "get-buffer-process", &[Value::Nil], env)?,
+            };
+            let process_id = interp.resolve_process_id(&process)?;
+            let (stdout, stderr) = interp.process_send_eof(process_id)?;
+            let mut output = String::from_utf8_lossy(&stdout).into_owned();
+            output.push_str(&String::from_utf8_lossy(&stderr));
+            deliver_process_output(interp, process_id, &output, env)?;
+            Ok(process)
         }
         "process-send-string" => {
             need_args(name, args, 2)?;

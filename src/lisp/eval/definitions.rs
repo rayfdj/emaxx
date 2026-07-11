@@ -2107,8 +2107,15 @@ impl Interpreter {
                     index += 2;
                 }
                 let mut delayed_body = Vec::new();
+                // GNU expands to (delay-mode-hooks (,(or PARENT
+                // 'kill-all-local-variables)) ...): the parent chain ends
+                // in a mode that resets buffer locals.
                 if let Some(parent) = parent {
                     delayed_body.push(Value::list([Value::Symbol(parent.to_string())]));
+                } else {
+                    delayed_body.push(Value::list([Value::Symbol(
+                        "kill-all-local-variables".into(),
+                    )]));
                 }
                 delayed_body.push(Value::list([
                     Value::Symbol("use-local-map".into()),
@@ -2503,10 +2510,7 @@ impl Interpreter {
             let params_for_make = if aux_bindings.is_empty() {
                 params.clone()
             } else {
-                params
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once("&key".to_string()))
+                std::iter::once("&key".to_string())
                     .chain(slot_names.iter().cloned())
                     .collect::<Vec<_>>()
             };
@@ -2515,24 +2519,32 @@ impl Interpreter {
             let call_args = if aux_bindings.is_empty() {
                 Value::Symbol("args".into())
             } else {
-                let aux_keywords = aux_bindings
+                // GNU fills slots only from constructor params and &aux
+                // bindings whose names match slot names; the let* below
+                // binds them all, so pass those as pure keywords (raw args
+                // must not leak into slot positions).
+                let mut binding_names = params
                     .iter()
-                    .flat_map(|(name, _)| {
-                        [
-                            Value::Symbol(format!(":{name}")),
-                            Value::Symbol(name.clone()),
-                        ]
+                    .filter(|param| !param.starts_with('&'))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for (aux_name, _) in &aux_bindings {
+                    if !binding_names.contains(aux_name) {
+                        binding_names.push(aux_name.clone());
+                    }
+                }
+                let slot_keywords = binding_names
+                    .into_iter()
+                    .filter(|binding| slot_names.contains(binding))
+                    .flat_map(|binding| {
+                        [Value::Symbol(format!(":{binding}")), Value::Symbol(binding)]
                     })
                     .collect::<Vec<_>>();
-                Value::list([
-                    Value::Symbol("append".into()),
-                    Value::Symbol("args".into()),
-                    Value::list(
-                        std::iter::once(Value::Symbol("list".into()))
-                            .chain(aux_keywords)
-                            .collect::<Vec<_>>(),
-                    ),
-                ])
+                Value::list(
+                    std::iter::once(Value::Symbol("list".into()))
+                        .chain(slot_keywords)
+                        .collect::<Vec<_>>(),
+                )
             };
             let mut make_items = vec![
                 Value::Symbol("emaxx-struct-make".into()),

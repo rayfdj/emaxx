@@ -505,6 +505,14 @@ impl Interpreter {
             {
                 None
             }
+            // A let-binding made in another buffer must not capture setq
+            // from this buffer: always-buffer-local variables (GNU
+            // default-directory) get this buffer's own local instead.
+            SpecialBindingScope::BufferLocal(id)
+                if self.is_auto_buffer_local(name) && id != self.current_buffer_id() =>
+            {
+                None
+            }
             _ => Some(restore.scope.clone()),
         }
     }

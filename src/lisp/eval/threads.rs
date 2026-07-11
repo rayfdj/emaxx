@@ -307,6 +307,93 @@ impl Interpreter {
         Ok((stdout, stderr))
     }
 
+    pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
+        self.refresh_process_id(record_id)?;
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        if !process.status.is_live() {
+            return Err(LispError::Signal("Process is not running".into()));
+        }
+        let Some(runtime) = process.runtime.as_mut() else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        // Closing stdin delivers EOF; drain the pipes until the process
+        // exits (filters/buffers get the output like process-send-string).
+        drop(runtime.child.stdin.take());
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(pipe) = runtime.child.stdout.as_mut() {
+                read_nonblocking_pipe(pipe, &mut stdout)?;
+            }
+            if let Some(pipe) = runtime.child.stderr.as_mut() {
+                read_nonblocking_pipe(pipe, &mut stderr)?;
+            }
+            if runtime
+                .child
+                .try_wait()
+                .map_err(|error| LispError::Signal(error.to_string()))?
+                .is_some()
+            {
+                if let Some(pipe) = runtime.child.stdout.as_mut() {
+                    read_nonblocking_pipe(pipe, &mut stdout)?;
+                }
+                if let Some(pipe) = runtime.child.stderr.as_mut() {
+                    read_nonblocking_pipe(pipe, &mut stderr)?;
+                }
+                process.status = ProcessStatus::Exit;
+                process.runtime = None;
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok((stdout, stderr))
+    }
+
+    pub fn live_external_process_ids(&self) -> Vec<u64> {
+        self.process_states
+            .iter()
+            .filter(|process| process.runtime.is_some())
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    /// Non-blocking read of a live process's pipes; marks the process
+    /// exited once the pipes are drained and the child has finished.
+    pub fn poll_process_output(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
+        let Some(runtime) = process.runtime.as_mut() else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(pipe) = runtime.child.stdout.as_mut() {
+            read_nonblocking_pipe(pipe, &mut stdout)?;
+        }
+        if let Some(pipe) = runtime.child.stderr.as_mut() {
+            read_nonblocking_pipe(pipe, &mut stderr)?;
+        }
+        if stdout.is_empty()
+            && stderr.is_empty()
+            && runtime
+                .child
+                .try_wait()
+                .map_err(|error| LispError::Signal(error.to_string()))?
+                .is_some()
+        {
+            process.status = ProcessStatus::Exit;
+            process.runtime = None;
+        }
+        Ok((stdout, stderr))
+    }
+
     pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
         let original_name = function.as_symbol().ok().map(str::to_string);
         self.pending_timers.push(ScheduledTimer {

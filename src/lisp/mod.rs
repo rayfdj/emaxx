@@ -363,9 +363,14 @@ pub fn load_file_strict(
             .into_iter()
             .rev(),
     );
+    // Re-read load-history here: nested loads during this file's
+    // evaluation have pushed their own entries onto it.
+    let load_history_now = interp
+        .lookup_var("load-history", &types::Env::new())
+        .unwrap_or(previous_load_history);
     interp.set_global_binding(
         "load-history",
-        types::Value::cons(history_entry, previous_load_history),
+        types::Value::cons(history_entry, load_history_now),
     );
     if let Some(message) = warning_message {
         append_message(interp, &message);

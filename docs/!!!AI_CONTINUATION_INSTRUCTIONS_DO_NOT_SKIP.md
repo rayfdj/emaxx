@@ -18,48 +18,49 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2437/7080: `oclosure-tests.el' (2433..2437)
-  passes; 103-file prefix sweep (prefix-files8.txt) on frozen binaries
-  is the gate.  Batch details in docs/compatibility-goal.md 2437 entry
-  (oclosure feature, transparent-branch identity dedup for live caller
-  frames, keyword copiers, emaxx--oclosure-set-slot + :mutable +
-  setting-constant, eieio-oref/oset oclosure integration, macroexpand
-  duplicate-slot validation, byte-compile immutable-setq error).
-- IN PROGRESS: `package-tests.el' (2438..2474, 37 selected) — 11/38
-  pass on emaxx (UNCOMMITTED work beyond the 2437 commit; verify
-  before building on it).  Already fixed: inhibit-message +
-  search-default-mode builtin nil defaults (bindings.rs);
-  simple_compat.el verbatim ports of cd/cd-absolute/parse-colon-path
-  (files.el; cd's interactive spec simplified), with-file-modes /
-  with-existing-directory / buffer-local-set-state family /
-  version-list-< / version-list-= / version-list-<= /
-  version-list-not-zero / package--builtin-versions /
-  package--description-file (subr.el), custom-quote (custom.el),
-  customize-save-variable (cus-edit.el, theme machinery guarded),
-  isearch-fold-quotes-mode (isearch.el); truncate-string-to-width
-  accepts GNU's sixth ELLIPSIS-TEXT-PROPERTY argument (strings.rs).
-  Also done since: native `set-visited-file-name'
-  (files_process.rs; sets buffer file+truename, renames buffer
-  uniquely, marks modified unless ALONG-WITH-FILE).
-  REMAINING failure clusters (run the file to refresh):
-  - "integer, nil" (7 tests) — root cause is `package-buffer-info'
-    failing on simple-single-1.3.el (REPRODUCER:
-    /tmp/probes/probe-pib.el — with-temp-buffer + insert-file-contents
-    + (package-buffer-info)); it goes through lisp-mnt's
-    lm-package-requires / narrow-to-region — bisect inside
-    package-buffer-info (package.el:1165).
-  - void `loaddefs-generate' (4 tests) — package install generates
-    autoloads via loaddefs-gen.el; decide port vs load.
-  - void `tar-mode' (2) — multi-file (.tar) package installs.
-  - "^ +simple-single" regex misses in *Packages* listing (3) —
-    package-menu listing format/alignment.
-  - describe-package "string-or-buffer, symbol" (3).
-  - "integer, nil" (4: desc-from-buffer, install-single, upload-*) and
-    assorted singles (dired-mode, byte-recompile-directory,
-    update-archives-async "number, nil", ignore-nil-entry).
-  NOTE: the simple_compat function ports SHADOW any native
-  counterparts; run the full 103-file sweep before committing this
-  batch (version-list-*/cd could affect prefix files).
+- Verified through selector 2474/7080: `package-tests.el' (2438..2474,
+  all 37 selected; harness check-all also matches
+  package-test-update-archives-async) passes; 104-file prefix sweep
+  (prefix-files9.txt) on frozen binaries is the gate.  Batch details in
+  docs/compatibility-goal.md 2474 entry — READ IT before touching the
+  reader's string/char escapes, replace-regexp-in-string,
+  cl-defstruct constructors, let-alist, default-directory scoping,
+  load resolution/load-history, coding-system EOL detection, process
+  pumping, or the native url machinery; several are load-bearing:
+  - Reader: escape modifiers chain only via backslash ("\C-^" is
+    control-^); GNU ctrl fold set with "Invalid modifier in string"
+    for leftovers ("\C-SPC" -> NUL in strings).
+  - replace-regexp-in-string empty-match-past-scan fix; searches fold
+    case per case-fold-search.
+  - emaxx-struct-make: &rest consumes nothing positionally; &aux
+    constructors pass slots as pure keywords from let* bindings.
+  - let-alist binds the exact cdr.
+  - default-directory is special + DEFVAR_PER_BUFFER (foreign-buffer
+    lets don't capture setq; reads prefer the buffer's own local).
+  - special-mode/parentless derived modes run kill-all-local-variables
+    (change-major-mode-hook: tar-mode re-entry unswap).
+  - Shared lisp-data syntax table char-table id 3 behind
+    emacs-lisp-mode-syntax-table (ietf-drums keeps "J. R." dots).
+  - load falls back to NAME.elc; nested load-history entries survive.
+  - file-coding-system-alist GNU defaults; EOL detection for
+    unspecified-eol codings in decode (bug#48137 path).
+  - call-process INFILE errors are file-error (epg tty probe).
+  - process-send-eof; accept-process-output pumps process pipes + url
+    retrievals, SECONDS is arg 2, returns nil on timeout.
+  - Native url-retrieve (worker thread + status plist with
+    (:error (error http CODE)) for non-2xx), url-retrieve-synchronously,
+    url-http-file-exists-p, url-insert (builtin-overridden);
+    features url/url-http builtin-provided; simple_compat url-http
+    surface; url-scheme-get-property delegates to loaded elisp.
+  - simple_compat: substitute-quotes, lwarn, lisp-outline-level,
+    outline surface + (provide 'outline), with-help-window mirrors
+    help--window-setup; mail-fetch-field autoload; emacs-lisp-mode
+    sets outline-regexp/outline-level locals.
+- NEXT: `pcase-tests.el' (2475..2487, 13 selectors) — run
+  `cargo run --release --bin compat-harness -- run --scope all
+  --selector check-all --file test/lisp/emacs-lisp/pcase-tests.el`
+  to see the current state, then continue down
+  compat/oracle_tests_all.txt toward 3000.
 - Verified through selector 2432/7080: `nadvice-tests.el' (2420..2432)
   passes the harness with ALL 13 selectors matching the oracle,
   including the two the ORACLE fails as :expected-result :failed
@@ -805,14 +806,18 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 2016/7080` run completed the eieio-tests directory in three
-batches: the persist batch (slot descriptor protocol, record `equal',
-hash-table reads, class-object tags), the groundwork batch (implicit
-`eieio-default-superclass' parent activating eieio.el's real generic
-methods, GNU slot-override merge + defclass validation, class-allocated
-storage, typed `oset', record `aset', native slot machinery, plus the
-`file-attributes' GNU time-list repair), and the finish batch
-(cl-generic no-next/no-applicable hooks, in-place method re-registration,
-`defgeneric' collision errors, exact `NAME-p'/`same-class-p'). The
-83-file verified-prefix sweep is green. The next agent continues with
-`test/lisp/emacs-lisp/ert-font-lock-tests.el` (selectors 2017..2056).
+The `Compat 2474/7080` run completed package-tests.el end to end (37
+selected selectors plus the async archive test the harness also
+checks).  It was a broad cross-cutting batch: reader escape-modifier
+chaining, replace-regexp-in-string empty-match handling, case-folded
+literal search, cl-defstruct &rest/&aux constructor argument
+plumbing, let-alist cdr semantics, tabulated-list ellipsis defaults,
+kill-all-local-variables in special-mode, a real shared
+lisp-data-mode syntax table, DEFVAR_PER_BUFFER default-directory
+scoping, .elc load fallback + nested load-history, GNU
+file-coding-system-alist + EOL detection on decode, file-error for
+call-process INFILE, process-send-eof + pipe pumping in
+accept-process-output, and a native async url-retrieve stack (url and
+url-http are builtin-provided features).  The 104-file verified-prefix
+sweep (prefix-files9.txt) is green.  The next agent continues with
+`test/lisp/emacs-lisp/pcase-tests.el` (selectors 2475..2487).

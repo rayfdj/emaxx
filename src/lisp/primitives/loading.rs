@@ -434,7 +434,9 @@ pub(crate) fn resolve_load_target_in_env(
     if direct.is_file() {
         return Some(direct);
     }
-    let with_el = (!target.ends_with(".el")).then(|| format!("{target}.el"));
+    let bare_target = !target.ends_with(".el") && !target.ends_with(".elc");
+    let with_el = bare_target.then(|| format!("{target}.el"));
+    let with_elc = bare_target.then(|| format!("{target}.elc"));
     let Some(load_path) = interp.lookup_var("load-path", env) else {
         return interp.resolve_load_target(target);
     };
@@ -451,6 +453,22 @@ pub(crate) fn resolve_load_target_in_env(
         }
         if let Some(with_el) = &with_el {
             let candidate = root.join(with_el);
+            if candidate.is_file() {
+                if crate::lisp::eval::runtime::load_source_stub_prefers_elc(&candidate)
+                    && let Some(with_elc) = &with_elc
+                {
+                    let elc = root.join(with_elc);
+                    if elc.is_file() {
+                        return Some(elc);
+                    }
+                }
+                return Some(candidate);
+            }
+        }
+        // GNU load-suffixes include .elc; the .el may be gone (gzipped
+        // sources with compiled artifacts left in place).
+        if let Some(with_elc) = &with_elc {
+            let candidate = root.join(with_elc);
             if candidate.is_file() {
                 return Some(candidate);
             }

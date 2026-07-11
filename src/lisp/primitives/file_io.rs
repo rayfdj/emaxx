@@ -719,11 +719,26 @@ pub(crate) fn printer_env_with_overrides(
                 } else {
                     return Err(LispError::Signal("invalid print overrides".into()));
                 };
-                match name.as_str() {
-                    "length" => bindings.push(("print-length".into(), value)),
-                    "level" => bindings.push(("print-level".into(), value)),
+                // GNU print.c's full OVERRIDES key set (print_bind_overrides).
+                let variable = match name.as_str() {
+                    "length" => "print-length",
+                    "level" => "print-level",
+                    "circle" => "print-circle",
+                    "quoted" => "print-quoted",
+                    "escape-newlines" => "print-escape-newlines",
+                    "escape-control-characters" => "print-escape-control-characters",
+                    "escape-nonascii" => "print-escape-nonascii",
+                    "escape-multibyte" => "print-escape-multibyte",
+                    "charset-text-property" => "print-charset-text-property",
+                    "unreadable-function" => "print-unreadable-function",
+                    "gensym" => "print-gensym",
+                    "continuous-numbering" => "print-continuous-numbering",
+                    "number-table" => "print-number-table",
+                    "float-format" => "float-output-format",
+                    "integers-as-characters" => "print-integers-as-characters",
                     _ => return Err(LispError::Signal("invalid print overrides".into())),
-                }
+                };
+                bindings.push((variable.into(), value));
             }
         }
         _ => return Err(LispError::Signal("invalid print overrides".into())),

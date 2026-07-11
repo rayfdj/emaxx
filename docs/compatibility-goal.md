@@ -19,6 +19,111 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2474/7080 are verified: `package-tests.el`
+  (2438..2474, all 37 selected — and the harness check-all scope also
+  matches the 38th, `package-test-update-archives-async`).  The batch
+  is broad cross-cutting GNU semantics:
+  - READER string/character modified escapes: modifiers chain ONLY
+    through another backslash escape (`"\C-\M-a"`); a bare `C-'/`M-'/
+    `^' after the first modifier is the TARGET character, so `"\C-^"`
+    reads as control-^ (char 30) instead of desyncing the whole load
+    stream (outline.el's docstring made every following form
+    misparse).  Control folds GNU's exact set (`@'..`_' and a-z fold
+    to 0..31, `?' becomes DEL; anything else keeps the control
+    modifier bit, which only `\C-SPC' -> NUL survives inside a
+    string; elsewhere it signals "Invalid modifier in string").
+    Character literals keep modifier bits (`?\C-\C-a' =
+    67108865, `?\C-1' = 67108913).
+  - `replace-regexp-in-string': an empty match past the scan position
+    (anchors like `$'/`\''`) resumes AFTER the match; previously the
+    scan reset behind it and duplicated the tail with a one-char slide
+    (lm-commentary output).
+  - `search-forward'/`search-backward' honor `case-fold-search'
+    (per-character folding keeps char counts aligned).
+  - cl-defstruct explicit constructors: in emaxx-struct-make the
+    `&rest' variable captures the remaining args WITHOUT consuming
+    them positionally (a following `&key' reads the same tail; a rest
+    variable naming a slot gets the tail list).  Constructors with
+    `&aux' now pass slots as PURE KEYWORDS computed from the
+    parameter/aux let* bindings whose names match slot names (GNU
+    fills slots only from those bindings) — raw call args can no
+    longer leak into slot positions (`package-desc-from-define' with
+    requirements produced name=nil records).
+  - `let-alist' binds each `.key' to the exact cdr (a single-element
+    list cdr stays a list; the unwrap hack broke
+    package-menu--partition-transaction).
+  - `truncate-string-to-width': a non-string non-nil ELLIPSIS means
+    the `truncate-string-ellipsis' default ("…"), GNU-style
+    (tabulated-list columns pass t; the verilog-mode version row
+    aborted the whole package menu print, leaving point at
+    point-max).
+  - Native `special-mode' (and generated derived modes without a
+    parent) call `kill-all-local-variables' first, running
+    change-major-mode-hook: re-entering `tar-mode' unswaps its data
+    buffer (GNU's `(delay-mode-hooks (,(or PARENT
+    'kill-all-local-variables)) ...)' expansion).
+  - The GNU lisp-data-mode-syntax-table is a real shared char-table
+    (id 3) exposed through `emacs-lisp-mode-syntax-table'/
+    `lisp-mode-syntax-table'/`lisp-data-mode-syntax-table', and native
+    emacs-lisp-mode parents its per-buffer table to it.
+    `copy-syntax-table' callers (ietf-drums.el) now see `.' as a
+    symbol constituent, so `mail-header-parse-addresses-lax' keeps
+    "J. R. Hacker" dots (package desc :authors extras).
+  - `default-directory' is special (DEFVAR_PER_BUFFER): `let' goes
+    through the special-binding machinery recording the binding
+    buffer; a `setq' from ANOTHER buffer creates that buffer's own
+    local instead of mutating the binding, and reads prefer the
+    current buffer's local over a foreign global let (the leak sent
+    package-install-file's second install into the previous package's
+    directory).
+  - load: the load-path resolver tries `NAME.elc' when `NAME.el' is
+    missing (gzipped sources with compiled artifacts), keeping the
+    empty-.el-stub-prefers-elc rule; nested loads' `load-history'
+    entries survive the outer load's completion (the entry list is
+    re-read instead of consing onto a stale snapshot).
+  - Coding: `file-coding-system-alist' carries the GNU default table
+    (simple_compat `setq' — the builtin default is nil);
+    `find-operation-coding-system' returns `(REGEXP DECODING .
+    ENCODING)' pairs verbatim; `decode-coding-region'/`decode-coding-
+    string' DETECT the EOL convention for codings with an unspecified
+    eol type (everything except no-conversion/binary), so
+    `package-install-from-buffer''s bug#48137 decode path works for
+    literally-read dos/mac buffers.
+  - `call-process': an unreadable INFILE signals `file-error' (GNU
+    report_file_error), which epg's `(condition-case nil (call-process
+    "tty" "/dev/fd/0" t) (file-error))' probe catches in batch.
+  - Processes: `process-send-eof' (closes stdin, drains until exit,
+    delivers to filters/buffers); `accept-process-output' takes
+    SECONDS from the second argument (nil PROCESS is not a wait),
+    pumps live external process pipes into process buffers, delivers
+    completed url retrievals, and returns nil on timeout.
+  - Native async HTTP: `url-retrieve' spawns a worker thread
+    (http_fetch_raw, HTTP/1.0 GET) and the wait loops deliver the raw
+    response into the ` *http URL*' buffer and run the callback there;
+    non-2xx responses set `(:error (error http CODE))' in the status
+    plist (a 404 .sig download must NOT be treated as a signature).
+    `url-retrieve-synchronously', `url-http-file-exists-p' and
+    `url-insert' (raw header/body split; url-handlers' mm-dissect
+    version is builtin-overridden) are native; features `url' and
+    `url-http' are builtin-provided so the GNU files cannot shadow
+    them with make-network-process transports; simple_compat defines
+    the `url-http'/`url-http-expand-file-name' surface url-methods.el
+    introspects, and the native `url-scheme-get-property' fallback
+    table serves expand-file-name/file-exists-p for http(s) while
+    delegating to a loaded elisp definition.
+  - simple_compat ports (verbatim): help.el `substitute-quotes',
+    warnings.el `lwarn', lisp-mode.el `lisp-outline-level' (+
+    lisp-mode-autoload-regexp), a minimal outline.el surface
+    (outline-regexp/-heading-end-regexp/-level machinery + `(provide
+    'outline)' — the real file builds menus by walking keymaps as raw
+    lists, impossible with record-backed keymaps), and
+    `with-help-window' now mirrors GNU `help--window-setup' (help-mode
+    + buffer-read-only t + body under inhibit-read-only with
+    standard-output bound: describe-package writes into the
+    test's read-only fake help buffer).  `mail-fetch-field' is
+    autoloaded from mail-utils.el.  Native emacs-lisp-mode sets the
+    GNU lisp-mode-variables `outline-regexp'/`outline-level' locals
+    (lm-section-end depends on them).
 - Tests through 2437/7080 are verified: `oclosure-tests.el`
   (2433..2437, all 5 selectors) passes.  The batch:
   - 'oclosure is a builtin-provided FEATURE (GNU preloads oclosure.el;

@@ -518,6 +518,15 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
             Some(builtin_file_autoload("advice", Value::Nil))
         }
         "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
+        // GNU autoloads these entry points (package.el install flows).
+        // byte-recompile-directory is NOT routed to bytecomp.el: loading it
+        // would shadow the native byte-compile machinery (simple_compat.el
+        // defines a shim over the native byte-compile-file instead).
+        "loaddefs-generate" => Some(builtin_file_autoload("loaddefs-gen", Value::Nil)),
+        "tar-mode" => Some(builtin_file_autoload("tar-mode", Value::T)),
+        // GNU mail-utils.el autoload (url-insert's MIME dissection needs it).
+        "mail-fetch-field" => Some(builtin_file_autoload("mail-utils", Value::Nil)),
+        "dired-mode" => Some(builtin_file_autoload("dired", Value::Nil)),
         "prolog-mode" => Some(builtin_file_autoload("prolog", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
         "sh-mode" => Some(preloaded_sh_mode()),

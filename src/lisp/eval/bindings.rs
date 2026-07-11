@@ -25,6 +25,13 @@ impl Interpreter {
         let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
             restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
         });
+        // DEFVAR_PER_BUFFER semantics: the current buffer's own local wins
+        // over a global `let' made in another buffer.
+        if self.is_auto_buffer_local(&resolved)
+            && let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved)
+        {
+            return Some(value);
+        }
         if active_global_special && let Some(value) = self.global_value(&resolved) {
             return Some(value);
         }
@@ -42,6 +49,12 @@ impl Interpreter {
         let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
             restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
         });
+        // DEFVAR_PER_BUFFER semantics, as in lookup_var above.
+        if self.is_auto_buffer_local(&resolved)
+            && let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved)
+        {
+            return Ok(value);
+        }
         if active_global_special && let Some(value) = self.global_value(&resolved) {
             return Ok(value);
         }
@@ -202,6 +215,13 @@ impl Interpreter {
             "pre-redisplay-function" => Some(Value::Symbol("ignore".into())),
             // GNU startup.el defvar; bytecomp reads it.
             "startup-redirect-eln-cache" => Some(Value::Nil),
+            // GNU tramp defcustom (preloaded via tramp-loaddefs);
+            // directory-files-recursively let-binds it.
+            "tramp-mode" => Some(Value::T),
+            // GNU emacs.c defvar (":" on POSIX).
+            "path-separator" => Some(Value::String(":".into())),
+            // GNU callproc.c defvar (paths.h).
+            "configure-info-directory" => Some(Value::String("/usr/share/info".into())),
             // GNU xdisp.c defvar; tests let-bind it around noisy calls.
             "inhibit-message" => Some(Value::Nil),
             // GNU isearch.el defcustom; package.el's quick-help reads it.
@@ -361,9 +381,11 @@ impl Interpreter {
             "window-display-table" => Some(Value::Nil),
             "standard-display-table" => Some(Value::Nil),
             "text-mode-syntax-table" => Some(Value::CharTable(2)),
-            "emacs-lisp-mode-syntax-table" | "prog-mode-syntax-table" => {
-                Some(Value::CharTable(self.standard_syntax_table_id()))
+            "emacs-lisp-mode-syntax-table" | "lisp-mode-syntax-table"
+            | "lisp-data-mode-syntax-table" => {
+                Some(Value::CharTable(self.lisp_data_syntax_table_id()))
             }
+            "prog-mode-syntax-table" => Some(Value::CharTable(self.standard_syntax_table_id())),
             "compilation-error-regexp-alist-alist" => Some(Value::Nil),
             "compilation-error-regexp-alist" => Some(Value::Nil),
             "text-mode-map" => Some(primitives::keymap_placeholder(Some("text-mode-map"))),

@@ -97,6 +97,50 @@ pub(super) fn standard_syntax_table_entries() -> Vec<CharTableEntry> {
     ]
 }
 
+/// GNU lisp-data-mode-syntax-table (lisp-mode.el): every non-alphanumeric
+/// ASCII character is a symbol constituent unless overridden below (Lisp
+/// symbols carry -, ., {, } and friends).  Lookup is last-entry-wins, so
+/// the specific overrides follow the symbol-constituent ranges.
+pub(super) fn lisp_data_syntax_table_entries() -> Vec<CharTableEntry> {
+    let mut entries: Vec<CharTableEntry> = [(0u32, 47u32), (58, 64), (91, 96), (123, 127)]
+        .into_iter()
+        .map(|(start, end)| CharTableEntry {
+            start,
+            end,
+            value: syntax_spec_value("_"),
+        })
+        .collect();
+    for ch in [' ', '\t', '\x0c', '\u{a0}'] {
+        entries.push(CharTableEntry {
+            start: ch as u32,
+            end: ch as u32,
+            value: syntax_spec_value(" "),
+        });
+    }
+    for (ch, spec) in [
+        ('\n', ">"),
+        (';', "<"),
+        ('`', "'"),
+        ('\'', "'"),
+        (',', "'"),
+        ('#', "'"),
+        ('@', "_ p"),
+        ('"', "\""),
+        ('\\', "\\"),
+        ('(', "()"),
+        (')', ")("),
+        ('[', "(]"),
+        (']', ")["),
+    ] {
+        entries.push(CharTableEntry {
+            start: ch as u32,
+            end: ch as u32,
+            value: syntax_spec_value(spec),
+        });
+    }
+    entries
+}
+
 pub(super) fn current_exec_path() -> Value {
     match std::env::var_os("PATH") {
         Some(path) => Value::list(

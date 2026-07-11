@@ -687,22 +687,31 @@ impl<'a> Reader<'a> {
     }
 
     fn read_string_modified_escape(&mut self) -> Result<u32, LispError> {
-        const CTRL_BIT: i64 = 1 << 26;
         const META_BIT: i64 = 1 << 27;
 
         let mut modifiers = 0i64;
+        let mut ctrl_count = 0u32;
+        let mut first = true;
         loop {
-            if self.peek() == Some(b'\\')
-                && matches!(
-                    self.input.get(self.pos + 1).copied(),
-                    Some(b'C' | b'M' | b'^')
-                )
-            {
+            if !first {
+                // GNU chains modifiers only through another backslash escape
+                // ("\C-\M-a"); a bare `C-', `M-' or `^' after the first
+                // modifier is the target character ("\C-^" is control-^).
+                let chained = self.peek() == Some(b'\\')
+                    && match self.input.get(self.pos + 1).copied() {
+                        Some(b'^') => true,
+                        Some(b'C' | b'M') => self.input.get(self.pos + 2).copied() == Some(b'-'),
+                        _ => false,
+                    };
+                if !chained {
+                    break;
+                }
                 self.advance();
             }
+            first = false;
             match (self.peek(), self.input.get(self.pos + 1).copied()) {
                 (Some(b'C'), Some(b'-')) => {
-                    modifiers |= CTRL_BIT;
+                    ctrl_count += 1;
                     self.pos += 2;
                 }
                 (Some(b'M'), Some(b'-')) => {
@@ -710,7 +719,7 @@ impl<'a> Reader<'a> {
                     self.pos += 2;
                 }
                 (Some(b'^'), _) => {
-                    modifiers |= CTRL_BIT;
+                    ctrl_count += 1;
                     self.pos += 1;
                 }
                 _ => break,
@@ -723,14 +732,25 @@ impl<'a> Reader<'a> {
             self.read_literal_character_code()?
         };
 
-        if modifiers & CTRL_BIT != 0 && value != 0 {
+        // GNU read_char_escape folds each control prefix over letters and
+        // the 0x40..0x5F block; anything else keeps the control modifier
+        // bit, which only `\C-SPC' (-> NUL) survives inside a string.
+        let mut ctrl_pending = false;
+        for _ in 0..ctrl_count {
             value = match value {
                 0x3f => 0x7f,
-                n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
-                n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
-                n => n & 0x1f,
+                n if (0x40..=0x5f).contains(&n) || (0x61..=0x7a).contains(&n) => n & 0x1f,
+                n => {
+                    ctrl_pending = true;
+                    n
+                }
             };
-            modifiers &= !CTRL_BIT;
+        }
+        if ctrl_pending {
+            if value == 0x20 && modifiers == 0 {
+                return Ok(0);
+            }
+            return Err(LispError::ReadError("Invalid modifier in string".into()));
         }
 
         if modifiers == META_BIT && value <= 0x7F {
@@ -739,9 +759,7 @@ impl<'a> Reader<'a> {
         }
 
         if modifiers != 0 {
-            return Err(LispError::ReadError(
-                "unsupported modified string escape".into(),
-            ));
+            return Err(LispError::ReadError("Invalid modifier in string".into()));
         }
 
         Ok(value as u32)
@@ -840,9 +858,13 @@ impl<'a> Reader<'a> {
                             (Some(b'^'), _)
                                 | (Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's'), Some(b'-'))
                         );
-                    if escaped_modifier_start {
-                        self.advance();
+                    if !escaped_modifier_start {
+                        // GNU chains modifiers only through another
+                        // backslash escape (?\C-\M-a); a bare `M-' or `^'
+                        // after the first modifier is the target character.
+                        break;
                     }
+                    self.advance();
                     match (self.peek(), self.input.get(self.pos + 1).copied()) {
                         (Some(b'A'), Some(b'-')) => {
                             saw_modifier = true;
@@ -887,22 +909,18 @@ impl<'a> Reader<'a> {
                 } else {
                     self.read_literal_character_code()?
                 };
-                if ctrl_count > 0 {
-                    if value == 0 {
-                        modifiers |= CTRL_BIT;
-                    } else if value <= 0x7f {
-                        value = match value {
-                            0x3f => 0x7f,
-                            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
-                            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
-                            n => n & 0x1f,
-                        };
-                        if ctrl_count > 1 {
+                // GNU read_char_escape folds each control prefix over
+                // letters and the 0x40..0x5F block and turns `?' into DEL;
+                // any other target keeps the control modifier bit.
+                for _ in 0..ctrl_count {
+                    value = match value {
+                        0x3f => 0x7f,
+                        n if (0x40..=0x5f).contains(&n) || (0x61..=0x7a).contains(&n) => n & 0x1f,
+                        n => {
                             modifiers |= CTRL_BIT;
+                            n
                         }
-                    } else {
-                        modifiers |= CTRL_BIT;
-                    }
+                    };
                 }
                 value |= modifiers;
                 Ok(Some(Value::Integer(value)))

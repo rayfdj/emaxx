@@ -388,10 +388,19 @@ fn custom_current_group_alist_defaults_to_nil() {
 }
 
 #[test]
-fn emacs_lisp_mode_syntax_table_defaults_to_placeholder() {
+fn emacs_lisp_mode_syntax_table_defaults_to_lisp_data_table() {
+    // The shared GNU lisp-data-mode-syntax-table built at startup: `.'
+    // must read as a symbol constituent (copy-syntax-table callers like
+    // ietf-drums.el depend on the entries).
     assert_eq!(
         eval_str("emacs-lisp-mode-syntax-table"),
-        Value::CharTable(1)
+        Value::CharTable(3)
+    );
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer (set-syntax-table (copy-syntax-table emacs-lisp-mode-syntax-table)) (char-syntax ?.))"
+        ),
+        Value::Integer('_' as i64)
     );
 }
 

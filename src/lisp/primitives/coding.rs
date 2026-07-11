@@ -1021,6 +1021,13 @@ pub(crate) fn find_operation_coding_system_value(
             Value::Cons(value, tail) if matches!(*tail.borrow(), Value::Nil) => {
                 value.borrow().clone()
             }
+            // (REGEXP DECODING . ENCODING): return the pair verbatim.
+            Value::Cons(decode, encode) => {
+                return Ok(Value::cons(
+                    decode.borrow().clone(),
+                    encode.borrow().clone(),
+                ));
+            }
             other => other,
         };
         let coding = match target {
@@ -1125,6 +1132,17 @@ pub(crate) fn decode_coding_text(
     let text = match interp.coding_system_eol_type_value(&canonical) {
         Some(1) if string.text.contains('\r') => string.text.replace("\r\n", "\n"),
         Some(2) if string.text.contains('\r') => string.text.replace('\r', "\n"),
+        // GNU detects the EOL convention for codings with an unspecified
+        // eol type; only no-conversion/binary keep raw CR bytes.
+        None if string.text.contains('\r')
+            && !matches!(canonical.as_str(), "no-conversion" | "binary") =>
+        {
+            if string.text.contains("\r\n") {
+                string.text.replace("\r\n", "\n")
+            } else {
+                string.text.replace('\r', "\n")
+            }
+        }
         _ => string.text.clone(),
     };
     if nocopy

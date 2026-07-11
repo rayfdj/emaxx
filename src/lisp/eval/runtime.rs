@@ -1505,6 +1505,6 @@ fn repeated_directory_load_alias(target: &str) -> Option<String> {
     Some(format!("{directory}/{alias_file}"))
 }
 
-fn load_source_stub_prefers_elc(path: &std::path::Path) -> bool {
+pub(crate) fn load_source_stub_prefers_elc(path: &std::path::Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0)
 }
