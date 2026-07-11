@@ -591,6 +591,10 @@ impl Interpreter {
             "emacs-version" => Some(Value::String(primitives::emacs_version_value())),
             "emacs-major-version" => Some(Value::Integer(primitives::emacs_major_version_value())),
             "emacs-minor-version" => Some(Value::Integer(primitives::emacs_minor_version_value())),
+            // GNU records the dump time; erc's version stamp reads it.  A
+            // fixed nil means "not recorded", which string-replace paths
+            // handle (erc--make-message-variable-name checks it).
+            "emacs-build-time" => Some(Value::Nil),
             "etags-program-name" => Some(Value::String(
                 primitives::find_executable("etags").unwrap_or_else(|| "etags".into()),
             )),

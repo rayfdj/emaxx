@@ -6407,6 +6407,35 @@ The return value is the new value of LIST-VAR."
 ;; GNU format.el (preloaded) marks `format-alist' risky.
 (put 'format-alist 'risky-local-variable t)
 
+;; GNU mule.el (preloaded): the ASCII case table, saved in case a locale
+;; modifies ASCII case behavior.  erc builds its IRC casemapping from it.
+(defvar ascii-case-table
+  ;; Code copied from copy-case-table to avoid requiring case-table.el
+  (let ((tbl (copy-sequence (standard-case-table)))
+	(up  (char-table-extra-slot (standard-case-table) 0)))
+    (if up (set-char-table-extra-slot tbl 0 (copy-sequence up)))
+    (set-char-table-extra-slot tbl 1 nil)
+    (set-char-table-extra-slot tbl 2 nil)
+    tbl)
+  "Case table for the ASCII character set.")
+
+(defmacro while-let (spec &rest body)
+  "Bind variables according to SPEC and conditionally evaluate BODY.
+Evaluate each binding in turn, stopping if a binding value is nil.
+If all bindings are non-nil, eval BODY and repeat.
+
+The variable list SPEC is the same as in `if-let*'."
+  (declare (indent 1) (debug if-let))
+  (let ((done (gensym "done")))
+    `(catch ',done
+       (while t
+         ;; This is `if-let*', not `if-let', deliberately, despite the
+         ;; name of this macro.  See bug#60758.
+         (if-let* ,spec
+             (progn
+               ,@body)
+           (throw ',done nil))))))
+
 (defun backtrace-frames (&optional base)
   "Collect all frames of current backtrace into a list.
 If non-nil, BASE should be a function, and frames before its
@@ -7191,3 +7220,53 @@ then call `undo-more' one or more times to undo them."
     (setq pending-undo-list (primitive-undo n pending-undo-list))
     (if (null pending-undo-list)
 	(setq pending-undo-list t))))
+
+(defmacro with-case-table (table &rest body)
+  "Execute the forms in BODY with TABLE as the current case table.
+The value returned is the value of the last form in BODY."
+  (declare (indent 1) (debug t))
+  (let ((old-case-table (make-symbol "table"))
+	(old-buffer (make-symbol "buffer")))
+    `(let ((,old-case-table (current-case-table))
+	   (,old-buffer (current-buffer)))
+       (unwind-protect
+	   (progn (set-case-table ,table)
+		  ,@body)
+	 (with-current-buffer ,old-buffer
+	   (set-case-table ,old-case-table))))))
+
+(defvar custom-load-recursion nil
+  "Hack to avoid recursive dependencies.")
+
+(defun custom-load-symbol (symbol)
+  "Load all dependencies for SYMBOL."
+  (unless custom-load-recursion
+    (let ((custom-load-recursion t))
+      (ignore-errors
+        (require 'cus-load))
+      (ignore-errors
+        (require 'cus-start))
+      (dolist (load (get symbol 'custom-loads))
+        (cond ((symbolp load) (ignore-errors (require load)))
+	      ((assoc load load-history))
+	      ((let ((regexp (concat "\\(\\`\\|/\\)" (regexp-quote load)
+				     "\\(\\'\\|\\.\\)"))
+		     (found nil))
+		 (dolist (loaded load-history)
+		   (and (stringp (car loaded))
+			(string-match-p regexp (car loaded))
+			(setq found t)))
+		 found))
+	      ((equal load "cus-edit"))
+              (t (ignore-errors (load load))))))))
+
+(defun custom-variable-p (variable)
+  "Return non-nil if VARIABLE is a customizable variable.
+A customizable variable is either (i) a variable whose property
+list contains a non-nil `standard-value' or `custom-autoload'
+property, or (ii) an alias for another customizable variable."
+  (declare (side-effect-free t))
+  (when (symbolp variable)
+    (setq variable (indirect-variable variable))
+    (or (get variable 'standard-value)
+	(get variable 'custom-autoload))))

@@ -111,10 +111,16 @@ fn cl_defmethod_runtime_variables(
     }
     for specializer in method_specializers {
         if specializer.is_context {
+            // Expression contexts (from context rewriters) evaluate their
+            // form at dispatch; plain contexts read the variable.
+            let source = specializer
+                .context_expr
+                .clone()
+                .unwrap_or_else(|| Value::Symbol(specializer.variable.clone()));
             runtime_variables.push((
                 specializer.variable.clone(),
                 cl_defmethod_argument_key(&specializer.variable).to_string(),
-                Value::Symbol(specializer.variable.clone()),
+                source,
             ));
         }
     }
@@ -3500,6 +3506,53 @@ impl Interpreter {
         Ok(Value::Symbol(name))
     }
 
+    // Expand registered `cl-generic-define-context-rewriter' heads inside a
+    // cl-defmethod lambda list's &context section: (erc-obsolete-var VAR
+    // SPEC) becomes the rewriter's ((EXPR) SPEC) output.
+    fn expand_generic_context_rewriters(
+        &mut self,
+        lambda_list: &Value,
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
+        let Ok(entries) = lambda_list.to_vec() else {
+            return Ok(None);
+        };
+        let mut in_context = false;
+        let mut changed = false;
+        let mut expanded = Vec::with_capacity(entries.len());
+        for entry in entries {
+            if let Value::Symbol(symbol) = &entry {
+                if symbol == "&context" {
+                    in_context = true;
+                } else if is_lambda_list_keyword(symbol) {
+                    in_context = false;
+                }
+                expanded.push(entry);
+                continue;
+            }
+            if in_context && let Value::Cons(car, _) = &entry {
+                let head = match &*car.borrow() {
+                    Value::Symbol(head) => Some(head.clone()),
+                    _ => None,
+                };
+                if let Some(head) = head {
+                    let rewriter = format!("cl-generic--context-rewriter--{head}");
+                    if self.has_macro_binding(&rewriter) {
+                        let mut call = entry.to_vec()?;
+                        call[0] = Value::Symbol(rewriter);
+                        let call_form = Value::list(call);
+                        expanded
+                            .push(self.macroexpand_1_form_with_environment(&call_form, None, env)?);
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+            expanded.push(entry);
+        }
+        Ok(changed.then(|| Value::list(expanded)))
+    }
+
     pub(super) fn sf_cl_defmethod(
         &mut self,
         items: &[Value],
@@ -3519,6 +3572,17 @@ impl Interpreter {
                 matches!(value, Value::Cons(_, _) | Value::Nil).then_some(index)
             })
             .ok_or_else(|| LispError::Signal("cl-defmethod needs a lambda list".into()))?;
+        // Rewrite context-rewriter entries before any downstream parsing.
+        let items_storage;
+        let items = match self.expand_generic_context_rewriters(&items[lambda_list_index], env)? {
+            Some(expanded_lambda_list) => {
+                let mut rewritten = items.to_vec();
+                rewritten[lambda_list_index] = expanded_lambda_list;
+                items_storage = rewritten;
+                &items_storage
+            }
+            None => items,
+        };
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
         lowered.push(Value::Symbol(name));

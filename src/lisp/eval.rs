@@ -2731,6 +2731,10 @@ struct ClDefmethodSpecializer {
     variable: String,
     kind: ClDefmethodSpecializerKind,
     is_context: bool,
+    /// For `&context (EXPR SPEC)` entries whose first element is an
+    /// expression (context rewriters expand to these): the form the
+    /// dispatch evaluates instead of reading `variable`.
+    context_expr: Option<Value>,
 }
 
 impl ClDefmethodSpecializer {
@@ -2763,6 +2767,35 @@ impl ClDefmethodSpecializer {
     }
 }
 
+/// Parse the SPEC half of a specializer entry ((ARG SPEC)) into a kind.
+fn cl_defmethod_specializer_kind(spec: Option<&Value>) -> Option<ClDefmethodSpecializerKind> {
+    match spec {
+        Some(Value::Symbol(class_name)) => {
+            Some(ClDefmethodSpecializerKind::Class(class_name.clone()))
+        }
+        Some(Value::T) => Some(ClDefmethodSpecializerKind::Class("t".into())),
+        Some(compound @ Value::Cons(_, _)) => {
+            let specializer = compound.to_vec().ok()?;
+            match specializer.first() {
+                Some(Value::Symbol(name)) if name == "eql" => {
+                    Some(ClDefmethodSpecializerKind::Eql(specializer.get(1)?.clone()))
+                }
+                Some(Value::Symbol(name)) if name == "subclass" => match specializer.get(1) {
+                    Some(Value::Symbol(class_name)) => {
+                        Some(ClDefmethodSpecializerKind::Subclass(class_name.clone()))
+                    }
+                    _ => None,
+                },
+                Some(Value::Symbol(name)) if name == "head" => Some(
+                    ClDefmethodSpecializerKind::Head(specializer.get(1)?.clone()),
+                ),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>, LispError> {
     let mut next_is_context = false;
     let mut specializers = Vec::new();
@@ -2775,6 +2808,20 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
             continue;
         };
         let parts = item.to_vec()?;
+        // &context (EXPR SPEC) where EXPR is an expression, not a variable
+        // (context rewriters expand to this shape): dispatch evaluates EXPR.
+        if next_is_context && let Some(expr @ Value::Cons(_, _)) = parts.first() {
+            if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
+                specializers.push(ClDefmethodSpecializer {
+                    variable: format!("--cl-context-{}", specializers.len()),
+                    kind,
+                    is_context: true,
+                    context_expr: Some(expr.clone()),
+                });
+            }
+            next_is_context = false;
+            continue;
+        }
         let Some(Value::Symbol(variable)) = parts.first() else {
             continue;
         };
@@ -2787,55 +2834,19 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
                     variable: variable.clone(),
                     kind: ClDefmethodSpecializerKind::Eql(value.clone()),
                     is_context: true,
+                    context_expr: None,
                 });
             }
             next_is_context = false;
             continue;
         }
-        match parts.get(1) {
-            Some(Value::Symbol(class_name)) => {
-                specializers.push(ClDefmethodSpecializer {
-                    variable: variable.clone(),
-                    kind: ClDefmethodSpecializerKind::Class(class_name.clone()),
-                    is_context: next_is_context,
-                });
-            }
-            Some(Value::T) => {
-                specializers.push(ClDefmethodSpecializer {
-                    variable: variable.clone(),
-                    kind: ClDefmethodSpecializerKind::Class("t".into()),
-                    is_context: next_is_context,
-                });
-            }
-            Some(Value::Cons(_, _)) => {
-                let specializer = parts[1].to_vec()?;
-                if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "eql")
-                    && let Some(value) = specializer.get(1)
-                {
-                    specializers.push(ClDefmethodSpecializer {
-                        variable: variable.clone(),
-                        kind: ClDefmethodSpecializerKind::Eql(value.clone()),
-                        is_context: next_is_context,
-                    });
-                } else if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "subclass")
-                    && let Some(Value::Symbol(class_name)) = specializer.get(1)
-                {
-                    specializers.push(ClDefmethodSpecializer {
-                        variable: variable.clone(),
-                        kind: ClDefmethodSpecializerKind::Subclass(class_name.clone()),
-                        is_context: next_is_context,
-                    });
-                } else if matches!(specializer.first(), Some(Value::Symbol(name)) if name == "head")
-                    && let Some(value) = specializer.get(1)
-                {
-                    specializers.push(ClDefmethodSpecializer {
-                        variable: variable.clone(),
-                        kind: ClDefmethodSpecializerKind::Head(value.clone()),
-                        is_context: next_is_context,
-                    });
-                }
-            }
-            _ => {}
+        if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
+            specializers.push(ClDefmethodSpecializer {
+                variable: variable.clone(),
+                kind,
+                is_context: next_is_context,
+                context_expr: None,
+            });
         }
         next_is_context = false;
     }

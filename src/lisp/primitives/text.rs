@@ -439,3 +439,48 @@ pub(crate) fn format_float_conversion(
     }
     Ok(text)
 }
+
+/// C-style %e / %g conversions ((format "%e" 3.5) => "3.500000e+00").
+pub(crate) fn format_exponential_conversion(
+    interp: &Interpreter,
+    arg: &Value,
+    conv: char,
+    flag_plus: bool,
+    flag_space: bool,
+    precision: Option<usize>,
+) -> Result<String, LispError> {
+    let value = numeric_to_f64(interp, arg)?;
+    let mut text = if conv == 'e' {
+        let precision = precision.unwrap_or(6);
+        let raw = format!("{value:.precision$e}");
+        // Rust renders "3.5e0"; C uses a sign and at least two exponent
+        // digits ("3.500000e+00").
+        match raw.split_once('e') {
+            Some((mantissa, exponent)) => {
+                let (sign, digits) = match exponent.strip_prefix('-') {
+                    Some(rest) => ('-', rest),
+                    None => ('+', exponent),
+                };
+                format!("{mantissa}e{sign}{:0>2}", digits)
+            }
+            None => raw,
+        }
+    } else {
+        // %g: %e for very large/small magnitudes, otherwise %f with
+        // trailing zeros trimmed; Rust's default float Display matches
+        // the common cases.
+        if value != 0.0 && (value.abs() >= 1e6 || value.abs() < 1e-4) {
+            format!("{value:e}")
+        } else {
+            format!("{value}")
+        }
+    };
+    if !text.starts_with('-') {
+        if flag_plus {
+            text.insert(0, '+');
+        } else if flag_space {
+            text.insert(0, ' ');
+        }
+    }
+    Ok(text)
+}
