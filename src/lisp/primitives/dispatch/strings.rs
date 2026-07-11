@@ -53,6 +53,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "ngettext"
             | "format-spec"
             | "char-to-string"
+            | "find-composition-internal"
             | "string-replace"
             | "subst-char-in-string"
             | "replace-regexp-in-string"
@@ -1090,6 +1091,43 @@ pub(super) fn call(
             let n = args[0].as_integer()?;
             let c = char_for_codepoint(n)?;
             Ok(Value::String(c.to_string()))
+        }
+        "find-composition-internal" => {
+            // (find-composition-internal POS LIMIT STRING DETAIL-P): for
+            // string-glyph-split, report a grapheme cluster (>1 char) that
+            // begins at POS as (FROM TO nil).  Emacs composes emoji ZWJ /
+            // skin-tone / combining sequences into single glyphs.
+            need_arg_range(name, args, 4, 4)?;
+            let pos = args[0].as_integer()?.max(0) as usize;
+            let Some(string) = string_like(&args[2]) else {
+                return Ok(Value::Nil);
+            };
+            use unicode_segmentation::UnicodeSegmentation;
+            let chars: Vec<char> = string.text.chars().collect();
+            if pos >= chars.len() {
+                return Ok(Value::Nil);
+            }
+            // Walk grapheme clusters, tracking char offsets, to find the one
+            // starting at POS.
+            let mut char_offset = 0usize;
+            for cluster in string.text.graphemes(true) {
+                let cluster_len = cluster.chars().count();
+                if char_offset == pos {
+                    if cluster_len > 1 {
+                        return Ok(Value::list([
+                            Value::Integer(pos as i64),
+                            Value::Integer((pos + cluster_len) as i64),
+                            Value::Nil,
+                        ]));
+                    }
+                    return Ok(Value::Nil);
+                }
+                if char_offset > pos {
+                    break;
+                }
+                char_offset += cluster_len;
+            }
+            Ok(Value::Nil)
         }
         "string-replace" => {
             need_args(name, args, 3)?;

@@ -4305,7 +4305,6 @@ fn is_compat_preloaded_feature(feature: &str) -> bool {
             | "map"
             | "python"
             | "seq"
-            | "subr-x"
             | "thread"
     )
 }

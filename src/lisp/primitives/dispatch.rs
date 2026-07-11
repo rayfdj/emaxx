@@ -347,6 +347,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "ngettext"
             | "format-spec"
             | "char-to-string"
+            | "find-composition-internal"
             | "make-char"
             | "string-to-char"
             | "char-syntax"

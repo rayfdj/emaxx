@@ -1507,7 +1507,9 @@ pub(super) fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let list = super::call(interp, "mapcar", &args[..2], env)?.to_vec()?;
-            let sep = if args.len() == 3 {
+            // GNU: a nil SEPARATOR stands for the empty string (subr-x's
+            // string-join passes nil when no separator is given).
+            let sep = if args.len() == 3 && !args[2].is_nil() {
                 let text = string_text(&args[2])?;
                 let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
                 string_like(&args[2]).unwrap_or(StringLike {
@@ -1554,11 +1556,7 @@ pub(super) fn call(
             super::call(
                 interp,
                 "mapconcat",
-                &[
-                    Value::BuiltinFunc("identity".into()),
-                    args[0].clone(),
-                    separator,
-                ],
+                &[Value::Symbol("identity".into()), args[0].clone(), separator],
                 env,
             )
         }

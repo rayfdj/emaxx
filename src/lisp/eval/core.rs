@@ -108,11 +108,19 @@ impl Interpreter {
                     match name.as_str() {
                         "quote" => return self.sf_quote(&items),
                         "if" | "static-if" => return self.sf_if(&items, env),
-                        "if-let" => return self.sf_if_let(&items, env),
-                        "if-let*" => return self.sf_if_let_star(&items, env),
+                        "if-let" if !self.has_macro_binding("if-let") => {
+                            return self.sf_if_let(&items, env);
+                        }
+                        "if-let*" if !self.has_macro_binding("if-let*") => {
+                            return self.sf_if_let_star(&items, env);
+                        }
                         "when" | "static-when" => return self.sf_when(&items, env),
-                        "when-let" => return self.sf_when_let(&items, env),
-                        "when-let*" => return self.sf_when_let_star(&items, env),
+                        "when-let" if !self.has_macro_binding("when-let") => {
+                            return self.sf_when_let(&items, env);
+                        }
+                        "when-let*" if !self.has_macro_binding("when-let*") => {
+                            return self.sf_when_let_star(&items, env);
+                        }
                         "unless" | "static-unless" => return self.sf_unless(&items, env),
                         "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
                         "cond" => {
@@ -136,7 +144,9 @@ impl Interpreter {
                         "pcase-exhaustive" if !self.has_macro_binding("pcase-exhaustive") => {
                             return self.sf_pcase_exhaustive(&items, env);
                         }
-                        "and-let*" => return self.sf_and_let_star(&items, env),
+                        "and-let*" if !self.has_macro_binding("and-let*") => {
+                            return self.sf_and_let_star(&items, env);
+                        }
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
                         "not" => return self.sf_not(&items, env),

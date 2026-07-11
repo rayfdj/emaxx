@@ -550,6 +550,12 @@ impl<'a> Reader<'a> {
                             } else if hex <= 0xFF {
                                 has_raw_bytes = true;
                                 s.push(encode_raw_byte(hex as u8));
+                            } else if (0x3F_FF00..=0x3F_FFFF).contains(&hex) {
+                                // Emacs eight-bit (raw byte) codepoints
+                                // #x3FFF00..#x3FFFFF map to the internal
+                                // raw-byte marker.
+                                has_raw_bytes = true;
+                                s.push(encode_raw_byte((hex - 0x3F_FF00) as u8));
                             } else if valid_unicode_scalar(hex) {
                                 let c = char::from_u32(hex).expect("validated scalar");
                                 has_explicit_multibyte = true;
