@@ -19,6 +19,34 @@ counts as the progress denominator.
 
 ## Current State
 
+- IN PROGRESS: `rx-tests.el` (2524..2559, 36 selected) — 33/36 on
+  emaxx (UNCOMMITTED groundwork beyond the 2523 commit; verify before
+  building on it).  Frontier stays at 2523 until all 36 pass the
+  harness.  The batch adopts GNU rx.el and fixes several cross-cutting
+  primitives:
+  - `ensure_gnu_rx_loaded' (like ensure_gnu_pcase_loaded): the first
+    rx/rx-let/rx-define/rx-let-eval form loads GNU rx.el when the
+    load-path resolves it; native sf_rx* stay the no-file fallback,
+    gated by has_macro_binding("rx").  rx-to-string delegates to the
+    loaded elisp (its native override is dropped).
+  - `macroexpand-all' now binds `macroexpand-all-environment' for
+    environments carrying `:rx-locals' (not just cl-flet `function'
+    expanders) so rx-let's nested rx forms read their local defs.
+  - `define-obsolete-function-alias' ACTUALLY installs the alias now
+    (evals a (defalias 'OLD 'NEW DOC) form + make-obsolete); it was a
+    nil no-op (rx-submatch-n and many other GNU aliases were void).
+  - `regexp-opt' loads GNU regexp-opt.el on demand and delegates (the
+    trie/common-prefix optimization); the native plain-alternation
+    output is the no-file fallback.
+  - `char-to-string'/`string' accept the raw-byte codepoint range
+    (#x3FFF00..#x3FFFFF), mapping to the internal private-use marker;
+    `unibyte-char-to-multibyte' maps bytes 0x80..0xFF to those raw-byte
+    codepoints (GNU eight-bit chars).
+  - REMAINING 3 (all deep raw-byte string-model issues, for the next
+    agent): rx-char-any-raw-byte and rx-charset-or need emaxx's
+    internal raw-byte char (0xE000+byte) to round-trip as the oracle's
+    unibyte byte in constructed/compared regexp strings; rx-let-define
+    is an rx-let/rx-define shadowing-precedence case.
 - Tests through 2523/7080 are verified: `pp-tests.el` (2488..2491),
   `range-tests.el` (2492), `regexp-opt-tests.el` (2493..2494),
   `ring-tests.el` (2495..2518, free) and `rmc-tests.el` (2519..2523).

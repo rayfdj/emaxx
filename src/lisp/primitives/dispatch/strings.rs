@@ -100,6 +100,17 @@ pub(super) fn handles(name: &str) -> bool {
     )
 }
 
+/// Map an Emacs character code to a Rust char, translating the raw-byte
+/// range (RAW_BYTE8_BASE #x3FFF00..) to the internal private-use marker.
+fn char_for_codepoint(n: i64) -> Result<char, LispError> {
+    let code = n as u32;
+    if (0x3FFF00..=0x3FFFFF).contains(&code) {
+        let byte = (code - 0x3FFF00) as u8;
+        return Ok(char::from_u32(0xE000 + byte as u32).expect("raw byte marker"));
+    }
+    char::from_u32(code).ok_or_else(|| LispError::Signal(format!("Invalid character: {n}")))
+}
+
 pub(super) fn call(
     interp: &mut Interpreter,
     name: &str,
@@ -533,10 +544,7 @@ pub(super) fn call(
         "string" => {
             let mut result = String::new();
             for arg in args {
-                let ch = arg.as_integer()?;
-                let ch = char::from_u32(ch as u32)
-                    .ok_or_else(|| LispError::Signal(format!("Invalid character: {ch}")))?;
-                result.push(ch);
+                result.push(char_for_codepoint(arg.as_integer()?)?);
             }
             Ok(Value::String(result))
         }
@@ -1080,8 +1088,7 @@ pub(super) fn call(
         "char-to-string" => {
             need_args(name, args, 1)?;
             let n = args[0].as_integer()?;
-            let c = char::from_u32(n as u32)
-                .ok_or_else(|| LispError::Signal(format!("Invalid character: {}", n)))?;
+            let c = char_for_codepoint(n)?;
             Ok(Value::String(c.to_string()))
         }
         "string-replace" => {
@@ -1491,7 +1498,9 @@ pub(super) fn call(
             if !(0..=255).contains(&n) {
                 return Err(LispError::Signal("Byte value out of range".into()));
             }
-            Ok(Value::Integer(n))
+            // GNU maps bytes 0x80..0xFF to the raw-byte (eight-bit)
+            // codepoints at #x3FFF00; ASCII stays as-is.
+            Ok(Value::Integer(if n >= 0x80 { 0x3FFF00 + n } else { n }))
         }
         "upcase" => {
             need_args(name, args, 1)?;
