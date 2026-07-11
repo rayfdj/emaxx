@@ -444,9 +444,29 @@ impl Interpreter {
                             return self.sf_skip_unless(&items, env);
                         }
                         "skip-when" | "ert--skip-when" => return self.sf_skip_when(&items, env),
-                        "rx" => return self.sf_rx(&items, env),
-                        "rx-define" => return self.sf_rx_define(&items),
-                        "rx-let" => return self.sf_rx_let(&items, env),
+                        "rx" if !{
+                            self.ensure_gnu_rx_loaded();
+                            self.has_macro_binding("rx")
+                        } =>
+                        {
+                            return self.sf_rx(&items, env);
+                        }
+                        "rx-define"
+                            if !{
+                                self.ensure_gnu_rx_loaded();
+                                self.has_macro_binding("rx")
+                            } =>
+                        {
+                            return self.sf_rx_define(&items);
+                        }
+                        "rx-let"
+                            if !{
+                                self.ensure_gnu_rx_loaded();
+                                self.has_macro_binding("rx")
+                            } =>
+                        {
+                            return self.sf_rx_let(&items, env);
+                        }
                         "require" => {
                             if let Some(feature_expr) = items.get(1) {
                                 let feature_value = self.eval(feature_expr, env)?;

@@ -28,14 +28,18 @@ counts as the progress denominator.
   regexp-quote (native regexp-opt override dropped); lambda
   doc-string-elt 2; simple_compat untabify/use-dialog-box-p; native
   window-frame + display-supports-face-attributes-p (nil).
-- NEXT: `rx-tests.el' (2524..2559, 36 selectors) — the native `rx'
-  macro is missing many GNU atoms (anychar/anything, category,
-  intersection, submatch/group, eval, regex/regexp, seq nesting,
-  repeat forms, rx-let/rx-define, charset unions).  Likely the biggest
-  lever is to load GNU rx.el over the native macro the way pcase.el was
-  adopted, or port the missing atoms.  Run `cargo run --release --bin
-  compat-harness -- run --scope all --selector check-all --file
-  test/lisp/emacs-lisp/rx-tests.el` to see the current state.
+- IN PROGRESS: `rx-tests.el' (2524..2559) — 33/36 on emaxx
+  (UNCOMMITTED groundwork; frontier stays 2523 until all 36 pass).
+  GNU rx.el is now adopted via ensure_gnu_rx_loaded (native sf_rx* are
+  the fallback); macroexpand-all binds macroexpand-all-environment for
+  :rx-locals; define-obsolete-function-alias actually installs aliases;
+  regexp-opt delegates to the trie elisp; char-to-string/string accept
+  raw-byte codepoints and unibyte-char-to-multibyte maps 0x80..0xFF to
+  eight-bit chars.  REMAINING 3 need emaxx's internal raw-byte char
+  (0xE000+byte) to round-trip as the oracle's unibyte byte in
+  constructed regexp strings (rx-char-any-raw-byte, rx-charset-or) and
+  an rx-let/rx-define shadowing fix (rx-let-define).  See
+  docs/compatibility-goal.md rx-tests IN PROGRESS entry.
 - Verified through selector 2487/7080: `pcase-tests.el' (2475..2487)
   passes; 105-file prefix sweep (prefix-files10.txt) on frozen binaries
   is the gate.  Batch details in docs/compatibility-goal.md 2487 entry

@@ -1008,7 +1008,30 @@ pub(super) fn call(
             let obsolete_name = obsolete_definition_symbol(&args[0])?;
             Ok(Value::Symbol(obsolete_name.to_string()))
         }
-        "define-obsolete-face-alias" | "define-obsolete-function-alias" => Ok(Value::Nil),
+        "define-obsolete-face-alias" => Ok(Value::Nil),
+        "define-obsolete-function-alias" => {
+            // GNU byte-run.el: (defalias OBSOLETE CURRENT DOC) +
+            // (make-obsolete ...); the alias must actually be installed
+            // (rx.el aliases rx-submatch-n to rx-to-string).
+            need_arg_range(name, args, 2, 4)?;
+            let obsolete = obsolete_definition_symbol(&args[0])?.to_string();
+            // defalias is a special form: eval a quoted (defalias 'OLD
+            // 'NEW DOC) form rather than dispatching it as a primitive.
+            let doc = args.get(3).cloned().unwrap_or(Value::Nil);
+            let defalias_form = Value::list([
+                Value::Symbol("defalias".into()),
+                Value::list([Value::Symbol("quote".into()), args[0].clone()]),
+                Value::list([Value::Symbol("quote".into()), args[1].clone()]),
+                Value::list([Value::Symbol("quote".into()), doc]),
+            ]);
+            interp.eval(&defalias_form, env)?;
+            let mut make_obsolete = vec![args[0].clone(), args[1].clone()];
+            if let Some(when) = args.get(2) {
+                make_obsolete.push(when.clone());
+            }
+            let _ = super::call(interp, "make-obsolete", &make_obsolete, env);
+            Ok(Value::Symbol(obsolete))
+        }
         "make-obsolete-variable" => {
             need_arg_range(name, args, 3, 4)?;
             let obsolete_name = obsolete_definition_symbol(&args[0])?;
@@ -1114,7 +1137,10 @@ pub(super) fn call(
                         entries.iter().any(|entry| {
                             matches!(
                                 entry.car(),
-                                Ok(Value::Symbol(head)) if head == "function"
+                                // cl-flet/cl-labels use a `function'
+                                // expander; rx-let/rx-let-eval carry
+                                // `:rx-locals' that the rx macro reads back.
+                                Ok(Value::Symbol(head)) if head == "function" || head == ":rx-locals"
                             )
                         })
                     });

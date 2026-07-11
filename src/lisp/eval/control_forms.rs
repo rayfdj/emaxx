@@ -370,6 +370,24 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         }
     }
 
+    /// GNU rx.el owns the rx family once loadable: its translator handles
+    /// every documented atom (category, intersection, submatch, eval,
+    /// regexp, seq nesting, repeat forms, rx-let/rx-define...) the native
+    /// sf_rx cannot.  The native forms remain the no-file fallback.
+    pub(crate) fn ensure_gnu_rx_loaded(&mut self) {
+        if self.gnu_rx_load_attempted {
+            return;
+        }
+        self.gnu_rx_load_attempted = true;
+        if self.has_macro_binding("rx") {
+            return;
+        }
+        let Some(path) = self.resolve_load_target("rx") else {
+            return;
+        };
+        let _ = crate::lisp::load_file_strict(self, &path);
+    }
+
     pub(super) fn sf_pcase(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_pcase_like(items, env, false)
     }

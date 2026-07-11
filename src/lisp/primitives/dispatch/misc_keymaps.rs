@@ -2205,6 +2205,17 @@ pub(super) fn call(
         }
         "regexp-opt" => {
             need_arg_range(name, args, 1, 2)?;
+            // GNU regexp-opt.el builds a trie-optimized regexp (common
+            // prefix/suffix folding); load it and delegate.  The native
+            // plain-alternation output is the no-file fallback.
+            if !interp.has_lisp_function("regexp-opt")
+                && let Some(path) = interp.resolve_load_target("regexp-opt")
+            {
+                let _ = crate::lisp::load_file_strict(interp, &path);
+            }
+            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                return Ok(delegated);
+            }
             let strings = args[0].to_vec()?;
             let mut patterns = strings
                 .iter()
@@ -2240,6 +2251,12 @@ pub(super) fn call(
         }
         "rx-to-string" => {
             need_arg_range(name, args, 1, 2)?;
+            // GNU rx.el owns rx-to-string once loaded (its translator
+            // covers every atom); the native compiler is the fallback.
+            interp.ensure_gnu_rx_loaded();
+            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                return Ok(delegated);
+            }
             let no_group = args.get(1).is_some_and(Value::is_truthy);
             Ok(Value::String(crate::lisp::eval::compile_rx_to_string(
                 interp, &args[0], env, no_group,
