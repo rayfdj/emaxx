@@ -18,6 +18,24 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2487/7080: `pcase-tests.el' (2475..2487)
+  passes; 105-file prefix sweep (prefix-files10.txt) on frozen binaries
+  is the gate.  Batch details in docs/compatibility-goal.md 2487 entry
+  — READ IT before touching pcase, the reader's quote symbols,
+  backquote evaluation, macro arity, or cl-typep; load-bearing:
+  - GNU pcase.el now OWNS the pcase family whenever the load-path can
+    resolve it (ensure_gnu_pcase_loaded, lazily on first use); native
+    sf_pcase* are the no-file fallback, gated by has_macro_binding.
+  - The reader always emits raw \`/\,/\,@ quote symbols (GNU).
+  - Nested backquote rebuilds preserve original head symbols.
+  - Macro calls missing required params signal
+    wrong-number-of-arguments.
+  - byte-opt.el side-effect-free/pure property tables live in
+    simple_compat.el (do NOT load byte-opt.el itself).
+  - cl-typep: GNU range types + "Unknown type" signaling.
+- NEXT: continue down compat/oracle_tests_all.txt from selector 2488
+  (`cargo run --release --bin compat-harness -- run --scope all
+  --selector check-all --file FILE` per file) toward 3000.
 - Verified through selector 2474/7080: `package-tests.el' (2438..2474,
   all 37 selected; harness check-all also matches
   package-test-update-archives-async) passes; 104-file prefix sweep
@@ -806,18 +824,12 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 2474/7080` run completed package-tests.el end to end (37
-selected selectors plus the async archive test the harness also
-checks).  It was a broad cross-cutting batch: reader escape-modifier
-chaining, replace-regexp-in-string empty-match handling, case-folded
-literal search, cl-defstruct &rest/&aux constructor argument
-plumbing, let-alist cdr semantics, tabulated-list ellipsis defaults,
-kill-all-local-variables in special-mode, a real shared
-lisp-data-mode syntax table, DEFVAR_PER_BUFFER default-directory
-scoping, .elc load fallback + nested load-history, GNU
-file-coding-system-alist + EOL detection on decode, file-error for
-call-process INFILE, process-send-eof + pipe pumping in
-accept-process-output, and a native async url-retrieve stack (url and
-url-http are builtin-provided features).  The 104-file verified-prefix
-sweep (prefix-files9.txt) is green.  The next agent continues with
-`test/lisp/emacs-lisp/pcase-tests.el` (selectors 2475..2487).
+The `Compat 2487/7080` run completed pcase-tests.el by handing the
+pcase family to GNU pcase.el (lazy ensure-load with native fallback),
+switching the reader to GNU's raw quote symbols, preserving head
+symbols in nested backquote rebuilds, enforcing macro required-arity,
+porting byte-opt.el's side-effect-free/pure property tables plus
+how-many/count-matches, and teaching native cl-typep GNU range types
+and unknown-type signaling.  The 105-file verified-prefix sweep
+(prefix-files10.txt) is the gate.  The next agent continues from
+selector 2488 in compat/oracle_tests_all.txt toward 3000.

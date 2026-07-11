@@ -2376,6 +2376,18 @@ impl Interpreter {
             Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
 
         self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
+        // GNU cl-struct-sequence-type: list / vector / nil (record).
+        self.put_symbol_property(
+            &name,
+            "emaxx-struct-sequence-type",
+            if list_backed {
+                Value::Symbol("list".into())
+            } else if vector_backed {
+                Value::Symbol("vector".into())
+            } else {
+                Value::Nil
+            },
+        );
         // GNU cl-struct-slot-info shape: ((cl-tag-slot) DESC...) where each
         // DESC is the original (NAME DEFAULT OPTS...) slot spec; inherited
         // slots come first.  Consumed by the Lisp cl-struct-slot-* helpers.

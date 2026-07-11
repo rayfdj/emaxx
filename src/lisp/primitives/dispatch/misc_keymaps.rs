@@ -6633,6 +6633,51 @@ fn cl_typep_matches(
                 .iter()
                 .any(|member| crate::lisp::primitives::values_equal(interp, value, member)));
         }
+        if matches!(operator.as_str(), "integer" | "float" | "number" | "real") {
+            // GNU range types: (integer LOW HIGH) with `*' for unbounded
+            // and (N) for an exclusive bound.
+            if !cl_typep_matches(interp, env, value, &Value::Symbol(operator.clone()))? {
+                return Ok(false);
+            }
+            let candidate = match value {
+                Value::Integer(n) => *n as f64,
+                Value::Float(f) => *f,
+                _ => return Ok(false),
+            };
+            let bound_value = |bound: &Value| -> Option<(f64, bool)> {
+                match bound {
+                    Value::Integer(n) => Some((*n as f64, false)),
+                    Value::Float(f) => Some((*f, false)),
+                    Value::Cons(_, _) => match bound.to_vec().ok()?.first()? {
+                        Value::Integer(n) => Some((*n as f64, true)),
+                        Value::Float(f) => Some((*f, true)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            };
+            if let Some(low) = items.get(1)
+                && let Some((limit, exclusive)) = bound_value(low)
+                && if exclusive {
+                    candidate <= limit
+                } else {
+                    candidate < limit
+                }
+            {
+                return Ok(false);
+            }
+            if let Some(high) = items.get(2)
+                && let Some((limit, exclusive)) = bound_value(high)
+                && if exclusive {
+                    candidate >= limit
+                } else {
+                    candidate > limit
+                }
+            {
+                return Ok(false);
+            }
+            return Ok(true);
+        }
         if operator == "satisfies" && items.len() == 2 {
             let predicate = items[1].clone();
             return Ok(crate::lisp::primitives::call_function_value(
@@ -6721,6 +6766,37 @@ fn cl_typep_matches(
                     | "interpreted-function"
                     | "byte-code-function"
             ));
+    if !matches {
+        // GNU cl-typep signals for type names it cannot resolve to a
+        // class, deftype or satisfies-predicate ("Unknown type %S").
+        let known = matches!(
+            target,
+            "t" | "nil"
+                | "list"
+                | "eieio-object"
+                | "cl-structure-object"
+                | "hash-table"
+                | "class"
+                | "function"
+        ) || is_builtin_class_name(target)
+            || interp.class_value(target).is_some()
+            || interp
+                .get_symbol_property(target, "cl-deftype-satisfies")
+                .is_some()
+            || interp.get_symbol_property(target, "cl--class").is_some()
+            || interp
+                .get_symbol_property(target, "emaxx-oclosure-parent")
+                .is_some()
+            || interp
+                .get_symbol_property(target, "emaxx-oclosure-slots")
+                .is_some()
+            || interp
+                .get_symbol_property(target, "emaxx-struct-slots")
+                .is_some();
+        if !known {
+            return Err(LispError::Signal(format!("Unknown type {target}")));
+        }
+    }
     Ok(matches)
 }
 

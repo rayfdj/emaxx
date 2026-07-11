@@ -5732,3 +5732,374 @@ LEVEL should be either :debug, :warning, :error, or :emergency
 
 (defalias 'url-https 'url-http)
 (defalias 'url-https-expand-file-name 'url-http-expand-file-name)
+
+;; byte-opt.el (verbatim): the side-effect-free / pure function
+;; properties.  GNU installs these whenever byte-opt loads (which real
+;; sessions do early via bytecomp); pcase--split-pred consults
+;; `side-effect-free' to fold predicate calls over quoted values and
+;; prune shadowed branches.  byte-opt.el itself must not load (it would
+;; drag bytecomp over the native compiler).
+(let ((side-effect-free-fns
+       '(
+         ;; alloc.c
+         make-bool-vector make-byte-code make-list make-record make-string
+         make-symbol make-vector
+         ;; buffer.c
+         buffer-base-buffer buffer-chars-modified-tick buffer-file-name
+         buffer-local-value buffer-local-variables buffer-modified-p
+         buffer-modified-tick buffer-name get-buffer next-overlay-change
+         overlay-buffer overlay-end overlay-get overlay-properties
+         overlay-start overlays-at overlays-in previous-overlay-change
+         ;; callint.c
+         prefix-numeric-value
+         ;; casefiddle.c
+         capitalize downcase upcase upcase-initials
+         ;; category.c
+         category-docstring category-set-mnemonics char-category-set
+         copy-category-table get-unused-category make-category-set
+         ;; character.c
+         char-width get-byte multibyte-char-to-unibyte string string-width
+         unibyte-char-to-multibyte unibyte-string
+         ;; charset.c
+         decode-char encode-char
+         ;; chartab.c
+         make-char-table
+         ;; data.c
+         % * + - / /= 1+ 1- < <= = > >=
+         aref ash bare-symbol
+         bool-vector-count-consecutive bool-vector-count-population
+         bool-vector-subsetp
+         boundp car cdr default-boundp default-value fboundp
+         get-variable-watchers indirect-variable
+         local-variable-if-set-p local-variable-p
+         logand logcount logior lognot logxor max min mod
+         number-to-string position-symbol string-to-number
+         subr-arity subr-name subr-native-lambda-list subr-type
+         symbol-function symbol-name symbol-plist symbol-value
+         symbol-with-pos-pos variable-binding-locus
+         ;; doc.c
+         documentation
+         ;; editfns.c
+         buffer-substring buffer-substring-no-properties
+         byte-to-position byte-to-string
+         char-after char-before char-equal char-to-string
+         compare-buffer-substrings
+         format format-message
+         group-name
+         line-beginning-position line-end-position ngettext pos-bol pos-eol
+         propertize region-beginning region-end string-to-char
+         user-full-name user-login-name
+         ;; eval.c
+         special-variable-p
+         ;; fileio.c
+         car-less-than-car directory-name-p file-directory-p file-exists-p
+         file-name-absolute-p file-name-concat file-newer-than-file-p
+         file-readable-p file-symlink-p file-writable-p
+         ;; filelock.c
+         file-locked-p
+         ;; floatfns.c
+         abs acos asin atan ceiling copysign cos exp expt fceiling ffloor
+         float floor frexp fround ftruncate isnan ldexp log logb round
+         sin sqrt tan
+         truncate
+         ;; fns.c
+         append assq
+         base64-decode-string base64-encode-string base64url-encode-string
+         buffer-hash buffer-line-statistics
+         compare-strings concat copy-alist copy-hash-table copy-sequence elt
+         equal equal-including-properties
+         featurep get
+         gethash hash-table-count hash-table-rehash-size
+         hash-table-rehash-threshold hash-table-size hash-table-test
+         hash-table-weakness
+         length length< length= length>
+         line-number-at-pos load-average locale-info make-hash-table md5
+         member memq memql nth nthcdr
+         object-intervals rassoc rassq reverse secure-hash
+         string-as-multibyte string-as-unibyte string-bytes
+         string-collate-equalp string-collate-lessp string-distance
+         string-equal string-lessp string-make-multibyte string-make-unibyte
+         string-search string-to-multibyte string-to-unibyte
+         string-version-lessp
+         substring substring-no-properties
+         sxhash-eq sxhash-eql sxhash-equal sxhash-equal-including-properties
+         take value< vconcat
+         ;; frame.c
+         frame-ancestor-p frame-bottom-divider-width frame-char-height
+         frame-char-width frame-child-frame-border-width frame-focus
+         frame-fringe-width frame-internal-border-width frame-native-height
+         frame-native-width frame-parameter frame-parameters frame-parent
+         frame-pointer-visible-p frame-position frame-right-divider-width
+         frame-scale-factor frame-scroll-bar-height frame-scroll-bar-width
+         frame-text-cols frame-text-height frame-text-lines frame-text-width
+         frame-total-cols frame-total-lines frame-visible-p
+         frame-window-state-change next-frame previous-frame
+         tool-bar-pixel-width window-system
+         ;; fringe.c
+         fringe-bitmaps-at-pos
+         ;; keyboard.c
+         posn-at-point posn-at-x-y
+         ;; keymap.c
+         copy-keymap keymap-parent keymap-prompt make-keymap make-sparse-keymap
+         ;; lread.c
+         intern-soft read-from-string
+         ;; marker.c
+         copy-marker marker-buffer marker-insertion-type marker-position
+         ;; minibuf.c
+         active-minibuffer-window assoc-string innermost-minibuffer-p
+         minibuffer-innermost-command-loop-p minibufferp
+         ;; print.c
+         error-message-string prin1-to-string
+         ;; process.c
+         format-network-address get-buffer-process get-process
+         process-buffer process-coding-system process-command process-filter
+         process-id process-inherit-coding-system-flag process-mark
+         process-name process-plist process-query-on-exit-flag
+         process-running-child-p process-sentinel process-thread
+         process-tty-name process-type
+         ;; search.c
+         match-beginning match-end regexp-quote
+         ;; sqlite.c
+         sqlite-columns sqlite-more-p sqlite-version
+         ;; syntax.c
+         char-syntax copy-syntax-table matching-paren string-to-syntax
+         syntax-class-to-char
+         ;; term.c
+         controlling-tty-p tty-display-color-cells tty-display-color-p
+         tty-top-frame tty-type
+         ;; terminal.c
+         frame-terminal terminal-list terminal-live-p terminal-name
+         terminal-parameter terminal-parameters
+         ;; textprop.c
+         get-char-property get-char-property-and-overlay get-text-property
+         next-char-property-change next-property-change
+         next-single-char-property-change next-single-property-change
+         previous-char-property-change previous-property-change
+         previous-single-char-property-change previous-single-property-change
+         text-properties-at text-property-any text-property-not-all
+         ;; thread.c
+         all-threads condition-mutex condition-name mutex-name thread-live-p
+         thread-name
+         ;; timefns.c
+         current-cpu-time
+         current-time-string current-time-zone decode-time encode-time
+         float-time format-time-string time-add time-convert time-equal-p
+         time-less-p time-subtract
+         ;; window.c
+         coordinates-in-window-p frame-first-window frame-root-window
+         frame-selected-window get-buffer-window minibuffer-selected-window
+         minibuffer-window next-window previous-window window-at
+         window-body-height window-body-width window-buffer
+         window-combination-limit window-configuration-equal-p
+         window-dedicated-p window-display-table window-frame window-fringes
+         window-hscroll window-left-child window-left-column window-margins
+         window-minibuffer-p window-new-normal window-new-total
+         window-next-buffers window-next-sibling window-normal-size
+         window-parameter window-parameters window-parent window-point
+         window-prev-buffers window-prev-sibling window-scroll-bars
+         window-start window-text-height window-top-child window-top-line
+         window-total-height window-total-width window-use-time window-vscroll
+         ;; xdisp.c
+         buffer-text-pixel-size current-bidi-paragraph-direction
+         get-display-property invisible-p line-pixel-height lookup-image-map
+         tab-bar-height tool-bar-height window-text-pixel-size
+         ))
+      (side-effect-and-error-free-fns
+       '(
+         ;; alloc.c
+         bool-vector cons list make-marker purecopy record vector
+         ;; buffer.c
+         buffer-list buffer-live-p current-buffer overlay-lists overlayp
+         ;; casetab.c
+         case-table-p current-case-table standard-case-table
+         ;; category.c
+         category-table category-table-p make-category-table
+         standard-category-table
+         ;; character.c
+         characterp max-char
+         ;; charset.c
+         charsetp
+         ;; data.c
+         arrayp atom bare-symbol-p bool-vector-p bufferp byte-code-function-p
+         interpreted-function-p closurep
+         byteorder car-safe cdr-safe char-or-string-p char-table-p
+         condition-variable-p consp eq floatp indirect-function
+         integer-or-marker-p integerp keywordp listp markerp
+         module-function-p multibyte-string-p mutexp native-comp-function-p
+         natnump nlistp null
+         number-or-marker-p numberp recordp remove-pos-from-symbol
+         sequencep stringp subrp symbol-with-pos-p symbolp
+         threadp type-of user-ptrp vector-or-char-table-p vectorp wholenump
+         ;; editfns.c
+         bobp bolp buffer-size buffer-string current-message emacs-pid
+         eobp eolp following-char gap-position gap-size group-gid
+         group-real-gid mark-marker point point-marker point-max point-min
+         position-bytes preceding-char system-name
+         user-real-login-name user-real-uid user-uid
+         ;; emacs.c
+         invocation-directory invocation-name
+         ;; eval.c
+         commandp functionp
+         ;; fileio.c
+         default-file-modes
+         ;; fns.c
+         eql
+         hash-table-p identity proper-list-p safe-length
+         secure-hash-algorithms
+         ;; frame.c
+         frame-list frame-live-p framep last-nonminibuffer-frame
+         old-selected-frame selected-frame visible-frame-list
+         ;; image.c
+         imagep
+         ;; indent.c
+         current-column current-indentation
+         ;; keyboard.c
+         current-idle-time current-input-mode recent-keys recursion-depth
+         this-command-keys this-command-keys-vector this-single-command-keys
+         this-single-command-raw-keys
+         ;; keymap.c
+         current-global-map current-local-map current-minor-mode-maps keymapp
+         ;; minibuf.c
+         minibuffer-contents minibuffer-contents-no-properties minibuffer-depth
+         minibuffer-prompt minibuffer-prompt-end
+         ;; process.c
+         process-list processp signal-names waiting-for-user-input-p
+         ;; sqlite.c
+         sqlite-available-p sqlitep
+         ;; syntax.c
+         standard-syntax-table syntax-table syntax-table-p
+         ;; thread.c
+         current-thread
+         ;; timefns.c
+         current-time
+         ;; window.c
+         selected-window window-configuration-p window-live-p window-valid-p
+         windowp
+         ;; xdisp.c
+         long-line-optimizations-p
+         )))
+  (while side-effect-free-fns
+    (put (car side-effect-free-fns) 'side-effect-free t)
+    (setq side-effect-free-fns (cdr side-effect-free-fns)))
+  (while side-effect-and-error-free-fns
+    (put (car side-effect-and-error-free-fns) 'side-effect-free 'error-free)
+    (setq side-effect-and-error-free-fns (cdr side-effect-and-error-free-fns)))
+  nil)
+
+
+;; Pure functions are side-effect free functions whose values depend
+;; only on their arguments, not on the platform.  For these functions,
+;; calls with constant arguments can be evaluated at compile time.
+;; For example, ash is pure since its results are machine-independent,
+;; whereas lsh is not pure because (lsh -1 -1)'s value depends on the
+;; fixnum range.
+;;
+;; When deciding whether a function is pure, do not worry about
+;; mutable strings or markers, as they are so unlikely in real code
+;; that they are not worth worrying about.  Thus string-to-char is
+;; pure even though it might return different values if a string is
+;; changed, and logand is pure even though it might return different
+;; values if a marker is moved.
+
+(let ((pure-fns
+       '(
+         ;; character.c
+         characterp max-char
+         ;; data.c
+         % * + - / /= 1+ 1- < <= = > >= aref arrayp ash atom bare-symbol
+         bool-vector-count-consecutive bool-vector-count-population
+         bool-vector-p bool-vector-subsetp
+         bufferp car car-safe cdr cdr-safe char-or-string-p char-table-p
+         condition-variable-p consp eq floatp integer-or-marker-p integerp
+         keywordp listp logand logcount logior lognot logxor markerp max min
+         mod multibyte-string-p mutexp natnump nlistp null number-or-marker-p
+         numberp recordp remove-pos-from-symbol sequencep stringp symbol-name
+         symbolp threadp type-of vector-or-char-table-p vectorp
+         ;; editfns.c
+         string-to-char
+         ;; floatfns.c
+         abs ceiling copysign fceiling ffloor float floor fround ftruncate
+         isnan ldexp logb round sqrt truncate
+         ;; fns.c
+         assq base64-decode-string base64-encode-string base64url-encode-string
+         concat elt eql equal equal-including-properties
+         hash-table-p identity length length< length=
+         length> member memq memql nth nthcdr proper-list-p rassoc rassq
+         safe-length string-bytes string-distance string-equal string-lessp
+         string-search string-version-lessp take value<
+         ;; search.c
+         regexp-quote
+         ;; syntax.c
+         string-to-syntax
+         )))
+  (while pure-fns
+    (put (car pure-fns) 'pure t)
+    (setq pure-fns (cdr pure-fns)))
+  nil)
+
+;; isearch.el defcustom: how-many consults it for case folding.
+(defvar search-upper-case 'not-yanks
+  "If non-nil, upper case chars disable case fold searching.")
+
+;; replace.el (verbatim): count-matches over a regexp.
+(defun how-many (regexp &optional rstart rend interactive)
+  "Print and return number of matches for REGEXP following point.
+When called from Lisp and INTERACTIVE is omitted or nil, just return
+the number, do not print it; if INTERACTIVE is t, the function behaves
+in all respects as if it had been called interactively.
+
+If REGEXP contains upper case characters (excluding those preceded by `\\')
+and `search-upper-case' is non-nil, the matching is case-sensitive.
+
+Second and third arg RSTART and REND specify the region to operate on.
+
+Interactively, in Transient Mark mode when the mark is active, operate
+on the contents of the region.  Otherwise, operate from point to the
+end of (the accessible portion of) the buffer.
+
+This function starts looking for the next match from the end of
+the previous match.  Hence, it ignores matches that overlap
+a previously found match."
+  (interactive
+   (keep-lines-read-args "How many matches for regexp"))
+  (save-excursion
+    (if rstart
+        (if rend
+            (progn
+              (goto-char (min rstart rend))
+              (setq rend (max rstart rend)))
+          (goto-char rstart)
+          (setq rend (point-max)))
+      (if (and interactive (use-region-p))
+	  (setq rstart (region-beginning)
+		rend (region-end))
+	(setq rstart (point)
+	      rend (point-max)))
+      (goto-char rstart))
+    (let ((count 0)
+	  (case-fold-search
+	   (if (and case-fold-search search-upper-case)
+	       (isearch-no-upper-case-p regexp t)
+	     case-fold-search)))
+      (while (and (< (point) rend)
+		  (re-search-forward regexp rend t))
+        ;; Ensure forward progress on zero-length matches like "^$".
+        (when (and (= (match-beginning 0) (match-end 0))
+                   (not (eobp)))
+          (forward-char 1))
+	(setq count (1+ count)))
+      (when interactive (message (ngettext "%d occurrence"
+					   "%d occurrences"
+					   count)
+				 count))
+      count)))
+(defalias 'count-matches 'how-many)
+
+;; subr.el (verbatim): pp-emacs-lisp-code copies its temp buffer out.
+(defun insert-into-buffer (buffer &optional start end)
+  "Insert the contents of the current buffer into BUFFER.
+If START/END, only insert that region from the current buffer.
+Point in BUFFER will be placed after the inserted text."
+  (let ((current (current-buffer)))
+    (with-current-buffer buffer
+      (insert-buffer-substring current start end))))

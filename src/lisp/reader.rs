@@ -261,7 +261,10 @@ impl<'a> Reader<'a> {
             pos: 0,
             symbol_shorthands,
             backquote_depth: 0,
-            raw_quote_symbols: false,
+            // GNU's reader always encodes quote shorthands with the raw
+            // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
+            // registered under those names.
+            raw_quote_symbols: true,
         }
     }
 
@@ -1908,8 +1911,8 @@ mod tests {
         assert_eq!(
             read_one("`(t .,t)"),
             Value::list([
-                Value::Symbol("backquote".into()),
-                Value::list([Value::T, Value::Symbol("comma".into()), Value::T,]),
+                Value::Symbol("`".into()),
+                Value::list([Value::T, Value::Symbol(",".into()), Value::T,]),
             ])
         );
     }
