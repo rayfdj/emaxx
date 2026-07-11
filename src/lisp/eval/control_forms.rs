@@ -791,13 +791,9 @@ impl Interpreter {
             let Ok(symbol) = car.as_symbol() else {
                 continue;
             };
-            let value = match cdr {
-                Value::Cons(value, tail) if matches!(*tail.borrow(), Value::Nil) => {
-                    value.borrow().clone()
-                }
-                other => other,
-            };
-            frame.push((format!(".{symbol}"), Self::stored_value(value)));
+            // GNU binds each `.key' to (cdr (assq 'key alist)) verbatim;
+            // a single-element-list cdr stays a list.
+            frame.push((format!(".{symbol}"), Self::stored_value(cdr)));
         }
         Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);

@@ -3350,6 +3350,11 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "url-scheme-get-property" => {
+            // GNU url-methods.el maintains the real scheme registry once
+            // loaded; the native table below is the no-file fallback.
+            if let Some(delegated) = delegate_to_lisp_function(interp, name, args, env)? {
+                return Ok(delegated);
+            }
             need_args(name, args, 2)?;
             let scheme = match &args[0] {
                 Value::Symbol(symbol) => symbol.clone(),
@@ -3387,6 +3392,17 @@ pub(super) fn call(
                 "parse-url" => Value::Symbol("url-generic-parse-url".into()),
                 "asynchronous-p" => Value::Nil,
                 "file-directory-p" => Value::Symbol("ignore".into()),
+                // GNU's registry reads these from url-SCHEME.el; the
+                // http(s) methods come from the simple_compat url-http
+                // surface, everything else gets the registry defaults.
+                "expand-file-name" => match scheme.as_str() {
+                    "http" | "https" => Value::Symbol("url-http-expand-file-name".into()),
+                    _ => Value::Symbol("url-identity-expander".into()),
+                },
+                "file-exists-p" => match scheme.as_str() {
+                    "http" | "https" => Value::Symbol("url-http-file-exists-p".into()),
+                    _ => Value::Symbol("ignore".into()),
+                },
                 _ => Value::Nil,
             };
             Ok(value)

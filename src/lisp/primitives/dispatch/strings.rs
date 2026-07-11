@@ -470,7 +470,18 @@ pub(super) fn call(
             let ellipsis = args
                 .get(4)
                 .filter(|value| !matches!(value, Value::Nil))
-                .map(string_text)
+                .map(|value| {
+                    // GNU: a non-string ELLIPSIS means "use the default"
+                    // (the `truncate-string-ellipsis' function).
+                    string_text(value).or_else(|_: LispError| {
+                        Ok::<String, LispError>(
+                            interp
+                                .lookup_var("truncate-string-ellipsis", env)
+                                .and_then(|value| string_like(&value).map(|text| text.text.clone()))
+                                .unwrap_or_else(|| "\u{2026}".to_string()),
+                        )
+                    })
+                })
                 .transpose()?;
 
             let mut result = String::new();
@@ -1182,6 +1193,9 @@ pub(super) fn call(
                 ));
 
                 if full_start == full_end {
+                    // An empty match may sit past search_pos (anchors like
+                    // `$'); resume after it, consuming one char to advance.
+                    search_pos = full_end;
                     if let Some(ch) = source.text.chars().nth(search_pos) {
                         result.push(ch);
                         search_pos += 1;

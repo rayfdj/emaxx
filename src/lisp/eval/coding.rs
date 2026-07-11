@@ -444,6 +444,12 @@ impl Interpreter {
         self.standard_syntax_table_id
     }
 
+    /// The static GNU lisp-data-mode-syntax-table built at interpreter
+    /// startup (see Interpreter::new).
+    pub fn lisp_data_syntax_table_id(&self) -> u64 {
+        3
+    }
+
     pub fn current_syntax_table_id(&self) -> u64 {
         self.buffer_syntax_tables
             .iter()

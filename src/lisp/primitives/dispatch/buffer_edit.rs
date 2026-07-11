@@ -1011,10 +1011,30 @@ pub(super) fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let needle = string_text(&args[0])?;
+            // GNU folds case whenever `case-fold-search' is non-nil; fold
+            // per character so char counts stay aligned with the buffer.
+            let case_fold = interp
+                .lookup_var("case-fold-search", env)
+                .is_some_and(|value| value.is_truthy());
+            let fold = |text: &str| -> String {
+                text.chars()
+                    .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+                    .collect()
+            };
+            let needle_key = if case_fold {
+                fold(&needle)
+            } else {
+                needle.clone()
+            };
             let point = interp.buffer.point();
             let noerror = args.get(2).is_some_and(Value::is_truthy);
             let move_on_failure = search_noerror_moves(args.get(2));
             let limit = match args.get(1) {
+                // GNU clamps a BOUND outside the accessible region
+                // (loaddefs-gen searches backward with (- (point-max) 1000)).
+                Some(Value::Integer(pos)) if *pos < interp.buffer.point_min() as i64 => {
+                    interp.buffer.point_min()
+                }
                 Some(value) if !value.is_nil() => position_from_value(interp, value)?,
                 _ if name == "search-forward" => interp.buffer.point_max(),
                 _ => interp.buffer.point_min(),
@@ -1028,7 +1048,8 @@ pub(super) fn call(
                         .buffer
                         .buffer_substring(point, limit)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
-                    haystack.find(&needle).map(|found| {
+                    let haystack = if case_fold { fold(&haystack) } else { haystack };
+                    haystack.find(&needle_key).map(|found| {
                         let match_start_chars = haystack[..found].chars().count();
                         (
                             point + match_start_chars,
@@ -1045,7 +1066,8 @@ pub(super) fn call(
                         .buffer
                         .buffer_substring(limit, point)
                         .map_err(|error| LispError::Signal(error.to_string()))?;
-                    haystack.rfind(&needle).map(|found| {
+                    let haystack = if case_fold { fold(&haystack) } else { haystack };
+                    haystack.rfind(&needle_key).map(|found| {
                         let start = limit + haystack[..found].chars().count();
                         let end = start + needle.chars().count();
                         (start, end)
@@ -1515,6 +1537,23 @@ pub(super) fn call(
             while spec_index < constructor_spec.len() && constructor_spec[spec_index] != "&key" {
                 if constructor_spec[spec_index] == "&optional" {
                     spec_index += 1;
+                    continue;
+                }
+                if constructor_spec[spec_index] == "&rest"
+                    || constructor_spec[spec_index] == "&body"
+                {
+                    // The rest variable captures the remaining args without
+                    // consuming them positionally; a following &key section
+                    // reads its keywords from this same tail (GNU cl-lib).
+                    if let Some(rest_name) = constructor_spec.get(spec_index + 1)
+                        && let Some(slot_index) = slot_names
+                            .iter()
+                            .position(|slot_name| slot_name == rest_name)
+                    {
+                        slots[slot_index] = Value::list(call_args[arg_index..].to_vec());
+                        provided[slot_index] = true;
+                    }
+                    spec_index += 2;
                     continue;
                 }
                 if arg_index >= call_args.len() {
@@ -2362,10 +2401,11 @@ pub(super) fn call(
             Ok(Value::Integer(interp.buffer.line_number_at_pos(pos) as i64))
         }
         "line-beginning-position" | "pos-bol" => {
-            let n = if args.is_empty() {
-                1
-            } else {
-                args[0].as_integer()?
+            // GNU treats an explicit nil N as 1 (lisp-mnt passes
+            // (if after 2) straight through).
+            let n = match args.first() {
+                None | Some(Value::Nil) => 1,
+                Some(value) => value.as_integer()?,
             };
             let saved = interp.buffer.point();
             let count = (n - 1) as isize;
@@ -2403,10 +2443,10 @@ pub(super) fn call(
             )?))
         }
         "line-end-position" | "pos-eol" => {
-            let n = if args.is_empty() {
-                1
-            } else {
-                args[0].as_integer()?
+            // GNU treats an explicit nil N as 1.
+            let n = match args.first() {
+                None | Some(Value::Nil) => 1,
+                Some(value) => value.as_integer()?,
             };
             let saved = interp.buffer.point();
             let count = (n - 1) as isize;

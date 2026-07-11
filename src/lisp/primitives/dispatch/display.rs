@@ -464,17 +464,23 @@ pub(super) fn call(
         }
         "accept-process-output" => {
             need_arg_range(name, args, 0, 4)?;
-            let duration_args = if args
-                .first()
-                .is_some_and(|process| interp.resolve_process_id(process).is_ok())
-            {
-                args.get(1..3).unwrap_or(&[])
-            } else {
-                args.get(0..2).unwrap_or(&[])
-            };
-            std::thread::sleep(wait_duration(duration_args)?);
+            // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
+            // JUST-THIS-ONE) - the wait always comes from args 2 and 3.
+            let duration_args = args.get(1..3).unwrap_or(&[]);
+            let deadline = std::time::Instant::now() + wait_duration(duration_args)?;
+            let mut delivered = false;
+            loop {
+                delivered |=
+                    crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+                delivered |=
+                    crate::lisp::primitives::processes::run_pending_url_retrievals(interp, env)?;
+                if delivered || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             interp.drive_threads(env, true)?;
-            Ok(Value::T)
+            Ok(if delivered { Value::T } else { Value::Nil })
         }
         "input-pending-p" => {
             need_arg_range(name, args, 0, 1)?;

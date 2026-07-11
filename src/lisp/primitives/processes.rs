@@ -414,3 +414,162 @@ pub(crate) fn write_process_output(
     append_process_bytes_to_buffer(interp, destination, stderr)?;
     Ok(())
 }
+
+// ── Native url-retrieve (GNU url.el / url-http.el are blocked: their
+// make-network-process transport has no emaxx equivalent) ──
+
+/// Fetch URL (http only) and return the raw response bytes
+/// (status line + headers + body).
+pub(crate) fn http_fetch_raw(url: &str) -> Result<Vec<u8>, String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("Unsupported URL: {url}"))?;
+    let (hostport, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((host, port)) => (
+            host,
+            port.parse::<u16>().map_err(|error| error.to_string())?,
+        ),
+        None => (hostport, 80),
+    };
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect((host, port))
+        .map_err(|error| format!("{host}:{port} {error}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(|error| error.to_string())?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.0\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|error| error.to_string())?;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| error.to_string())?;
+    Ok(response)
+}
+
+/// Register an async retrieval: a worker thread fetches the response and
+/// the wait loops (accept-process-output, sit-for) deliver it.
+pub(crate) fn start_url_retrieval(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    url: &str,
+    callback: Value,
+    cbargs: Vec<Value>,
+) -> Result<Value, LispError> {
+    let buffer = call(
+        interp,
+        "generate-new-buffer",
+        &[Value::String(format!(" *http {url}*"))],
+        env,
+    )?;
+    let buffer_id = interp.resolve_buffer_id(&buffer)?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let url_owned = url.to_string();
+    std::thread::spawn(move || {
+        let _ = sender.send(http_fetch_raw(&url_owned));
+    });
+    interp
+        .pending_url_retrievals
+        .push(crate::lisp::eval::PendingUrlRetrieval {
+            buffer_id,
+            url: url.to_string(),
+            callback,
+            cbargs,
+            receiver,
+        });
+    Ok(buffer)
+}
+
+/// Deliver completed retrievals: fill the response buffer and run the
+/// callback there (GNU url-retrieve semantics). Returns true if any fired.
+pub(crate) fn run_pending_url_retrievals(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut ready = Vec::new();
+    let mut index = 0;
+    while index < interp.pending_url_retrievals.len() {
+        match interp.pending_url_retrievals[index].receiver.try_recv() {
+            Ok(result) => {
+                let pending = interp.pending_url_retrievals.remove(index);
+                ready.push((pending, result));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => index += 1,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let pending = interp.pending_url_retrievals.remove(index);
+                ready.push((pending, Err("connection aborted".into())));
+            }
+        }
+    }
+    let fired = !ready.is_empty();
+    for (pending, result) in ready {
+        let saved_buffer = interp.current_buffer_id();
+        interp.switch_to_buffer_id(pending.buffer_id)?;
+        let status = match result {
+            Ok(bytes) => {
+                // Bytes map to chars 0..255 so header parsing stays exact.
+                let text: String = bytes.iter().map(|byte| char::from(*byte)).collect();
+                interp.insert_current_buffer(&text);
+                interp.buffer.goto_char(interp.buffer.point_max());
+                // GNU url-http flags non-2xx responses in the callback
+                // status plist as (:error (error http CODE)).
+                let code = text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|code| code.parse::<i64>().ok());
+                match code {
+                    Some(code) if !(200..300).contains(&code) => Value::list([
+                        Value::Symbol(":error".into()),
+                        Value::list([
+                            Value::Symbol("error".into()),
+                            Value::Symbol("http".into()),
+                            Value::Integer(code),
+                        ]),
+                    ]),
+                    _ => Value::Nil,
+                }
+            }
+            Err(message) => Value::list([
+                Value::Symbol(":error".into()),
+                Value::list([
+                    Value::Symbol("error".into()),
+                    Value::String(format!("{}: {}", pending.url, message)),
+                ]),
+            ]),
+        };
+        let mut call_args = vec![status];
+        call_args.extend(pending.cbargs.clone());
+        let outcome = call_function_value(interp, &pending.callback, &call_args, env);
+        let _ = interp.switch_to_buffer_id(saved_buffer);
+        outcome?;
+    }
+    Ok(fired)
+}
+
+/// Drain live external process pipes into their buffers/filters.
+/// Returns true if any output was delivered.
+pub(crate) fn pump_external_process_output(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let ids = interp.live_external_process_ids();
+    let mut delivered = false;
+    for process_id in ids {
+        let (stdout, stderr) = interp.poll_process_output(process_id)?;
+        if stdout.is_empty() && stderr.is_empty() {
+            continue;
+        }
+        let mut output = String::from_utf8_lossy(&stdout).into_owned();
+        output.push_str(&String::from_utf8_lossy(&stderr));
+        deliver_process_output(interp, process_id, &output, env)?;
+        delivered = true;
+    }
+    Ok(delivered)
+}

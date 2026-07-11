@@ -26,7 +26,7 @@ mod loops;
 mod macros;
 mod preload;
 mod resource_forms;
-mod runtime;
+pub(crate) mod runtime;
 mod rx;
 mod threads;
 mod variables;
@@ -340,6 +340,17 @@ struct UndoSequenceState {
 enum SpecialBindingScope {
     Global,
     BufferLocal(u64),
+}
+
+/// An in-flight native url-retrieve: a worker thread fetches the raw
+/// HTTP response; accept-process-output style waits deliver it to the
+/// response buffer and run the callback.
+pub(crate) struct PendingUrlRetrieval {
+    pub(crate) buffer_id: u64,
+    pub(crate) url: String,
+    pub(crate) callback: Value,
+    pub(crate) cbargs: Vec<Value>,
+    pub(crate) receiver: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -696,6 +707,7 @@ pub struct Interpreter {
     generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
     pending_file_notifications: Vec<(String, String)>,
+    pub(crate) pending_url_retrievals: Vec<PendingUrlRetrieval>,
     main_thread_id: u64,
     active_thread_id: u64,
     last_thread_error: Option<Value>,
@@ -911,6 +923,19 @@ impl Interpreter {
                     ],
                     category_docs: Vec::new(),
                 },
+                // GNU lisp-data-mode-syntax-table, exposed through the
+                // `emacs-lisp-mode-syntax-table' variable so that
+                // copy-syntax-table callers (ietf-drums.el) inherit the
+                // symbol-constituent punctuation entries.
+                CharTableState {
+                    id: 3,
+                    subtype: Some("syntax-table".into()),
+                    default: Value::Nil,
+                    parent: Some(standard_syntax_table_id),
+                    extra_slots: Vec::new(),
+                    entries: lisp_data_syntax_table_entries(),
+                    category_docs: Vec::new(),
+                },
             ],
             charset_aliases: Vec::new(),
             charset_plists: Vec::new(),
@@ -924,7 +949,7 @@ impl Interpreter {
             standard_category_table_id: None,
             standard_case_table_id: None,
             buffer_case_tables: Vec::new(),
-            next_char_table_id: 3,
+            next_char_table_id: 4,
             records: vec![RecordState {
                 id: main_thread_id,
                 type_name: "thread".into(),
@@ -968,6 +993,11 @@ impl Interpreter {
                 // oclosures natively, so (require 'oclosure) must not load
                 // the GNU file over them.
                 "oclosure".into(),
+                // url-retrieve and friends are native (Rust HTTP); GNU's
+                // url.el/url-http.el would shadow them with
+                // make-network-process code emaxx cannot run.
+                "url".into(),
+                "url-http".into(),
                 "threads".into(),
             ],
             after_load_forms: Vec::new(),
@@ -1016,6 +1046,7 @@ impl Interpreter {
             generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
             pending_file_notifications: Vec::new(),
+            pending_url_retrievals: Vec::new(),
             main_thread_id,
             active_thread_id: main_thread_id,
             last_thread_error: None,
@@ -1352,6 +1383,11 @@ impl Interpreter {
         // buffer must not redirect unrelated buffers (and later `ls' spawns)
         // into a directory that gets deleted by test cleanup.
         interp.mark_auto_buffer_local("default-directory");
+        // Special (dynamically scoped) like every DEFVAR_PER_BUFFER
+        // variable: `let' must go through the special-binding machinery,
+        // which records the binding buffer, so a setq from another buffer
+        // creates that buffer's own local instead of mutating the binding.
+        interp.mark_special_variable("default-directory");
         interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
         interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
         interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);

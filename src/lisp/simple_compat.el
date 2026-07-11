@@ -4885,14 +4885,24 @@ property list, or no properties if there is no plist before it."
 
 ;; help.el: run BODY with the help buffer erased, then display it.
 (defmacro with-help-window (buffer-or-name &rest body)
-  "Evaluate BODY, then display the help buffer BUFFER-OR-NAME."
+  "Evaluate BODY, then display the help buffer BUFFER-OR-NAME.
+Like GNU's `help--window-setup': BODY runs in the help buffer with
+`standard-output' bound to it and read-only checks inhibited."
   (declare (indent 1))
-  `(let ((emaxx--help-window-buffer (get-buffer-create ,buffer-or-name)))
-     (with-current-buffer emaxx--help-window-buffer
-       (let ((inhibit-read-only t))
-         (erase-buffer)))
-     (prog1 (progn ,@body)
-       (display-buffer emaxx--help-window-buffer))))
+  `(with-current-buffer (get-buffer-create ,buffer-or-name)
+     (when (and (fboundp 'help-mode)
+                (not (derived-mode-p 'help-mode)))
+       (help-mode))
+     (setq buffer-read-only t
+           buffer-file-name nil)
+     (buffer-disable-undo)
+     (let ((inhibit-read-only t)
+           (inhibit-modification-hooks t))
+       (erase-buffer)
+       (prog1
+           (let ((standard-output (current-buffer)))
+             ,@body)
+         (display-buffer (current-buffer))))))
 
 ;; fill.el: paragraph filler; a no-op suffices while emaxx has no
 ;; window-width-driven line breaking.
@@ -5427,3 +5437,298 @@ If `default-directory' is already an existing directory, it's not changed."
                                             "/tmp/")
                                       "/")))
      ,@body))
+
+;; GNU custom.el (verbatim).
+(defun custom--standard-value (variable)
+  "Return the standard value of VARIABLE."
+  (eval (car (get variable 'standard-value)) t))
+
+;; GNU byte-run.el (verbatim): loaddefs-gen.el logs through it.
+(defun byte-compile-info (string &optional message type)
+  "Format STRING in a way that looks pleasing in the compilation output.
+If MESSAGE, output the message, too.
+
+If TYPE, it should be a string that says what the information
+type is.  This defaults to \"INFO\"."
+  (let ((string (format "  %-9s%s" (or type "INFO") string)))
+    (when message
+      (message "%s" string))
+    string))
+
+;; GNU subr.el (verbatim).
+(defun ensure-empty-lines (&optional lines)
+  "Ensure that there are LINES number of empty lines before point.
+If LINES is nil or omitted, ensure that there is a single empty
+line before point.
+
+If called interactively, LINES is given by the prefix argument.
+
+If there are more than LINES empty lines before point, the number
+of empty lines is reduced to LINES.
+
+If point is not at the beginning of a line, a newline character
+is inserted before adjusting the number of empty lines."
+  (interactive "p")
+  (unless (bolp)
+    (insert "\n"))
+  (let ((lines (or lines 1))
+        (start (save-excursion
+                 (if (re-search-backward "[^\n]" nil t)
+                     (+ (point) 2)
+                   (point-min)))))
+    (cond
+     ((> (- (point) start) lines)
+      (delete-region (point) (- (point) (- (point) start lines))))
+     ((< (- (point) start) lines)
+      (insert (make-string (- lines (- (point) start)) ?\n))))))
+
+;; Shim over the native byte-compile machinery: GNU's
+;; byte-recompile-directory lives in bytecomp.el, which must not be loaded
+;; (it would shadow the native compiler).  Compiles every .el file below
+;; DIRECTORY that has no up-to-date .elc, like GNU with ARG 0.
+(defun byte-recompile-directory (directory &optional arg force _follow-symlinks)
+  "Recompile every `.el' file in DIRECTORY that needs recompilation.
+Files in subdirectories of DIRECTORY are processed also."
+  (interactive "DByte recompile directory: \nP")
+  (dolist (file (directory-files-recursively directory "\\.el\\'"))
+    (let ((dest (concat file "c")))
+      (when (or force
+                (not (file-exists-p dest))
+                (file-newer-than-file-p file dest))
+        (when (or (file-exists-p dest) (numberp arg) force)
+          (ignore-errors (byte-compile-file file))))))
+  nil)
+
+;; GNU files.el (verbatim).
+(defun directory-files-recursively (dir regexp
+                                        &optional include-directories predicate
+                                        follow-symlinks)
+  "Return list of all files under directory DIR whose names match REGEXP.
+This function works recursively.  Files are returned in \"depth
+first\" order, and files from each directory are sorted in
+alphabetical order.  Each file name appears in the returned list
+in its absolute form.
+
+By default, the returned list excludes directories, but if
+optional argument INCLUDE-DIRECTORIES is non-nil, they are
+included.
+
+PREDICATE can be either nil (which means that all subdirectories
+of DIR are descended into), t (which means that subdirectories that
+can't be read are ignored), or a function (which is called with
+the name of each subdirectory, and should return non-nil if the
+subdirectory is to be descended into).
+
+If FOLLOW-SYMLINKS is non-nil, symbolic links that point to
+directories are followed.  Note that this can lead to infinite
+recursion."
+  (let* ((result nil)
+	 (files nil)
+         (dir (directory-file-name dir))
+	 ;; When DIR is "/", remote file names like "/method:" could
+	 ;; also be offered.  We shall suppress them.
+	 (tramp-mode (and tramp-mode (file-remote-p (expand-file-name dir)))))
+    (dolist (file (sort (file-name-all-completions "" dir)
+			'string<))
+      (unless (member file '("./" "../"))
+	(if (directory-name-p file)
+	    (let* ((leaf (substring file 0 (1- (length file))))
+		   (full-file (concat dir "/" leaf)))
+	      ;; Don't follow symlinks to other directories.
+	      (when (and (or (not (file-symlink-p full-file))
+                             (and (file-symlink-p full-file)
+                                  follow-symlinks))
+                         ;; Allow filtering subdirectories.
+                         (or (eq predicate nil)
+                             (eq predicate t)
+                             (funcall predicate full-file)))
+                (let ((sub-files
+                       (if (eq predicate t)
+                           (ignore-error file-error
+                             (directory-files-recursively
+			      full-file regexp include-directories
+                              predicate follow-symlinks))
+                         (directory-files-recursively
+			  full-file regexp include-directories
+                          predicate follow-symlinks))))
+		  (setq result (nconc result sub-files))))
+	      (when (and include-directories
+			 (string-match regexp leaf))
+		(setq result (nconc result (list full-file)))))
+	  (when (string-match regexp file)
+	    (push (concat dir "/" file) files)))))
+    (nconc result (nreverse files))))
+
+;; GNU comp.el helper: emaxx produces no .eln artifacts, so there is
+;; nothing to clean; package.el calls this when deleting packages.
+(defun comp-clean-up-stale-eln (_file)
+  "Remove stale .eln files (no-op: emaxx has no native compilation cache)."
+  nil)
+
+;; GNU comp.el helper: emaxx never writes .eln files, so map to a path
+;; that cannot exist (package-delete probes it before removing).
+(defun comp-el-to-eln-filename (filename &optional base-dir)
+  "Return the .eln path FILENAME would compile to (never exists here)."
+  (expand-file-name (concat (file-name-base filename) ".eln")
+                    (or base-dir (expand-file-name "eln-cache" temporary-file-directory))))
+
+;; GNU files.el (verbatim).
+(defun prune-directory-list (dirs &optional keep reject)
+  "Return a copy of DIRS with all non-existent directories removed.
+The optional argument KEEP is a list of directories to retain even if
+they don't exist, and REJECT is a list of directories to remove from
+DIRS, even if they exist; REJECT takes precedence over KEEP.
+
+Note that membership in REJECT and KEEP is checked using simple string
+comparison."
+  (apply #'nconc
+	 (mapcar (lambda (dir)
+		   (and (not (member dir reject))
+			(or (member dir keep) (file-directory-p dir))
+			(list dir)))
+		 dirs)))
+
+;; lisp-mode.el (verbatim): `lm-section-end' (lisp-mnt.el) calls
+;; `lisp-outline-level' directly when computing Commentary bounds.
+(defconst lisp-mode-autoload-regexp
+  "^;;;###\\(\\([-[:alnum:]]+?\\)-\\)?\\(autoload\\)"
+  "Regexp to match autoload cookies.
+The second group matches package names used to redirect autoloads
+to a package-local loaddefs file.")
+
+(defun lisp-outline-level ()
+  "Lisp mode `outline-level' function."
+  ;; Expects outline-regexp is ";;;\\(;* [^ \t\n]\\|###autoload\\)\\|("
+  ;; and point is at the beginning of a matching line.
+  (let ((len (- (match-end 0) (match-beginning 0))))
+    (cond ((or (looking-at-p "(")
+               (looking-at-p lisp-mode-autoload-regexp))
+           1000)
+          ((looking-at ";;\\(;+\\) ")
+           (- (match-end 1) (match-beginning 1)))
+          ;; Above should match everything but just in case.
+          (t
+           len))))
+
+;; outline.el: GNU's file builds its mode menus by walking keymaps as
+;; raw lists (`mapcar'/`nconc' over `outline-mode-menu-bar-map'), which
+;; the record-backed emaxx keymaps cannot satisfy, so the real file
+;; cannot load.  Provide the feature with the pieces its library
+;; consumers (lisp-mnt.el's `lm-section-end') actually read.  All
+;; definitions are verbatim from outline.el.
+(defvar outline-regexp "[*\^L]+"
+  "Regular expression to match the beginning of a heading.
+Any line whose beginning matches this regexp is considered to start a heading.
+Note that Outline mode only checks this regexp at the start of a line,
+so the regexp need not (and usually does not) start with `^'.
+The recommended way to set this is with a `Local Variables:' list
+in the file it applies to.")
+
+(defvar outline-heading-end-regexp "\n"
+  "Regular expression to match the end of a heading line.
+You can assume that point is at the beginning of a heading when this
+regexp is searched for.  The heading ends at the end of the match.
+The recommended way to set this is with a `Local Variables:' list
+in the file it applies to.")
+
+(defvar outline-search-function nil
+  "Function to search for the next outline heading.")
+
+(defvar outline-heading-alist ()
+  "Alist associating a heading for every possible level.")
+
+(defvar outline-level #'outline-level
+  "Function of no args to compute a header's nesting level in an outline.
+It can assume point is at the beginning of a header line and that the match
+data reflects the `outline-regexp'.")
+
+(defun outline-level ()
+  "Return the depth to which a statement is nested in the outline.
+Point must be at the beginning of a header line.
+This is actually either the level specified in `outline-heading-alist'
+or else the number of characters matched by `outline-regexp'."
+  (or (cdr (assoc (match-string 0) outline-heading-alist))
+      (- (match-end 0) (match-beginning 0))))
+
+(provide 'outline)
+
+;; help.el (verbatim): describe-package quotes the install directory
+;; with this.
+(defun substitute-quotes (string)
+  "Substitute quote characters in STRING for display.
+Each grave accent \\=` is replaced by left quote, and each
+apostrophe \\=' is replaced by right quote.  Which left and right
+quote characters to use is determined by the variable
+`text-quoting-style'."
+  (cond ((eq (text-quoting-style) 'curve)
+         (string-replace "`" "‘"
+                         (string-replace "'" "’" string)))
+        ((eq (text-quoting-style) 'straight)
+         (string-replace "`" "'" string))
+        (t string)))
+
+;; warnings.el (verbatim): tar-mode's link handler calls this; the
+;; native display-warning does the rest.
+(defun lwarn (type level message &rest args)
+  "Display a warning message made from (format-message MESSAGE ARGS...).
+\\<special-mode-map>
+Aside from generating the message with `format-message',
+this is equivalent to `display-warning'.
+
+TYPE is the warning type: either a custom group name (a symbol),
+or a list of symbols whose first element is a custom group name.
+\(The rest of the symbols represent subcategories and
+can be whatever you like.)
+
+LEVEL should be either :debug, :warning, :error, or :emergency
+\(but see `warning-minimum-level' and `warning-minimum-log-level').
+
+:emergency -- a problem that will seriously impair Emacs operation soon
+	      if you do not attend to it promptly.
+:error     -- invalid data or circumstances.
+:warning   -- suspicious data or circumstances.
+:debug     -- info for debugging only."
+  (display-warning type (apply #'format-message message args) level))
+
+;; mule-conf.el/jka-compr defaults: GNU builds this alist in C/mule
+;; setup; package-install-from-buffer consults it (via
+;; find-operation-coding-system) to decode literally-read buffers.
+(setq file-coding-system-alist
+  '(("\\.tzst\\'" no-conversion . no-conversion)
+    ("\\.zst\\'" no-conversion . no-conversion)
+    ("\\.dz\\'" no-conversion . no-conversion)
+    ("\\.txz\\'" no-conversion . no-conversion)
+    ("\\.xz\\'" no-conversion . no-conversion)
+    ("\\.lzma\\'" no-conversion . no-conversion)
+    ("\\.lz\\'" no-conversion . no-conversion)
+    ("\\.g?z\\'" no-conversion . no-conversion)
+    ("\\.\\(?:tgz\\|svgz\\|sifz\\)\\'" no-conversion . no-conversion)
+    ("\\.tbz2?\\'" no-conversion . no-conversion)
+    ("\\.bz2\\'" no-conversion . no-conversion)
+    ("\\.Z\\'" no-conversion . no-conversion)
+    ("\\.elc\\'" . utf-8-emacs)
+    ("\\.el\\'" . prefer-utf-8)
+    ("\\.utf\\(-8\\)?\\'" . utf-8)
+    ("\\.xml\\'" . xml-find-file-coding-system)
+    ("\\(\\`\\|/\\)loaddefs.el\\'" raw-text . raw-text-unix)
+    ("\\.tar\\'" no-conversion . no-conversion)
+    ("\\.po[tx]?\\'\\|\\.po\\." . po-find-file-coding-system)
+    ("\\.\\(tex\\|ltx\\|dtx\\|drv\\)\\'" . latexenc-find-file-coding-system)
+    ("" undecided)))
+
+;; url-http.el surface: the real file drives make-network-process, which
+;; emaxx cannot run (url-retrieve is native).  url-methods.el's scheme
+;; registry only needs the `url-http' loader to be fbound plus the
+;; method symbols it interns (url-http-expand-file-name and friends).
+(defun url-http (url callback &optional cbargs &rest _ignored)
+  "Retrieve URL via the native HTTP client and call CALLBACK."
+  (require 'url-parse)
+  (url-retrieve (if (url-p url) (url-recreate-url url) url) callback cbargs))
+
+(defun url-http-expand-file-name (urlobj defobj)
+  "Expand URLOBJ relative to DEFOBJ (GNU aliases `url-default-expander')."
+  (require 'url-expand)
+  (url-default-expander urlobj defobj))
+
+(defalias 'url-https 'url-http)
+(defalias 'url-https-expand-file-name 'url-http-expand-file-name)
