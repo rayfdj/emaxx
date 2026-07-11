@@ -6365,6 +6365,14 @@ HISTORY-VAR cannot refer to a lexical variable."
 	(setq current-input-method nil)
 	(force-mode-line-update)))))
 
+(defun shell-command-to-string (command)
+  "Execute shell command COMMAND and return its output as a string.
+Use `shell-quote-argument' to quote dangerous characters in
+COMMAND before passing it as an argument to this function."
+  (with-output-to-string
+    (with-current-buffer standard-output
+      (shell-command command t))))
+
 (defun load-library (library &optional _interactive-call)
   "Load the Emacs Lisp library named LIBRARY.
 LIBRARY should be a string.  This is an interface to the function `load'."
@@ -6968,3 +6976,218 @@ Process sentinels are not dispatched in this batch environment."
   "Return the version-control backend responsible for FILE.
 Version control is not integrated in this environment."
   nil)
+
+;;; Change-group / undo machinery (verbatim from GNU simple.el and
+;;; subr.el): viper's undo grouping builds on these.
+
+(defun undo-start (&optional beg end)
+  "Set `pending-undo-list' to the front of the undo list.
+The next call to `undo-more' will undo the most recently made change.
+If BEG and END are specified, then undo only elements
+that apply to text between BEG and END are used; other undo elements
+are ignored.  If BEG and END are nil, all undo elements are used."
+  (if (eq buffer-undo-list t)
+      (user-error "No undo information in this buffer"))
+  (setq pending-undo-list
+	(if (and beg end (not (= beg end)))
+	    (undo-make-selective-list (min beg end) (max beg end))
+	  buffer-undo-list)))
+
+(defun prepare-change-group (&optional buffer)
+  "Return a handle for the current buffer's state, for a change group.
+If you specify BUFFER, make a handle for BUFFER's state instead.
+
+Pass the handle to `activate-change-group' afterward to initiate
+the actual changes of the change group.
+
+To finish the change group, call either `accept-change-group' or
+`cancel-change-group' passing the same handle as argument."
+  (if buffer
+      (list (cons buffer (with-current-buffer buffer buffer-undo-list)))
+    (list (cons (current-buffer) buffer-undo-list))))
+
+(defun activate-change-group (handle)
+  "Activate a change group made with `prepare-change-group' (which see)."
+  (dolist (elt handle)
+    (with-current-buffer (car elt)
+      (if (eq buffer-undo-list t)
+	  (setq buffer-undo-list nil)
+        ;; Add a boundary to make sure the upcoming changes won't be
+        ;; merged/combined with any previous changes (bug#33341).
+        (when (numberp (car-safe (car buffer-undo-list)))
+          (push (cons (caar buffer-undo-list) (caar buffer-undo-list))
+                buffer-undo-list))))))
+
+(defun accept-change-group (handle)
+  "Finish a change group made with `prepare-change-group' (which see).
+This finishes the change group by accepting its changes as final."
+  (dolist (elt handle)
+    (with-current-buffer (car elt)
+      (if (eq (cdr elt) t)
+	  (setq buffer-undo-list t)))))
+
+(defun cancel-change-group (handle)
+  "Finish a change group made with `prepare-change-group' (which see).
+This finishes the change group by reverting all of its changes."
+  (dolist (elt handle)
+    (with-current-buffer (car elt)
+      (setq elt (cdr elt))
+      (save-restriction
+	(widen)
+	(let ((old-car (car-safe elt))
+	      (old-cdr (cdr-safe elt))
+	      (pending-undo-list buffer-undo-list))
+          (unwind-protect
+              (progn
+                (when (consp elt)
+                  (setcar elt nil) (setcdr elt nil))
+                (when (and (consp elt) (not (eq elt (last pending-undo-list))))
+                  (error "Undoing to some unrelated state"))
+                (save-excursion
+                  (while (listp pending-undo-list) (undo-more 1)))
+                (setq buffer-undo-list elt))
+            (when (consp elt)
+              (setcar elt old-car)
+              (setcdr elt old-cdr))))))))
+
+(defun undo-amalgamate-change-group (handle)
+  "Amalgamate changes in change-group since HANDLE.
+Remove all undo boundaries between the state of HANDLE and now.
+HANDLE is as returned by `prepare-change-group'.
+
+GNU's implementation truncates the shared list structure in place; the
+undo list emaxx exposes is rebuilt on each read, so the entries recorded
+since HANDLE are identified by length instead."
+  (dolist (elt handle)
+    (with-current-buffer (car elt)
+      (let ((old (cdr elt))
+            (cur buffer-undo-list))
+        (when (consp cur)
+          (let* ((old-len (if (listp old) (length old) 0))
+                 (new-count (max 0 (- (length cur) old-len)))
+                 (head (delq nil (seq-take cur new-count)))
+                 (tail (nthcdr new-count cur)))
+            (setq buffer-undo-list (append head tail))))))))
+
+(defvar pending-undo-list nil
+  "Within a run of consecutive undo commands, list remaining to be undone.
+If t, we undid all the way to the end of it.")
+(defvar undo-in-progress nil
+  "Non-nil while performing an undo.
+Some change-hooks test this variable to do something different.")
+(defvar undo-in-region nil
+  "Non-nil if `pending-undo-list' is not just a tail of `buffer-undo-list'.")
+
+(defun primitive-undo (n list)
+  "Undo N records from the front of the list LIST.
+Return what remains of the list."
+  (let ((arg n)
+        ;; In a writable buffer, enable undoing read-only text that is
+        ;; so because of text properties.
+        (inhibit-read-only t)
+        ;; We use oldlist only to check for EQ.  ++kfs
+        (oldlist buffer-undo-list)
+        (did-apply nil)
+        (next nil))
+    (while (> arg 0)
+      (while (setq next (pop list))     ;Exit inner loop at undo boundary.
+        ;; Handle an integer by setting point to that value.
+        (pcase next
+          ((pred integerp) (goto-char next))
+          ;; Element (t . TIME) records previous modtime.
+          (`(t . ,time)
+           (let ((visited-file-time (visited-file-modtime)))
+             (when (time-equal-p time visited-file-time)
+               (unlock-buffer)
+               (set-buffer-modified-p nil))))
+          ;; Element (nil PROP VAL BEG . END) is property change.
+          (`(nil . ,(or `(,prop ,val ,beg . ,end) pcase--dontcare))
+           (when (or (> (point-min) beg) (< (point-max) end))
+             (error "Changes to be undone are outside visible portion of buffer"))
+           (put-text-property beg end prop val))
+          ;; Element (BEG . END) means range was inserted.
+          (`(,(and beg (pred integerp)) . ,(and end (pred integerp)))
+           (when (or (> (point-min) beg) (< (point-max) end))
+             (error "Changes to be undone are outside visible portion of buffer"))
+           ;; Set point first thing, so that undoing this undo
+           ;; does not send point back to where it is now.
+           (goto-char beg)
+           (delete-region beg end))
+          ;; Element (apply FUN . ARGS) means call FUN to undo.
+          (`(apply . ,fun-args)
+           (let ((currbuff (current-buffer)))
+             (if (integerp (car fun-args))
+                 ;; Long format: (apply DELTA START END FUN . ARGS).
+                 (pcase-let* ((`(,delta ,start ,end ,fun . ,args) fun-args)
+                              (start-mark (copy-marker start nil))
+                              (end-mark (copy-marker end t)))
+                   (when (or (> (point-min) start) (< (point-max) end))
+                     (error "Changes to be undone are outside visible portion of buffer"))
+                   (apply fun args)
+                   (unless (and (= start start-mark)
+                                (= (+ delta end) end-mark))
+                     (error "Changes undone by function are different from the announced ones"))
+                   (set-marker start-mark nil)
+                   (set-marker end-mark nil))
+               (apply fun-args))
+             (unless (eq currbuff (current-buffer))
+               (error "Undo function switched buffer"))
+             (setq did-apply t)))
+          ;; Element (STRING . POS) means STRING was deleted.
+          (`(,(and string (pred stringp)) . ,(and pos (pred integerp)))
+           (let ((valid-marker-adjustments nil)
+                 (apos (abs pos)))
+             (when (or (< apos (point-min)) (> apos (point-max)))
+               (error "Changes to be undone are outside visible portion of buffer"))
+             (while (and (markerp (car-safe (car list)))
+                         (integerp (cdr-safe (car list))))
+               (let* ((marker-adj (pop list))
+                      (m (car marker-adj)))
+                 (and (eq (marker-buffer m) (current-buffer))
+                      (= apos m)
+                      (push marker-adj valid-marker-adjustments))))
+             ;; Insert string and adjust point
+             (if (< pos 0)
+                 (progn
+                   (goto-char (- pos))
+                   (insert string))
+               (goto-char pos)
+               (insert string)
+               (goto-char pos))
+             (dolist (adj valid-marker-adjustments)
+               (if (marker-buffer (car adj))
+                   (set-marker (car adj)
+                               (- (car adj) (cdr adj)))))))
+          ;; (MARKER . OFFSET) means a marker MARKER was adjusted by OFFSET.
+          (`(,(and marker (pred markerp)) . ,(and offset (pred integerp)))
+           (warn "Encountered %S entry in undo list with no matching (TEXT . POS) entry"
+                 next)
+           (when (marker-buffer marker)
+             (set-marker marker
+                         (- marker offset)
+                         (marker-buffer marker))))
+          (_ (error "Unrecognized entry in undo list %S" next))))
+      (setq arg (1- arg)))
+    ;; Make sure an apply entry produces at least one undo entry,
+    ;; so the test in `undo' for continuing an undo series
+    ;; will work right.
+    (if (and did-apply
+             (eq oldlist buffer-undo-list))
+        (setq buffer-undo-list
+              (cons (list 'apply 'cdr nil) buffer-undo-list))))
+  list)
+
+(defun undo-more (n)
+  "Undo back N undo-boundaries beyond what was already undone recently.
+Call `undo-start' to get ready to undo recent changes,
+then call `undo-more' one or more times to undo them."
+  (or (listp pending-undo-list)
+      (user-error (concat "No further undo information"
+                          (and undo-in-region " for region"))))
+  (let ((undo-in-progress t))
+    ;; Note: The following, while pulling elements off
+    ;; `pending-undo-list' will call primitive change functions which
+    ;; will push more elements onto `buffer-undo-list'.
+    (setq pending-undo-list (primitive-undo n pending-undo-list))
+    (if (null pending-undo-list)
+	(setq pending-undo-list t))))

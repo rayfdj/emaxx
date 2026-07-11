@@ -305,6 +305,16 @@ pub(crate) fn pop_unread_command_event_value(
         .unwrap_or(Value::Nil);
     let mut events = unread.to_vec()?;
     if events.is_empty() {
+        // GNU's input readers consume the executing keyboard macro's
+        // remaining events (viper's `F'/`t' read their target char that way).
+        if let Some(state) = interp.kbd_macro_executions.last_mut()
+            && let Some(event) = state.events.get(state.index).cloned()
+        {
+            state.index += 1;
+            let index = state.index;
+            interp.set_global_binding("executing-kbd-macro-index", Value::Integer(index as i64));
+            return Ok(event);
+        }
         return Err(LispError::Signal(
             "No unread-command-events available for interactive input".into(),
         ));

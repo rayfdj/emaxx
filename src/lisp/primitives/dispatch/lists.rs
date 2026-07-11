@@ -253,11 +253,30 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         if !macro_active {
             return Ok(());
         }
-        let Some(event) = current_kbd_macro_event(interp, 0) else {
+        let Some(mut event) = current_kbd_macro_event(interp, 0) else {
             return Ok(());
         };
         let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
-        let event_key = key_sequence_binding_text(&key)?;
+        let mut event_key = key_sequence_binding_text(&key)?;
+        // GNU describes function-key symbol events in angle brackets
+        // ("<escape>"), which is also what the string-parsing lookup path
+        // needs to see one named key instead of one key per character.
+        if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+            event_key = format!("<{event_key}>");
+        }
+        // GNU's local-function-key-map translates unbound function-key
+        // symbols to their ASCII equivalents ([escape] a1 ESC dispatches
+        // viper's ESC binding, not an `escape' text insertion).
+        if pending_keys.is_empty()
+            && let Value::Symbol(name) = &event
+            && let Some(code) = function_key_default_translation(name)
+            && key_binding(interp, &event_key, env)?.is_nil()
+            && !key_sequence_is_prefix(interp, &event_key, env)?
+        {
+            event = Value::Integer(code);
+            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            event_key = key_sequence_binding_text(&translated)?;
+        }
         if pending_keys.is_empty() && event_key == "C-s" {
             advance_kbd_macro_index(interp, 1);
             let mut search_text = String::new();
@@ -411,6 +430,9 @@ fn execute_kbd_macro_command(
     event: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    // GNU's command loop separates each command into its own undo group
+    // (undo-auto--boundaries); viper's undo tests observe that grouping.
+    interp.buffer.push_undo_boundary();
     interp.set_variable(
         "this-single-command-keys",
         Value::list([Value::Symbol("vector-literal".into()), event.clone()]),
@@ -467,7 +489,14 @@ fn execute_kbd_macro_command(
         env,
         Some(interp.current_buffer_id()),
     )?;
-    finish_kbd_macro_command(interp, command.clone(), command.clone(), env);
+    // GNU copies `this-command' into `last-command' at the end of the
+    // cycle, so a command that rewrites this-command (viper-undo-more sets
+    // it to viper-undo) steers the next dispatch.
+    let final_this_command = interp
+        .lookup_var("this-command", env)
+        .filter(|value| !value.is_nil())
+        .unwrap_or_else(|| command.clone());
+    finish_kbd_macro_command(interp, command.clone(), final_this_command, env);
     Ok(())
 }
 
@@ -477,6 +506,14 @@ fn execute_kbd_macro_self_insert(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let command = Value::Symbol("self-insert-command".into());
+    // GNU amalgamates consecutive self-insertions into one undo group;
+    // any other preceding command starts a fresh group.
+    if !matches!(
+        interp.lookup_var("last-command", env),
+        Some(Value::Symbol(last)) if last == "self-insert-command"
+    ) {
+        interp.buffer.push_undo_boundary();
+    }
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("this-original-command", command.clone(), env);
     interp.set_variable("this-command", command.clone(), env);
@@ -511,6 +548,19 @@ fn finish_kbd_macro_command(
             .unwrap_or(Value::Nil);
         interp.set_variable("last-repeatable-command", real_last_command, env);
     }
+}
+
+/// GNU's `local-function-key-map' default translations from function-key
+/// symbols to ASCII control characters.
+fn function_key_default_translation(name: &str) -> Option<i64> {
+    Some(match name {
+        "escape" => 27,
+        "tab" => 9,
+        "return" => 13,
+        "linefeed" => 10,
+        "delete" | "backspace" => 127,
+        _ => return None,
+    })
 }
 
 fn keyboard_macro_self_insert_text(event: &Value) -> Option<String> {

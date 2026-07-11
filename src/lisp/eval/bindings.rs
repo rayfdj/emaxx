@@ -835,7 +835,28 @@ impl Interpreter {
                 let entry = buffer_undo_head_to_entry(&head);
                 self.buffer.push_undo_entry(entry);
             } else {
+                // A structural replacement (undo truncation after
+                // cancel-change-group, boundary removal by
+                // undo-amalgamate-change-group, ...): rebuild the native undo
+                // state from the assigned list so the Lisp view round-trips.
                 self.undo_sequence = None;
+                if let Ok(items) = value.to_vec() {
+                    self.buffer.clear_undo_history();
+                    // The Lisp view is newest-first; the native list is
+                    // oldest-first.
+                    for item in items.into_iter().rev() {
+                        // The trailing (t . TIME) modtime marker is
+                        // synthesized on read for file-visiting buffers;
+                        // storing it back would duplicate it.
+                        if let Value::Cons(car, _) = &item
+                            && matches!(&*car.borrow(), Value::T)
+                        {
+                            continue;
+                        }
+                        self.buffer
+                            .push_undo_entry(buffer_undo_head_to_entry(&item));
+                    }
+                }
             }
             return;
         }

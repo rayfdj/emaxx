@@ -1025,9 +1025,16 @@ pub(super) fn call(
             } else {
                 needle.clone()
             };
-            let point = interp.buffer.point();
             let noerror = args.get(2).is_some_and(Value::is_truthy);
             let move_on_failure = search_noerror_moves(args.get(2));
+            // GNU repeats the search COUNT times; a negative COUNT searches
+            // in the opposite direction (viper's `F' calls search-forward
+            // with -1).
+            let count = match args.get(3) {
+                Some(value) if !value.is_nil() => value.as_integer()?,
+                _ => 1,
+            };
+            let forward = (name == "search-forward") == (count >= 0);
             let limit = match args.get(1) {
                 // GNU clamps a BOUND outside the accessible region
                 // (loaddefs-gen searches backward with (- (point-max) 1000)).
@@ -1035,53 +1042,59 @@ pub(super) fn call(
                     interp.buffer.point_min()
                 }
                 Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                _ if name == "search-forward" => interp.buffer.point_max(),
+                _ if forward => interp.buffer.point_max(),
                 _ => interp.buffer.point_min(),
             };
-            let result = if name == "search-forward" {
-                let limit = limit.min(interp.buffer.point_max());
-                if limit < point {
-                    None
+            let mut result = None;
+            for _ in 0..count.unsigned_abs().max(1) {
+                let point = interp.buffer.point();
+                result = if forward {
+                    let limit = limit.min(interp.buffer.point_max());
+                    if limit < point {
+                        None
+                    } else {
+                        let haystack = interp
+                            .buffer
+                            .buffer_substring(point, limit)
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                        let haystack = if case_fold { fold(&haystack) } else { haystack };
+                        haystack.find(&needle_key).map(|found| {
+                            let match_start_chars = haystack[..found].chars().count();
+                            (
+                                point + match_start_chars,
+                                point + match_start_chars + needle.chars().count(),
+                            )
+                        })
+                    }
                 } else {
-                    let haystack = interp
-                        .buffer
-                        .buffer_substring(point, limit)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let haystack = if case_fold { fold(&haystack) } else { haystack };
-                    haystack.find(&needle_key).map(|found| {
-                        let match_start_chars = haystack[..found].chars().count();
-                        (
-                            point + match_start_chars,
-                            point + match_start_chars + needle.chars().count(),
-                        )
-                    })
+                    let limit = limit.max(interp.buffer.point_min());
+                    if limit > point {
+                        None
+                    } else {
+                        let haystack = interp
+                            .buffer
+                            .buffer_substring(limit, point)
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                        let haystack = if case_fold { fold(&haystack) } else { haystack };
+                        haystack.rfind(&needle_key).map(|found| {
+                            let start = limit + haystack[..found].chars().count();
+                            let end = start + needle.chars().count();
+                            (start, end)
+                        })
+                    }
+                };
+                match result {
+                    Some((start, end)) => {
+                        interp.buffer.goto_char(if forward { end } else { start });
+                    }
+                    None => break,
                 }
-            } else {
-                let limit = limit.max(interp.buffer.point_min());
-                if limit > point {
-                    None
-                } else {
-                    let haystack = interp
-                        .buffer
-                        .buffer_substring(limit, point)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let haystack = if case_fold { fold(&haystack) } else { haystack };
-                    haystack.rfind(&needle_key).map(|found| {
-                        let start = limit + haystack[..found].chars().count();
-                        let end = start + needle.chars().count();
-                        (start, end)
-                    })
-                }
-            };
+            }
             match result {
                 Some((start, end)) => {
                     interp.last_match_data = Some(vec![Some((start, end))]);
                     interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                    let point = if name == "search-backward" {
-                        start
-                    } else {
-                        end
-                    };
+                    let point = if forward { end } else { start };
                     interp.buffer.goto_char(point);
                     Ok(Value::Integer(point as i64))
                 }

@@ -122,6 +122,8 @@ impl Interpreter {
             program,
             argv,
             runtime: runtime.map(|child| RunningProcess { child }),
+            pending_stdout: Vec::new(),
+            pending_stderr: Vec::new(),
         });
         Ok(process)
     }
@@ -139,6 +141,21 @@ impl Interpreter {
             .map_err(|error| LispError::Signal(error.to_string()))?
             .is_some()
         {
+            // Drain whatever the child wrote before exiting so the next
+            // pump still delivers it to the filter (gpg's final status
+            // lines arrive after `process-status' notices the exit).
+            if let Some(pipe) = runtime.child.stdout.as_mut() {
+                let mut tail = Vec::new();
+                if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
+                    process.pending_stdout.extend(tail);
+                }
+            }
+            if let Some(pipe) = runtime.child.stderr.as_mut() {
+                let mut tail = Vec::new();
+                if std::io::Read::read_to_end(pipe, &mut tail).is_ok() {
+                    process.pending_stderr.extend(tail);
+                }
+            }
             process.status = ProcessStatus::Exit;
             process.runtime = None;
         }
@@ -358,7 +375,11 @@ impl Interpreter {
     pub fn live_external_process_ids(&self) -> Vec<u64> {
         self.process_states
             .iter()
-            .filter(|process| process.runtime.is_some())
+            .filter(|process| {
+                process.runtime.is_some()
+                    || !process.pending_stdout.is_empty()
+                    || !process.pending_stderr.is_empty()
+            })
             .map(|process| process.record_id)
             .collect()
     }
@@ -370,10 +391,14 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
         let Some(runtime) = process.runtime.as_mut() else {
-            return Ok((Vec::new(), Vec::new()));
+            // Output drained at exit-detection time still needs delivering.
+            return Ok((
+                std::mem::take(&mut process.pending_stdout),
+                std::mem::take(&mut process.pending_stderr),
+            ));
         };
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
+        let mut stdout = std::mem::take(&mut process.pending_stdout);
+        let mut stderr = std::mem::take(&mut process.pending_stderr);
         if let Some(pipe) = runtime.child.stdout.as_mut() {
             read_nonblocking_pipe(pipe, &mut stdout)?;
         }

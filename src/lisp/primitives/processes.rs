@@ -194,7 +194,12 @@ pub(crate) fn deliver_process_output(
         return Ok(());
     }
 
-    let target_buffer_id = interp.process_buffer_id(process_id);
+    // The process buffer may have been killed before straggler output is
+    // delivered (epg-reset kills it right after completion); GNU discards
+    // such output rather than erroring.
+    let target_buffer_id = interp
+        .process_buffer_id(process_id)
+        .filter(|buffer_id| interp.get_buffer_by_id(*buffer_id).is_some());
     if let Some(filter) = interp.process_filter(process_id) {
         let saved_buffer_id = interp.current_buffer_id();
         let switched = target_buffer_id.is_some_and(|buffer_id| buffer_id != saved_buffer_id);

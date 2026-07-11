@@ -19,6 +19,18 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2765/7080: viper (2747..2751, 5/5), env
+  (2752..2754), epg-config (2755..2758), epg (2759..2765, 7/7) all
+  pass; 130-file prefix sweep (prefix-files15.txt) is the gate.
+  Highlights (full detail in the continuation doc): emulation-mode-map-
+  alists in the active keymaps; GNU undo-list model (Insert = (BEG .
+  END), primitive-undo/undo-more ports, buffer-undo-list setq rebuilds
+  the native list, per-command boundaries in the kbd macro loop);
+  search COUNT; process pipe tail-draining + sleep-for pumping +
+  raw-byte process-send-string encoding (gpg); shell-command output
+  capture.
+- NEXT: erc series (2766+; erc-button needs `emacs-build-time` at
+  load). Milestone 3000 sits inside the erc series.
 - Verified through selector 2746/7080: testcover (2670..2700, 31/31),
   text-property-search (2701..2720), thunk (2721..2729), timer
   (2730..2734), track-changes (2735), unsafep (2736..2740), vtable
