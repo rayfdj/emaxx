@@ -45,8 +45,12 @@ pub(super) fn handles(name: &str) -> bool {
             | "display-graphic-p"
             | "display-supports-face-attributes-p"
             | "display-images-p"
+            | "display-color-p"
+            | "display-grayscale-p"
+            | "display-color-cells"
             | "window-system"
             | "frame-parameter"
+            | "frame-parameters"
             | "set-frame-parameter"
             | "char-displayable-p"
             | "frame-width"
@@ -460,8 +464,15 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "sit-for" => {
-            need_arg_range(name, args, 0, 2)?;
-            std::thread::sleep(wait_duration(args)?);
+            need_arg_range(name, args, 0, 3)?;
+            // GNU: (sit-for SECONDS &optional NODISP), with the obsolete
+            // (sit-for SECONDS MILLISEC NODISP) form still accepted when
+            // MILLISEC is a number — a non-numeric second arg is NODISP.
+            let duration_args = match args.get(1) {
+                Some(Value::Integer(_) | Value::Float(_)) => args.get(0..2).unwrap_or(args),
+                _ => args.get(0..1).unwrap_or(args),
+            };
+            std::thread::sleep(wait_duration(duration_args)?);
             interp.drive_threads(env, true)?;
             Ok(Value::T)
         }
@@ -820,6 +831,9 @@ pub(super) fn call(
 
         // ── Display stubs ──
         "display-graphic-p" | "display-images-p" | "window-system" => Ok(Value::Nil),
+        // Batch sessions have no color support (GNU: nil / 0).
+        "display-color-p" | "display-grayscale-p" => Ok(Value::Nil),
+        "display-color-cells" => Ok(Value::Integer(0)),
         // emaxx is a batch/TTY display: no face-attribute display support
         // (rmc.el underlines the shortcut key only on graphical terminals).
         "display-supports-face-attributes-p" => {
@@ -842,6 +856,43 @@ pub(super) fn call(
         "set-frame-parameter" => {
             need_args(name, args, 3)?;
             Ok(args[2].clone())
+        }
+        "frame-parameters" => {
+            // Terminal frame parameters, mirroring GNU's --batch alist for
+            // the entries emaxx models; unspecified entries are omitted.
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::list([
+                Value::cons(Value::Symbol("tab-bar-lines".into()), Value::Integer(0)),
+                Value::cons(Value::Symbol("menu-bar-lines".into()), Value::Integer(1)),
+                Value::cons(Value::Symbol("modeline".into()), Value::T),
+                Value::cons(
+                    Value::Symbol("width".into()),
+                    Value::Integer(interp.frame_width()),
+                ),
+                Value::cons(
+                    Value::Symbol("height".into()),
+                    Value::Integer(interp.frame_height()),
+                ),
+                Value::cons(Value::Symbol("name".into()), Value::String("F1".into())),
+                Value::cons(Value::Symbol("font".into()), Value::String("tty".into())),
+                Value::cons(
+                    Value::Symbol("background-color".into()),
+                    Value::String("unspecified-bg".into()),
+                ),
+                Value::cons(
+                    Value::Symbol("foreground-color".into()),
+                    Value::String("unspecified-fg".into()),
+                ),
+                Value::cons(
+                    Value::Symbol("background-mode".into()),
+                    Value::Symbol("dark".into()),
+                ),
+                Value::cons(
+                    Value::Symbol("display-type".into()),
+                    Value::Symbol("mono".into()),
+                ),
+                Value::cons(Value::Symbol("minibuffer".into()), Value::T),
+            ]))
         }
         "char-displayable-p" => {
             need_args(name, args, 1)?;

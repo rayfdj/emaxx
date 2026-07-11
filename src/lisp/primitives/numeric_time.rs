@@ -984,11 +984,10 @@ pub(crate) fn exact_time_to_scaled_pair(
     if hz <= &BigInt::zero() {
         return Err(LispError::Signal("Invalid time resolution".into()));
     }
+    // GNU rounds toward negative infinity when the target clock cannot
+    // represent the time exactly ((time-convert '(1 . 3) 2) => (0 . 2)).
     let scaled = &time.ticks * hz;
-    let (ticks, remainder) = floor_div_mod(&scaled, &time.hz);
-    if !remainder.is_zero() {
-        return Err(LispError::Signal("Time conversion lost precision".into()));
-    }
+    let (ticks, _) = floor_div_mod(&scaled, &time.hz);
     Ok(Value::cons(
         normalize_bigint_value(ticks),
         normalize_bigint_value(hz.clone()),
@@ -1802,13 +1801,42 @@ pub(crate) fn call_time_builtin(
             need_args(name, args, 2)?;
             let left = exact_time_from_value(interp, &args[0], &now)?;
             let right = exact_time_from_value(interp, &args[1], &now)?;
-            let ticks = if name == "time-add" {
-                left.ticks.clone() * &right.hz + right.ticks.clone() * &left.hz
+            let subtract = name == "time-subtract";
+            // GNU time_arith: with equal clocks the ticks combine directly
+            // and HZ is preserved (no fraction reduction); with different
+            // clocks the result is LO/HI with LO = db2*na OP da2*nb and
+            // HI = da2*db2*g (g = gcd of the clocks), reduced only by
+            // gcd(LO, da2*db2) — timer-tests compares the cons with `equal'.
+            let result = if left.hz == right.hz {
+                let ticks = if subtract {
+                    left.ticks.clone() - &right.ticks
+                } else {
+                    left.ticks.clone() + &right.ticks
+                };
+                ExactTimeValue {
+                    ticks,
+                    hz: left.hz.clone(),
+                }
             } else {
-                left.ticks.clone() * &right.hz - right.ticks.clone() * &left.hz
+                let g = bigint_gcd(left.hz.clone(), right.hz.clone());
+                let da2 = left.hz.clone() / &g;
+                let db2 = right.hz.clone() / &g;
+                let lo = if subtract {
+                    db2.clone() * &left.ticks - da2.clone() * &right.ticks
+                } else {
+                    db2.clone() * &left.ticks + da2.clone() * &right.ticks
+                };
+                let hi = da2.clone() * &db2 * &g;
+                let g2 = bigint_gcd(lo.clone(), da2 * db2);
+                ExactTimeValue {
+                    ticks: lo / &g2,
+                    hz: hi / g2,
+                }
             };
-            let hz = left.hz.clone() * right.hz.clone();
-            Ok(exact_time_to_value(&exact_time_value(ticks, hz)?))
+            if result.hz <= BigInt::zero() {
+                return Err(LispError::Signal("Invalid time resolution".into()));
+            }
+            Ok(exact_time_to_value(&result))
         }
         "time-equal-p" => {
             need_args(name, args, 2)?;

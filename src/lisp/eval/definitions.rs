@@ -967,6 +967,33 @@ impl Interpreter {
                 })?;
             return Ok(value);
         }
+        // Unnamed `:type list' structs live in plain lists: replace the car of
+        // the slot's cons cell in place.
+        if matches!(object, Value::Cons(_, _))
+            && self
+                .get_symbol_property(&expected_type, "emaxx-struct-sequence-type")
+                .and_then(|kind| kind.as_symbol().ok().map(str::to_string))
+                .as_deref()
+                == Some("list")
+        {
+            let mut current = object.clone();
+            for _ in 0..slot_index {
+                let Value::Cons(_, cdr) = current else {
+                    return Err(LispError::Signal(format!(
+                        "Struct slot out of range: {slot_index}"
+                    )));
+                };
+                let next = cdr.borrow().clone();
+                current = next;
+            }
+            let Value::Cons(car, _) = &current else {
+                return Err(LispError::Signal(format!(
+                    "Struct slot out of range: {slot_index}"
+                )));
+            };
+            *car.borrow_mut() = value.clone();
+            return Ok(value);
+        }
         let Value::Record(id) = object.clone() else {
             return Err(wrong_type_argument(&predicate, object));
         };
@@ -2570,6 +2597,13 @@ impl Interpreter {
                 make_items.push(Value::list([
                     Value::Symbol("quote".into()),
                     Value::Symbol("vector".into()),
+                ]));
+            } else if list_backed && !struct_named {
+                // GNU stores unnamed `:type list' structs as plain lists
+                // (testcover walks edebug--form-data entries with `car').
+                make_items.push(Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol("list".into()),
                 ]));
             }
             let make_form = Value::list(make_items);

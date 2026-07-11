@@ -552,11 +552,15 @@ pub(super) fn call(
             } else {
                 interp.current_buffer_id()
             };
-            Ok(if interp.buffer_local_value(buffer_id, &symbol).is_some() {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            Ok(
+                if interp.buffer_local_value(buffer_id, &symbol).is_some()
+                    || is_always_buffer_local_builtin(&symbol)
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "local-variable-if-set-p" => {
             need_arg_range(name, args, 1, 2)?;
@@ -908,6 +912,34 @@ pub(super) fn call(
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
     }
+}
+
+/// GNU's DEFVAR_PER_BUFFER variables whose buffer_local_flags slot is -1:
+/// they are buffer-local in every buffer, so `local-variable-p' is always t
+/// (unsafep counts a setq of these as safe).
+fn is_always_buffer_local_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "buffer-file-name"
+            | "default-directory"
+            | "buffer-backed-up"
+            | "buffer-saved-size"
+            | "buffer-auto-save-file-name"
+            | "buffer-read-only"
+            | "major-mode"
+            | "local-minor-modes"
+            | "mode-name"
+            | "buffer-undo-list"
+            | "mark-active"
+            | "point-before-scroll"
+            | "buffer-file-truename"
+            | "buffer-invisibility-spec"
+            | "buffer-file-format"
+            | "buffer-auto-save-file-format"
+            | "buffer-display-count"
+            | "buffer-display-time"
+            | "enable-multibyte-characters"
+    )
 }
 
 fn is_special_form_name(name: &str) -> bool {

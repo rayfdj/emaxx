@@ -18,6 +18,53 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2746/7080: `testcover-tests.el' (2670..2700,
+  31/31), `text-property-search-tests.el' (2701..2720),
+  `thunk-tests.el' (2721..2729), `timer-tests.el' (2730..2734),
+  `track-changes-tests.el' (2735), `unsafep-tests.el' (2736..2740),
+  `vtable-tests.el' (2741..2742), `warnings-tests.el' (2743..2746) all
+  pass; 126-file prefix sweep (prefix-files14.txt) on frozen binaries
+  is the gate.  Load-bearing for this batch:
+  - cl-defstruct `:type list' (unnamed) constructs PLAIN LISTS like GNU
+    (emaxx-struct-make 'list mode; setf writes the nth car in place,
+    gated on the struct's emaxx-struct-sequence-type) — edebug's
+    edebug--form-data entries are walked with `car' by testcover.
+  - `equal' on closures now compares the captured bindings the body
+    references (collect_free_symbol_candidates + lookup_captured_binding
+    in values.rs): textually identical lambdas stay equal (nadvice)
+    while closures over different values differ (testcover 1value).
+  - `function-get' follows defalias chains ((function-get 'not
+    'side-effect-free) reads null's — unsafep); `(defalias 'not #'null)'
+    and `(put 'format-alist 'risky-local-variable t)' mirror the GNU
+    preloads.
+  - time-add/time-subtract use GNU's time_arith reduction (same hz →
+    ticks combine, hz kept; different hz → LO/HI reduced only by
+    gcd(LO, da2*db2)); time-convert with integer HZ floors instead of
+    signaling; sit-for accepts (SECONDS NODISP);
+    timer-next-integral-multiple-of-time ported (timer-tests bug#33071).
+  - insert-file-contents runs before/after-change-functions (both the
+    REPLACE wipe and the insertion) — track-changes' revert sync.
+    Because inserts now go through insert_text_with_hooks, the
+    supersession check respects a let-bound nil `buffer-file-name'
+    (GNU gates the conflict prompt on the Lisp value; auto-revert's
+    tail handler binds it to nil while appending).  autorevert-tests
+    REGRESSES to a hard FAIL without that guard.
+  - local-variable-p returns t for GNU's always-buffer-local
+    DEFVAR_PER_BUFFER set (is_always_buffer_local_builtin) — unsafep
+    treats setq of buffer-display-count/mark-active as safe.
+  - recent-keys (empty vector), display-color-p/grayscale-p (nil),
+    display-color-cells (0), frame-parameters (terminal alist).
+  - simple_compat: 1value/noreturn macros, backtrace-frames,
+    risky-local-variable-p, load-library, add-to-ordered-list,
+    add-to-history, deactivate-input-method + input-method state vars,
+    next-line-add-newlines, scroll-step/-conservatively/-margin,
+    global-mode-string, mark-even-if-inactive, emulation-mode-map-alists,
+    initial-major-mode, abbrev-mode, auto-fill-function, beep alias.
+  - NEXT WALL: `viper-tests.el' (2747..2751) — loads now and
+    viper-test-fix passes; the 4 undo tests (viper-test-undo-1..4)
+    fail: they drive vi-style editing via execute-kbd-macro and check
+    undo grouping semantics.  After viper: env/epg-config already pass;
+    erc series follows.
 - Verified through selector 2669/7080: `shortdoc-tests.el' (2613..2617,
   5/5), `subr-x-tests.el' (2618..2664, 47/47), `syntax-tests.el' (2665),
   `tabulated-list-tests.el' (2666..2669, 4/4) all pass; 118-file prefix

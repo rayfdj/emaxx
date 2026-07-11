@@ -293,16 +293,81 @@ pub(crate) fn values_equal_recursive(
             values_equal_recursive(interp, &a_car, &b_car, seen)
                 && values_equal_recursive(interp, &a_cdr, &b_cdr, seen)
         }
-        // GNU compares closures structurally, and its lexical closures
-        // capture nothing unless referenced; emaxx lambdas over-capture, so
-        // `equal' ignores the environment (two textually identical lambdas
-        // evaluated separately compare equal — nadvice's advice--member-p
-        // relies on it).
-        (Value::Lambda(left_params, left_body, _), Value::Lambda(right_params, right_body, _)) => {
-            left_params == right_params && left_body == right_body
+        // GNU compares closures structurally: two closures are `equal' when
+        // their code matches AND their captured environments match.  GNU's
+        // lexical closures capture only the variables the body references;
+        // emaxx lambdas over-capture whole frames, so compare just the
+        // bindings the body actually mentions (two textually identical
+        // lambdas evaluated separately still compare equal — nadvice's
+        // advice--member-p relies on it — while closures over differing
+        // captured values do not — testcover's 1value detection relies on
+        // THAT).
+        (
+            Value::Lambda(left_params, left_body, left_env),
+            Value::Lambda(right_params, right_body, right_env),
+        ) => {
+            if left_params != right_params || left_body != right_body {
+                return false;
+            }
+            let left_ptr = Rc::as_ptr(left_env) as usize;
+            let right_ptr = Rc::as_ptr(right_env) as usize;
+            if left_ptr == right_ptr || !seen.insert((left_ptr, right_ptr)) {
+                return true;
+            }
+            let mut symbols = HashSet::new();
+            for form in right_body {
+                collect_free_symbol_candidates(form, &mut symbols);
+            }
+            for param in right_params {
+                symbols.remove(param.as_str());
+            }
+            symbols.iter().all(|symbol| {
+                match (
+                    lookup_captured_binding(left_env, symbol),
+                    lookup_captured_binding(right_env, symbol),
+                ) {
+                    (None, None) => true,
+                    (Some(left_value), Some(right_value)) => {
+                        values_equal_recursive(interp, &left_value, &right_value, seen)
+                    }
+                    _ => false,
+                }
+            })
         }
         _ => left == right,
     }
+}
+
+/// Collect symbols occurring in FORM that could be free-variable references.
+/// Quoted data is skipped (a quoted symbol is not a variable reference);
+/// everything else is walked conservatively.
+fn collect_free_symbol_candidates(form: &Value, symbols: &mut HashSet<String>) {
+    match form {
+        Value::Symbol(name) => {
+            symbols.insert(name.clone());
+        }
+        Value::Cons(car, cdr) => {
+            if matches!(&*car.borrow(), Value::Symbol(head) if head == "quote") {
+                return;
+            }
+            collect_free_symbol_candidates(&car.borrow(), symbols);
+            collect_free_symbol_candidates(&cdr.borrow(), symbols);
+        }
+        _ => {}
+    }
+}
+
+/// Look up SYMBOL's innermost binding in a lambda's captured environment.
+fn lookup_captured_binding(env: &crate::lisp::types::SharedEnv, symbol: &str) -> Option<Value> {
+    let frames = env.borrow();
+    for frame in frames.iter().rev() {
+        for (name, value) in frame.iter().rev() {
+            if name == symbol {
+                return Some(value.clone());
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
