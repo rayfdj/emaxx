@@ -43,6 +43,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "preceding-char"
             | "buffer-last-name"
             | "display-graphic-p"
+            | "display-supports-face-attributes-p"
             | "display-images-p"
             | "window-system"
             | "frame-parameter"
@@ -120,6 +121,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "window-parameters"
             | "walk-windows"
             | "selected-frame"
+            | "window-frame"
             | "framep"
             | "frame-terminal"
             | "frame-list"
@@ -817,6 +819,12 @@ pub(super) fn call(
 
         // ── Display stubs ──
         "display-graphic-p" | "display-images-p" | "window-system" => Ok(Value::Nil),
+        // emaxx is a batch/TTY display: no face-attribute display support
+        // (rmc.el underlines the shortcut key only on graphical terminals).
+        "display-supports-face-attributes-p" => {
+            need_arg_range(name, args, 1, 2)?;
+            Ok(Value::Nil)
+        }
         "frame-parameter" => {
             need_arg_range(name, args, 1, 2)?;
             let parameter = args
@@ -1596,6 +1604,11 @@ pub(super) fn call(
             Ok(Value::Nil)
         }
         "selected-frame" => Ok(Value::Symbol("frame".into())),
+        "window-frame" => {
+            // emaxx has a single frame; any live window belongs to it.
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::Symbol("frame".into()))
+        }
         "framep" => {
             need_args(name, args, 1)?;
             Ok(

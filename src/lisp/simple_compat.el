@@ -6103,3 +6103,48 @@ Point in BUFFER will be placed after the inserted text."
   (let ((current (current-buffer)))
     (with-current-buffer buffer
       (insert-buffer-substring current start end))))
+
+;; tabify.el (verbatim): pp's code-format tests untabify their output.
+(defun untabify (start end &optional _arg)
+  "Convert all tabs in region to multiple spaces, preserving columns.
+If called interactively with prefix ARG, convert for the entire
+buffer.
+
+Called non-interactively, the region is specified by arguments
+START and END, rather than by the position of point and mark.
+The variable `tab-width' controls the spacing of tab stops."
+  (interactive (if current-prefix-arg
+		   (list (point-min) (point-max) current-prefix-arg)
+		 (list (region-beginning) (region-end) nil)))
+  (let ((c (current-column)))
+    (save-excursion
+      (save-restriction
+        (narrow-to-region (point-min) end)
+        (goto-char start)
+        (while (search-forward "\t" nil t)      ; faster than re-search
+          (forward-char -1)
+          (let ((tab-beg (point))
+                (indent-tabs-mode nil)
+                column)
+            (skip-chars-forward "\t")
+            (setq column (current-column))
+            (delete-region tab-beg (point))
+            (indent-to column)))))
+    (move-to-column c)))
+
+;; subr.el: whether the current command should use a dialog box.  The
+;; emaxx batch harness is always a TTY, so the mouse/menu branches never
+;; fire; the defvars keep the guards valid.
+(defvar from--tty-menu-p nil
+  "Non-nil means the current command was invoked via a TTY menu.")
+(defvar use-dialog-box-override nil
+  "If non-nil, `use-dialog-box-p' always returns non-nil.")
+(defun use-dialog-box-p ()
+  "Return non-nil if the current command should prompt the user via a dialog box."
+  (or use-dialog-box-override
+      (and last-input-event                 ; not during startup
+           (or (consp last-nonmenu-event)   ; invoked by a mouse event
+               (and (null last-nonmenu-event)
+                    (consp last-input-event))
+               from--tty-menu-p)            ; invoked via TTY menu
+           use-dialog-box)))

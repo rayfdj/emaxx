@@ -18,6 +18,24 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2523/7080: `pp-tests.el' (2488..2491),
+  `range-tests.el' (2492), `regexp-opt-tests.el' (2493..2494),
+  `ring-tests.el' (2495..2518), `rmc-tests.el' (2519..2523) all pass;
+  see docs/compatibility-goal.md 2523 entry.  Load-bearing:
+  prin1 escapes only " and \ by default (raw newlines/tabs);
+  looking-back prefers latest non-empty match, match-data based at
+  haystack origin; insert-buffer-substring nil bounds; GNU-exact
+  regexp-quote (native regexp-opt override dropped); lambda
+  doc-string-elt 2; simple_compat untabify/use-dialog-box-p; native
+  window-frame + display-supports-face-attributes-p (nil).
+- NEXT: `rx-tests.el' (2524..2559, 36 selectors) — the native `rx'
+  macro is missing many GNU atoms (anychar/anything, category,
+  intersection, submatch/group, eval, regex/regexp, seq nesting,
+  repeat forms, rx-let/rx-define, charset unions).  Likely the biggest
+  lever is to load GNU rx.el over the native macro the way pcase.el was
+  adopted, or port the missing atoms.  Run `cargo run --release --bin
+  compat-harness -- run --scope all --selector check-all --file
+  test/lisp/emacs-lisp/rx-tests.el` to see the current state.
 - Verified through selector 2487/7080: `pcase-tests.el' (2475..2487)
   passes; 105-file prefix sweep (prefix-files10.txt) on frozen binaries
   is the gate.  Batch details in docs/compatibility-goal.md 2487 entry
@@ -824,12 +842,13 @@ Commit messages must include:
 
 ## Current Batch Context
 
-The `Compat 2487/7080` run completed pcase-tests.el by handing the
-pcase family to GNU pcase.el (lazy ensure-load with native fallback),
-switching the reader to GNU's raw quote symbols, preserving head
-symbols in nested backquote rebuilds, enforcing macro required-arity,
-porting byte-opt.el's side-effect-free/pure property tables plus
-how-many/count-matches, and teaching native cl-typep GNU range types
-and unknown-type signaling.  The 105-file verified-prefix sweep
-(prefix-files10.txt) is the gate.  The next agent continues from
-selector 2488 in compat/oracle_tests_all.txt toward 3000.
+The `Compat 2523/7080` run cleared pp-tests, range-tests,
+regexp-opt-tests, ring-tests and rmc-tests: prin1 default escaping
+(raw newlines), looking-back non-empty-match preference + match-data
+base fix, insert-buffer-substring nil bounds, GNU-exact regexp-quote
+(dropping the native regexp-opt override), lambda doc-string-elt, and
+simple_compat untabify/use-dialog-box-p plus native window-frame and
+display-supports-face-attributes-p.  The 111-file verified-prefix
+sweep (prefix-files11.txt) is the gate.  The next agent continues with
+`test/lisp/emacs-lisp/rx-tests.el' (selectors 2524..2559) — the native
+rx macro needs many GNU atoms; consider adopting GNU rx.el.
