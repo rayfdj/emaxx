@@ -2296,7 +2296,10 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;
             let input = string_text(&args[1])?;
-            let (stdout, stderr) = interp.process_send_string(process_id, input.as_bytes())?;
+            // GNU encodes eight-bit (raw byte) characters as their single
+            // byte value; epg pipes binary signatures to gpg this way.
+            let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
+            let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
             let mut output = String::from_utf8_lossy(&stdout).into_owned();
             output.push_str(&String::from_utf8_lossy(&stderr));
             deliver_process_output(interp, process_id, &output, env)?;
@@ -2428,8 +2431,38 @@ pub(super) fn call(
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
         "shell-command" => {
-            need_args(name, args, 1)?;
+            need_arg_range(name, args, 1, 3)?;
             let command = string_text(&args[0])?;
+            // GNU inserts the output into OUTPUT-BUFFER when it is t (or a
+            // buffer): shell-command-to-string relies on the current buffer
+            // receiving stdout.
+            let capture = args.get(1).is_some_and(|value| !value.is_nil());
+            if capture {
+                let output = Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .output()
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                let target_buffer_id = match args.get(1) {
+                    Some(Value::T) => Some(interp.current_buffer_id()),
+                    Some(value @ (Value::Buffer(..) | Value::String(_))) => {
+                        interp.resolve_buffer_id(value).ok()
+                    }
+                    _ => Some(interp.current_buffer_id()),
+                };
+                let text = String::from_utf8_lossy(&output.stdout).into_owned();
+                if let Some(buffer_id) = target_buffer_id {
+                    let saved = interp.current_buffer_id();
+                    if buffer_id != saved {
+                        interp.switch_to_buffer_id(buffer_id)?;
+                    }
+                    interp.insert_current_buffer(&text);
+                    if buffer_id != saved {
+                        interp.switch_to_buffer_id(saved)?;
+                    }
+                }
+                return Ok(Value::Integer(output.status.code().unwrap_or(1) as i64));
+            }
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(&command)

@@ -6,9 +6,11 @@ pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
         .iter()
         .rev()
         .map(|entry| match entry {
-            crate::buffer::UndoEntry::Insert { pos, len } => {
-                Value::cons(Value::Integer(*pos as i64), Value::Integer(*len as i64))
-            }
+            // GNU records an insertion as (BEG . END).
+            crate::buffer::UndoEntry::Insert { pos, len } => Value::cons(
+                Value::Integer(*pos as i64),
+                Value::Integer((*pos + *len) as i64),
+            ),
             crate::buffer::UndoEntry::Delete { pos, text, .. } => {
                 Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
             }
@@ -3163,6 +3165,34 @@ pub(crate) fn active_command_keymaps(
     }
     if overriding {
         return Ok(maps);
+    }
+    // GNU consults `emulation-mode-map-alists' before the minor-mode maps.
+    // Each element is either an alist of (VAR . KEYMAP) entries or a symbol
+    // whose value is such an alist (viper registers viper--key-maps this way);
+    // entries whose VAR is currently non-nil contribute their keymap.
+    if let Some(alists) = interp.lookup_var("emulation-mode-map-alists", env) {
+        for element in alists.to_vec().unwrap_or_default() {
+            let alist = match &element {
+                Value::Symbol(variable) => interp.lookup_var(variable, env).unwrap_or(Value::Nil),
+                other => other.clone(),
+            };
+            for entry in alist.to_vec().unwrap_or_default() {
+                let Value::Cons(mode, map) = entry else {
+                    continue;
+                };
+                let Value::Symbol(mode_name) = mode.borrow().clone() else {
+                    continue;
+                };
+                let map_value = map.borrow().clone();
+                if interp
+                    .lookup_var(&mode_name, env)
+                    .is_some_and(|value| value.is_truthy())
+                    && is_keymap_value(interp, &map_value)
+                {
+                    maps.push(map_value);
+                }
+            }
+        }
     }
     let mut overridden_modes = Vec::new();
     if let Some(alist) = interp.lookup_var("minor-mode-overriding-map-alist", env) {

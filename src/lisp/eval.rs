@@ -523,6 +523,11 @@ struct ProcessState {
     program: Option<String>,
     argv: Vec<String>,
     runtime: Option<RunningProcess>,
+    /// Output drained from the pipes when the child's exit was noticed
+    /// before the pump ran; delivered by the next poll so no tail output
+    /// is lost (epg reads gpg's final status lines this way).
+    pending_stdout: Vec<u8>,
+    pending_stderr: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -1894,10 +1899,11 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
     match value {
         Value::Nil => crate::buffer::UndoEntry::Boundary,
         Value::Cons(_, _) => match value.cons_values() {
-            Some((Value::Integer(pos), Value::Integer(len))) if pos >= 0 && len >= 0 => {
+            // GNU records an insertion as (BEG . END).
+            Some((Value::Integer(beg), Value::Integer(end))) if beg >= 0 && end >= beg => {
                 crate::buffer::UndoEntry::Insert {
-                    pos: pos as usize,
-                    len: len as usize,
+                    pos: beg as usize,
+                    len: (end - beg) as usize,
                 }
             }
             Some((Value::String(text), Value::Integer(pos))) if pos >= 0 => {
@@ -1929,9 +1935,11 @@ fn combined_undo_display(entries: &[crate::buffer::UndoEntry]) -> Value {
 
 fn undo_entry_display(entry: &crate::buffer::UndoEntry) -> Value {
     match entry {
-        crate::buffer::UndoEntry::Insert { pos, len } => {
-            Value::cons(Value::Integer(*pos as i64), Value::Integer(*len as i64))
-        }
+        // GNU records an insertion as (BEG . END).
+        crate::buffer::UndoEntry::Insert { pos, len } => Value::cons(
+            Value::Integer(*pos as i64),
+            Value::Integer((*pos + *len) as i64),
+        ),
         crate::buffer::UndoEntry::Delete { pos, text, .. } => {
             Value::cons(Value::String(text.clone()), Value::Integer(*pos as i64))
         }

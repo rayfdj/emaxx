@@ -18,6 +18,43 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2765/7080: `viper-tests.el' (2747..2751,
+  5/5), `env-tests.el' (2752..2754), `epg-config-tests.el' (2755..2758),
+  `epg-tests.el' (2759..2765, 7/7) all pass; 130-file prefix sweep
+  (prefix-files15.txt) on frozen binaries is the gate.  Load-bearing:
+  - active_command_keymaps consults `emulation-mode-map-alists'
+    (symbols resolving to (VAR . KEYMAP) alists — viper's modal maps).
+  - kbd macro loop: function-key symbol events described as "<escape>"
+    (angle brackets) and translated to their ASCII equivalents via GNU's
+    local-function-key-map defaults when unbound; per-command undo
+    boundaries (self-insert runs amalgamated); `last-command' takes the
+    post-command value of `this-command' (viper-undo-more rewrites it);
+    interactive readers consume kbd-macro events when
+    unread-command-events is empty (viper's `F' target char).
+  - GNU undo-list model: Insert entries render/parse as (BEG . END);
+    marker riders live inline in the undo list (push_undo_meta appends
+    Opaque entries; replay skips (MARKER . N)/(t . TIME) riders); setq
+    of buffer-undo-list REBUILDS the native list (round-trip);
+    primitive-undo + undo-more are GNU simple.el ports in
+    simple_compat.el, as are prepare/activate/accept/cancel-change-group;
+    undo-amalgamate-change-group is length-based (the exposed list is
+    rebuilt per read, so GNU's eq/setcar structure-sharing tricks
+    cannot work — see the docstring).
+  - search-forward/backward honor COUNT (negative = opposite direction,
+    viper-find-char).
+  - Process machinery: refresh_process_state drains exiting children's
+    pipes into pending buffers delivered by the next pump (gpg's final
+    status lines); sleep-for pumps process output (GNU waits do);
+    deliver_process_output drops output for killed buffers;
+    process-send-string encodes via encode_utf8_bytes so raw-byte chars
+    are single bytes (binary signatures to gpg's stdin).
+  - shell-command captures stdout into OUTPUT-BUFFER (t = current);
+    shell-command-to-string port (epg's gnupg-version skip check —
+    gpg 2.4.4 is "buggy" upstream so epg-roundtrip-1/2 SKIP to match
+    the oracle).
+  - NEXT: erc series (2766+): erc-button-tests loads fail on
+    void `emacs-build-time'; many erc files ahead — 3000 sits inside
+    the erc series.
 - Verified through selector 2746/7080: `testcover-tests.el' (2670..2700,
   31/31), `text-property-search-tests.el' (2701..2720),
   `thunk-tests.el' (2721..2729), `timer-tests.el' (2730..2734),

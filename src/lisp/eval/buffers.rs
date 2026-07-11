@@ -331,10 +331,20 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            crate::buffer::UndoEntry::Opaque(value) => Err(LispError::Signal(format!(
-                "Unrecognized entry in undo list {}",
-                render_undo_value(value)
-            ))),
+            crate::buffer::UndoEntry::Opaque(value) => {
+                // Marker adjustments and modtime records are bookkeeping
+                // riders on their neighboring entries, not undoable changes
+                // themselves; GNU consumes or ignores them.
+                if let Some((car, _)) = value.cons_values()
+                    && matches!(car, Value::Marker(_) | Value::T)
+                {
+                    return Ok(());
+                }
+                Err(LispError::Signal(format!(
+                    "Unrecognized entry in undo list {}",
+                    render_undo_value(value)
+                )))
+            }
             crate::buffer::UndoEntry::Boundary => Ok(()),
         }
     }

@@ -905,7 +905,10 @@ impl Buffer {
     }
 
     pub fn push_undo_meta(&mut self, entry: Value) {
-        self.undo_meta.push(entry);
+        // Meta entries (marker adjustments, ...) live in the main undo list
+        // as opaque riders so the Lisp `buffer-undo-list' view keeps
+        // chronological order (change groups reason about it by position).
+        self.undo_list.push(UndoEntry::Opaque(entry));
     }
 
     pub fn push_undo_entry(&mut self, entry: UndoEntry) {

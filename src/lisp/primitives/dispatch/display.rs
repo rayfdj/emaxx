@@ -460,6 +460,10 @@ pub(super) fn call(
         "sleep-for" => {
             need_arg_range(name, args, 1, 2)?;
             std::thread::sleep(wait_duration(args)?);
+            // GNU processes subprocess output whenever it waits; epg relies
+            // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
+            // flush gpg's final status lines through the process filter.
+            crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
             interp.drive_threads(env, true)?;
             Ok(Value::Nil)
         }
