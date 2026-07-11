@@ -6241,3 +6241,556 @@ lines."
               (push (substring string start) lines))
             (setq start (length string)))))
       (nreverse lines))))
+
+;;; shortdoc.el support: functions listed in the built-in documentation
+;;; groups so `shortdoc-all-functions-fboundp' passes and the groups
+;;; display without error.  Ports are verbatim from the GNU sources
+;;; (subr.el, files.el, simple.el) except where a self-contained
+;;; equivalent avoids dragging preloaded internals.
+
+;; `rx-let-eval' is provided by GNU rx.el, which emaxx loads lazily on the
+;; first rx form.  Mirror GNU's loaddefs autoload so it is `fboundp' before
+;; that first use (e.g. for `shortdoc-all-functions-fboundp'); an actual call
+;; loads rx.el via the native trigger.
+(autoload 'rx-let-eval "rx" "Evaluate BODY with local rx-definitions." nil 'macro)
+
+(defun make-separator-line (&optional length)
+  "Make a string appropriate for usage as a visual separator line.
+This uses the `separator-line' face.
+
+If LENGTH is nil, use the window width."
+  (if (or (display-graphic-p)
+          (display-supports-face-attributes-p '(:underline t)))
+      (if length
+          (concat (propertize (make-string length ?\s) 'face 'separator-line)
+                  "\n")
+        (propertize "\n" 'face '(:inherit separator-line :extend t)))
+    (concat (propertize (make-string (or length (1- (window-width))) ?-)
+                        'face 'separator-line)
+            "\n")))
+
+(defun string-or-null-p (object)
+  "Return t if OBJECT is a string or nil.
+Otherwise, return nil."
+  (declare (pure t) (side-effect-free error-free))
+  (or (stringp object) (null object)))
+
+(defun string-greaterp (string1 string2)
+  "Return non-nil if STRING1 is greater than STRING2 in lexicographic order.
+Case is significant.
+Symbols are also allowed; their print names are used instead."
+  (declare (pure t) (side-effect-free t))
+  (string-lessp string2 string1))
+
+(defun assoc-default (key alist &optional test default)
+  "Find object KEY in a pseudo-alist ALIST.
+ALIST is a list of conses or objects.  Each element
+ (or the element's car, if it is a cons) is compared with KEY by
+ calling TEST, with two arguments: (i) the element or its car,
+ and (ii) KEY.
+If that is non-nil, the element matches; then `assoc-default'
+ returns the element's cdr, if it is a cons, or DEFAULT if the
+ element is not a cons.
+
+If no element matches, the value is nil.
+If TEST is omitted or nil, `equal' is used."
+  (declare (important-return-value t))
+  (let (found (tail alist) value)
+    (while (and tail (not found))
+      (let ((elt (car tail)))
+	(when (funcall (or test #'equal) (if (consp elt) (car elt) elt) key)
+	  (setq found t value (if (consp elt) (cdr elt) default))))
+      (setq tail (cdr tail)))
+    value))
+
+(defun char-uppercase-p (char)
+  "Return non-nil if CHAR is an upper-case character.
+If the Unicode tables are not yet available, e.g. during bootstrap,
+then gives correct answers only for ASCII characters."
+  (cond ((unicode-property-table-internal 'lowercase)
+         (characterp (get-char-code-property char 'lowercase)))
+        ((<= ?A char ?Z))))
+
+(defun split-string-and-unquote (string &optional separator)
+  "Split the STRING into a list of strings.
+It understands Emacs Lisp quoting within STRING, such that
+  (split-string-and-unquote (combine-and-quote-strings strs)) == strs
+The SEPARATOR regexp defaults to \"\\s-+\"."
+  (declare (important-return-value t))
+  (let ((sep (or separator "\\s-+"))
+	(i (string-search "\"" string)))
+    (if (null i)
+	(split-string string sep t)	; no quoting:  easy
+      (append (unless (eq i 0) (split-string (substring string 0 i) sep t))
+	      (let ((rfs (read-from-string string i)))
+		(cons (car rfs)
+		      (split-string-and-unquote (substring string (cdr rfs))
+						sep)))))))
+
+(defun split-string-shell-command (string)
+  "Split STRING (a shell command) into a list of strings.
+General shell syntax, like single and double quoting, as well as
+backslash quoting, is respected."
+  (let ((pos 0) (len (length string)) (args nil) (cur nil) (in-word nil))
+    (while (< pos len)
+      (let ((ch (aref string pos)))
+        (cond
+         ((and (not in-word) (memq ch '(?\s ?\t ?\n)))
+          (setq pos (1+ pos)))
+         ((memq ch '(?\s ?\t ?\n))
+          (push cur args) (setq cur nil in-word nil pos (1+ pos)))
+         ((eq ch ?\')
+          (setq in-word t)
+          (let ((end (or (string-search "'" string (1+ pos)) len)))
+            (setq cur (concat cur (substring string (1+ pos) end))
+                  pos (min len (1+ end)))))
+         ((eq ch ?\")
+          (setq in-word t pos (1+ pos))
+          (while (and (< pos len) (not (eq (aref string pos) ?\")))
+            (if (and (eq (aref string pos) ?\\) (< (1+ pos) len))
+                (setq cur (concat cur (char-to-string (aref string (1+ pos))))
+                      pos (+ pos 2))
+              (setq cur (concat cur (char-to-string (aref string pos)))
+                    pos (1+ pos))))
+          (setq pos (1+ pos)))
+         ((eq ch ?\\)
+          (setq in-word t)
+          (when (< (1+ pos) len)
+            (setq cur (concat cur (char-to-string (aref string (1+ pos))))))
+          (setq pos (+ pos 2)))
+         (t (setq in-word t cur (concat cur (char-to-string ch)) pos (1+ pos))))))
+    (when (or in-word cur) (push (or cur "") args))
+    (nreverse args)))
+
+(defun get-char-property-and-overlay (position prop &optional object)
+  "Like `get-char-property', but with extra overlay information.
+The value is a cons cell.  Its car is the return value of
+`get-char-property' with the same arguments.  Its cdr is the overlay in
+which the property was found, or nil if it was found as a text property
+or not found at all."
+  (let ((overlay nil) (val nil))
+    (unless (stringp object)
+      (let ((buffer (cond ((bufferp object) object)
+                          ((windowp object) (window-buffer object))
+                          (t (current-buffer)))))
+        (with-current-buffer buffer
+          (catch 'done
+            (dolist (ov (overlays-at position))
+              (let ((v (overlay-get ov prop)))
+                (when v (setq val v overlay ov) (throw 'done nil))))))))
+    (if overlay
+        (cons val overlay)
+      (cons (get-char-property position prop object) nil))))
+
+(defun string-glyph-compose (string)
+  "Compose STRING according to the Unicode NFC."
+  (ucs-normalize-NFC-string string))
+
+(defun string-glyph-decompose (string)
+  "Decompose STRING according to the Unicode NFD."
+  (ucs-normalize-NFD-string string))
+
+(defun next-property-change (position &optional object limit)
+  "Return the position of next property change from POSITION.
+Scan forward in OBJECT (a buffer or string, defaulting to the current
+buffer) until the text properties differ from those at POSITION, and
+return that position.  Return nil (or LIMIT if given) if none is found."
+  (let* ((end (cond (limit limit)
+                    ((stringp object) (length object))
+                    (t (point-max))))
+         (initial (text-properties-at position object))
+         (pos position))
+    (setq pos (1+ pos))
+    (while (and (< pos end)
+                (equal (text-properties-at pos object) initial))
+      (setq pos (1+ pos)))
+    (cond ((< pos end) pos)
+          (limit limit)
+          (t nil))))
+
+(defun previous-property-change (position &optional object limit)
+  "Return the position of previous property change from POSITION.
+Scan backward in OBJECT (a buffer or string, defaulting to the current
+buffer) until the text properties differ from those just before
+POSITION, and return that position.  Return nil (or LIMIT if given) if
+none is found."
+  (let* ((start (cond (limit limit)
+                      ((stringp object) 0)
+                      (t (point-min))))
+         (initial (text-properties-at (1- position) object))
+         (pos position))
+    (setq pos (1- pos))
+    (while (and (> pos start)
+                (equal (text-properties-at (1- pos) object) initial))
+      (setq pos (1- pos)))
+    (cond ((> pos start) pos)
+          (limit limit)
+          (t nil))))
+
+(defun file-name-with-extension (filename extension)
+  "Return FILENAME modified to have the specified EXTENSION.
+The extension (in a file name) is the part that begins with the last \".\".
+This function removes any existing extension from FILENAME, and then
+appends EXTENSION to it.
+
+EXTENSION may include the leading dot; if it doesn't, this function
+will provide it.
+
+It is an error if FILENAME or EXTENSION is empty, or if FILENAME
+is in the form of a directory name according to `directory-name-p'."
+  (let ((extn (string-trim-left extension "[.]")))
+    (cond ((string-empty-p filename)
+           (error "Empty filename"))
+          ((string-empty-p extn)
+           (error "Malformed extension: %s" extension))
+          ((directory-name-p filename)
+           (error "Filename is a directory: %s" filename))
+          (t
+           (concat (file-name-sans-extension filename) "." extn)))))
+
+(defun file-name-parent-directory (filename)
+  "Return the directory name of the parent directory of FILENAME.
+If FILENAME is at the root of the filesystem, return nil.
+If FILENAME is relative, it is interpreted to be relative
+to `default-directory', and the result will also be relative."
+  (let* ((expanded-filename (expand-file-name filename))
+         (parent (file-name-directory (directory-file-name expanded-filename))))
+    (cond
+     ((or (null parent)
+          (equal parent expanded-filename))
+      nil)
+     ((not (file-name-absolute-p filename))
+      (file-relative-name parent))
+     (t
+      parent))))
+
+(defsubst file-name-quoted-p (name &optional top)
+  "Whether NAME is quoted with prefix \"/:\".
+If NAME is a remote file name and TOP is nil, check the local part of NAME."
+  (let ((file-name-handler-alist (unless top file-name-handler-alist)))
+    (string-prefix-p "/:" (file-local-name name))))
+
+(defsubst file-name-quote (name &optional top)
+  "Add the quotation prefix \"/:\" to file NAME.
+If NAME is a remote file name and TOP is nil, the local part of
+NAME is quoted.  If NAME is already a quoted file name, NAME is
+returned unchanged."
+  (let ((file-name-handler-alist (unless top file-name-handler-alist)))
+    (if (file-name-quoted-p name top)
+        name
+      (concat (file-remote-p name) "/:" (file-local-name name)))))
+
+(defsubst file-name-unquote (name &optional top)
+  "Remove quotation prefix \"/:\" from file NAME, if any.
+If NAME is a remote file name and TOP is nil, the local part of
+NAME is unquoted."
+  (let* ((file-name-handler-alist (unless top file-name-handler-alist))
+         (localname (file-local-name name)))
+    (when (file-name-quoted-p localname top)
+      (setq
+       localname (if (= (length localname) 2) "/" (substring localname 2))))
+    (concat (file-remote-p name) localname)))
+
+(defun file-modes-char-to-who (char)
+  "Convert CHAR to a numeric bit-mask for extracting mode bits.
+CHAR is in [ugoa] and represents the category of users (Owner, Group,
+Others, or All) for whom to produce the mask."
+  (cond ((eq char ?u) #o4700)
+	((eq char ?g) #o2070)
+	((eq char ?o) #o1007)
+	((eq char ?a) #o7777)
+        (t (error "%c: Bad `who' character" char))))
+
+(defun file-modes-char-to-right (char &optional from)
+  "Convert CHAR to a numeric value of mode bits.
+CHAR is in [rwxXstugo] and represents symbolic access permissions.
+If CHAR is in [Xugo], the value is taken from FROM (or 0 if omitted)."
+  (or from (setq from 0))
+  (cond ((eq char ?r) #o0444)
+	((eq char ?w) #o0222)
+	((eq char ?x) #o0111)
+	((eq char ?s) #o6000)
+	((eq char ?t) #o1000)
+	((eq char ?X) (if (= (logand from #o111) 0) 0 #o0111))
+	((eq char ?u) (let ((uright (logand #o4700 from)))
+		        (+ uright (/ uright #o10) (/ uright #o100))))
+	((eq char ?g) (let ((gright (logand #o2070 from)))
+		        (+ gright (/ gright #o10) (* gright #o10))))
+	((eq char ?o) (let ((oright (logand #o1007 from)))
+		        (+ oright (* oright #o10) (* oright #o100))))
+        (t (error "%c: Bad right character" char))))
+
+(defun file-modes-rights-to-number (rights who-mask &optional from)
+  "Convert a symbolic mode string specification to an equivalent number.
+RIGHTS is the symbolic mode spec, it should match \"([+=-][rwxXstugo]*)+\".
+WHO-MASK is the bit-mask specifying the category of users to which to
+apply the access permissions.  See `file-modes-char-to-who'.
+FROM (or 0 if nil) gives the mode bits on which to base permissions if
+RIGHTS request to add, remove, or set permissions based on existing ones."
+  (let* ((num-rights (or from 0))
+	 (list-rights (string-to-list rights))
+	 (op (pop list-rights)))
+    (while (memq op '(?+ ?- ?=))
+      (let ((num-right 0)
+	    char-right)
+	(while (memq (setq char-right (pop list-rights))
+		     '(?r ?w ?x ?X ?s ?t ?u ?g ?o))
+	  (setq num-right
+		(logior num-right
+			(file-modes-char-to-right char-right num-rights))))
+	(setq num-right (logand who-mask num-right)
+	      num-rights
+	      (cond ((= op ?+) (logior num-rights num-right))
+		    ((= op ?-) (logand num-rights (lognot num-right)))
+		    (t (logior (logand num-rights (lognot who-mask)) num-right)))
+	      op char-right)))
+    num-rights))
+
+(defun file-modes-symbolic-to-number (modes &optional from)
+  "Convert symbolic file modes to numeric file modes.
+MODES is the string to convert, it should match
+\"[ugoa]*([+=-][rwxXstugo]*)+,...\".
+FROM (or 0 if nil) gives the mode bits on which to base permissions."
+  (save-match-data
+    (let ((case-fold-search nil)
+	  (num-modes (or from 0)))
+      (while (/= (string-to-char modes) 0)
+	(if (string-match "^\\([ugoa]*\\)\\([+=-][rwxXstugo]*\\)+\\(,\\|\\)" modes)
+	    (let ((num-who (apply 'logior 0
+				  (mapcar 'file-modes-char-to-who
+					  (match-string 1 modes)))))
+	      (when (= num-who 0)
+		(setq num-who (logior #o7000 (default-file-modes))))
+	      (setq num-modes
+		    (file-modes-rights-to-number (substring modes (match-end 1))
+						 num-who num-modes)
+		    modes (substring modes (match-end 3))))
+	  (error "Parse error in modes near `%s'" (substring modes 0))))
+      num-modes)))
+
+(defun match-substitute-replacement (replacement
+				     &optional fixedcase literal string subexp)
+  "Return REPLACEMENT as it will be inserted by `replace-match'.
+In other words, all back-references in the form `\\&' and `\\N'
+are substituted with actual strings matched by the last search.
+Optional FIXEDCASE, LITERAL, STRING and SUBEXP have the same
+meaning as for `replace-match'."
+  (declare (side-effect-free t))
+  (let ((match (match-string 0 string)))
+    (save-match-data
+      (set-match-data (mapcar (lambda (x)
+                                (if (numberp x) (- x (match-beginning 0)) x))
+                              (match-data t)))
+      (replace-match replacement fixedcase literal match subexp))))
+
+(defun replace-regexp-in-region (regexp replacement &optional start end)
+  "Replace REGEXP with REPLACEMENT in the region from START to END.
+The number of replaced occurrences are returned, or nil if REGEXP
+doesn't exist in the region.
+
+If START is nil, use the current point.  If END is nil, use `point-max'.
+
+Comparisons and replacements are done with fixed case."
+  (if start
+      (when (< start (point-min))
+        (error "Start before start of buffer"))
+    (setq start (point)))
+  (if end
+      (when (> end (point-max))
+        (error "End after end of buffer"))
+    (setq end (point-max)))
+  (save-excursion
+    (goto-char start)
+    (save-restriction
+      (narrow-to-region start end)
+      (let ((matches 0)
+            (case-fold-search nil))
+        (while (re-search-forward regexp nil t)
+          (replace-match replacement t)
+          (setq matches (1+ matches)))
+        (and (not (zerop matches))
+             matches)))))
+
+(defun replace-string-in-region (string replacement &optional start end)
+  "Replace STRING with REPLACEMENT in the region from START to END.
+The number of replaced occurrences are returned, or nil if STRING
+doesn't exist in the region.
+
+If START is nil, use the current point.  If END is nil, use `point-max'.
+
+Comparisons and replacements are done with fixed case."
+  (if start
+      (when (< start (point-min))
+        (error "Start before start of buffer"))
+    (setq start (point)))
+  (if end
+      (when (> end (point-max))
+        (error "End after end of buffer"))
+    (setq end (point-max)))
+  (save-excursion
+    (goto-char start)
+    (save-restriction
+      (narrow-to-region start end)
+      (let ((matches 0)
+            (case-fold-search nil))
+        (while (search-forward string nil t)
+          (delete-region (match-beginning 0) (match-end 0))
+          (insert replacement)
+          (setq matches (1+ matches)))
+        (and (not (zerop matches))
+             matches)))))
+
+(defvar locate-dominating-stop-dir-regexp
+  "\\`\\(?:[\\/][\\/][^\\/]+[\\/]\\|/\\(?:net\\|afs\\|\\.\\.\\.\\)/\\)\\'"
+  "Regexp of directory names that stop the search in `locate-dominating-file'.")
+
+(defun locate-dominating-file (file name)
+  "Starting at FILE, look up directory hierarchy for directory containing NAME.
+FILE can be a file or a directory.  If it's a file, its directory will
+serve as the starting point for searching the hierarchy of directories.
+Stop at the first parent directory containing a file NAME,
+and return the directory.  Return nil if not found.
+Instead of a string, NAME can also be a predicate taking one argument
+\(a directory) and returning a non-nil value if that directory is the one for
+which we're looking."
+  (setq file (abbreviate-file-name (expand-file-name file)))
+  (let ((root nil)
+        try)
+    (while (not (or root
+                    (null file)
+                    (string-match locate-dominating-stop-dir-regexp file)))
+      (setq file (if (file-directory-p file)
+                     file
+                   (file-name-directory file))
+            try (if (stringp name)
+                    (file-exists-p (expand-file-name name file))
+                  (funcall name file)))
+      (cond (try (setq root file))
+            ((equal file (setq file (file-name-directory
+                                     (directory-file-name file))))
+             (setq file nil))))
+    (if root (file-name-as-directory root))))
+
+(defun file-equal-p (file1 file2)
+  "Return non-nil if files FILE1 and FILE2 name the same file.
+If FILE1 or FILE2 does not exist, the return value is unspecified."
+  (let ((handler (or (find-file-name-handler file1 'file-equal-p)
+                     (find-file-name-handler file2 'file-equal-p))))
+    (if handler
+        (funcall handler 'file-equal-p file1 file2)
+      (let (f1-attr f2-attr)
+        (and (setq f1-attr (file-attributes (file-truename file1)))
+	     (setq f2-attr (file-attributes (file-truename file2)))
+             (equal f1-attr f2-attr))))))
+
+(defun file-newer-than-file-p (file1 file2)
+  "Return non-nil if file FILE1 is newer than file FILE2.
+If FILE1 does not exist, the return value is nil;
+otherwise, if FILE2 does not exist, the return value is t."
+  (let ((handler (or (find-file-name-handler file1 'file-newer-than-file-p)
+                     (find-file-name-handler file2 'file-newer-than-file-p))))
+    (if handler
+        (funcall handler 'file-newer-than-file-p file1 file2)
+      (let ((mt1 (file-attribute-modification-time (file-attributes file1)))
+            (mt2 (file-attribute-modification-time (file-attributes file2))))
+        (cond ((not mt1) nil)
+              ((not mt2) t)
+              (t (time-less-p mt2 mt1)))))))
+
+(defun file-chase-links (filename &optional limit)
+  "Chase links in FILENAME until a name that is not a link.
+Unlike `file-truename', this does not check whether a parent
+directory name is a symbolic link.
+If the optional argument LIMIT is a number,
+it means chase no more than that many links and then stop."
+  (let (tem (newname filename)
+	    (count 0))
+    (while (and (or (null limit) (< count limit))
+		(setq tem (file-symlink-p newname)))
+      (save-match-data
+	(if (and (null limit) (= count 100))
+	    (error "Apparent cycle of symbolic links for %s" filename))
+	(while (string-match "//+" tem)
+	  (setq tem (replace-match "/" nil nil tem)))
+	(while (string-match "\\`\\.\\./" tem)
+	  (setq tem (substring tem 3))
+	  (setq newname (expand-file-name newname))
+	  (setq newname
+		(file-chase-links
+		 (directory-file-name (file-name-directory newname))))
+	  (setq newname (file-name-directory newname)))
+	(setq newname (if (file-name-absolute-p tem)
+                          tem
+                        (concat (file-name-directory newname) tem)))
+	(setq count (1+ count))))
+    newname))
+
+(defun copy-directory (directory newname &optional keep-time parents copy-contents)
+  "Copy DIRECTORY to NEWNAME.  Both args must be strings.
+Copy the contents of DIRECTORY into NEWNAME, creating it if necessary."
+  (setq directory (directory-file-name (expand-file-name directory))
+        newname (expand-file-name newname))
+  (cond ((not (file-directory-p newname))
+         (make-directory newname parents))
+        ((not copy-contents)
+         (setq newname (expand-file-name
+                        (file-name-nondirectory directory) newname))))
+  (unless (file-directory-p newname)
+    (make-directory newname t))
+  (dolist (file (directory-files directory nil directory-files-no-dot-files-regexp))
+    (let ((source (expand-file-name file directory))
+          (target (expand-file-name file newname)))
+      (if (file-directory-p source)
+          (copy-directory source target keep-time parents t)
+        (copy-file source target t keep-time))))
+  (when keep-time
+    (set-file-times newname (file-attribute-modification-time
+                             (file-attributes directory)))))
+
+(defun make-nearby-temp-file (prefix &optional dir-flag suffix)
+  "Create a temporary file as close as possible to `default-directory'.
+Regardless of PREFIX, this creates the file in the local temporary
+directory in this environment (there is no remote support)."
+  (make-temp-file prefix dir-flag suffix))
+
+;; Filesystem features that this environment does not implement.  GNU
+;; Emacs returns these degraded values when the underlying OS lacks the
+;; corresponding support; they are listed only so the built-in shortdoc
+;; groups can reference them.
+(defun file-acl (_file) "Return the ACL entries of FILE, or nil if unsupported." nil)
+(defun set-file-acl (_file _acl) "Set the ACL entries of FILE (unsupported)." nil)
+(defun file-selinux-context (_file)
+  "Return the SELinux context of FILE (unsupported)."
+  '(nil nil nil nil))
+(defun set-file-selinux-context (_file _context)
+  "Set the SELinux context of FILE (unsupported)."
+  nil)
+(defun file-extended-attributes (_file)
+  "Return an alist of extended attributes of FILE (unsupported)."
+  nil)
+(defun set-file-extended-attributes (_file _attributes)
+  "Set the extended attributes of FILE (unsupported)."
+  nil)
+
+(defun add-name-to-file (file newname &optional ok-if-already-exists)
+  "Give FILE additional name NEWNAME (a hard link).
+Hard links are not supported in this environment."
+  (ignore ok-if-already-exists)
+  (signal 'file-error (list "Adding new name" "Operation not supported"
+                            file newname)))
+
+(defun kill-process (&optional process _current-group)
+  "Kill process PROCESS.  PROCESS may be a process object or a buffer."
+  (let ((proc (or (get-process process) process)))
+    (when (processp proc)
+      (delete-process proc))))
+
+(defun set-process-sentinel (_process sentinel)
+  "Give PROCESS the sentinel function SENTINEL.
+Process sentinels are not dispatched in this batch environment."
+  sentinel)
+
+(defun vc-responsible-backend (_file &optional _no-error)
+  "Return the version-control backend responsible for FILE.
+Version control is not integrated in this environment."
+  nil)

@@ -18,6 +18,47 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2669/7080: `shortdoc-tests.el' (2613..2617,
+  5/5), `subr-x-tests.el' (2618..2664, 47/47), `syntax-tests.el' (2665),
+  `tabulated-list-tests.el' (2666..2669, 4/4) all pass; 118-file prefix
+  sweep (prefix-files13.txt) on frozen binaries is the gate.
+  Load-bearing for this batch:
+  - Native define-short-documentation-group (sf_defgroup) is now gated
+    behind !has_macro_binding so the real shortdoc.el macro populates
+    `shortdoc--groups' (it was silently routing to the custom defgroup
+    handler, leaving the groups empty and 3/5 tests vacuously passing).
+  - `documentation' falls back to (1) the version's etc/DOC file
+    (compat_data_directory()/DOC, `\x1fF<name>\n<doc>' entries — C
+    primitives) and then (2) a lazy scan of the version's lisp/ tree for
+    top-level defun/defmacro/defsubst docstrings (natively-implemented
+    subr.el/files.el functions have no lambda body to read from).  Both
+    caches are thread-local and keyed by path.
+  - `help-function-arglist' returns the macro's arglist for macro-table
+    macros instead of `t' (shortdoc iterates the arglist with dolist;
+    `t' faulted with wrong-type-argument — rx-let display).
+  - `rx-let-eval' has a loaddefs-style autoload in simple_compat.el
+    (fboundp before rx.el loads) plus a native eval trigger that loads
+    GNU rx.el; ucs-normalize-NFC/NFD-string are native
+    (unicode-normalization crate); buffer-text-pixel-size added
+    (char-count model, same as window-text-pixel-size).
+  - simple_compat.el gained the shortdoc group functions: verbatim GNU
+    ports (assoc-default, char-uppercase-p, split-string-and-unquote,
+    file-name-with-extension/-parent-directory/-quote/-quoted-p/-unquote,
+    file-modes-* family, match-substitute-replacement,
+    replace-{regexp,string}-in-region, locate-dominating-file,
+    file-equal-p, file-newer-than-file-p, file-chase-links,
+    string-or-null-p, string-greaterp, make-separator-line,
+    next/previous-property-change, get-char-property-and-overlay,
+    string-glyph-compose/decompose, copy-directory,
+    split-string-shell-command) and honest degraded stubs for
+    OS-level features (file-acl/selinux/xattr return nil/unsupported,
+    add-name-to-file signals file-error, vc-responsible-backend nil,
+    kill-process via delete-process, set-process-sentinel no-op,
+    make-nearby-temp-file = make-temp-file).
+  - NEXT WALL: `testcover-tests.el' (2670..2700, 31 selectors) FAILs;
+    `text-property-search-tests.el' (2701..2720) and `thunk-tests.el'
+    (2721..2729) already PASS behind it; `timer-tests.el' (2730..2734)
+    FAILs.  Crack testcover then timer to extend the frontier to 2734+.
 - Verified through selector 2612/7080: `rx-tests.el' (2524..2559,
   36/36), `seq-tests.el' (2560..2611, 52/52), `shadow-tests.el' (2612)
   all pass; 117-file prefix sweep (prefix-files12.txt) on frozen

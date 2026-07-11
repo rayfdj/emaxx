@@ -54,6 +54,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "format-spec"
             | "char-to-string"
             | "find-composition-internal"
+            | "ucs-normalize-NFC-string"
+            | "ucs-normalize-NFD-string"
             | "string-replace"
             | "subst-char-in-string"
             | "replace-regexp-in-string"
@@ -1128,6 +1130,18 @@ pub(super) fn call(
                 char_offset += cluster_len;
             }
             Ok(Value::Nil)
+        }
+        "ucs-normalize-NFC-string" => {
+            need_args(name, args, 1)?;
+            use unicode_normalization::UnicodeNormalization;
+            let input = string_text(&args[0])?;
+            Ok(Value::String(input.nfc().collect()))
+        }
+        "ucs-normalize-NFD-string" => {
+            need_args(name, args, 1)?;
+            use unicode_normalization::UnicodeNormalization;
+            let input = string_text(&args[0])?;
+            Ok(Value::String(input.nfd().collect()))
         }
         "string-replace" => {
             need_args(name, args, 3)?;

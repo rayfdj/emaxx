@@ -657,7 +657,23 @@ pub(super) fn call(
                 return Ok(documentation);
             }
             let value = resolve_callable(interp, &args[0], env).unwrap_or_else(|_| args[0].clone());
-            Ok(function_documentation(interp, &value, env).unwrap_or(Value::Nil))
+            if let Some(documentation) = function_documentation(interp, &value, env) {
+                return Ok(documentation);
+            }
+            // Fall back to the version's DOC file for builtins that carry no
+            // native docstring (e.g. C primitives documented in etc/DOC), then
+            // to the docstrings inline in the GNU lisp sources on the load path
+            // (many subr.el/files.el functions are implemented natively here and
+            // have no lambda body to read the docstring from).
+            if let Value::Symbol(sym) = &args[0] {
+                if let Some(doc) = builtin_doc_from_doc_file(sym) {
+                    return Ok(Value::String(doc));
+                }
+                if let Some(doc) = builtin_doc_from_lisp_sources(sym) {
+                    return Ok(Value::String(doc));
+                }
+            }
+            Ok(Value::Nil)
         }
         "documentation-property" => {
             need_args(name, args, 2)?;
@@ -1476,4 +1492,273 @@ fn obsolete_definition_symbol(value: &Value) -> Result<&str, LispError> {
         Value::Symbol(name) => Ok(name),
         _ => Err(LispError::TypeError("symbol".into(), value.type_name())),
     }
+}
+
+/// A lazily-populated docstring cache: the source path it was built from and a
+/// shared name → docstring map.
+type DocSourceCache = Option<(
+    String,
+    std::rc::Rc<std::collections::HashMap<String, String>>,
+)>;
+
+thread_local! {
+    // Cache of (DOC-file-path -> {function-name -> docstring}) parsed lazily.
+    static DOC_FILE_CACHE: std::cell::RefCell<DocSourceCache> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Look up FUNCTION's docstring in the version's `DOC` file (the same file GNU
+/// Emacs distributes in its data directory).  Returns `None` when the DOC file
+/// cannot be located or has no entry for the function.
+fn builtin_doc_from_doc_file(function: &str) -> Option<String> {
+    let etc_dir = crate::lisp::primitives::compat_data_directory()?;
+    let path = std::path::Path::new(&etc_dir).join("DOC");
+    let path_str = path.to_string_lossy().to_string();
+
+    let map = DOC_FILE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((cached_path, cached_map)) = cache.as_ref()
+            && *cached_path == path_str
+        {
+            return Some(cached_map.clone());
+        }
+        let bytes = std::fs::read(&path).ok()?;
+        let parsed = std::rc::Rc::new(parse_doc_file(&bytes));
+        *cache = Some((path_str.clone(), parsed.clone()));
+        Some(parsed)
+    })?;
+
+    map.get(function).cloned()
+}
+
+thread_local! {
+    // Cache of (lisp-root-path -> {function-name -> docstring}) scanned lazily.
+    static LISP_SOURCE_DOC_CACHE: std::cell::RefCell<DocSourceCache> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Look up FUNCTION's docstring in the GNU lisp sources on the load path.
+///
+/// The version's `lisp/` tree sits next to the data directory.  Many functions
+/// (subr.el, files.el, simple.el, …) are implemented natively in emaxx and so
+/// have no lambda body to read a docstring from, yet their docstrings are not in
+/// the `DOC` file either — they live inline in the byte-compiled sources.  We
+/// scan the `.el` sources once and cache a name → first-docstring map.
+fn builtin_doc_from_lisp_sources(function: &str) -> Option<String> {
+    let etc_dir = crate::lisp::primitives::compat_data_directory()?;
+    let lisp_root = std::path::Path::new(&etc_dir).parent()?.join("lisp");
+    let root_str = lisp_root.to_string_lossy().to_string();
+
+    let map = LISP_SOURCE_DOC_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((cached_root, cached_map)) = cache.as_ref()
+            && *cached_root == root_str
+        {
+            return Some(cached_map.clone());
+        }
+        if !lisp_root.is_dir() {
+            return None;
+        }
+        let mut map = std::collections::HashMap::new();
+        scan_lisp_dir_for_docstrings(&lisp_root, &mut map);
+        let parsed = std::rc::Rc::new(map);
+        *cache = Some((root_str.clone(), parsed.clone()));
+        Some(parsed)
+    })?;
+
+    map.get(function).cloned()
+}
+
+/// Recursively walk DIR collecting the first docstring of every top-level
+/// `defun`/`defmacro`/`defsubst`/`define-inline`/`cl-defun`/`cl-defmacro` form
+/// in each `.el` file into MAP (first definition wins).
+fn scan_lisp_dir_for_docstrings(
+    dir: &std::path::Path,
+    map: &mut std::collections::HashMap<String, String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_lisp_dir_for_docstrings(&path, map);
+        } else if path.extension().is_some_and(|ext| ext == "el")
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            parse_el_source_docstrings(&text, map);
+        }
+    }
+}
+
+/// Extract `(NAME . docstring)` pairs from a single `.el` source's top-level
+/// definition forms.  A top-level form begins at column 0 with `(`.
+fn parse_el_source_docstrings(text: &str, map: &mut std::collections::HashMap<String, String>) {
+    const HEADS: [&str; 6] = [
+        "defun",
+        "defmacro",
+        "defsubst",
+        "define-inline",
+        "cl-defun",
+        "cl-defmacro",
+    ];
+    let bytes = text.as_bytes();
+    for line_start in line_starts(text) {
+        let rest = &text[line_start..];
+        // Only column-0 open-paren forms are top-level definitions.
+        if !rest.starts_with('(') {
+            continue;
+        }
+        let after_paren = &rest[1..];
+        let Some(head) = HEADS.iter().find(|head| {
+            after_paren.starts_with(**head) && is_symbol_boundary(after_paren, head.len())
+        }) else {
+            continue;
+        };
+        let mut idx = line_start + 1 + head.len();
+        idx = skip_ws(bytes, idx);
+        let name_start = idx;
+        while idx < bytes.len() && is_lisp_symbol_byte(bytes[idx]) {
+            idx += 1;
+        }
+        if idx == name_start {
+            continue;
+        }
+        let name = &text[name_start..idx];
+        idx = skip_ws(bytes, idx);
+        // Skip the arglist `(...)`.
+        if idx >= bytes.len() || bytes[idx] != b'(' {
+            continue;
+        }
+        idx = match skip_balanced_parens(bytes, idx) {
+            Some(next) => next,
+            None => continue,
+        };
+        idx = skip_ws(bytes, idx);
+        // The docstring, if present, is the next form and starts with `"`.
+        if idx >= bytes.len() || bytes[idx] != b'"' {
+            continue;
+        }
+        if let Some(doc) = read_lisp_string(bytes, idx) {
+            map.entry(name.to_string()).or_insert(doc);
+        }
+    }
+}
+
+/// Byte offsets of the start of each line in TEXT.
+fn line_starts(text: &str) -> impl Iterator<Item = usize> + '_ {
+    std::iter::once(0).chain(
+        text.match_indices('\n')
+            .map(|(index, _)| index + 1)
+            .filter(move |index| *index < text.len()),
+    )
+}
+
+fn is_symbol_boundary(text: &str, offset: usize) -> bool {
+    text.as_bytes()
+        .get(offset)
+        .is_none_or(|b| !is_lisp_symbol_byte(*b))
+}
+
+fn is_lisp_symbol_byte(b: u8) -> bool {
+    !b.is_ascii_whitespace() && !matches!(b, b'(' | b')' | b'"' | b';' | b'\'' | b'`' | b',')
+}
+
+fn skip_ws(bytes: &[u8], mut idx: usize) -> usize {
+    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+        idx += 1;
+    }
+    idx
+}
+
+/// Given IDX at an opening `(`, return the offset just past the matching `)`,
+/// honoring string literals and character/escape syntax.
+fn skip_balanced_parens(bytes: &[u8], mut idx: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        if in_string {
+            match b {
+                b'\\' => idx += 1,
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'?' => idx += 1, // character literal: skip the next byte
+                b';' => {
+                    while idx < bytes.len() && bytes[idx] != b'\n' {
+                        idx += 1;
+                    }
+                    continue;
+                }
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(idx + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Read a Lisp string literal that starts at IDX (a `"`), returning the decoded
+/// contents (with `\"` and `\\` unescaped; other escapes kept verbatim).
+fn read_lisp_string(bytes: &[u8], mut idx: usize) -> Option<String> {
+    idx += 1; // skip opening quote
+    let mut out = Vec::new();
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'\\' if idx + 1 < bytes.len() => {
+                let next = bytes[idx + 1];
+                match next {
+                    b'"' | b'\\' => out.push(next),
+                    _ => {
+                        out.push(b'\\');
+                        out.push(next);
+                    }
+                }
+                idx += 2;
+            }
+            b'"' => return Some(String::from_utf8_lossy(&out).to_string()),
+            b => {
+                out.push(b);
+                idx += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Parse a GNU Emacs `DOC` file into a map from function name to docstring.
+///
+/// Entries are separated by the `\x1f` (unit-separator) byte and prefixed by a
+/// type tag: `F` for functions, `V` for variables, `S` for source-file markers.
+/// Only function entries are collected here.  The stored docstring keeps the
+/// trailing `(fn ...)` usage line exactly as GNU stores it.
+fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for chunk in bytes.split(|&b| b == 0x1f) {
+        // Each chunk is `<tag><name>\n<doc>`; skip empties and non-function tags.
+        let Some((&tag, rest)) = chunk.split_first() else {
+            continue;
+        };
+        if tag != b'F' {
+            continue;
+        }
+        let Some(newline) = rest.iter().position(|&b| b == b'\n') else {
+            continue;
+        };
+        let name = String::from_utf8_lossy(&rest[..newline]).to_string();
+        let doc = String::from_utf8_lossy(&rest[newline + 1..]).to_string();
+        map.entry(name).or_insert(doc);
+    }
+    map
 }

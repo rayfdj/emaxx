@@ -19,6 +19,29 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2669/7080: `shortdoc-tests.el` (2613..2617,
+  5/5), `subr-x-tests.el` (2618..2664, 47/47), `syntax-tests.el` (2665),
+  `tabulated-list-tests.el` (2666..2669, 4/4) all pass the harness.
+  The 118-file prefix sweep (prefix-files13.txt) on frozen binaries is
+  the gate; autorevert-tests is a known flake, retry it standalone.
+  Batch summary (see the continuation doc for the full list):
+  - Native define-short-documentation-group gated behind
+    !has_macro_binding → real shortdoc.el owns `shortdoc--groups`.
+  - `documentation` falls back to etc/DOC (C primitives) and then to a
+    lazy docstring scan of the version's lisp/ sources
+    (natively-implemented elisp functions).  Thread-local caches in
+    dispatch/misc.rs.
+  - `help-function-arglist` resolves macro-table macros to their
+    arglist instead of returning `t` (shortdoc dolists over it).
+  - rx-let-eval autoload; native ucs-normalize-NFC/NFD-string
+    (unicode-normalization crate); buffer-text-pixel-size.
+  - ~35 shortdoc group functions ported verbatim from GNU
+    subr.el/files.el/simple.el into simple_compat.el, plus honest
+    degraded stubs for OS features (ACL/SELinux/xattr nil,
+    add-name-to-file signals file-error, vc-responsible-backend nil).
+- NEXT: `testcover-tests.el` (2670..2700) is the next wall
+  (text-property-search 2701..2720 and thunk 2721..2729 already pass
+  behind it; timer-tests 2730..2734 also fails).
 - Verified through selector 2612/7080: `rx-tests.el` (2524..2559,
   36/36), `seq-tests.el` (2560..2611, 52/52), `shadow-tests.el`
   (2612) all pass the harness.  The 117-file prefix sweep
