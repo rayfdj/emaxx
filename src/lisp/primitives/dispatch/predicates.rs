@@ -532,11 +532,19 @@ pub(super) fn call(
         "special-variable-p" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            Ok(if interp.is_special_variable(symbol) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            // GNU: the self-evaluating constants t/nil/keywords are declared
+            // special (erc-button-setup's alist FORM check relies on
+            // (special-variable-p t) being non-nil).
+            Ok(
+                if matches!(symbol, "t" | "nil")
+                    || symbol.starts_with(':')
+                    || interp.is_special_variable(symbol)
+                {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "make-variable-buffer-local" => {
             need_args(name, args, 1)?;

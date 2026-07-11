@@ -854,11 +854,12 @@ pub(super) fn call(
             Ok(Value::Symbol(symbol.to_string()))
         }
         "internal--define-uninitialized-variable" => {
-            need_args(name, args, 2)?;
+            // GNU: (SYMBOL &optional DOC) — cus-start.el passes one arg.
+            need_arg_range(name, args, 1, 2)?;
             let symbol = args[0].as_symbol()?;
             interp.mark_special_variable(symbol);
-            if !args[1].is_nil() {
-                interp.put_symbol_property(symbol, "variable-documentation", args[1].clone());
+            if let Some(doc) = args.get(1).filter(|value| !value.is_nil()) {
+                interp.put_symbol_property(symbol, "variable-documentation", doc.clone());
             }
             Ok(Value::Symbol(symbol.to_string()))
         }
