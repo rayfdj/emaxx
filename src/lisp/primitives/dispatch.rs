@@ -967,6 +967,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "buffer-last-name"
             // Stubs for terminal/display
             | "display-graphic-p"
+            | "display-supports-face-attributes-p"
             | "display-images-p"
             | "window-system"
             | "char-displayable-p"
@@ -1001,6 +1002,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "window-dedicated-p"
             | "window-splittable-p"
             | "selected-frame"
+            | "window-frame"
             | "framep"
             | "frame-terminal"
             | "frame-list"

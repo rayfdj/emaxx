@@ -19,6 +19,34 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2523/7080 are verified: `pp-tests.el` (2488..2491),
+  `range-tests.el` (2492), `regexp-opt-tests.el` (2493..2494),
+  `ring-tests.el` (2495..2518, free) and `rmc-tests.el` (2519..2523).
+  The batch:
+  - `prin1' escapes only `"' and `\' by default; newlines/tabs/control
+    chars print RAW unless `print-escape-newlines' is non-nil (Rust's
+    {:?} always-escapes was wrong — pp's docstring roundtrip and the
+    code-formats erts depend on raw newlines).
+  - `looking-back' prefers the latest-starting NON-EMPTY match ending
+    at point (a zero-length match only counts when nothing else does),
+    and its match data is based at the haystack origin, not the match
+    start (pp-fill's "#[sf]?" unbreakable probe).
+  - `insert-buffer-substring' treats nil START/END as the accessible
+    bounds (pp-emacs-lisp-code copies its temp buffer via
+    insert-into-buffer).
+  - `regexp-quote' is GNU-exact: only [ * . \ ? + ^ $ get a
+    backslash; ( ) { } | ] stay literal (the native `regexp-opt'
+    override is dropped, so the real elisp file runs).
+  - `lambda' carries `doc-string-elt' = 2 (GNU function-put; pp's code
+    formatter keeps pre-docstring elements on the first line) — merged
+    into lambda's existing edebug-form-spec entry, not a second entry
+    that the wholesale per-symbol replace would shadow.
+  - simple_compat ports: tabify.el `untabify', subr.el
+    `use-dialog-box-p' (+ from--tty-menu-p / use-dialog-box-override
+    defvars).  Native `window-frame' (single frame) and
+    `display-supports-face-attributes-p' (nil: batch/TTY has no
+    face-attribute display; rmc.el underlines shortcut keys only on
+    graphical terminals).
 - Tests through 2487/7080 are verified: `pcase-tests.el` (2475..2487,
   all 13 selectors).  The batch hands the pcase family to GNU pcase.el:
   - `ensure_gnu_pcase_loaded': the first evaluation or macroexpansion of

@@ -770,18 +770,12 @@ fn is_empty_unicode_raw_range(start: char, end: char) -> bool {
 }
 
 pub(super) fn regexp_quote_elisp(pattern: &str) -> String {
+    // GNU search.c Fregexp_quote: exactly [ * . \ ? + ^ $ get a
+    // backslash; ( ) { } | ] are literal in elisp regexp syntax.
     let mut quoted = String::new();
     for ch in pattern.chars() {
         match ch {
-            '(' => quoted.push_str("[(]"),
-            ')' => quoted.push_str("[)]"),
-            '[' => quoted.push_str("\\["),
-            ']' => quoted.push_str("\\]"),
-            '{' => quoted.push_str("[{]"),
-            '}' => quoted.push_str("[}]"),
-            '\\' => quoted.push_str("[\\\\]"),
-            '|' => quoted.push_str("[|]"),
-            '.' | '*' | '+' | '?' | '^' | '$' => {
+            '[' | '*' | '.' | '\\' | '?' | '+' | '^' | '$' => {
                 quoted.push('\\');
                 quoted.push(ch);
             }
@@ -1671,6 +1665,7 @@ pub(super) fn looking_back_impl(
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     starts.push(haystack.len());
+    let mut empty_fallback = None;
     for start in starts {
         if let Some(captures) = regex
             .captures_from_pos(&haystack, start)
@@ -1679,16 +1674,28 @@ pub(super) fn looking_back_impl(
             && matched.end() == haystack.len()
         {
             let absolute_start = limit + haystack[..matched.start()].chars().count();
-            best = Some((absolute_start, captures));
-            if greedy {
-                break;
+            // GNU prefers the latest-starting NON-EMPTY match ending at
+            // point; a zero-length match only counts when nothing else
+            // matches (pp-fill's "#[sf]?" probe must find the "#").
+            if matched.start() == matched.end() {
+                empty_fallback = Some((absolute_start, captures));
+            } else {
+                best = Some((absolute_start, captures));
+                if greedy {
+                    break;
+                }
             }
         }
     }
-    if let Some((absolute_start, captures)) = best {
+    if best.is_none() {
+        best = empty_fallback;
+    }
+    if let Some((_absolute_start, captures)) = best {
+        // Captures are haystack-relative: the base for match data is the
+        // haystack origin (LIMIT), not the match start.
         set_match_data(
             interp,
-            absolute_start,
+            limit,
             &haystack,
             &captures,
             regex.capture_mapping(),

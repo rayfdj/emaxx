@@ -482,15 +482,14 @@ pub(super) fn call(
             let source = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-            let start = if args.len() > 1 {
-                position_from_value(interp, &args[1])?
-            } else {
-                source.point_min()
+            // GNU: nil START/END mean the accessible portion's bounds.
+            let start = match args.get(1) {
+                Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+                _ => source.point_min(),
             };
-            let end = if args.len() > 2 {
-                position_from_value(interp, &args[2])?
-            } else {
-                source.point_max()
+            let end = match args.get(2) {
+                Some(value) if !value.is_nil() => position_from_value(interp, value)?,
+                _ => source.point_max(),
             };
             let text = source
                 .buffer_substring(start, end)

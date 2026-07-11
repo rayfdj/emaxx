@@ -245,6 +245,23 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     properties.extend(builtin_edebug_form_specs());
     properties.extend(builtin_edebug_declaration_specs());
     properties.extend(builtin_edebug_elem_specs());
+    // GNU: (function-put 'lambda 'doc-string-elt 2); pp's code formatter
+    // keeps only pre-docstring elements on the first line.  Merged into
+    // lambda's existing entry (per-symbol entries replace wholesale).
+    if let Some(entry) = properties
+        .iter_mut()
+        .rev()
+        .find(|(name, _)| name == "lambda")
+    {
+        entry
+            .1
+            .push(("doc-string-elt".to_string(), Value::Integer(2)));
+    } else {
+        properties.push((
+            "lambda".to_string(),
+            vec![("doc-string-elt".to_string(), Value::Integer(2))],
+        ));
+    }
     properties
 }
 

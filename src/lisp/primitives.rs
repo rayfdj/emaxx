@@ -475,7 +475,6 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
             | "cl-parse-integer"
             | "read-key"
             | "run-mode-hooks"
-            | "regexp-opt"
             | "rx-to-string"
             | "timerp"
             | "header-line-indent-mode"

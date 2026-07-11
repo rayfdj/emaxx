@@ -8,10 +8,9 @@ pub(crate) fn render_prin1_string(interp: &Interpreter, text: &str, env: &Env) -
         .lookup_var("print-escape-newlines", env)
         .is_some_and(|value| value.is_truthy());
 
-    if !escape_multibyte && !escape_newlines {
-        return format!("{:?}", text);
-    }
-
+    // GNU prin1 escapes only `"' and `\' by default: newlines, tabs and
+    // other control characters print raw unless print-escape-newlines is
+    // non-nil (Rust's {:?} formatting escapes them all, which is wrong).
     let mut rendered = String::with_capacity(text.len() + 2);
     rendered.push('"');
     for ch in text.chars() {
