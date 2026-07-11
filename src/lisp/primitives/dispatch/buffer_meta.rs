@@ -173,7 +173,46 @@ pub(super) fn call(
             } else {
                 position_from_value(interp, &args[0])?
             };
-            let field = interp.buffer.text_property_at(pos, "field");
+            let point_min = interp.buffer.point_min();
+            let point_max = interp.buffer.point_max();
+            // GNU boundary rule: when the fields before and after POS differ,
+            // the position belongs to the after-field if its first char is
+            // front-sticky for `field', else to the before-field if its last
+            // char is rear-sticky (the default); if neither claims it, POS is
+            // a zero-length field of its own (erc's prompt end relies on the
+            // rear-sticky case).
+            let stickiness_covers_field = |value: Option<Value>| match value {
+                Some(Value::T) => true,
+                Some(list @ Value::Cons(_, _)) => list
+                    .to_vec()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .any(|item| matches!(item, Value::Symbol(name) if name == "field"))
+                    })
+                    .unwrap_or(false),
+                _ => false,
+            };
+            let after_field = (pos < point_max)
+                .then(|| interp.buffer.text_property_at(pos, "field"))
+                .flatten();
+            let before_field = (pos > point_min)
+                .then(|| interp.buffer.text_property_at(pos - 1, "field"))
+                .flatten();
+            let field = if pos == point_min
+                || before_field == after_field
+                || (pos < point_max
+                    && stickiness_covers_field(interp.buffer.text_property_at(pos, "front-sticky")))
+            {
+                after_field
+            } else if !stickiness_covers_field(
+                interp.buffer.text_property_at(pos - 1, "rear-nonsticky"),
+            ) {
+                before_field
+            } else {
+                // Unclaimed boundary: a zero-length field at POS.
+                return Ok(Value::Integer(pos as i64));
+            };
             let mut cursor = pos;
             if name == "field-beginning" {
                 while cursor > interp.buffer.point_min()

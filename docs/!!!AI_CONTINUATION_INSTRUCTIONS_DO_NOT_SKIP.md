@@ -71,23 +71,33 @@ counts as the progress denominator.
       — erc--find-mode's module fallback.
     - erc/erc-button/erc-loaddefs load cleanly; module autoloads
       registered via erc.el's (load "erc-loaddefs").
+    - field-beginning/field-end implement GNU's BOUNDARY rule now
+      (buffer_meta.rs): with differing before/after `field' props,
+      front-sticky on the after char claims POS, else the (default)
+      rear-sticky before char does, else POS is a zero-length field.
+      Verified against the oracle; erc's prep-for-insertion assert and
+      a plain erc-display-message flow both pass standalone.
     CURRENT erc-button-tests state (5 selectors, 2766..2770):
-    - erc-button-alist--nil-form/-url/erc-button-next fail an erc
-      prompt-machinery assert: `(= (field-end erc-insert-marker)
-      erc-input-marker)' — erc-tests-common-prep-for-insertion sets up
-      the prompt via erc--initialize-markers; investigate field-end
-      over the prompt's field text property vs marker positions.
+    - erc-button-alist--nil-form/-url/erc-button-next still fail
+      `(= (field-end erc-insert-marker) erc-input-marker)' but ONLY
+      inside the full `erc-open' session bring-up
+      (erc-button-tests--populate → erc--open-target → erc-open with a
+      real "sleep 1" process).  Simple insertion flows pass, so the
+      divergence is inside erc-open's buffer setup (modules,
+      continued-session marker path, or process-mark sync).
+      Instrument erc-open next.
     - erc-button-alist--function-as-form: wrong-type marker, nil.
     - erc-button--display-error-notice-with-keys: substitute-command-keys
-      style key substitution (\\[erc-bol] → C-a) mismatch.
-    NEXT STEPS: fix the marker/field prompt setup first (it gates 4 of
-    5 selectors and likely the whole erc series), then rerun
-    erc-button/erc-dcc/erc-goodies/erc-networks; erc-networks-tests
-    already has 6/43 passing and needs the context-rewriter path
-    (landed) — recheck it.  Milestone 3000 sits inside the erc series.
-    BEFORE COMMITTING more: run the full 130-file sweep
-    (prefix-files15.txt pattern; create sweep25 from sweep24.sh) — the
-    require-NOERROR and context-rewriter changes are cross-cutting.
+      key substitution (\\[erc-bol] → C-a) mismatch.
+    NEXT STEPS: crack erc-open's bring-up (gates 4 of 5 selectors and
+    likely the whole erc series), then rerun erc-button/erc-dcc/
+    erc-goodies/erc-networks; erc-networks-tests already has 6/43
+    passing with the context-rewriter path landed — recheck it.
+    Milestone 3000 sits inside the erc series.
+    VALIDATION DEBT: sweep25 (130 files) validated ONLY up to the
+    "erc series unblocked" commit; the field-boundary fix landed after
+    it — run a fresh sweep (copy sweep25.sh → sweep26) on frozen
+    binaries before cutting the next patch.
 - Verified through selector 2746/7080: `testcover-tests.el' (2670..2700,
   31/31), `text-property-search-tests.el' (2701..2720),
   `thunk-tests.el' (2721..2729), `timer-tests.el' (2730..2734),
