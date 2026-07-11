@@ -7270,3 +7270,89 @@ property, or (ii) an alias for another customizable variable."
     (setq variable (indirect-variable variable))
     (or (get variable 'standard-value)
 	(get variable 'custom-autoload))))
+
+(defun add-to-invisibility-spec (element)
+  "Add ELEMENT to `buffer-invisibility-spec'.
+See documentation for `buffer-invisibility-spec' for the kind of elements
+that can be added."
+  (if (eq buffer-invisibility-spec t)
+      (setq buffer-invisibility-spec (list t)))
+  (setq buffer-invisibility-spec
+	(cons element buffer-invisibility-spec)))
+
+(defun remove-from-invisibility-spec (element)
+  "Remove ELEMENT from `buffer-invisibility-spec'.
+If `buffer-invisibility-spec' isn't a list before calling this
+function, it will be made into a list containing just t as the
+only list member."
+  (setq buffer-invisibility-spec
+        (if (consp buffer-invisibility-spec)
+	    (delete element buffer-invisibility-spec)
+          (list t))))
+
+;; GNU window.el (preloaded) display-buffer action variables.
+(defvar display-buffer-overriding-action '(nil)
+  "Overriding action to perform to display a buffer.")
+
+;; GNU custom.el (preloaded): the standard defcustom :initialize
+;; functions, called by the defcustom machinery.  The custom-check-value
+;; widget validation is omitted (no widget library in batch).
+(defun custom-initialize-default (symbol exp)
+  "Initialize SYMBOL with EXP unless it already has a default binding."
+  (condition-case nil
+      (default-toplevel-value symbol)
+    (void-variable
+     (set-default-toplevel-value
+      symbol (eval (let ((sv (get symbol 'saved-value)))
+                     (if sv (car sv) exp))
+                   t)))))
+
+(defun custom-initialize-set (symbol exp)
+  "Initialize SYMBOL based on EXP via its `:set' function when unbound."
+  (condition-case nil
+      (default-toplevel-value symbol)
+    (error
+     (funcall (or (get symbol 'custom-set) #'set-default-toplevel-value)
+              symbol
+              (eval (let ((sv (get symbol 'saved-value)))
+                      (if sv (car sv) exp)))))))
+
+(defun custom-initialize-reset (symbol exp)
+  "Initialize SYMBOL based on EXP, using its `:set' function."
+  (funcall (or (get symbol 'custom-set) #'set-default-toplevel-value)
+           symbol
+           (condition-case nil
+               (let ((def (default-toplevel-value symbol))
+                     (getter (get symbol 'custom-get)))
+                 (if getter (funcall getter symbol) def))
+             (error
+              (eval (let ((sv (get symbol 'saved-value)))
+                      (if sv (car sv) exp)))))))
+
+(defun custom-initialize-changed (symbol exp)
+  "Initialize SYMBOL with EXP, using `:set' only for non-standard settings."
+  (condition-case nil
+      (let ((def (default-toplevel-value symbol)))
+        (funcall (or (get symbol 'custom-set) #'set-default-toplevel-value)
+                 symbol
+                 (let ((getter (get symbol 'custom-get)))
+                   (if getter (funcall getter symbol) def))))
+    (error
+     (cond
+      ((get symbol 'saved-value)
+       (funcall (or (get symbol 'custom-set) #'set-default-toplevel-value)
+                symbol
+                (eval (car (get symbol 'saved-value)))))
+      (t
+       (set-default-toplevel-value symbol (eval exp)))))))
+
+(defvar custom-delayed-init-variables nil
+  "List of variables whose initialization is pending until startup.")
+
+(defun custom-initialize-delay (symbol exp)
+  "Delay initialization of SYMBOL to the next startup.
+In this environment startup has already happened, so initialize
+immediately like `custom-initialize-set'."
+  (set-default-toplevel-value symbol nil)
+  (push symbol custom-delayed-init-variables)
+  (custom-initialize-set symbol exp))

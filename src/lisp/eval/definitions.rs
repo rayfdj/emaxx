@@ -1705,6 +1705,15 @@ impl Interpreter {
         } else {
             3
         };
+        // GNU custom-declare-variable records the unevaluated default under
+        // `standard-value' for every defcustom; custom-variable-p keys off it
+        // (erc--update-modules activates global module modes through it).
+        self.put_symbol_property(
+            symbol,
+            "standard-value",
+            Value::list([items.get(2).cloned().unwrap_or(Value::Nil)]),
+        );
+        let mut initialize = None;
         while index + 1 < items.len() {
             let Some(keyword) = items[index].as_symbol().ok() else {
                 break;
@@ -1716,6 +1725,24 @@ impl Interpreter {
                 ":set" => {
                     let setter = self.eval(&items[index + 1], env)?;
                     self.put_symbol_property(symbol, "custom-set", setter);
+                }
+                ":get" => {
+                    let getter = self.eval(&items[index + 1], env)?;
+                    self.put_symbol_property(symbol, "custom-get", getter);
+                }
+                ":initialize" => {
+                    let function = self.eval(&items[index + 1], env)?;
+                    // The standard custom-initialize-* functions reduce to the
+                    // plain default assignment emaxx already performed;
+                    // re-running them can clobber values whose default
+                    // expressions aren't idempotent.  Only bespoke
+                    // initializers (erc-modules' lambda) carry extra
+                    // side effects worth running.
+                    let standard = matches!(&function, Value::Symbol(name)
+                        if name.starts_with("custom-initialize-"));
+                    if !standard {
+                        initialize = Some(function);
+                    }
                 }
                 ":type" => {
                     let custom_type = self.eval(&items[index + 1], env)?;
@@ -1756,6 +1783,30 @@ impl Interpreter {
                 _ => {}
             }
             index += 2;
+        }
+        // GNU's custom-declare-variable records every keyword first and then
+        // calls the :initialize function with (SYMBOL EXP), EXP being the
+        // unevaluated default (erc-modules' initializer walks the
+        // custom-type entries recorded above to stamp `erc--module').
+        if let Some(function) = initialize {
+            let default_expr = items.get(2).cloned().unwrap_or(Value::Nil);
+            match self.call_function_value(
+                function,
+                None,
+                &[Value::Symbol(symbol.to_string()), default_expr],
+                env,
+            ) {
+                Ok(_) => {}
+                // Bare interpreters (unit tests) may not have the
+                // custom-initialize family loaded; the plain default
+                // assignment already happened, so a void initializer is
+                // tolerable.
+                Err(LispError::Void(_)) => {}
+                Err(LispError::SignalValue(condition))
+                    if matches!(condition.car(), Ok(Value::Symbol(kind))
+                        if kind == "void-function") => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }
@@ -2004,7 +2055,17 @@ impl Interpreter {
 
                 self.mark_special_variable(&variable_name);
                 let init_value_truthy = init_value.is_truthy();
-                if !global {
+                if global {
+                    // GNU's :global define-minor-mode declares the mode
+                    // variable with defcustom, so it carries a
+                    // `standard-value' and satisfies custom-variable-p
+                    // (erc--update-modules activates global modes through it).
+                    self.put_symbol_property(
+                        &variable_name,
+                        "standard-value",
+                        Value::list([init_value.clone()]),
+                    );
+                } else {
                     self.mark_auto_buffer_local(&variable_name);
                 }
                 if self.lookup_var(&variable_name, &Vec::new()).is_none() {
@@ -4216,7 +4277,52 @@ impl Interpreter {
                 return Ok(items[1].clone());
             }
         }
-        let result = if method_specializers.is_empty() {
+        let is_around_qualifier = items[2..lambda_list_index]
+            .iter()
+            .any(|value| matches!(value, Value::Symbol(name) if name == ":around"));
+        let result = if method_specializers.is_empty()
+            && is_around_qualifier
+            && let Ok(previous) = self.lookup_function(&method_name, env)
+            && previous != Value::BuiltinFunc("ignore".into())
+        {
+            // A specializer-less :around wraps whatever the generic
+            // currently runs (often the cl-defgeneric default body), with
+            // `cl-call-next-method' chaining to it (erc-stamp--current-time).
+            let params = self.parse_params(&lowered_lambda_list)?;
+            let fixed_params = lambda_list_fixed_params(&params);
+            let rest_param = lambda_list_rest_param_from_params(&params);
+            let mut default_args = vec![Value::Symbol("list".into())];
+            default_args.extend(
+                fixed_params
+                    .iter()
+                    .map(|param| Value::Symbol(param.clone())),
+            );
+            let default_form = if let Some(rest_param) = &rest_param {
+                Value::list([
+                    Value::Symbol("append".into()),
+                    Value::list(default_args),
+                    Value::Symbol(rest_param.clone()),
+                ])
+            } else {
+                Value::list(default_args)
+            };
+            let previous_symbol = format!(
+                "__emaxx_previous_method_{}_around_class_t_method",
+                method_name.replace('-', "_")
+            );
+            let body = rewrite_cl_call_next_method_forms(
+                &executable_method_forms,
+                &method_name,
+                &previous_symbol,
+                &default_form,
+                Value::T,
+            )?;
+            let mut closure_env = env.clone();
+            closure_env.push(vec![(previous_symbol, Self::stored_value(previous))]);
+            let wrapper = Value::Lambda(params, body, shared_env(closure_env));
+            self.set_function_binding(&method_name, Some(wrapper));
+            Ok(items[1].clone())
+        } else if method_specializers.is_empty() {
             self.sf_cl_defun(&lowered, env)
         } else {
             let mut direct_lowered = lowered[..3].to_vec();

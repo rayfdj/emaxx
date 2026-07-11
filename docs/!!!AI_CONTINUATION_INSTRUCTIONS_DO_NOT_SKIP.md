@@ -77,27 +77,54 @@ counts as the progress denominator.
       rear-sticky before char does, else POS is a zero-length field.
       Verified against the oracle; erc's prep-for-insertion assert and
       a plain erc-display-message flow both pass standalone.
-    CURRENT erc-button-tests state (5 selectors, 2766..2770):
-    - erc-button-alist--nil-form/-url/erc-button-next still fail
-      `(= (field-end erc-insert-marker) erc-input-marker)' but ONLY
-      inside the full `erc-open' session bring-up
-      (erc-button-tests--populate → erc--open-target → erc-open with a
-      real "sleep 1" process).  Simple insertion flows pass, so the
-      divergence is inside erc-open's buffer setup (modules,
-      continued-session marker path, or process-mark sync).
-      Instrument erc-open next.
-    - erc-button-alist--function-as-form: wrong-type marker, nil.
-    - erc-button--display-error-notice-with-keys: substitute-command-keys
-      key substitution (\\[erc-bol] → C-a) mismatch.
-    NEXT STEPS: crack erc-open's bring-up (gates 4 of 5 selectors and
-    likely the whole erc series), then rerun erc-button/erc-dcc/
-    erc-goodies/erc-networks; erc-networks-tests already has 6/43
-    passing with the context-rewriter path landed — recheck it.
-    Milestone 3000 sits inside the erc series.
-    VALIDATION DEBT: sweep25 (130 files) validated ONLY up to the
-    "erc series unblocked" commit; the field-boundary fix landed after
-    it — run a fresh sweep (copy sweep25.sh → sweep26) on frozen
-    binaries before cutting the next patch.
+    erc-open SESSION BRING-UP NOW WORKS end-to-end (server buffer +
+    erc--open-target + erc-display-message in #chan).  The chain of
+    fixes, each found by instrumenting erc-open:
+    - add-to/remove-from-invisibility-spec, display-buffer-overriding-action
+      ('(nil)), custom-initialize-default/set/reset/changed/delay ports
+      in simple_compat.el.
+    - defcustom records `standard-value' (list of the UNEVALUATED
+      default) and honors :initialize/:get — GNU's custom-declare-variable
+      contract.  erc-modules' :initialize lambda stamps `erc--module' on
+      every built-in module symbol (kills the bogus aberrant-modules
+      warning), and :global define-minor-mode records standard-value so
+      custom-variable-p routes global modes through erc--update-modules'
+      immediate funcall (they were wrongly deferred as local modules).
+    - Zero-specializer :around cl-defmethods now wrap the generic's
+      current definition with cl-call-next-method chaining (they
+      previously CLOBBERED it via plain cl-defun — erc-stamp--current-time).
+    - special-variable-p returns t for t/nil/keywords like GNU —
+      erc-button-setup's FORM check ((special-variable-p t)) otherwise
+      routed every default erc-button-alist entry into a deprecation
+      warn that inserted into a marker-less process buffer
+      (the "wrong-type-argument marker nil").
+    CURRENT erc-button-tests state (2766..2770): all 5 reach REAL
+    buttonize assertions now:
+    - erc-button-alist--url (alone): erc-data text property missing.
+      ROOT CAUSE FOUND (probe /tmp/probes/btn.el): message text inserted
+      at erc-insert-marker comes out carrying THE PROMPT'S properties
+      (rear-nonsticky t front-sticky t read-only t) — emaxx's
+      insert-before-markers INHERITS neighboring text properties, but
+      GNU's plain insert/insert-before-markers NEVER inherit (only the
+      -and-inherit variants do).  Fix
+      insert_current_buffer_before_markers (and check the plain insert
+      path) in eval/buffers.rs, then the read-only/sticky bleed and the
+      missing erc-data/mouse-face should both resolve.  The 3 field-end
+      failures in a full-file run are POLLUTION from the first failure;
+      fix this first, rerun the file.
+    - erc-button--display-error-notice-with-keys:
+      substitute-command-keys \\[erc-bol] → "C-a" mismatch.
+    NEXT: fix erc-button-add-buttons buttonizing, then erc-dcc/
+    erc-goodies/erc-networks (6/43 already passing).  3000 sits inside
+    the erc series.
+    VALIDATION DEBT: sweep26 caught 10 regressions from this batch,
+    all fixed in-place (internal--define-uninitialized-variable accepts
+    1 arg for cus-start.el; :initialize only invokes bespoke lambda
+    initializers — the standard custom-initialize-* symbols reduce to
+    the plain default assignment and re-running them clobbered
+    package-tests).  All 10 files re-verified PASS individually, but a
+    FULL fresh sweep (sweep27 from sweep26.sh, freeze binaries first)
+    is REQUIRED before cutting the next patch.
 - Verified through selector 2746/7080: `testcover-tests.el' (2670..2700,
   31/31), `text-property-search-tests.el' (2701..2720),
   `thunk-tests.el' (2721..2729), `timer-tests.el' (2730..2734),
