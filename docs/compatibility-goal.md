@@ -19,6 +19,50 @@ counts as the progress denominator.
 
 ## Current State
 
+- Tests through 2487/7080 are verified: `pcase-tests.el` (2475..2487,
+  all 13 selectors).  The batch hands the pcase family to GNU pcase.el:
+  - `ensure_gnu_pcase_loaded': the first evaluation or macroexpansion of
+    a pcase-family form loads GNU pcase.el when the load-path can
+    resolve it; the native special forms remain the no-file fallback
+    (unit tests).  After the load, the verbatim cl-macs.el integration
+    is installed (the `cl-type' pcase pattern and the
+    `cl--pcase-mutually-exclusive-p' advice; its struct-predicate
+    branches are fboundp-guarded because cl--struct-class-p has no
+    native counterpart).
+  - The READER now always encodes quote shorthands with the raw
+    `\``/`\,'/`\,@' symbols (GNU behavior; pcase.el registers its
+    backquote pattern expander under `\`').  Print still renders both
+    spellings identically, and the evaluator accepts both names.
+  - `eval_backquote_with_depth' preserves the original head symbols
+    when rebuilding nested backquote/unquote forms (patterns passing
+    through templates keep the reader's raw symbols).
+  - Macro calls signal `wrong-number-of-arguments' when required
+    parameters are missing (GNU; `(pcase-setq a)' must error).
+  - byte-opt.el's `side-effect-free'/`pure' function property tables
+    are installed verbatim from simple_compat.el (GNU gets them when
+    byte-opt loads, which real sessions do early; pcase--split-pred
+    folds predicate calls over quoted values with them and prunes
+    shadowed branches — the byte-opt file itself must NOT load, it
+    would drag bytecomp over the native compiler).  replace.el's
+    `how-many'/`count-matches' and isearch.el's `search-upper-case'
+    are ported verbatim for the quote-optimization test.
+  - Native `cl-typep' handles GNU range types ((integer LOW HIGH),
+    float/number/real, `*' unbounded, (N) exclusive) and signals
+    "Unknown type %S" for type names it cannot resolve to a class,
+    deftype, satisfies-predicate, oclosure type (root types register
+    `emaxx-oclosure-slots'; kmacro.el's `(cl-typep x 'kmacro)' must
+    stay nil before matching) or struct type (`emaxx-struct-slots').
+  - Sweep regressions fixed in-batch: the cl-macs integration must NOT
+    use `advice-add' (it autoloads nadvice.el and the blob can run in
+    the middle of nadvice's own load, re-entering it and clobbering
+    its cl-print-object method — plain wrapper redefinition of
+    `pcase--mutually-exclusive-p' instead); `cl-struct-sequence-type'
+    and the `cl-struct' pcase pattern are defined over emaxx struct
+    metadata (`emaxx-struct-sequence-type' property, list/vector/nil)
+    because the cl-loaddefs autoload stubs would drag cl-macs.el over
+    the native cl machinery mid-indent (lisp-mode's indent code
+    pcase-matches the lisp-indent-state struct); subr.el
+    `insert-into-buffer' is ported (pp-emacs-lisp-code).
 - Tests through 2474/7080 are verified: `package-tests.el`
   (2438..2474, all 37 selected — and the harness check-all scope also
   matches the 38th, `package-test-update-archives-async`).  The batch

@@ -91,6 +91,20 @@ impl Interpreter {
 
                 // Check for special forms first
                 if let Value::Symbol(ref name) = items[0] {
+                    if matches!(
+                        name.as_str(),
+                        "pcase"
+                            | "pcase-exhaustive"
+                            | "pcase-defmacro"
+                            | "pcase-let"
+                            | "pcase-let*"
+                            | "pcase-dolist"
+                            | "pcase-setq"
+                    ) {
+                        // GNU pcase.el takes over the family when loadable;
+                        // the native arms below are the no-file fallback.
+                        self.ensure_gnu_pcase_loaded();
+                    }
                     match name.as_str() {
                         "quote" => return self.sf_quote(&items),
                         "if" | "static-if" => return self.sf_if(&items, env),
@@ -113,9 +127,15 @@ impl Interpreter {
                             self.pop_backtrace_frame();
                             return result;
                         }
-                        "pcase" => return self.sf_pcase(&items, env),
-                        "pcase-defmacro" => return self.sf_pcase_defmacro(&items, env),
-                        "pcase-exhaustive" => return self.sf_pcase_exhaustive(&items, env),
+                        "pcase" if !self.has_macro_binding("pcase") => {
+                            return self.sf_pcase(&items, env);
+                        }
+                        "pcase-defmacro" if !self.has_macro_binding("pcase-defmacro") => {
+                            return self.sf_pcase_defmacro(&items, env);
+                        }
+                        "pcase-exhaustive" if !self.has_macro_binding("pcase-exhaustive") => {
+                            return self.sf_pcase_exhaustive(&items, env);
+                        }
                         "and-let*" => return self.sf_and_let_star(&items, env),
                         "and" => return self.sf_and(&items, env),
                         "or" => return self.sf_or(&items, env),
@@ -164,8 +184,12 @@ impl Interpreter {
                             return result;
                         }
                         "cl-progv" => return self.sf_cl_progv(&items, env),
-                        "pcase-let" => return self.sf_pcase_let(&items, env, false),
-                        "pcase-let*" => return self.sf_pcase_let(&items, env, true),
+                        "pcase-let" if !self.has_macro_binding("pcase-let") => {
+                            return self.sf_pcase_let(&items, env, false);
+                        }
+                        "pcase-let*" if !self.has_macro_binding("pcase-let*") => {
+                            return self.sf_pcase_let(&items, env, true);
+                        }
                         // GNU's let-alist.el macro handles nested
                         // `.sublist.foo' fields and `..outer' escapes;
                         // prefer it once loaded and keep the native form
@@ -290,7 +314,9 @@ impl Interpreter {
                         "dolist-with-progress-reporter" => {
                             return self.sf_dolist_with_progress_reporter(&items, env);
                         }
-                        "pcase-dolist" => return self.sf_pcase_dolist(&items, env),
+                        "pcase-dolist" if !self.has_macro_binding("pcase-dolist") => {
+                            return self.sf_pcase_dolist(&items, env);
+                        }
                         "dotimes" => return self.sf_dotimes(&items, env),
                         // The preloaded GNU `cl-loop' macro takes precedence;
                         // the native special form remains as a bootstrap

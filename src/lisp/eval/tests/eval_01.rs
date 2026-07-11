@@ -924,10 +924,15 @@ fn defmacro_without_body_expands_to_nil() {
 }
 
 #[test]
-fn macro_rest_after_missing_required_args_binds_nil() {
+fn macro_missing_required_args_signals_wrong_number_of_arguments() {
+    // GNU signals wrong-number-of-arguments when a macro call omits
+    // required parameters.
     assert_eq!(
-        eval_str("(progn (defmacro sample-macro (required &rest rest) rest) (sample-macro))"),
-        Value::Nil
+        eval_str(
+            "(progn (defmacro sample-macro (required &rest rest) rest)
+                    (condition-case e (eval '(sample-macro) t) (error (car e))))"
+        ),
+        Value::Symbol("wrong-number-of-arguments".into())
     );
 }
 

@@ -275,6 +275,101 @@ impl Interpreter {
         Ok(Value::Nil)
     }
 
+    /// GNU pcase.el owns the pcase family once it is loadable: its
+    /// expansions carry the memq/member optimizations and branch pruning
+    /// pcase-tests macroexpands for.  The native special forms stay as the
+    /// no-file fallback (unit tests run without a GNU load-path).
+    pub(crate) fn ensure_gnu_pcase_loaded(&mut self) {
+        if self.gnu_pcase_load_attempted {
+            return;
+        }
+        self.gnu_pcase_load_attempted = true;
+        if self.has_macro_binding("pcase") {
+            return;
+        }
+        let Some(path) = self.resolve_load_target("pcase") else {
+            return;
+        };
+        if crate::lisp::load_file_strict(self, &path).is_err() {
+            return;
+        }
+        // GNU cl-macs.el integrates with pcase once loaded: the cl-type
+        // pattern and the cl-typep-aware exclusivity advice (it prunes
+        // shadowed quoted branches).  emaxx's cl machinery is native, so
+        // cl-macs.el never loads; install the pieces here.  The GNU
+        // advice's defstruct-predicate branches are OMITTED: they call
+        // cl-struct-sequence-type, whose autoload stub would drag
+        // cl-macs.el over the native cl machinery (pruning is an
+        // optimization, so omitting them only costs precision).
+        const CL_MACS_PCASE_INTEGRATION: &str = r#"
+(progn
+  (defun cl--pcase-mutually-exclusive-p (orig pred1 pred2)
+    "Extra special cases for `cl-typep' predicates."
+    (let* ((x1 pred1) (x2 pred2)
+           (t1
+            (and (eq 'cl-typep (car-safe x1))    (setq x1 (cdr x1))
+                 (eq '_ (car-safe x1))           (setq x1 (cdr x1))
+                 (null (cdr-safe x1))            (setq x1 (car x1))
+                 (eq 'quote (car-safe x1))       (cadr x1)))
+           (t2
+            (and (eq 'cl-typep (car-safe x2))    (setq x2 (cdr x2))
+                 (eq '_ (car-safe x2))           (setq x2 (cdr x2))
+                 (null (cdr-safe x2))            (setq x2 (car x2))
+                 (eq 'quote (car-safe x2))       (cadr x2))))
+      (or
+       (and (symbolp t1) (symbolp t2)
+            (let ((c1 (cl--find-class t1))
+                  (c2 (cl--find-class t2)))
+              (and c1 c2
+                   (not (or (memq t1 (cl--class-allparents c2))
+                            (memq t2 (cl--class-allparents c1)))))))
+       (funcall orig pred1 pred2))))
+  ;; GNU installs this with advice-add, but advice-add autoloads
+  ;; nadvice.el and this blob can run in the middle of nadvice's own
+  ;; load (its first pcase form pulls pcase.el in); wrap by plain
+  ;; redefinition instead.
+  (defalias 'pcase--mutually-exclusive-p--emaxx-orig
+    (symbol-function 'pcase--mutually-exclusive-p))
+  (defun pcase--mutually-exclusive-p (pred1 pred2)
+    (cl--pcase-mutually-exclusive-p
+     #'pcase--mutually-exclusive-p--emaxx-orig pred1 pred2))
+  (defun cl-struct-sequence-type (struct-type)
+    "Return the sequence used to build STRUCT-TYPE.
+STRUCT-TYPE is a symbol naming a struct type.  Return values are
+either `vector', `list' or nil (and the latter indicates a
+`record' struct type."
+    (unless (get struct-type 'emaxx-struct-slots)
+      (error "%s is not a struct type" struct-type))
+    (get struct-type 'emaxx-struct-sequence-type))
+  (pcase-defmacro cl-struct (type &rest fields)
+    "Pcase patterns that match cl-struct EXPVAL of type TYPE.
+Elements of FIELDS can be of the form (NAME PAT) in which case the
+contents of field NAME is matched against PAT, or they can be of
+the form NAME which is a shorthand for (NAME NAME)."
+    (declare (debug (sexp &rest [&or (sexp pcase-PAT) sexp])))
+    `(and (pred (cl-typep _ ',type))
+          ,@(mapcar
+             (lambda (field)
+               (let* ((name (if (consp field) (car field) field))
+                      (pat (if (consp field) (cadr field) field)))
+                 `(app ,(if (eq (cl-struct-sequence-type type) 'list)
+                            `(nth ,(cl-struct-slot-offset type name))
+                          `(aref _ ,(cl-struct-slot-offset type name)))
+                       ,pat)))
+             fields)))
+  (pcase-defmacro cl-type (type)
+    "Pcase pattern that matches objects of TYPE.
+TYPE is a type descriptor as accepted by `cl-typep', which see."
+    `(pred (cl-typep _ ',type))))
+"#;
+        if let Ok(forms) = crate::lisp::reader::Reader::new(CL_MACS_PCASE_INTEGRATION).read_all() {
+            let mut env = Env::new();
+            for form in forms {
+                let _ = self.eval(&form, &mut env);
+            }
+        }
+    }
+
     pub(super) fn sf_pcase(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
         self.sf_pcase_like(items, env, false)
     }

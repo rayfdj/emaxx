@@ -43,19 +43,24 @@ impl Interpreter {
         env: &mut Env,
         depth: usize,
     ) -> Result<Value, LispError> {
-        if let Some((kind, value)) = backquote_unquote_form(expr) {
+        if let Some((_kind, value)) = backquote_unquote_form(expr) {
             if depth == 0 {
                 return self.eval(&value, env);
             }
+            // Preserve the original head symbol (`\,'/`\,@' vs the
+            // canonical names): pcase patterns rebuilt through nested
+            // templates must keep the reader's raw symbols.
+            let head = expr.to_vec()?[0].clone();
             return Ok(Value::list([
-                Value::Symbol(kind.into()),
+                head,
                 self.eval_backquote_with_depth(&value, env, depth - 1)?,
             ]));
         }
 
         if let Some(body) = nested_backquote_body(expr) {
+            let head = expr.to_vec()?[0].clone();
             return Ok(Value::list([
-                Value::Symbol("backquote".into()),
+                head,
                 self.eval_backquote_with_depth(&body, env, depth + 1)?,
             ]));
         }
@@ -329,15 +334,17 @@ impl Interpreter {
             return Ok(None);
         }
 
-        // The pcase family is evaluated natively; loading GNU pcase.el
-        // would otherwise shadow it with macros whose backquote-pattern
-        // expander is registered under the `\`' symbol while the native
-        // reader encodes patterns with `backquote'.
+        // The pcase family is evaluated natively UNLESS GNU pcase.el has
+        // been loaded (its macros then own the family; the reader encodes
+        // patterns with the same `\`'/`\,' symbols pcase.el registers).
         if matches!(
             name,
             "pcase" | "pcase-exhaustive" | "pcase-let" | "pcase-let*" | "pcase-dolist"
         ) {
-            return Ok(None);
+            self.ensure_gnu_pcase_loaded();
+            if !self.has_macro_binding(name) {
+                return Ok(None);
+            }
         }
 
         // GNU oclosure.el signals duplicate-slot errors at macroexpansion
@@ -419,9 +426,11 @@ impl Interpreter {
         let mut frame = Vec::new();
         let mut arg_idx = 0;
         let mut rest = false;
+        let mut optional = false;
 
         for param in &params {
             if param == "&optional" {
+                optional = true;
                 continue;
             }
             if param == "&rest" || param == "&body" {
@@ -435,8 +444,12 @@ impl Interpreter {
             }
             let val = if arg_idx < args.len() {
                 args[arg_idx].clone()
-            } else {
+            } else if optional {
                 Value::Nil
+            } else {
+                // GNU signals wrong-number-of-arguments when a macro call
+                // omits required parameters ((pcase-setq a) must error).
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             };
             frame.push((param.clone(), val));
             arg_idx += 1;
@@ -678,7 +691,9 @@ impl Interpreter {
                 // use backquote SYNTAX; expand only the subject and clause
                 // bodies so patterns survive while cl-labels-style env
                 // expanders still reach the code inside.
-                "pcase" | "pcase-exhaustive" if items.len() >= 2 => {
+                "pcase" | "pcase-exhaustive"
+                    if items.len() >= 2 && !self.has_macro_binding("pcase") =>
+                {
                     let mut rebuilt = vec![items[0].clone()];
                     rebuilt.push(self.macroexpand_all_form_with_environment(
                         &items[1],
@@ -734,7 +749,9 @@ impl Interpreter {
                     }
                     return Ok(Value::list(rebuilt));
                 }
-                "pcase-let" | "pcase-let*" | "pcase-dolist" if items.len() >= 2 => {
+                "pcase-let" | "pcase-let*" | "pcase-dolist"
+                    if items.len() >= 2 && !self.has_macro_binding("pcase-let") =>
+                {
                     let mut rebuilt = vec![items[0].clone(), items[1].clone()];
                     for body in &items[2..] {
                         rebuilt.push(self.macroexpand_all_form_with_environment(
