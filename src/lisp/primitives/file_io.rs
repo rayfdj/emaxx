@@ -1115,9 +1115,9 @@ pub(crate) fn insert_file_contents(
         let start = interp.buffer.point_min();
         let end = interp.buffer.point_max();
         interp.buffer.goto_char(start);
-        interp
-            .delete_region_current_buffer(start, end)
-            .map_err(LispError::from)?;
+        // GNU runs the modification hooks for the replaced region
+        // (track-changes keeps buffers in sync across reverts).
+        crate::lisp::primitives::delete_region_with_hooks(interp, start, end, env)?;
         interp.buffer.goto_char(start);
     }
     if let Some(hooks) = interp.lookup_var("after-insert-file-functions", env)
@@ -1129,7 +1129,7 @@ pub(crate) fn insert_file_contents(
         ])));
     }
     let insert_at = interp.buffer.point();
-    interp.insert_current_buffer(&text);
+    crate::lisp::primitives::insert_text_with_hooks(interp, &text, &[], false, false, env)?;
     interp.buffer.goto_char(insert_at);
     interp.set_buffer_local_value(
         interp.current_buffer_id(),
@@ -1235,6 +1235,15 @@ pub(crate) fn ensure_no_supersession_threat(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    // GNU's check is gated on the `buffer-file-name' Lisp value, so a
+    // let-binding of it to nil suppresses the conflict prompt entirely
+    // (auto-revert-tail-handler relies on this while appending).
+    if interp
+        .lookup_var("buffer-file-name", env)
+        .is_some_and(|value| value.is_nil())
+    {
+        return Ok(());
+    }
     let Some(path) = current_buffer_file(interp).map(str::to_string) else {
         return Ok(());
     };

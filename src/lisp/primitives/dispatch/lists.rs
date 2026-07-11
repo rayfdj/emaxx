@@ -113,6 +113,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "this-command-keys-vector"
             | "this-single-command-keys"
             | "this-single-command-raw-keys"
+            | "recent-keys"
             | "define-keymap"
             | "define-abbrev-table"
             | "read-key"
@@ -1957,6 +1958,12 @@ pub(super) fn call(
             Ok(interp
                 .lookup_var("this-single-command-keys", env)
                 .unwrap_or_else(|| Value::list([Value::Symbol("vector-literal".into())])))
+        }
+        "recent-keys" => {
+            // (recent-keys &optional INCLUDE-CMDS): batch sessions record no
+            // key events, matching GNU's empty vector under --batch.
+            need_arg_range(name, args, 0, 1)?;
+            Ok(Value::list([Value::Symbol("vector-literal".into())]))
         }
         "define-keymap" => Ok(keymap_placeholder(None)),
         "define-abbrev-table" => {

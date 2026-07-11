@@ -1589,13 +1589,17 @@ pub(super) fn call(
                     slots[index] = interp.eval(&default_form, env)?;
                 }
             }
-            // Unnamed `:type vector' structs are stored as plain vectors.
-            if args.get(5).and_then(|mode| mode.as_symbol().ok()) == Some("vector") {
-                let mut items = vec![Value::symbol("vector-literal")];
-                items.extend(slots);
-                return Ok(Value::list(items));
+            // Unnamed `:type vector' structs are stored as plain vectors,
+            // unnamed `:type list' structs as plain lists (GNU).
+            match args.get(5).and_then(|mode| mode.as_symbol().ok()) {
+                Some("vector") => {
+                    let mut items = vec![Value::symbol("vector-literal")];
+                    items.extend(slots);
+                    Ok(Value::list(items))
+                }
+                Some("list") => Ok(Value::list(slots)),
+                _ => Ok(interp.create_record(&struct_name, slots)),
             }
-            Ok(interp.create_record(&struct_name, slots))
         }
         "emaxx-struct-p" => {
             need_args(name, args, 2)?;

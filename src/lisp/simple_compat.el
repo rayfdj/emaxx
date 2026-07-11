@@ -6254,6 +6254,180 @@ lines."
 ;; loads rx.el via the native trigger.
 (autoload 'rx-let-eval "rx" "Evaluate BODY with local rx-definitions." nil 'macro)
 
+(defmacro noreturn (form)
+  "Evaluate FORM, expecting it not to return.
+If FORM does return, signal an error."
+  (declare (debug t))
+  `(prog1 ,form
+     (error "Form marked with `noreturn' did return")))
+
+(defmacro 1value (form)
+  "Evaluate FORM, expecting a constant return value.
+If FORM returns differing values when running under Testcover,
+Testcover will raise an error."
+  (declare (debug t))
+  form)
+
+(defun timer-next-integral-multiple-of-time (time secs)
+  "Yield the next value after TIME that is an integral multiple of SECS.
+More precisely, the next value, after TIME, that is an integral multiple
+of SECS seconds since the epoch.  SECS may be a fraction."
+  (let* ((ticks-hz (time-convert time t))
+	 (ticks (car ticks-hz))
+	 (hz (cdr ticks-hz))
+	 trunc-s-ticks)
+    (while (let ((s-ticks (* secs hz)))
+	     (setq trunc-s-ticks (truncate s-ticks))
+	     (/= s-ticks trunc-s-ticks))
+      (setq ticks (ash ticks 1))
+      (setq hz (ash hz 1)))
+    (let ((more-ticks (+ ticks trunc-s-ticks)))
+      (time-convert (cons (- more-ticks (% more-ticks trunc-s-ticks)) hz) t))))
+
+;; GNU subr.el: `not' is an alias of `null', so `function-get' reads
+;; null's `side-effect-free' property through the alias (unsafep).
+(defalias 'not #'null)
+
+;; GNU simple.el (preloaded): viper reads this at load time.
+(defvar next-line-add-newlines nil
+  "If non-nil, `next-line' inserts newline to avoid `end of buffer' error.")
+
+;; GNU C display variables (window.c/xdisp.c defaults): viper reads and
+;; let-binds these at load time.
+(defvar scroll-step 0)
+(defvar scroll-conservatively 0)
+(defvar scroll-margin 0)
+(defvar global-mode-string nil)
+(defvar mark-even-if-inactive t)
+(defvar emulation-mode-map-alists nil)
+(defvar initial-major-mode 'lisp-interaction-mode)
+(defvar-local abbrev-mode nil)
+(defvar-local auto-fill-function nil)
+(defalias 'beep #'ding)
+
+;; GNU mule-cmds.el (preloaded): the input-method state surface, enough
+;; for viper's conditional deactivation in batch (no input method active).
+(defvar current-input-method nil)
+(defvar current-transient-input-method nil)
+(defvar current-input-method-title nil)
+(defvar input-method-history nil)
+(defvar input-method-deactivate-hook nil)
+(defvar deactivate-current-input-method-function nil)
+
+(defvar history-length 100)
+(defvar history-delete-duplicates nil)
+
+(defun add-to-history (history-var newelt &optional maxelt keep-all)
+  "Add NEWELT to the history list stored in the variable HISTORY-VAR.
+Return the new history list.
+If MAXELT is non-nil, it specifies the maximum length of the history.
+Otherwise, the maximum history length is the value of the `history-length'
+property on symbol HISTORY-VAR, if set, or the value of the `history-length'
+variable.
+Remove duplicates of NEWELT if `history-delete-duplicates' is non-nil.
+If optional fourth arg KEEP-ALL is non-nil, add NEWELT to history even
+if it is empty or duplicates the most recent entry in the history.
+HISTORY-VAR cannot refer to a lexical variable."
+  (unless maxelt
+    (setq maxelt (or (get history-var 'history-length)
+		     history-length)))
+  (let ((history (symbol-value history-var))
+	tail)
+    (when (and (listp history)
+	       (or keep-all
+		   (not (stringp newelt))
+		   (> (length newelt) 0))
+	       (or keep-all
+		   (not (equal (car history) newelt))))
+      (if history-delete-duplicates
+	  (setq history (delete newelt history)))
+      (setq history (cons newelt history))
+      (when (integerp maxelt)
+        (if (>= 0 maxelt)
+	    (setq history nil)
+	  (setq tail (nthcdr (1- maxelt) history))
+	  (when (consp tail)
+            (setcdr tail nil))))
+      (set history-var history))))
+
+(defun deactivate-input-method ()
+  "Turn off the current input method."
+  (when current-input-method
+    (unless current-transient-input-method
+      (add-to-history 'input-method-history current-input-method))
+    (unwind-protect
+	(progn
+	  (setq input-method-function nil
+		current-input-method-title nil)
+	  (funcall deactivate-current-input-method-function))
+      (unwind-protect
+	  (run-hooks 'input-method-deactivate-hook)
+	(setq current-input-method nil)
+	(force-mode-line-update)))))
+
+(defun load-library (library &optional _interactive-call)
+  "Load the Emacs Lisp library named LIBRARY.
+LIBRARY should be a string.  This is an interface to the function `load'."
+  (interactive "sLoad library: ")
+  (load library))
+
+(defun add-to-ordered-list (list-var element &optional order)
+  "Add ELEMENT to the value of LIST-VAR if it isn't there yet.
+The test for presence of ELEMENT is done with `eq'.
+
+The value of LIST-VAR is kept ordered based on the ORDER
+parameter.  The list order for each element is stored in
+LIST-VAR's `list-order' property.
+
+The return value is the new value of LIST-VAR."
+  (let ((ordering (get list-var 'list-order)))
+    (unless ordering
+      (put list-var 'list-order
+           (setq ordering (make-hash-table :weakness 'key :test 'eq))))
+    (when order
+      (puthash element (and (numberp order) order) ordering))
+    (unless (memq element (symbol-value list-var))
+      (set list-var (cons element (symbol-value list-var))))
+    (set list-var (sort (symbol-value list-var)
+			(lambda (a b)
+			  (let ((oa (gethash a ordering))
+				(ob (gethash b ordering)))
+			    (if (and oa ob)
+				(< oa ob)
+			      oa)))))))
+
+;; GNU format.el (preloaded) marks `format-alist' risky.
+(put 'format-alist 'risky-local-variable t)
+
+(defun backtrace-frames (&optional base)
+  "Collect all frames of current backtrace into a list.
+If non-nil, BASE should be a function, and frames before its
+nearest activation frame are discarded."
+  (let ((frames nil))
+    (mapbacktrace (lambda (&rest frame) (push frame frames))
+                  (or base #'backtrace-frames))
+    (nreverse frames)))
+
+(defun risky-local-variable-p (sym &optional _ignored)
+  "Non-nil if SYM could be dangerous as a file-local variable.
+It is dangerous if either of these conditions are met:
+
+ * Its `risky-local-variable' property is non-nil.
+
+ * Its name ends with \"hook(s)\", \"function(s)\", \"form(s)\", \"map\",
+   \"program\", \"command(s)\", \"predicate(s)\", \"frame-alist\",
+   \"mode-alist\", \"font-lock-(syntactic-)keyword*\",
+   \"map-alist\", or \"bindat-spec\"."
+  ;; If this is an alias, check the base name.
+  (condition-case nil
+      (setq sym (indirect-variable sym))
+    (error nil))
+  (or (get sym 'risky-local-variable)
+      (string-match "-hooks?$\\|-functions?$\\|-forms?$\\|-program$\\|\
+-commands?$\\|-predicates?$\\|font-lock-keywords$\\|font-lock-keywords\
+-[0-9]+$\\|font-lock-syntactic-keywords$\\|-frame-alist$\\|-mode-alist$\\|\
+-map$\\|-map-alist$\\|-bindat-spec$" (symbol-name sym))))
+
 (defun make-separator-line (&optional length)
   "Make a string appropriate for usage as a visual separator line.
 This uses the `separator-line' face.

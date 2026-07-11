@@ -19,6 +19,28 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2746/7080: testcover (2670..2700, 31/31),
+  text-property-search (2701..2720), thunk (2721..2729), timer
+  (2730..2734), track-changes (2735), unsafep (2736..2740), vtable
+  (2741..2742), warnings (2743..2746) all pass; 126-file prefix sweep
+  (prefix-files14.txt) on frozen binaries is the gate.  Key semantics
+  (full detail in the continuation doc):
+  - Unnamed `:type list` cl-defstructs are plain lists (GNU), with
+    accessor reads/writes and setf on the list cells.
+  - `equal` on closures compares body-referenced captured bindings
+    (nadvice equality preserved, testcover 1value divergence detected).
+  - `function-get` follows defalias chains; `not` aliases `null`.
+  - GNU time_arith tick/hz arithmetic; flooring time-convert; sit-for
+    NODISP; timer-next-integral-multiple-of-time port.
+  - insert-file-contents fires change hooks (REPLACE included); the
+    supersession check respects a let-bound nil `buffer-file-name`
+    (auto-revert tail handler).
+  - local-variable-p → t for always-buffer-local DEFVAR_PER_BUFFER vars.
+  - recent-keys/display-color-p/frame-parameters batch stubs; a dozen
+    preloaded simple.el/subr.el/mule-cmds.el defuns+defvars in
+    simple_compat.el (see continuation doc list).
+- NEXT: `viper-tests.el` (2747..2751): 1/5 passes (viper-test-fix);
+  viper-test-undo-1..4 exercise vi undo grouping via execute-kbd-macro.
 - Verified through selector 2669/7080: `shortdoc-tests.el` (2613..2617,
   5/5), `subr-x-tests.el` (2618..2664, 47/47), `syntax-tests.el` (2665),
   `tabulated-list-tests.el` (2666..2669, 4/4) all pass the harness.

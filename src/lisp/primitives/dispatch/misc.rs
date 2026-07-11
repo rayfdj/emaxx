@@ -683,13 +683,36 @@ pub(super) fn call(
                 .get_symbol_property(symbol, property)
                 .unwrap_or(Value::Nil))
         }
-        "get" | "function-get" => {
+        "get" => {
             need_arg_range(name, args, 2, 3)?;
             let symbol = args[0].as_symbol()?;
             let property = args[1].as_symbol()?;
             Ok(interp
                 .get_symbol_property(symbol, property)
                 .unwrap_or(Value::Nil))
+        }
+        "function-get" => {
+            need_arg_range(name, args, 2, 3)?;
+            let mut symbol = args[0].as_symbol()?.to_string();
+            let property = args[1].as_symbol()?;
+            // GNU follows defalias chains until a non-nil property is found
+            // ((function-get 'not 'side-effect-free) reads null's — unsafep).
+            let mut hops = 0;
+            loop {
+                if let Some(value) = interp.get_symbol_property(&symbol, property)
+                    && !value.is_nil()
+                {
+                    return Ok(value);
+                }
+                hops += 1;
+                if hops > 10 {
+                    return Ok(Value::Nil);
+                }
+                match interp.raw_function_binding(&symbol, env) {
+                    Some(Value::Symbol(next)) if next != symbol => symbol = next,
+                    _ => return Ok(Value::Nil),
+                }
+            }
         }
         "makunbound" => {
             need_args(name, args, 1)?;
