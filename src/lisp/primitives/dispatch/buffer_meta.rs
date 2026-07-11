@@ -1,5 +1,18 @@
 use super::*;
 
+/// Convert a resolved function value into a `help-function-arglist` result: the
+/// parameter list for a lambda, the inner lambda's parameters for a
+/// `(macro . lambda)` cons, and nil otherwise.
+fn help_function_arglist_value(function: &Value) -> Value {
+    match function {
+        Value::Lambda(params, _, _) => Value::list(params.iter().cloned().map(Value::Symbol)),
+        Value::Cons(car, cdr) if matches!(&*car.borrow(), Value::Symbol(s) if s == "macro") => {
+            help_function_arglist_value(&cdr.borrow())
+        }
+        _ => Value::Nil,
+    }
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -651,31 +664,19 @@ pub(super) fn call(
                 }
                 match interp.lookup_function(symbol, env) {
                     Ok(function) => function,
-                    Err(_) => return Ok(Value::T),
+                    // The function cell has no lambda, but the symbol may still
+                    // be a macro (e.g. a GNU macro loaded into the macro table).
+                    // GNU returns the macro's arglist, never a bare `t`, so the
+                    // callers that iterate the arglist (shortdoc) do not fault.
+                    Err(_) => match interp.macro_binding_as_function(symbol) {
+                        Some(macro_fn) => macro_fn,
+                        None => return Ok(Value::T),
+                    },
                 }
             } else {
                 args[0].clone()
             };
-            match function {
-                Value::Lambda(params, _, _) => {
-                    Ok(Value::list(params.into_iter().map(Value::Symbol)))
-                }
-                Value::Symbol(symbol) => {
-                    if let Some(arglist) =
-                        interp.get_symbol_property(&symbol, "emaxx-function-arglist")
-                    {
-                        Ok(arglist)
-                    } else {
-                        match interp.lookup_function(&symbol, env)? {
-                            Value::Lambda(params, _, _) => {
-                                Ok(Value::list(params.into_iter().map(Value::Symbol)))
-                            }
-                            _ => Ok(Value::Nil),
-                        }
-                    }
-                }
-                _ => Ok(Value::Nil),
-            }
+            Ok(help_function_arglist_value(&function))
         }
         "indirect-function" => {
             need_arg_range(name, args, 1, 2)?;

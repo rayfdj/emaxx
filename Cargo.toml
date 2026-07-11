@@ -30,5 +30,6 @@ sha3 = "0.10.8"
 getrandom = "0.3"
 libc = "0.2"
 unicode-segmentation = "1.13.3"
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]

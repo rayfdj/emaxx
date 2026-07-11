@@ -233,7 +233,11 @@ impl Interpreter {
                         "defgroup" => return self.sf_defgroup(&items),
                         "defface" => return self.sf_defface(&items),
                         "defvar-keymap" => return self.sf_defvar_keymap(&items, env),
-                        "define-short-documentation-group" => return self.sf_defgroup(&items),
+                        "define-short-documentation-group"
+                            if !self.has_macro_binding("define-short-documentation-group") =>
+                        {
+                            return self.sf_defgroup(&items);
+                        }
                         "eval" => return self.sf_eval_function(&items, env),
                         "insert" => return self.sf_insert_function(&items, env, false, false),
                         "insert-and-inherit" => {
@@ -476,6 +480,20 @@ impl Interpreter {
                             } =>
                         {
                             return self.sf_rx_let(&items, env);
+                        }
+                        // rx-let-eval is defined only by GNU rx.el; loading it
+                        // makes the macro available so the normal macro dispatch
+                        // (below) expands it.  There is no native fallback.
+                        "rx-let-eval"
+                            if !{
+                                self.ensure_gnu_rx_loaded();
+                                self.has_macro_binding("rx-let-eval")
+                            } =>
+                        {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::Symbol("void-function".into()),
+                                Value::Symbol("rx-let-eval".into()),
+                            ])));
                         }
                         "require" => {
                             if let Some(feature_expr) = items.get(1) {

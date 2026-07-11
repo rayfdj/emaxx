@@ -85,6 +85,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "scroll-up"
             | "scroll-down"
             | "window-text-pixel-size"
+            | "buffer-text-pixel-size"
             | "get-display-property"
             | "bidi-find-overridden-directionality"
             | "redisplay"
@@ -1259,6 +1260,23 @@ pub(super) fn call(
                 .max()
                 .unwrap_or(0);
             let height = interp.buffer.buffer_string().lines().count().max(1);
+            Ok(Value::cons(
+                Value::Integer(width as i64),
+                Value::Integer(height as i64),
+            ))
+        }
+        "buffer-text-pixel-size" => {
+            // (buffer-text-pixel-size &optional WINDOW FROM TO X-LIMIT).
+            // Without a graphical frame there is no font, so report the
+            // widest line's character count as the pixel width and the line
+            // count as the pixel height (one nominal unit per character).
+            let text = interp.buffer.buffer_string();
+            let width = text
+                .lines()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0);
+            let height = text.lines().count().max(1);
             Ok(Value::cons(
                 Value::Integer(width as i64),
                 Value::Integer(height as i64),
