@@ -1430,6 +1430,17 @@ pub(super) fn call(
                 .get(2)
                 .is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
                 || args.get(3).is_some_and(|value| value.is_truthy());
+            // GNU add-hook: a hook whose current value is a single function
+            // (not a list) is first wrapped in a one-element list, so the
+            // existing handler survives (erc's `422' hook holds the bare
+            // symbol `erc-server-376' before the networks module adds to it).
+            let hook_value_to_vec = |value: Value| -> Vec<Value> {
+                match value.to_vec() {
+                    Ok(items) => items,
+                    Err(_) if value.is_nil() => Vec::new(),
+                    Err(_) => vec![value],
+                }
+            };
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
@@ -1442,12 +1453,12 @@ pub(super) fn call(
                 // value here; GNU's global add-hook reads the DEFAULT.
                 interp
                     .default_value(&hook_name)
-                    .map(|value| value.to_vec().unwrap_or_default())
+                    .map(hook_value_to_vec)
                     .unwrap_or_default()
             } else {
                 interp
                     .lookup_var(&hook_name, env)
-                    .map(|value| value.to_vec().unwrap_or_default())
+                    .map(hook_value_to_vec)
                     .unwrap_or_default()
             };
             if !hooks.contains(&function) {

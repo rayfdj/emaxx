@@ -748,7 +748,15 @@ pub(crate) fn pump_network_processes(
                 break;
             };
             progressed = true;
+            // GNU server_accept_connection gives each child a fresh copy of
+            // the server's plist (Fcopy_sequence), so the child's later
+            // `process-put' (plist-put mutates value cells in place) never
+            // clobbers the server's own properties.
             let server_plist = interp.process_plist_value(server_id).unwrap_or(Value::Nil);
+            let server_plist = match server_plist.to_vec() {
+                Ok(items) => Value::list(items),
+                Err(_) => server_plist,
+            };
             let server_filter = interp.process_filter(server_id);
             let server_sentinel = interp.process_sentinel(server_id);
             let server_log = interp.process_log_function(server_id);
