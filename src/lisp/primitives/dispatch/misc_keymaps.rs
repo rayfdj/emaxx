@@ -1005,7 +1005,16 @@ pub(super) fn call(
                 args.get(2).map(Value::as_integer).transpose()?,
             )
         }
-        "text-quoting-style" => Ok(Value::Symbol("grave".into())),
+        "text-quoting-style" => {
+            // GNU doc.c: honor the `text-quoting-style' variable; the batch
+            // terminal cannot display curved quotes, so nil means grave.
+            Ok(match interp.lookup_var("text-quoting-style", env) {
+                Some(Value::Symbol(style)) if style == "curve" || style == "straight" => {
+                    Value::Symbol(style)
+                }
+                _ => Value::Symbol("grave".into()),
+            })
+        }
         "file-truename" => {
             need_args(name, args, 1)?;
             Ok(Value::String(string_text(&args[0])?))

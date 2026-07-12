@@ -138,6 +138,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "process-buffer"
             | "process-mark"
             | "process-status"
+            | "process-plist"
+            | "set-process-plist"
+            | "process-get"
+            | "process-put"
             | "process-live-p"
             | "process-attributes"
             | "process-coding-system"
@@ -208,6 +212,10 @@ pub(super) fn call(
                 interp.resolve_buffer_id(&args[0])?
             };
             interp.switch_to_buffer_id(id)?;
+            let norecord = args.get(1).is_some_and(|value| value.is_truthy());
+            if !norecord {
+                interp.record_buffer_front(id);
+            }
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
         "pop-to-buffer" | "pop-to-buffer-same-window" | "switch-to-buffer-other-window" => {
@@ -221,6 +229,15 @@ pub(super) fn call(
                 interp.resolve_buffer_id(&args[0])?
             };
             interp.switch_to_buffer_id(id)?;
+            // NORECORD is the third arg for pop-to-buffer (after ACTION)
+            // and the second for the same-window/other-window variants.
+            let norecord_index = if name == "pop-to-buffer" { 2 } else { 1 };
+            let norecord = args
+                .get(norecord_index)
+                .is_some_and(|value| value.is_truthy());
+            if !norecord {
+                interp.record_buffer_front(id);
+            }
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
         "create-file-buffer" => {
@@ -2139,6 +2156,36 @@ pub(super) fn call(
                 .process_status_value(process_id)
                 .ok_or_else(|| LispError::Signal("Invalid process state".into()))
         }
+        "process-plist" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp.process_plist_value(process_id).unwrap_or(Value::Nil))
+        }
+        "set-process-plist" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp.set_process_plist_value(process_id, args[1].clone());
+            Ok(args[1].clone())
+        }
+        "process-get" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let plist = interp.process_plist_value(process_id).unwrap_or(Value::Nil);
+            super::call(interp, "plist-get", &[plist, args[1].clone()], env)
+        }
+        "process-put" => {
+            need_args(name, args, 3)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let plist = interp.process_plist_value(process_id).unwrap_or(Value::Nil);
+            let updated = super::call(
+                interp,
+                "plist-put",
+                &[plist, args[1].clone(), args[2].clone()],
+                env,
+            )?;
+            interp.set_process_plist_value(process_id, updated);
+            Ok(args[2].clone())
+        }
         "process-live-p" => {
             need_args(name, args, 1)?;
             let process_id = interp.resolve_process_id(&args[0])?;
@@ -2175,8 +2222,26 @@ pub(super) fn call(
             Ok(args[1].clone())
         }
         "delete-process" => {
-            need_args(name, args, 1)?;
-            let process_id = interp.resolve_process_id(&args[0])?;
+            // PROCESS may be a process, a buffer, the name of a buffer, or
+            // nil, defaulting to the current buffer's process.
+            let process_value = match args.first() {
+                None | Some(Value::Nil) => {
+                    let buffer_id = interp.current_buffer_id();
+                    interp.process_value_for_buffer(buffer_id)
+                }
+                Some(process @ Value::Record(_)) => Some(process.clone()),
+                Some(other) => {
+                    let buffer_id = interp.resolve_buffer_id(other)?;
+                    interp.process_value_for_buffer(buffer_id)
+                }
+            };
+            let Some(process_value) = process_value else {
+                return Err(wrong_type_argument(
+                    "processp",
+                    args.first().cloned().unwrap_or(Value::Nil),
+                ));
+            };
+            let process_id = interp.resolve_process_id(&process_value)?;
             interp.delete_process(process_id)?;
             Ok(Value::Nil)
         }

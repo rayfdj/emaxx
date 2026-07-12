@@ -34,6 +34,20 @@ impl Interpreter {
             .find(|process| process.record_id == record_id)
     }
 
+    pub fn process_plist_value(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .map(|process| process.plist.clone())
+    }
+
+    pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.plist = Self::stored_value(plist);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn find_process_state_mut(&mut self, record_id: u64) -> Option<&mut ProcessState> {
         self.process_states
             .iter_mut()
@@ -124,6 +138,7 @@ impl Interpreter {
             runtime: runtime.map(|child| RunningProcess { child }),
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
+            plist: Value::Nil,
         });
         Ok(process)
     }

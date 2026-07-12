@@ -528,6 +528,8 @@ struct ProcessState {
     /// is lost (epg reads gpg's final status lines this way).
     pending_stdout: Vec<u8>,
     pending_stderr: Vec<u8>,
+    /// The process property list (process-put/process-get).
+    plist: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -2824,8 +2826,16 @@ fn cl_defmethod_specializers(spec: &Value) -> Result<Vec<ClDefmethodSpecializer>
         // (context rewriters expand to this shape): dispatch evaluates EXPR.
         if next_is_context && let Some(expr @ Value::Cons(_, _)) = parts.first() {
             if let Some(kind) = cl_defmethod_specializer_kind(parts.get(1)) {
+                // Two methods that differ only in their context EXPR are
+                // distinct methods, so the variable naming (which feeds the
+                // method identity key) must incorporate the expression.
+                let fingerprint = expr
+                    .to_string()
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                    .collect::<String>();
                 specializers.push(ClDefmethodSpecializer {
-                    variable: format!("--cl-context-{}", specializers.len()),
+                    variable: format!("--cl-context-{}-{fingerprint}", specializers.len()),
                     kind,
                     is_context: true,
                     context_expr: Some(expr.clone()),
@@ -4336,8 +4346,10 @@ fn is_compat_preloaded_feature(feature: &str) -> bool {
             | "cus-load"
             | "edmacro"
             | "ert-x"
+            | "hex-util"
             | "map"
             | "python"
+            | "rfc2104"
             | "seq"
             | "thread"
     )

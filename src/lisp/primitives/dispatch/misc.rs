@@ -11,6 +11,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "secure-hash"
             | "secure-hash-algorithms"
             | "buffer-hash"
+            | "decode-hex-string"
+            | "encode-hex-string"
+            | "rfc2104-hash"
             | "error"
             | "user-error"
             | "signal"
@@ -183,6 +186,82 @@ pub(super) fn call(
                 args.get(3),
                 args.get(4),
             )
+        }
+        // hex-util.el (native for speed; the feature is compat-preloaded).
+        "decode-hex-string" => {
+            need_args(name, args, 1)?;
+            let text = string_text(&args[0])?;
+            let chars: Vec<char> = text.chars().collect();
+            if !chars.len().is_multiple_of(2) {
+                return Err(LispError::Signal(format!(
+                    "Args out of range: {:?}, {}",
+                    text,
+                    chars.len()
+                )));
+            }
+            let mut out = Vec::with_capacity(chars.len() / 2);
+            for pair in chars.chunks(2) {
+                let hi = hex_util_digit(pair[0])?;
+                let lo = hex_util_digit(pair[1])?;
+                out.push((hi * 16 + lo) as u8);
+            }
+            Ok(bytes_to_shared_unibyte_value(&out))
+        }
+        "encode-hex-string" => {
+            need_args(name, args, 1)?;
+            let text = string_text(&args[0])?;
+            let bytes = internal_text_bytes(&text, false)?;
+            let mut dst = String::with_capacity(bytes.len() * 2);
+            for byte in bytes {
+                dst.push(HEX_UTIL_DIGITS[(byte / 16) as usize] as char);
+                dst.push(HEX_UTIL_DIGITS[(byte % 16) as usize] as char);
+            }
+            Ok(Value::String(dst))
+        }
+        // rfc2104.el HMAC (native for speed; the feature is compat-preloaded).
+        // HASH is funcalled for wrapper functions (sasl-scram-sha256 etc.);
+        // known algorithm symbols hash natively.
+        "rfc2104-hash" => {
+            need_args(name, args, 5)?;
+            let block_length = usize::try_from(args[1].as_integer()?)
+                .map_err(|_| LispError::TypeError("natnum".into(), args[1].type_name()))?;
+            let hash_length = usize::try_from(args[2].as_integer()?)
+                .map_err(|_| LispError::TypeError("natnum".into(), args[2].type_name()))?;
+            let key_text = string_text(&args[3])?;
+            let text = string_text(&args[4])?;
+            let mut key = internal_text_bytes(&key_text, false)?;
+            let text_bytes = internal_text_bytes(&text, false)?;
+            // GNU: a key longer than the block is replaced by the HASH's
+            // return value -- the hex STRING itself, not its octets.
+            if key.len() > block_length {
+                key = rfc2104_hash_hex(interp, &args[0], &key, env)?.into_bytes();
+            }
+            if key.len() > block_length {
+                return Err(LispError::Signal(format!(
+                    "Args out of range: {}, {}",
+                    key.len(),
+                    block_length
+                )));
+            }
+            let mut ipad = vec![0x36u8; block_length];
+            let mut opad = vec![0x5cu8; block_length];
+            for (index, byte) in key.iter().enumerate() {
+                ipad[index] ^= byte;
+                opad[index] ^= byte;
+            }
+            ipad.extend_from_slice(&text_bytes);
+            let inner = rfc2104_hash_digest(interp, &args[0], &ipad, env)?;
+            if inner.len() < hash_length {
+                return Err(LispError::Signal(format!(
+                    "Args out of range: {}, {}",
+                    inner.len(),
+                    hash_length
+                )));
+            }
+            opad.extend_from_slice(&inner[..hash_length]);
+            Ok(Value::String(rfc2104_hash_hex(
+                interp, &args[0], &opad, env,
+            )?))
         }
         "secure-hash-algorithms" => {
             need_args(name, args, 0)?;
@@ -627,7 +706,11 @@ pub(super) fn call(
                 }
                 let symbol = items[0].as_symbol()?.to_string();
                 interp.put_symbol_property(&symbol, "saved-value", Value::list([items[1].clone()]));
-                if items.get(2).is_some_and(Value::is_truthy) {
+                // GNU sets an already-defined option immediately; NOW only
+                // forces a binding for options not yet defined.
+                if items.get(2).is_some_and(Value::is_truthy)
+                    || interp.default_toplevel_value(&symbol).is_some()
+                {
                     let value = interp.eval(&items[1], env)?;
                     result = interp.set_custom_option(&symbol, value, env)?;
                 }
@@ -1910,4 +1993,56 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
         map.entry(name).or_insert(doc);
     }
     map
+}
+
+const HEX_UTIL_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+// hex-util.el hex-char-to-num, including its error for non-hex digits.
+fn hex_util_digit(ch: char) -> Result<u32, LispError> {
+    match ch {
+        'a'..='f' => Ok(ch as u32 - 'a' as u32 + 10),
+        'A'..='F' => Ok(ch as u32 - 'A' as u32 + 10),
+        '0'..='9' => Ok(ch as u32 - '0' as u32),
+        other => Err(LispError::Signal(format!(
+            "Invalid hexadecimal digit `{other}'"
+        ))),
+    }
+}
+
+// Run rfc2104's HASH over INPUT, returning the hex string HASH yields.
+fn rfc2104_hash_hex(
+    interp: &mut Interpreter,
+    hash: &Value,
+    input: &[u8],
+    env: &mut crate::lisp::types::Env,
+) -> Result<String, LispError> {
+    if let Value::Symbol(algorithm) = hash
+        && matches!(
+            algorithm.as_str(),
+            "md5" | "sha1" | "sha224" | "sha256" | "sha384" | "sha512"
+        )
+    {
+        return Ok(digest_hex(&secure_hash_digest(algorithm, input)?));
+    }
+    let arg = bytes_to_shared_unibyte_value(input);
+    let result = interp.call_function_value(hash.clone(), None, &[arg], env)?;
+    string_text(&result)
+}
+
+// As above but decoded to octets (the inner-hash packing step).
+fn rfc2104_hash_digest(
+    interp: &mut Interpreter,
+    hash: &Value,
+    input: &[u8],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Vec<u8>, LispError> {
+    let hex = rfc2104_hash_hex(interp, hash, input, env)?;
+    let chars: Vec<char> = hex.chars().collect();
+    let mut out = Vec::with_capacity(chars.len() / 2);
+    for pair in chars.chunks(2) {
+        if pair.len() == 2 {
+            out.push((hex_util_digit(pair[0])? * 16 + hex_util_digit(pair[1])?) as u8);
+        }
+    }
+    Ok(out)
 }

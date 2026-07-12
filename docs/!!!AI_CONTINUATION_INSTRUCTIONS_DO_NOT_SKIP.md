@@ -18,7 +18,96 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2765/7080: `viper-tests.el' (2747..2751,
+- Verified through selector 2879/7080: `erc-networks-tests.el'
+  (2812..2854, 43/43), `erc-nicks-tests.el' (2855..2870, 16/16),
+  `erc-sasl-tests.el' (2871..2879, 9/9 selected; the :unstable ecdsa
+  placeholder SKIPS via ert-skip like GNU); 139-file prefix sweep
+  (prefix-files19.txt) on frozen binaries is the gate.  Load-bearing:
+  - sf_with_current_buffer (resource_forms.rs) saves the current
+    buffer BEFORE evaluating the buffer form and restores it if the
+    form or buffer resolution errors; sf_with_current_buffer_window
+    likewise.  A buffer form that switches buffers (erc--open-target)
+    must not leak.
+  - Buffer-list recency (runtime.rs): switch_to_buffer_id never
+    reorders buffer_list; record_buffer_front(id) is called by the
+    switch-to-buffer / pop-to-buffer / pop-to-buffer-same-window /
+    switch-to-buffer-other-window arms (files_process.rs) and
+    select-window (display.rs), each honoring its NORECORD argument
+    position (pop-to-buffer's is arg 3).
+  - cl-generic &context: expression-context specializers embed a
+    fingerprint of the context expr in the generated variable name
+    (eval.rs cl_defmethod_specializers), so two methods differing only
+    in context expr get distinct method identity keys; and
+    ClDefmethodStoredMethod stores (variable, specializer,
+    Option<context-expr>) triples (metadata_value emits 3-element
+    entries) so condition() can re-evaluate ANOTHER method's context
+    test inside (not <cond>) guards.
+  - sf_should returns the evaluated FORM value (GNU `should').  The
+    native ert runner also maps a SignalValue whose car is
+    ert-test-skipped to TestStatus::Skipped (`ert-skip').
+  - sf_save_restriction: wide buffer at entry -> plain re-widen on
+    exit (GNU save-restriction-save); marker tracking of a wide
+    buffer's bounds re-narrowed after insert-before-markers at BEGV
+    (broke erc-networks--transplant-buffer-content).
+  - sf_with_silent_modifications pushes an env frame binding
+    inhibit-read-only and inhibit-modification-hooks (GNU macro).
+  - delete-process accepts nil (current buffer's process), a buffer,
+    or a buffer name (files_process.rs).  custom-set-variables sets
+    an option immediately when default_toplevel_value exists (misc.rs).
+  - --batch colors: simple_compat.el carries verbatim
+    term/tty-colors.el (color-name-rgb-alist, tty-standard-colors,
+    tty-color-alist/canonicalize/24bit/off-gray-diag/approximate/
+    standard-values/values/desc + tty-defined-color-alist init) and
+    faces.el color-values, readable-foreground-color, color-dark-p,
+    color-luminance-dark-limit, face-attribute-name-alist,
+    face-spec-choose, face-spec-set-match-display, face-attr-match-p,
+    face-spec-match-p, face-default-spec, face-user-default-spec,
+    face-documentation, set-face-documentation, list-faces-display
+    (+ list-faces-sample-text), and custom.el
+    custom-handle-all-keywords/custom-handle-keyword/custom-add-*/
+    custom-fix-face-spec, cus-face.el custom-declare-face, doc.c
+    documentation-stringp, elisp-mode.el lisp-interaction-mode
+    (define-derived-mode; do NOT autoload "lisp-mode" for it — that
+    breaks the native mode arm), plus autoloads for customize-face /
+    customize-face-other-window / describe-face.
+  - frame-parameter singular arm returns background-color
+    "unspecified-bg", foreground-color "unspecified-fg",
+    background-mode `dark, display-type `mono, name "F1", font "tty",
+    modeline/minibuffer t (display.rs) — matching the plural arm.
+  - face-spec-set is a native arm (display.rs) storing SPEC under the
+    requested spec-type property and applying default-display
+    attributes via record_defface_runtime_attributes (now pub(crate)).
+  - with-help-window shim (simple_compat.el) runs help-make-xrefs and
+    goto-char point-min after BODY (GNU help--window-setup): [back]
+    buttons appear and help-xref-go-back's position restore works via
+    the new set-window-point arm (selected window moves point).
+  - text-quoting-style arm reads the variable (curve/straight;
+    default grave in batch).
+  - hex-util + rfc2104 are in is_compat_preloaded_feature (eval.rs)
+    with native arms (misc.rs): decode-hex-string / encode-hex-string
+    (hex-util semantics incl. the invalid-digit error) and
+    rfc2104-hash (HMAC; known algorithm symbols hash natively via
+    secure_hash_digest, wrapper functions are funcalled and their hex
+    output re-parsed; a longer-than-block key becomes the HASH's hex
+    string itself, exactly like the elisp).  Rationale: interpreted
+    hex-util/rfc2104 made erc-sasl's 4096-iteration PBKDF2 take ~25
+    minutes; native is milliseconds and byte-identical.
+  - read-string/read-from-minibuffer/read-no-blanks-input consume
+    unread-command-events up to RET before consulting kbd macros
+    (lists.rs) — ert-simulate-keys works.  minibuffer-with-setup-hook
+    (core.rs) runs the hook with the " *Minibuf-0*" buffer current and
+    emaxx--active-minibuffer bound (active-minibuffer-window returns
+    the selected window while set), so auth-source.el read-passwd
+    (read-passwd-mode -> read-passwd-toggle-visibility) works.
+    define-minor-mode's generated body maintains GNU's
+    `local-minor-modes' (buffer-local list of enabled modes; the
+    variable is registered natively for bare interpreters and via
+    defvar-local in simple_compat.el).  `read-hide-char' defvar added.
+- Milestone status: frontier 2879; next block needs erc-d fake-server
+  machinery (erc-scenarios-internal 2882..2894 etc.), then
+  erc-services (plstore cluster), erc-stamp (2 fails), erc-tests
+  (57/99).  See compatibility-goal.md Current State for the full map.
+- Previous entry (2765/7080): `viper-tests.el' (2747..2751,
   5/5), `env-tests.el' (2752..2754), `epg-config-tests.el' (2755..2758),
   `epg-tests.el' (2759..2765, 7/7) all pass; 130-file prefix sweep
   (prefix-files15.txt) on frozen binaries is the gate.  Load-bearing:
@@ -1093,6 +1182,21 @@ Commit messages must include:
 - Final gate commands.
 
 ## Current Batch Context
+
+The `Compat 2879/7080` run cleared erc-networks (43/43), erc-nicks
+(16/16) and erc-sasl (9/9 selected).  The 139-file verified-prefix
+sweep (prefix-files19.txt) on frozen binaries is the gate
+(autorevert-tests is a known flake under load; `pkill -f "sleep"`
+leftovers from erc probes before retrying it standalone).  The next
+agent continues with the selected erc-scenarios tests (statusmsg
+2880, upstream-recon-znc 2881, internal 2882..2894, match 2895..2896,
+misc-commands 2897, stamp 2898..2900) — these need the erc-d
+fake-server machinery under test/lisp/erc/resources (network process
+simulation; expect process/timer work) — then erc-services
+(2901..2917, plstore cluster fails), erc-stamp (2918..2929, 2 fails)
+and erc-tests (2930..3023, 57/99).  Milestone 3000 sits inside
+erc-tests.  The Current Resume Point section lists this batch's
+load-bearing semantics; the 2811 notes below still apply.
 
 The `Compat 2811/7080` run cleared erc-button, erc-dcc, erc-fill,
 erc-goodies, erc-join and erc-match (selectors 2766..2811).  The

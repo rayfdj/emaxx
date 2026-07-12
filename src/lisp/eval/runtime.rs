@@ -354,8 +354,24 @@ impl Interpreter {
     }
 
     /// Switch the current buffer to a different live buffer ID.
+    ///
+    /// Like `set-buffer', this never reorders the buffer list; only
+    /// `record_buffer_front' callers (GNU record_buffer: `switch-to-buffer',
+    /// `pop-to-buffer', `select-window' without NORECORD) do.
     pub fn switch_to_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
         self.switch_to_buffer_id_with_window_history(id, true)
+    }
+
+    /// Move a buffer to the front of the buffer list (GNU record_buffer).
+    pub fn record_buffer_front(&mut self, id: u64) {
+        if let Some(index) = self
+            .buffer_list
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == id)
+        {
+            let entry = self.buffer_list.remove(index);
+            self.buffer_list.insert(0, entry);
+        }
     }
 
     pub fn switch_to_buffer_id_preserving_window_history(
@@ -383,14 +399,6 @@ impl Interpreter {
         let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
         self.inactive_buffers.push((current_id, current_buffer));
         self.current_buffer_id = id;
-        if let Some(index) = self
-            .buffer_list
-            .iter()
-            .position(|(buffer_id, _)| *buffer_id == id)
-        {
-            let entry = self.buffer_list.remove(index);
-            self.buffer_list.insert(0, entry);
-        }
         let point_min = self.buffer.point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             let previous = window
