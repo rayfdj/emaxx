@@ -7356,3 +7356,18 @@ immediately like `custom-initialize-set'."
   (set-default-toplevel-value symbol nil)
   (push symbol custom-delayed-init-variables)
   (custom-initialize-set symbol exp))
+
+;; GNU newcomment.el autoloaded variables (preloaded surface): fill.el's
+;; adaptive fill consults these in any buffer.
+(defvar comment-start nil "String to insert to start a new comment, or nil if no comment syntax.")
+(defvar comment-start-skip nil "Regexp to match the start of a comment plus everything up to its body.")
+(defvar comment-end-skip nil "Regexp to match the end of a comment plus everything back to its body.")
+(defvar comment-end (purecopy "") "String to insert to end a new comment.")
+(defvar comment-indent-function 'comment-indent-default "Function to compute desired indentation for a comment.")
+(defvar comment-insert-comment-function nil "Function to insert a comment when a line doesn't contain one.")
+(defvar comment-column 32 "Column to indent right-margin comments to.")
+(make-variable-buffer-local 'comment-start)
+(make-variable-buffer-local 'comment-start-skip)
+(make-variable-buffer-local 'comment-end-skip)
+(make-variable-buffer-local 'comment-end)
+(make-variable-buffer-local 'comment-column)

@@ -3377,7 +3377,10 @@ pub(crate) fn keymap_binding_text_for_command(
 pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &Env) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut output = String::new();
-    let mut current_map = interp.lookup_var("global-map", env);
+    // A `\<MAPVAR>' directive pins subsequent `\[...]' lookups to that map;
+    // without one, GNU consults the currently ACTIVE maps (minor-mode and
+    // local maps first, then the global map) like `where-is-internal'.
+    let mut explicit_map: Option<Value> = None;
     let mut index = 0usize;
 
     while index < chars.len() {
@@ -3390,7 +3393,7 @@ pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &En
                         .map(|offset| index + 2 + offset)
                     {
                         let map_name: String = chars[index + 2..end].iter().collect();
-                        current_map = interp.lookup_var(&map_name, env);
+                        explicit_map = interp.lookup_var(&map_name, env);
                         index = end + 1;
                         continue;
                     }
@@ -3403,12 +3406,25 @@ pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &En
                     {
                         let command: String = chars[index + 2..end].iter().collect();
                         let command = command.trim();
-                        let replacement = current_map
-                            .as_ref()
-                            .and_then(|keymap| {
-                                keymap_binding_text_for_command(interp, keymap, command)
-                            })
-                            .unwrap_or_else(|| format!("M-x {command}"));
+                        let replacement = if let Some(keymap) = &explicit_map {
+                            keymap_binding_text_for_command(interp, keymap, command)
+                        } else {
+                            active_command_keymaps(interp, env)
+                                .ok()
+                                .and_then(|maps| {
+                                    maps.iter().find_map(|map| {
+                                        keymap_binding_text_for_command(interp, map, command)
+                                    })
+                                })
+                                .or_else(|| {
+                                    interp.lookup_var("global-map", env).as_ref().and_then(
+                                        |keymap| {
+                                            keymap_binding_text_for_command(interp, keymap, command)
+                                        },
+                                    )
+                                })
+                        }
+                        .unwrap_or_else(|| format!("M-x {command}"));
                         output.push_str(&replacement);
                         index = end + 1;
                         continue;
