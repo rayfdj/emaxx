@@ -19,6 +19,40 @@ counts as the progress denominator.
 
 ## Current State
 
+- Regression-fix follow-up to the 2880 batch (same frontier), found by
+  a clean 139-file sweep after the first sweep was invalidated by a
+  mid-sweep oracle.lock revert and a leaked CPU-hogging emaxx child:
+  - `buffer-local-variables' now honors its BUFFER argument (it always
+    reported the current buffer's locals; erc-open's second `erc-open'
+    for an existing target buffer restored FOONET's markers into
+    "#chan", tripping `(cl-assert (= (field-end erc-insert-marker)
+    erc-input-marker))' — znc/severed now passes).
+  - `cancel-timer' no longer falls back to function-only matching when
+    no timer matches function+args: GNU cancel-timer on an already
+    fired timer is a no-op, and the fallback was cancelling the OTHER
+    network's pending `erc-server-send-queue' drain timer.
+  - Native forms that model GNU `let'-expanding macros now bind
+    special names dynamically instead of pushing lexical env frames
+    (invisible to callees since the special-reference floor):
+    `with-output-to-string' (`standard-output'),
+    `ert-with-temp-directory'/`ert-with-temp-file' (custom-tests,
+    eieio persistence via `eieio-object-write-to-string'),
+    `dolist'/`dotimes' loop variables, and the native `newline''s
+    `last-command-event' rebinding (electric-tests layout/reindent).
+  - `macroexp--dynamic-variable-p' is now faithful (was a nil stub):
+    checks `lexical-binding', special/soft/dlet names, and
+    `macroexp--dynvars'; locally-special declarations (non-top-level
+    one-arg `defvar') are pushed onto `macroexp--dynvars' like GNU's
+    load-time expansion records them, and `local_special_active' is
+    floor-scoped rather than activation-stamped so closures created in
+    the declaring scope keep the declaration (cl-macs tail-call
+    elimination must NOT treat a tail call under a dynamic binding as
+    eliminable — cl-macs--labels).
+  - One-arg `(eval FORM)' no longer installs a global lambda-capture
+    override while evaluating: it leaked into lambdas created inside
+    called library functions (seq-reduce, cl-equalp internals broke in
+    shortdoc examples).  The empty environment + fresh activation
+    already provide GNU's nil-lexenv semantics.
 - Verified through selector 2880/7080: erc-scenarios-base-statusmsg
   (2880) passes — the first live erc-d network scenario end-to-end
   (real TCP client/server handshake, status-prefixed messages, /me
@@ -65,8 +99,17 @@ counts as the progress denominator.
     marker-free templates as-is (GNU structure sharing) with a
     per-template verdict cache.  erc message processing dropped from
     ~250ms to low-ms per line, fitting erc-d dialog timeouts.
-- NEXT: erc-scenarios-base-upstream-recon-znc (2881) fails on
-  field/erc-mode teardown assertions; erc-scenarios-internal
+- NEXT: erc-scenarios-base-upstream-recon-znc (2881): the counted
+  `znc/severed' test now PASSES; the file still fails check-all because
+  the :expensive `--znc' two-network test times out — per-message
+  client processing (~0.1-1.5s/msg during the two-network burst) makes
+  the erc-d dialog's chained reply timers run 5-10x slower than
+  scripted, so the barnet rejoin misses its 10s expect window.
+  Profiling (advice-based, possibly skewed by a since-killed runaway
+  process pinning a core) pointed at erc-display-message ~99ms,
+  erc-update-mode-line-buffer ~119ms (2x format-spec ~50ms/call
+  in-scenario, though format-spec is 10us standalone) — REMEASURE on a
+  quiet machine before optimizing.  Then erc-scenarios-internal
   (2882..2894) needs the remaining erc-d-run-* live tests (basic
   completes its handshake; drop/eof/linger/dynamic variants still
   fail); then match 2895..2896, misc-commands 2897, stamp 2898..2900,

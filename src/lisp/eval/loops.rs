@@ -114,21 +114,39 @@ impl Interpreter {
         let list_val = self.eval(&spec[1], env)?;
         let list_items = Self::dolist_items(&list_val)?;
 
+        // Upstream expands to a fresh `let' per iteration, which binds
+        // special names dynamically.
+        let dynamic =
+            self.is_dynamic_binding_name(&var_name) || self.local_special_active(&var_name, env);
         let frame_index = env.len();
-        Self::push_marked_frame(env, vec![(var_name.clone(), Value::Nil)]);
+        if !dynamic {
+            Self::push_marked_frame(env, vec![(var_name.clone(), Value::Nil)]);
+        }
         let mut outcome = Ok(());
         for item in list_items {
-            let frame = env
-                .get_mut(frame_index)
-                .expect("dolist binding frame remains active during loop");
-            Self::upsert_frame_binding(frame, var_name.clone(), item);
-            if let Err(error) = self.sf_progn(&items[2..], env) {
-                outcome = Err(error);
-                break;
+            if dynamic {
+                let restore = self.bind_special_variable(&var_name, item, env)?;
+                let body_result = self.sf_progn(&items[2..], env);
+                let restore_result = self.restore_special_binding(restore, env);
+                if let Err(error) = body_result.and(restore_result) {
+                    outcome = Err(error);
+                    break;
+                }
+            } else {
+                let frame = env
+                    .get_mut(frame_index)
+                    .expect("dolist binding frame remains active during loop");
+                Self::upsert_frame_binding(frame, var_name.clone(), item);
+                if let Err(error) = self.sf_progn(&items[2..], env) {
+                    outcome = Err(error);
+                    break;
+                }
             }
         }
         let result = outcome.and_then(|()| {
             if spec.len() > 2 {
+                // GNU's lexical-binding expansion leaves VAR unbound around
+                // the RESULT form (each iteration used a fresh `let').
                 self.eval(&spec[2], env)
             } else {
                 Ok(Value::Nil)
@@ -203,17 +221,33 @@ impl Interpreter {
         let var_name = spec[0].as_symbol()?.to_string();
         let count = self.eval(&spec[1], env)?.as_integer()?;
 
+        // Upstream expands to a fresh `let' per iteration, which binds
+        // special names dynamically.
+        let dynamic =
+            self.is_dynamic_binding_name(&var_name) || self.local_special_active(&var_name, env);
         let frame_index = env.len();
-        Self::push_marked_frame(env, vec![(var_name.clone(), Value::Integer(0))]);
+        if !dynamic {
+            Self::push_marked_frame(env, vec![(var_name.clone(), Value::Integer(0))]);
+        }
         let mut outcome = Ok(());
         for i in 0..count {
-            let frame = env
-                .get_mut(frame_index)
-                .expect("dotimes binding frame remains active during loop");
-            frame[0] = (var_name.clone(), Value::Integer(i));
-            if let Err(error) = self.sf_progn(&items[2..], env) {
-                outcome = Err(error);
-                break;
+            if dynamic {
+                let restore = self.bind_special_variable(&var_name, Value::Integer(i), env)?;
+                let body_result = self.sf_progn(&items[2..], env);
+                let restore_result = self.restore_special_binding(restore, env);
+                if let Err(error) = body_result.and(restore_result) {
+                    outcome = Err(error);
+                    break;
+                }
+            } else {
+                let frame = env
+                    .get_mut(frame_index)
+                    .expect("dotimes binding frame remains active during loop");
+                frame[0] = (var_name.clone(), Value::Integer(i));
+                if let Err(error) = self.sf_progn(&items[2..], env) {
+                    outcome = Err(error);
+                    break;
+                }
             }
         }
         let result = outcome.and_then(|()| {

@@ -18,6 +18,60 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- REGRESSION-FIX FOLLOW-UP (same 2880 frontier; commit after the 2880
+  batch): the first post-batch sweep was invalid — reverting
+  compat/oracle.lock.json WHILE a sweep runs makes every remaining
+  file report TIMEOUT/NONE (the harness fast-fails on the oracle
+  fingerprint mismatch; NEVER revert the lock mid-sweep), and a
+  leaked emaxx child from a harness run (todo-mode-tests) pinned a
+  core for 1.5h skewing all timing runs (`pgrep -x emaxx' and kill
+  leftovers before ANY timing-sensitive validation).  A clean sweep
+  then exposed six real regressions, all fixed and re-validated
+  (whole 139-file sweep green, cargo test 1140/0, fmt/clippy clean,
+  10-probe oracle matrix exact):
+  - buffer-local-variables ignored its BUFFER argument
+    (buffer_meta.rs) — erc-open restored the SERVER buffer's markers
+    into "#chan" on re-join, tripping the field-end cl-assert
+    (upstream-recon-znc/severed now passes; also fixes the second
+    `--znc' assert).
+  - cancel-timer's function-only FALLBACK removed (threads.rs
+    unschedule_timer_by_function_and_args): GNU cancel-timer of an
+    already-fired timer is a no-op; the fallback cancelled the other
+    network's pending erc-server-send-queue drain (cross-network
+    flood-queue starvation).
+  - Native GNU-`let'-expanding forms bound special names LEXICALLY
+    (invisible to callees since the floor) — now dynamic when the
+    name is special/soft/locally-declared: with-output-to-string
+    (standard-output; eieio-object-write-to-string returned "" →
+    eieio-persist end-of-file), ert-with-temp-directory /
+    ert-with-temp-file (custom-theme--load-path), dolist / dotimes
+    loop vars (fresh per-iteration binding; RESULT form evaluates
+    with VAR unbound in the lexical expansion), native `newline''s
+    last-command-event=?\n rebinding around post-self-insert-hook
+    (electric-layout/pair/indent interplay).
+  - macroexp--dynamic-variable-p was a nil STUB (misc.rs) → now
+    faithful: (or (not lexical-binding) special-p soft/dlet/local
+    memq-macroexp--dynvars).  Non-top-level one-arg `defvar' now
+    ALSO pushes onto macroexp--dynvars (GNU's load-time eager
+    expansion records dynvars for the rest of the form — the elisp
+    macroexp.el definition shadows the native arm once loaded, so
+    the LIST must be correct, not just the native predicate), and
+    local_special_active is FLOOR-scoped, not activation-stamped:
+    closures created inside the declaring scope must keep the
+    declaration when invoked later (GNU captures (defvar . VAR) in
+    the closure's interpreter env).  Without these, cl-macs
+    tail-call elimination optimized `(let ((dyn-var 'b)) (f ...))'
+    tail calls it must NOT touch (cl-macs--labels i-case: expect 'b).
+  - One-arg `(eval FORM)' dropped its push_lambda_eval_context(false,
+    false): that override is GLOBAL while the eval runs and leaked
+    into lambdas created inside CALLED library functions (seq-reduce
+    → wrong-number-of-arguments; cl-equalp → void-variable `case';
+    shortdoc examples).  Empty env + fresh activation suffice.
+  - Diagnosis pattern that worked: emaxx batch swallows stdout/princ;
+    write probes with write-region crumbs to /tmp/probes/*.out, set
+    EMAXX_BATCH_RESULT_FILE to read file_error/results, and ALWAYS
+    set EMACS_TEST_DIRECTORY=/home/user/emacs/test or `documentation'
+    returns nil for every builtin (that red herring cost an hour).
 - Verified through selector 2880/7080:
   `erc-scenarios-base-statusmsg.el' (2880) passes check-all — the
   first LIVE erc-d network scenario end-to-end (TCP client+server in
@@ -139,9 +193,22 @@ counts as the progress denominator.
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
 - NEXT (frontier order): erc-scenarios-base-upstream-recon-znc
-  (2881) — both selectors now run the full dialog but fail teardown
-  assertions ((= (field-end erc-insert-marker) erc-input-marker) and
-  (derived-mode-p 'erc-mode)); erc-scenarios-internal (2882..2894) —
+  (2881) — the counted `znc/severed' selector now PASSES (the
+  buffer-local-variables fix); the file still fails check-all because
+  the :expensive two-network `--znc' test times out: per-message
+  client processing (~0.1-1.5s during the two-network burst) makes
+  the erc-d dialog's CHAINED reply timers run 5-10x slower than
+  scripted (each timer only fires on the next pump round), so the
+  barnet rejoin misses its 10s expect window.  Advice-based profiling
+  (possibly skewed — a leaked emaxx child was pinning a core; ALSO
+  advice itself distorts: wrapping many hot functions inflated
+  format-spec to 50ms/call vs 10us standalone) pointed at
+  erc-display-message ~99ms and erc-update-mode-line-buffer ~119ms
+  per message.  REMEASURE on a quiet machine (zdiag5/zdiag6/zdiag7
+  probes under /tmp/probes show the send/drain/expect tracing
+  pattern; erc-d self-reschedules erc-d--on-request via 0-delay
+  run-at-time, so timer volume is high by design).
+  erc-scenarios-internal (2882..2894) —
   the 13 manifest selectors are erc-d UNIT tests but check-all also
   compares the erc-d-run-* live tests, several still failing; then
   match/misc-commands/stamp scenario files, erc-services (plstore),

@@ -373,14 +373,36 @@ impl Interpreter {
         let path =
             std::env::temp_dir().join(format!("emaxx-ert-dir-{}-{}", std::process::id(), stamp));
         fs::create_dir_all(&path).map_err(|error| LispError::Signal(error.to_string()))?;
-        env.push(vec![(
-            name,
-            Value::String(crate::lisp::primitives::file_name_as_directory(
-                &path.display().to_string(),
-            )),
-        )]);
-        let result = self.sf_progn(&items[2..], env);
-        env.pop();
+        let dir_value = Value::String(crate::lisp::primitives::file_name_as_directory(
+            &path.display().to_string(),
+        ));
+        // Upstream expands to `let', which binds special names dynamically.
+        let special_restore =
+            if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env) {
+                match self.bind_special_variable(&name, dir_value, env) {
+                    Ok(restore) => Some(restore),
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&path);
+                        return Err(error);
+                    }
+                }
+            } else {
+                env.push(vec![(name, dir_value)]);
+                None
+            };
+        let mut result = self.sf_progn(&items[2..], env);
+        match special_restore {
+            Some(restore) => {
+                if let Err(error) = self.restore_special_binding(restore, env)
+                    && result.is_ok()
+                {
+                    result = Err(error);
+                }
+            }
+            None => {
+                env.pop();
+            }
+        }
         let _ = fs::remove_dir_all(&path);
         result
     }
@@ -470,12 +492,19 @@ impl Interpreter {
         let (temp_id, _) = self.create_buffer(&temp_name);
         self.set_buffer_hooks_inhibited(temp_id, true);
         self.switch_to_buffer_id(temp_id)?;
-        env.push(vec![(
-            "standard-output".into(),
+        // Upstream expands to `let'; `standard-output' is special, so the
+        // binding must be dynamic for `princ' in callees to see it.
+        let restore = self.bind_special_variable(
+            "standard-output",
             Value::Buffer(temp_id, temp_name.clone()),
-        )]);
-        let body_result = self.sf_progn(&items[1..], env);
-        env.pop();
+            env,
+        )?;
+        let mut body_result = self.sf_progn(&items[1..], env);
+        if let Err(error) = self.restore_special_binding(restore, env)
+            && body_result.is_ok()
+        {
+            body_result = Err(error);
+        }
         let output = Value::String(self.buffer.buffer_string());
         let _ = self.switch_to_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
@@ -586,9 +615,35 @@ impl Interpreter {
             )?;
             frame.push((buffer_name, Self::stored_value(buffer)));
         }
-        Self::push_marked_frame(env, frame);
-        let result = self.sf_progn(&items[index..], env);
-        env.pop();
+        // Upstream expands to `let', which binds special names dynamically.
+        let mut lexical_frame = Vec::new();
+        let mut restores = Vec::new();
+        let mut result = Ok(Value::Nil);
+        for (var, value) in frame {
+            if self.is_dynamic_binding_name(&var) || self.local_special_active(&var, env) {
+                match self.bind_special_variable(&var, value, env) {
+                    Ok(restore) => restores.push(restore),
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
+            } else {
+                lexical_frame.push((var, value));
+            }
+        }
+        if result.is_ok() {
+            Self::push_marked_frame(env, lexical_frame);
+            result = self.sf_progn(&items[index..], env);
+            env.pop();
+        }
+        for restore in restores.into_iter().rev() {
+            if let Err(error) = self.restore_special_binding(restore, env)
+                && result.is_ok()
+            {
+                result = Err(error);
+            }
+        }
         let _ = if directory.is_truthy() {
             fs::remove_dir_all(&path)
         } else {

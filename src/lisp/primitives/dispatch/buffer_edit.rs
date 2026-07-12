@@ -441,14 +441,17 @@ pub(super) fn call(
             let text = "\n".repeat(count as usize);
             insert_text_with_hooks(interp, &text, &[], true, false, env)?;
             if count > 0 {
-                env.push(vec![(
-                    "last-command-event".into(),
+                // GNU's `newline' let-binds `last-command-event' to ?\n; the
+                // variable is special, so hooks must see it dynamically.
+                let restore = interp.bind_special_dynamic(
+                    "last-command-event",
                     Value::Integer('\n' as i64),
-                )]);
+                    env,
+                )?;
                 let buffer_id = interp.current_buffer_id();
                 let hook_result =
                     run_named_hooks(interp, "post-self-insert-hook", env, Some(buffer_id));
-                env.pop();
+                interp.restore_special_dynamic(restore, env)?;
                 hook_result?;
             }
             Ok(Value::Nil)

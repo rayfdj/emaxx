@@ -166,30 +166,52 @@ impl Interpreter {
     /// Record a GNU "locally special" declaration: a bare one-arg `defvar'
     /// evaluated inside a lexical scope makes same-scope `let's of the name
     /// bind dynamically without setting the global special flag.  The
-    /// marker lives in the innermost env frame (so it pops with its scope)
-    /// and is stamped with the current activation so bindings in OTHER
-    /// function invocations sharing the env chain stay lexical.
+    /// marker lives in the innermost env frame, so it pops with its scope
+    /// and is captured by closures created in the scope (GNU stores a
+    /// `(defvar . NAME)' entry in the interpreter environment, which
+    /// closures inherit).
     pub(crate) fn push_local_special_marker(&mut self, name: &str, env: &mut Env) {
         let marker_key = format!("--emaxx-local-special--{name}");
         let activation = Value::Integer(self.current_activation_id as i64);
         if let Some(frame) = env.last_mut() {
             frame.push((marker_key.clone(), activation));
         }
-        self.local_special_names.insert(name.to_string());
+        if self.local_special_names.insert(name.to_string()) {
+            // GNU's load-time macroexpansion records the declaration in
+            // `macroexp--dynvars' for the rest of the enclosing form, so
+            // expansion-time predicates (cl-macs tail-call elimination,
+            // &key argument renaming) treat the name as dynamic.
+            let existing = self.global_value("macroexp--dynvars").unwrap_or(Value::Nil);
+            self.set_global_binding(
+                "macroexp--dynvars",
+                Value::cons(Value::Symbol(name.to_string()), existing),
+            );
+        }
     }
 
-    /// Whether NAME was declared locally special in the current activation.
+    /// Whether NAME has ever been declared locally special (one-arg
+    /// `defvar' in a lexical scope).  GNU's eager load-time macroexpansion
+    /// records such names in `macroexp--dynvars' for the rest of the
+    /// enclosing top-level form; expansion-time predicates use this set as
+    /// the equivalent signal.
+    pub(crate) fn local_special_declared(&self, name: &str) -> bool {
+        self.local_special_names.contains(name)
+    }
+
+    /// Whether NAME is declared locally special in the current scope: the
+    /// marker must sit in a frame the scope can legitimately see — its own
+    /// frames or captured closure frames (at or above the special-reference
+    /// floor) — never a caller frame leaking through a shared env chain
+    /// (below the floor), mirroring GNU's per-closure interpreter
+    /// environment.
     pub(crate) fn local_special_active(&self, name: &str, env: &Env) -> bool {
         if !self.local_special_names.contains(name) {
             return false;
         }
         let marker_key = format!("--emaxx-local-special--{name}");
-        let current = self.current_activation_id as i64;
-        env.iter().rev().any(|frame| {
-            frame.iter().any(|(key, value)| {
-                key == &marker_key && matches!(value, Value::Integer(id) if *id == current)
-            })
-        })
+        env.iter()
+            .skip(self.special_scan_floor)
+            .any(|frame| frame.iter().any(|(key, _)| key == &marker_key))
     }
 
     /// Record a top-level one-arg `defvar': dynamic-binding treatment

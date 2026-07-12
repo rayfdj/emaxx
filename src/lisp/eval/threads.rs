@@ -700,24 +700,13 @@ impl Interpreter {
         Ok((stdout, stderr))
     }
 
-    pub fn unschedule_timer_by_function(&mut self, function: &Value) {
-        let functions: Vec<Value> = self
-            .pending_timers
-            .iter()
-            .map(|timer| timer.function.clone())
-            .collect();
-        if let Some(index) = functions
-            .iter()
-            .position(|candidate| crate::lisp::primitives::values_equal(self, candidate, function))
-        {
-            self.pending_timers.remove(index);
-        }
-    }
-
     /// Cancel the timer matching both FUNCTION and ARGS (GNU cancel-timer
     /// removes one specific timer object; several timers often share a
-    /// function and differ only in their arguments).  Falls back to
-    /// function-only matching when no exact match exists.
+    /// function and differ only in their arguments).  When no exact match
+    /// exists the timer already fired or was cancelled, and GNU's
+    /// cancel-timer is a harmless no-op — never fall back to function-only
+    /// matching, which would cancel an unrelated timer (e.g. another
+    /// buffer's pending `erc-server-send-queue' drain).
     pub fn unschedule_timer_by_function_and_args(&mut self, function: &Value, args: &[Value]) {
         let candidates: Vec<(Value, Vec<Value>)> = self
             .pending_timers
@@ -733,8 +722,6 @@ impl Interpreter {
                     .all(|(a, b)| crate::lisp::primitives::values_equal(self, a, b))
         }) {
             self.pending_timers.remove(index);
-        } else {
-            self.unschedule_timer_by_function(function);
         }
     }
 

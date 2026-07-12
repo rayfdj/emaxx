@@ -623,14 +623,21 @@ pub(super) fn call(
                 .ok_or(LispError::Void(symbol))
         }
         "buffer-local-variables" => {
+            let buffer_id = match args.first().filter(|value| !value.is_nil()) {
+                Some(value) => interp.resolve_buffer_id(value)?,
+                None => interp.current_buffer_id(),
+            };
             let mut vars = interp
-                .buffer_local_variables(interp.current_buffer_id())
+                .buffer_local_variables(buffer_id)
                 .into_iter()
                 .map(|(name, value)| Value::cons(Value::Symbol(name), value))
                 .collect::<Vec<_>>();
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
             vars.push(Value::cons(
                 Value::Symbol("buffer-undo-list".into()),
-                buffer_undo_list_value(&interp.buffer),
+                buffer_undo_list_value(buffer),
             ));
             Ok(Value::list(vars))
         }

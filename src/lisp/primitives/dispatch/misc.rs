@@ -1260,11 +1260,35 @@ pub(super) fn call(
                 ),
             })
         }
-        "macroexp-compiling-p" | "macroexp--dynamic-variable-p" => {
+        "macroexp-compiling-p" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             Ok(Value::Nil)
+        }
+        "macroexp--dynamic-variable-p" => {
+            need_args(name, args, 1)?;
+            let var = args[0].as_symbol()?;
+            // GNU: (or (not lexical-binding) (special-variable-p var)
+            //          (memq var macroexp--dynvars) ...)
+            let lexical = interp
+                .lookup_var("lexical-binding", env)
+                .is_some_and(|value| value.is_truthy());
+            if !lexical
+                || interp.is_dynamic_binding_name(var)
+                || interp.local_special_declared(var)
+            {
+                return Ok(Value::T);
+            }
+            let dynvars = interp
+                .lookup_var("macroexp--dynvars", env)
+                .unwrap_or(Value::Nil);
+            let found = dynvars.to_vec().is_ok_and(|items| {
+                items
+                    .iter()
+                    .any(|item| matches!(item, Value::Symbol(name) if name == var))
+            });
+            Ok(if found { Value::T } else { Value::Nil })
         }
         "macroexpand" | "macroexpand-1" | "macroexpand-all" => {
             if args.is_empty() || args.len() > 2 {
