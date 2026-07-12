@@ -714,13 +714,62 @@ impl Interpreter {
         }
     }
 
+    /// Cancel the timer matching both FUNCTION and ARGS (GNU cancel-timer
+    /// removes one specific timer object; several timers often share a
+    /// function and differ only in their arguments).  Falls back to
+    /// function-only matching when no exact match exists.
+    pub fn unschedule_timer_by_function_and_args(&mut self, function: &Value, args: &[Value]) {
+        let candidates: Vec<(Value, Vec<Value>)> = self
+            .pending_timers
+            .iter()
+            .map(|timer| (timer.function.clone(), timer.args.clone()))
+            .collect();
+        if let Some(index) = candidates.iter().position(|(candidate, timer_args)| {
+            crate::lisp::primitives::values_equal(self, candidate, function)
+                && timer_args.len() == args.len()
+                && timer_args
+                    .iter()
+                    .zip(args)
+                    .all(|(a, b)| crate::lisp::primitives::values_equal(self, a, b))
+        }) {
+            self.pending_timers.remove(index);
+        } else {
+            self.unschedule_timer_by_function(function);
+        }
+    }
+
     pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
+        self.schedule_timer_after(function, args, 0.0, None);
+    }
+
+    /// Schedule a timer to become due DELAY_SECS from now, optionally
+    /// repeating every REPEAT_SECS (GNU run-at-time).
+    pub fn schedule_timer_after(
+        &mut self,
+        function: Value,
+        args: Vec<Value>,
+        delay_secs: f64,
+        repeat_secs: Option<f64>,
+    ) {
         let original_name = function.as_symbol().ok().map(str::to_string);
+        let due = (delay_secs > 0.0 && delay_secs.is_finite())
+            .then(|| std::time::Instant::now() + std::time::Duration::from_secs_f64(delay_secs));
         self.pending_timers.push(ScheduledTimer {
             function: Self::stored_value(function),
             original_name,
             args: args.into_iter().map(Self::stored_value).collect(),
+            due,
+            repeat: repeat_secs.filter(|secs| secs.is_finite() && *secs > 0.0),
         });
+    }
+
+    /// The earliest instant at which a pending native timer becomes due,
+    /// so waits can wake up exactly when the next timer should fire.
+    pub fn next_timer_due(&self) -> Option<std::time::Instant> {
+        self.pending_timers
+            .iter()
+            .map(|timer| timer.due.unwrap_or_else(std::time::Instant::now))
+            .min()
     }
 
     pub fn queue_file_notification(&mut self, path: &str, action: &str) {
@@ -760,8 +809,25 @@ impl Interpreter {
     }
 
     pub fn run_pending_timers(&mut self, env: &mut Env) -> Result<(), LispError> {
-        let pending = std::mem::take(&mut self.pending_timers);
+        // Only timers whose scheduled time has arrived fire; the rest stay
+        // queued (GNU never runs a timer before it is due).  Due timers
+        // fire in schedule order.
+        let now = std::time::Instant::now();
+        let all = std::mem::take(&mut self.pending_timers);
+        let (pending, not_yet): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|timer| timer.due.is_none_or(|due| due <= now));
+        self.pending_timers = not_yet;
         for timer in pending {
+            if let Some(repeat) = timer.repeat {
+                self.pending_timers.push(ScheduledTimer {
+                    function: timer.function.clone(),
+                    original_name: timer.original_name.clone(),
+                    args: timer.args.clone(),
+                    due: Some(now + std::time::Duration::from_secs_f64(repeat)),
+                    repeat: timer.repeat,
+                });
+            }
             let outcome = self.call_function_value(
                 timer.function,
                 timer.original_name.as_deref(),

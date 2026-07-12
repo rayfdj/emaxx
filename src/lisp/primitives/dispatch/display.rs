@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::primitives::processes::wait_pumping_processes;
 
 pub(super) fn handles(name: &str) -> bool {
     matches!(
@@ -462,13 +463,10 @@ pub(super) fn call(
         }
         "sleep-for" => {
             need_arg_range(name, args, 1, 2)?;
-            std::thread::sleep(wait_duration(args)?);
             // GNU processes subprocess output whenever it waits; epg relies
             // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
             // flush gpg's final status lines through the process filter.
-            crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
-            crate::lisp::primitives::processes::pump_network_processes(interp, env)?;
-            interp.drive_threads(env, true)?;
+            wait_pumping_processes(interp, env, wait_duration(args)?, false)?;
             Ok(Value::Nil)
         }
         "sit-for" => {
@@ -480,31 +478,17 @@ pub(super) fn call(
                 Some(Value::Integer(_) | Value::Float(_)) => args.get(0..2).unwrap_or(args),
                 _ => args.get(0..1).unwrap_or(args),
             };
-            std::thread::sleep(wait_duration(duration_args)?);
-            crate::lisp::primitives::processes::pump_network_processes(interp, env)?;
-            interp.drive_threads(env, true)?;
+            wait_pumping_processes(interp, env, wait_duration(duration_args)?, false)?;
             Ok(Value::T)
         }
         "accept-process-output" => {
             need_arg_range(name, args, 0, 4)?;
             // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
-            // JUST-THIS-ONE) - the wait always comes from args 2 and 3.
+            // JUST-THIS-ONE) - the wait always comes from args 2 and 3, and
+            // the call returns as soon as any output is handled.
             let duration_args = args.get(1..3).unwrap_or(&[]);
-            let deadline = std::time::Instant::now() + wait_duration(duration_args)?;
-            let mut delivered = false;
-            loop {
-                delivered |=
-                    crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
-                delivered |=
-                    crate::lisp::primitives::processes::pump_network_processes(interp, env)?;
-                delivered |=
-                    crate::lisp::primitives::processes::run_pending_url_retrievals(interp, env)?;
-                if delivered || std::time::Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            interp.drive_threads(env, true)?;
+            let delivered =
+                wait_pumping_processes(interp, env, wait_duration(duration_args)?, true)?;
             Ok(if delivered { Value::T } else { Value::Nil })
         }
         "input-pending-p" => {

@@ -1416,9 +1416,11 @@ impl Interpreter {
     }
 
     pub(crate) fn has_lisp_macro(&self, name: &str) -> bool {
-        self.macros
-            .iter()
-            .any(|(macro_name, _, _)| macro_name == name)
+        self.macros_name_counts.contains_key(name)
+            && self
+                .macros
+                .iter()
+                .any(|(macro_name, _, _)| macro_name == name)
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
@@ -1481,7 +1483,7 @@ impl Interpreter {
     // Whether NAME has an interpreted (Lisp-defined) function binding,
     // as opposed to only a native dispatch arm.
     pub(crate) fn has_lisp_function(&self, name: &str) -> bool {
-        self.functions.iter().any(|(fname, _)| fname == name)
+        self.functions_index.contains_key(name)
     }
 
     pub fn has_feature(&self, feature: &str) -> bool {

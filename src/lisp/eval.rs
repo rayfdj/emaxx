@@ -371,7 +371,7 @@ pub(crate) struct PendingUrlRetrieval {
 }
 
 #[derive(Clone, Debug)]
-struct SpecialBindingRestore {
+pub(crate) struct SpecialBindingRestore {
     name: String,
     scope: SpecialBindingScope,
     binding_buffer_id: Option<u64>,
@@ -600,19 +600,52 @@ struct ScheduledTimer {
     function: Value,
     original_name: Option<String>,
     args: Vec<Value>,
+    /// Earliest wall-clock instant the timer may fire; GNU never runs a
+    /// timer before its scheduled time.  `None` means due immediately.
+    due: Option<std::time::Instant>,
+    /// Reschedule interval in seconds for repeating timers.
+    repeat: Option<f64>,
 }
 
-type MacroBinding = (String, Vec<String>, Vec<Value>);
+pub(crate) type MacroBinding = (String, Vec<String>, Vec<Value>);
 
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
     /// Global variable bindings (defvar, setq at top level).
     globals: Vec<(String, Value)>,
+    /// Last-wins index over `globals` so global variable reads are O(1);
+    /// every mutation of `globals` keeps this in sync.
+    globals_index: HashMap<String, Value>,
     /// Variable aliases keyed by alias name.
     variable_aliases: Vec<(String, String)>,
+    /// Alias → target index mirroring `variable_aliases` (at most one entry
+    /// per alias) so name resolution on the hot lookup path is O(1).
+    variable_aliases_index: HashMap<String, String>,
     /// Variables with dynamic binding semantics.
     special_variables: Vec<String>,
+    /// Membership index over `special_variables` so hot binding paths can
+    /// test specialness in O(1).
+    special_variables_index: HashSet<String>,
+    /// Names ever declared locally special via a non-top-level one-arg
+    /// `defvar`; lets of other names skip the env marker scan entirely.
+    local_special_names: HashSet<String>,
+    /// Names declared by a TOP-LEVEL one-arg `defvar` in a lexical-binding
+    /// file: GNU scopes these to the file (dynamic `let's, dynamic
+    /// references) while `special-variable-p' stays nil.  emaxx applies
+    /// the dynamic-binding treatment session-wide but keeps them out of
+    /// the official special set.
+    soft_special_names: HashSet<String>,
+    /// Names currently bound by an active `dlet': treated as dynamic for
+    /// binding and reference resolution while the dlet body runs (counted,
+    /// since dlets nest).
+    dlet_active_names: HashMap<String, u32>,
+    /// Env index below which SPECIAL variable references must not resolve
+    /// through lexical frames: set to the caller boundary when a function
+    /// body runs on the caller's env chain, so a callee's reference to a
+    /// special name reads the dynamic value like GNU instead of a caller's
+    /// same-named lexical argument (bug#47552 semantics).
+    pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
     pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
     pub(crate) command_loop_recursion_depth: usize,
@@ -706,8 +739,14 @@ pub struct Interpreter {
     change_hooks_running: usize,
     /// User-defined macros: name → (params, body).
     macros: Vec<MacroBinding>,
+    /// Occurrence counts per macro name so the hot macroexpansion path can
+    /// reject non-macro heads without scanning the positional table.
+    macros_name_counts: HashMap<String, u32>,
     /// User-defined functions in the function namespace.
     functions: Vec<(String, Value)>,
+    /// Last-wins index over `functions` so the hot function-lookup path is
+    /// O(1); every mutation of `functions` keeps this in sync.
+    functions_index: HashMap<String, Value>,
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
@@ -765,6 +804,10 @@ pub struct Interpreter {
     class_object_tagged_records: HashSet<u64>,
     generalizer_states: Vec<GenericGeneralizerState>,
     pending_timers: Vec<ScheduledTimer>,
+    /// Quoted templates already scanned and found free of reader marker
+    /// forms; `quote' returns them as-is (keyed by car-cell address, the
+    /// stored Value keeps the template alive so keys stay unique).
+    pub(crate) plain_quote_templates: HashMap<usize, Value>,
     pending_file_notifications: Vec<(String, String)>,
     pub(crate) gnu_pcase_load_attempted: bool,
     pub(crate) gnu_rx_load_attempted: bool,
@@ -871,6 +914,12 @@ impl Interpreter {
                 ("emaxx-external-debugging-output-target".into(), Value::Nil),
             ],
             variable_aliases: Vec::new(),
+            variable_aliases_index: HashMap::new(),
+            special_variables_index: HashSet::new(),
+            local_special_names: HashSet::new(),
+            soft_special_names: HashSet::new(),
+            dlet_active_names: HashMap::new(),
+            special_scan_floor: 0,
             lisp_eval_depth: 0,
             kbd_macro_executions: Vec::new(),
             command_loop_recursion_depth: 0,
@@ -1054,7 +1103,9 @@ impl Interpreter {
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
             macros: Vec::new(),
+            macros_name_counts: HashMap::new(),
             functions: Vec::new(),
+            functions_index: HashMap::new(),
             provided_features: vec![
                 "emacs".into(),
                 "emaxx".into(),
@@ -1118,6 +1169,7 @@ impl Interpreter {
             class_object_tagged_records: HashSet::new(),
             generalizer_states: Vec::new(),
             pending_timers: Vec::new(),
+            plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
             gnu_pcase_load_attempted: false,
             gnu_rx_load_attempted: false,
@@ -1130,7 +1182,10 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
+            globals_index: HashMap::new(),
         };
+        interp.globals_index = interp.globals.iter().cloned().collect();
+        interp.special_variables_index = interp.special_variables.iter().cloned().collect();
         for class_name in primitives::builtin_class_names() {
             interp.put_symbol_property(
                 class_name,

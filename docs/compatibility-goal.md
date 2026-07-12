@@ -19,6 +19,59 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2880/7080: erc-scenarios-base-statusmsg
+  (2880) passes — the first live erc-d network scenario end-to-end
+  (real TCP client/server handshake, status-prefixed messages, /me
+  round trip); 139-file prefix sweep on frozen binaries is the gate.
+  Key semantics (full detail in the continuation doc):
+  - GNU scoping for `defvar': a one-arg `defvar' NOT at top level no
+    longer sets the global special flag (`special-variable-p' stays
+    nil, matching the oracle); it records an activation-scoped local
+    marker so `let's in the SAME scope bind dynamically while other
+    functions' same-named arguments and lets stay lexical
+    (erc-send-input's obsolete dynamic `str' interface).
+  - GNU reference resolution for special variables (bug#47552): when
+    a function body runs on the caller's env chain, references and
+    `setq's of a GLOBALLY special name no longer resolve through a
+    caller's same-named lexical argument frame — they read/write the
+    dynamic binding, exactly like the oracle (a callee's `str' read
+    could previously see erc-send-action's argument).
+  - Function arguments always bind lexically (oracle-confirmed, even
+    for special names); internal frames that must be dynamic
+    (delay-mode-hooks, with-silent-modifications, overlay
+    modification hooks) now use real dynamic bindings.  A top-level
+    one-arg `defvar' is "soft special": dynamic `let's and dynamic
+    references without the `special-variable-p' flag, exposed via
+    `macroexp--dynvars' so cl-macs aliases same-named arguments
+    (bug#47552).  `dlet' is a real special form whose bindings and
+    names are dynamic for the body's duration (calendar/diary sexp
+    machinery), and the native cl-defun &key lowering binds its
+    arguments through an always-lexical internal let*.
+  - The reader ends symbols at unescaped `,'/`''/`` ` `` like GNU
+    read0, so erc-backend's 352 handler pattern `,flags, hop-real'
+    reads as two unquotes instead of a symbol named "flags,".
+  - `kill-buffer' only asks "Buffer modified; kill anyway?" for
+    file-VISITING buffers (erc-d's .eld dialog buffers die silently
+    under `inhibit-interaction' like GNU).
+  - run-at-time/run-with-timer honor their delay (due instants;
+    repeating timers reschedule; cancel-timer matches function+args;
+    run-at-time returns the 10-slot timer vector), and the batch
+    waits (sleep-for/sit-for/accept-process-output) pump process +
+    network output to quiescence and fire due timers throughout the
+    wait, so an in-process IRC handshake completes at full speed.
+  - Interpreter hot paths are indexed: O(1) function/global/alias/
+    special lookups, fast negative macro checks, cycle detection in
+    list traversal deferred past 64 nodes, and `quote' returns
+    marker-free templates as-is (GNU structure sharing) with a
+    per-template verdict cache.  erc message processing dropped from
+    ~250ms to low-ms per line, fitting erc-d dialog timeouts.
+- NEXT: erc-scenarios-base-upstream-recon-znc (2881) fails on
+  field/erc-mode teardown assertions; erc-scenarios-internal
+  (2882..2894) needs the remaining erc-d-run-* live tests (basic
+  completes its handshake; drop/eof/linger/dynamic variants still
+  fail); then match 2895..2896, misc-commands 2897, stamp 2898..2900,
+  erc-services (2901..2917, plstore cluster), erc-stamp (2918..2929),
+  erc-tests (2930..3023).
 - Verified through selector 2879/7080: erc-networks (2812..2854,
   43/43), erc-nicks (2855..2870, 16/16), erc-sasl (2871..2879, 9/9
   selected; the unstable ecdsa placeholder now SKIPS like GNU);

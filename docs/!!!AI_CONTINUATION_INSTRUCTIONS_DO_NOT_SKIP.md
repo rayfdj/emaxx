@@ -18,6 +18,134 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2880/7080:
+  `erc-scenarios-base-statusmsg.el' (2880) passes check-all — the
+  first LIVE erc-d network scenario end-to-end (TCP client+server in
+  one process, full registration, status-prefixed PRIVMSG/ACTION
+  send+receive, /me round trip, clean teardown).  139-file prefix
+  sweep on frozen binaries is the gate.  This batch is mostly CORE
+  INTERPRETER semantics + speed; every semantic change was validated
+  against the oracle with minimal probes before adoption:
+  - GNU `defvar' scoping (sf_defvar, definitions.rs): a one-arg
+    `(defvar v)' NOT at top level (env non-empty) does NOT set the
+    global special flag — `special-variable-p' stays nil, matching
+    the oracle — and instead records an activation-stamped local
+    marker (`--emaxx-local-special--v' in the innermost env frame;
+    variables.rs push_local_special_marker/local_special_active).
+    sf_let/sf_letstar treat a name as dynamic when globally special
+    OR locally marked in the CURRENT activation.  Oracle behavior:
+    inside a function, (defvar str) then (let ((str ...))) binds
+    dynamically (callees see symbol-value), yet special-variable-p
+    is nil and OTHER functions' `str' args/lets stay lexical.  GNU
+    erc-send-input relies on ALL of this for its obsolete dynamic
+    `str' (erc-send-pre-hook) interface.
+  - Special-reference floor (bug#47552; eval.rs special_scan_floor,
+    core.rs call_function_value, bindings.rs lookup/lookup_var/
+    set_variable): when a function body runs on the CALLER's env
+    chain (empty-closure and transparent-env branches), references
+    and setqs of a GLOBALLY special name skip caller frames below
+    the boundary and resolve dynamically.  Oracle behavior: a callee
+    referencing special `pv2' sees the GLOBAL value even while the
+    caller holds a lexical `pv2' argument; the caller's own body
+    still sees its lexical argument.  Without this, erc-send-action's
+    `str' ARG leaked into erc--server-send's queue push ("ready"
+    instead of the full PRIVMSG line — the statusmsg /me bug).
+    Fresh-env branches (isolated/real closures) reset the floor to 0.
+  - Function arguments ALWAYS bind lexically, even for special names
+    (oracle-confirmed; a dynamic-binding attempt was tried and
+    REVERTED — cl-&key-arguments and callee-reference probes both
+    match GNU only with lexical args).
+  - A TOP-LEVEL one-arg `defvar' in a lexical-binding file is a
+    THIRD tier, "soft special" (mark_soft_special/
+    is_dynamic_binding_name): `let's bind dynamically and the
+    reference floor applies, but `special-variable-p' stays nil,
+    matching the oracle (cal-iso.el's top-level `(defvar date)'
+    previously went globally special and broke icalendar).  Soft
+    names are also pushed onto the GLOBAL `macroexp--dynvars' list
+    so GNU cl-macs' cl--do-arglist gives same-named &key/&optional
+    arguments lexical aliases (bug#47552) exactly as during a file
+    compile — cl-&key-arguments needs `(funcall f :cl--test-a 'lex)'
+    to bind the key lexically while `symbol-value' still sees the
+    surrounding dynamic 'dyn.
+  - `dlet' is now its OWN special form (sf_dlet), not an alias of
+    `let': every binding is dynamic (bind_special_variable), and the
+    bound NAMES are registered dynamic for the DURATION of the body
+    (dlet_active_names counters) so `mapconcat #'eval' over
+    calendar-date-display-form resolves `day'/`month'/`year'
+    dynamically instead of finding a caller's same-named lexical
+    frame (calendar-date-string; icalendar sexp enumeration).
+  - The generated &key bindings of the NATIVE cl-defun lowering bind
+    through `--emaxx-lexical-let*' (sf_letstar_forced_lexical), which
+    always binds lexically like GNU's aliased arguments.
+  - `(eval FORM)' with no LEXICAL argument now evaluates with an
+    EMPTY lexical environment like GNU (all references dynamic):
+    solar-time-string's `mapconcat #'eval' over
+    calendar-time-display-form must read the dlet-bound `24-hours'/
+    `minutes' strings, not a same-named outer lexical integer
+    (lunar/cal-julian tests).  The nested-backquote unit test now
+    passes its variable through eval's LEXICAL alist, matching the
+    oracle (the old form signals void-variable in GNU too).
+  - Internal frames that GNU binds dynamically now use
+    bind_special_variable + restore: the `delay-mode-hooks' special
+    form (core.rs — mode bodies are callees and must see it),
+    with-silent-modifications (resource_forms.rs), and overlay
+    modification-hook runs (hooks_overlays.rs via new pub(crate)
+    bind_special_dynamic/restore_special_dynamic wrappers).
+  - Reader (reader.rs read_atom): unescaped `,' `'' and backtick
+    end a symbol like GNU read0's terminator set — `(,flags, hop-real)'
+    in erc-backend's 352 pcase-let now reads as two unquotes; before,
+    `hop-real' stayed a plain symbol and the handler died with
+    void-variable hop-real (znc scenarios).
+  - kill-buffer (files_process.rs) asks "Buffer modified; kill
+    anyway?" only when the buffer VISITS a file (GNU Fkill_buffer
+    checks BVAR filename): erc-d's insert-file-contents .eld dialog
+    buffers die silently under inhibit-interaction.
+  - TIMERS (threads.rs ScheduledTimer {due, repeat}, misc.rs arms):
+    run-at-time/run-with-timer honor their delay (due Instant; nil/0
+    fire at next pump), repeating timers reschedule after firing,
+    cancel-timer matches function AND args (multiple erc-d exchange
+    timers share erc-d--expire), run-at-time returns the 10-slot
+    timer vector.  next_timer_due() lets waits sleep until the next
+    due timer.  The earlier char-fold/srecode "timers must fire
+    immediately" revert warning is OBSOLETE: with eager pumping (next
+    bullet) due-based timers pass the whole sweep.
+  - EAGER PUMPS (processes.rs wait_pumping_processes, display.rs
+    arms): sleep-for/sit-for/accept-process-output loop until their
+    deadline pumping external process output + network I/O + url
+    retrievals, firing due timers each iteration, re-pumping
+    IMMEDIATELY while progress is made (quiescence pumping — an
+    in-process client/server handshake completes inside one wait),
+    napping min(10ms, next-timer-due) when idle.
+    accept-process-output still returns as soon as anything arrived.
+  - INTERPRETER SPEED (the erc scenario timeout killer — message
+    processing was ~250ms/line, now low-ms):
+    functions_index (HashMap, last-wins) makes function lookup O(1)
+    — mutations go through push_function_binding /
+    reindex_function_binding etc (bindings.rs); macros_name_counts
+    gives fast negative macro lookups (resolve_macro_binding,
+    has_lisp_macro, macro_binding_as_function; cl-macrolet ranges via
+    push_local_macros/drain_local_macros; shadow_macro_binding
+    updates counts); globals_index makes global variable reads O(1)
+    (global_value/set_global_binding/remove_global_binding/
+    special-binding paths all keep it in sync — grep globals_index
+    before touching `globals\` directly!); variable_aliases_index +
+    special_variables_index do the same for alias resolution and
+    specialness; Value::to_vec defers its cycle-detection HashSet
+    until 64 nodes; sf_quote returns marker-free templates AS-IS
+    (GNU shares quoted structure) with a per-template verdict cache
+    (plain_quote_templates keyed by car-cell address, capped 1<<20).
+  - LESSON: /tmp probe files that shadow library names break load
+    (`load' checks cwd-relative names first): a stale /tmp/probes/
+    fill.el turned an erc test run into an infinite autoload loop.
+    Keep probe basenames un-library-like.
+- NEXT (frontier order): erc-scenarios-base-upstream-recon-znc
+  (2881) — both selectors now run the full dialog but fail teardown
+  assertions ((= (field-end erc-insert-marker) erc-input-marker) and
+  (derived-mode-p 'erc-mode)); erc-scenarios-internal (2882..2894) —
+  the 13 manifest selectors are erc-d UNIT tests but check-all also
+  compares the erc-d-run-* live tests, several still failing; then
+  match/misc-commands/stamp scenario files, erc-services (plstore),
+  erc-stamp (right-stamp rendering), erc-tests (2930..3023).
 - Verified through selector 2879/7080: `erc-networks-tests.el'
   (2812..2854, 43/43), `erc-nicks-tests.el' (2855..2870, 16/16),
   `erc-sasl-tests.el' (2871..2879, 9/9 selected; the :unstable ecdsa

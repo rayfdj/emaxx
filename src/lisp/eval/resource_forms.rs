@@ -1181,13 +1181,14 @@ impl Interpreter {
         let was_modified = self.buffer.is_modified();
         let was_autosaved = self.buffer.is_autosaved();
         // The GNU macro also binds inhibit-read-only and
-        // inhibit-modification-hooks around BODY.
-        env.push(vec![
-            ("inhibit-read-only".into(), Value::T),
-            ("inhibit-modification-hooks".into(), Value::T),
-        ]);
+        // inhibit-modification-hooks around BODY (dynamically, so callees
+        // observe them).
+        let restore_read_only = self.bind_special_variable("inhibit-read-only", Value::T, env)?;
+        let restore_hooks =
+            self.bind_special_variable("inhibit-modification-hooks", Value::T, env)?;
         let result = self.sf_progn(&items[1..], env);
-        env.pop();
+        self.restore_special_binding(restore_hooks, env)?;
+        self.restore_special_binding(restore_read_only, env)?;
         if !was_modified {
             self.buffer.set_unmodified();
         } else if was_autosaved {
@@ -1380,7 +1381,7 @@ impl Interpreter {
                             };
                             let function_name = function_name_from_binding_form(target)?;
                             let value = self.eval(&parts[1], env)?;
-                            self.functions.push((function_name.clone(), value));
+                            self.push_function_binding(&function_name, value);
                             rebound.push(function_name);
                         } else {
                             let place = self.resolve_setf_place(&parts[0], env)?;
@@ -1417,9 +1418,7 @@ impl Interpreter {
             }
         }
         for name in rebound.into_iter().rev() {
-            if let Some(index) = self.functions.iter().rposition(|(fname, _)| *fname == name) {
-                self.functions.remove(index);
-            }
+            self.pop_function_binding(&name);
         }
         match result {
             Ok(value) => restore_error.map_or(Ok(value), Err),
@@ -1613,16 +1612,14 @@ impl Interpreter {
 
         let mut result = Value::Nil;
         for form in &items[2..] {
-            let local_start = self.macros.len();
-            self.macros.extend(local_macros.iter().cloned());
-            let local_count = self.macros.len() - local_start;
+            let (local_start, local_count) = self.push_local_macros(&local_macros);
 
             let expanded_form = self.cl_macrolet_form_with_expanded_function_body(form, env);
             let eval_result = match expanded_form {
                 Ok(form) => self.eval(&form, env),
                 Err(error) => Err(error),
             };
-            self.macros.drain(local_start..local_start + local_count);
+            self.drain_local_macros(local_start, local_count);
             result = eval_result?;
         }
 

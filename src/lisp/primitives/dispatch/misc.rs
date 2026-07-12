@@ -1329,18 +1329,31 @@ pub(super) fn call(
                 Ok(form)
             }
         }
-        "run-at-time" => {
+        "run-at-time" | "run-with-timer" | "run-with-idle-timer" => {
             if args.len() < 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            interp.schedule_timer(args[2].clone(), args[3..].to_vec());
-            Ok(Value::String("#<timer>".into()))
-        }
-        "run-with-timer" | "run-with-idle-timer" => {
-            if args.len() < 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            interp.schedule_timer(args[2].clone(), args[3..].to_vec());
+            let repeat_secs = match args.get(1) {
+                Some(Value::Integer(n)) => Some(*n as f64),
+                Some(Value::Float(f)) => Some(*f),
+                _ => None,
+            };
+            // GNU run-at-time TIME: nil/0 means fire at the next idle
+            // opportunity; a number is seconds from now; t means the next
+            // integral multiple of REPEAT.  Other forms (relative-time
+            // strings, absolute timestamps) fall back to firing promptly.
+            let delay_secs = match &args[0] {
+                Value::Integer(n) => *n as f64,
+                Value::Float(f) => *f,
+                Value::T => repeat_secs.unwrap_or(0.0),
+                _ => 0.0,
+            };
+            interp.schedule_timer_after(
+                args[2].clone(),
+                args[3..].to_vec(),
+                delay_secs,
+                repeat_secs,
+            );
             // GNU returns a 10-slot timer vector (timer.el's cl-defstruct
             // with :type vector): [triggered high low usecs repeat-delay
             // function args idle-delay psecs integral-multiple].
@@ -1367,7 +1380,8 @@ pub(super) fn call(
             if let Ok(items) = vector_items(&args[0])
                 && items.len() == 10
             {
-                interp.unschedule_timer_by_function(&items[5]);
+                let timer_args = items[6].to_vec().unwrap_or_default();
+                interp.unschedule_timer_by_function_and_args(&items[5], &timer_args);
             }
             Ok(Value::Nil)
         }
@@ -1380,8 +1394,8 @@ pub(super) fn call(
             // Fire the timer once, removing it from the native queue so a
             // later drain doesn't run it twice.  GNU reschedules repeating
             // timers; the native queue models one-shot firing.
-            interp.unschedule_timer_by_function(&items[5]);
             let timer_args = items[6].to_vec().unwrap_or_default();
+            interp.unschedule_timer_by_function_and_args(&items[5], &timer_args);
             call_function_value(interp, &items[5], &timer_args, env)
         }
         "timerp" => {

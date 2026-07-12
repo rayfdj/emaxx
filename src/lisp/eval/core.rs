@@ -152,12 +152,12 @@ impl Interpreter {
                         "not" => return self.sf_not(&items, env),
                         "progn" => return self.sf_progn(&items[1..], env),
                         "delay-mode-hooks" => {
-                            Self::push_marked_frame(
-                                env,
-                                vec![("delay-mode-hooks".into(), Value::T)],
-                            );
+                            // A real dynamic binding: the mode functions run
+                            // as callees and must see it like GNU's specbind.
+                            let restore =
+                                self.bind_special_variable("delay-mode-hooks", Value::T, env)?;
                             let result = self.sf_progn(&items[1..], env);
-                            env.pop();
+                            self.restore_special_binding(restore, env)?;
                             return result;
                         }
                         "atomic-change-group" => {
@@ -168,7 +168,7 @@ impl Interpreter {
                         "throw" => return self.sf_throw(&items, env),
                         "prog1" => return self.sf_prog1(&items, env),
                         "prog2" => return self.sf_prog2(&items, env),
-                        "let" | "dlet" => {
+                        "let" => {
                             // Keep the in-progress form visible in
                             // backtraces like GNU's eval frames.
                             self.push_backtrace_frame_with_evald(
@@ -180,7 +180,23 @@ impl Interpreter {
                             self.pop_backtrace_frame();
                             return result;
                         }
+                        "dlet" => {
+                            // GNU dlet `defvar's each binder before a `let',
+                            // so every binding is DYNAMIC (diary sexps read
+                            // `date'/`entry' from inside `eval').
+                            self.push_backtrace_frame_with_evald(
+                                items[0].clone(),
+                                items[1..].to_vec(),
+                                false,
+                            );
+                            let result = self.sf_dlet(&items, env);
+                            self.pop_backtrace_frame();
+                            return result;
+                        }
                         "letrec" => return self.sf_letrec(&items, env),
+                        "--emaxx-lexical-let*" => {
+                            return self.sf_letstar_forced_lexical(&items, env);
+                        }
                         "let*" => {
                             // Keep the in-progress form visible in
                             // backtraces like GNU's eval frames.
@@ -279,11 +295,10 @@ impl Interpreter {
                                     .map(|p| p.as_symbol().map(str::to_string))
                                     .collect::<Result<Vec<_>, _>>()
                             {
-                                self.macros.push((
-                                    format!("cl-generic--context-rewriter--{name}"),
-                                    params,
-                                    items[3..].to_vec(),
-                                ));
+                                let rewriter_name = format!("cl-generic--context-rewriter--{name}");
+                                self.note_macro_added(&rewriter_name);
+                                self.macros
+                                    .push((rewriter_name, params, items[3..].to_vec()));
                             }
                             return Ok(Value::Nil);
                         }
@@ -836,6 +851,10 @@ impl Interpreter {
                     }
                 }
 
+                // GNU binds an interpreted function's arguments LEXICALLY
+                // even when a variable of the same name is special: in
+                // lexical-binding code, "function arguments are always
+                // statically scoped" (bug#47552).
                 let mut frame = Vec::new();
                 let mut arg_idx = 0;
                 let mut optional = false;
@@ -889,7 +908,10 @@ impl Interpreter {
                     let caller_len = env.len();
                     let mut call_env = env.clone();
                     call_env.push(frame);
+                    let previous_floor = self.special_scan_floor;
+                    self.special_scan_floor = caller_len;
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    self.special_scan_floor = previous_floor;
                     call_env.truncate(caller_len);
                     env.clear();
                     env.extend(call_env);
@@ -928,7 +950,10 @@ impl Interpreter {
                     }
                     let captured_len = call_env.len();
                     call_env.push(frame);
+                    let previous_floor = self.special_scan_floor;
+                    self.special_scan_floor = caller_len;
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    self.special_scan_floor = previous_floor;
                     call_env.truncate(captured_len);
                     let refreshed: Vec<_> = frame_sources
                         .iter()
@@ -970,17 +995,25 @@ impl Interpreter {
                     let captured_len = call_env.len();
                     call_env.push(vec![("__closure-isolated-current-env".into(), Value::T)]);
                     call_env.push(frame);
+                    let previous_floor = self.special_scan_floor;
+                    self.special_scan_floor = 0;
                     let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    self.special_scan_floor = previous_floor;
                     call_env.truncate(captured_len);
                     result
                 } else {
-                    self.eval_with_closure_env(closure_env, env, |interp, call_env| {
-                        let depth = call_env.len();
-                        call_env.push(frame);
-                        let result = interp.sf_progn(function_executable_body(body), call_env);
-                        call_env.truncate(depth);
-                        result
-                    })
+                    let previous_floor = self.special_scan_floor;
+                    self.special_scan_floor = 0;
+                    let result =
+                        self.eval_with_closure_env(closure_env, env, |interp, call_env| {
+                            let depth = call_env.len();
+                            call_env.push(frame);
+                            let result = interp.sf_progn(function_executable_body(body), call_env);
+                            call_env.truncate(depth);
+                            result
+                        });
+                    self.special_scan_floor = previous_floor;
+                    result
                 };
                 self.leave_activation(previous_activation);
                 self.pop_backtrace_frame();

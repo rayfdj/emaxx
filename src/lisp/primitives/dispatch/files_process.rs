@@ -2668,9 +2668,12 @@ pub(super) fn call(
             let inhibit_hooks = interp.buffer_hooks_inhibited(id);
             let auto_save = interp.buffer_local_value(id, "buffer-auto-save-file-name");
             let auto_save_path = auto_save.as_ref().and_then(|value| string_text(value).ok());
+            // GNU only asks about a modified buffer when it VISITS a file
+            // (Fkill_buffer checks BVAR (b, filename)); scratch buffers
+            // filled via insert-file-contents die silently.
             let modified = interp
                 .get_buffer_by_id(id)
-                .map(|buffer| buffer.is_modified())
+                .map(|buffer| buffer.is_modified() && buffer.file.is_some())
                 .unwrap_or(false);
             if modified {
                 let answer = call_named_function(

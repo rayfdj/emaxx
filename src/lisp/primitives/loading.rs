@@ -159,7 +159,15 @@ pub(crate) fn eval_impl(
         interp.pop_lambda_capture_override();
         result
     } else {
-        interp.eval(&args[0], env)
+        // GNU (eval FORM) without LEXICAL evaluates with a nil lexical
+        // environment: every variable reference is dynamic (solar/diary
+        // run `mapconcat #'eval' over display forms bound by dlet).
+        interp.push_lambda_eval_context(false, false);
+        let previous_activation = interp.enter_activation();
+        let result = interp.eval(&args[0], &mut Vec::new());
+        interp.leave_activation(previous_activation);
+        interp.pop_lambda_capture_override();
+        result
     }
 }
 

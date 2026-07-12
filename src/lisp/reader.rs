@@ -244,6 +244,45 @@ pub(crate) fn resolve_circular_read_syntax(value: Value) -> Result<Value, LispEr
     resolve_circular_read_syntax_inner(&value, &mut HashMap::new())
 }
 
+/// True when a quoted template contains reader marker forms (`#N='/`#N#'
+/// circular labels or `#s(hash-table ...)' literals) that `quote' must
+/// resolve.  Marker-free templates — the common case — can be returned
+/// as-is, sharing structure exactly like GNU's quote.
+pub(crate) fn quote_template_needs_resolution(value: &Value) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![value.clone()];
+    while let Some(current) = stack.pop() {
+        match &current {
+            Value::Cons(car_cell, cdr_cell) => {
+                let ptr = Rc::as_ptr(car_cell) as usize;
+                if !seen.insert(ptr) {
+                    continue;
+                }
+                {
+                    let car = car_cell.borrow();
+                    if let Value::Symbol(symbol) = &*car
+                        && (symbol == CIRCULAR_READ_SYNTAX_SYMBOL
+                            || symbol == HASH_TABLE_LITERAL_SYMBOL)
+                    {
+                        return true;
+                    }
+                }
+                stack.push(car_cell.borrow().clone());
+                stack.push(cdr_cell.borrow().clone());
+            }
+            Value::StringObject(state) => {
+                for span in &state.borrow().props {
+                    for (_, prop_value) in &span.props {
+                        stack.push(prop_value.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn encode_raw_byte(byte: u8) -> char {
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
         .expect("raw byte regex marker is a valid private-use character")
@@ -1472,6 +1511,9 @@ impl<'a> Reader<'a> {
         let mut token = String::new();
         let mut saw_escape = false;
         while let Some(ch) = self.peek() {
+            // GNU's reader also ends a symbol at unescaped quote, backquote,
+            // and comma (read0 stops at "\"';()[]#`,"), so `,flags, hop-real'
+            // reads as two unquotes rather than a symbol named "flags,".
             if ch == b' '
                 || ch == b'\t'
                 || ch == b'\n'
@@ -1483,6 +1525,7 @@ impl<'a> Reader<'a> {
                 || ch == b']'
                 || ch == b'"'
                 || ch == b';'
+                || (!token.is_empty() && (ch == b',' || ch == b'\'' || ch == b'`'))
             {
                 break;
             }
