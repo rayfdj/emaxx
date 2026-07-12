@@ -1142,7 +1142,12 @@ pub(super) fn call(
                 .unwrap_or(1);
             let step = count.signum();
             for _ in 0..count.unsigned_abs() {
-                let position = syntax::scan_lists_impl(
+                // GNU's C `Fforward_list' scans with sexpflag=0; when the
+                // scan can't complete it signals `scan-error' (not nil like
+                // the `scan-lists' Lisp wrapper).  erc-d-u--read-dialog
+                // relies on this: it reads dialog hunks with `forward-list'
+                // and catches the end-of-buffer `scan-error'.
+                let scanned = syntax::scan_lists_impl(
                     interp,
                     &[
                         Value::Integer(interp.buffer.point() as i64),
@@ -1150,8 +1155,18 @@ pub(super) fn call(
                         Value::Integer(0),
                     ],
                     env,
-                )?
-                .as_integer()? as usize;
+                )?;
+                let position = match scanned {
+                    Value::Integer(position) => position as usize,
+                    _ => {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::Symbol("scan-error".into()),
+                            Value::String("Unbalanced parentheses".into()),
+                            Value::Integer(interp.buffer.point() as i64),
+                            Value::Integer(interp.buffer.point() as i64),
+                        ])));
+                    }
+                };
                 interp.buffer.goto_char(position);
             }
             Ok(Value::Nil)

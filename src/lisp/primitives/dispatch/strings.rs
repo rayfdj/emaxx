@@ -1009,11 +1009,33 @@ pub(super) fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let format = string_text(&args[0])?;
+            // GNU builds the result in a buffer seeded with FORMAT, so text
+            // properties survive: literals keep their own props, a
+            // replacement inherits the spec text's props (insert-and-inherit
+            // next to the "%"), and a collapsed "%%" keeps the first "%"'s.
+            // Track, for every output char, the FORMAT char it derives its
+            // properties from.
+            let format_props: Vec<crate::lisp::types::StringPropertySpan> = match &args[0] {
+                Value::StringObject(state) => state.borrow().props.clone(),
+                _ => Vec::new(),
+            };
+            let format_multibyte = match &args[0] {
+                Value::StringObject(state) => state.borrow().multibyte,
+                _ => false,
+            };
             let entries = args[1].to_vec()?;
             let ignore_missing = args.get(2).unwrap_or(&Value::Nil);
             let split = args.get(3).is_some_and(Value::is_truthy);
             let chars: Vec<char> = format.chars().collect();
             let mut result = String::new();
+            // Per output char: (instance, rep_char, src).  Instance 0 =
+            // FORMAT literal at char SRC; instance K>0 = the K'th spec
+            // replacement (own props at REP_CHAR when Some, inheriting the
+            // FORMAT props at SRC = the spec's "%").  Splice boundaries
+            // never merge, matching the interval structure GNU's
+            // buffer-based build leaves behind.
+            let mut provenance: Vec<(usize, Option<usize>, usize)> = Vec::new();
+            let mut rep_props: Vec<Vec<crate::lisp::types::StringPropertySpan>> = Vec::new();
             let mut split_start = 0usize;
             let mut split_result = Vec::new();
             let mut i = 0usize;
@@ -1021,6 +1043,7 @@ pub(super) fn call(
                 let ch = chars[i];
                 if ch != '%' {
                     result.push(ch);
+                    provenance.push((0, None, i));
                     i += 1;
                     continue;
                 }
@@ -1028,14 +1051,18 @@ pub(super) fn call(
                 i += 1;
                 if i >= chars.len() {
                     result.push('%');
+                    provenance.push((0, None, spec_start));
                     break;
                 }
                 if chars[i] == '%' {
                     if format_spec_collapses_quoted_percent(ignore_missing) {
                         result.push('%');
+                        provenance.push((0, None, spec_start));
                     } else {
                         result.push('%');
                         result.push('%');
+                        provenance.push((0, None, spec_start));
+                        provenance.push((0, None, i));
                     }
                     i += 1;
                     continue;
@@ -1046,6 +1073,7 @@ pub(super) fn call(
                         return Err(LispError::Signal("Invalid format string".into()));
                     }
                     result.push('%');
+                    provenance.push((0, None, spec_start));
                     continue;
                 };
                 i = parsed.end;
@@ -1060,8 +1088,16 @@ pub(super) fn call(
                 }
 
                 let replacement = format_spec_replacement(interp, env, &entries, parsed.specifier)?;
-                if let Some(replacement) = replacement {
-                    let formatted = apply_format_spec_flags(replacement, &parsed);
+                if let Some((replacement, replacement_props)) = replacement {
+                    let (formatted, sources) =
+                        apply_format_spec_flags_indexed(replacement, &parsed);
+                    rep_props.push(replacement_props);
+                    let instance = rep_props.len();
+                    provenance.extend(
+                        sources
+                            .iter()
+                            .map(|source| (instance, *source, spec_start)),
+                    );
                     result.push_str(&formatted);
                     if split {
                         split_result.push(Value::String(formatted));
@@ -1079,6 +1115,7 @@ pub(super) fn call(
                     )));
                 } else {
                     let original = chars[spec_start..parsed.end].iter().collect::<String>();
+                    provenance.extend((spec_start..parsed.end).map(|index| (0, None, index)));
                     result.push_str(&original);
                     if split {
                         split_result.push(Value::String(original));
@@ -1098,8 +1135,107 @@ pub(super) fn call(
                     ));
                 }
                 Ok(Value::list(split_result))
-            } else {
+            } else if format_props.is_empty() && rep_props.iter().all(|props| props.is_empty()) {
                 Ok(Value::String(result))
+            } else {
+                // Merge runs by SOURCE INTERVAL IDENTITY, not value
+                // equality: GNU's buffer-based implementation carries the
+                // template's and each replacement's interval structure into
+                // the output, so adjacent spans with `equal' but not `eq'
+                // values stay separate intervals, and splice boundaries
+                // never coalesce (erc snapshots compare the
+                // `object-intervals' fragmentation).
+                let span_ids_at = |spans: &[crate::lisp::types::StringPropertySpan],
+                                   index: usize|
+                 -> Vec<usize> {
+                    spans
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, span)| span.start <= index && index < span.end)
+                        .map(|(id, _)| id)
+                        .collect()
+                };
+                // Run key: (instance, own-span ids).  Instance 0 reads ids
+                // against FORMAT's spans; instance K>0 against replacement
+                // K's own spans, inheriting FORMAT props at the spec's "%".
+                let key_for = |&(instance, rep_char, src): &(usize, Option<usize>, usize)| {
+                    let ids = if instance == 0 {
+                        span_ids_at(&format_props, src)
+                    } else {
+                        rep_char
+                            .map(|index| span_ids_at(&rep_props[instance - 1], index))
+                            .unwrap_or_default()
+                    };
+                    (instance, ids)
+                };
+                let props_for = |(instance, ids): &(usize, Vec<usize>), src: usize| {
+                    let mut collected: Vec<(String, Value)> = Vec::new();
+                    if *instance == 0 {
+                        for &id in ids {
+                            collected.extend(format_props[id].props.iter().cloned());
+                        }
+                    } else {
+                        for &id in ids {
+                            collected.extend(rep_props[*instance - 1][id].props.iter().cloned());
+                        }
+                        // insert-and-inherit: inherited FORMAT props fill in
+                        // keys the replacement's own props don't set.
+                        for inherit_id in span_ids_at(&format_props, src) {
+                            for (key, value) in &format_props[inherit_id].props {
+                                if !collected.iter().any(|(existing, _)| existing == key) {
+                                    collected.push((key.clone(), value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    collected
+                };
+                let mut spans = Vec::new();
+                let mut run_start = 0usize;
+                let mut run_key: Option<(usize, Vec<usize>)> = None;
+                let mut run_src = 0usize;
+                for (out_index, source) in provenance.iter().enumerate() {
+                    let key = key_for(source);
+                    match &run_key {
+                        Some(current) if *current == key => {}
+                        _ => {
+                            if let Some(current) = run_key.take() {
+                                let props = props_for(&current, run_src);
+                                if !props.is_empty() && run_start < out_index {
+                                    spans.push(crate::lisp::types::StringPropertySpan {
+                                        start: run_start,
+                                        end: out_index,
+                                        props,
+                                    });
+                                }
+                            }
+                            run_start = out_index;
+                            run_src = source.2;
+                            run_key = Some(key);
+                        }
+                    }
+                }
+                if let Some(current) = run_key {
+                    let props = props_for(&current, run_src);
+                    if !props.is_empty() && run_start < provenance.len() {
+                        spans.push(crate::lisp::types::StringPropertySpan {
+                            start: run_start,
+                            end: provenance.len(),
+                            props,
+                        });
+                    }
+                }
+                if spans.is_empty() {
+                    Ok(Value::String(result))
+                } else {
+                    Ok(Value::StringObject(std::rc::Rc::new(std::cell::RefCell::new(
+                        crate::lisp::types::SharedStringState {
+                            text: result,
+                            props: spans,
+                            multibyte: format_multibyte,
+                        },
+                    ))))
+                }
             }
         }
         "char-to-string" => {

@@ -369,6 +369,11 @@ pub(crate) fn prefer_builtin_override(name: &str) -> bool {
         name,
         "user-error"
             | "read-only-mode"
+            // format-spec.el's interpreted implementation costs tens of
+            // milliseconds per call once erc loads it; the native version
+            // passes format-spec-tests.el and keeps erc's per-message
+            // mode-line updates cheap.
+            | "format-spec"
             // GNU font-lock.el (loaded transitively by mode libraries such
             // as js.el) would shadow the native fontification entry point
             // with elisp that depends on redisplay-driven machinery.

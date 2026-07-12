@@ -902,19 +902,20 @@ impl Interpreter {
                 frame.push(Self::fresh_frame_identity());
                 let previous_activation = self.enter_activation();
                 let result = if closure_env.borrow().is_empty() {
-                    // Truncate (not pop) at the call boundary: a non-local
-                    // exit can leave binding frames above the argument frame,
-                    // and those must not leak into the caller's environment.
+                    // Run directly on the caller's chain: cloning the whole
+                    // chain per call made deep call stacks quadratic (the
+                    // erc two-network scenario spends most of its time
+                    // there).  Truncate (not pop) at the call boundary: a
+                    // non-local exit can leave binding frames above the
+                    // argument frame, and those must not leak into the
+                    // caller's environment.
                     let caller_len = env.len();
-                    let mut call_env = env.clone();
-                    call_env.push(frame);
+                    env.push(frame);
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = caller_len;
-                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    let result = self.sf_progn(function_executable_body(body), env);
                     self.special_scan_floor = previous_floor;
-                    call_env.truncate(caller_len);
-                    env.clear();
-                    env.extend(call_env);
+                    env.truncate(caller_len);
                     result
                 } else if body_has_marker(body, ":closure-transparent-env")
                     || body_has_marker(body, ":closure-oclosure")
@@ -927,41 +928,39 @@ impl Interpreter {
                     // identity-stamped slot frames keep two objects'
                     // look-alike slot frames from unifying.
                     let caller_len = env.len();
-                    let mut call_env = env.clone();
                     // A captured frame whose IDENTITY is live in the caller
                     // env is the same binding frame: the caller's version is
                     // current (the capture is a snapshot), so skip the stale
-                    // copy and let the live frame be seen and mutated.
+                    // copy and let the live frame be seen and mutated.  Run
+                    // directly on the caller's chain (no full-chain clone).
                     let captured_frames = closure_env.borrow().clone();
                     let mut frame_sources: Vec<usize> = Vec::with_capacity(captured_frames.len());
                     for captured_frame in &captured_frames {
                         let live_position = Self::frame_identity(captured_frame).and_then(|id| {
-                            call_env[..caller_len]
+                            env[..caller_len]
                                 .iter()
                                 .position(|frame| Self::frame_identity(frame) == Some(id))
                         });
                         match live_position {
                             Some(position) => frame_sources.push(position),
                             None => {
-                                call_env.push(captured_frame.clone());
-                                frame_sources.push(call_env.len() - 1);
+                                env.push(captured_frame.clone());
+                                frame_sources.push(env.len() - 1);
                             }
                         }
                     }
-                    let captured_len = call_env.len();
-                    call_env.push(frame);
+                    let captured_len = env.len();
+                    env.push(frame);
                     let previous_floor = self.special_scan_floor;
                     self.special_scan_floor = caller_len;
-                    let result = self.sf_progn(function_executable_body(body), &mut call_env);
+                    let result = self.sf_progn(function_executable_body(body), env);
                     self.special_scan_floor = previous_floor;
-                    call_env.truncate(captured_len);
+                    env.truncate(captured_len);
                     let refreshed: Vec<_> = frame_sources
                         .iter()
-                        .map(|&position| call_env[position].clone())
+                        .map(|&position| env[position].clone())
                         .collect();
-                    call_env.truncate(caller_len);
-                    env.clear();
-                    env.extend(call_env);
+                    env.truncate(caller_len);
                     {
                         let mut stored = closure_env.borrow_mut();
                         stored.clear();

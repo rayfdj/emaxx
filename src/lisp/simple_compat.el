@@ -5361,6 +5361,21 @@ If all LST elements are zeros or LST is nil, return zero."
     ;; there is no element different of zero
     0))
 
+(defun version< (v1 v2)
+  "Return t if version V1 is lower (older) than V2."
+  (declare (side-effect-free t))
+  (version-list-< (version-to-list v1) (version-to-list v2)))
+
+(defun version<= (v1 v2)
+  "Return t if version V1 is lower (older) than or equal to V2."
+  (declare (side-effect-free t))
+  (version-list-<= (version-to-list v1) (version-to-list v2)))
+
+(defun version= (v1 v2)
+  "Return t if version V1 is equal to V2."
+  (declare (side-effect-free t))
+  (version-list-= (version-to-list v1) (version-to-list v2)))
+
 ;; GNU cus-edit.el customize-save-variable, with the theme/custom-file
 ;; machinery guarded (cus-edit.el itself is not loaded; batch tests have
 ;; no custom-file so GNU takes the message branch anyway).
