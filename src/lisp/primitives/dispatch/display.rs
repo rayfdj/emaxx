@@ -467,6 +467,7 @@ pub(super) fn call(
             // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
             // flush gpg's final status lines through the process filter.
             crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+            crate::lisp::primitives::processes::pump_network_processes(interp, env)?;
             interp.drive_threads(env, true)?;
             Ok(Value::Nil)
         }
@@ -480,6 +481,7 @@ pub(super) fn call(
                 _ => args.get(0..1).unwrap_or(args),
             };
             std::thread::sleep(wait_duration(duration_args)?);
+            crate::lisp::primitives::processes::pump_network_processes(interp, env)?;
             interp.drive_threads(env, true)?;
             Ok(Value::T)
         }
@@ -493,6 +495,8 @@ pub(super) fn call(
             loop {
                 delivered |=
                     crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+                delivered |=
+                    crate::lisp::primitives::processes::pump_network_processes(interp, env)?;
                 delivered |=
                     crate::lisp::primitives::processes::run_pending_url_retrievals(interp, env)?;
                 if delivered || std::time::Instant::now() >= deadline {

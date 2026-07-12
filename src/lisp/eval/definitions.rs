@@ -2095,8 +2095,7 @@ impl Interpreter {
                     self.mark_special_variable("local-minor-modes");
                     self.mark_auto_buffer_local("local-minor-modes");
                     if self.lookup_var("local-minor-modes", &Vec::new()).is_none() {
-                        self.globals
-                            .push(("local-minor-modes".into(), Value::Nil));
+                        self.globals.push(("local-minor-modes".into(), Value::Nil));
                     }
                 }
                 if self.lookup_var(&variable_name, &Vec::new()).is_none() {

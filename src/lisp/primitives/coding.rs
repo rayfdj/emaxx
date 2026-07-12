@@ -127,6 +127,38 @@ pub(crate) fn bytes_to_shared_unibyte_value(bytes: &[u8]) -> Value {
     make_shared_string_value_with_multibyte(text, Vec::new(), false)
 }
 
+// Decode BYTES as UTF-8, keeping undecodable bytes as raw-byte chars
+// (GNU's behavior for utf-8 text decoding of invalid sequences).
+pub(crate) fn utf8_text_from_bytes_keeping_raw(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match std::str::from_utf8(&bytes[index..]) {
+            Ok(valid) => {
+                out.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                out.push_str(
+                    std::str::from_utf8(&bytes[index..index + valid_up_to]).unwrap_or_default(),
+                );
+                index += valid_up_to;
+                let bad_len = error.error_len().unwrap_or(bytes.len() - index).max(1);
+                for &byte in &bytes[index..index + bad_len] {
+                    if byte <= 0x7F {
+                        out.push(byte as char);
+                    } else {
+                        out.push(raw_byte_regex_char(byte));
+                    }
+                }
+                index += bad_len;
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn make_temp_name(prefix: &str) -> String {
     let counter = TEMP_NAME_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
     let nanos = SystemTime::now()
@@ -1189,6 +1221,18 @@ pub(crate) fn decode_coding_text(
             }
         }
         _ => string.text.clone(),
+    };
+    // GNU decodes the byte stream for utf-8 family codings: raw bytes
+    // (emaxx's unibyte representation) become the decoded characters,
+    // with undecodable bytes preserved as raw bytes.
+    let text = if text.chars().any(is_raw_byte_regex_char)
+        && (canonical == "utf-8"
+            || canonical.starts_with("utf-8-")
+            || canonical.starts_with("prefer-utf-8"))
+    {
+        utf8_text_from_bytes_keeping_raw(&encode_raw_text_bytes(&text)?)
+    } else {
+        text
     };
     if nocopy
         && text == string.text
