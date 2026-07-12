@@ -18,6 +18,61 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2881/7080:
+  `erc-scenarios-base-upstream-recon-znc.el' passes check-all.  The
+  decisive lever was a NATIVE `format-spec' (primitives.rs
+  prefer_builtin_override + dispatch/strings.rs): erc rebuilds the mode
+  line via `format-spec' on EVERY message, and the interpreted
+  format-spec.el cost ~50ms/call, so the two-network burst ran too slow
+  and erc-d's chained reply timers missed their expect windows.  The
+  native version is PROPERTY-AWARE — it tracks, per output char, the
+  FORMAT char its text props derive from (literals keep their own,
+  a %-spec replacement inherits the spec text's props like GNU's
+  insert-and-inherit, a collapsed %% keeps the first %'s) and returns a
+  StringObject when FORMAT carried props; passes format-spec-tests.el
+  against the oracle.  THREE fidelity rules the erc-fill snapshot tests
+  enforce (erc-fill-wrap--merge-action compares `object-intervals'
+  fragmentation against .eld snapshots saved under GNU): (1) a
+  replacement's OWN text properties survive into the output, mapped
+  through width/precision/padding via apply_format_spec_flags_indexed
+  (GNU splices with insert-and-inherit; erc's message catalog passes
+  propertized speaker strings); (2) own props take precedence,
+  inherited FORMAT props only fill missing keys, own-first in the
+  plist; (3) output property spans merge by SOURCE INTERVAL IDENTITY,
+  never by value equality — adjacent `equal' but not `eq' values stay
+  separate intervals and splice boundaries never coalesce.  Also in
+  this batch:
+  - Call-frame perf (core.rs call_function_value): the empty-closure
+    and advice-transparent branches run the body DIRECTLY on the
+    caller's `env' (push arg frame, truncate after) instead of
+    `env.clone()' per call — deep call stacks (erc's two networks) were
+    quadratic.  IMPORTANT NEGATIVE RESULT: two further micro-opts were
+    TRIED and REVERTED because they broke `named-let'/bindat:
+    (1) making `raw_function_binding' require FUNCTION_FRAME_MARKER as
+    the frame's FIRST entry (O(1) skip of non-function frames), and
+    (2) a hard `lexical_scan_floor' hiding all caller lexicals below the
+    call boundary.  emaxx's `named-let' expands to
+    `(letrec ((NAME (lambda ...))) (NAME . INITS))' and RELIES on
+    `(NAME ...)' resolving the letrec VALUE binding in the function
+    position (a Lisp-1 leak GNU doesn't have but emaxx allows); the
+    marker-first change skipped the letrec frame, leaving NAME
+    void-variable, which crashed loading bindat-tests.el (its LEB128
+    type + every pcase, which expands through named-let).  Do NOT
+    reintroduce marker-first or lexical_scan_floor without first
+    reworking `named-let' to bind NAME as a real function (cl-labels) —
+    and note the cl-labels expansion was ~10x SLOWER per call, blowing
+    the bindat-test--sint timeout (3200 iters x pcase x named-let).
+  - `forward-list' (buffer_edit.rs) signals `scan-error' at buffer end
+    like GNU's C Fforward_list, instead of `.as_integer()'-ing the nil
+    that the `scan-lists' Lisp wrapper returns (was a
+    `wrong-type-argument integer nil').  erc-d-u--read-dialog catches
+    the end-of-buffer scan-error to detect dialog EOF.
+  - `version<'/`version<='/`version=' added (simple_compat.el).
+  - LESSON: erc's per-message throughput matters for the erc-d live
+    scenarios; profile with the interpreter but ALSO check whether a
+    hot library function (format-spec here) should be native.  Native
+    ports must be validated against the library's own -tests.el file
+    (format-spec-tests.el) before adoption.
 - REGRESSION-FIX FOLLOW-UP (same 2880 frontier; commit after the 2880
   batch): the first post-batch sweep was invalid — reverting
   compat/oracle.lock.json WHILE a sweep runs makes every remaining
@@ -192,25 +247,17 @@ counts as the progress denominator.
     (`load' checks cwd-relative names first): a stale /tmp/probes/
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
-- NEXT (frontier order): erc-scenarios-base-upstream-recon-znc
-  (2881) — the counted `znc/severed' selector now PASSES (the
-  buffer-local-variables fix); the file still fails check-all because
-  the :expensive two-network `--znc' test times out: per-message
-  client processing (~0.1-1.5s during the two-network burst) makes
-  the erc-d dialog's CHAINED reply timers run 5-10x slower than
-  scripted (each timer only fires on the next pump round), so the
-  barnet rejoin misses its 10s expect window.  Advice-based profiling
-  (possibly skewed — a leaked emaxx child was pinning a core; ALSO
-  advice itself distorts: wrapping many hot functions inflated
-  format-spec to 50ms/call vs 10us standalone) pointed at
-  erc-display-message ~99ms and erc-update-mode-line-buffer ~119ms
-  per message.  REMEASURE on a quiet machine (zdiag5/zdiag6/zdiag7
-  probes under /tmp/probes show the send/drain/expect tracing
-  pattern; erc-d self-reschedules erc-d--on-request via 0-delay
-  run-at-time, so timer volume is high by design).
-  erc-scenarios-internal (2882..2894) —
-  the 13 manifest selectors are erc-d UNIT tests but check-all also
-  compares the erc-d-run-* live tests, several still failing; then
+- NEXT (frontier order): erc-scenarios-internal (2882..2894) — the 13
+  manifest selectors are erc-d UNIT tests but check-all also compares
+  the erc-d-run-* live tests; 6 still fail after the format-spec/
+  forward-list/version< batch, forming a server-side cluster (see the
+  Current State section of docs/compatibility-goal.md for each one).
+  They route through erc-d scheduling replies + teardown +
+  self-rescheduling erc-d--on-request via `run-at-time nil' timers the
+  eager pump must fire in-order during the client's
+  accept-process-output waits.  Probes zdiag12..zdiag16 under
+  /tmp/probes trace the erc-d command/consider/refresh/advance-or-die
+  state machine; zdiag5/6/7 trace send/drain/expect.  Then
   match/misc-commands/stamp scenario files, erc-services (plstore),
   erc-stamp (right-stamp rendering), erc-tests (2930..3023).
 - Verified through selector 2879/7080: `erc-networks-tests.el'

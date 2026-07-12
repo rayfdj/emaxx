@@ -19,6 +19,30 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2881/7080:
+  `erc-scenarios-base-upstream-recon-znc.el' (2881) passes check-all
+  (both `--znc/severed' and the :expensive two-network `--znc' test).
+  The decisive fix was a NATIVE `format-spec' (prefer_builtin_override
+  in primitives.rs; the interpreted format-spec.el cost tens of ms per
+  call and erc updates the mode line via `format-spec' on every
+  message, so the two-network burst ran 5-10x too slow and reply
+  timers missed their expect windows).  The native version is
+  property-aware (result inherits FORMAT's text props like GNU's
+  insert-and-inherit buffer build) and passes format-spec-tests.el
+  against the oracle.  Supporting changes:
+  - Call-frame perf: the empty-closure and advice-transparent branches
+    of `call_function_value' (core.rs) now run the body directly on the
+    caller's env chain instead of cloning the whole chain per call
+    (deep call stacks were quadratic).  (A `raw_function_binding'
+    marker-first skip was tried and reverted — it broke `named-let',
+    which relies on a letrec value binding resolving in the function
+    position; see the continuation doc.)
+  - `forward-list' signals `scan-error' at buffer end (GNU's C
+    `Fforward_list' behavior) instead of returning nil like the
+    `scan-lists' Lisp wrapper; `erc-d-u--read-dialog' reads dialog
+    hunks with `forward-list' and catches the end-of-buffer scan-error.
+  - `version<' / `version<=' / `version=' added to simple_compat.el
+    (erc-d proxy scenarios call `version<').
 - Regression-fix follow-up to the 2880 batch (same frontier), found by
   a clean 139-file sweep after the first sweep was invalidated by a
   mid-sweep oracle.lock revert and a leaked CPU-hogging emaxx child:
@@ -99,22 +123,26 @@ counts as the progress denominator.
     marker-free templates as-is (GNU structure sharing) with a
     per-template verdict cache.  erc message processing dropped from
     ~250ms to low-ms per line, fitting erc-d dialog timeouts.
-- NEXT: erc-scenarios-base-upstream-recon-znc (2881): the counted
-  `znc/severed' test now PASSES; the file still fails check-all because
-  the :expensive `--znc' two-network test times out — per-message
-  client processing (~0.1-1.5s/msg during the two-network burst) makes
-  the erc-d dialog's chained reply timers run 5-10x slower than
-  scripted, so the barnet rejoin misses its 10s expect window.
-  Profiling (advice-based, possibly skewed by a since-killed runaway
-  process pinning a core) pointed at erc-display-message ~99ms,
-  erc-update-mode-line-buffer ~119ms (2x format-spec ~50ms/call
-  in-scenario, though format-spec is 10us standalone) — REMEASURE on a
-  quiet machine before optimizing.  Then erc-scenarios-internal
-  (2882..2894) needs the remaining erc-d-run-* live tests (basic
-  completes its handshake; drop/eof/linger/dynamic variants still
-  fail); then match 2895..2896, misc-commands 2897, stamp 2898..2900,
-  erc-services (2901..2917, plstore cluster), erc-stamp (2918..2929),
-  erc-tests (2930..3023).
+- NEXT: erc-scenarios-internal (2882..2894) — 6 remaining check-all
+  failures form a coherent erc-d server-side cluster (the manifest
+  selectors are erc-d unit tests, but check-all also compares the
+  :expensive erc-d-run-* live tests): erc-d-run-{linger-direct} and
+  erc-d-run-unexpected-depleted (FIXED by the forward-list scan-error
+  change) fail on "dumb-server death" (server teardown timer never
+  fires); erc-d-run-{no-block,nonstandard-messages} miss server reply
+  timers — no-block's server matches through mode-foo but the client's
+  MODE #bar never draws mode-bar's 324/329 (an erc-d fuzzy-exchange /
+  incremental advance-or-die ordering subtlety, not a plain
+  reply-dispatch bug); erc-d-run-proxy-direct-subprocess{,-lib} fail a
+  `(car libs)' cl-assertion (subprocess spawn); erc-d-t-with-cleanup
+  spares `*foo*' correctly in isolation but fails when an `echo'
+  start-process binding is present.  All route through erc-d
+  scheduling everything (replies, teardown, self-rescheduling
+  erc-d--on-request) via `run-at-time nil' timers that the eager pump
+  must fire in the right order during the client's
+  accept-process-output waits.  Then match 2895..2896, misc-commands
+  2897, stamp 2898..2900, erc-services (2901..2917, plstore cluster),
+  erc-stamp (2918..2929), erc-tests (2930..3023).
 - Verified through selector 2879/7080: erc-networks (2812..2854,
   43/43), erc-nicks (2855..2870, 16/16), erc-sasl (2871..2879, 9/9
   selected; the unstable ecdsa placeholder now SKIPS like GNU);

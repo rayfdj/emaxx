@@ -882,7 +882,7 @@ pub(crate) fn format_spec_replacement(
     env: &mut Env,
     entries: &[Value],
     specifier: char,
-) -> Result<Option<String>, LispError> {
+) -> Result<Option<(String, Vec<crate::lisp::types::StringPropertySpan>)>, LispError> {
     for entry in entries {
         let Value::Cons(key, value) = entry else {
             continue;
@@ -908,11 +908,19 @@ pub(crate) fn format_spec_replacement(
         {
             value_value = call_function_value(interp, &callable, &[], env)?;
         }
-        return Ok(Some(
+        // Keep the replacement's own text properties: GNU splices the
+        // string into the work buffer with `insert-and-inherit', so its
+        // props survive into the output.
+        let props = match &value_value {
+            Value::StringObject(state) => state.borrow().props.clone(),
+            _ => Vec::new(),
+        };
+        return Ok(Some((
             string_like(&value_value)
                 .map(|value| value.text)
                 .unwrap_or_else(|| value_value.to_string()),
-        ));
+            props,
+        )));
     }
     Ok(None)
 }
@@ -925,51 +933,86 @@ pub(crate) fn format_spec_collapses_quoted_percent(ignore_missing: &Value) -> bo
     }
 }
 
-pub(crate) fn apply_format_spec_flags(mut text: String, spec: &ParsedFormatSpec) -> String {
+/// Apply a %-spec's flags to TEXT and return, for each output char,
+/// the index of the input char it came from (None for padding).  GNU's
+/// implementation truncates/pads with property-preserving primitives, so
+/// text properties follow the surviving characters.
+pub(crate) fn apply_format_spec_flags_indexed(
+    text: String,
+    spec: &ParsedFormatSpec,
+) -> (String, Vec<Option<usize>>) {
     let chop_left = spec.flags.contains(&'<');
     let chop_right = spec.flags.contains(&'>');
     let pad_zero = spec.flags.contains(&'0');
     let pad_right = spec.flags.contains(&'-');
+    let mut chars: Vec<char> = text.chars().collect();
+    let mut sources: Vec<Option<usize>> = (0..chars.len()).map(Some).collect();
     if let Some(precision) = spec.precision {
-        let width = text.chars().count();
+        let width = chars.len();
         if width > precision {
-            text = if chop_left {
-                text.chars().skip(width - precision).collect()
+            if chop_left {
+                chars.drain(..width - precision);
+                sources.drain(..width - precision);
             } else {
-                text.chars().take(precision).collect()
-            };
+                chars.truncate(precision);
+                sources.truncate(precision);
+            }
         }
     }
 
     if let Some(target_width) = spec.width {
-        let width = text.chars().count();
+        let width = chars.len();
         if width < target_width {
             let padding = target_width - width;
             let pad = if pad_zero { '0' } else { ' ' };
-            let pad_text = std::iter::repeat_n(pad, padding).collect::<String>();
-            text = if pad_right {
-                format!("{text}{pad_text}")
+            if pad_right {
+                chars.extend(std::iter::repeat_n(pad, padding));
+                sources.extend(std::iter::repeat_n(None, padding));
             } else {
-                format!("{pad_text}{text}")
-            };
+                let mut padded: Vec<char> = std::iter::repeat_n(pad, padding).collect();
+                padded.extend(chars);
+                chars = padded;
+                let mut padded_sources: Vec<Option<usize>> =
+                    std::iter::repeat_n(None, padding).collect();
+                padded_sources.extend(sources);
+                sources = padded_sources;
+            }
         } else if width > target_width {
-            text = if chop_left {
-                text.chars().skip(width - target_width).collect()
+            if chop_left {
+                chars.drain(..width - target_width);
+                sources.drain(..width - target_width);
             } else if chop_right {
-                text.chars().take(target_width).collect()
-            } else {
-                text
-            };
+                chars.truncate(target_width);
+                sources.truncate(target_width);
+            }
         }
     }
 
+    // Case transforms preserve positions (multi-char expansions are rare
+    // enough that GNU's property behavior for them is not load-bearing).
     if spec.flags.contains(&'^') {
-        text = text.to_uppercase();
+        let (mut new_chars, mut new_sources) = (Vec::new(), Vec::new());
+        for (ch, src) in chars.iter().zip(&sources) {
+            for up in ch.to_uppercase() {
+                new_chars.push(up);
+                new_sources.push(*src);
+            }
+        }
+        chars = new_chars;
+        sources = new_sources;
     }
     if spec.flags.contains(&'_') {
-        text = text.to_lowercase();
+        let (mut new_chars, mut new_sources) = (Vec::new(), Vec::new());
+        for (ch, src) in chars.iter().zip(&sources) {
+            for low in ch.to_lowercase() {
+                new_chars.push(low);
+                new_sources.push(*src);
+            }
+        }
+        chars = new_chars;
+        sources = new_sources;
     }
-    text
+    (chars.into_iter().collect(), sources)
 }
 
 pub(crate) fn custom_choice_tag(choice: &Value) -> Option<Value> {
