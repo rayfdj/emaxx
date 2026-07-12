@@ -124,11 +124,36 @@ counts as the progress denominator.
     process-output (accepts server conns -> child process inheriting
     filter/sentinel/log/plist, runs "open from PEER\n"; delivers
     stream input to filters; "connection broken" on close).
-  - REMAINING to bank erc-scenarios-internal (2882..2894): the full
-    ERC-over-network flow (erc-open -> erc-server-connect -> client
-    stream + timer-driven erc-d dialog pump) must complete
-    erc-d-run-basic and siblings.  Deep — erc-d-tests-with-server
-    drives a real ERC client through the fake server via timers.
+  - Follow-on UNCOMMITTED work (3 clean fixes on top of 646ca07, all
+    gated + sweep-validated, kept because correct/general):
+    (a) processes.rs pump copies the server's plist per accepted
+    connection (GNU server_accept_connection Fcopy_sequence) so a
+    child's `process-put' can't clobber the server's `:dialog-dialogs';
+    (b) misc.rs add-hook wraps a bare-function-symbol hook value into a
+    one-element list before adding (GNU), so erc's `422' hook keeps
+    `erc-server-376' when the networks module adds
+    `erc-networks-on-MOTD-end'; (c) syntax.rs down_list_impl (forward)
+    now routes through scan_lists_gnu(from, 1, -1) so
+    `parse-sexp-ignore-comments' is honored — a `(' inside a comment no
+    longer counts (erc-d-u--read-dialog navigates .eld hunks with
+    down-list/forward-list over comments containing parens).
+  - erc-d-run-basic now completes the ENTIRE IRC handshake with these
+    fixes (PASS/NICK/USER -> welcome burst -> MODE +i -> JOIN #chan ->
+    #chan buffer created), but still FAILS on the last exchange:
+    emaxx's pump is too SLOW (registration alone takes ~4.8s of pump
+    time; each accept-process-output sleeps 0.05s and the flow needs
+    many round-trips), so the client's `MODE #chan' arrives after the
+    mode-chan exchange's 1.2s timeout expires.  Banking
+    erc-scenarios-internal needs PUMP-PERFORMANCE work, not more
+    protocol fixes: process pending input/timers eagerly (don't sleep
+    a fixed 0.05s when there is deliverable input or a due timer),
+    and/or make accept-process-output return as soon as input arrives.
+    IMPORTANT: making run-at-time timers respect their delay (a
+    ScheduledTimer.due partition in run_pending_timers) was TRIED and
+    REVERTED — it regressed char-fold/srecode (they rely on timers
+    firing immediately during pumps) AND did not fix erc-d (the pump
+    is the real bottleneck).  Do not re-add delay-respecting timers
+    without also solving the pump-eagerness problem.
   - Other single-file gaps: erc-services 2901..2917 (3 plstore fails —
     need a plstore.el auth-source backend; get-file-buffer is nil);
     erc-stamp 2918..2929 (1 fail: erc-stamp--dedupe-date-stamps-from-

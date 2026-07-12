@@ -1899,9 +1899,29 @@ pub(super) fn scan_lists_impl(
 pub(super) fn down_list_impl(
     interp: &mut Interpreter,
     count_value: Option<&Value>,
-    _env: &Env,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let count = count_value.map_or(Ok(1), Value::as_integer)?;
+    if count > 0 {
+        // GNU lisp.el down-list: (goto-char (scan-lists (point) 1 -1)),
+        // which honors `parse-sexp-ignore-comments' (a `(' inside a comment
+        // must not count as a list opener).
+        for _ in 0..count {
+            let from = interp.buffer.point() as i64;
+            match scan_lists_gnu(interp, env, from, 1, -1, false)? {
+                Some(position) => {
+                    interp.buffer.goto_char(position);
+                }
+                None => {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("scan-error".into()),
+                        Value::String("No containing expression".into()),
+                    ])));
+                }
+            }
+        }
+        return Ok(Value::Nil);
+    }
     let chars: Vec<char> = interp.buffer.buffer_string().chars().collect();
     let table_id = interp.current_syntax_table_id();
     if count < 0 {
