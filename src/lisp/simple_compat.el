@@ -4902,6 +4902,12 @@ Like GNU's `help--window-setup': BODY runs in the help buffer with
        (prog1
            (let ((standard-output (current-buffer)))
              ,@body)
+         ;; GNU help--window-setup runs `help-make-xrefs' on the result
+         ;; ([back]/[forward] buttons, cross-references) and leaves point
+         ;; at the top of the rendered help buffer.
+         (when (fboundp 'help-make-xrefs)
+           (help-make-xrefs (current-buffer)))
+         (goto-char (point-min))
          (display-buffer (current-buffer))))))
 
 ;; fill.el: paragraph filler; a no-op suffices while emaxx has no
@@ -8996,3 +9002,1307 @@ Do nothing if FACE is nil."
 (defun set-window-fringes (_window _left &optional _right _outside-margins _persistent)
   "Set fringes of specified WINDOW."
   nil)
+
+;; GNU subr.el (verbatim).
+(defun buffer-narrowed-p ()
+  "Return non-nil if the current buffer is narrowed."
+  (/= (- (point-max) (point-min)) (buffer-size)))
+
+
+;; GNU term/tty-colors.el (verbatim): batch color-name resolution.
+;; `color-values' on a text terminal approximates any standard X color
+;; name (from `color-name-rgb-alist') to the nearest of the 8 standard
+;; tty colors, exactly as GNU does in --batch.
+
+(defconst color-name-rgb-alist
+  '(("snow"		65535 64250 64250)
+    ("ghostwhite"	63736 63736 65535)
+    ("whitesmoke"	62965 62965 62965)
+    ("gainsboro"	56540 56540 56540)
+    ("floralwhite"	65535 64250 61680)
+    ("oldlace"		65021 62965 59110)
+    ("linen"		64250 61680 59110)
+    ("antiquewhite"	64250 60395 55255)
+    ("papayawhip"	65535 61423 54741)
+    ("blanchedalmond"	65535 60395 52685)
+    ("bisque"		65535 58596 50372)
+    ("peachpuff"	65535 56026 47545)
+    ("navajowhite"	65535 57054 44461)
+    ("moccasin"		65535 58596 46517)
+    ("cornsilk"		65535 63736 56540)
+    ("ivory"		65535 65535 61680)
+    ("lemonchiffon"	65535 64250 52685)
+    ("seashell"		65535 62965 61166)
+    ("honeydew"		61680 65535 61680)
+    ("mintcream"	62965 65535 64250)
+    ("azure"		61680 65535 65535)
+    ("aliceblue"	61680 63736 65535)
+    ("lavender"		59110 59110 64250)
+    ("lavenderblush"	65535 61680 62965)
+    ("mistyrose"	65535 58596 57825)
+    ("white"		65535 65535 65535)
+    ("black"		    0     0     0)
+    ("darkslategray"	12079 20303 20303)
+    ("darkslategrey"	12079 20303 20303)
+    ("dimgray"		26985 26985 26985)
+    ("dimgrey"		26985 26985 26985)
+    ("slategray"	28784 32896 37008)
+    ("slategrey"	28784 32896 37008)
+    ("lightslategray"	30583 34952 39321)
+    ("lightslategrey"	30583 34952 39321)
+    ("gray"		48830 48830 48830)
+    ("grey"		48830 48830 48830)
+    ("lightgrey"	54227 54227 54227)
+    ("lightgray"	54227 54227 54227)
+    ("midnightblue"	 6425  6425 28784)
+    ("navy"		    0     0 32896)
+    ("navyblue"		    0     0 32896)
+    ("cornflowerblue"	25700 38293 60909)
+    ("darkslateblue"	18504 15677 35723)
+    ("slateblue"	27242 23130 52685)
+    ("mediumslateblue"	31611 26728 61166)
+    ("lightslateblue"	33924 28784 65535)
+    ("mediumblue"	    0     0 52685)
+    ("royalblue"	16705 26985 57825)
+    ("blue"		    0     0 65535)
+    ("dodgerblue"	 7710 37008 65535)
+    ("deepskyblue"	    0 49087 65535)
+    ("skyblue"		34695 52942 60395)
+    ("lightskyblue"	34695 52942 64250)
+    ("steelblue"	17990 33410 46260)
+    ("lightsteelblue"	45232 50372 57054)
+    ("lightblue"	44461 55512 59110)
+    ("powderblue"	45232 57568 59110)
+    ("paleturquoise"	44975 61166 61166)
+    ("darkturquoise"	    0 52942 53713)
+    ("mediumturquoise"	18504 53713 52428)
+    ("turquoise"	16448 57568 53456)
+    ("cyan"		    0 65535 65535)
+    ("lightcyan"	57568 65535 65535)
+    ("cadetblue"	24415 40606 41120)
+    ("mediumaquamarine"	26214 52685 43690)
+    ("aquamarine"	32639 65535 54484)
+    ("darkgreen"	    0 25700     0)
+    ("darkolivegreen"	21845 27499 12079)
+    ("darkseagreen"	36751 48316 36751)
+    ("seagreen"		11822 35723 22359)
+    ("mediumseagreen"	15420 46003 29041)
+    ("lightseagreen"	 8224 45746 43690)
+    ("palegreen"	39064 64507 39064)
+    ("springgreen"	    0 65535 32639)
+    ("lawngreen"	31868 64764     0)
+    ("green"		    0 65535     0)
+    ("chartreuse"	32639 65535     0)
+    ("mediumspringgreen"    0 64250 39578)
+    ("greenyellow"	44461 65535 12079)
+    ("limegreen"	12850 52685 12850)
+    ("yellowgreen"	39578 52685 12850)
+    ("forestgreen"	 8738 35723  8738)
+    ("olivedrab"	27499 36494  8995)
+    ("darkkhaki"	48573 47031 27499)
+    ("khaki"		61680 59110 35980)
+    ("palegoldenrod"	61166 59624 43690)
+    ("lightgoldenrodyellow" 64250 64250 53970)
+    ("lightyellow"	65535 65535 57568)
+    ("yellow"		65535 65535     0)
+    ("gold"		65535 55255     0)
+    ("lightgoldenrod"	61166 56797 33410)
+    ("goldenrod"	56026 42405  8224)
+    ("darkgoldenrod"	47288 34438  2827)
+    ("rosybrown"	48316 36751 36751)
+    ("indianred"	52685 23644 23644)
+    ("saddlebrown"	35723 17733  4883)
+    ("sienna"		41120 21074 11565)
+    ("peru"		52685 34181 16191)
+    ("burlywood"	57054 47288 34695)
+    ("beige"		62965 62965 56540)
+    ("wheat"		62965 57054 46003)
+    ("sandybrown"	62708 42148 24672)
+    ("tan"		53970 46260 35980)
+    ("chocolate"	53970 26985  7710)
+    ("firebrick"	45746  8738  8738)
+    ("brown"		42405 10794 10794)
+    ("darksalmon"	59881 38550 31354)
+    ("salmon"		64250 32896 29298)
+    ("lightsalmon"	65535 41120 31354)
+    ("orange"		65535 42405     0)
+    ("darkorange"	65535 35980     0)
+    ("coral"		65535 32639 20560)
+    ("lightcoral"	61680 32896 32896)
+    ("tomato"		65535 25443 18247)
+    ("orangered"	65535 17733     0)
+    ("red"		65535     0     0)
+    ("hotpink"		65535 26985 46260)
+    ("deeppink"		65535  5140 37779)
+    ("pink"		65535 49344 52171)
+    ("lightpink"	65535 46774 49601)
+    ("palevioletred"	56283 28784 37779)
+    ("maroon"		45232 12336 24672)
+    ("mediumvioletred"	51143  5397 34181)
+    ("violetred"	53456  8224 37008)
+    ("magenta"		65535     0 65535)
+    ("violet"		61166 33410 61166)
+    ("plum"		56797 41120 56797)
+    ("orchid"		56026 28784 54998)
+    ("mediumorchid"	47802 21845 54227)
+    ("darkorchid"	39321 12850 52428)
+    ("darkviolet"	38036     0 54227)
+    ("blueviolet"	35466 11051 58082)
+    ("purple"		41120  8224 61680)
+    ("mediumpurple"	37779 28784 56283)
+    ("thistle"		55512 49087 55512)
+    ("snow1"		65535 64250 64250)
+    ("snow2"		61166 59881 59881)
+    ("snow3"		52685 51657 51657)
+    ("snow4"		35723 35209 35209)
+    ("seashell1"	65535 62965 61166)
+    ("seashell2"	61166 58853 57054)
+    ("seashell3"	52685 50629 49087)
+    ("seashell4"	35723 34438 33410)
+    ("antiquewhite1"	65535 61423 56283)
+    ("antiquewhite2"	61166 57311 52428)
+    ("antiquewhite3"	52685 49344 45232)
+    ("antiquewhite4"	35723 33667 30840)
+    ("bisque1"		65535 58596 50372)
+    ("bisque2"		61166 54741 47031)
+    ("bisque3"		52685 47031 40606)
+    ("bisque4"		35723 32125 27499)
+    ("peachpuff1"	65535 56026 47545)
+    ("peachpuff2"	61166 52171 44461)
+    ("peachpuff3"	52685 44975 38293)
+    ("peachpuff4"	35723 30583 25957)
+    ("navajowhite1"	65535 57054 44461)
+    ("navajowhite2"	61166 53199 41377)
+    ("navajowhite3"	52685 46003 35723)
+    ("navajowhite4"	35723 31097 24158)
+    ("lemonchiffon1"	65535 64250 52685)
+    ("lemonchiffon2"	61166 59881 49087)
+    ("lemonchiffon3"	52685 51657 42405)
+    ("lemonchiffon4"	35723 35209 28784)
+    ("cornsilk1"	65535 63736 56540)
+    ("cornsilk2"	61166 59624 52685)
+    ("cornsilk3"	52685 51400 45489)
+    ("cornsilk4"	35723 34952 30840)
+    ("ivory1"		65535 65535 61680)
+    ("ivory2"		61166 61166 57568)
+    ("ivory3"		52685 52685 49601)
+    ("ivory4"		35723 35723 33667)
+    ("honeydew1"	61680 65535 61680)
+    ("honeydew2"	57568 61166 57568)
+    ("honeydew3"	49601 52685 49601)
+    ("honeydew4"	33667 35723 33667)
+    ("lavenderblush1"	65535 61680 62965)
+    ("lavenderblush2"	61166 57568 58853)
+    ("lavenderblush3"	52685 49601 50629)
+    ("lavenderblush4"	35723 33667 34438)
+    ("mistyrose1"	65535 58596 57825)
+    ("mistyrose2"	61166 54741 53970)
+    ("mistyrose3"	52685 47031 46517)
+    ("mistyrose4"	35723 32125 31611)
+    ("azure1"		61680 65535 65535)
+    ("azure2"		57568 61166 61166)
+    ("azure3"		49601 52685 52685)
+    ("azure4"		33667 35723 35723)
+    ("slateblue1"	33667 28527 65535)
+    ("slateblue2"	31354 26471 61166)
+    ("slateblue3"	26985 22873 52685)
+    ("slateblue4"	18247 15420 35723)
+    ("royalblue1"	18504 30326 65535)
+    ("royalblue2"	17219 28270 61166)
+    ("royalblue3"	14906 24415 52685)
+    ("royalblue4"	10023 16448 35723)
+    ("blue1"		    0     0 65535)
+    ("blue2"		    0     0 61166)
+    ("blue3"		    0     0 52685)
+    ("blue4"		    0     0 35723)
+    ("dodgerblue1"	 7710 37008 65535)
+    ("dodgerblue2"	 7196 34438 61166)
+    ("dodgerblue3"	 6168 29812 52685)
+    ("dodgerblue4"	 4112 20046 35723)
+    ("steelblue1"	25443 47288 65535)
+    ("steelblue2"	23644 44204 61166)
+    ("steelblue3"	20303 38036 52685)
+    ("steelblue4"	13878 25700 35723)
+    ("deepskyblue1"	    0 49087 65535)
+    ("deepskyblue2"	    0 45746 61166)
+    ("deepskyblue3"	    0 39578 52685)
+    ("deepskyblue4"	    0 26728 35723)
+    ("skyblue1"		34695 52942 65535)
+    ("skyblue2"		32382 49344 61166)
+    ("skyblue3"		27756 42662 52685)
+    ("skyblue4"		19018 28784 35723)
+    ("lightskyblue1"	45232 58082 65535)
+    ("lightskyblue2"	42148 54227 61166)
+    ("lightskyblue3"	36237 46774 52685)
+    ("lightskyblue4"	24672 31611 35723)
+    ("slategray1"	50886 58082 65535)
+    ("slategray2"	47545 54227 61166)
+    ("slategray3"	40863 46774 52685)
+    ("slategray4"	27756 31611 35723)
+    ("lightsteelblue1"	51914 57825 65535)
+    ("lightsteelblue2"	48316 53970 61166)
+    ("lightsteelblue3"	41634 46517 52685)
+    ("lightsteelblue4"	28270 31611 35723)
+    ("lightblue1"	49087 61423 65535)
+    ("lightblue2"	45746 57311 61166)
+    ("lightblue3"	39578 49344 52685)
+    ("lightblue4"	26728 33667 35723)
+    ("lightcyan1"	57568 65535 65535)
+    ("lightcyan2"	53713 61166 61166)
+    ("lightcyan3"	46260 52685 52685)
+    ("lightcyan4"	31354 35723 35723)
+    ("paleturquoise1"	48059 65535 65535)
+    ("paleturquoise2"	44718 61166 61166)
+    ("paleturquoise3"	38550 52685 52685)
+    ("paleturquoise4"	26214 35723 35723)
+    ("cadetblue1"	39064 62965 65535)
+    ("cadetblue2"	36494 58853 61166)
+    ("cadetblue3"	31354 50629 52685)
+    ("cadetblue4"	21331 34438 35723)
+    ("turquoise1"	    0 62965 65535)
+    ("turquoise2"	    0 58853 61166)
+    ("turquoise3"	    0 50629 52685)
+    ("turquoise4"	    0 34438 35723)
+    ("cyan1"		    0 65535 65535)
+    ("cyan2"		    0 61166 61166)
+    ("cyan3"		    0 52685 52685)
+    ("cyan4"		    0 35723 35723)
+    ("darkslategray1"	38807 65535 65535)
+    ("darkslategray2"	36237 61166 61166)
+    ("darkslategray3"	31097 52685 52685)
+    ("darkslategray4"	21074 35723 35723)
+    ("aquamarine1"	32639 65535 54484)
+    ("aquamarine2"	30326 61166 50886)
+    ("aquamarine3"	26214 52685 43690)
+    ("aquamarine4"	17733 35723 29812)
+    ("darkseagreen1"	49601 65535 49601)
+    ("darkseagreen2"	46260 61166 46260)
+    ("darkseagreen3"	39835 52685 39835)
+    ("darkseagreen4"	26985 35723 26985)
+    ("seagreen1"	21588 65535 40863)
+    ("seagreen2"	20046 61166 38036)
+    ("seagreen3"	17219 52685 32896)
+    ("seagreen4"	11822 35723 22359)
+    ("palegreen1"	39578 65535 39578)
+    ("palegreen2"	37008 61166 37008)
+    ("palegreen3"	31868 52685 31868)
+    ("palegreen4"	21588 35723 21588)
+    ("springgreen1"	    0 65535 32639)
+    ("springgreen2"	    0 61166 30326)
+    ("springgreen3"	    0 52685 26214)
+    ("springgreen4"	    0 35723 17733)
+    ("green1"		    0 65535     0)
+    ("green2"		    0 61166     0)
+    ("green3"		    0 52685     0)
+    ("green4"		    0 35723     0)
+    ("chartreuse1"	32639 65535     0)
+    ("chartreuse2"	30326 61166     0)
+    ("chartreuse3"	26214 52685     0)
+    ("chartreuse4"	17733 35723     0)
+    ("olivedrab1"	49344 65535 15934)
+    ("olivedrab2"	46003 61166 14906)
+    ("olivedrab3"	39578 52685 12850)
+    ("olivedrab4"	26985 35723  8738)
+    ("darkolivegreen1"	51914 65535 28784)
+    ("darkolivegreen2"	48316 61166 26728)
+    ("darkolivegreen3"	41634 52685 23130)
+    ("darkolivegreen4"	28270 35723 15677)
+    ("khaki1"		65535 63222 36751)
+    ("khaki2"		61166 59110 34181)
+    ("khaki3"		52685 50886 29555)
+    ("khaki4"		35723 34438 20046)
+    ("lightgoldenrod1"	65535 60652 35723)
+    ("lightgoldenrod2"	61166 56540 33410)
+    ("lightgoldenrod3"	52685 48830 28784)
+    ("lightgoldenrod4"	35723 33153 19532)
+    ("lightyellow1"	65535 65535 57568)
+    ("lightyellow2"	61166 61166 53713)
+    ("lightyellow3"	52685 52685 46260)
+    ("lightyellow4"	35723 35723 31354)
+    ("yellow1"		65535 65535     0)
+    ("yellow2"		61166 61166     0)
+    ("yellow3"		52685 52685     0)
+    ("yellow4"		35723 35723     0)
+    ("gold1"		65535 55255     0)
+    ("gold2"		61166 51657     0)
+    ("gold3"		52685 44461     0)
+    ("gold4"		35723 30069     0)
+    ("goldenrod1"	65535 49601  9509)
+    ("goldenrod2"	61166 46260  8738)
+    ("goldenrod3"	52685 39835  7453)
+    ("goldenrod4"	35723 26985  5140)
+    ("darkgoldenrod1"	65535 47545  3855)
+    ("darkgoldenrod2"	61166 44461  3598)
+    ("darkgoldenrod3"	52685 38293  3084)
+    ("darkgoldenrod4"	35723 25957  2056)
+    ("rosybrown1"	65535 49601 49601)
+    ("rosybrown2"	61166 46260 46260)
+    ("rosybrown3"	52685 39835 39835)
+    ("rosybrown4"	35723 26985 26985)
+    ("indianred1"	65535 27242 27242)
+    ("indianred2"	61166 25443 25443)
+    ("indianred3"	52685 21845 21845)
+    ("indianred4"	35723 14906 14906)
+    ("sienna1"		65535 33410 18247)
+    ("sienna2"		61166 31097 16962)
+    ("sienna3"		52685 26728 14649)
+    ("sienna4"		35723 18247  9766)
+    ("burlywood1"	65535 54227 39835)
+    ("burlywood2"	61166 50629 37265)
+    ("burlywood3"	52685 43690 32125)
+    ("burlywood4"	35723 29555 21845)
+    ("wheat1"		65535 59367 47802)
+    ("wheat2"		61166 55512 44718)
+    ("wheat3"		52685 47802 38550)
+    ("wheat4"		35723 32382 26214)
+    ("tan1"		65535 42405 20303)
+    ("tan2"		61166 39578 18761)
+    ("tan3"		52685 34181 16191)
+    ("tan4"		35723 23130 11051)
+    ("chocolate1"	65535 32639  9252)
+    ("chocolate2"	61166 30326  8481)
+    ("chocolate3"	52685 26214  7453)
+    ("chocolate4"	35723 17733  4883)
+    ("firebrick1"	65535 12336 12336)
+    ("firebrick2"	61166 11308 11308)
+    ("firebrick3"	52685  9766  9766)
+    ("firebrick4"	35723  6682  6682)
+    ("brown1"		65535 16448 16448)
+    ("brown2"		61166 15163 15163)
+    ("brown3"		52685 13107 13107)
+    ("brown4"		35723  8995  8995)
+    ("salmon1"		65535 35980 26985)
+    ("salmon2"		61166 33410 25186)
+    ("salmon3"		52685 28784 21588)
+    ("salmon4"		35723 19532 14649)
+    ("lightsalmon1"	65535 41120 31354)
+    ("lightsalmon2"	61166 38293 29298)
+    ("lightsalmon3"	52685 33153 25186)
+    ("lightsalmon4"	35723 22359 16962)
+    ("orange1"		65535 42405     0)
+    ("orange2"		61166 39578     0)
+    ("orange3"		52685 34181     0)
+    ("orange4"		35723 23130     0)
+    ("darkorange1"	65535 32639     0)
+    ("darkorange2"	61166 30326     0)
+    ("darkorange3"	52685 26214     0)
+    ("darkorange4"	35723 17733     0)
+    ("coral1"		65535 29298 22102)
+    ("coral2"		61166 27242 20560)
+    ("coral3"		52685 23387 17733)
+    ("coral4"		35723 15934 12079)
+    ("tomato1"		65535 25443 18247)
+    ("tomato2"		61166 23644 16962)
+    ("tomato3"		52685 20303 14649)
+    ("tomato4"		35723 13878  9766)
+    ("orangered1"	65535 17733     0)
+    ("orangered2"	61166 16448     0)
+    ("orangered3"	52685 14135     0)
+    ("orangered4"	35723  9509     0)
+    ("red1"		65535     0     0)
+    ("red2"		61166     0     0)
+    ("red3"		52685     0     0)
+    ("red4"		35723     0     0)
+    ("deeppink1"	65535  5140 37779)
+    ("deeppink2"	61166  4626 35209)
+    ("deeppink3"	52685  4112 30326)
+    ("deeppink4"	35723  2570 20560)
+    ("hotpink1"		65535 28270 46260)
+    ("hotpink2"		61166 27242 42919)
+    ("hotpink3"		52685 24672 37008)
+    ("hotpink4"		35723 14906 25186)
+    ("pink1"		65535 46517 50629)
+    ("pink2"		61166 43433 47288)
+    ("pink3"		52685 37265 40606)
+    ("pink4"		35723 25443 27756)
+    ("lightpink1"	65535 44718 47545)
+    ("lightpink2"	61166 41634 44461)
+    ("lightpink3"	52685 35980 38293)
+    ("lightpink4"	35723 24415 25957)
+    ("palevioletred1"	65535 33410 43947)
+    ("palevioletred2"	61166 31097 40863)
+    ("palevioletred3"	52685 26728 35209)
+    ("palevioletred4"	35723 18247 23901)
+    ("maroon1"		65535 13364 46003)
+    ("maroon2"		61166 12336 42919)
+    ("maroon3"		52685 10537 37008)
+    ("maroon4"		35723  7196 25186)
+    ("violetred1"	65535 15934 38550)
+    ("violetred2"	61166 14906 35980)
+    ("violetred3"	52685 12850 30840)
+    ("violetred4"	35723  8738 21074)
+    ("magenta1"		65535     0 65535)
+    ("magenta2"		61166     0 61166)
+    ("magenta3"		52685     0 52685)
+    ("magenta4"		35723     0 35723)
+    ("orchid1"		65535 33667 64250)
+    ("orchid2"		61166 31354 59881)
+    ("orchid3"		52685 26985 51657)
+    ("orchid4"		35723 18247 35209)
+    ("plum1"		65535 48059 65535)
+    ("plum2"		61166 44718 61166)
+    ("plum3"		52685 38550 52685)
+    ("plum4"		35723 26214 35723)
+    ("mediumorchid1"	57568 26214 65535)
+    ("mediumorchid2"	53713 24415 61166)
+    ("mediumorchid3"	46260 21074 52685)
+    ("mediumorchid4"	31354 14135 35723)
+    ("darkorchid1"	49087 15934 65535)
+    ("darkorchid2"	45746 14906 61166)
+    ("darkorchid3"	39578 12850 52685)
+    ("darkorchid4"	26728  8738 35723)
+    ("purple1"		39835 12336 65535)
+    ("purple2"		37265 11308 61166)
+    ("purple3"		32125  9766 52685)
+    ("purple4"		21845  6682 35723)
+    ("mediumpurple1"	43947 33410 65535)
+    ("mediumpurple2"	40863 31097 61166)
+    ("mediumpurple3"	35209 26728 52685)
+    ("mediumpurple4"	23901 18247 35723)
+    ("thistle1"		65535 57825 65535)
+    ("thistle2"		61166 53970 61166)
+    ("thistle3"		52685 46517 52685)
+    ("thistle4"		35723 31611 35723)
+    ("gray0"		    0     0     0)
+    ("grey0"		    0     0     0)
+    ("gray1"		  771   771   771)
+    ("grey1"		  771   771   771)
+    ("gray2"		 1285  1285  1285)
+    ("grey2"		 1285  1285  1285)
+    ("gray3"		 2056  2056  2056)
+    ("grey3"		 2056  2056  2056)
+    ("gray4"		 2570  2570  2570)
+    ("grey4"		 2570  2570  2570)
+    ("gray5"		 3341  3341  3341)
+    ("grey5"		 3341  3341  3341)
+    ("gray6"		 3855  3855  3855)
+    ("grey6"		 3855  3855  3855)
+    ("gray7"		 4626  4626  4626)
+    ("grey7"		 4626  4626  4626)
+    ("gray8"		 5140  5140  5140)
+    ("grey8"		 5140  5140  5140)
+    ("gray9"		 5911  5911  5911)
+    ("grey9"		 5911  5911  5911)
+    ("gray10"		 6682  6682  6682)
+    ("grey10"		 6682  6682  6682)
+    ("gray11"		 7196  7196  7196)
+    ("grey11"		 7196  7196  7196)
+    ("gray12"		 7967  7967  7967)
+    ("grey12"		 7967  7967  7967)
+    ("gray13"		 8481  8481  8481)
+    ("grey13"		 8481  8481  8481)
+    ("gray14"		 9252  9252  9252)
+    ("grey14"		 9252  9252  9252)
+    ("gray15"		 9766  9766  9766)
+    ("grey15"		 9766  9766  9766)
+    ("gray16"		10537 10537 10537)
+    ("grey16"		10537 10537 10537)
+    ("gray17"		11051 11051 11051)
+    ("grey17"		11051 11051 11051)
+    ("gray18"		11822 11822 11822)
+    ("grey18"		11822 11822 11822)
+    ("gray19"		12336 12336 12336)
+    ("grey19"		12336 12336 12336)
+    ("gray20"		13107 13107 13107)
+    ("grey20"		13107 13107 13107)
+    ("gray21"		13878 13878 13878)
+    ("grey21"		13878 13878 13878)
+    ("gray22"		14392 14392 14392)
+    ("grey22"		14392 14392 14392)
+    ("gray23"		15163 15163 15163)
+    ("grey23"		15163 15163 15163)
+    ("gray24"		15677 15677 15677)
+    ("grey24"		15677 15677 15677)
+    ("gray25"		16448 16448 16448)
+    ("grey25"		16448 16448 16448)
+    ("gray26"		16962 16962 16962)
+    ("grey26"		16962 16962 16962)
+    ("gray27"		17733 17733 17733)
+    ("grey27"		17733 17733 17733)
+    ("gray28"		18247 18247 18247)
+    ("grey28"		18247 18247 18247)
+    ("gray29"		19018 19018 19018)
+    ("grey29"		19018 19018 19018)
+    ("gray30"		19789 19789 19789)
+    ("grey30"		19789 19789 19789)
+    ("gray31"		20303 20303 20303)
+    ("grey31"		20303 20303 20303)
+    ("gray32"		21074 21074 21074)
+    ("grey32"		21074 21074 21074)
+    ("gray33"		21588 21588 21588)
+    ("grey33"		21588 21588 21588)
+    ("gray34"		22359 22359 22359)
+    ("grey34"		22359 22359 22359)
+    ("gray35"		22873 22873 22873)
+    ("grey35"		22873 22873 22873)
+    ("gray36"		23644 23644 23644)
+    ("grey36"		23644 23644 23644)
+    ("gray37"		24158 24158 24158)
+    ("grey37"		24158 24158 24158)
+    ("gray38"		24929 24929 24929)
+    ("grey38"		24929 24929 24929)
+    ("gray39"		25443 25443 25443)
+    ("grey39"		25443 25443 25443)
+    ("gray40"		26214 26214 26214)
+    ("grey40"		26214 26214 26214)
+    ("gray41"		26985 26985 26985)
+    ("grey41"		26985 26985 26985)
+    ("gray42"		27499 27499 27499)
+    ("grey42"		27499 27499 27499)
+    ("gray43"		28270 28270 28270)
+    ("grey43"		28270 28270 28270)
+    ("gray44"		28784 28784 28784)
+    ("grey44"		28784 28784 28784)
+    ("gray45"		29555 29555 29555)
+    ("grey45"		29555 29555 29555)
+    ("gray46"		30069 30069 30069)
+    ("grey46"		30069 30069 30069)
+    ("gray47"		30840 30840 30840)
+    ("grey47"		30840 30840 30840)
+    ("gray48"		31354 31354 31354)
+    ("grey48"		31354 31354 31354)
+    ("gray49"		32125 32125 32125)
+    ("grey49"		32125 32125 32125)
+    ("gray50"		32639 32639 32639)
+    ("grey50"		32639 32639 32639)
+    ("gray51"		33410 33410 33410)
+    ("grey51"		33410 33410 33410)
+    ("gray52"		34181 34181 34181)
+    ("grey52"		34181 34181 34181)
+    ("gray53"		34695 34695 34695)
+    ("grey53"		34695 34695 34695)
+    ("gray54"		35466 35466 35466)
+    ("grey54"		35466 35466 35466)
+    ("gray55"		35980 35980 35980)
+    ("grey55"		35980 35980 35980)
+    ("gray56"		36751 36751 36751)
+    ("grey56"		36751 36751 36751)
+    ("gray57"		37265 37265 37265)
+    ("grey57"		37265 37265 37265)
+    ("gray58"		38036 38036 38036)
+    ("grey58"		38036 38036 38036)
+    ("gray59"		38550 38550 38550)
+    ("grey59"		38550 38550 38550)
+    ("gray60"		39321 39321 39321)
+    ("grey60"		39321 39321 39321)
+    ("gray61"		40092 40092 40092)
+    ("grey61"		40092 40092 40092)
+    ("gray62"		40606 40606 40606)
+    ("grey62"		40606 40606 40606)
+    ("gray63"		41377 41377 41377)
+    ("grey63"		41377 41377 41377)
+    ("gray64"		41891 41891 41891)
+    ("grey64"		41891 41891 41891)
+    ("gray65"		42662 42662 42662)
+    ("grey65"		42662 42662 42662)
+    ("gray66"		43176 43176 43176)
+    ("grey66"		43176 43176 43176)
+    ("gray67"		43947 43947 43947)
+    ("grey67"		43947 43947 43947)
+    ("gray68"		44461 44461 44461)
+    ("grey68"		44461 44461 44461)
+    ("gray69"		45232 45232 45232)
+    ("grey69"		45232 45232 45232)
+    ("gray70"		46003 46003 46003)
+    ("grey70"		46003 46003 46003)
+    ("gray71"		46517 46517 46517)
+    ("grey71"		46517 46517 46517)
+    ("gray72"		47288 47288 47288)
+    ("grey72"		47288 47288 47288)
+    ("gray73"		47802 47802 47802)
+    ("grey73"		47802 47802 47802)
+    ("gray74"		48573 48573 48573)
+    ("grey74"		48573 48573 48573)
+    ("gray75"		49087 49087 49087)
+    ("grey75"		49087 49087 49087)
+    ("gray76"		49858 49858 49858)
+    ("grey76"		49858 49858 49858)
+    ("gray77"		50372 50372 50372)
+    ("grey77"		50372 50372 50372)
+    ("gray78"		51143 51143 51143)
+    ("grey78"		51143 51143 51143)
+    ("gray79"		51657 51657 51657)
+    ("grey79"		51657 51657 51657)
+    ("gray80"		52428 52428 52428)
+    ("grey80"		52428 52428 52428)
+    ("gray81"		53199 53199 53199)
+    ("grey81"		53199 53199 53199)
+    ("gray82"		53713 53713 53713)
+    ("grey82"		53713 53713 53713)
+    ("gray83"		54484 54484 54484)
+    ("grey83"		54484 54484 54484)
+    ("gray84"		54998 54998 54998)
+    ("grey84"		54998 54998 54998)
+    ("gray85"		55769 55769 55769)
+    ("grey85"		55769 55769 55769)
+    ("gray86"		56283 56283 56283)
+    ("grey86"		56283 56283 56283)
+    ("gray87"		57054 57054 57054)
+    ("grey87"		57054 57054 57054)
+    ("gray88"		57568 57568 57568)
+    ("grey88"		57568 57568 57568)
+    ("gray89"		58339 58339 58339)
+    ("grey89"		58339 58339 58339)
+    ("gray90"		58853 58853 58853)
+    ("grey90"		58853 58853 58853)
+    ("gray91"		59624 59624 59624)
+    ("grey91"		59624 59624 59624)
+    ("gray92"		60395 60395 60395)
+    ("grey92"		60395 60395 60395)
+    ("gray93"		60909 60909 60909)
+    ("grey93"		60909 60909 60909)
+    ("gray94"		61680 61680 61680)
+    ("grey94"		61680 61680 61680)
+    ("gray95"		62194 62194 62194)
+    ("grey95"		62194 62194 62194)
+    ("gray96"		62965 62965 62965)
+    ("grey96"		62965 62965 62965)
+    ("gray97"		63479 63479 63479)
+    ("grey97"		63479 63479 63479)
+    ("gray98"		64250 64250 64250)
+    ("grey98"		64250 64250 64250)
+    ("gray99"		64764 64764 64764)
+    ("grey99"		64764 64764 64764)
+    ("gray100"		65535 65535 65535)
+    ("grey100"		65535 65535 65535)
+    ("darkgrey"		43433 43433 43433)
+    ("darkgray"		43433 43433 43433)
+    ("darkblue"		    0     0 35723)
+    ("darkcyan"		    0 35723 35723) ; no "lightmagenta", see comment above
+    ("darkmagenta"	35723     0 35723)
+    ("darkred"		35723     0     0)  ; but no "lightred", see comment above
+    ("lightgreen"	37008 61166 37008))
+  "An alist of X color names and associated 16-bit RGB values.")
+
+(defconst tty-standard-colors
+  '(("black"	0     0     0     0)
+    ("red"	1 65535     0     0)
+    ("green"	2     0 65535     0)
+    ("yellow"	3 65535 65535     0)
+    ("blue"	4     0     0 65535)
+    ("magenta"	5 65535     0 65535)
+    ("cyan"	6     0 65535 65535)
+    ("white"	7 65535 65535 65535))
+  "An alist of 8 standard tty colors, their indices and RGB values.")
+
+(defun tty-color-alist (&optional _frame)
+  "Return an alist of colors supported by FRAME's terminal.
+FRAME defaults to the selected frame.
+Each element of the returned alist is of the form:
+ (NAME INDEX R G B)
+where NAME is the name of the color, a string;
+INDEX is the index of this color to be sent to the terminal driver
+when the color should be displayed; it is typically a small integer;
+R, G, and B are the intensities of, accordingly, red, green, and blue
+components of the color, represented as numbers between 0 and 65535.
+The file `etc/rgb.txt' in the Emacs distribution lists the standard
+RGB values of the X colors.  If RGB is nil, this color will not be
+considered by `tty-color-translate' as an approximation to another
+color."
+  tty-defined-color-alist)
+
+(defun tty-color-canonicalize (color)
+  "Return COLOR in canonical form.
+A canonicalized color name is all-lower case, with any blanks removed."
+  (let ((case-fold-search nil))
+    (if (string-match-p "[A-Z ]" color)
+	(replace-regexp-in-string " +" "" (downcase color))
+      color)))
+
+(defun tty-color-24bit (rgb &optional display)
+  "Return 24-bit color pixel value for RGB value on DISPLAY.
+DISPLAY can be a display name or a frame, and defaults to the
+selected frame's display.
+If DISPLAY is not on a 24-but TTY terminal, return nil."
+  (when (and rgb (= (display-color-cells display) 16777216))
+    (let ((r (ash (car rgb) -8))
+	  (g (ash (cadr rgb) -8))
+	  (b (ash (nth 2 rgb) -8)))
+      (logior (ash r 16) (ash g 8) b))))
+
+(defun tty-color-off-gray-diag (r g b)
+  "Compute the angle between the color given by R,G,B and the gray diagonal.
+The gray diagonal is the diagonal of the 3D cube in RGB space which
+connects the points corresponding to the black and white colors.  All the
+colors whose RGB coordinates belong to this diagonal are various shades
+of gray, thus the name."
+  (let ((mag (sqrt (* 3 (+ (* r r) (* g g) (* b b))))))
+    (if (< mag 1) 0 (acos (/ (+ r g b) mag)))))
+
+(defun tty-color-approximate (rgb &optional frame)
+  "Find the color in `tty-color-alist' that best approximates RGB.
+Value is a list of the form (NAME INDEX R G B).
+The argument RGB should be an rgb value, that is, a list of three
+integers in the 0..65535 range.
+FRAME defaults to the selected frame."
+  (let* ((color-list (tty-color-alist frame))
+	 (candidate (car color-list))
+	 (best-distance 195076)	;; 3 * 255^2 + 15
+	 (r (ash (car rgb) -8))
+	 (g (ash (cadr rgb) -8))
+	 (b (ash (nth 2 rgb) -8))
+	 best-color)
+    (while candidate
+      (let ((try-rgb (cddr candidate))
+	    ;; If the approximated color is not close enough to the
+	    ;; gray diagonal of the RGB cube, favor non-gray colors.
+	    ;; (The number 0.065 is an empirical ad-hoc'ery.)
+	    (favor-non-gray (>= (tty-color-off-gray-diag r g b) 0.065))
+	    try-r try-g try-b
+	    dif-r dif-g dif-b dist)
+	;; If the RGB values of the candidate color are unknown, we
+	;; never consider it for approximating another color.
+	(if try-rgb
+	    (progn
+	      (setq try-r (ash (car try-rgb) -8)
+		    try-g (ash (cadr try-rgb) -8)
+		    try-b (ash (nth 2 try-rgb) -8))
+	      (setq dif-r (- r try-r)
+		    dif-g (- g try-g)
+		    dif-b (- b try-b))
+	      (setq dist (+ (* dif-r dif-r) (* dif-g dif-g) (* dif-b dif-b)))
+	      (if (and (< dist best-distance)
+		       ;; The candidate color is on the gray diagonal
+		       ;; if its RGB components are all equal.
+		       (or (/= try-r try-g) (/= try-g try-b)
+			   (not favor-non-gray)))
+		  (setq best-distance dist
+			best-color candidate)))))
+      (setq color-list (cdr color-list))
+      (setq candidate (car color-list)))
+    best-color))
+
+(defun tty-color-standard-values (color)
+"Return standard RGB values of the color COLOR.
+
+The result is a list of integer RGB values--(RED GREEN BLUE).
+These values range from 0 to 65535; white is (65535 65535 65535).
+
+The returned value reflects the standard Emacs definition of
+COLOR (see the info node `(emacs) Colors'), regardless of whether
+the terminal can display it, so the return value should be the
+same regardless of what display is being used."
+  (or (color-values-from-color-spec color)
+      (cdr (assoc color color-name-rgb-alist))))
+
+(defun tty-color-values (color &optional frame)
+  "Return RGB values of the color COLOR on a termcap frame FRAME.
+
+If COLOR is not directly supported by the display, return the RGB
+values for a supported color that is its best approximation.
+The value is a list of integer RGB values--(RED GREEN BLUE).
+These values range from 0 to 65535; white is (65535 65535 65535).
+If FRAME is omitted or nil, use the selected frame."
+  (cddr (tty-color-desc color frame)))
+
+(defun tty-color-desc (color &optional frame)
+  "Return the description of the color COLOR for a character terminal.
+Value is a list of the form (NAME INDEX R G B).  The returned NAME or
+RGB value may not be the same as the argument COLOR, because the latter
+might need to be approximated if it is not supported directly."
+  (and (stringp color)
+       (let ((color (tty-color-canonicalize color)))
+	  (or (assoc color (tty-color-alist frame))
+	      (let ((rgb (tty-color-standard-values color)))
+		(and rgb
+		     (let ((pixel (tty-color-24bit rgb frame)))
+		       (or (and pixel (cons color (cons pixel rgb)))
+			   (tty-color-approximate rgb frame)))))))))
+
+
+;; GNU startup registers the 8 standard colors for the initial tty
+;; terminal (tty-register-default-colors); this is that end state.
+(defvar tty-defined-color-alist (mapcar #'copy-sequence tty-standard-colors)
+  "An alist of defined terminal colors and their RGB values.")
+
+;; GNU faces.el (verbatim).
+(defun color-values (color &optional frame)
+  "Return a description of the color named COLOR on frame FRAME.
+COLOR should be a string naming a color (e.g. \"white\"), or a
+string specifying a color's RGB components (e.g. \"#ff12ec\").
+
+Return a list of three integers, (RED GREEN BLUE), each between 0
+and 65535 inclusive.
+Use `color-name-to-rgb' if you want RGB floating-point values
+normalized to 1.0.
+
+If FRAME is omitted or nil, use the selected frame.
+If FRAME cannot display COLOR, the value is nil.
+
+COLOR can also be the symbol `unspecified' or one of the strings
+\"unspecified-fg\" or \"unspecified-bg\", in which case the
+return value is nil."
+  (cond
+   ((member color '(unspecified "unspecified-fg" "unspecified-bg"))
+    nil)
+   ((display-graphic-p frame)
+    (xw-color-values color frame))
+   (t
+    (tty-color-values color frame))))
+
+;; GNU faces.el (verbatim).
+(defun readable-foreground-color (color)
+  "Return a readable foreground color for background COLOR.
+The returned value is a string representing black or white, depending
+on which one provides better contrast with COLOR."
+  ;; We use #ffffff instead of "white", because the latter is sometimes
+  ;; less than white.  That way, we get the best contrast possible.
+  (if (color-dark-p (mapcar (lambda (c) (/ c 65535.0))
+                            (color-values color)))
+      "#ffffff" "black"))
+
+(defconst color-luminance-dark-limit 0.325
+  "The relative luminance below which a color is considered \"dark\".
+A \"dark\" color in this sense provides better contrast with white
+than with black; see `color-dark-p'.
+This value was determined experimentally.")
+
+(defun color-dark-p (rgb)
+  "Whether RGB is more readable against white than black.
+RGB is a 3-element list (R G B), each component in the range [0,1].
+This predicate can be used both for determining a suitable (black or white)
+contrast color with RGB as background and as foreground."
+  (unless (<= 0 (apply #'min rgb) (apply #'max rgb) 1)
+    (error "RGB components %S not in [0,1]" rgb))
+  ;; Compute the relative luminance after gamma-correcting (assuming sRGB),
+  ;; and compare to a cut-off value determined experimentally.
+  ;; See https://en.wikipedia.org/wiki/Relative_luminance for details.
+  (let* ((sr (nth 0 rgb))
+         (sg (nth 1 rgb))
+         (sb (nth 2 rgb))
+         ;; Gamma-correct the RGB components to linear values.
+         ;; Use the power 2.2 as an approximation to sRGB gamma;
+         ;; it should be good enough for the purpose of this function.
+         (r (expt sr 2.2))
+         (g (expt sg 2.2))
+         (b (expt sb 2.2))
+         (y (+ (* r 0.2126) (* g 0.7152) (* b 0.0722))))
+    (< y color-luminance-dark-limit)))
+
+;; GNU faces.el (verbatim).
+(defconst list-faces-sample-text
+  "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  "Text string to display as the sample text for `list-faces-display'.")
+
+
+(defvar help-xref-stack)
+(defun list-faces-display (&optional regexp)
+  "List all faces, using the same sample text in each.
+The sample text is a string that comes from the variable
+`list-faces-sample-text'.
+
+If REGEXP is non-nil, list only those faces with names matching
+this regular expression.  When called interactively with a prefix
+argument, prompt for a regular expression using `read-regexp'."
+  (interactive (list (and current-prefix-arg
+                          (read-regexp "List faces matching regexp"))))
+  (let ((all-faces (zerop (length regexp)))
+	(frame (selected-frame))
+	(max-length 0)
+	faces line-format
+	disp-frame window face-name)
+    ;; We filter and take the max length in one pass
+    (setq faces
+	  (delq nil
+		(mapcar (lambda (f)
+			  (let ((s (symbol-name f)))
+			    (when (or all-faces (string-match-p regexp s))
+			      (setq max-length (max (length s) max-length))
+			      f)))
+			(sort (face-list) #'string-lessp))))
+    (unless faces
+      (error "No faces matching \"%s\"" regexp))
+    (setq max-length (1+ max-length)
+	  line-format (format "%%-%ds" max-length))
+    (with-help-window "*Faces*"
+      (with-current-buffer standard-output
+	(setq truncate-lines t)
+	(insert
+	 (substitute-command-keys
+	  (concat
+	   "\\<help-mode-map>Use "
+	   (if (display-mouse-p) "\\[help-follow-mouse] or ")
+	   "\\[help-follow] on a face name to customize it\n"
+	   "or on its sample text for a description of the face.\n\n")))
+	(setq help-xref-stack nil)
+	(dolist (face faces)
+	  (setq face-name (symbol-name face))
+	  (insert (format line-format face-name))
+	  ;; Hyperlink to a customization buffer for the face.  Using
+	  ;; the help xref mechanism may not be the best way.
+	  (save-excursion
+	    (save-match-data
+	      (search-backward face-name)
+	      (setq help-xref-stack-item `(list-faces-display ,regexp))
+	      (help-xref-button 0 'help-customize-face face)))
+	  (let ((beg (point))
+		(line-beg (line-beginning-position)))
+	    (insert list-faces-sample-text)
+	    ;; Hyperlink to a help buffer for the face.
+	    (save-excursion
+	      (save-match-data
+		(search-backward list-faces-sample-text)
+		(help-xref-button 0 'help-face face)))
+	    (insert "\n")
+	    (put-text-property beg (1- (point)) 'face face)
+	    ;; Make all face commands default to the proper face
+	    ;; anywhere in the line.
+	    (put-text-property line-beg (1- (point)) 'read-face-name face)
+	    ;; If the sample text has multiple lines, line up all of them.
+	    (goto-char beg)
+	    (forward-line 1)
+	    (while (not (eobp))
+	      (insert-char ?\s max-length)
+	      (forward-line 1))))
+	(goto-char (point-min))))
+    ;; If the *Faces* buffer appears in a different frame,
+    ;; copy all the face definitions from FRAME,
+    ;; so that the display will reflect the frame that was selected.
+    (setq window (get-buffer-window (get-buffer "*Faces*") t))
+    (setq disp-frame (if window (window-frame window)
+		       (car (frame-list))))
+    (or (eq frame disp-frame)
+	(dolist (face (face-list))
+	  (copy-face face face frame disp-frame)))))
+
+;; GNU faces.el (verbatim).
+(defun face-documentation (face)
+  "Get the documentation string for FACE.
+If FACE is a face-alias, get the documentation for the target face."
+  (let ((alias (get face 'face-alias)))
+    (if alias
+        (let ((doc (documentation-property alias 'face-documentation)))
+	  (format "%s is an alias for the face `%s'.%s" face alias
+                  (if doc (format "\n%s" doc)
+                    "")))
+      (documentation-property face 'face-documentation))))
+
+
+(defun set-face-documentation (face string)
+  "Set the documentation string for FACE to STRING."
+  ;; Perhaps the text should go in DOC.
+  (put face 'face-documentation (purecopy string)))
+
+;; GNU faces.el (verbatim).
+(defsubst face-default-spec (face)
+  "Return the default face-spec for FACE, ignoring any user customization.
+If there is no default for FACE, return nil."
+  (get face 'face-defface-spec))
+
+(defsubst face-user-default-spec (face)
+  "Return the user's customized face-spec for FACE, or the default if none.
+If there is neither a user setting nor a default for FACE, return nil."
+  (or (get face 'customized-face)
+      (get face 'saved-face)
+      (face-default-spec face)))
+
+
+(defun face-spec-choose (spec &optional frame no-match-retval)
+  "Return the proper attributes for FRAME, out of SPEC.
+
+Value is a plist of face attributes in the form of attribute-value pairs.
+If no match is found or SPEC is nil, return nil, unless NO-MATCH-RETVAL
+is given, in which case return its value instead."
+  (unless frame
+    (setq frame (selected-frame)))
+  (let ((tail spec)
+	result defaults match-found)
+    (while tail
+      (let* ((entry (pop tail))
+	     (display (car entry))
+	     (attrs (cdr entry))
+	     thisval)
+	;; Get the attributes as actually specified by this alternative.
+	(setq thisval
+	      (if (null (cdr attrs)) ;; was (listp (car attrs))
+		  ;; Old-style entry, the attribute list is the
+		  ;; first element.
+		  (car attrs)
+		attrs))
+
+	;; If the condition is `default', that sets the default
+	;; for following conditions.
+	(if (eq display 'default)
+	    (setq defaults thisval)
+	  ;; Otherwise, if it matches, use it.
+	  (when (face-spec-set-match-display display frame)
+	    (setq result thisval
+	          tail nil
+		  match-found t)))))
+    ;; If defaults have been found, it's safe to just append those to the result
+    ;; list (which at this point will be either nil or contain actual specs) and
+    ;; return it to the caller. Since there will most definitely be something to
+    ;; return in this case, there's no need to know/check if a match was found.
+    (if defaults
+	(append defaults result)
+      (if match-found
+	  result
+	no-match-retval))))
+
+(defun face-spec-set-match-display (display frame)
+  "Non-nil if DISPLAY matches FRAME.
+DISPLAY is part of a spec such as can be used in `defface'.
+If FRAME is nil, the current FRAME is used."
+  (let* ((conjuncts display)
+	 conjunct req options
+	 ;; t means we have succeeded against all the conjuncts in
+	 ;; DISPLAY that have been tested so far.
+	 (match t))
+    (if (eq conjuncts t)
+	(setq conjuncts nil))
+    (while (and conjuncts match)
+      (setq conjunct (car conjuncts)
+	    conjuncts (cdr conjuncts)
+	    req (car conjunct)
+	    options (cdr conjunct)
+	    match (cond ((eq req 'type)
+			 (or (memq (window-system frame) options)
+			     (and (memq 'graphic options)
+				  (memq (window-system frame) '(x w32 ns pgtk)))
+			     ;; FIXME: This should be revisited to use
+			     ;; display-graphic-p, provided that the
+			     ;; color selection depends on the number
+			     ;; of supported colors, and all defface's
+			     ;; are changed to look at number of colors
+			     ;; instead of (type graphic) etc.
+			     (if (null (window-system frame))
+				 (memq 'tty options)
+			       (or (and (memq 'motif options)
+					(featurep 'motif))
+				   (and (memq 'gtk options)
+					(featurep 'gtk))
+				   (and (memq 'lucid options)
+					(featurep 'x-toolkit)
+					(not (featurep 'motif))
+					(not (featurep 'gtk)))
+				   (and (memq 'x-toolkit options)
+					(featurep 'x-toolkit))))))
+			((eq req 'min-colors)
+			 (>= (display-color-cells frame) (car options)))
+			((eq req 'class)
+			 (memq (frame-parameter frame 'display-type) options))
+			((eq req 'background)
+			 (memq (frame-parameter frame 'background-mode)
+			       options))
+			((eq req 'supports)
+			 (display-supports-face-attributes-p options frame))
+			(t (error "Unknown req `%S' with options `%S'"
+				  req options)))))
+    match))
+
+
+(defun face-attr-match-p (face attrs &optional frame)
+  "Return t if attributes of FACE match values in plist ATTRS.
+Optional parameter FRAME is the frame whose definition of FACE
+is used.  If nil or omitted, use the selected frame."
+  (unless frame
+    (setq frame (selected-frame)))
+  (let* ((list face-attribute-name-alist)
+	 (match t)
+	 (bold (and (plist-member attrs :bold)
+		    (not (plist-member attrs :weight))))
+	 (italic (and (plist-member attrs :italic)
+		      (not (plist-member attrs :slant))))
+	 (plist (if (or bold italic)
+		    (copy-sequence attrs)
+		  attrs)))
+    ;; Handle the Emacs 20 :bold and :italic properties.
+    (if bold
+	(plist-put plist :weight (if bold 'bold 'normal)))
+    (if italic
+	(plist-put plist :slant (if italic 'italic 'normal)))
+    (while (and match list)
+      (let* ((attr (caar list))
+	     (specified-value
+	      (if (plist-member plist attr)
+		  (plist-get plist attr)
+		'unspecified))
+	     (value-now (face-attribute face attr frame)))
+	(setq match (equal specified-value value-now))
+	(setq list (cdr list))))
+    match))
+
+(defsubst face-spec-match-p (face spec &optional frame)
+  "Return t if FACE, on FRAME, matches what SPEC says it should look like."
+  (face-attr-match-p face (face-spec-choose spec frame) frame))
+
+;; GNU doc.c documentation-stringp.
+(defun documentation-stringp (object)
+  "Return non-nil if OBJECT is a well-formed docstring object.
+OBJECT can be either a string or a reference if it's kept externally."
+  (or (stringp object)
+      (integerp object)                 ; Reference to DOC.
+      (and (consp object)               ; Reference to .elc.
+           (stringp (car object))
+           (integerp (cdr object)))))
+
+;; GNU custom.el (verbatim).
+(defun custom-handle-all-keywords (symbol args type)
+  "For customization option SYMBOL, handle keyword arguments ARGS.
+Third argument TYPE is the custom option type."
+  (unless (memq :group args)
+    (let ((cg (custom-current-group)))
+      (when cg
+        (custom-add-to-group cg symbol type))))
+  (while args
+    (let ((arg (car args)))
+      (setq args (cdr args))
+      (unless (symbolp arg)
+	(error "Junk in args %S" args))
+      (let ((keyword arg)
+	    (value (car args)))
+	(unless args
+	  (error "Keyword %s is missing an argument" keyword))
+	(setq args (cdr args))
+	(custom-handle-keyword symbol keyword value type)))))
+
+(defun custom-handle-keyword (symbol keyword value type)
+  "For customization option SYMBOL, handle KEYWORD with VALUE.
+Fourth argument TYPE is the custom option type."
+  (if purify-flag
+      (setq value (purecopy value)))
+  (cond ((eq keyword :group)
+	 (custom-add-to-group value symbol type))
+	((eq keyword :version)
+	 (custom-add-version symbol value))
+	((eq keyword :package-version)
+	 (custom-add-package-version symbol value))
+	((eq keyword :link)
+	 (custom-add-link symbol value))
+	((eq keyword :load)
+	 (custom-add-load symbol value))
+	((eq keyword :tag)
+	 (put symbol 'custom-tag value))
+	((eq keyword :set-after)
+	 (custom-add-dependencies symbol value))
+	(t
+	 (error "Unknown keyword %s" keyword))))
+
+(defun custom-add-dependencies (symbol value)
+  "To the custom option SYMBOL, add dependencies specified by VALUE.
+VALUE should be a list of symbols.  For each symbol in that list,
+this specifies that SYMBOL should be set after the specified symbol,
+if both appear in constructs like `custom-set-variables'."
+  (unless (listp value)
+    (error "Invalid custom dependency `%s'" value))
+  (let* ((deps (get symbol 'custom-dependencies))
+	 (new-deps deps))
+    (while value
+      (let ((dep (car value)))
+	(unless (symbolp dep)
+	  (error "Invalid custom dependency `%s'" dep))
+	(unless (memq dep new-deps)
+	  (setq new-deps (cons dep new-deps)))
+	(setq value (cdr value))))
+    (unless (eq deps new-deps)
+      (put symbol 'custom-dependencies new-deps))))
+
+(defun custom-add-link (symbol widget)
+  "To the custom option SYMBOL add the link WIDGET."
+  (let ((links (get symbol 'custom-links)))
+    (unless (member widget links)
+      (put symbol 'custom-links (cons (purecopy widget) links)))))
+
+(defun custom-add-version (symbol version)
+  "To the custom option SYMBOL add the version VERSION."
+  (put symbol 'custom-version (purecopy version)))
+
+(defun custom-add-package-version (symbol version)
+  "To the custom option SYMBOL add the package version VERSION."
+  (put symbol 'custom-package-version (purecopy version)))
+
+;; GNU cus-face.el (verbatim).
+(defun custom-declare-face (face spec doc &rest args)
+  "Like `defface', but with FACE evaluated as a normal argument."
+  (when (and doc
+             (not (documentation-stringp doc)))
+    (error "Invalid (or missing) doc string %S" doc))
+  (unless (get face 'face-defface-spec)
+    (face-spec-set face (purecopy spec) 'face-defface-spec)
+    (push (cons 'defface face) current-load-list)
+    (when doc
+      (set-face-documentation face (purecopy doc)))
+    (custom-handle-all-keywords face args 'custom-face)
+    (run-hooks 'custom-define-hook))
+  face)
+
+;; GNU loaddefs: cus-edit autoloads used by preloaded code.
+(autoload 'customize-face "cus-edit"
+  "Customize FACE, which should be a face name or nil." t)
+(autoload 'customize-face-other-window "cus-edit"
+  "Show customization buffer for face FACE in other window." t)
+(autoload 'describe-face "help-fns"
+  "Display the properties of face FACE on FRAME." t)
+
+;; GNU faces.el (verbatim).
+(defconst face-attribute-name-alist
+  '((:family . "font family")
+    (:foundry . "font foundry")
+    (:width . "character set width")
+    (:height . "height in 1/10 pt")
+    (:weight . "weight")
+    (:slant . "slant")
+    (:underline . "underline")
+    (:overline . "overline")
+    (:extend . "extend")
+    (:strike-through . "strike-through")
+    (:box . "box")
+    (:inverse-video . "inverse-video display")
+    (:foreground . "foreground color")
+    (:background . "background color")
+    (:stipple . "background stipple")
+    (:inherit . "inheritance"))
+  "An alist of descriptive names for face attributes.
+Each element has the form (ATTRIBUTE-NAME . DESCRIPTION) where
+ATTRIBUTE-NAME is a face attribute name (a keyword symbol), and
+DESCRIPTION is a descriptive name for ATTRIBUTE-NAME.")
+
+
+(defun face-descriptive-attribute-name (attribute)
+  "Return a descriptive name for ATTRIBUTE."
+  (cdr (assq attribute face-attribute-name-alist)))
+
+;; GNU custom.el (verbatim).
+(defun custom-fix-face-spec (spec)
+  "Convert face SPEC, replacing obsolete :bold and :italic attributes.
+Also change :reverse-video to :inverse-video."
+  (when (listp spec)
+    (if (or (memq :bold spec)
+	    (memq :italic spec)
+	    (memq :inverse-video spec))
+	(let (result)
+	  (while spec
+	    (let ((key (car spec))
+		  (val (car (cdr spec))))
+	      (cond ((eq key :italic)
+		     (push :slant result)
+		     (push (if val 'italic 'normal) result))
+		    ((eq key :bold)
+		     (push :weight result)
+		     (push (if val 'bold 'normal) result))
+		    ((eq key :reverse-video)
+		     (push :inverse-video result)
+		     (push val result))
+		    (t
+		     (push key result)
+		     (push val result))))
+	    (setq spec (cddr spec)))
+	  (nreverse result))
+      spec)))
+;; GNU progmodes/elisp-mode.el (verbatim).
+(define-derived-mode lisp-interaction-mode emacs-lisp-mode "Lisp Interaction"
+  "Major mode for typing and evaluating Lisp forms."
+  :abbrev-table nil
+  (setq-local lexical-binding t))
+
+;; GNU buffer.c: the C-managed list of buffer-local minor modes
+;; currently enabled in the buffer.
+(defvar-local local-minor-modes nil
+  "Minor modes currently active in the current buffer.
+This is a list of mode commands.")
+
+;; GNU minibuf.c DEFVAR: whether to mask characters in the minibuffer.
+(defvar read-hide-char nil
+  "Whether to hide input characters in noninteractive mode.
+If non-nil, it must be a character, which will be used to mask the
+input characters.")

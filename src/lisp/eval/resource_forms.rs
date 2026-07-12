@@ -673,9 +673,22 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        let target = self.eval(&items[1], env)?;
-        let target_id = self.resolve_buffer_id(&target)?;
+        // The macro expands to (save-current-buffer (set-buffer BUF) ...):
+        // the current buffer is saved BEFORE evaluating BUF, so a BUF form
+        // that switches buffers as a side effect must not leak.
         let saved_buffer_id = self.current_buffer_id;
+        let restore_on_err = |interp: &mut Self, err: LispError| {
+            let _ = interp.switch_to_buffer_id(saved_buffer_id);
+            Err(err)
+        };
+        let target = match self.eval(&items[1], env) {
+            Ok(value) => value,
+            Err(err) => return restore_on_err(self, err),
+        };
+        let target_id = match self.resolve_buffer_id(&target) {
+            Ok(id) => id,
+            Err(err) => return restore_on_err(self, err),
+        };
         self.switch_to_buffer_id(target_id)?;
         let result = if items.len() == 2 {
             // The macro expands to (save-current-buffer (set-buffer BUF)),
@@ -700,6 +713,7 @@ impl Interpreter {
         if items.len() < 5 {
             return Ok(Value::Nil);
         }
+        let saved_buffer_id = self.current_buffer_id;
         let target = self.eval(&items[1], env)?;
         let target_id = match self.resolve_buffer_id(&target) {
             Ok(id) => id,
@@ -710,7 +724,6 @@ impl Interpreter {
                     .unwrap_or_else(|| self.create_buffer(&name).0)
             }
         };
-        let saved_buffer_id = self.current_buffer_id;
         self.switch_to_buffer_id(target_id)?;
         let value = self.sf_progn(&items[4..], env);
         let _ = self.switch_to_buffer_id(saved_buffer_id);
@@ -1167,7 +1180,14 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         let was_modified = self.buffer.is_modified();
         let was_autosaved = self.buffer.is_autosaved();
+        // The GNU macro also binds inhibit-read-only and
+        // inhibit-modification-hooks around BODY.
+        env.push(vec![
+            ("inhibit-read-only".into(), Value::T),
+            ("inhibit-modification-hooks".into(), Value::T),
+        ]);
         let result = self.sf_progn(&items[1..], env);
+        env.pop();
         if !was_modified {
             self.buffer.set_unmodified();
         } else if was_autosaved {
@@ -1187,6 +1207,26 @@ impl Interpreter {
         let saved_buffer_id = self.current_buffer_id();
         let saved_begv = self.buffer.point_min();
         let saved_zv = self.buffer.point_max();
+        // GNU save-restriction-save: a wide buffer is saved as "no
+        // restriction" and simply re-widened on exit; tracking the old
+        // bounds with markers would spuriously re-narrow after edits
+        // (e.g. insert-before-markers at BEGV pushes both markers).
+        let was_wide = saved_begv == 1 && saved_zv == self.buffer.size_total() + 1;
+        if was_wide {
+            let result = self.sf_progn(&items[1..], env);
+            let final_buffer_id = self.current_buffer_id();
+            if self.has_buffer_id(saved_buffer_id) {
+                if final_buffer_id != saved_buffer_id {
+                    let _ = self.switch_to_buffer_id(saved_buffer_id);
+                }
+                let full_end = self.buffer.size_total() + 1;
+                self.buffer.restore_restriction(1, full_end);
+                if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
+                    let _ = self.switch_to_buffer_id(final_buffer_id);
+                }
+            }
+            return result;
+        }
         let beg_marker = self.make_marker();
         let end_marker = self.make_marker();
         let beg_id = match beg_marker {

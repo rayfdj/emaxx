@@ -211,7 +211,8 @@ impl Interpreter {
         }
         let val = self.eval(&items[1], env)?;
         if val.is_truthy() {
-            Ok(Value::T)
+            // GNU `should' returns the value of FORM.
+            Ok(val)
         } else {
             Err(LispError::ErtTestFailed(format!(
                 "Test failed: expected truthy value from {}",
@@ -396,8 +397,15 @@ impl Interpreter {
                     });
                 }
                 Err(e) => {
-                    let status = match e {
+                    // `ert-skip' signals ert-test-skipped directly.
+                    let status = match &e {
                         LispError::TestSkipped(_) => TestStatus::Skipped,
+                        LispError::SignalValue(condition)
+                            if matches!(condition.car(), Ok(Value::Symbol(kind))
+                                if kind == "ert-test-skipped") =>
+                        {
+                            TestStatus::Skipped
+                        }
                         _ => TestStatus::Failed,
                     };
                     let expected_failure = test.expected_result == ":failed";

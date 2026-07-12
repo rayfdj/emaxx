@@ -19,6 +19,58 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2879/7080: erc-networks (2812..2854,
+  43/43), erc-nicks (2855..2870, 16/16), erc-sasl (2871..2879, 9/9
+  selected; the unstable ecdsa placeholder now SKIPS like GNU);
+  139-file prefix sweep (prefix-files19.txt) on frozen binaries is
+  the gate.  Key semantics (full detail in the continuation doc):
+  - `with-current-buffer' saves the current buffer BEFORE evaluating
+    the buffer form (macro expands to save-current-buffer +
+    set-buffer), so a form that switches buffers no longer leaks;
+    same for with-current-buffer-window.
+  - GNU buffer-list recency: set-buffer never reorders; record_buffer
+    (switch-to-buffer / pop-to-buffer variants / select-window, each
+    honoring NORECORD) moves to front; bury-buffer to the end.
+  - cl-generic &context methods that differ only in the context
+    expression are distinct methods (the expression fingerprints the
+    identity key), and stored methods carry the context expr so
+    another method's (not <cond>) guard re-evaluates the context test
+    (erc-networks--id-create's erc-rename-buffers/erc-reuse-buffers
+    compat methods).
+  - `should' returns the value of FORM; ert-skip's ert-test-skipped
+    signal maps to a Skipped result.
+  - save-restriction on a wide buffer just re-widens on exit (GNU
+    save-restriction-save), instead of marker-tracking old bounds
+    that insert-before-markers at BEGV would push (this silently
+    re-narrowed erc-networks--transplant-buffer-content's insert).
+  - with-silent-modifications binds inhibit-read-only and
+    inhibit-modification-hooks; delete-process accepts nil/buffer/
+    name designators; custom-set-variables sets already-defined
+    options immediately (NOW only forces undefined ones).
+  - GNU --batch color model: verbatim term/tty-colors.el port
+    (color-name-rgb-alist + 8-color tty approximation) with faces.el
+    color-values/readable-foreground-color/color-dark-p;
+    frame-parameter returns unspecified-bg/-fg/background-mode dark.
+  - faces UI: face-spec-set (native, over the defface property
+    model), list-faces-display + describe-face flows (help-make-xrefs
+    + point-min in the with-help-window shim; [back] via help-xref
+    stacks; set-window-point on the selected window moves point);
+    custom-declare-face + custom.el keyword handlers ported verbatim;
+    text-quoting-style honors the variable.
+  - hex-util + rfc2104 are compat-preloaded native primitives
+    (decode/encode-hex-string, rfc2104-hash HMAC), turning erc-sasl's
+    4096-iteration PBKDF2 from a ~25-minute wall into milliseconds.
+  - read-string/read-from-minibuffer consume unread-command-events up
+    to RET (ert-simulate-keys); read-passwd works: minibuffer-with-
+    setup-hook runs the hook inside the minibuffer buffer with
+    active-minibuffer-window non-nil, define-minor-mode maintains
+    GNU's `local-minor-modes', and `read-hide-char' is defined.
+- NEXT: erc-scenarios-* selected tests (statusmsg 2880, znc 2881,
+  internal 2882..2894, match 2895..2896, misc-commands 2897, stamp
+  2898..2900) need the erc-d fake-server machinery; erc-services
+  (2901..2917, 14/17 — plstore cluster fails), erc-stamp (2918..2929,
+  10/12), erc-tests (2930..3023, 57/99). Milestone 3000 sits inside
+  erc-tests.
 - Verified through selector 2811/7080: erc-button (2766..2770),
   erc-dcc (2771..2780), erc-fill (2781), erc-goodies (2782..2796),
   erc-join (2797..2806), erc-match (2807..2811) all pass; 136-file

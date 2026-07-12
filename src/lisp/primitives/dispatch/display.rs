@@ -102,6 +102,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "face-foreground"
             | "face-background"
             | "set-face-attribute"
+            | "face-spec-set"
             | "color-distance"
             | "color-values"
             | "color-values-from-color-spec"
@@ -573,6 +574,10 @@ pub(super) fn call(
         }
         "prin1-to-string" => {
             need_arg_range(name, args, 1, 3)?;
+            // NOESCAPE non-nil prints like `princ' (no quoting).
+            if args.get(1).is_some_and(|value| value.is_truthy()) {
+                return Ok(Value::String(render_princ(&args[0])));
+            }
             if matches!(args.get(2), None | Some(Value::Nil)) {
                 return Ok(Value::String(render_prin1(interp, &args[0], env)?));
             }
@@ -856,6 +861,14 @@ pub(super) fn call(
                 "width" => Value::Integer(interp.frame_width()),
                 "height" => Value::Integer(interp.frame_height()),
                 "menu-bar-lines" | "tab-bar-lines" => Value::Integer(0),
+                // The GNU --batch terminal frame's color parameters.
+                "background-color" => Value::String("unspecified-bg".into()),
+                "foreground-color" => Value::String("unspecified-fg".into()),
+                "background-mode" => Value::Symbol("dark".into()),
+                "display-type" => Value::Symbol("mono".into()),
+                "name" => Value::String("F1".into()),
+                "font" => Value::String("tty".into()),
+                "modeline" | "minibuffer" => Value::T,
                 _ => Value::Nil,
             })
         }
@@ -1491,6 +1504,46 @@ pub(super) fn call(
                 value
             })
         }
+        "face-spec-set" => {
+            // GNU faces.el: store SPEC under the requested spec property,
+            // define FACE, and apply the spec's default-display attributes
+            // (emaxx's face model realizes attributes as symbol properties).
+            need_arg_range(name, args, 2, 3)?;
+            let mut face = args[0].as_symbol()?.to_string();
+            while let Some(alias) = interp
+                .get_symbol_property(&face, "face-alias")
+                .and_then(|value| value.as_symbol().ok().map(str::to_string))
+            {
+                face = alias;
+            }
+            let spec = args[1].clone();
+            let spec_type = args
+                .get(2)
+                .and_then(|value| value.as_symbol().ok())
+                .filter(|symbol| !symbol.is_empty())
+                .unwrap_or("face-override-spec")
+                .to_string();
+            if matches!(
+                spec_type.as_str(),
+                "face-defface-spec" | "face-override-spec" | "customized-face" | "saved-face"
+            ) {
+                interp.put_symbol_property(&face, &spec_type, spec.clone());
+            }
+            if matches!(spec_type.as_str(), "reset" | "saved-face") {
+                interp.put_symbol_property(&face, "customized-face", Value::Nil);
+            }
+            if matches!(
+                spec_type.as_str(),
+                "customized-face" | "saved-face" | "reset"
+            ) {
+                interp.put_symbol_property(&face, "face-override-spec", Value::Nil);
+            }
+            interp.put_symbol_property(&face, "face-modified", Value::Nil);
+            if spec_type != "reset" {
+                interp.record_defface_runtime_attributes(&face, &spec)?;
+            }
+            Ok(Value::Nil)
+        }
         "set-face-attribute" => {
             if args.len() < 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1582,6 +1635,10 @@ pub(super) fn call(
                 && interp.has_buffer_id(buffer_id)
             {
                 interp.switch_to_buffer_id_preserving_window_history(buffer_id)?;
+                // GNU select_window calls record_buffer unless NORECORD.
+                if !args.get(1).is_some_and(|value| value.is_truthy()) {
+                    interp.record_buffer_front(buffer_id);
+                }
             }
             Ok(args[0].clone())
         }
@@ -2037,14 +2094,41 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
-        "active-minibuffer-window" => Ok(Value::Nil),
+        "active-minibuffer-window" => {
+            // Non-nil while a minibuffer-with-setup-hook hook runs (the
+            // approximation of GNU's activated minibuffer).
+            if interp
+                .lookup_var("emaxx--active-minibuffer", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                Ok(interp.selected_window_value())
+            } else {
+                Ok(Value::Nil)
+            }
+        }
         "set-window-start" => {
             need_arg_range(name, args, 2, 4)?;
             let start = position_from_value(interp, &args[1])?;
             set_window_start_value(interp, &args[0], start)?;
             Ok(Value::T)
         }
-        "set-window-point" => Ok(Value::T),
+        "set-window-point" => {
+            need_args(name, args, 2)?;
+            let window_id = window_id_or_selected(interp, &args[0])?;
+            let pos = position_from_value(interp, &args[1])?;
+            // GNU: setting the selected window's point moves point in the
+            // window's buffer (emaxx has no separate window points).
+            if window_id == interp.selected_window_id() {
+                let buffer_id = window_buffer_id(interp, &Value::Record(window_id))
+                    .unwrap_or_else(|| interp.current_buffer_id());
+                if buffer_id == interp.current_buffer_id() {
+                    interp.buffer.goto_char(pos);
+                } else if let Some(buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                    buffer.goto_char(pos);
+                }
+            }
+            Ok(args[1].clone())
+        }
         "set-window-vscroll" => {
             need_arg_range(name, args, 2, 4)?;
             let _ = args[1].as_integer()?;

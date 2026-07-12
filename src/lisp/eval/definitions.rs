@@ -330,7 +330,10 @@ impl ClDefmethodStoredSpecializer {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ClDefmethodStoredMethod {
-    specializers: Vec<(String, ClDefmethodStoredSpecializer)>,
+    // (variable, specializer, context expression): the expression is
+    // present for `&context (EXPR SPEC)' entries so another method's
+    // guard can re-evaluate the context test.
+    specializers: Vec<(String, ClDefmethodStoredSpecializer, Option<Value>)>,
 }
 
 impl ClDefmethodStoredMethod {
@@ -338,8 +341,13 @@ impl ClDefmethodStoredMethod {
         let specializers = specializers
             .iter()
             .filter_map(|specializer| {
-                ClDefmethodStoredSpecializer::parse(&specializer.metadata_value())
-                    .map(|stored| (specializer.variable.clone(), stored))
+                ClDefmethodStoredSpecializer::parse(&specializer.metadata_value()).map(|stored| {
+                    (
+                        specializer.variable.clone(),
+                        stored,
+                        specializer.context_expr.clone(),
+                    )
+                })
             })
             .collect();
         Self { specializers }
@@ -348,7 +356,7 @@ impl ClDefmethodStoredMethod {
     fn parse(value: &Value) -> Option<Self> {
         if let Some(specializer) = ClDefmethodStoredSpecializer::parse(value) {
             return Some(Self {
-                specializers: vec![("".into(), specializer)],
+                specializers: vec![("".into(), specializer, None)],
             });
         }
         let items = value.to_vec().ok()?;
@@ -358,13 +366,19 @@ impl ClDefmethodStoredMethod {
         let mut specializers = Vec::new();
         for item in &items[1..] {
             let parts = item.to_vec().ok()?;
-            let [Value::Symbol(variable), specializer] = parts.as_slice() else {
-                return None;
-            };
-            specializers.push((
-                variable.clone(),
-                ClDefmethodStoredSpecializer::parse(specializer)?,
-            ));
+            match parts.as_slice() {
+                [Value::Symbol(variable), specializer] => specializers.push((
+                    variable.clone(),
+                    ClDefmethodStoredSpecializer::parse(specializer)?,
+                    None,
+                )),
+                [Value::Symbol(variable), specializer, context_expr] => specializers.push((
+                    variable.clone(),
+                    ClDefmethodStoredSpecializer::parse(specializer)?,
+                    Some(context_expr.clone()),
+                )),
+                _ => return None,
+            }
         }
         Some(Self { specializers })
     }
@@ -372,38 +386,46 @@ impl ClDefmethodStoredMethod {
     fn metadata_value(&self) -> Value {
         let mut items = Vec::with_capacity(self.specializers.len() + 1);
         items.push(Value::Symbol("method".into()));
-        items.extend(self.specializers.iter().map(|(variable, specializer)| {
-            Value::list([
-                Value::Symbol(variable.clone()),
-                specializer.metadata_value(),
-            ])
-        }));
+        items.extend(
+            self.specializers
+                .iter()
+                .map(|(variable, specializer, context_expr)| {
+                    let mut parts = vec![
+                        Value::Symbol(variable.clone()),
+                        specializer.metadata_value(),
+                    ];
+                    if let Some(expr) = context_expr {
+                        parts.push(expr.clone());
+                    }
+                    Value::list(parts)
+                }),
+        );
         Value::list(items)
     }
 
     fn hidden_key(&self) -> String {
         self.specializers
             .iter()
-            .map(|(variable, specializer)| format!("{variable}_{}", specializer.hidden_key()))
+            .map(|(variable, specializer, _)| format!("{variable}_{}", specializer.hidden_key()))
             .collect::<Vec<_>>()
             .join("_")
             .replace([':', '\'', ' ', '(', ')'], "_")
     }
 
     fn condition(&self, runtime_variables: &[(String, String, Value)]) -> Value {
-        let mut conditions = self
-            .specializers
-            .iter()
-            .filter_map(|(variable, specializer)| {
-                let key = cl_defmethod_argument_key(variable);
-                let runtime_variable =
-                    runtime_variables
+        let mut conditions =
+            self.specializers
+                .iter()
+                .filter_map(|(variable, specializer, context_expr)| {
+                    let key = cl_defmethod_argument_key(variable);
+                    let runtime_variable = runtime_variables
                         .iter()
                         .find_map(|(runtime, runtime_key, value)| {
                             (runtime == variable || runtime_key == key).then_some(value.clone())
-                        })?;
-                Some(specializer.condition_value(runtime_variable))
-            });
+                        })
+                        .or_else(|| context_expr.clone())?;
+                    Some(specializer.condition_value(runtime_variable))
+                });
         let Some(first) = conditions.next() else {
             return Value::T;
         };
@@ -421,12 +443,12 @@ impl ClDefmethodStoredMethod {
         let mut variables = self
             .specializers
             .iter()
-            .map(|(variable, _)| variable.clone())
+            .map(|(variable, _, _)| variable.clone())
             .chain(
                 other
                     .specializers
                     .iter()
-                    .map(|(variable, _)| variable.clone()),
+                    .map(|(variable, _, _)| variable.clone()),
             )
             .collect::<Vec<_>>();
         variables.sort();
@@ -462,7 +484,7 @@ impl ClDefmethodStoredMethod {
         let key = cl_defmethod_argument_key(variable);
         self.specializers
             .iter()
-            .find_map(|(candidate, specializer)| {
+            .find_map(|(candidate, specializer, _)| {
                 (candidate == variable || cl_defmethod_argument_key(candidate) == key)
                     .then_some(specializer)
             })
@@ -1926,7 +1948,7 @@ impl Interpreter {
         Ok(Value::Symbol(name.to_string()))
     }
 
-    pub(super) fn record_defface_runtime_attributes(
+    pub(crate) fn record_defface_runtime_attributes(
         &mut self,
         face: &str,
         spec_form: &Value,
@@ -2067,6 +2089,15 @@ impl Interpreter {
                     );
                 } else {
                     self.mark_auto_buffer_local(&variable_name);
+                    // The generated body maintains the GNU C variable
+                    // `local-minor-modes'; make sure it exists even in
+                    // sessions without the preloaded lisp.
+                    self.mark_special_variable("local-minor-modes");
+                    self.mark_auto_buffer_local("local-minor-modes");
+                    if self.lookup_var("local-minor-modes", &Vec::new()).is_none() {
+                        self.globals
+                            .push(("local-minor-modes".into(), Value::Nil));
+                    }
                 }
                 if self.lookup_var(&variable_name, &Vec::new()).is_none() {
                     self.globals
@@ -2139,6 +2170,40 @@ impl Interpreter {
                     Value::Symbol(variable_name.clone()),
                     toggle_form,
                 ])];
+                if !global {
+                    // GNU's expansion tracks enabled buffer-local modes in
+                    // the C variable `local-minor-modes'.
+                    let mode_symbol = Value::list([
+                        Value::Symbol("quote".into()),
+                        Value::Symbol(name.to_string()),
+                    ]);
+                    body.push(Value::list([
+                        Value::Symbol("if".into()),
+                        Value::Symbol(variable_name.clone()),
+                        Value::list([
+                            Value::Symbol("unless".into()),
+                            Value::list([
+                                Value::Symbol("memq".into()),
+                                mode_symbol.clone(),
+                                Value::Symbol("local-minor-modes".into()),
+                            ]),
+                            Value::list([
+                                Value::Symbol("push".into()),
+                                mode_symbol.clone(),
+                                Value::Symbol("local-minor-modes".into()),
+                            ]),
+                        ]),
+                        Value::list([
+                            Value::Symbol("setq".into()),
+                            Value::Symbol("local-minor-modes".into()),
+                            Value::list([
+                                Value::Symbol("delq".into()),
+                                mode_symbol,
+                                Value::Symbol("local-minor-modes".into()),
+                            ]),
+                        ]),
+                    ]));
+                }
                 body.extend_from_slice(&items[index..]);
                 // GNU runs MODE-hook (and the on/off variant) on every
                 // toggle, in both directions.
@@ -3659,6 +3724,19 @@ impl Interpreter {
             }
             None => items,
         };
+        // GNU permits repeated `_' ignored parameters; the machinery below
+        // keys specializers by variable NAME, so uniquify them positionally
+        // (erc-networks--id-equal-p specializes two `_' arguments).
+        let items_storage_ignored;
+        let items = match uniquify_ignored_lambda_list_params(&items[lambda_list_index]) {
+            Some(renamed_lambda_list) => {
+                let mut rewritten = items.to_vec();
+                rewritten[lambda_list_index] = renamed_lambda_list;
+                items_storage_ignored = rewritten;
+                &items_storage_ignored
+            }
+            None => items,
+        };
         let mut lowered = Vec::with_capacity(items.len());
         lowered.push(Value::Symbol("cl-defun".into()));
         lowered.push(Value::Symbol(name));
@@ -4092,7 +4170,7 @@ impl Interpreter {
                 method
                     .specializers
                     .iter()
-                    .map(|(variable, _)| variable.clone())
+                    .map(|(variable, _, _)| variable.clone())
             }));
             let wrapper_rest_param = "__emaxx-cl-defmethod-rest".to_string();
             let wrapper_params = cl_defmethod_dispatch_wrapper_params(
@@ -4916,4 +4994,35 @@ fn custom_type_matches_value(custom_type: &Value, value: &Value) -> bool {
         },
         _ => true,
     }
+}
+
+/// Rename each `_' parameter of a `cl-defmethod' lambda list to a unique
+/// positional name.  Returns None when nothing needed renaming.
+fn uniquify_ignored_lambda_list_params(lambda_list: &Value) -> Option<Value> {
+    let entries = lambda_list.to_vec().ok()?;
+    let mut changed = false;
+    let mut counter = 0usize;
+    let mut fresh = || {
+        let name = format!("_emaxx-ignored-{counter}");
+        counter += 1;
+        name
+    };
+    let rewritten = entries
+        .iter()
+        .map(|entry| match entry {
+            Value::Symbol(name) if name == "_" => {
+                changed = true;
+                Value::Symbol(fresh())
+            }
+            Value::Cons(_, _) => match entry.cons_values() {
+                Some((Value::Symbol(name), rest)) if name == "_" => {
+                    changed = true;
+                    Value::cons(Value::Symbol(fresh()), rest)
+                }
+                _ => entry.clone(),
+            },
+            _ => entry.clone(),
+        })
+        .collect::<Vec<_>>();
+    changed.then(|| Value::list(rewritten))
 }

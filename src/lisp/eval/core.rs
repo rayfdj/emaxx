@@ -624,8 +624,26 @@ impl Interpreter {
                                 ));
                             }
                             let hook = self.eval(&items[1], env)?;
+                            // GNU runs the hook when BODY activates a
+                            // minibuffer, with that minibuffer current and
+                            // `active-minibuffer-window' non-nil.
+                            let minibuffer_id = self
+                                .find_buffer(" *Minibuf-0*")
+                                .map(|(id, _)| id)
+                                .unwrap_or_else(|| self.create_buffer(" *Minibuf-0*").0);
+                            let saved_buffer_id = self.current_buffer_id();
+                            let previous_active = self
+                                .lookup_var("emaxx--active-minibuffer", env)
+                                .unwrap_or(Value::Nil);
+                            let _ = self.switch_to_buffer_id(minibuffer_id);
+                            self.set_global_binding("emaxx--active-minibuffer", Value::T);
                             let call = vec![hook];
-                            self.eval_call(&call, env)?;
+                            let hook_result = self.eval_call(&call, env);
+                            self.set_global_binding("emaxx--active-minibuffer", previous_active);
+                            if self.has_buffer_id(saved_buffer_id) {
+                                let _ = self.switch_to_buffer_id(saved_buffer_id);
+                            }
+                            hook_result?;
                             return self.sf_progn(&items[2..], env);
                         }
                         _ => {}

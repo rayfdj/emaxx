@@ -2172,7 +2172,32 @@ pub(super) fn call(
                 .and_then(string_like)
                 .map(|string| string.text)
                 .unwrap_or_default();
-            if let Some(contents) = read_minibuffer_text_from_kbd_macro(interp, &initial) {
+            // ert-simulate-keys feeds input through `unread-command-events';
+            // consume characters up to RET like the GNU command loop.
+            let unread = crate::lisp::primitives::unread_command_events(interp, env)?;
+            let unread_contents = if unread.is_empty() {
+                None
+            } else {
+                let mut contents = initial.clone();
+                let mut consumed = 0;
+                for event in &unread {
+                    consumed += 1;
+                    match crate::lisp::primitives::unread_event_char(event) {
+                        Some('\r') | Some('\n') => break,
+                        Some(ch) => contents.push(ch),
+                        None => break,
+                    }
+                }
+                interp.set_variable(
+                    "unread-command-events",
+                    Value::list(unread[consumed..].to_vec()),
+                    env,
+                );
+                Some(contents)
+            };
+            if let Some(contents) =
+                unread_contents.or_else(|| read_minibuffer_text_from_kbd_macro(interp, &initial))
+            {
                 if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
                     let parsed =
                         super::call(interp, "read-from-string", &[Value::String(contents)], env)?;
