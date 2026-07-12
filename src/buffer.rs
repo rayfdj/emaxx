@@ -710,6 +710,32 @@ impl Buffer {
         self.pt
     }
 
+    /// Replace [from, to) with TEXT of the same character length, in place:
+    /// text properties and markers are untouched (GNU subst-char-in-region
+    /// substitutes characters without disturbing intervals).
+    pub fn replace_region_in_place(&mut self, from: usize, to: usize, text: &str, noundo: bool) {
+        let from0 = from - 1;
+        let to0 = to - 1;
+        if !self.undo_disabled && !noundo {
+            let old: String = self.text.slice(from0..to0).to_string();
+            let props = self.substring_property_spans(from, to);
+            self.undo_list.push(UndoEntry::Delete {
+                pos: from,
+                text: old,
+                props,
+                markers: Vec::new(),
+            });
+            self.undo_list.push(UndoEntry::Insert {
+                pos: from,
+                len: text.chars().count(),
+            });
+        }
+        self.text.remove(from0..to0);
+        self.text.insert(from0, text);
+        self.modiff += 1;
+        self.autosaved = false;
+    }
+
     /// Insert a single character at point.
     pub fn insert_char(&mut self, c: char) -> usize {
         let mut buf = [0u8; 4];

@@ -98,6 +98,27 @@ counts as the progress denominator.
       routed every default erc-button-alist entry into a deprecation
       warn that inserted into a marker-less process buffer
       (the "wrong-type-argument marker nil").
+    NEWER (this batch, uncommitted-sweep): three verified-vs-oracle
+    primitive fixes unlocked buttonizing:
+    - subst-char-in-region now substitutes IN PLACE (buffer.rs
+      replace_region_in_place): text properties and markers survive.
+      fill-region's newline pass was DELETING+REINSERTING the whole
+      message, stripping erc-button's props (the erc-data mystery).
+    - newcomment.el autoloaded defvars (comment-start[-skip] etc.) in
+      simple_compat — fill.el errored void comment-start-skip.
+    - substitute-command-keys \\[CMD] consults the ACTIVE keymaps
+      (active_command_keymaps then global-map) unless \\<MAPVAR>
+      pins one — erc-mode's C-a for erc-bol now resolves.
+    RESULT: erc-button-alist--url PASSES alone.  Full-file failures are
+    cross-test pollution from the first test.  Remaining:
+    - erc-button--display-error-notice-with-keys: string compare passes
+      now; fails later at (search-forward "erc-bol") — the notice's
+      buttonized key names; check erc-button--display-error-notice-
+      with-keys' buttonize pass over its own inserted notice.
+    - erc-button-alist--function-as-form: expects form-call positions
+      (53 55 ...) — off-by-something in match positions handed to the
+      FORM lambda; compare erc-button-add-buttons-1's bounds.
+    - Fix those two, then the file should go green (url passes alone).
     CURRENT erc-button-tests state (2766..2770): all 5 reach REAL
     buttonize assertions now:
     - erc-button-alist--url (alone): erc-data text property missing.

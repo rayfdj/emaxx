@@ -350,7 +350,8 @@ pub(super) fn call(
         }
 
         "subst-char-in-region" => {
-            need_args(name, args, 4)?;
+            // (subst-char-in-region START END FROMCHAR TOCHAR &optional NOUNDO)
+            need_arg_range(name, args, 4, 5)?;
             let from = position_from_value(interp, &args[0])?;
             let to = position_from_value(interp, &args[1])?;
             let old = args[2].as_integer()? as u32;
@@ -367,8 +368,31 @@ pub(super) fn call(
                 .chars()
                 .map(|ch| if ch == old { new } else { ch })
                 .collect();
-            delete_region_with_hooks(interp, from, to, env)?;
-            insert_text_with_hooks(interp, &replaced, &[], false, false, env)?;
+            // GNU substitutes characters IN PLACE: text properties and
+            // markers in the region are untouched (fill-region's
+            // newline→space pass must keep erc-button's props intact).
+            if replaced != text {
+                run_change_hooks(
+                    interp,
+                    "before-change-functions",
+                    &[Value::Integer(from as i64), Value::Integer(to as i64)],
+                    env,
+                )?;
+                let noundo = args.get(4).is_some_and(Value::is_truthy);
+                interp
+                    .buffer
+                    .replace_region_in_place(from, to, &replaced, noundo);
+                run_change_hooks(
+                    interp,
+                    "after-change-functions",
+                    &[
+                        Value::Integer(from as i64),
+                        Value::Integer(to as i64),
+                        Value::Integer((to - from) as i64),
+                    ],
+                    env,
+                )?;
+            }
             Ok(Value::Nil)
         }
 
