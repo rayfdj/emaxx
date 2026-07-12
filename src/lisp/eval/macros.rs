@@ -159,6 +159,7 @@ impl Interpreter {
             body_start
         };
         let body: Vec<Value> = items[body_start..].to_vec();
+        self.note_macro_added(&name);
         self.macros
             .push((name.clone(), params.clone(), body.clone()));
         // Pending advice on a macro: GNU defalias hands the fresh
@@ -1018,9 +1019,7 @@ impl Interpreter {
             // CPS transformer relies on `macroexpand' doing this).
             "cl-macrolet" if args.len() >= 2 => {
                 let local_macros = self.parse_cl_macrolet_bindings(&args[0])?;
-                let local_start = self.macros.len();
-                self.macros.extend(local_macros.iter().cloned());
-                let local_count = self.macros.len() - local_start;
+                let (local_start, local_count) = self.push_local_macros(&local_macros);
                 let mut forms = vec![Value::Symbol("progn".into())];
                 let mut failure = None;
                 for body_form in &args[1..] {
@@ -1032,7 +1031,7 @@ impl Interpreter {
                         }
                     }
                 }
-                self.macros.drain(local_start..local_start + local_count);
+                self.drain_local_macros(local_start, local_count);
                 if let Some(error) = failure {
                     return Err(error);
                 }

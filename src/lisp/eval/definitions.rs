@@ -1660,7 +1660,22 @@ impl Interpreter {
         if is_defcustom {
             self.record_defcustom_properties(&resolved, items, env)?;
         }
-        self.mark_special_variable(&resolved);
+        // GNU: a bare one-arg `defvar' NOT at top level only makes the
+        // variable special within the enclosing lexical scope — the global
+        // flag stays off (`special-variable-p' returns nil), so other
+        // functions' same-named arguments and `let's remain lexical
+        // (erc-send-input relies on this for its obsolete dynamic `str').
+        // The local specialness is recorded as a frame marker scoped to the
+        // current activation so `let's in the SAME scope bind dynamically.
+        if items.len() > 2 || is_defcustom {
+            self.mark_special_variable(&resolved);
+        } else if env.is_empty() {
+            // Top level of a lexical-binding file: GNU scopes the
+            // declaration to the file (special-variable-p stays nil).
+            self.mark_soft_special(&resolved);
+        } else {
+            self.push_local_special_marker(&resolved, env);
+        }
         if matches!(items.first(), Some(Value::Symbol(symbol)) if symbol == "defconst") {
             if items.len() > 2 {
                 let val = self.eval(&items[2], env)?;
@@ -2023,14 +2038,16 @@ impl Interpreter {
             index += 2;
         }
 
+        let stored = Self::stored_value(keymap);
+        self.globals_index.insert(resolved.clone(), stored.clone());
         if let Some(existing) = self
             .globals
             .iter_mut()
             .rposition(|(symbol, _)| symbol == &resolved)
         {
-            self.globals[existing].1 = Self::stored_value(keymap);
+            self.globals[existing].1 = stored;
         } else {
-            self.globals.push((resolved, Self::stored_value(keymap)));
+            self.globals.push((resolved, stored));
         }
         Ok(Value::Nil)
     }
@@ -2095,12 +2112,16 @@ impl Interpreter {
                     self.mark_special_variable("local-minor-modes");
                     self.mark_auto_buffer_local("local-minor-modes");
                     if self.lookup_var("local-minor-modes", &Vec::new()).is_none() {
+                        self.globals_index
+                            .insert("local-minor-modes".into(), Value::Nil);
                         self.globals.push(("local-minor-modes".into(), Value::Nil));
                     }
                 }
                 if self.lookup_var(&variable_name, &Vec::new()).is_none() {
-                    self.globals
-                        .push((variable_name.clone(), Self::stored_value(init_value)));
+                    let stored = Self::stored_value(init_value);
+                    self.globals_index
+                        .insert(variable_name.clone(), stored.clone());
+                    self.globals.push((variable_name.clone(), stored));
                 }
                 if let Some(map) = self.lookup_var(&format!("{name}-map"), &Vec::new()) {
                     let entry = Value::cons(Value::Symbol(name.to_string()), map);
@@ -2243,6 +2264,7 @@ impl Interpreter {
             if kind == "define-globalized-minor-mode" {
                 self.mark_special_variable(name);
                 if self.lookup_var(name, &Vec::new()).is_none() {
+                    self.globals_index.insert(name.to_string(), Value::Nil);
                     self.globals
                         .push((name.to_string(), Self::stored_value(Value::Nil)));
                 }
@@ -2256,12 +2278,11 @@ impl Interpreter {
                 });
                 let map_name = format!("{name}-map");
                 if self.lookup_var(&map_name, &Vec::new()).is_none() {
-                    self.globals.push((
-                        map_name.clone(),
-                        Self::stored_value(crate::lisp::primitives::keymap_placeholder(Some(
-                            &map_name,
-                        ))),
+                    let stored = Self::stored_value(crate::lisp::primitives::keymap_placeholder(
+                        Some(&map_name),
                     ));
+                    self.globals_index.insert(map_name.clone(), stored.clone());
+                    self.globals.push((map_name.clone(), stored));
                 }
                 let mut index = 4;
                 if matches!(
@@ -3037,8 +3058,7 @@ impl Interpreter {
         }
         let body: Vec<Value> = normalized_forms[body_start..].to_vec();
         if crate::lisp::primitives::prefer_builtin_override(&name) {
-            self.functions
-                .push((name.clone(), Value::BuiltinFunc(name.clone())));
+            self.push_function_binding(&name, Value::BuiltinFunc(name.clone()));
             return Ok(Value::Symbol(name));
         }
         // GNU eagerly macroexpands top-level forms when they are loaded or
@@ -3068,7 +3088,7 @@ impl Interpreter {
         }
         // A defun over a macro name erases the macro (GNU function cell).
         self.shadow_macro_binding(&name);
-        self.functions.push((name.clone(), lambda));
+        self.push_function_binding(&name, lambda);
         self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
@@ -3088,9 +3108,7 @@ impl Interpreter {
             Some(Value::Symbol(head)) if head == "quote" => return Ok(form.clone()),
             Some(Value::Symbol(head)) if head == "cl-macrolet" && items.len() >= 3 => {
                 let local_macros = self.parse_cl_macrolet_bindings(&items[1])?;
-                let local_start = self.macros.len();
-                self.macros.extend(local_macros.iter().cloned());
-                let local_count = self.macros.len() - local_start;
+                let (local_start, local_count) = self.push_local_macros(&local_macros);
                 let mut expanded_forms = Vec::with_capacity(items.len());
                 expanded_forms.push(Value::Symbol("progn".into()));
                 let mut failure = None;
@@ -3103,7 +3121,7 @@ impl Interpreter {
                         }
                     }
                 }
-                self.macros.drain(local_start..local_start + local_count);
+                self.drain_local_macros(local_start, local_count);
                 if let Some(error) = failure {
                     return Err(error);
                 }
@@ -3385,7 +3403,14 @@ impl Interpreter {
                     ]));
                 }
             }
-            let mut wrapped = vec![Value::Symbol("let*".into()), Value::list(let_bindings)];
+            // GNU cl--do-arglist gives dynamic-variable arguments lexical
+            // aliases (bug#47552): function arguments are always statically
+            // scoped, so the generated bindings must stay lexical even when
+            // a key shares its name with a special variable.
+            let mut wrapped = vec![
+                Value::Symbol("--emaxx-lexical-let*".into()),
+                Value::list(let_bindings),
+            ];
             wrapped.append(&mut executable_body);
             executable_body = vec![Value::list(wrapped)];
         }

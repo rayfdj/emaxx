@@ -6,6 +6,26 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
+        // GNU's quote returns its argument as-is, sharing structure.  The
+        // emaxx reader leaves marker forms (circular labels, `#s(hash-table
+        // ...)' literals) that must be resolved first, but marker-free
+        // templates — the common case — are returned directly.  The verdict
+        // is cached per template so hot code doesn't rescan large constants.
+        if let Value::Cons(car_cell, _) = &items[1] {
+            let key = std::rc::Rc::as_ptr(car_cell) as usize;
+            if self.plain_quote_templates.contains_key(&key) {
+                return Ok(items[1].clone());
+            }
+            if !reader::quote_template_needs_resolution(&items[1]) {
+                if self.plain_quote_templates.len() >= (1 << 20) {
+                    self.plain_quote_templates.clear();
+                }
+                self.plain_quote_templates.insert(key, items[1].clone());
+                return Ok(items[1].clone());
+            }
+        } else if !reader::quote_template_needs_resolution(&items[1]) {
+            return Ok(items[1].clone());
+        }
         let value = reader::resolve_circular_read_syntax(items[1].clone())?;
         // GNU's reader creates real hash tables for `#s(hash-table ...)'
         // literals at READ time; emaxx's reader leaves a marker form, so
@@ -663,7 +683,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             match binding {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
-                    if self.is_special_variable(name) {
+                    if self.is_dynamic_binding_name(name) || self.local_special_active(name, env) {
                         special_bindings.push((name.clone(), Value::Nil));
                     } else {
                         frame.push((name.clone(), Value::Nil));
@@ -681,7 +701,8 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     } else {
                         Value::Nil
                     };
-                    if self.is_special_variable(&name) {
+                    if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env)
+                    {
                         special_bindings.push((name, val));
                     } else {
                         frame.push((name, Self::stored_value(val)));
@@ -702,6 +723,114 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         for restore in restores.into_iter().rev() {
             self.restore_special_binding(restore, env)?;
         }
+        result
+    }
+
+    /// GNU `dlet' expands to a `defvar' per binder followed by `let', so
+    /// every binding is dynamic; the binder values still evaluate in the
+    /// surrounding lexical scope, in parallel like `let'.
+    pub(super) fn sf_dlet(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        if is_vector_literal(&items[1]) {
+            return Err(wrong_type_argument("listp", items[1].clone()));
+        }
+        let bindings = items[1].to_vec()?;
+        let mut evaluated = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            match binding {
+                Value::Symbol(name) => {
+                    Self::check_let_binding_name(name)?;
+                    evaluated.push((name.clone(), Value::Nil));
+                }
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    let Some(name_value) = parts.first() else {
+                        return Err(LispError::ReadError("bad dlet binding".into()));
+                    };
+                    let name = name_value.as_symbol()?.to_string();
+                    Self::check_let_binding_name(&name)?;
+                    let val = if parts.len() > 1 {
+                        self.eval(&parts[1], env)?
+                    } else {
+                        Value::Nil
+                    };
+                    evaluated.push((name, val));
+                }
+                _ => return Err(wrong_type_argument("listp", binding.clone())),
+            }
+        }
+        let mut restores = Vec::with_capacity(evaluated.len());
+        let mut entered: Vec<String> = Vec::with_capacity(evaluated.len());
+        for (name, value) in evaluated {
+            self.enter_dlet_name(&name);
+            entered.push(name.clone());
+            match self.bind_special_variable(&name, value, env) {
+                Ok(restore) => restores.push(restore),
+                Err(error) => {
+                    for name in entered.iter().rev() {
+                        self.leave_dlet_name(name);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let result = self.sf_progn(&items[2..], env);
+        let mut restore_error = None;
+        for restore in restores.into_iter().rev() {
+            if let Err(error) = self.restore_special_binding(restore, env)
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
+            }
+        }
+        for name in entered.iter().rev() {
+            self.leave_dlet_name(name);
+        }
+        match result {
+            Ok(value) => restore_error.map_or(Ok(value), Err),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// let* that always binds lexically, used for generated function-
+    /// argument bindings (GNU keeps arguments statically scoped even when
+    /// they shadow special variables, bug#47552).
+    pub(super) fn sf_letstar_forced_lexical(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if is_vector_literal(&items[1]) {
+            return Err(wrong_type_argument("listp", items[1].clone()));
+        }
+        let bindings = items[1].to_vec()?;
+        env.push(vec![Self::fresh_frame_identity()]);
+        for binding in &bindings {
+            match binding {
+                Value::Symbol(name) => {
+                    Self::check_let_binding_name(name)?;
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    frame.push((name.clone(), Value::Nil));
+                }
+                Value::Cons(_, _) => {
+                    let parts = binding.to_vec()?;
+                    let Some(name_value) = parts.first() else {
+                        return Err(LispError::ReadError("bad let* binding".into()));
+                    };
+                    let name = name_value.as_symbol()?.to_string();
+                    Self::check_let_binding_name(&name)?;
+                    let val = if parts.len() > 1 {
+                        self.eval(&parts[1], env)?
+                    } else {
+                        Value::Nil
+                    };
+                    let frame = env.last_mut().expect("env frame just pushed");
+                    frame.push((name, Self::stored_value(val)));
+                }
+                _ => return Err(wrong_type_argument("listp", binding.clone())),
+            }
+        }
+        let result = self.sf_progn(&items[2..], env);
+        env.pop();
         result
     }
 
@@ -776,7 +905,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             match binding {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
-                    if self.is_special_variable(name) {
+                    if self.is_dynamic_binding_name(name) || self.local_special_active(name, env) {
                         restores.push(self.bind_special_variable(name, Value::Nil, env)?);
                     } else {
                         let frame = env.last_mut().expect("env frame just pushed");
@@ -795,7 +924,8 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     } else {
                         Value::Nil
                     };
-                    if self.is_special_variable(&name) {
+                    if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env)
+                    {
                         restores.push(self.bind_special_variable(&name, val, env)?);
                     } else {
                         let frame = env.last_mut().expect("env frame just pushed");

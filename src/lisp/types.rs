@@ -253,14 +253,21 @@ impl Value {
     pub fn to_vec(&self) -> Result<Vec<Value>, LispError> {
         let mut result = Vec::new();
         let mut current = self.clone();
-        let mut seen = HashSet::new();
+        // Cycle detection only kicks in past a threshold so short lists —
+        // the overwhelmingly common case — never pay for the hash set.
+        // Once tracking starts every node is recorded, so any cycle is
+        // still caught within one lap.
+        let mut seen: Option<HashSet<usize>> = None;
         loop {
             match current {
                 Value::Nil => return Ok(result),
                 Value::Cons(car, cdr) => {
-                    let id = Rc::as_ptr(&car) as usize;
-                    if !seen.insert(id) {
-                        return Err(circular_list_error());
+                    if result.len() >= 64 {
+                        let seen = seen.get_or_insert_with(HashSet::new);
+                        let id = Rc::as_ptr(&car) as usize;
+                        if !seen.insert(id) {
+                            return Err(circular_list_error());
+                        }
                     }
                     result.push(car.borrow().clone());
                     current = cdr.borrow().clone();

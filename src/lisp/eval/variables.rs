@@ -146,32 +146,101 @@ impl Interpreter {
     }
 
     pub fn mark_special_variable(&mut self, name: &str) {
-        if !self
-            .special_variables
-            .iter()
-            .any(|existing| existing == name)
-        {
+        if self.special_variables_index.insert(name.to_string()) {
             self.special_variables.push(name.to_string());
         }
     }
 
     pub fn unmark_special_variable(&mut self, name: &str) {
+        self.soft_special_names.remove(name);
         if let Some(index) = self
             .special_variables
             .iter()
             .rposition(|existing| existing == name)
         {
             self.special_variables.remove(index);
+            self.special_variables_index.remove(name);
+        }
+    }
+
+    /// Record a GNU "locally special" declaration: a bare one-arg `defvar'
+    /// evaluated inside a lexical scope makes same-scope `let's of the name
+    /// bind dynamically without setting the global special flag.  The
+    /// marker lives in the innermost env frame (so it pops with its scope)
+    /// and is stamped with the current activation so bindings in OTHER
+    /// function invocations sharing the env chain stay lexical.
+    pub(crate) fn push_local_special_marker(&mut self, name: &str, env: &mut Env) {
+        let marker_key = format!("--emaxx-local-special--{name}");
+        let activation = Value::Integer(self.current_activation_id as i64);
+        if let Some(frame) = env.last_mut() {
+            frame.push((marker_key.clone(), activation));
+        }
+        self.local_special_names.insert(name.to_string());
+    }
+
+    /// Whether NAME was declared locally special in the current activation.
+    pub(crate) fn local_special_active(&self, name: &str, env: &Env) -> bool {
+        if !self.local_special_names.contains(name) {
+            return false;
+        }
+        let marker_key = format!("--emaxx-local-special--{name}");
+        let current = self.current_activation_id as i64;
+        env.iter().rev().any(|frame| {
+            frame.iter().any(|(key, value)| {
+                key == &marker_key && matches!(value, Value::Integer(id) if *id == current)
+            })
+        })
+    }
+
+    /// Record a top-level one-arg `defvar': dynamic-binding treatment
+    /// without the official special flag (GNU file-scoped declaration).
+    /// The name is also exposed through `macroexp--dynvars' so GNU
+    /// cl-macs gives same-named function arguments lexical aliases
+    /// (bug#47552) exactly as it does during a file compile.
+    pub(crate) fn mark_soft_special(&mut self, name: &str) {
+        if self.soft_special_names.insert(name.to_string()) {
+            let existing = self.global_value("macroexp--dynvars").unwrap_or(Value::Nil);
+            self.set_global_binding(
+                "macroexp--dynvars",
+                Value::cons(Value::Symbol(name.to_string()), existing),
+            );
+        }
+    }
+
+    /// Whether `let's of NAME bind dynamically and references resolve
+    /// dynamically across call boundaries: officially special variables
+    /// plus file-scoped (soft) declarations.
+    pub(crate) fn is_dynamic_binding_name(&self, name: &str) -> bool {
+        self.soft_special_names.contains(name)
+            || self.dlet_active_names.contains_key(name)
+            || self.is_special_variable(name)
+    }
+
+    pub(crate) fn enter_dlet_name(&mut self, name: &str) {
+        *self.dlet_active_names.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    pub(crate) fn leave_dlet_name(&mut self, name: &str) {
+        if let Some(count) = self.dlet_active_names.get_mut(name) {
+            if *count <= 1 {
+                self.dlet_active_names.remove(name);
+            } else {
+                *count -= 1;
+            }
         }
     }
 
     pub fn is_special_variable(&self, name: &str) -> bool {
+        if self.special_variables_index.contains(name) {
+            return true;
+        }
+        if self.variable_aliases_index.is_empty() {
+            return false;
+        }
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        self.special_variables
-            .iter()
-            .any(|existing| existing == &resolved)
+        self.special_variables_index.contains(&resolved)
     }
 
     pub fn special_variable_names(&self) -> Vec<String> {
@@ -381,10 +450,7 @@ impl Interpreter {
     }
 
     pub(super) fn direct_variable_alias(&self, name: &str) -> Option<String> {
-        self.variable_aliases
-            .iter()
-            .rposition(|(alias, _)| alias == name)
-            .map(|index| self.variable_aliases[index].1.clone())
+        self.variable_aliases_index.get(name).cloned()
     }
 
     pub fn resolve_variable_name(&self, name: &str) -> Result<String, LispError> {
@@ -411,6 +477,8 @@ impl Interpreter {
                 Value::Symbol(alias.to_string()),
             ])));
         }
+        self.variable_aliases_index
+            .insert(alias.to_string(), target.clone());
         if let Some(index) = self
             .variable_aliases
             .iter()
@@ -430,6 +498,7 @@ impl Interpreter {
             .rposition(|(alias, _)| alias == name)
         {
             self.variable_aliases.remove(index);
+            self.variable_aliases_index.remove(name);
             true
         } else {
             false
@@ -441,10 +510,7 @@ impl Interpreter {
     }
 
     pub(super) fn global_value(&self, name: &str) -> Option<Value> {
-        self.globals
-            .iter()
-            .rposition(|(symbol, _)| symbol == name)
-            .map(|index| self.globals[index].1.clone())
+        self.globals_index.get(name).cloned()
     }
 
     pub fn default_value(&self, name: &str) -> Option<Value> {
@@ -459,20 +525,32 @@ impl Interpreter {
         let resolved = self
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
-        self.globals.iter().any(|(symbol, _)| symbol == &resolved)
+        self.globals_index.contains_key(&resolved)
+    }
+
+    /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
+    /// or in-place mutation of `globals`.
+    pub(crate) fn reindex_global_binding(&mut self, name: &str) {
+        match self.globals.iter().rfind(|(symbol, _)| symbol == name) {
+            Some((_, value)) => {
+                let value = value.clone();
+                self.globals_index.insert(name.to_string(), value);
+            }
+            None => {
+                self.globals_index.remove(name);
+            }
+        }
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
         if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == name) {
             self.globals.remove(index);
+            self.reindex_global_binding(name);
         }
     }
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
-        self.globals
-            .iter()
-            .rfind(|(symbol, _)| symbol == name)
-            .map(|(_, value)| value.clone())
+        self.globals_index.get(name).cloned()
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -480,6 +558,7 @@ impl Interpreter {
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
         let value = Self::stored_value(value);
+        self.globals_index.insert(name.clone(), value.clone());
         if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
             self.globals[index].1 = value;
         } else {
@@ -716,6 +795,7 @@ impl Interpreter {
             };
             self.notify_variable_watchers(&name, value.clone(), "let", None, env)?;
             let value = Self::stored_value(value);
+            self.globals_index.insert(name.clone(), value.clone());
             if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
                 self.globals[index].1 = value;
             } else {
@@ -730,6 +810,26 @@ impl Interpreter {
         };
         self.active_special_restores.push(restore.clone());
         Ok(restore)
+    }
+
+    /// Public wrappers so primitives outside the eval module can make
+    /// real dynamic bindings (GNU specbind) instead of pushing lexical
+    /// frames for special variables.
+    pub(crate) fn bind_special_dynamic(
+        &mut self,
+        name: &str,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<SpecialBindingRestore, LispError> {
+        self.bind_special_variable(name, value, env)
+    }
+
+    pub(crate) fn restore_special_dynamic(
+        &mut self,
+        restore: SpecialBindingRestore,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        self.restore_special_binding(restore, env)
     }
 
     pub(super) fn restore_special_binding(
@@ -757,6 +857,8 @@ impl Interpreter {
                 )?;
                 if let Some(value) = restore.previous {
                     let value = Self::stored_value(value);
+                    self.globals_index
+                        .insert(restore.name.clone(), value.clone());
                     if let Some(index) = self
                         .globals
                         .iter()

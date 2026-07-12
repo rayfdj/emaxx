@@ -733,6 +733,51 @@ fn run_process_log(
     Ok(())
 }
 
+/// GNU wait_reading_process_output: wait up to TOTAL, handling process
+/// output as it arrives and firing timers as they come due, instead of
+/// sleeping blind.  While progress is being made the loop re-pumps
+/// immediately, so an in-process client/server exchange completes at full
+/// speed rather than one round-trip per wait call.  With RETURN_ON_DELIVERY
+/// (accept-process-output) the wait ends as soon as output was handled.
+/// Returns whether any process output was delivered.
+pub(crate) fn wait_pumping_processes(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    total: std::time::Duration,
+    return_on_delivery: bool,
+) -> Result<bool, LispError> {
+    let deadline = std::time::Instant::now() + total;
+    let mut delivered = false;
+    loop {
+        let mut progressed = pump_external_process_output(interp, env)?;
+        progressed |= pump_network_processes(interp, env)?;
+        progressed |= run_pending_url_retrievals(interp, env)?;
+        delivered |= progressed;
+        interp.drive_threads(env, true)?;
+        if return_on_delivery && delivered {
+            break;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        if progressed {
+            continue;
+        }
+        // Idle: nap until the deadline or the next due timer, polling at
+        // most every 10ms so freshly arriving input is picked up promptly.
+        let mut nap = deadline - now;
+        if let Some(due) = interp.next_timer_due() {
+            nap = nap.min(due.saturating_duration_since(now));
+        }
+        nap = nap
+            .min(std::time::Duration::from_millis(10))
+            .max(std::time::Duration::from_millis(1));
+        std::thread::sleep(nap);
+    }
+    Ok(delivered)
+}
+
 /// Accept pending server connections and deliver stream input/closure to
 /// filters and sentinels.  Returns true if anything was processed.
 pub(crate) fn pump_network_processes(

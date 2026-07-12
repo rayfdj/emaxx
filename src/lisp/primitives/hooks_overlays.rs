@@ -457,8 +457,9 @@ pub(crate) fn run_overlay_hook_calls(
     after: bool,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
-    env.push(vec![("inhibit-modification-hooks".into(), Value::T)]);
-    for call in calls {
+    let restore = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
+    let mut outcome = Ok(());
+    'outer: for call in calls {
         if after && interp.find_overlay(call.overlay_id).is_none() {
             continue;
         }
@@ -472,11 +473,14 @@ pub(crate) fn run_overlay_hook_calls(
             } else {
                 call.before_tail.clone()
             });
-            call_function_value(interp, function, &args, env)?;
+            if let Err(error) = call_function_value(interp, function, &args, env) {
+                outcome = Err(error);
+                break 'outer;
+            }
         }
     }
-    env.pop();
-    Ok(())
+    interp.restore_special_dynamic(restore, env)?;
+    outcome
 }
 
 pub(crate) fn delete_region_with_hooks(

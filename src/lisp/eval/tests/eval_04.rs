@@ -1472,13 +1472,9 @@ fn nested_backquote_decrements_unquote_depth() {
         .read()
         .expect("read succeeds")
         .expect("form is present");
-    assert_eq!(
-        eval_str(
-            r#"(let ((x 1))
-                     (eval '``(,,x)))"#
-        ),
-        expected
-    );
+    // GNU (eval FORM) uses a nil lexical environment, so the variable is
+    // supplied through eval's LEXICAL alist argument.
+    assert_eq!(eval_str(r#"(eval '``(,,x) '((x . 1)))"#), expected);
 }
 
 #[test]

@@ -12,7 +12,16 @@ pub(crate) const FUNCTION_FRAME_MARKER: &str = "--emaxx-function-frame--";
 
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
-        for frame in env.iter().rev() {
+        let mut special: Option<bool> = None;
+        for (index, frame) in env.iter().enumerate().rev() {
+            // Below the caller boundary, references to SPECIAL variables
+            // resolve dynamically like GNU rather than through a caller's
+            // same-named lexical binding (bug#47552 semantics).
+            if index < self.special_scan_floor
+                && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name))
+            {
+                break;
+            }
             for (k, v) in frame.iter().rev() {
                 if k == name {
                     return Some(v.clone());
@@ -618,7 +627,16 @@ impl Interpreter {
     /// Look up a variable in the given local env, then globals.
     pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
         // Search local frames from innermost to outermost
-        for frame in env.iter().rev() {
+        let mut special: Option<bool> = None;
+        for (index, frame) in env.iter().enumerate().rev() {
+            // Below the caller boundary, references to SPECIAL variables
+            // resolve dynamically like GNU rather than through a caller's
+            // same-named lexical binding (bug#47552 semantics).
+            if index < self.special_scan_floor
+                && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name))
+            {
+                break;
+            }
             for (k, v) in frame.iter().rev() {
                 if k == name {
                     return Ok(v.clone());
@@ -676,10 +694,8 @@ impl Interpreter {
                 }
             }
         }
-        for (k, v) in self.functions.iter().rev() {
-            if k == name {
-                return Some(v.clone());
-            }
+        if let Some(v) = self.functions_index.get(name) {
+            return Some(v.clone());
         }
         if let Some(value) = builtin_autoload_function(name) {
             return Some(value);
@@ -765,6 +781,50 @@ impl Interpreter {
         names
     }
 
+    /// Track a macro-table insertion so name-count lookups stay in sync;
+    /// every push/extend into `macros` must call this.
+    pub(crate) fn note_macro_added(&mut self, name: &str) {
+        *self.macros_name_counts.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    /// Track a macro-table removal (drain/rename); the counterpart of
+    /// `note_macro_added`.
+    pub(crate) fn note_macro_removed(&mut self, name: &str) {
+        if let Some(count) = self.macros_name_counts.get_mut(name) {
+            if *count <= 1 {
+                self.macros_name_counts.remove(name);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+
+    /// Append cl-macrolet-style local macros to the positional table,
+    /// returning the (start, count) range for `drain_local_macros`.
+    pub(crate) fn push_local_macros(
+        &mut self,
+        local_macros: &[crate::lisp::eval::MacroBinding],
+    ) -> (usize, usize) {
+        let local_start = self.macros.len();
+        for binding in local_macros {
+            self.note_macro_added(&binding.0);
+            self.macros.push(binding.clone());
+        }
+        (local_start, local_macros.len())
+    }
+
+    /// Remove the local-macro range installed by `push_local_macros`.
+    pub(crate) fn drain_local_macros(&mut self, local_start: usize, local_count: usize) {
+        let names: Vec<String> = self.macros[local_start..local_start + local_count]
+            .iter()
+            .map(|binding| binding.0.clone())
+            .collect();
+        self.macros.drain(local_start..local_start + local_count);
+        for name in names {
+            self.note_macro_removed(&name);
+        }
+    }
+
     pub(super) fn resolve_macro_binding(&self, name: &str) -> Option<(Vec<String>, Vec<Value>)> {
         let mut current = name.to_string();
         let mut seen = Vec::new();
@@ -773,19 +833,16 @@ impl Interpreter {
                 return None;
             }
             seen.push(current.clone());
-            if let Some((_, params, body)) = self
-                .macros
-                .iter()
-                .rev()
-                .find(|(macro_name, _, _)| macro_name == &current)
+            if self.macros_name_counts.contains_key(&current)
+                && let Some((_, params, body)) = self
+                    .macros
+                    .iter()
+                    .rev()
+                    .find(|(macro_name, _, _)| macro_name == &current)
             {
                 return Some((params.clone(), body.clone()));
             }
-            let (_, value) = self
-                .functions
-                .iter()
-                .rev()
-                .find(|(function_name, _)| function_name == &current)?;
+            let value = self.functions_index.get(&current)?;
             let Value::Symbol(next) = value else {
                 return None;
             };
@@ -795,7 +852,14 @@ impl Interpreter {
 
     /// Set a variable in the innermost local frame, or in globals.
     pub fn set_variable(&mut self, name: &str, value: Value, env: &mut Env) {
-        for frame in env.iter_mut().rev() {
+        let floor = self.special_scan_floor;
+        let mut special: Option<bool> = None;
+        for (index, frame) in env.iter_mut().enumerate().rev() {
+            // Mirror `lookup': below the caller boundary a SPECIAL variable
+            // is set dynamically, never through a caller's lexical frame.
+            if index < floor && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name)) {
+                break;
+            }
             for (k, v) in frame.iter_mut().rev() {
                 if k == name {
                     *v = Self::stored_value(value);
@@ -876,6 +940,7 @@ impl Interpreter {
             return;
         }
         // Set in globals
+        self.globals_index.insert(resolved.clone(), value.clone());
         for (k, v) in self.globals.iter_mut().rev() {
             if k == &resolved {
                 *v = value;
@@ -986,6 +1051,9 @@ impl Interpreter {
     // keeps a native macro table, so synthesize the GNU shape on demand
     // (nadvice reads and rewrites it when advising macros).
     pub(crate) fn macro_binding_as_function(&self, name: &str) -> Option<Value> {
+        if !self.macros_name_counts.contains_key(name) {
+            return None;
+        }
         self.macros
             .iter()
             .rev()
@@ -1047,15 +1115,37 @@ impl Interpreter {
     // The macro table is positional (cl-macrolet drains index ranges), so
     // entries are renamed out of resolution instead of removed.
     pub(crate) fn shadow_macro_binding(&mut self, name: &str) {
+        let mut renamed = 0u32;
         for entry in self.macros.iter_mut() {
             if entry.0 == name {
                 entry.0 = format!("{MACRO_SHADOW_PREFIX}{name}");
+                renamed += 1;
             }
+        }
+        for _ in 0..renamed {
+            self.note_macro_removed(name);
+            self.note_macro_added(&format!("{MACRO_SHADOW_PREFIX}{name}"));
         }
     }
 
     pub fn push_function_binding(&mut self, name: &str, function: Value) {
+        self.functions_index
+            .insert(name.to_string(), function.clone());
         self.functions.push((name.to_string(), function));
+    }
+
+    /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
+    /// or in-place mutation of `functions`.
+    pub(crate) fn reindex_function_binding(&mut self, name: &str) {
+        match self.functions.iter().rev().find(|(fname, _)| fname == name) {
+            Some((_, value)) => {
+                let value = value.clone();
+                self.functions_index.insert(name.to_string(), value);
+            }
+            None => {
+                self.functions_index.remove(name);
+            }
+        }
     }
 
     pub fn function_binding_name(&self, function: &Value) -> Option<String> {
@@ -1073,6 +1163,7 @@ impl Interpreter {
     pub fn pop_function_binding(&mut self, name: &str) {
         if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
             self.functions.remove(index);
+            self.reindex_function_binding(name);
         }
     }
 
@@ -1089,19 +1180,21 @@ impl Interpreter {
             *value = function;
             return;
         }
-        self.functions.push((name.to_string(), function));
+        self.push_function_binding(name, function);
     }
 
     pub fn remove_all_function_bindings(&mut self, name: &str) {
         self.functions.retain(|(fname, _)| fname != name);
+        self.functions_index.remove(name);
     }
 
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
         if let Some(index) = self.functions.iter().rposition(|(fname, _)| fname == name) {
             self.functions.remove(index);
         }
-        if let Some(function) = function {
-            self.functions.push((name.to_string(), function));
+        match function {
+            Some(function) => self.push_function_binding(name, function),
+            None => self.reindex_function_binding(name),
         }
     }
 
