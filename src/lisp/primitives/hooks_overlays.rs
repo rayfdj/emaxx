@@ -18,11 +18,7 @@ pub(crate) fn run_change_hooks(
     if interp.change_hooks_are_running() {
         return Ok(());
     }
-    let hook_values = interp
-        .lookup_var(hook_name, env)
-        .map(|value| value.to_vec().unwrap_or_default())
-        .or_else(|| interp.buffer_local_hook(interp.current_buffer_id(), hook_name))
-        .unwrap_or_default();
+    let hook_values = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
     if hook_values.is_empty() {
         return Ok(());
     }
@@ -44,8 +40,20 @@ pub(crate) fn hook_values(
     env: &crate::lisp::types::Env,
     buffer_id: Option<u64>,
 ) -> Vec<Value> {
-    let mut hooks = interp
-        .lookup_var(hook_name, env)
+    let local = buffer_id.and_then(|id| interp.buffer_local_hook(id, hook_name));
+    let mut base = interp.lookup_var(hook_name, env);
+    // Local hooks are mirrored into a buffer-local value "(fns... t)" so
+    // Lisp reads see them; when the plain lookup returns exactly that
+    // mirror, the effective global part is the DEFAULT value (the store
+    // below already carries the local functions).
+    if let (Some(local_hooks), Some(base_value)) = (&local, &base) {
+        let mut mirror = local_hooks.clone();
+        mirror.push(Value::T);
+        if crate::lisp::primitives::values_equal(interp, base_value, &Value::list(mirror)) {
+            base = interp.default_value(hook_name);
+        }
+    }
+    let mut hooks = base
         .map(|value| {
             if value.is_nil() {
                 Vec::new()
@@ -54,9 +62,10 @@ pub(crate) fn hook_values(
             }
         })
         .unwrap_or_default();
-    if let Some(id) = buffer_id
-        && let Some(local) = interp.buffer_local_hook(id, hook_name)
-    {
+    // GNU's `t' inside a hook value means "run the default here"; the
+    // store-merge below covers the local functions, so drop the sentinel.
+    hooks.retain(|hook| !matches!(hook, Value::T));
+    if let Some(local) = local {
         hooks.extend(local);
     }
     hooks

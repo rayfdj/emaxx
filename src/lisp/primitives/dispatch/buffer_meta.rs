@@ -168,10 +168,15 @@ pub(super) fn call(
             Ok(Value::Integer(compare_buffer_substrings(&left, &right)))
         }
         "field-beginning" | "field-end" => {
-            let pos = if args.is_empty() {
+            let pos = if args.is_empty() || args[0].is_nil() {
                 interp.buffer.point()
             } else {
                 position_from_value(interp, &args[0])?
+            };
+            let escape_from_edge = args.get(1).is_some_and(|value| value.is_truthy());
+            let limit = match args.get(2).filter(|value| !value.is_nil()) {
+                Some(value) => Some(position_from_value(interp, value)?),
+                None => None,
             };
             let point_min = interp.buffer.point_min();
             let point_max = interp.buffer.point_max();
@@ -199,7 +204,17 @@ pub(super) fn call(
             let before_field = (pos > point_min)
                 .then(|| interp.buffer.text_property_at(pos - 1, "field"))
                 .flatten();
-            let field = if pos == point_min
+            let field = if escape_from_edge && before_field != after_field {
+                // GNU's ESCAPE-FROM-EDGE (find_field's merge_at_boundary):
+                // at a boundary the fields merge, so the beginning belongs
+                // to the before-field and the end to the after-field,
+                // regardless of stickiness.
+                if name == "field-beginning" {
+                    before_field
+                } else {
+                    after_field
+                }
+            } else if pos == point_min
                 || before_field == after_field
                 || (pos < point_max
                     && stickiness_covers_field(interp.buffer.text_property_at(pos, "front-sticky")))
@@ -215,15 +230,14 @@ pub(super) fn call(
             };
             let mut cursor = pos;
             if name == "field-beginning" {
-                while cursor > interp.buffer.point_min()
-                    && interp.buffer.text_property_at(cursor - 1, "field") == field
+                let stop = limit.unwrap_or(point_min).max(point_min);
+                while cursor > stop && interp.buffer.text_property_at(cursor - 1, "field") == field
                 {
                     cursor -= 1;
                 }
             } else {
-                while cursor < interp.buffer.point_max()
-                    && interp.buffer.text_property_at(cursor, "field") == field
-                {
+                let stop = limit.unwrap_or(point_max).min(point_max);
+                while cursor < stop && interp.buffer.text_property_at(cursor, "field") == field {
                     cursor += 1;
                 }
             }
@@ -286,22 +300,66 @@ pub(super) fn call(
                 .lookup_var("inhibit-field-text-motion", env)
                 .is_some_and(|value| value.is_truthy());
             let mut constrained = new_pos;
-            if !inhibit_motion
-                && interp.buffer.text_property_at(new_pos, "field")
-                    != interp.buffer.text_property_at(old_pos, "field")
-            {
-                constrained = if new_pos < old_pos {
+            let fwd = new_pos > old_pos;
+            let point_min = interp.buffer.point_min();
+            // GNU's gate: any field property at or just before either
+            // position makes the positions candidates for constraining.
+            let field_at = |interp: &Interpreter, pos: usize| -> Option<Value> {
+                interp
+                    .buffer
+                    .text_property_at(pos, "field")
+                    .filter(|value| !value.is_nil())
+            };
+            let near_field = field_at(interp, new_pos).is_some()
+                || field_at(interp, old_pos).is_some()
+                || (new_pos > point_min && field_at(interp, new_pos - 1).is_some())
+                || (old_pos > point_min && field_at(interp, old_pos - 1).is_some());
+            if !inhibit_motion && new_pos != old_pos && near_field {
+                let escape = args.get(2).cloned().unwrap_or(Value::Nil);
+                let field_bound = if fwd {
                     super::call(
                         interp,
-                        "field-beginning",
-                        &[Value::Integer(old_pos as i64)],
+                        "field-end",
+                        &[
+                            Value::Integer(old_pos as i64),
+                            escape,
+                            Value::Integer(new_pos as i64),
+                        ],
                         env,
                     )?
                     .as_integer()? as usize
                 } else {
-                    super::call(interp, "field-end", &[Value::Integer(old_pos as i64)], env)?
-                        .as_integer()? as usize
+                    super::call(
+                        interp,
+                        "field-beginning",
+                        &[
+                            Value::Integer(old_pos as i64),
+                            escape,
+                            Value::Integer(new_pos as i64),
+                        ],
+                        env,
+                    )?
+                    .as_integer()? as usize
                 };
+                // GNU only constrains when FIELD_BOUND lies between OLD-POS
+                // and NEW-POS; a bound already past NEW-POS means NEW-POS is
+                // acceptable (see Fconstrain_to_field's "other side" check).
+                // With ONLY-IN-LINE, the constraint applies only when it
+                // does not move the result across a newline.
+                let only_in_line = args.get(3).is_some_and(|value| value.is_truthy());
+                let crosses_newline = || {
+                    let (low, high) = if field_bound < new_pos {
+                        (field_bound, new_pos)
+                    } else {
+                        (new_pos, field_bound)
+                    };
+                    (low..high).any(|pos| interp.buffer.char_at(pos) == Some('\n'))
+                };
+                if (if field_bound < new_pos { fwd } else { !fwd })
+                    && (!only_in_line || !crosses_newline())
+                {
+                    constrained = field_bound;
+                }
             }
             if args[0].is_nil() {
                 interp.buffer.goto_char(constrained);
@@ -548,8 +606,12 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let symbol = args[0].as_symbol()?.to_string();
             let buffer_id = interp.resolve_buffer_id(&args[1])?;
+            // GNU falls back to the DEFAULT value when BUFFER has no local
+            // binding; another buffer's local value must not leak through
+            // (erc-open's prior-session detection reads `erc--target').
             Ok(interp
                 .buffer_local_value(buffer_id, &symbol)
+                .or_else(|| interp.default_value(&symbol))
                 .or_else(|| interp.symbol_value_cell(&symbol).ok())
                 .unwrap_or(Value::Nil))
         }

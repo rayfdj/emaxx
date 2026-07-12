@@ -419,6 +419,20 @@ impl Interpreter {
         Ok((stdout, stderr))
     }
 
+    pub fn unschedule_timer_by_function(&mut self, function: &Value) {
+        let functions: Vec<Value> = self
+            .pending_timers
+            .iter()
+            .map(|timer| timer.function.clone())
+            .collect();
+        if let Some(index) = functions
+            .iter()
+            .position(|candidate| crate::lisp::primitives::values_equal(self, candidate, function))
+        {
+            self.pending_timers.remove(index);
+        }
+    }
+
     pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
         let original_name = function.as_symbol().ok().map(str::to_string);
         self.pending_timers.push(ScheduledTimer {

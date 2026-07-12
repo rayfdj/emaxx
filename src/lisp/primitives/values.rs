@@ -561,21 +561,47 @@ pub(crate) fn values_equal_including_properties_recursive(
     seen: &mut HashSet<(usize, usize)>,
 ) -> bool {
     if let (Some(left_string), Some(right_string)) = (string_like(left), string_like(right)) {
-        // GNU compares interval plists as sets: property ORDER within a
-        // span is not significant (intervals_equal in intervals.c).
-        return left_string.text == right_string.text
-            && left_string.props.len() == right_string.props.len()
-            && left_string.props.iter().zip(right_string.props.iter()).all(
-                |(left_span, right_span)| {
-                    left_span.start == right_span.start
-                        && left_span.end == right_span.end
-                        && text_property_plists_equal_including_properties(
-                            &left_span.props,
-                            &right_span.props,
-                            seen,
-                        )
-                },
-            );
+        // GNU's compare_string_intervals walks POSITIONS, so interval
+        // segmentation is not significant, and plists within a span
+        // compare as sets (intervals_equal in intervals.c).
+        if left_string.text != right_string.text {
+            return false;
+        }
+        let len = left_string.text.chars().count();
+        let collect_props = |string: &StringLike, pos: usize| {
+            let mut out: Vec<(String, Value)> = Vec::new();
+            for span in &string.props {
+                if span.start <= pos && pos < span.end {
+                    for (key, value) in &span.props {
+                        if !out.iter().any(|(existing, _)| existing == key) {
+                            out.push((key.clone(), value.clone()));
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let mut bounds: Vec<usize> = vec![0, len];
+        for span in left_string.props.iter().chain(right_string.props.iter()) {
+            bounds.push(span.start.min(len));
+            bounds.push(span.end.min(len));
+        }
+        bounds.sort_unstable();
+        bounds.dedup();
+        for window in bounds.windows(2) {
+            let pos = window[0];
+            if pos >= len {
+                break;
+            }
+            if !text_property_plists_equal_including_properties(
+                &collect_props(&left_string, pos),
+                &collect_props(&right_string, pos),
+                seen,
+            ) {
+                return false;
+            }
+        }
+        return true;
     }
     if let (Ok(left_items), Ok(right_items)) = (vector_items(left), vector_items(right))
         && matches!(left, Value::Cons(_, _))
@@ -3087,6 +3113,10 @@ pub(crate) fn default_global_binding_for_key(key: &str) -> Option<&'static str> 
         "C-f" => Some("forward-char"),
         "C-b" => Some("backward-char"),
         "C-k" => Some("kill-line"),
+        "C-y" => Some("yank"),
+        "M-y" => Some("yank-pop"),
+        "C-w" => Some("kill-region"),
+        "M-w" => Some("kill-ring-save"),
         "C-d" => Some("delete-char"),
         "M-a" => Some("backward-sentence"),
         "C-SPC" => Some("set-mark-command"),

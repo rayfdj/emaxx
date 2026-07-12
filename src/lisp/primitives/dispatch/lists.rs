@@ -430,6 +430,16 @@ fn execute_kbd_macro_command(
     event: &Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
+    // The command loop resolves [remap COMMAND] bindings from the active
+    // keymaps before dispatching (erc-fill-wrap remaps erc-bol);
+    // `this-original-command' keeps the pre-remap binding.
+    let original_command = command.clone();
+    let remapped = crate::lisp::primitives::command_remapping(interp, command, None, env)?;
+    let command = &if remapped.is_nil() {
+        original_command.clone()
+    } else {
+        remapped
+    };
     // GNU's command loop separates each command into its own undo group
     // (undo-auto--boundaries); viper's undo tests observe that grouping.
     interp.buffer.push_undo_boundary();
@@ -440,7 +450,7 @@ fn execute_kbd_macro_command(
     );
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("last-command-event", event.clone(), env);
-    interp.set_variable("this-original-command", command.clone(), env);
+    interp.set_variable("this-original-command", original_command, env);
     interp.set_variable("this-command", command.clone(), env);
     safe_run_named_hooks(
         interp,

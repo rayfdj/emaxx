@@ -214,6 +214,28 @@ fn resolve_circular_read_syntax_inner(
                 resolve_circular_read_syntax_inner(&cdr, labels)?,
             ))
         }
+        // Propertized string literals carry arbitrary values in their
+        // property plists; `#N=' labels and `#N#' references may appear
+        // there (print-circle output shares prop values).
+        Value::StringObject(state) => {
+            let spans = state.borrow().props.clone();
+            let mut resolved_spans = Vec::with_capacity(spans.len());
+            for span in spans {
+                let mut resolved_props = Vec::with_capacity(span.props.len());
+                for (key, prop_value) in span.props {
+                    resolved_props.push((
+                        key,
+                        resolve_circular_read_syntax_inner(&prop_value, labels)?,
+                    ));
+                }
+                resolved_spans.push(StringPropertySpan {
+                    props: resolved_props,
+                    ..span
+                });
+            }
+            state.borrow_mut().props = resolved_spans;
+            Ok(value.clone())
+        }
         _ => Ok(value.clone()),
     }
 }

@@ -2140,6 +2140,21 @@ impl Interpreter {
                     toggle_form,
                 ])];
                 body.extend_from_slice(&items[index..]);
+                // GNU runs MODE-hook (and the on/off variant) on every
+                // toggle, in both directions.
+                let quoted_symbol = |symbol: String| {
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol(symbol)])
+                };
+                body.push(Value::list([
+                    Value::Symbol("run-hooks".into()),
+                    quoted_symbol(format!("{name}-hook")),
+                    Value::list([
+                        Value::Symbol("if".into()),
+                        current_mode_form,
+                        quoted_symbol(format!("{name}-on-hook")),
+                        quoted_symbol(format!("{name}-off-hook")),
+                    ]),
+                ]));
                 body.push(Value::Symbol(variable_name));
 
                 self.set_function_binding(
@@ -4323,7 +4338,40 @@ impl Interpreter {
             self.set_function_binding(&method_name, Some(wrapper));
             Ok(items[1].clone())
         } else if method_specializers.is_empty() {
-            self.sf_cl_defun(&lowered, env)
+            // If a specializer-less :around wrapper is already installed,
+            // this primary must become the around's next method instead of
+            // clobbering the wrapper (e.g. erc-stamp--current-time).
+            let previous_symbol = format!(
+                "__emaxx_previous_method_{}_around_class_t_method",
+                method_name.replace('-', "_")
+            );
+            let existing_around = self
+                .lookup_function(&method_name, env)
+                .ok()
+                .filter(|previous| match previous {
+                    Value::Lambda(_, _, closure) => closure
+                        .borrow()
+                        .iter()
+                        .any(|frame| frame.iter().any(|(name, _)| name == &previous_symbol)),
+                    _ => false,
+                });
+            let result = self.sf_cl_defun(&lowered, env);
+            if let Some(around) = existing_around
+                && result.is_ok()
+                && let Ok(new_primary) = self.lookup_function(&method_name, env)
+            {
+                if let Value::Lambda(_, _, closure) = &around {
+                    for frame in closure.borrow_mut().iter_mut() {
+                        if let Some(slot) =
+                            frame.iter_mut().find(|(name, _)| name == &previous_symbol)
+                        {
+                            slot.1 = Self::stored_value(new_primary.clone());
+                        }
+                    }
+                }
+                self.set_function_binding(&method_name, Some(around));
+            }
+            result
         } else {
             let mut direct_lowered = lowered[..3].to_vec();
             let direct_params = self.parse_params(&lowered_lambda_list)?;

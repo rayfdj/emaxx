@@ -8,6 +8,11 @@ impl Interpreter {
             .map(|(_, _, hooks)| hooks.clone())
     }
 
+    pub fn remove_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str) {
+        self.buffer_local_hooks
+            .retain(|(id, name, _)| !(*id == buffer_id && name == hook_name));
+    }
+
     pub fn set_buffer_local_hook(&mut self, buffer_id: u64, hook_name: &str, hooks: Vec<Value>) {
         if let Some((_, _, existing)) = self
             .buffer_local_hooks
@@ -1002,14 +1007,97 @@ impl Interpreter {
         merged
     }
 
+    pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {
+        if let Some(entry) = self
+            .window_margins
+            .iter_mut()
+            .find(|(id, _, _)| *id == window_id)
+        {
+            entry.1 = left;
+            entry.2 = right;
+        } else {
+            self.window_margins.push((window_id, left, right));
+        }
+    }
+
+    pub fn window_margins(&self, window_id: u64) -> (Option<i64>, Option<i64>) {
+        self.window_margins
+            .iter()
+            .find(|(id, _, _)| *id == window_id)
+            .map(|(_, left, right)| (*left, *right))
+            .unwrap_or((None, None))
+    }
+
     pub fn push_handler_bindings(&mut self, bindings: &[(String, Value)]) -> usize {
         let start = self.active_handlers.len();
-        self.active_handlers.extend_from_slice(bindings);
+        self.active_handlers.extend(
+            bindings.iter().map(|(condition, handler)| {
+                ActiveHandler::Bind(condition.clone(), handler.clone())
+            }),
+        );
+        start
+    }
+
+    pub(super) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
+        let start = self.active_handlers.len();
+        self.active_handlers.push(ActiveHandler::Case(heads));
         start
     }
 
     pub fn pop_handler_bindings(&mut self, start: usize) {
         self.active_handlers.truncate(start);
+    }
+
+    /// The `error-conditions' of CONDITION, or empty when undefined.
+    pub(super) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
+        self.get_symbol_property(condition, "error-conditions")
+            .and_then(|value| value.to_vec().ok())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_symbol().ok().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// GNU handler matching: `t' matches anything; otherwise the handler
+    /// symbol must be `memq' in the signaled symbol's `error-conditions',
+    /// falling back to the condition-or-`error' rule when none is defined.
+    pub(super) fn condition_symbol_matches(
+        symbol: &str,
+        error_type: &str,
+        condition_list: &[String],
+    ) -> bool {
+        if symbol == "t" {
+            true
+        } else if condition_list.is_empty() {
+            symbol == error_type || symbol == "error"
+        } else {
+            condition_list.iter().any(|entry| entry == symbol)
+        }
+    }
+
+    pub(super) fn clause_head_matches(
+        head: &Value,
+        error_type: &str,
+        condition_list: &[String],
+    ) -> bool {
+        match head {
+            Value::T => true,
+            Value::Symbol(symbol) => {
+                Self::condition_symbol_matches(symbol, error_type, condition_list)
+            }
+            Value::Cons(_, _) => head.to_vec().ok().is_some_and(|items| {
+                items.iter().any(|item| {
+                    matches!(item, Value::T)
+                        || symbol_name(item).is_some_and(|symbol| {
+                            Self::condition_symbol_matches(&symbol, error_type, condition_list)
+                        })
+                })
+            }),
+            _ => false,
+        }
     }
 
     pub(super) fn take_condition_case_suspend(&mut self) -> bool {
@@ -1031,22 +1119,51 @@ impl Interpreter {
         }
         let error_value = error_condition_value(&error);
         let error_type = error.condition_type();
+        let condition_list = self.error_condition_names(&error_type);
         let mut handled = false;
         self.handler_dispatch_depth += 1;
-        for (condition, handler) in self.active_handlers.clone().into_iter().rev() {
-            if condition != "error" && condition != error_type {
-                continue;
-            }
-            let result =
-                self.call_function_value(handler, None, std::slice::from_ref(&error_value), env);
-            match result {
-                Ok(_) => handled = true,
-                Err(next) => {
-                    self.handler_dispatch_depth = self.handler_dispatch_depth.saturating_sub(1);
-                    if !matches!(next, LispError::Throw(_, _)) && self.condition_case_depth > 1 {
-                        self.suspend_condition_case_count = 1;
+        let snapshot = self.active_handlers.clone();
+        for (index, entry) in snapshot.iter().enumerate().rev() {
+            match entry {
+                // A matching `condition-case' between the signal point and
+                // any outer `handler-bind' handles the error itself; stop
+                // searching like GNU's signal_or_quit.
+                ActiveHandler::Case(heads) => {
+                    if heads
+                        .iter()
+                        .any(|head| Self::clause_head_matches(head, &error_type, &condition_list))
+                    {
+                        break;
                     }
-                    return Err(next);
+                }
+                ActiveHandler::Bind(condition, handler) => {
+                    if !Self::condition_symbol_matches(condition, &error_type, &condition_list) {
+                        continue;
+                    }
+                    let result = self.call_function_value(
+                        handler.clone(),
+                        None,
+                        std::slice::from_ref(&error_value),
+                        env,
+                    );
+                    match result {
+                        Ok(_) => handled = true,
+                        Err(next) => {
+                            self.handler_dispatch_depth =
+                                self.handler_dispatch_depth.saturating_sub(1);
+                            if !matches!(next, LispError::Throw(_, _)) {
+                                // An error signaled by the handler propagates
+                                // from the `handler-bind' frame outward, so
+                                // every `condition-case' inside it must let
+                                // the new error pass through untouched.
+                                self.suspend_condition_case_count = snapshot[index + 1..]
+                                    .iter()
+                                    .filter(|inner| matches!(inner, ActiveHandler::Case(_)))
+                                    .count();
+                            }
+                            return Err(next);
+                        }
+                    }
                 }
             }
         }

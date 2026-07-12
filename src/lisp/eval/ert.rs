@@ -247,8 +247,17 @@ impl Interpreter {
         if items.len() < 2 {
             return Err(LispError::WrongNumberOfArgs("should-error".into(), 0));
         }
-        match self.eval(&items[1], env) {
+        // GNU `should-error' expands to a `condition-case' with an `error'
+        // clause; register it so signal-time `handler-bind' dispatch (e.g.
+        // ert's own test-runner handlers) leaves the error to us.
+        let handler_start = self.push_condition_case_handler(vec![Value::Symbol("error".into())]);
+        let body_result = self.eval(&items[1], env);
+        self.pop_handler_bindings(handler_start);
+        match body_result {
             Err(e) => {
+                if self.take_condition_case_suspend() {
+                    return Err(e);
+                }
                 // GNU matches when the expected type is memq in the
                 // signaled condition's `error-conditions' (every error
                 // derives from `error').
@@ -324,7 +333,46 @@ impl Interpreter {
             let previous =
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
             let previous_name = self.current_ert_test_name.replace(test.name.clone());
+            // GNU pushes the executing test onto `ert--running-tests';
+            // helpers like `ert-running-test' read it.
+            let test_struct = self
+                .get_symbol_property(&test.name, "ert--test")
+                .unwrap_or(Value::Nil);
+            let previous_running = self
+                .lookup_var("ert--running-tests", &env)
+                .unwrap_or(Value::Nil);
+            self.set_variable("ert--running-tests", Value::list([test_struct]), &mut env);
+            // GNU's ert--run-test-internal gives each test its own temp
+            // buffer ("For now, each test gets its own temp buffer ...
+            // just to be safe"); erc's helpers rely on starting in one.
+            let saved_buffer_id = self.current_buffer_id();
+            let temp_buffer_result = primitives::call(
+                self,
+                "generate-new-buffer",
+                &[Value::String(" *temp*".into())],
+                &mut env,
+            );
+            let temp_buffer_id = temp_buffer_result
+                .ok()
+                .and_then(|buffer| self.resolve_buffer_id(&buffer).ok());
+            if let Some(id) = temp_buffer_id {
+                let _ = self.switch_to_buffer_id(id);
+            }
             let mut result = self.call_function_value(test.body.clone(), None, &[], &mut env);
+            if self.has_buffer_id(saved_buffer_id) {
+                let _ = self.switch_to_buffer_id(saved_buffer_id);
+            }
+            if let Some(id) = temp_buffer_id
+                && self.has_buffer_id(id)
+            {
+                let _ = primitives::call(
+                    self,
+                    "kill-buffer",
+                    &[Value::Buffer(id, String::new())],
+                    &mut env,
+                );
+            }
+            self.set_variable("ert--running-tests", previous_running, &mut env);
             self.ert_test_source_file = previous;
             self.current_ert_test_name = previous_name;
             // GNU wraps each test body in (catch 'ert--pass ...); `ert-pass'

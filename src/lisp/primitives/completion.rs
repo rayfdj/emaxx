@@ -512,6 +512,10 @@ pub(crate) fn default_intern_soft_result(
         || interp.lookup_var(symbol_name, env).is_some()
         || interp.lookup_function(symbol_name, env).is_ok()
         || is_builtin(symbol_name)
+        // Symbols carrying properties are interned too (defface names have
+        // no value or function cell, but erc's face plumbing intern-softs
+        // "erc-error-face" and expects the symbol back).
+        || !interp.symbol_plist(symbol_name).is_nil()
     {
         Value::Symbol(symbol_name.into())
     } else {

@@ -7371,3 +7371,1628 @@ immediately like `custom-initialize-set'."
 (make-variable-buffer-local 'comment-end-skip)
 (make-variable-buffer-local 'comment-end)
 (make-variable-buffer-local 'comment-column)
+
+;; GNU custom.el (preloaded): theme recording used by customize-mark-as-set
+;; and setopt.
+(defvar custom--inhibit-theme-enable 'apply-only-user
+  "Whether the custom-theme-set-* functions act immediately.")
+
+(defun custom--should-apply-setting (theme)
+  (or (null custom--inhibit-theme-enable)
+      (and (eq custom--inhibit-theme-enable 'apply-only-user)
+           (eq theme 'user))))
+(defun custom-push-theme (prop symbol theme mode &optional value)
+  "Record VALUE for face or variable SYMBOL in custom theme THEME.
+PROP is `theme-face' for a face, `theme-value' for a variable.
+
+MODE can be either the symbol `set' or the symbol `reset'.  If it is the
+symbol `set', then VALUE is the value to use.  If it is the symbol
+`reset', then SYMBOL will be removed from THEME (VALUE is ignored).
+
+See `custom-known-themes' for a list of known themes."
+  (unless (memq prop '(theme-value theme-face theme-icon))
+    (error "Unknown theme property"))
+  (let* ((old (get symbol prop))
+	 (setting (assq theme old))  ; '(theme value)
+	 (theme-settings             ; '(prop symbol theme value)
+	  (get theme 'theme-settings)))
+    (cond
+     ;; Remove a setting:
+     ((eq mode 'reset)
+      (when setting
+	(let (res)
+	  (dolist (theme-setting theme-settings)
+	    (if (and (eq (car  theme-setting) prop)
+		     (eq (cadr theme-setting) symbol))
+		(setq res theme-setting)))
+	  (put theme 'theme-settings (delq res theme-settings)))
+	(put symbol prop (delq setting old))))
+     ;; Alter an existing setting:
+     (setting
+      (let (res)
+	(dolist (theme-setting theme-settings)
+	  (if (and (eq (car  theme-setting) prop)
+		   (eq (cadr theme-setting) symbol))
+	      (setq res theme-setting)))
+	(put theme 'theme-settings
+	     (cons (list prop symbol theme value)
+		   (delq res theme-settings)))
+        ;; It's tempting to use setcar here, but that could
+        ;; inadvertently modify other properties in SYMBOL's proplist,
+        ;; if those just happen to share elements with the value of PROP.
+        (put symbol prop (cons (list theme value) (delq setting old)))))
+     ;; Add a new setting:
+     (t
+      (when (custom--should-apply-setting theme)
+	(unless old
+	  ;; If the user changed a variable outside of Customize, save
+	  ;; the value to a fake theme, `changed'.  If the theme is
+	  ;; later disabled, we use this to bring back the old value.
+	  ;;
+	  ;; For faces, we just use `face--new-frame-defaults' to
+	  ;; recompute when the theme is disabled.
+	  (when (and (eq prop 'theme-value)
+		     (boundp symbol))
+	    (let ((sv  (get symbol 'standard-value))
+		  (val (symbol-value symbol)))
+	      (unless (or
+                       ;; We only do this trick if the current value
+                       ;; is different from the standard value.
+                       (and sv (equal (eval (car sv)) val))
+                       ;; And we don't do it if we would end up recording
+                       ;; the same value for the user theme.  This way we avoid
+                       ;; having ((user VALUE) (changed VALUE)).  That would be
+                       ;; useless, because we don't disable the user theme.
+                       (and (eq theme 'user) (equal (custom-quote val) value)))
+		(setq old `((changed ,(custom-quote val))))))))
+	(put symbol prop (cons (list theme value) old)))
+      (put theme 'theme-settings
+	   (cons (list prop symbol theme value) theme-settings))))))
+
+(defun customize-mark-as-set (symbol)
+  "Mark current value of SYMBOL as being set from customize.
+Return non-nil if the `customized-value' property actually changed."
+  (custom-load-symbol symbol)
+  (let* ((get (or (get symbol 'custom-get) #'default-value))
+	 (value (funcall get symbol))
+	 (customized (get symbol 'customized-value))
+	 (old (or (get symbol 'saved-value) (get symbol 'standard-value))))
+    ;; Mark default value as set if different from old value.
+    (if (not (and old
+                  (equal value (ignore-errors
+                                 (eval (car old))))))
+	(progn (put symbol 'customized-value (list (custom-quote value)))
+	       (custom-push-theme 'theme-value symbol 'user 'set
+				  (custom-quote value)))
+      (custom-push-theme 'theme-value symbol 'user
+                         (if (get symbol 'saved-value) 'set 'reset)
+                         (custom-quote value))
+      (put symbol 'customized-value nil))
+    ;; Changed?
+    (not (equal customized (get symbol 'customized-value)))))
+
+;; GNU minibuffer.el (verbatim): quoted completion tables, needed by
+;; `pcomplete-completions-at-point' (erc-dcc /dcc completion).
+(defun completion-boundaries (string collection pred suffix)
+  "Return the boundaries of text on which COLLECTION will operate.
+STRING is the string on which completion will be performed.
+SUFFIX is the string after point.
+If COLLECTION is a function, it is called with 3 arguments: STRING,
+PRED, and a cons cell of the form (boundaries . SUFFIX).
+
+The result is of the form (START . END) where START is the position
+in STRING of the beginning of the completion field and END is the position
+in SUFFIX of the end of the completion field.
+E.g. for simple completion tables, the result is always (0 . (length SUFFIX))
+and for file names the result is the positions delimited by
+the closest directory separators."
+  (let ((boundaries (if (functionp collection)
+                        (funcall collection string pred
+                                 (cons 'boundaries suffix)))))
+    (if (not (eq (car-safe boundaries) 'boundaries))
+        (setq boundaries nil))
+    (cons (or (cadr boundaries) 0)
+          (or (cddr boundaries) (length suffix)))))
+
+
+(defun complete-with-action (action collection string predicate)
+  "Perform completion according to ACTION.
+STRING, COLLECTION and PREDICATE are used as in `try-completion'.
+
+If COLLECTION is a function, it will be called directly to
+perform completion, no matter what ACTION is.
+
+If ACTION is `metadata' or a list where the first element is
+`boundaries', return nil.  If ACTION is nil, this function works
+like `try-completion'; if it is t, this function works like
+`all-completion'; and any other value makes it work like
+`test-completion'."
+  (cond
+   ((functionp collection) (funcall collection string predicate action))
+   ((eq (car-safe action) 'boundaries) nil)
+   ((eq action 'metadata) nil)
+   (t
+    (funcall
+     (cond
+      ((null action) 'try-completion)
+      ((eq action t) 'all-completions)
+      (t 'test-completion))
+     string collection predicate))))
+
+(defun completion-table-subvert (table s1 s2)
+  "Return a completion table from TABLE with S1 replaced by S2.
+The result is a completion table which completes strings of the
+form (concat S1 S) in the same way as TABLE completes strings of
+the form (concat S2 S)."
+  (lambda (string pred action)
+    (let* ((str (if (string-prefix-p s1 string completion-ignore-case)
+                    (concat s2 (substring string (length s1)))))
+           (res (if str (complete-with-action action table str pred))))
+      (when (or res (eq (car-safe action) 'boundaries))
+        (cond
+         ((eq (car-safe action) 'boundaries)
+          (let ((beg (or (and (eq (car-safe res) 'boundaries) (cadr res)) 0)))
+            `(boundaries
+              ,(min (length string)
+                    (max (length s1)
+                         (+ beg (- (length s1) (length s2)))))
+              . ,(and (eq (car-safe res) 'boundaries) (cddr res)))))
+         ((stringp res)
+          (if (string-prefix-p s2 res completion-ignore-case)
+              (concat s1 (substring res (length s2)))))
+         ((eq action t)
+          (let ((bounds (completion-boundaries str table pred "")))
+            (if (>= (car bounds) (length s2))
+                res
+              (let ((re (concat "\\`"
+                                (regexp-quote (substring s2 (car bounds))))))
+                (delq nil
+                      (mapcar (lambda (c)
+                                (if (string-match re c)
+                                    (substring c (match-end 0))))
+                              res))))))
+         ;; E.g. action=nil and it's the only completion.
+         (res))))))
+
+(defun completion-table-with-quoting (table unquote requote)
+  ;; A difficult part of completion-with-quoting is to map positions in the
+  ;; quoted string to equivalent positions in the unquoted string and
+  ;; vice-versa.  There is no efficient and reliable algorithm that works for
+  ;; arbitrary quote and unquote functions.
+  ;; So to map from quoted positions to unquoted positions, we simply assume
+  ;; that `concat' and `unquote' commute (which tends to be the case).
+  ;; And we ask `requote' to do the work of mapping from unquoted positions
+  ;; back to quoted positions.
+  ;; FIXME: For some forms of "quoting" such as the truncation behavior of
+  ;; substitute-in-file-name, it would be desirable not to requote completely.
+  "Return a new completion table operating on quoted text.
+TABLE operates on the unquoted text.
+UNQUOTE is a function that takes a string and returns a new unquoted string.
+REQUOTE is a function of 2 args (UPOS QSTR) where
+  QSTR is a string entered by the user (and hence indicating
+  the user's preferred form of quoting); and
+  UPOS is a position within the unquoted form of QSTR.
+REQUOTE should return a pair (QPOS . QFUN) such that QPOS is the
+position corresponding to UPOS but in QSTR, and QFUN is a function
+of one argument (a string) which returns that argument appropriately quoted
+for use at QPOS."
+  ;; FIXME: One problem with the current setup is that `qfun' doesn't know if
+  ;; its argument is "the end of the completion", so if the quoting used double
+  ;; quotes (for example), we end up completing "fo" to "foobar and throwing
+  ;; away the closing double quote.
+  (lambda (string pred action)
+    (cond
+     ((eq action 'metadata)
+      (append (completion-metadata string table pred)
+              '((completion--unquote-requote . t))))
+
+     ((eq action 'lambda) ;;test-completion
+      (let ((ustring (funcall unquote string)))
+        (test-completion ustring table pred)))
+
+     ((eq (car-safe action) 'boundaries)
+      (let* ((ustring (funcall unquote string))
+             (qsuffix (cdr action))
+             (ufull (if (zerop (length qsuffix)) ustring
+                      (funcall unquote (concat string qsuffix))))
+             ;; If (not (string-prefix-p ustring ufull)) we have a problem:
+             ;; unquoting the qfull gives something "unrelated" to ustring.
+             ;; E.g. "~/" and "/" where "~//" gets unquoted to just "/" (see
+             ;; bug#47678).
+             ;; In that case we can't even tell if we're right before the
+             ;; "/" or right after it (aka if this "/" is from qstring or
+             ;; from qsuffix), thus which usuffix to use is very unclear.
+             (usuffix (if (string-prefix-p ustring ufull)
+                          (substring ufull (length ustring))
+                        ;; FIXME: Maybe "" is preferable/safer?
+                        qsuffix))
+             (boundaries (completion-boundaries ustring table pred usuffix))
+             (qlboundary (car (funcall requote (car boundaries) string)))
+             (qrboundary (if (zerop (cdr boundaries)) 0 ;Common case.
+                           (let* ((urfullboundary
+                                   (+ (cdr boundaries) (length ustring))))
+                             (- (car (funcall requote urfullboundary
+                                              (concat string qsuffix)))
+                                (length string))))))
+        `(boundaries ,qlboundary . ,qrboundary)))
+
+     ;; In "normal" use a c-t-with-quoting completion table should never be
+     ;; called with action in (t nil) because `completion--unquote' should have
+     ;; been called before and would have returned a different completion table
+     ;; to apply to the unquoted text.  But there's still a lot of code around
+     ;; that likes to use all/try-completions directly, so we do our best to
+     ;; handle those calls as well as we can.
+
+     ((eq action nil) ;;try-completion
+      (let* ((ustring (funcall unquote string))
+             (completion (try-completion ustring table pred)))
+        ;; Most forms of quoting allow several ways to quote the same string.
+        ;; So here we could simply requote `completion' in a kind of
+        ;; "canonical" quoted form without paying attention to the way
+        ;; `string' was quoted.  But since we have to solve the more complex
+        ;; problems of "pay attention to the original quoting" for
+        ;; all-completions, we may as well use it here, since it provides
+        ;; a nicer behavior.
+        (if (not (stringp completion)) completion
+          (car (completion--twq-try
+                string ustring completion 0 unquote requote)))))
+
+     ((eq action t) ;;all-completions
+      ;; When all-completions is used for completion-try/all-completions
+      ;; (e.g. for `pcm' style), we can't do the job properly here because
+      ;; the caller will match our output against some pattern derived from
+      ;; the user's (quoted) input, and we don't have access to that
+      ;; pattern, so we can't know how to requote our output so that it
+      ;; matches the quoting used in the pattern.  It is to fix this
+      ;; fundamental problem that we have to introduce the new
+      ;; unquote-requote method so that completion-try/all-completions can
+      ;; pass the unquoted string to the style functions.
+      (pcase-let*
+          ((ustring (funcall unquote string))
+           (completions (all-completions ustring table pred))
+           (boundary (car (completion-boundaries ustring table pred "")))
+           (completions
+            (completion--twq-all
+             string ustring completions boundary unquote requote))
+           (last (last completions)))
+        (when (consp last) (setcdr last nil))
+        completions))
+
+     ((eq action 'completion--unquote)
+      ;; PRED is really a POINT in STRING.
+      ;; We should return a new set (STRING TABLE POINT REQUOTE)
+      ;; where STRING is a new (unquoted) STRING to match against the new TABLE
+      ;; using a new POINT inside it, and REQUOTE is a requoting function which
+      ;; should reverse the unquoting, (i.e. it receives the completion result
+      ;; of using the new TABLE and should turn it into the corresponding
+      ;; quoted result).
+      (let* ((qpos pred)
+	     (ustring (funcall unquote string))
+	     (uprefix (funcall unquote (substring string 0 qpos)))
+	     ;; FIXME: we really should pass `qpos' to `unquote' and have that
+	     ;; function give us the corresponding `uqpos'.  But for now we
+	     ;; presume (more or less) that `concat' and `unquote' commute.
+	     (uqpos (if (string-prefix-p uprefix ustring)
+			;; Yay!!  They do seem to commute!
+			(length uprefix)
+		      ;; They don't commute this time!  :-(
+		      ;; Maybe qpos is in some text that disappears in the
+		      ;; ustring (bug#17239).  Let's try a second chance guess.
+		      (let ((usuffix (funcall unquote (substring string qpos))))
+			(if (string-suffix-p usuffix ustring)
+			    ;; Yay!!  They still "commute" in a sense!
+			    (- (length ustring) (length usuffix))
+			  ;; Still no luck!  Let's just choose *some* position
+			  ;; within ustring.
+			  (/ (+ (min (length uprefix) (length ustring))
+				(max (- (length ustring) (length usuffix)) 0))
+			     2))))))
+        (list ustring table uqpos
+              (lambda (unquoted-result op)
+                (pcase op
+                  (1 ;;try
+                   (if (not (stringp (car-safe unquoted-result)))
+                       unquoted-result
+                     (completion--twq-try
+                      string ustring
+                      (car unquoted-result) (cdr unquoted-result)
+                      unquote requote)))
+                  (2 ;;all
+                   (let* ((last (last unquoted-result))
+                          (base (or (cdr last) 0)))
+                     (when last
+                       (setcdr last nil)
+                       (completion--twq-all string ustring
+                                            unquoted-result base
+                                            unquote requote))))))))))))
+
+(defun completion--twq-try (string ustring completion point
+                                   unquote requote)
+  ;; Basically two cases: either the new result is
+  ;; - commonprefix1 <point> morecommonprefix <qpos> suffix
+  ;; - commonprefix <qpos> newprefix <point> suffix
+  (pcase-let*
+      ((prefix (fill-common-string-prefix ustring completion))
+       (suffix (substring completion (max point (length prefix))))
+       (`(,qpos . ,qfun) (funcall requote (length prefix) string))
+       (qstr1 (if (> point (length prefix))
+                  (funcall qfun (substring completion (length prefix) point))))
+       (qsuffix (funcall qfun suffix))
+       (qstring (concat (substring string 0 qpos) qstr1 qsuffix))
+       (qpoint
+        (cond
+         ((zerop point) 0)
+         ((> point (length prefix)) (+ qpos (length qstr1)))
+         (t (car (funcall requote point string))))))
+    ;; Make sure `requote' worked.
+    (if (equal (funcall unquote qstring) completion)
+	(cons qstring qpoint)
+      ;; If requote failed (e.g. because sifn-requote did not handle
+      ;; Tramp's "/foo:/bar//baz -> /foo:/baz" truncation), then at least
+      ;; try requote properly.
+      (let ((qstr (funcall qfun completion)))
+	(cons qstr (length qstr))))))
+
+(defun completion--twq-all (string ustring completions boundary
+                                   _unquote requote)
+  (when completions
+    (pcase-let*
+        ((prefix
+          (let ((completion-regexp-list nil))
+            (try-completion "" (cons (substring ustring boundary)
+                                     completions))))
+         (`(,qfullpos . ,qfun)
+          (funcall requote (+ boundary (length prefix)) string))
+         (qfullprefix (substring string 0 qfullpos))
+	 ;; FIXME: This assertion can be wrong, e.g. in Cygwin, where
+	 ;; (unquote "c:\bin") => "/usr/bin" but (unquote "c:\") => "/".
+         ;;(cl-assert (string-equal-ignore-case
+         ;;            (funcall unquote qfullprefix)
+         ;;            (concat (substring ustring 0 boundary) prefix))
+         ;;           t))
+         (qboundary (car (funcall requote boundary string)))
+         (_ (cl-assert (<= qboundary qfullpos)))
+         ;; FIXME: this split/quote/concat business messes up the carefully
+         ;; placed completions-common-part and completions-first-difference
+         ;; faces.  We could try within the mapcar loop to search for the
+         ;; boundaries of those faces, pass them to `requote' to find their
+         ;; equivalent positions in the quoted output and re-add the faces:
+         ;; this might actually lead to correct results but would be
+         ;; pretty expensive.
+         ;; The better solution is to not quote the *Completions* display,
+         ;; which nicely circumvents the problem.  The solution I used here
+         ;; instead is to hope that `qfun' preserves the text-properties and
+         ;; presume that the `first-difference' is not within the `prefix';
+         ;; this presumption is not always true, but at least in practice it is
+         ;; true in most cases.
+         (qprefix (propertize (substring qfullprefix qboundary)
+                              'face 'completions-common-part)))
+
+      ;; Here we choose to quote all elements returned, but a better option
+      ;; would be to return unquoted elements together with a function to
+      ;; requote them, so that *Completions* can show nicer unquoted values
+      ;; which only get quoted when needed by choose-completion.
+      (nconc
+       (mapcar (lambda (completion)
+                 (cl-assert (string-prefix-p prefix completion 'ignore-case) t)
+                 (let* ((new (substring completion (length prefix)))
+                        (qnew (funcall qfun new))
+			(qprefix
+                         (if (not completion-ignore-case)
+                             qprefix
+                           ;; Make qprefix inherit the case from `completion'.
+                           (let* ((rest (substring completion
+                                                   0 (length prefix)))
+                                  (qrest (funcall qfun rest)))
+                             (if (string-equal-ignore-case qprefix qrest)
+                                 (propertize qrest 'face
+                                             'completions-common-part)
+                               qprefix))))
+                        (qcompletion (concat qprefix qnew)))
+                   ;; Some completion tables (including this one) pass
+                   ;; along necessary information as text properties
+                   ;; on the first character of the completion.  Make
+                   ;; sure the quoted completion has these properties
+                   ;; too.
+                   (add-text-properties 0 1 (text-properties-at 0 completion)
+                                        qcompletion)
+                   ;; Attach unquoted completion string, which is needed
+                   ;; to score the completion in `completion--flex-score'.
+                   (put-text-property 0 1 'completion--unquoted
+                                      completion qcompletion)
+		   ;; FIXME: Similarly here, Cygwin's mapping trips this
+		   ;; assertion.
+                   ;;(cl-assert
+                   ;; (string-equal-ignore-case
+		   ;;  (funcall unquote
+		   ;;           (concat (substring string 0 qboundary)
+		   ;;                   qcompletion))
+		   ;;  (concat (substring ustring 0 boundary)
+		   ;;          completion))
+		   ;; t)
+                   qcompletion))
+               completions)
+       qboundary))))
+
+;; GNU fill.el (verbatim): used by `completion--twq-try'.
+(defun fill-common-string-prefix (s1 s2)
+  "Return the longest common prefix of strings S1 and S2, or nil if none."
+  (let ((cmp (compare-strings s1 nil nil s2 nil nil)))
+    (if (eq cmp t)
+	s1
+      (setq cmp (1- (abs cmp)))
+      (unless (zerop cmp)
+	(substring s1 0 cmp)))))
+
+;; GNU minibuffer.el (verbatim).
+(defun completion-table-case-fold (table &optional dont-fold)
+  "Return new completion TABLE that is case insensitive.
+If DONT-FOLD is non-nil, return a completion table that is
+case sensitive instead."
+  (lambda (string pred action)
+    (let ((completion-ignore-case (not dont-fold)))
+      (complete-with-action action table string pred))))
+
+;; GNU subr.el (verbatim): pcomplete quoting helpers.
+(defun combine-and-quote-strings (strings &optional separator)
+  "Concatenate the STRINGS, adding the SEPARATOR (default \" \").
+This tries to quote the strings to avoid ambiguity such that
+  (split-string-and-unquote (combine-and-quote-strings strs)) == strs
+Only some SEPARATORs will work properly.
+
+Note that this is not intended to protect STRINGS from
+interpretation by shells, use `shell-quote-argument' for that."
+  (declare (important-return-value t))
+  (let* ((sep (or separator " "))
+         (re (concat "[\\\"]" "\\|" (regexp-quote sep))))
+    (mapconcat
+     (lambda (str)
+       (if (string-match re str)
+	   (concat "\"" (replace-regexp-in-string "[\\\"]" "\\\\\\&" str) "\"")
+	 str))
+     strings sep)))
+
+(defun split-string-and-unquote (string &optional separator)
+  "Split the STRING into a list of strings.
+It understands Emacs Lisp quoting within STRING, such that
+  (split-string-and-unquote (combine-and-quote-strings strs)) == strs
+The SEPARATOR regexp defaults to \"\\s-+\"."
+  (declare (important-return-value t))
+  (let ((sep (or separator "\\s-+"))
+	(i (string-search "\"" string)))
+    (if (null i)
+	(split-string string sep t)	; no quoting:  easy
+      (append (unless (eq i 0) (split-string (substring string 0 i) sep t))
+	      (let ((rfs (read-from-string string i)))
+		(cons (car rfs)
+		      (split-string-and-unquote (substring string (cdr rfs))
+						sep)))))))
+
+
+;; GNU C-defined hook variables (keyboard.c, window.c): always bound.
+;; The native command dispatch runs the command hooks; these defvars only
+;; provide the variable bindings Lisp expects to read and modify.
+(defvar pre-command-hook nil
+  "Normal hook run before each command is executed.")
+(defvar post-command-hook nil
+  "Normal hook run after each command is executed.")
+(defvar window-buffer-change-functions nil
+  "Functions called during redisplay when window buffers have changed.")
+(defvar window-selection-change-functions nil
+  "Functions called during redisplay when the selected window changed.")
+(defvar window-state-change-functions nil
+  "Functions called during redisplay when the window state changed.")
+(defvar window-state-change-hook nil
+  "Normal hook run when the window state changed during redisplay.")
+(defvar window-size-change-functions nil
+  "Functions called during redisplay when window sizes have changed.")
+(defvar window-configuration-change-hook nil
+  "Normal hook run when the window configuration changed.")
+
+;; GNU buffer.c permanent buffer-local display variables.
+(defvar left-margin-width 0
+  "Width in columns of left marginal area for display of a buffer.")
+(defvar right-margin-width 0
+  "Width in columns of right marginal area for display of a buffer.")
+(defvar fringes-outside-margins nil
+  "Non-nil means to display fringes outside display margins.")
+(make-variable-buffer-local 'left-margin-width)
+(make-variable-buffer-local 'right-margin-width)
+(make-variable-buffer-local 'fringes-outside-margins)
+
+;; emaxx models batch sessions as a single full-frame window, so the
+;; window metric accessors coincide with `window-width'/`window-height'.
+(defun window-normalize-window (window &optional _live-only)
+  "Return WINDOW or the selected window when WINDOW is nil."
+  (or window (selected-window)))
+(defun window-total-width (&optional window &rest _round)
+  "Return the total width, in columns, of WINDOW."
+  (window-width window))
+(defun window-total-height (&optional window &rest _round)
+  "Return the total height, in lines, of WINDOW."
+  (window-height window))
+(defun window-body-width (&optional window _pixelwise)
+  "Return the width of WINDOW's text area."
+  (window-width window))
+(defun window-body-height (&optional window _pixelwise)
+  "Return the height of WINDOW's text area."
+  (window-height window))
+(defun window-full-width-p (&optional _window)
+  "Return t if WINDOW is as wide as its containing frame."
+  t)
+
+;; GNU C-defined/simple.el variables read by the kill commands below.
+(defvar kill-whole-line nil
+  "If non-nil, `kill-line' with no arg at start of line kills the whole line.")
+(defvar show-trailing-whitespace nil
+  "Non-nil means highlight trailing whitespace.")
+(defvar kill-read-only-ok nil
+  "Non-nil means don't signal an error for killing read-only text.")
+(defvar truncate-partial-width-windows 50
+  "Non-nil means truncate lines in windows narrower than the frame.")
+
+;; GNU window.el (verbatim).
+(defun count-screen-lines (&optional beg end count-final-newline window)
+  "Return the number of screen lines in the region.
+The number of screen lines may be different from the number of actual lines,
+due to line breaking, display table, etc.
+
+Optional arguments BEG and END default to `point-min' and `point-max'
+respectively.
+
+If region ends with a newline, ignore it unless optional third argument
+COUNT-FINAL-NEWLINE is non-nil.
+
+The optional fourth argument WINDOW specifies the window used for obtaining
+parameters such as width, horizontal scrolling, and so on.  The default is
+to use the selected window's parameters.
+
+Like `vertical-motion', `count-screen-lines' always uses the current buffer,
+regardless of which buffer is displayed in WINDOW.  This makes possible to use
+`count-screen-lines' in any buffer, whether or not it is currently displayed
+in some window."
+  (unless beg
+    (setq beg (point-min)))
+  (unless end
+    (setq end (point-max)))
+  (if (= beg end)
+      0
+    (let ((start (min beg end))
+          (finish (max beg end))
+          count end-invisible-p)
+      ;; When END is invisible because lines are truncated in WINDOW,
+      ;; vertical-motion returns a number that is 1 larger than it
+      ;; should.  We need to fix that.
+      (setq end-invisible-p
+            (and (or truncate-lines (truncated-partial-width-window-p window))
+                 (save-excursion
+                   (goto-char finish)
+                   (> (- (current-column) (window-hscroll window))
+                      (window-body-width window)))))
+      (save-excursion
+        (save-restriction
+          (widen)
+          (narrow-to-region start
+                            (if (and (not count-final-newline)
+                                     (= ?\n (char-before finish)))
+                                (1- finish)
+                              finish))
+          (goto-char start)
+          (setq count (vertical-motion (buffer-size) window))
+          (if end-invisible-p count (1+ count)))))))
+
+(defun truncated-partial-width-window-p (&optional window)
+  "Return non-nil if lines in WINDOW are specifically truncated due to its width.
+WINDOW must be a live window and defaults to the selected one.
+Return nil if WINDOW is not a partial-width window
+ (regardless of the value of `truncate-lines').
+Otherwise, consult the value of `truncate-partial-width-windows'
+ for the buffer shown in WINDOW."
+  (setq window (window-normalize-window window t))
+  (unless (window-full-width-p window)
+    (let ((t-p-w-w (buffer-local-value 'truncate-partial-width-windows
+				       (window-buffer window))))
+      (if (integerp t-p-w-w)
+	  (< (window-total-width window) t-p-w-w)
+        t-p-w-w))))
+
+
+;; GNU simple.el (verbatim).
+(defun kill-line (&optional arg)
+  "Kill the rest of the current line; if no nonblanks there, kill thru newline.
+With prefix argument ARG, kill that many lines from point.
+Negative arguments kill lines backward.
+With zero argument, kills the text before point on the current line.
+
+When calling from a program, nil means \"no arg\",
+a number counts as a prefix arg.
+
+To kill a whole line, when point is not at the beginning, type \
+\\[move-beginning-of-line] \\[kill-line] \\[kill-line].
+
+If `show-trailing-whitespace' is non-nil, this command will just
+kill the rest of the current line, even if there are no nonblanks
+there.
+
+If option `kill-whole-line' is non-nil, then this command kills the whole line
+including its terminating newline, when used at the beginning of a line
+with no argument.  As a consequence, you can always kill a whole line
+by typing \\[move-beginning-of-line] \\[kill-line].
+
+If you want to append the killed line to the last killed text,
+use \\[append-next-kill] before \\[kill-line].
+
+If the buffer is read-only, Emacs will beep and refrain from deleting
+the line, but put the line in the kill ring anyway.  This means that
+you can use this command to copy text from a read-only buffer.
+\(If the variable `kill-read-only-ok' is non-nil, then this won't
+even beep.)"
+  (interactive "P")
+  (kill-region (point)
+	       ;; It is better to move point to the other end of the kill
+	       ;; before killing.  That way, in a read-only buffer, point
+	       ;; moves across the text that is copied to the kill ring.
+	       ;; The choice has no effect on undo now that undo records
+	       ;; the value of point from before the command was run.
+	       (progn
+		 (if arg
+		     (forward-visible-line (prefix-numeric-value arg))
+		   (if (eobp)
+		       (signal 'end-of-buffer nil))
+		   (let ((end
+			  (save-excursion
+			    (end-of-visible-line) (point))))
+		     (if (or (save-excursion
+			       ;; If trailing whitespace is visible,
+			       ;; don't treat it as nothing.
+			       (unless show-trailing-whitespace
+				 (skip-chars-forward " \t" end))
+			       (= (point) end))
+			     (and kill-whole-line (bolp)))
+			 (forward-visible-line 1)
+		       (goto-char end))))
+		 (point))))
+
+(defun forward-visible-line (arg)
+  "Move forward by ARG lines, ignoring currently invisible newlines only.
+If ARG is negative, move backward -ARG lines.
+If ARG is zero, move to the beginning of the current line."
+  (condition-case nil
+      (if (> arg 0)
+	  (progn
+	    (while (> arg 0)
+	      (or (zerop (forward-line 1))
+		  (signal 'end-of-buffer nil))
+	      ;; If the newline we just skipped is invisible,
+	      ;; don't count it.
+	      (if (invisible-p (1- (point)))
+		  (setq arg (1+ arg)))
+	      (setq arg (1- arg)))
+	    ;; If invisible text follows, and it is a number of complete lines,
+	    ;; skip it.
+	    (let ((opoint (point)))
+	      (while (and (not (eobp))
+			  (invisible-p (point)))
+		(goto-char
+		 (if (get-text-property (point) 'invisible)
+		     (or (next-single-property-change (point) 'invisible)
+			 (point-max))
+		   (next-overlay-change (point)))))
+	      (unless (bolp)
+		(goto-char opoint))))
+	(let ((first t))
+	  (while (or first (<= arg 0))
+	    (if first
+		(beginning-of-line)
+	      (or (zerop (forward-line -1))
+		  (signal 'beginning-of-buffer nil)))
+	    ;; If the newline we just moved to is invisible,
+	    ;; don't count it.
+	    (unless (bobp)
+	      (unless (invisible-p (1- (point)))
+		(setq arg (1+ arg))))
+	    (setq first nil))
+	  ;; If invisible text follows, and it is a number of complete lines,
+	  ;; skip it.
+	  (let ((opoint (point)))
+	    (while (and (not (bobp))
+			(invisible-p (1- (point))))
+	      (goto-char
+	       (if (get-text-property (1- (point)) 'invisible)
+		   (or (previous-single-property-change (point) 'invisible)
+		       (point-min))
+		 (previous-overlay-change (point)))))
+	    (unless (bolp)
+	      (goto-char opoint)))))
+    ((beginning-of-buffer end-of-buffer)
+     nil)))
+
+(defun end-of-visible-line ()
+  "Move to end of current visible line."
+  (end-of-line)
+  ;; If the following character is currently invisible,
+  ;; skip all characters with that same `invisible' property value,
+  ;; then find the next newline.
+  (while (and (not (eobp))
+	      (save-excursion
+		(skip-chars-forward "^\n")
+		(invisible-p (point))))
+    (skip-chars-forward "^\n")
+    (if (get-text-property (point) 'invisible)
+	(goto-char (or (next-single-property-change (point) 'invisible)
+		       (point-max)))
+      (goto-char (next-overlay-change (point))))
+    (end-of-line)))
+
+
+;; GNU buffer.c per-buffer display variables.
+(defvar truncate-lines nil
+  "Non-nil means do not display continuation lines.")
+(defvar word-wrap nil
+  "Non-nil means to use word-wrapping for continuation lines.")
+(make-variable-buffer-local 'truncate-lines)
+(make-variable-buffer-local 'word-wrap)
+
+;; GNU subr.el (verbatim): transient keymaps.
+(defun internal-push-keymap (keymap symbol)
+  (let ((map (symbol-value symbol)))
+    (unless (memq keymap map)
+      (unless (memq 'add-keymap-witness (symbol-value symbol))
+        (setq map (make-composed-keymap nil (symbol-value symbol)))
+        (push 'add-keymap-witness (cdr map))
+        (set symbol map))
+      (push keymap (cdr map)))))
+
+(defun internal-pop-keymap (keymap symbol)
+  (let ((map (symbol-value symbol)))
+    (when (memq keymap map)
+      (setf (cdr map) (delq keymap (cdr map))))
+    (let ((tail (cddr map)))
+      (and (or (null tail) (keymapp tail))
+           (eq 'add-keymap-witness (nth 1 map))
+           (set symbol tail)))))
+
+(defvar set-transient-map-timeout nil
+  "Timeout in seconds for deactivation of a transient keymap.
+If this is a number, it specifies the amount of idle time
+after which to deactivate the keymap set by `set-transient-map',
+thus overriding the value of the TIMEOUT argument to that function.")
+
+(defvar set-transient-map-timer nil
+  "Timer for `set-transient-map-timeout'.")
+
+(defun set-transient-map (map &optional keep-pred on-exit message timeout)
+  "Set MAP as a temporary keymap taking precedence over other keymaps.
+Normally, MAP is used only once, to look up the very next key.
+However, if the optional argument KEEP-PRED is t, MAP stays
+active if a key from MAP is used.  KEEP-PRED can also be a
+function of no arguments: it is called from `pre-command-hook' and
+if it returns non-nil, then MAP stays active.
+
+Optional arg ON-EXIT, if non-nil, specifies a function that is
+called, with no arguments, after MAP is deactivated.
+
+Optional arg MESSAGE, if non-nil, requests display of an informative
+message after activating the transient map.  If MESSAGE is a string,
+it specifies the format string for the message to display, and the %k
+specifier in the string is replaced with the list of keys from the
+transient map.  Any other non-nil value of MESSAGE means to use the
+message format string \"Repeat with %k\".  Upon deactivating the map,
+the displayed message will be cleared out.
+
+Optional arg TIMEOUT, if non-nil, should be a number specifying the
+number of seconds of idle time after which the map is deactivated.
+The variable `set-transient-map-timeout', if non-nil, overrides the
+value of TIMEOUT.
+
+This function uses `overriding-terminal-local-map', which takes precedence
+over all other keymaps.  As usual, if no match for a key is found in MAP,
+the normal key lookup sequence then continues.
+
+This returns an \"exit function\", which can be called with no argument
+to deactivate this transient map, regardless of KEEP-PRED."
+  (let* ((timeout (or set-transient-map-timeout timeout))
+         (message
+          (when message
+            (let (keys)
+              (map-keymap (lambda (key cmd) (and cmd (push key keys))) map)
+              (format-spec (if (stringp message) message "Repeat with %k")
+                           `((?k . ,(mapconcat
+                                     (lambda (key)
+                                       (substitute-command-keys
+                                        (format "\\`%s'"
+                                                (key-description (vector key)))))
+                                     keys ", ")))))))
+         (clearfun (make-symbol "clear-transient-map"))
+         (exitfun
+          (lambda ()
+            (internal-pop-keymap map 'overriding-terminal-local-map)
+            (remove-hook 'pre-command-hook clearfun)
+            ;; Clear the prompt after exiting.
+            (when message (message ""))
+            (when set-transient-map-timer (cancel-timer set-transient-map-timer))
+            (when on-exit (funcall on-exit)))))
+    ;; Don't use letrec, because equal (in add/remove-hook) could get trapped
+    ;; in a cycle. (bug#46326)
+    (fset clearfun
+          (lambda ()
+            (with-demoted-errors "set-transient-map PCH: %S"
+              (if (cond
+                       ((null keep-pred) nil)
+                       ((and (not (eq map (cadr overriding-terminal-local-map)))
+                             (memq map (cddr overriding-terminal-local-map)))
+                        ;; There's presumably some other transient-map in
+                        ;; effect.  Wait for that one to terminate before we
+                        ;; remove ourselves.
+                        ;; For example, if isearch and C-u both use transient
+                        ;; maps, then the lifetime of the C-u should be nested
+                        ;; within isearch's, so the pre-command-hook of
+                        ;; isearch should be suspended during the C-u one so
+                        ;; we don't exit isearch just because we hit 1 after
+                        ;; C-u and that 1 exits isearch whereas it doesn't
+                        ;; exit C-u.
+                        t)
+                       ((eq t keep-pred)
+                        (let ((mc (lookup-key map (this-command-keys-vector))))
+                          ;; We may have a remapped command, so chase
+                          ;; down that.
+                          (when (and mc (symbolp mc))
+                            (setq mc (or (command-remapping mc) mc)))
+                          ;; If the key is unbound `this-command` is
+                          ;; nil and so is `mc`.
+                          (and mc (eq this-command mc))))
+                       (t (funcall keep-pred)))
+                  ;; Repeat the message for the next command.
+                  (when message (message "%s" message))
+                (funcall exitfun)))))
+    (add-hook 'pre-command-hook clearfun)
+    (internal-push-keymap map 'overriding-terminal-local-map)
+    (when timeout
+      (when set-transient-map-timer (cancel-timer set-transient-map-timer))
+      (setq set-transient-map-timer (run-with-idle-timer timeout nil exitfun)))
+    (when message (message "%s" message))
+    exitfun))
+
+;; GNU keyboard.c: no idle time accumulates during batch execution.
+(defun current-idle-time ()
+  "Return the time elapsed since last user input, or nil if not idle."
+  nil)
+
+;; GNU subr.el (verbatim).
+(defun make-composed-keymap (maps &optional parent)
+  "Construct a new keymap composed of MAPS and inheriting from PARENT.
+When looking up a key in the returned map, the key is looked in each
+keymap of MAPS in turn until a binding is found.
+If no binding is found in MAPS, the lookup continues in PARENT, if non-nil.
+As always with keymap inheritance, a nil binding in MAPS overrides
+any corresponding binding in PARENT, but it does not override corresponding
+bindings in other keymaps of MAPS.
+MAPS can be a list of keymaps or a single keymap.
+PARENT if non-nil should be a keymap."
+  (declare (side-effect-free t))
+  `(keymap
+    ,@(if (keymapp maps) (list maps) maps)
+    ,@parent))
+
+;; GNU subr.el (verbatim).
+(defun field-at-pos (pos)
+  "Return the field at position POS, taking stickiness etc into account."
+  (declare (important-return-value t))
+  (let ((raw-field (get-char-property (field-beginning pos) 'field)))
+    (if (eq raw-field 'boundary)
+	(get-char-property (1- (field-end pos)) 'field)
+      raw-field)))
+
+
+;; GNU keyboard.c: position info for a buffer shown in WINDOW; nil when
+;; the buffer isn't displayed there (like an off-screen position).
+;; `kill-visual-line' reads the (COL . ROW) slot to detect line wraps.
+(defun posn-at-point (&optional pos window)
+  "Return position information for POS in WINDOW, or nil."
+  (setq window (or window (selected-window)))
+  (when (eq (window-buffer window) (current-buffer))
+    (let* ((pos (or pos (point)))
+           (col (save-excursion (goto-char pos)
+                                (- pos (progn (vertical-motion 0) (point)))))
+           (row (max 0 (1- (count-screen-lines (window-start window) pos t)))))
+      (list window pos (cons col row) 0 nil pos (cons col row)))))
+(defvar word-wrap-by-category nil
+  "Non-nil means also wrap after characters of a certain category.")
+
+;; GNU simple.el (verbatim): visual-line motion commands.
+(defun end-of-visual-line (&optional n)
+  "Move point to end of current visual line.
+With argument N not nil or 1, move forward N - 1 visual lines first.
+If point reaches the beginning or end of buffer, it stops there.
+To ignore intangibility, bind `inhibit-point-motion-hooks' to t."
+  (interactive "^p")
+  (or n (setq n 1))
+  (if (/= n 1)
+      (let ((line-move-visual t))
+	(line-move (1- n) t)))
+  ;; Unlike `move-beginning-of-line', `move-end-of-line' doesn't
+  ;; constrain to field boundaries, so we don't either.
+  (vertical-motion (cons (window-width) 0)))
+
+(defun beginning-of-visual-line (&optional n)
+  "Move point to beginning of current visual line.
+With argument N not nil or 1, move forward N - 1 visual lines first.
+If point reaches the beginning or end of buffer, it stops there.
+\(But if the buffer doesn't end in a newline, it stops at the
+beginning of the last visual line.)
+To ignore intangibility, bind `inhibit-point-motion-hooks' to t."
+  (interactive "^p")
+  (or n (setq n 1))
+  (let ((opoint (point)))
+    (if (/= n 1)
+	(let ((line-move-visual t))
+	  (line-move (1- n) t)))
+    (vertical-motion 0)
+    ;; Constrain to field boundaries, like `move-beginning-of-line'.
+    (goto-char (constrain-to-field (point) opoint (/= n 1)))))
+
+(defun kill-visual-line (&optional arg)
+  "Kill the rest of the visual line.
+With prefix argument ARG, kill that many visual lines from point.
+If ARG is negative, kill visual lines backward.
+If ARG is zero, kill the text before point on the current visual
+line.
+
+If the variable `kill-whole-line' is non-nil, and this command is
+invoked at start of a line that ends in a newline, kill the newline
+as well.
+
+If you want to append the killed line to the last killed text,
+use \\[append-next-kill] before \\[kill-line].
+
+If the buffer is read-only, Emacs will beep and refrain from deleting
+the line, but put the line in the kill ring anyway.  This means that
+you can use this command to copy text from a read-only buffer.
+\(If the variable `kill-read-only-ok' is non-nil, then this won't
+even beep.)"
+  (interactive "P")
+  ;; Like in `kill-line', it's better to move point to the other end
+  ;; of the kill before killing.
+  (let ((opoint (point))
+        (kill-whole-line (and kill-whole-line (bolp)))
+        (orig-vlnum (cdr (nth 6 (posn-at-point)))))
+    (if arg
+	(vertical-motion (prefix-numeric-value arg))
+      (end-of-visual-line 1)
+      (if (= (point) opoint)
+	  (vertical-motion 1)
+        ;; The first condition below verifies we are still on the same
+        ;; screen line, i.e. that the line isn't continued, and that
+        ;; end-of-visual-line didn't overshoot due to complications
+        ;; like display or overlay strings, intangible text, etc.:
+        ;; otherwise, we don't want to kill a character that's
+        ;; unrelated to the place where the visual line wraps.
+        (and (= (cdr (nth 6 (posn-at-point))) orig-vlnum)
+             ;; Make sure we delete the character where the line wraps
+             ;; under visual-line-mode, be it whitespace or a
+             ;; character whose category set permits wrapping at it.
+             (or (looking-at-p "[ \t]")
+                 (and word-wrap-by-category
+                      (aref (char-category-set (following-char)) ?\|)))
+             (forward-char))))
+    (kill-region opoint (if (and kill-whole-line (= (following-char) ?\n))
+			    (1+ (point))
+			  (point)))))
+
+
+;; GNU batch sessions have no window-system selections.
+(defvar interprogram-cut-function nil
+  "Function to call to make a killed region available to other programs.")
+(defvar interprogram-paste-function nil
+  "Function to call to get text cut from other programs.")
+
+;; GNU simple.el (verbatim): the kill ring.
+(defvar kill-ring nil
+  "List of killed text sequences.
+Since the kill ring is supposed to interact nicely with cut-and-paste
+facilities offered by window systems, use of this variable should
+interact nicely with `interprogram-cut-function' and
+`interprogram-paste-function'.  The functions `kill-new',
+`kill-append', and `current-kill' are supposed to implement this
+interaction; you may want to use them instead of manipulating the kill
+ring directly.")
+
+(defcustom kill-ring-max 120
+  "Maximum length of kill ring before oldest elements are thrown away."
+  :type 'natnum
+  :group 'killing
+  :version "29.1")
+
+(defvar kill-ring-yank-pointer nil
+  "The tail of the kill ring whose car is the last thing yanked.")
+
+(defcustom save-interprogram-paste-before-kill nil
+  "Whether to save existing clipboard text into kill ring before replacing it.
+A non-nil value means the clipboard text is saved to the `kill-ring'
+prior to any kill command.  Such text can subsequently be retrieved
+via \\[yank] \\[yank-pop].  This ensures that Emacs kill operations
+do not irrevocably overwrite existing clipboard text.
+
+The value of this variable can also be a number, in which case the
+clipboard data is only saved to the `kill-ring' if it's shorter
+(in characters) than that number.  Any other non-nil value will save
+the clipboard data unconditionally."
+  :type '(choice (const nil)
+                 number
+                 (other :tag "Always" t))
+  :group 'killing
+  :version "23.2")
+
+(defcustom kill-do-not-save-duplicates nil
+  "If non-nil, don't add a string to `kill-ring' if it duplicates the last one.
+The comparison is done using `equal-including-properties'."
+  :type 'boolean
+  :group 'killing
+  :version "23.2")
+
+(defcustom kill-transform-function nil
+  "Function to call to transform a string before it's put on the kill ring.
+The function is called with one parameter (the string that's to
+be put on the kill ring).  It should return a string or nil.  If
+the latter, the string is not put on the kill ring."
+  :type '(choice (const :tag "No transform" nil)
+                 function)
+  :group 'killing
+  :version "28.1")
+
+(defun kill-new (string &optional replace)
+  "Make STRING the latest kill in the kill ring.
+Set `kill-ring-yank-pointer' to point to it.
+If `interprogram-cut-function' is non-nil, apply it to STRING.
+Optional second argument REPLACE non-nil means that STRING will replace
+the front of the kill ring, rather than being added to the list.
+
+When `save-interprogram-paste-before-kill' and `interprogram-paste-function'
+are non-nil, save the interprogram paste string(s) into `kill-ring' before
+STRING.
+
+When the yank handler has a non-nil PARAM element, the original STRING
+argument is not used by `insert-for-yank'.  However, since Lisp code
+may access and use elements from the kill ring directly, the STRING
+argument should still be a \"useful\" string for such uses."
+  ;; Allow the user to transform or ignore the string.
+  (when (or (not kill-transform-function)
+            (setq string (funcall kill-transform-function string)))
+    (unless (and kill-do-not-save-duplicates
+	         ;; Due to text properties such as 'yank-handler that
+	         ;; can alter the contents to yank, comparison using
+	         ;; `equal' is unsafe.
+	         (equal-including-properties string (car kill-ring)))
+      (if (fboundp 'menu-bar-update-yank-menu)
+	  (menu-bar-update-yank-menu string (and replace (car kill-ring)))))
+    (when save-interprogram-paste-before-kill
+      (let ((interprogram-paste
+             (and interprogram-paste-function
+                  ;; On X, the selection owner might be slow, so the user might
+                  ;; interrupt this. If they interrupt it, we want to continue
+                  ;; so we become selection owner, so this doesn't stay slow.
+                  (if (eq (window-system) 'x)
+                      (ignore-error quit (funcall interprogram-paste-function))
+                    (funcall interprogram-paste-function)))))
+        (when interprogram-paste
+          (setq interprogram-paste
+                (if (listp interprogram-paste)
+                    ;; Use `reverse' to avoid modifying external data.
+                    (reverse interprogram-paste)
+		  (list interprogram-paste)))
+          (when (or (not (numberp save-interprogram-paste-before-kill))
+                    (< (seq-reduce #'+ (mapcar #'length interprogram-paste) 0)
+                       save-interprogram-paste-before-kill))
+            (dolist (s interprogram-paste)
+	      (unless (and kill-do-not-save-duplicates
+                           (equal-including-properties s (car kill-ring)))
+	        (push s kill-ring)))))))
+    (unless (and kill-do-not-save-duplicates
+	         (equal-including-properties string (car kill-ring)))
+      (if (and replace kill-ring)
+	  (setcar kill-ring string)
+        (let ((history-delete-duplicates nil))
+          (add-to-history 'kill-ring string kill-ring-max t))))
+    (setq kill-ring-yank-pointer kill-ring)
+    (if interprogram-cut-function
+        (funcall interprogram-cut-function string))))
+
+;; It has been argued that this should work like `self-insert-command'
+;; which merges insertions in `buffer-undo-list' in groups of 20
+;; (hard-coded in `undo-auto-amalgamate').
+(defcustom kill-append-merge-undo nil
+  "Amalgamate appending kills with the last kill for undo.
+When non-nil, appending or prepending text to the last kill makes
+\\[undo] restore both pieces of text simultaneously."
+  :type 'boolean
+  :group 'killing
+  :version "25.1")
+
+(defun kill-append (string before-p)
+  "Append STRING to the end of the latest kill in the kill ring.
+If BEFORE-P is non-nil, prepend STRING to the kill instead.
+If `interprogram-cut-function' is non-nil, call it with the
+resulting kill.
+If `kill-append-merge-undo' is non-nil, remove the last undo
+boundary in the current buffer."
+  (let ((cur (car kill-ring)))
+    (kill-new (if before-p (concat string cur) (concat cur string))
+              (or (= (length cur) 0)
+                  (null (get-text-property 0 'yank-handler cur)))))
+  (when (and kill-append-merge-undo (not buffer-read-only))
+    (let ((prev buffer-undo-list)
+          (next (cdr buffer-undo-list)))
+      ;; Find the next undo boundary.
+      (while (car next)
+        (pop next)
+        (pop prev))
+      ;; Remove this undo boundary.
+      (when prev
+        (setcdr prev (cdr next))))))
+
+(defcustom yank-pop-change-selection nil
+  "Whether rotating the kill ring changes the window system selection.
+If non-nil, whenever the kill ring is rotated (usually via the
+`yank-pop' command), Emacs also calls `interprogram-cut-function'
+to copy the new kill to the window system selection."
+  :type 'boolean
+  :group 'killing
+  :version "23.1")
+
+(defun current-kill (n &optional do-not-move)
+  "Rotate the yanking point by N places, and then return that kill.
+If N is zero and `interprogram-paste-function' is set to a
+function that returns a string or a list of strings, and if that
+function doesn't return nil, then that string (or list) is added
+to the front of the kill ring and the string (or first string in
+the list) is returned as the latest kill.
+
+If N is not zero, and if `yank-pop-change-selection' is
+non-nil, use `interprogram-cut-function' to transfer the
+kill at the new yank point into the window system selection.
+
+If optional arg DO-NOT-MOVE is non-nil, then don't actually
+move the yanking point; just return the Nth kill forward."
+
+  (let ((interprogram-paste (and (= n 0)
+				 interprogram-paste-function
+				 (funcall interprogram-paste-function))))
+    (if interprogram-paste
+	(progn
+	  ;; Disable the interprogram cut function when we add the new
+	  ;; text to the kill ring, so Emacs doesn't try to own the
+	  ;; selection, with identical text.
+          ;; Also disable the interprogram paste function, so that
+          ;; `kill-new' doesn't call it repeatedly.
+          (let ((interprogram-cut-function nil)
+                (interprogram-paste-function nil))
+	    (if (listp interprogram-paste)
+                ;; Use `reverse' to avoid modifying external data.
+                (mapc #'kill-new (reverse interprogram-paste))
+	      (kill-new interprogram-paste)))
+	  (car kill-ring))
+      (or kill-ring (error "Kill ring is empty"))
+      (let ((ARGth-kill-element
+	     (nthcdr (mod (- n (length kill-ring-yank-pointer))
+			  (length kill-ring))
+		     kill-ring)))
+	(unless do-not-move
+	  (setq kill-ring-yank-pointer ARGth-kill-element)
+	  (when (and yank-pop-change-selection
+		     (> n 0)
+		     interprogram-cut-function)
+	    (funcall interprogram-cut-function (car ARGth-kill-element))))
+	(car ARGth-kill-element)))))
+
+
+
+;;;; Commands for manipulating the kill ring.
+
+(defcustom kill-read-only-ok nil
+  "Non-nil means don't signal an error for killing read-only text."
+  :type 'boolean
+  :group 'killing)
+
+(defun kill-region (beg end &optional region)
+  "Kill (\"cut\") text between point and mark.
+This deletes the text from the buffer and saves it in the kill ring.
+The command \\[yank] can retrieve it from there.
+\(If you want to save the region without killing it, use \\[kill-ring-save].)
+
+If you want to append the killed region to the last killed text,
+use \\[append-next-kill] before \\[kill-region].
+
+Any command that calls this function is a \"kill command\".
+If the previous command was also a kill command,
+the text killed this time appends to the text killed last time
+to make one entry in the kill ring.
+
+The killed text is filtered by `filter-buffer-substring' before it is
+saved in the kill ring, so the actual saved text might be different
+from what was killed.
+
+If the buffer is read-only, Emacs will beep and refrain from deleting
+the text, but put the text in the kill ring anyway.  This means that
+you can use the killing commands to copy text from a read-only buffer.
+
+Lisp programs should use this function for killing text.
+ (To delete text, use `delete-region'.)
+Supply two arguments, character positions BEG and END indicating the
+ stretch of text to be killed.  If the optional argument REGION is
+ non-nil, the function ignores BEG and END, and kills the current
+ region instead.  Interactively, REGION is always non-nil, and so
+ this command always kills the current region."
+  ;; Pass mark first, then point, because the order matters when
+  ;; calling `kill-append'.
+  (interactive (progn
+                 (let ((beg (mark))
+                       (end (point)))
+                   (unless (and beg end)
+                     (user-error "The mark is not set now, so there is no region"))
+                   (list beg end 'region))))
+  (condition-case nil
+      (let ((string (if region
+                        (funcall region-extract-function 'delete)
+                      (filter-buffer-substring beg end 'delete))))
+	(when string			;STRING is nil if BEG = END
+	  ;; Add that string to the kill ring, one way or another.
+	  (if (eq last-command 'kill-region)
+	      (kill-append string (< end beg))
+	    (kill-new string)))
+	(when (or string (eq last-command 'kill-region))
+	  (setq this-command 'kill-region))
+	(setq deactivate-mark t)
+	nil)
+    ((buffer-read-only text-read-only)
+     ;; The code above failed because the buffer, or some of the characters
+     ;; in the region, are read-only.
+     ;; We should beep, in case the user just isn't aware of this.
+     ;; However, there's no harm in putting
+     ;; the region's text in the kill ring, anyway.
+     (copy-region-as-kill beg end region)
+     ;; Set this-command now, so it will be set even if we get an error.
+     (setq this-command 'kill-region)
+     ;; This should barf, if appropriate, and give us the correct error.
+     (if kill-read-only-ok
+	 (progn (message "Read only text copied to kill ring") nil)
+       ;; Signal an error if the buffer is read-only.
+       (barf-if-buffer-read-only)
+       ;; If the buffer isn't read-only, the text is.
+       (signal 'text-read-only (list (current-buffer)))))))
+
+;; copy-region-as-kill no longer sets this-command, because it's confusing
+;; to get two copies of the text when the user accidentally types M-w and
+;; then corrects it with the intended C-w.
+(defun copy-region-as-kill (beg end &optional region)
+  "Save the region as if killed, but don't kill it.
+In Transient Mark mode, deactivate the mark.
+If `interprogram-cut-function' is non-nil, also save the text for a window
+system cut and paste.
+
+The copied text is filtered by `filter-buffer-substring' before it is
+saved in the kill ring, so the actual saved text might be different
+from what was in the buffer.
+
+When called from Lisp, save in the kill ring the stretch of text
+between BEG and END, unless the optional argument REGION is
+non-nil, in which case ignore BEG and END, and save the current
+region instead.
+
+This command's old key binding has been given to `kill-ring-save'."
+  ;; Pass mark first, then point, because the order matters when
+  ;; calling `kill-append'.
+  (interactive (list (mark) (point) 'region))
+  (let ((str (if region
+                 (funcall region-extract-function nil)
+               (filter-buffer-substring beg end))))
+    (if (eq last-command 'kill-region)
+        (kill-append str (< end beg))
+      (kill-new str)))
+  (setq deactivate-mark t)
+  nil)
+
+(defun kill-ring-save (beg end &optional region)
+  "Save the region as if killed, but don't kill it.
+In Transient Mark mode, deactivate the mark.
+If `interprogram-cut-function' is non-nil, also save the text for a window
+system cut and paste.
+
+If you want to append the killed region to the last killed text,
+use \\[append-next-kill] before \\[kill-ring-save].
+
+The copied text is filtered by `filter-buffer-substring' before it is
+saved in the kill ring, so the actual saved text might be different
+from what was in the buffer.
+
+When called from Lisp, save in the kill ring the stretch of text
+between BEG and END, unless the optional argument REGION is
+non-nil, in which case ignore BEG and END, and save the current
+region instead.
+
+This command is similar to `copy-region-as-kill', except that it gives
+visual feedback indicating the extent of the region being copied."
+  ;; Pass mark first, then point, because the order matters when
+  ;; calling `kill-append'.
+  (interactive (list (mark) (point) 'region))
+  (copy-region-as-kill beg end region)
+  ;; This use of called-interactively-p is correct because the code it
+  ;; controls just gives the user visual feedback.
+  (if (called-interactively-p 'interactive)
+      (indicate-copied-region)))
+
+
+;; GNU simple.el (verbatim): yanking.
+(defcustom yank-handled-properties
+  '((font-lock-face . yank-handle-font-lock-face-property)
+    (category . yank-handle-category-property))
+  "List of special text property handling conditions for yanking.
+Each element should have the form (PROP . FUN), where PROP is a
+property symbol and FUN is a function.  When the `yank' command
+inserts text into the buffer, it scans the inserted text for
+stretches of text that have `eq' values of the text property
+PROP; for each such stretch of text, FUN is called with three
+arguments: the property's value in that text, and the start and
+end positions of the text.
+
+This is done prior to removing the properties specified by
+`yank-excluded-properties'."
+  :group 'killing
+  :type '(repeat (cons (symbol :tag "property symbol")
+                       function))
+  :version "24.3")
+
+;; This is actually used in subr.el but defcustom does not work there.
+(defcustom yank-excluded-properties
+  '(category field follow-link fontified font-lock-face help-echo
+    intangible invisible keymap local-map mouse-face read-only
+    yank-handler)
+  "Text properties to discard when yanking.
+The value should be a list of text properties to discard or t,
+which means to discard all text properties.
+
+See also `yank-handled-properties'."
+  :type '(choice (const :tag "All" t) (repeat symbol))
+  :group 'killing
+  :version "24.3")
+
+(defvar yank-transform-functions nil
+  "Hook run on strings to be yanked.
+Each function in this list will be called (in order) with the
+string to be yanked as the sole argument, and should return the (possibly)
+transformed string.
+
+The functions will be called with the destination buffer as the current
+buffer, and with point at the place where the string is to be inserted.")
+
+(defvar yank-window-start nil)
+(defvar yank-undo-function nil
+  "If non-nil, function used by `yank-pop' to delete last stretch of yanked text.
+Function is called with two parameters, START and END corresponding to
+the value of the mark and point; it is guaranteed that START <= END.
+Normally set from the UNDO element of a yank-handler; see `insert-for-yank'.")
+
+(defun yank-pop (&optional arg)
+  "Replace just-yanked stretch of killed text with a different stretch.
+The main use of this command is immediately after a `yank' or a
+`yank-pop'.  At such a time, the region contains a stretch of
+reinserted (\"pasted\") previously-killed text.  `yank-pop' deletes
+that text and inserts in its place a different stretch of killed text
+by traversing the value of the `kill-ring' variable and selecting
+another kill from there.
+
+With no argument, the previous kill is inserted.
+With argument N, insert the Nth previous kill.
+If N is negative, it means to use a more recent kill.
+
+The sequence of kills wraps around, so if you keep invoking this command
+time after time, and pass the oldest kill, you get the newest one.
+
+You can also invoke this command after a command other than `yank'
+or `yank-pop'.  This is the same as invoking `yank-from-kill-ring',
+including the effect of the prefix argument; see there for the details.
+
+This command honors the `yank-handled-properties' and
+`yank-excluded-properties' variables, and the `yank-handler' text
+property, in the way that `yank' does."
+  (interactive "p")
+  (if (not (eq last-command 'yank))
+      (yank-from-kill-ring (read-from-kill-ring "Yank from kill-ring: ")
+                           current-prefix-arg)
+    (setq this-command 'yank)
+    (unless arg (setq arg 1))
+    (let ((inhibit-read-only t)
+          (before (< (point) (mark t))))
+      (if before
+          (funcall (or yank-undo-function 'delete-region) (point) (mark t))
+        (funcall (or yank-undo-function 'delete-region) (mark t) (point)))
+      (setq yank-undo-function nil)
+      (set-marker (mark-marker) (point) (current-buffer))
+      (insert-for-yank (current-kill arg))
+      ;; Set the window start back where it was in the yank command,
+      ;; if possible.
+      (set-window-start (selected-window) yank-window-start t)
+      (if before
+          ;; This is like exchange-point-and-mark, but doesn't activate the mark.
+          ;; It is cleaner to avoid activation, even though the command
+          ;; loop would deactivate the mark because we inserted text.
+          (goto-char (prog1 (mark t)
+                       (set-marker (mark-marker) (point) (current-buffer))))))
+    nil))
+
+(defun yank (&optional arg)
+  "Reinsert (\"paste\") the last stretch of killed text.
+More precisely, reinsert the most recent kill, which is the stretch of
+text most recently killed OR yanked, as returned by `current-kill' (which
+see).  Put point at the end, and set mark at the beginning without
+activating it. With just \\[universal-argument] as argument, put point
+at beginning, and mark at end.
+With argument N, reinsert the Nth most recent kill.
+
+This command honors the `yank-handled-properties' and
+`yank-excluded-properties' variables, and the `yank-handler' text
+property, as described below.
+
+Properties listed in `yank-handled-properties' are processed,
+then those listed in `yank-excluded-properties' are discarded.
+
+STRING will be run through `yank-transform-functions'.
+`yank-in-context' is a command that uses this mechanism to
+provide a `yank' alternative that conveniently preserves
+string/comment syntax.
+
+If STRING has a non-nil `yank-handler' property anywhere, the
+normal insert behavior is altered, and instead, for each contiguous
+segment of STRING that has a given value of the `yank-handler'
+property, that value is used as follows:
+
+The value of a `yank-handler' property must be a list of one to four
+elements, of the form (FUNCTION PARAM NOEXCLUDE UNDO).
+FUNCTION, if non-nil, should be a function of one argument (the
+ object to insert); FUNCTION is called instead of `insert'.
+PARAM, if present and non-nil, is passed to FUNCTION (to be handled
+ in whatever way is appropriate; e.g. if FUNCTION is `yank-rectangle',
+ PARAM may be a list of strings to insert as a rectangle).  If PARAM
+ is nil, then the current segment of STRING is used.
+If NOEXCLUDE is present and non-nil, the normal removal of
+ `yank-excluded-properties' is not performed; instead FUNCTION is
+ responsible for the removal.  This may be necessary if FUNCTION
+ adjusts point before or after inserting the object.
+UNDO, if present and non-nil, should be a function to be called
+ by `yank-pop' to undo the insertion of the current PARAM.  It is
+ given two arguments, the start and end of the region.  FUNCTION
+ may set `yank-undo-function' to override UNDO.
+
+See also the command `yank-pop' (\\[yank-pop])."
+  (interactive "*P")
+  (setq yank-window-start (window-start))
+  ;; If we don't get all the way thru, make last-command indicate that
+  ;; for the following command.
+  (setq this-command t)
+  (push-mark)
+  (insert-for-yank (current-kill (cond
+				  ((listp arg) 0)
+				  ((eq arg '-) -2)
+				  (t (1- arg)))))
+  (if (consp arg)
+      ;; This is like exchange-point-and-mark, but doesn't activate the mark.
+      ;; It is cleaner to avoid activation, even though the command
+      ;; loop would deactivate the mark because we inserted text.
+      (goto-char (prog1 (mark t)
+		   (set-marker (mark-marker) (point) (current-buffer)))))
+  ;; If we do get all the way thru, make this-command indicate that.
+  (if (eq this-command t)
+      (setq this-command 'yank))
+  nil)
+
+(defun rotate-yank-pointer (arg)
+  "Rotate the yanking point in the kill ring.
+With ARG, rotate that many kills forward (or backward, if negative)."
+  (interactive "p")
+  (current-kill arg))
+
+
+;; GNU subr.el (verbatim): yank insertion helpers.
+(defun remove-yank-excluded-properties (start end)
+  "Process text properties between START and END, inserted for a `yank'.
+Perform the handling specified by `yank-handled-properties', then
+remove properties specified by `yank-excluded-properties'."
+  (let ((inhibit-read-only t))
+    (dolist (handler yank-handled-properties)
+      (let ((prop (car handler))
+            (fun  (cdr handler))
+            (run-start start))
+        (while (< run-start end)
+          (let ((value (get-text-property run-start prop))
+                (run-end (next-single-property-change
+                          run-start prop nil end)))
+            (funcall fun value run-start run-end)
+            (setq run-start run-end)))))
+    (if (eq yank-excluded-properties t)
+        (set-text-properties start end nil)
+      (remove-list-of-text-properties start end yank-excluded-properties))))
+
+(defvar yank-undo-function)
+
+(defun insert-for-yank (string)
+  "Insert STRING at point for the `yank' command.
+
+This function is like `insert', except it honors the variables
+`yank-handled-properties' and `yank-excluded-properties', and the
+`yank-handler' text property, in the way that `yank' does.
+
+It also runs the string through `yank-transform-functions'."
+  ;; Allow altering the yank string.
+  (run-hook-wrapped 'yank-transform-functions
+                    (lambda (f) (setq string (funcall f string)) nil))
+  (let (to)
+    (while (setq to (next-single-property-change 0 'yank-handler string))
+      (insert-for-yank-1 (substring string 0 to))
+      (setq string (substring string to))))
+  (insert-for-yank-1 string))
+
+(defun insert-for-yank-1 (string)
+  "Helper for `insert-for-yank', which see."
+  (let* ((handler (and (stringp string)
+		       (get-text-property 0 'yank-handler string)))
+	 (param (or (nth 1 handler) string))
+	 (opoint (point))
+	 (inhibit-read-only inhibit-read-only)
+	 end)
+
+    ;; FIXME: This throws away any yank-undo-function set by previous calls
+    ;; to insert-for-yank-1 within the loop of insert-for-yank!
+    (setq yank-undo-function t)
+    (if (nth 0 handler) ; FUNCTION
+	(funcall (car handler) param)
+      (insert param))
+    (setq end (point))
+
+    ;; Prevent read-only properties from interfering with the
+    ;; following text property changes.
+    (setq inhibit-read-only t)
+
+    (unless (nth 2 handler) ; NOEXCLUDE
+      (remove-yank-excluded-properties opoint end))
+
+    ;; If last inserted char has properties, mark them as rear-nonsticky.
+    (if (and (> end opoint)
+	     (text-properties-at (1- end)))
+	(put-text-property (1- end) end 'rear-nonsticky t))
+
+    (if (eq yank-undo-function t)		   ; not set by FUNCTION
+	(setq yank-undo-function (nth 3 handler))) ; UNDO
+    (if (nth 4 handler)				   ; COMMAND
+	(setq this-command (nth 4 handler)))))
+
+
+;; GNU subr.el (verbatim): yank-handled-properties handlers.
+(defun yank-handle-font-lock-face-property (face start end)
+  "If `font-lock-defaults' is nil, apply FACE as a `face' property.
+START and END denote the start and end of the text to act on.
+Do nothing if FACE is nil."
+  (and face
+       (null font-lock-defaults)
+       (put-text-property start end 'face face)))
+
+;; This removes `mouse-face' properties in *Help* buffer buttons:
+;; https://lists.gnu.org/r/emacs-devel/2002-04/msg00648.html
+(defun yank-handle-category-property (category start end)
+  "Apply property category CATEGORY's properties between START and END."
+  (when category
+    (let ((start2 start))
+      (while (< start2 end)
+	(let ((end2     (next-property-change start2 nil end))
+	      (original (text-properties-at start2)))
+	  (set-text-properties start2 end2 (symbol-plist category))
+	  (add-text-properties start2 end2 original)
+	  (setq start2 end2))))))
+
+
+
+;; GNU window.c: the batch frame has no fringes.
+(defun window-fringes (&optional _window)
+  "Return fringe settings of specified WINDOW."
+  (list 0 0 nil nil))
+(defun set-window-fringes (_window _left &optional _right _outside-margins _persistent)
+  "Set fringes of specified WINDOW."
+  nil)

@@ -1524,10 +1524,30 @@ pub(super) fn call(
             Ok(args[0].clone())
         }
         "completion-table-case-fold" => {
-            if args.len() < 2 || args.len() > 3 {
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            }
-            Ok(args[0].clone())
+            // Native fallback mirroring GNU minibuffer.el's defun (the
+            // preloaded Lisp definition shadows this in full sessions).
+            need_arg_range(name, args, 1, 2)?;
+            let table = args[0].clone();
+            let dont_fold = args.get(1).is_some_and(|value| value.is_truthy());
+            let body = Value::list([
+                Value::Symbol("let".into()),
+                Value::list([Value::list([
+                    Value::Symbol("completion-ignore-case".into()),
+                    if dont_fold { Value::Nil } else { Value::T },
+                ])]),
+                Value::list([
+                    Value::Symbol("complete-with-action".into()),
+                    Value::Symbol("action".into()),
+                    Value::list([Value::Symbol("quote".into()), table]),
+                    Value::Symbol("string".into()),
+                    Value::Symbol("pred".into()),
+                ]),
+            ]);
+            Ok(Value::Lambda(
+                vec!["string".into(), "pred".into(), "action".into()],
+                vec![body],
+                crate::lisp::types::shared_env(Vec::new()),
+            ))
         }
         "hash-table-count" => {
             need_args(name, args, 1)?;
@@ -1649,6 +1669,174 @@ pub(super) fn call(
         }
         "completion-at-point" => {
             need_args(name, args, 0)?;
+            // GNU runs `completion-at-point-functions' and completes the
+            // region a matching capf returns; the dabbrev-style expansion
+            // below only serves buffers with no capf spec.
+            let capf_spec = super::call(
+                interp,
+                "run-hook-with-args-until-success",
+                &[Value::Symbol("completion-at-point-functions".into())],
+                env,
+            )?;
+            if let Ok(spec) = capf_spec.to_vec()
+                && spec.len() >= 3
+            {
+                let resolve = |interp: &Interpreter, value: &Value| -> Option<usize> {
+                    match value {
+                        Value::Integer(pos) if *pos >= 0 => Some(*pos as usize),
+                        Value::Marker(id) => interp.marker_position(*id),
+                        _ => None,
+                    }
+                };
+                if let (Some(beg), Some(end)) =
+                    (resolve(interp, &spec[0]), resolve(interp, &spec[1]))
+                {
+                    let table = spec[2].clone();
+                    let mut predicate = Value::Nil;
+                    let mut exit_function = Value::Nil;
+                    let mut cursor = 3;
+                    while cursor + 1 < spec.len() {
+                        match &spec[cursor] {
+                            Value::Symbol(key) if key == ":predicate" => {
+                                predicate = spec[cursor + 1].clone();
+                            }
+                            Value::Symbol(key) if key == ":exit-function" => {
+                                exit_function = spec[cursor + 1].clone();
+                            }
+                            _ => {}
+                        }
+                        cursor += 2;
+                    }
+                    let string = interp
+                        .buffer
+                        .buffer_substring(beg, end)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    let string_value = Value::String(string.clone());
+                    let call_exit = |interp: &mut Interpreter,
+                                     env: &mut Env,
+                                     text: &str,
+                                     status: &str|
+                     -> Result<(), LispError> {
+                        if !exit_function.is_nil() {
+                            call_function_value(
+                                interp,
+                                &exit_function,
+                                &[
+                                    Value::String(text.to_string()),
+                                    Value::Symbol(status.into()),
+                                ],
+                                env,
+                            )?;
+                        }
+                        Ok(())
+                    };
+                    let comp = super::call(
+                        interp,
+                        "try-completion",
+                        &[string_value.clone(), table.clone(), predicate.clone()],
+                        env,
+                    )?;
+                    match comp {
+                        Value::T => {
+                            call_exit(interp, env, &string, "finished")?;
+                            return Ok(Value::T);
+                        }
+                        ref comp if string_text(comp).is_ok() => {
+                            let comp_text = string_text(comp)?;
+                            if comp_text != string {
+                                delete_region_with_hooks(interp, beg, end, env)?;
+                                interp.buffer.goto_char(beg);
+                                insert_text_with_hooks(interp, &comp_text, &[], false, false, env)?;
+                            }
+                            let comp_value = Value::String(comp_text.clone());
+                            let exact = super::call(
+                                interp,
+                                "test-completion",
+                                &[comp_value.clone(), table.clone(), predicate.clone()],
+                                env,
+                            )?
+                            .is_truthy();
+                            if exact {
+                                let sole = matches!(
+                                    super::call(
+                                        interp,
+                                        "try-completion",
+                                        &[comp_value, table, predicate],
+                                        env,
+                                    )?,
+                                    Value::T
+                                );
+                                call_exit(
+                                    interp,
+                                    env,
+                                    &comp_text,
+                                    if sole { "finished" } else { "exact" },
+                                )?;
+                            } else if comp_text == string {
+                                // No progress: with `completion-auto-help'
+                                // disabled GNU only messages; otherwise it
+                                // lists the candidates in *Completions*.
+                                if interp
+                                    .lookup_var("completion-auto-help", env)
+                                    .is_some_and(|value| value.is_nil())
+                                {
+                                    let _ = call_function_value(
+                                        interp,
+                                        &Value::Symbol("minibuffer-message".into()),
+                                        &[Value::String("Next char not unique".into())],
+                                        env,
+                                    );
+                                    return Ok(Value::T);
+                                }
+                                let mut candidates = super::call(
+                                    interp,
+                                    "all-completions",
+                                    &[string_value, table, predicate],
+                                    env,
+                                )?
+                                .to_vec()
+                                .unwrap_or_default()
+                                .iter()
+                                .filter_map(|item| string_text(item).ok())
+                                .collect::<Vec<_>>();
+                                candidates.sort();
+                                let content = format!(
+                                    "Possible completions are:\n{}\n",
+                                    candidates.join("\n")
+                                );
+                                let buffer = super::call(
+                                    interp,
+                                    "get-buffer-create",
+                                    &[Value::String("*Completions*".into())],
+                                    env,
+                                )?;
+                                let completions_id = interp.resolve_buffer_id(&buffer)?;
+                                let saved_id = interp.current_buffer_id();
+                                interp.switch_to_buffer_id(completions_id)?;
+                                let (min, max) =
+                                    (interp.buffer.point_min(), interp.buffer.point_max());
+                                if max > min {
+                                    interp
+                                        .delete_region_current_buffer(min, max)
+                                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                                }
+                                interp.insert_current_buffer(&content);
+                                interp.switch_to_buffer_id(saved_id)?;
+                            }
+                            return Ok(Value::T);
+                        }
+                        _ => {
+                            let _ = call_function_value(
+                                interp,
+                                &Value::Symbol("minibuffer-message".into()),
+                                &[Value::String("No match".into())],
+                                env,
+                            );
+                            return Ok(Value::Nil);
+                        }
+                    }
+                }
+            }
             if let Some(completion) = dabbrev_completion_at_point(interp, env)? {
                 let (start, end, expansion) = completion;
                 delete_region_with_hooks(interp, start, end, env)?;

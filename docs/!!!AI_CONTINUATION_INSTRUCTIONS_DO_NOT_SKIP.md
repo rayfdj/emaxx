@@ -1094,6 +1094,87 @@ Commit messages must include:
 
 ## Current Batch Context
 
+The `Compat 2811/7080` run cleared erc-button, erc-dcc, erc-fill,
+erc-goodies, erc-join and erc-match (selectors 2766..2811).  The
+136-file verified-prefix sweep (prefix-files18.txt) on frozen
+binaries is the gate
+(autorevert-tests is a known flake under load; also `pkill -f "sleep"`
+leftovers from erc probes before retrying it standalone).  The next
+agent continues with `test/lisp/erc/erc-networks-tests.el'
+(selectors 2812..2854, 19/43 passing), then erc-nicks (13/16) and
+erc-sasl (crashes the native runner — investigate the crash first) —
+milestone 3000 sits inside the erc series.
+
+Interpreter-level semantics this batch introduced (watch for their
+regressions when touching nearby code):
+
+- `condition-case' accepts the `t' catch-all handler, and handler-bind
+  dispatch happens at signal time against a unified stack of active
+  condition-case clause heads and handler-bind entries
+  (`Interpreter::active_handlers`, `ActiveHandler` in eval.rs): an
+  inner MATCHING condition-case stops outer handler-bind functions
+  (this is how GNU ert's `should-error' suppresses the test-runner
+  debugger).  `sf_should_error', `ignore-errors' and `ignore-error'
+  push Case entries too.  A handler-bind function that signals sets a
+  precise suspend count so only the condition-cases inside the
+  handler-bind frame pass the new error through.
+- GNU field motion: `pos-bol'/`pos-eol' ignore fields entirely;
+  `line-beginning-position'/`line-end-position' constrain via
+  constrain-to-field with ONLY-IN-LINE=t (and ESCAPE-FROM-EDGE only
+  after actual line motion); `field-beginning'/`field-end' accept
+  ESCAPE-FROM-EDGE (merge-at-boundary) and LIMIT; constrain-to-field
+  implements the near-field gate (checks POS-1 too) and the
+  "other side" check.
+- `indent-rigidly' replaces each line's leading whitespace in place
+  (was a destructive delete+reinsert that wiped text props).
+- format-time-string gained the common strftime directives;
+  current-time-zone takes the optional ZONE argument.
+- vertical-motion models GNU's batch display: wrap at frame-width
+  minus one (continuation column), honoring line-prefix/wrap-prefix
+  display widths, IGNORING word-wrap and the cons goal column (GNU's
+  batch vmotion does the same — verified against the oracle).
+  beginning/end-of-visual-line, kill-visual-line, posn-at-point,
+  count-screen-lines, kill-line and the whole kill-ring/yank subsystem
+  are verbatim simple.el/subr.el ports in simple_compat.el.
+- Keyboard macros: command remapping applies at dispatch
+  (this-original-command keeps the pre-remap binding); raw key strings
+  like "\C-c\C-j" parse as two events (a raw newline is C-j, not a
+  textual separator); C-y/M-y/C-w/M-w have default global bindings.
+- completion-at-point consumes completion-at-point-functions specs
+  (BEG END TABLE :predicate :exit-function), performing try/test/
+  all-completion with exit-function statuses, the *Completions*
+  listing, and the "Next char not unique" message when
+  completion-auto-help is nil.  minibuffer.el's quoted completion
+  tables (completion-boundaries, complete-with-action,
+  completion-table-subvert, completion-table-with-quoting,
+  completion--twq-try/all) are verbatim ports; the native
+  completion-table-case-fold fallback builds the same closure.
+- Local hooks now mirror into a buffer-local variable value
+  "(fns... t)" so Lisp reads and local-variable-p see them; the
+  buffer_local_hooks store stays authoritative for running
+  (hook_values strips the `t' sentinel and swaps the mirror for the
+  default value).  remove-hook's LOCAL is its THIRD argument and
+  kills the local binding when only the sentinel remains; global
+  add/remove-hook write through set-default when a mirror exists.
+  define-minor-mode runs MODE-hook (and MODE-on/off-hook) on every
+  toggle.
+- buffer-local-value falls back to the DEFAULT value (never another
+  buffer's local or the last-set global cell);
+  (with-current-buffer BUF) with an empty body returns the buffer.
+- The native ert runner wraps each test body in its own " *temp*"
+  buffer (GNU ert--run-test-internal does) and binds
+  ert--running-tests so ert-running-test works.  run-with(-idle)-timer
+  return GNU 10-slot timer vectors; timer-event-handler fires and
+  unschedules them; cancel-timer unschedules by function.
+- The reader resolves #N= / #N# labels inside propertized string
+  literals; equal-including-properties compares interval contents
+  position-wise (segmentation-independent).
+- buffer-text-pixel-size honors display string/margin replacements.
+- window-margins/set-window-margins track per-window margins;
+  window-fringes/set-window-fringes report the batch frame's (0 0 nil
+  nil); pre/post-command-hook, window-*-change-functions,
+  truncate-lines, word-wrap, left/right-margin-width defvars exist.
+
 The `Compat 2523/7080` run cleared pp-tests, range-tests,
 regexp-opt-tests, ring-tests and rmc-tests: prin1 default escaping
 (raw newlines), looking-back non-empty-match preference + match-data

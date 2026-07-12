@@ -1806,7 +1806,8 @@ fn find_comment_ending_at(
 fn syntax_class_char_matches(interp: &Interpreter, class: char, ch: char) -> bool {
     let entry = syntax_entry_for_char(interp, interp.current_syntax_table_id(), ch);
     match class {
-        ' ' => entry.class == SyntaxClass::Whitespace,
+        // GNU accepts both ` ' and `-' as the whitespace class designator.
+        ' ' | '-' => entry.class == SyntaxClass::Whitespace,
         'w' => entry.class == SyntaxClass::Word,
         '_' => entry.class == SyntaxClass::Symbol,
         '.' => entry.class == SyntaxClass::Punctuation,
