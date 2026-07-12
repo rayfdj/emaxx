@@ -103,10 +103,39 @@ counts as the progress denominator.
     `local-minor-modes' (buffer-local list of enabled modes; the
     variable is registered natively for bare interpreters and via
     defvar-local in simple_compat.el).  `read-hide-char' defvar added.
-- Milestone status: frontier 2879; next block needs erc-d fake-server
-  machinery (erc-scenarios-internal 2882..2894 etc.), then
-  erc-services (plstore cluster), erc-stamp (2 fails), erc-tests
-  (57/99).  See compatibility-goal.md Current State for the full map.
+- Milestone status: verified frontier 2879 (committed f982967, pushed
+  to main by the user).  A FOUNDATION commit 646ca07 sits on top: it
+  does NOT bank a new manifest file yet, so the verified frontier is
+  still 2879.  What 646ca07 adds (all gated, non-regressing):
+  - decode-coding-string decodes utf-8 family codings byte-exactly
+    (raw-byte unibyte -> decoded multibyte, undecodable bytes kept)
+    via utf8_text_from_bytes_keeping_raw in coding.rs.  Banks the 4
+    erc-d-i parse tests.
+  - with-timeout macro (verbatim GNU timer.el) in simple_compat.el.
+  - cursor-sensor.el subset (cursor-sensor-inhibit + cursor-intangible-
+    mode / cursor-sensor-mode) — fixes erc-timestamp-intangible--left.
+  - A network process subsystem: NetworkRuntime {Listener,Stream} on
+    ProcessState; ProcessStatus Open/Closed/Listen; create_network_
+    process/accept_network_connection/poll_network_stream/network_
+    stream_send in threads.rs; make-network-process/open-network-
+    stream/set-process-sentinel/process-sentinel/process-name/get-
+    process/process-contact/set-process-buffer arms; pump_network_
+    processes in processes.rs wired into sleep-for/sit-for/accept-
+    process-output (accepts server conns -> child process inheriting
+    filter/sentinel/log/plist, runs "open from PEER\n"; delivers
+    stream input to filters; "connection broken" on close).
+  - REMAINING to bank erc-scenarios-internal (2882..2894): the full
+    ERC-over-network flow (erc-open -> erc-server-connect -> client
+    stream + timer-driven erc-d dialog pump) must complete
+    erc-d-run-basic and siblings.  Deep — erc-d-tests-with-server
+    drives a real ERC client through the fake server via timers.
+  - Other single-file gaps: erc-services 2901..2917 (3 plstore fails —
+    need a plstore.el auth-source backend; get-file-buffer is nil);
+    erc-stamp 2918..2929 (1 fail: erc-stamp--dedupe-date-stamps-from-
+    target-buffer date-stamp merge — deep); erc-tests 2930..3023
+    (57/99, 42 non-network unit fails, listed in
+    /tmp/probes/result-erct.json).  Highest yield: erc-stamp (1 fix)
+    or erc-services (plstore).  Notes: /tmp/probes/NEXT-BATCH-NOTES.md.
 - Previous entry (2765/7080): `viper-tests.el' (2747..2751,
   5/5), `env-tests.el' (2752..2754), `epg-config-tests.el' (2755..2758),
   `epg-tests.el' (2759..2765, 7/7) all pass; 130-file prefix sweep
