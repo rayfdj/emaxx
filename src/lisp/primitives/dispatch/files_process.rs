@@ -147,6 +147,17 @@ pub(super) fn handles(name: &str) -> bool {
             | "process-coding-system"
             | "set-process-coding-system"
             | "set-process-filter"
+            | "set-process-sentinel"
+            | "set-process-buffer"
+            | "process-sentinel"
+            | "process-name"
+            | "get-process"
+            | "process-contact"
+            | "make-network-process"
+            | "open-network-stream"
+            | "set-network-process-option"
+            | "network-interface-list"
+            | "network-interface-info"
             | "delete-process"
             | "set-process-query-on-exit-flag"
             | "process-send-string"
@@ -2205,9 +2216,11 @@ pub(super) fn call(
             interp.process_coding_system(process_id)
         }
         "set-process-coding-system" => {
-            need_args(name, args, 3)?;
+            need_arg_range(name, args, 1, 3)?;
             let process_id = interp.resolve_process_id(&args[0])?;
-            interp.set_process_coding_system(process_id, args[1].clone(), args[2].clone())?;
+            let decoding = args.get(1).cloned().unwrap_or(Value::Nil);
+            let encoding = args.get(2).cloned().unwrap_or(Value::Nil);
+            interp.set_process_coding_system(process_id, decoding, encoding)?;
             Ok(Value::T)
         }
         "set-process-filter" => {
@@ -2221,6 +2234,113 @@ pub(super) fn call(
             interp.set_process_filter(process_id, filter)?;
             Ok(args[1].clone())
         }
+        "set-process-sentinel" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
+            interp.set_process_sentinel(process_id, sentinel);
+            Ok(args[1].clone())
+        }
+        "set-process-buffer" => {
+            need_args(name, args, 2)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let buffer_id = if args[1].is_nil() {
+                None
+            } else {
+                Some(interp.resolve_buffer_id(&args[1])?)
+            };
+            interp.set_process_buffer_id(process_id, buffer_id);
+            Ok(args[1].clone())
+        }
+        "process-sentinel" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp.process_sentinel(process_id).unwrap_or(Value::Nil))
+        }
+        "process-name" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp
+                .process_name(process_id)
+                .map(Value::String)
+                .unwrap_or(Value::Nil))
+        }
+        "get-process" => {
+            need_args(name, args, 1)?;
+            if matches!(&args[0], Value::Record(_)) {
+                return Ok(args[0].clone());
+            }
+            let requested = string_text(&args[0])?;
+            Ok(interp
+                .find_process_id_by_name(&requested)
+                .map(Value::Record)
+                .unwrap_or(Value::Nil))
+        }
+        "process-contact" => {
+            need_arg_range(name, args, 1, 3)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            let Some((host, service, remote, is_server)) = interp.process_contact_info(process_id)
+            else {
+                return Ok(Value::Nil);
+            };
+            let key = args.get(1).and_then(|value| value.as_symbol().ok());
+            // erc-d only calls (process-contact PROC) and, via the format
+            // helper, reads :service / :host from the full plist form.
+            match key {
+                Some(":service") => Ok(service
+                    .map(Value::Integer)
+                    .unwrap_or_else(|| Value::Integer(0))),
+                Some(":host") => Ok(host
+                    .map(Value::String)
+                    .unwrap_or_else(|| Value::String("local".into()))),
+                Some(":server") => Ok(if is_server { Value::T } else { Value::Nil }),
+                _ => {
+                    // (HOST SERVICE) list, or T for a server with no info.
+                    let host_value = remote
+                        .clone()
+                        .or(host)
+                        .map(Value::String)
+                        .unwrap_or_else(|| Value::String("local".into()));
+                    let service_value = service
+                        .map(Value::Integer)
+                        .unwrap_or_else(|| Value::Integer(0));
+                    Ok(Value::list([host_value, service_value]))
+                }
+            }
+        }
+        "make-network-process" => make_network_process(interp, args, env),
+        "open-network-stream" => {
+            // network-stream.el open-network-stream, plain-connection
+            // subset: (NAME BUFFER HOST SERVICE &rest PARAMETERS).
+            need_arg_range(name, args, 4, usize::MAX)?;
+            let mut network_args = vec![
+                Value::Symbol(":name".into()),
+                args[0].clone(),
+                Value::Symbol(":buffer".into()),
+                args[1].clone(),
+                Value::Symbol(":host".into()),
+                args[2].clone(),
+                Value::Symbol(":service".into()),
+                args[3].clone(),
+            ];
+            // Forward :coding / :filter / :sentinel / :nowait if present.
+            let mut index = 4;
+            while index + 1 < args.len() {
+                if let Ok(keyword) = args[index].as_symbol()
+                    && matches!(keyword, ":coding" | ":filter" | ":sentinel" | ":nowait")
+                {
+                    network_args.push(args[index].clone());
+                    network_args.push(args[index + 1].clone());
+                }
+                index += 2;
+            }
+            make_network_process(interp, &network_args, env)
+        }
+        "set-network-process-option" => {
+            need_arg_range(name, args, 2, 4)?;
+            Ok(Value::T)
+        }
+        "network-interface-list" | "network-interface-info" => Ok(Value::Nil),
         "delete-process" => {
             // PROCESS may be a process, a buffer, the name of a buffer, or
             // nil, defaulting to the current buffer's process.

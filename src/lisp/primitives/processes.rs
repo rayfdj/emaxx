@@ -578,3 +578,222 @@ pub(crate) fn pump_external_process_output(
     }
     Ok(delivered)
 }
+
+// ── Network processes (GNU process.c make-network-process) ──
+
+/// Create a network server (`:server t`) or client stream.  emaxx models
+/// the subset erc-d exercises: a local/ipv4 TCP server with :filter,
+/// :sentinel and :log, plus TCP client streams.
+pub(crate) fn make_network_process(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if !args.len().is_multiple_of(2) {
+        return Err(LispError::WrongNumberOfArgs(
+            "make-network-process".into(),
+            args.len(),
+        ));
+    }
+    let mut name = String::from("emaxx-network");
+    let mut buffer_id = None;
+    let mut filter = None;
+    let mut sentinel = None;
+    let mut log = None;
+    let mut plist = Value::Nil;
+    let mut is_server = false;
+    let mut host: Option<String> = None;
+    let mut service: Option<i64> = None;
+
+    for pair in args.chunks_exact(2) {
+        let key = pair[0].as_symbol()?;
+        let value = &pair[1];
+        match key {
+            ":name" => name = string_text(value)?,
+            ":buffer" => buffer_id = process_buffer_target(interp, value)?,
+            ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
+            ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
+            ":log" => log = (!value.is_nil()).then(|| value.clone()),
+            ":plist" => plist = value.clone(),
+            ":server" => is_server = value.is_truthy(),
+            ":host" => {
+                host = match value {
+                    Value::Nil => None,
+                    Value::Symbol(symbol) if symbol == "local" => Some("127.0.0.1".into()),
+                    _ => Some(string_text(value)?),
+                }
+            }
+            ":service" => {
+                service = match value {
+                    // `:service t' asks the OS to pick a free port.
+                    Value::T => Some(0),
+                    Value::Integer(port) => Some(*port),
+                    Value::String(_) | Value::StringObject(_) => {
+                        string_text(value)?.parse::<i64>().ok()
+                    }
+                    _ => None,
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let name = interp.unique_process_name(&name);
+
+    if is_server {
+        let bind_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
+        let listener =
+            std::net::TcpListener::bind((bind_host.as_str(), service.unwrap_or(0) as u16))
+                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let bound_port = listener
+            .local_addr()
+            .ok()
+            .map(|addr| addr.port() as i64)
+            .or(service);
+        interp.create_network_process(
+            &name,
+            buffer_id,
+            filter,
+            sentinel,
+            log,
+            plist,
+            crate::lisp::eval::NetworkRuntime::Listener(listener),
+            host,
+            bound_port,
+            None,
+            None,
+        )
+    } else {
+        let connect_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
+        let stream =
+            std::net::TcpStream::connect((connect_host.as_str(), service.unwrap_or(0) as u16))
+                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let process = interp.create_network_process(
+            &name,
+            buffer_id,
+            filter,
+            sentinel,
+            log,
+            plist,
+            crate::lisp::eval::NetworkRuntime::Stream(stream),
+            host,
+            service,
+            None,
+            None,
+        )?;
+        // GNU runs the sentinel with "open\n" once a client connects.
+        let process_id = interp.resolve_process_id(&process)?;
+        run_process_sentinel(interp, process_id, "open\n", env)?;
+        Ok(process)
+    }
+}
+
+fn run_process_sentinel(
+    interp: &mut Interpreter,
+    process_id: u64,
+    event: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if let Some(sentinel) = interp.process_sentinel(process_id) {
+        call_function_value(
+            interp,
+            &sentinel,
+            &[Value::Record(process_id), Value::String(event.to_string())],
+            env,
+        )?;
+    }
+    Ok(())
+}
+
+fn run_process_log(
+    interp: &mut Interpreter,
+    server_id: u64,
+    client_id: u64,
+    message: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if let Some(log) = interp.process_log_function(server_id) {
+        call_function_value(
+            interp,
+            &log,
+            &[
+                Value::Record(server_id),
+                Value::Record(client_id),
+                Value::String(message.to_string()),
+            ],
+            env,
+        )?;
+    }
+    Ok(())
+}
+
+/// Accept pending server connections and deliver stream input/closure to
+/// filters and sentinels.  Returns true if anything was processed.
+pub(crate) fn pump_network_processes(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut progressed = false;
+
+    // Accept new connections on every server listener.
+    for server_id in interp.network_listener_ids() {
+        loop {
+            let Some((stream, remote)) = interp.accept_network_connection(server_id)? else {
+                break;
+            };
+            progressed = true;
+            let server_plist = interp.process_plist_value(server_id).unwrap_or(Value::Nil);
+            let server_filter = interp.process_filter(server_id);
+            let server_sentinel = interp.process_sentinel(server_id);
+            let server_log = interp.process_log_function(server_id);
+            let server_buffer = interp.process_buffer_id(server_id);
+            let base_name = interp.process_name(server_id).unwrap_or_default();
+            let child_name = interp.unique_process_name(&format!("{base_name}<{remote}>"));
+            let child = interp.create_network_process(
+                &child_name,
+                server_buffer,
+                server_filter,
+                server_sentinel,
+                server_log,
+                server_plist,
+                crate::lisp::eval::NetworkRuntime::Stream(stream),
+                None,
+                None,
+                Some(remote.clone()),
+                Some(server_id),
+            )?;
+            let child_id = interp.resolve_process_id(&child)?;
+            run_process_log(
+                interp,
+                server_id,
+                child_id,
+                &format!("accept from {remote}"),
+                env,
+            )?;
+            run_process_sentinel(interp, child_id, &format!("open from {remote}\n"), env)?;
+        }
+    }
+
+    // Deliver input / closure on every open stream.
+    for stream_id in interp.network_stream_ids() {
+        let (bytes, closed) = interp.poll_network_stream(stream_id)?;
+        if !bytes.is_empty() {
+            progressed = true;
+            let output = crate::lisp::primitives::coding::bytes_to_shared_unibyte_value(&bytes);
+            let text = string_text(&output)?;
+            deliver_process_output(interp, stream_id, &text, env)?;
+        }
+        if closed {
+            progressed = true;
+            run_process_sentinel(interp, stream_id, "connection broken by remote peer\n", env)?;
+        }
+    }
+
+    Ok(progressed)
+}

@@ -163,6 +163,33 @@ The batch frame always shows a single window."
 (defvar with-timeout-timers nil
   "List of timers armed by `with-timeout' forms currently in flight.")
 
+;; GNU emacs-lisp/timer.el (verbatim): run BODY with a timeout.
+(defmacro with-timeout (list &rest body)
+  "Run BODY, but if it doesn't finish in SECONDS seconds, give up.
+If we give up, we run the TIMEOUT-FORMS and return the value of the last one.
+The timeout is checked whenever Emacs waits for some kind of external
+event (such as keyboard input, input from subprocesses, or a certain time);
+if the program loops without waiting in any way, the timeout will not
+be detected.
+\n(fn (SECONDS TIMEOUT-FORMS...) BODY)"
+  (declare (indent 1) (debug ((form body) body)))
+  (let ((seconds (car list))
+	(timeout-forms (cdr list))
+        (timeout (make-symbol "timeout")))
+    `(let ((-with-timeout-value-
+            (catch ',timeout
+              (let* ((-with-timeout-timer-
+                      (run-with-timer ,seconds nil
+                                      (lambda () (throw ',timeout ',timeout))))
+                     (with-timeout-timers
+                         (cons -with-timeout-timer- with-timeout-timers)))
+                (unwind-protect
+                    (progn ,@body)
+                  (cancel-timer -with-timeout-timer-))))))
+       (if (eq -with-timeout-value- ',timeout)
+           (progn ,@timeout-forms)
+         -with-timeout-value-))))
+
 (defun with-timeout-suspend ()
   "Cancel the pending `with-timeout' timers, returning a resume token."
   (let ((timers with-timeout-timers))
@@ -10306,3 +10333,30 @@ This is a list of mode commands.")
   "Whether to hide input characters in noninteractive mode.
 If non-nil, it must be a character, which will be used to mask the
 input characters.")
+
+;; GNU emacs-lisp/cursor-sensor.el subset: erc-stamp toggles these modes
+;; and reads `cursor-sensor-inhibit'.  Batch has no redisplay, so the
+;; point-motion machinery is inert, but the variable and modes must exist.
+(defvar cursor-sensor-inhibit nil
+  "When non-nil, suspend `cursor-sensor-mode' and `cursor-intangible-mode'.
+By convention, this is a list of symbols where each symbol stands for the
+\"cause\" of the suspension.")
+
+(defun cursor-sensor--move-to-tangible (_window) nil)
+
+(define-minor-mode cursor-intangible-mode
+  "Keep cursor outside of any `cursor-intangible' text property."
+  :global nil
+  (if cursor-intangible-mode
+      (add-hook 'pre-redisplay-functions #'cursor-sensor--move-to-tangible
+                nil t)
+    (remove-hook 'pre-redisplay-functions #'cursor-sensor--move-to-tangible t)))
+
+(defun cursor-sensor--detect (&optional _window) nil)
+
+(define-minor-mode cursor-sensor-mode
+  "Handle the `cursor-sensor-functions' text property."
+  :global nil
+  (if cursor-sensor-mode
+      (add-hook 'pre-redisplay-functions #'cursor-sensor--detect nil t)
+    (remove-hook 'pre-redisplay-functions #'cursor-sensor--detect t)))

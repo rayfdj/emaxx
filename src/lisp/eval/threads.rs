@@ -1,5 +1,8 @@
 use super::*;
 
+/// (host, service, remote-peer, is-server) for `process-contact'.
+pub(crate) type ProcessContactInfo = (Option<String>, Option<i64>, Option<String>, bool);
+
 impl Interpreter {
     pub(super) fn find_thread_state(&self, record_id: u64) -> Option<&ThreadState> {
         self.thread_states
@@ -130,17 +133,254 @@ impl Interpreter {
             mark_marker_id,
             status: ProcessStatus::Run,
             filter: None,
+            sentinel: None,
+            log: None,
+            name: program.clone().unwrap_or_default(),
             _query_on_exit_flag: false,
             decoding: Value::Nil,
             encoding: Value::Nil,
             program,
             argv,
             runtime: runtime.map(|child| RunningProcess { child }),
+            network: None,
+            contact_host: None,
+            contact_service: None,
+            remote: None,
+            parent_server_id: None,
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
             plist: Value::Nil,
         });
         Ok(process)
+    }
+
+    /// Create a network process record (server listener, client stream, or
+    /// an accepted server-child stream).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_network_process(
+        &mut self,
+        name: &str,
+        buffer_id: Option<u64>,
+        filter: Option<Value>,
+        sentinel: Option<Value>,
+        log: Option<Value>,
+        plist: Value,
+        network: NetworkRuntime,
+        contact_host: Option<String>,
+        contact_service: Option<i64>,
+        remote: Option<String>,
+        parent_server_id: Option<u64>,
+    ) -> Result<Value, LispError> {
+        let status = match &network {
+            NetworkRuntime::Listener(_) => ProcessStatus::Listen,
+            NetworkRuntime::Stream(_) => ProcessStatus::Open,
+        };
+        let process = self.create_record("process", Vec::new());
+        let Value::Record(record_id) = process.clone() else {
+            unreachable!("create_record returns a record")
+        };
+        let marker = self.make_marker();
+        let Value::Marker(mark_marker_id) = marker else {
+            unreachable!("make_marker returns a marker")
+        };
+        let initial_position =
+            buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
+        self.set_marker(mark_marker_id, initial_position, buffer_id)?;
+        self.process_states.push(ProcessState {
+            record_id,
+            buffer_id,
+            mark_marker_id,
+            status,
+            filter,
+            sentinel,
+            log,
+            name: name.to_string(),
+            _query_on_exit_flag: false,
+            decoding: Value::Nil,
+            encoding: Value::Nil,
+            program: None,
+            argv: Vec::new(),
+            runtime: None,
+            network: Some(network),
+            contact_host,
+            contact_service,
+            remote,
+            parent_server_id,
+            pending_stdout: Vec::new(),
+            pending_stderr: Vec::new(),
+            plist,
+        });
+        Ok(process)
+    }
+
+    pub fn process_name(&self, record_id: u64) -> Option<String> {
+        self.find_process_state(record_id)
+            .map(|process| process.name.clone())
+    }
+
+    pub fn find_process_id_by_name(&self, name: &str) -> Option<u64> {
+        self.process_states
+            .iter()
+            .rev()
+            .find(|process| process.name == name)
+            .map(|process| process.record_id)
+    }
+
+    /// A unique process name: NAME, then NAME<1>, NAME<2>, ... (GNU).
+    pub fn unique_process_name(&self, base: &str) -> String {
+        if self.find_process_id_by_name(base).is_none() {
+            return base.to_string();
+        }
+        let mut index = 1;
+        loop {
+            let candidate = format!("{base}<{index}>");
+            if self.find_process_id_by_name(&candidate).is_none() {
+                return candidate;
+            }
+            index += 1;
+        }
+    }
+
+    pub fn process_sentinel(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.sentinel.clone())
+    }
+
+    pub fn set_process_sentinel(&mut self, record_id: u64, sentinel: Option<Value>) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        process.sentinel = sentinel;
+        true
+    }
+
+    pub fn process_contact_info(&self, record_id: u64) -> Option<ProcessContactInfo> {
+        self.find_process_state(record_id).map(|process| {
+            (
+                process.contact_host.clone(),
+                process.contact_service,
+                process.remote.clone(),
+                matches!(process.network, Some(NetworkRuntime::Listener(_))),
+            )
+        })
+    }
+
+    pub fn process_log_function(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.log.clone())
+    }
+
+    pub fn process_parent_server(&self, record_id: u64) -> Option<u64> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.parent_server_id)
+    }
+
+    pub fn is_network_process(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| process.network.is_some())
+    }
+
+    pub fn network_listener_ids(&self) -> Vec<u64> {
+        self.process_states
+            .iter()
+            .filter(|process| {
+                matches!(process.network, Some(NetworkRuntime::Listener(_)))
+                    && process.status.is_live()
+            })
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    pub fn network_stream_ids(&self) -> Vec<u64> {
+        self.process_states
+            .iter()
+            .filter(|process| {
+                matches!(process.network, Some(NetworkRuntime::Stream(_)))
+                    && process.status.is_live()
+            })
+            .map(|process| process.record_id)
+            .collect()
+    }
+
+    /// Accept one pending connection on a server listener, if any.
+    /// Returns the accepted stream and the peer's address string.
+    pub fn accept_network_connection(
+        &mut self,
+        server_id: u64,
+    ) -> Result<Option<(std::net::TcpStream, String)>, LispError> {
+        let Some(process) = self.find_process_state_mut(server_id) else {
+            return Ok(None);
+        };
+        let Some(NetworkRuntime::Listener(listener)) = process.network.as_ref() else {
+            return Ok(None);
+        };
+        match listener.accept() {
+            Ok((stream, addr)) => {
+                stream
+                    .set_nonblocking(true)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+                Ok(Some((stream, addr.to_string())))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(LispError::Signal(error.to_string())),
+        }
+    }
+
+    /// Non-blocking read of a network stream. Returns the bytes read and
+    /// whether the peer closed the connection.
+    pub fn poll_network_stream(&mut self, record_id: u64) -> Result<(Vec<u8>, bool), LispError> {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return Ok((Vec::new(), false));
+        };
+        let Some(NetworkRuntime::Stream(stream)) = process.network.as_mut() else {
+            return Ok((Vec::new(), false));
+        };
+        let mut out = Vec::new();
+        let mut closed = false;
+        let mut chunk = [0u8; 4096];
+        loop {
+            match std::io::Read::read(stream, &mut chunk) {
+                Ok(0) => {
+                    closed = true;
+                    break;
+                }
+                Ok(n) => out.extend_from_slice(&chunk[..n]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        if closed {
+            process.status = ProcessStatus::Closed;
+            process.network = None;
+        }
+        Ok((out, closed))
+    }
+
+    pub fn network_stream_send(&mut self, record_id: u64, input: &[u8]) -> Result<(), LispError> {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return Err(wrong_type_argument("processp", Value::Record(record_id)));
+        };
+        let Some(NetworkRuntime::Stream(stream)) = process.network.as_mut() else {
+            return Err(LispError::Signal("Process is not a network stream".into()));
+        };
+        use std::io::Write as _;
+        let mut written = 0;
+        while written < input.len() {
+            match stream.write(&input[written..]) {
+                Ok(n) => written += n,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(LispError::Signal(error.to_string())),
+            }
+        }
+        let _ = stream.flush();
+        Ok(())
     }
 
     pub(super) fn refresh_process_state(process: &mut ProcessState) -> Result<(), LispError> {
@@ -190,6 +430,17 @@ impl Interpreter {
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
         Self::refresh_process_state(process)
+    }
+
+    pub fn set_process_buffer_id(&mut self, record_id: u64, buffer_id: Option<u64>) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        process.buffer_id = buffer_id;
+        let mark_id = process.mark_marker_id;
+        let position = buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|b| b.point_max()));
+        let _ = self.set_marker(mark_id, position, buffer_id);
+        true
     }
 
     pub fn process_buffer_id(&self, record_id: u64) -> Option<u64> {
@@ -281,6 +532,14 @@ impl Interpreter {
             let _ = runtime.child.kill();
             let _ = runtime.child.wait();
         }
+        if let Some(network) = process.network.take() {
+            if let NetworkRuntime::Stream(stream) = &network {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            process.status = ProcessStatus::Closed;
+            process.runtime = None;
+            return Ok(());
+        }
         process.status = ProcessStatus::Exit;
         process.runtime = None;
         Ok(())
@@ -298,6 +557,13 @@ impl Interpreter {
         if !process.status.is_live() {
             return Err(LispError::Signal("Process is not running".into()));
         }
+        if process.network.is_some() {
+            self.network_stream_send(record_id, input)?;
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", Value::Record(record_id)))?;
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok((input.to_vec(), Vec::new()));
         };

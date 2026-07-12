@@ -486,6 +486,12 @@ struct ConditionVariableState {
 enum ProcessStatus {
     Run,
     Exit,
+    /// Network connection established (client or accepted server child).
+    Open,
+    /// Network connection closed.
+    Closed,
+    /// Network server accepting connections.
+    Listen,
 }
 
 impl ProcessStatus {
@@ -493,11 +499,26 @@ impl ProcessStatus {
         match self {
             Self::Run => "run",
             Self::Exit => "exit",
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Listen => "listen",
         }
     }
 
     fn is_live(&self) -> bool {
-        matches!(self, Self::Run)
+        matches!(self, Self::Run | Self::Open | Self::Listen)
+    }
+}
+
+/// A network process's OS-level object (GNU process.c network processes).
+pub(crate) enum NetworkRuntime {
+    Listener(std::net::TcpListener),
+    Stream(std::net::TcpStream),
+}
+
+impl std::fmt::Debug for NetworkRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkRuntime").finish_non_exhaustive()
     }
 }
 
@@ -517,12 +538,26 @@ struct ProcessState {
     mark_marker_id: u64,
     status: ProcessStatus,
     filter: Option<Value>,
+    sentinel: Option<Value>,
+    /// Network process :log function (server connection events).
+    log: Option<Value>,
+    /// The process name (process-name / get-process).
+    name: String,
     _query_on_exit_flag: bool,
     decoding: Value,
     encoding: Value,
     program: Option<String>,
     argv: Vec<String>,
     runtime: Option<RunningProcess>,
+    network: Option<NetworkRuntime>,
+    /// Network :host/:service as given at creation (process-contact).
+    contact_host: Option<String>,
+    contact_service: Option<i64>,
+    /// A server child's peer address (process-contact :remote-ish info
+    /// and sentinel event strings).
+    remote: Option<String>,
+    /// The server process a child connection came from.
+    parent_server_id: Option<u64>,
     /// Output drained from the pipes when the child's exit was noticed
     /// before the pump ran; delivered by the next poll so no tail output
     /// is lost (epg reads gpg's final status lines this way).
