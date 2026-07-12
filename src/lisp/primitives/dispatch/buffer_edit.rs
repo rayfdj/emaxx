@@ -336,6 +336,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "text-property-not-all"
             | "next-single-property-change"
             | "next-single-char-property-change"
+            | "previous-single-char-property-change"
             | "previous-single-property-change"
             | "text-properties-at"
             | "object-intervals"
@@ -1001,9 +1002,20 @@ pub(super) fn call(
         }
         "vertical-motion" => {
             need_arg_range(name, args, 1, 3)?;
-            let n = integer_like_bigint(interp, &args[0])?;
-            let remaining = forward_line_bigint(&mut interp.buffer, n.clone());
-            Ok(normalize_bigint_value(n - remaining))
+            let (goal_col, n) = match &args[0] {
+                cons @ Value::Cons(_, _) => {
+                    let (car, cdr) = cons
+                        .cons_values()
+                        .ok_or_else(|| LispError::TypeError("cons".into(), args[0].type_name()))?;
+                    (Some(car.as_integer()?.max(0) as usize), cdr.as_integer()?)
+                }
+                other => {
+                    let big = integer_like_bigint(interp, other)?;
+                    (None, big.to_i64().unwrap_or(i64::MAX / 2))
+                }
+            };
+            let moved = visual_vertical_motion(interp, env, n, goal_col)?;
+            Ok(Value::Integer(moved))
         }
         "search-forward" | "search-backward" => {
             if args.is_empty() || args.len() > 4 {
@@ -2323,60 +2335,62 @@ pub(super) fn call(
         "indent-rigidly" => {
             need_arg_range(name, args, 3, 4)?;
             let start = position_from_value(interp, &args[0])?;
-            let end = position_from_value(interp, &args[1])?;
+            let mut end = position_from_value(interp, &args[1])?;
             let count = args[2].as_integer()?;
-            let text = interp
-                .buffer
-                .buffer_substring(start, end)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            // GNU only touches lines that BEGIN inside the region: a
-            // partial first line keeps its indentation, and empty lines
-            // are never padded.
             let saved_point = interp.buffer.point();
+            // GNU only touches lines that BEGIN inside the region: a
+            // partial first line keeps its indentation.  Each line's
+            // leading whitespace is replaced in place (indent-to plus a
+            // delete of the old run), so the rest of the line keeps its
+            // text properties and markers.
             interp.buffer.goto_char(start);
             interp.buffer.beginning_of_line();
-            let first_line_partial = interp.buffer.point() < start;
-            interp.buffer.goto_char(saved_point);
-            let adjusted = if count > 0 {
-                let prefix = " ".repeat(count as usize);
-                text.split_inclusive('\n')
-                    .enumerate()
-                    .map(|(index, line)| {
-                        if (index == 0 && first_line_partial) || line == "\n" || line.is_empty() {
-                            line.to_string()
-                        } else {
-                            format!("{prefix}{line}")
-                        }
-                    })
-                    .collect::<String>()
-            } else if count < 0 {
-                let mut adjusted = String::new();
-                for (index, line) in text.split_inclusive('\n').enumerate() {
-                    if index == 0 && first_line_partial {
-                        adjusted.push_str(line);
-                        continue;
+            if interp.buffer.point() < start {
+                let mut pos = interp.buffer.point();
+                while let Some(ch) = interp.buffer.char_at(pos) {
+                    pos += 1;
+                    if ch == '\n' {
+                        break;
                     }
-                    let mut remove = (-count) as usize;
-                    let mut start_idx = 0usize;
-                    for (index, ch) in line.char_indices() {
-                        if remove == 0 || !matches!(ch, ' ' | '\t') {
-                            start_idx = index;
-                            break;
-                        }
-                        remove -= 1;
-                        start_idx = index + ch.len_utf8();
-                    }
-                    adjusted.push_str(&line[start_idx..]);
                 }
-                adjusted
-            } else {
-                text
-            };
+                interp.buffer.goto_char(pos);
+            }
+            while interp.buffer.point() < end {
+                let bol = interp.buffer.point();
+                let mut ws_end = bol;
+                while matches!(interp.buffer.char_at(ws_end), Some(' ' | '\t')) {
+                    ws_end += 1;
+                }
+                let old_ws_len = ws_end - bol;
+                let eol_flag = matches!(interp.buffer.char_at(ws_end), None | Some('\n'));
+                if !eol_flag {
+                    let indent = column_at(interp, env, bol, ws_end) as i64;
+                    let target = (indent + count).max(0);
+                    super::call(interp, "indent-to", &[Value::Integer(target)], env)?;
+                }
+                // GNU deletes the old whitespace run unconditionally, so
+                // whitespace-only lines end up empty.
+                let after_insert = interp.buffer.point();
+                if old_ws_len > 0 {
+                    interp
+                        .delete_region_current_buffer(after_insert, after_insert + old_ws_len)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                }
+                let inserted = after_insert - bol;
+                end = (end + inserted).saturating_sub(old_ws_len);
+                // Move to the next line start.
+                let mut pos = interp.buffer.point();
+                while let Some(ch) = interp.buffer.char_at(pos) {
+                    pos += 1;
+                    if ch == '\n' {
+                        break;
+                    }
+                }
+                interp.buffer.goto_char(pos);
+            }
             interp
-                .delete_region_current_buffer(start, end)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            interp.buffer.goto_char(start);
-            interp.insert_current_buffer(&adjusted);
+                .buffer
+                .goto_char(saved_point.min(interp.buffer.point_max()));
             Ok(Value::Nil)
         }
         "line-number-at-pos" => {
@@ -2437,11 +2451,19 @@ pub(super) fn call(
             }
             let mut result = interp.buffer.point();
             interp.buffer.goto_char(saved);
-            if buffer_has_field_property(interp) {
+            // GNU's `pos-bol' ignores fields; only `line-beginning-position'
+            // constrains (with ESCAPE-FROM-EDGE only after actual line
+            // motion and ONLY-IN-LINE set; see Fline_beginning_position).
+            if name == "line-beginning-position" && buffer_has_field_property(interp) {
                 result = super::call(
                     interp,
                     "constrain-to-field",
-                    &[Value::Integer(result as i64), Value::Integer(saved as i64)],
+                    &[
+                        Value::Integer(result as i64),
+                        Value::Integer(saved as i64),
+                        if count != 0 { Value::T } else { Value::Nil },
+                        Value::T,
+                    ],
                     env,
                 )?
                 .as_integer()? as usize;
@@ -2470,8 +2492,24 @@ pub(super) fn call(
                 interp.buffer.forward_line(count);
             }
             interp.buffer.end_of_line();
-            let result = interp.buffer.point();
+            let mut result = interp.buffer.point();
             interp.buffer.goto_char(saved);
+            // GNU's `pos-eol' ignores fields; `line-end-position'
+            // constrains with ONLY-IN-LINE set (Fline_end_position).
+            if name == "line-end-position" && buffer_has_field_property(interp) {
+                result = super::call(
+                    interp,
+                    "constrain-to-field",
+                    &[
+                        Value::Integer(result as i64),
+                        Value::Integer(saved as i64),
+                        Value::Nil,
+                        Value::T,
+                    ],
+                    env,
+                )?
+                .as_integer()? as usize;
+            }
             Ok(Value::Integer(result as i64))
         }
         "narrow-to-region" => {
@@ -2663,11 +2701,10 @@ pub(super) fn call(
             }
             let prop = args[1].as_symbol()?.to_string();
             let object = args.get(2).unwrap_or(&Value::Nil);
-            let limit = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .map(|value| value.as_integer().map(|value| value.max(0) as usize))
-                .transpose()?;
+            let limit = match args.get(3).filter(|value| !value.is_nil()) {
+                Some(value) => Some(position_from_value(interp, value)?),
+                None => None,
+            };
             if string_like(object).is_some() {
                 let pos = args[0].as_integer()?.max(0) as usize;
                 let text = string_text(object)?;
@@ -2726,11 +2763,10 @@ pub(super) fn call(
             }
             let prop = args[1].as_symbol()?.to_string();
             let object = args.get(2).unwrap_or(&Value::Nil);
-            let limit = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .map(|value| value.as_integer().map(|value| value.max(0) as usize))
-                .transpose()?;
+            let limit = match args.get(3).filter(|value| !value.is_nil()) {
+                Some(value) => Some(position_from_value(interp, value)?),
+                None => None,
+            };
             if string_like(object).is_some() {
                 let pos = args[0].as_integer()?.max(0) as usize;
                 let text = string_text(object)?;
@@ -2766,17 +2802,55 @@ pub(super) fn call(
             }
             Ok(Value::Integer(max_pos as i64))
         }
+        "previous-single-char-property-change" => {
+            // (previous-single-char-property-change POSITION PROP &optional
+            // OBJECT LIMIT): scan back for a change in PROP (text property or
+            // overlay), returning the position AFTER the change.
+            if args.len() < 2 || args.len() > 4 {
+                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
+            }
+            let prop = args[1].as_symbol()?.to_string();
+            let object = args.get(2).unwrap_or(&Value::Nil);
+            let limit = match args.get(3).filter(|value| !value.is_nil()) {
+                Some(value) => Some(position_from_value(interp, value)?),
+                None => None,
+            };
+            let pos = position_from_value(interp, &args[0])?;
+            let buffer_id = if object.is_nil() {
+                interp.current_buffer_id()
+            } else {
+                interp.resolve_buffer_id(object)?
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+            let min_pos = limit.unwrap_or(buffer.point_min());
+            if pos <= min_pos {
+                return Ok(Value::Integer(min_pos as i64));
+            }
+            // The property "at" POS for backward scans is that of the char
+            // before POS.
+            let initial = buffer_char_property_at(interp, buffer, pos.saturating_sub(1), &prop);
+            let mut cursor = pos;
+            while cursor > min_pos + 1 {
+                let current = buffer_char_property_at(interp, buffer, cursor - 2, &prop);
+                if current != initial {
+                    return Ok(Value::Integer((cursor - 1) as i64));
+                }
+                cursor -= 1;
+            }
+            Ok(Value::Integer(min_pos as i64))
+        }
         "previous-single-property-change" => {
             if args.len() < 2 || args.len() > 4 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let prop = args[1].as_symbol()?.to_string();
             let object = args.get(2).unwrap_or(&Value::Nil);
-            let limit = args
-                .get(3)
-                .filter(|value| !value.is_nil())
-                .map(|value| value.as_integer().map(|value| value.max(0) as usize))
-                .transpose()?;
+            let limit = match args.get(3).filter(|value| !value.is_nil()) {
+                Some(value) => Some(position_from_value(interp, value)?),
+                None => None,
+            };
             if string_like(object).is_some() {
                 let pos = args[0].as_integer()?.max(0) as usize;
                 let min_pos = limit.unwrap_or(0);
@@ -3308,4 +3382,253 @@ fn buffer_has_field_property(interp: &Interpreter) -> bool {
         .full_property_spans()
         .iter()
         .any(|span| span.props.iter().any(|(name, _)| name == "field"))
+}
+
+/// Column width of a display spec form: integers are columns, one-element
+/// lists are pixels (one per column on the batch frame), symbols are
+/// variables, and (+ ...)/(- ...) combine recursively.
+fn display_spec_width(interp: &mut Interpreter, env: &mut Env, spec: &Value) -> i64 {
+    match spec {
+        Value::Integer(value) => *value,
+        Value::Float(value) => *value as i64,
+        Value::Symbol(name) => interp
+            .lookup_var(name, env)
+            .map(|value| display_spec_width(interp, env, &value))
+            .unwrap_or(0),
+        Value::Cons(_, _) => {
+            let Ok(items) = spec.to_vec() else { return 0 };
+            match items.first() {
+                Some(Value::Symbol(op)) if op == "-" || op == "+" => {
+                    let mut acc = items
+                        .get(1)
+                        .map(|item| display_spec_width(interp, env, item))
+                        .unwrap_or(0);
+                    for item in items.iter().skip(2) {
+                        let value = display_spec_width(interp, env, item);
+                        if op == "-" {
+                            acc -= value;
+                        } else {
+                            acc += value;
+                        }
+                    }
+                    acc
+                }
+                Some(inner) if items.len() == 1 => display_spec_width(interp, env, inner),
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Column width contributed by a `line-prefix'/`wrap-prefix' property.
+fn prefix_property_width(interp: &mut Interpreter, env: &mut Env, prop: Option<Value>) -> usize {
+    let Some(prop) = prop else { return 0 };
+    if let Some(text) = string_like(&prop) {
+        return text.text.chars().count();
+    }
+    if let Ok(items) = prop.to_vec()
+        && matches!(items.first(), Some(Value::Symbol(head)) if head == "space")
+    {
+        let mut cursor = 1;
+        while cursor + 1 < items.len() {
+            if matches!(&items[cursor], Value::Symbol(key) if key == ":width") {
+                return display_spec_width(interp, env, &items[cursor + 1]).max(0) as usize;
+            }
+            cursor += 2;
+        }
+    }
+    0
+}
+
+/// Per-position display widths for [bol, eol): `usize::MAX` marks a TAB
+/// (resolved against the running column), 0 marks invisible or
+/// display-replaced text, and display strings count once per run.
+fn visual_char_widths(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    bol: usize,
+    eol: usize,
+) -> Vec<(usize, bool)> {
+    let _ = env;
+    let mut widths = Vec::with_capacity(eol.saturating_sub(bol));
+    let mut pos = bol;
+    while pos < eol {
+        let display = interp.buffer.text_property_at(pos, "display");
+        if let Some(display_value) = display.clone().filter(|value| !value.is_nil()) {
+            let mut end = pos;
+            while end < eol && interp.buffer.text_property_at(end, "display") == display {
+                end += 1;
+            }
+            let run_width = string_like(&display_value)
+                .map(|text| text.text.chars().count())
+                .unwrap_or(0);
+            widths.push((run_width, false));
+            for _ in pos + 1..end {
+                widths.push((0, false));
+            }
+            pos = end;
+            continue;
+        }
+        if interp
+            .buffer
+            .text_property_at(pos, "invisible")
+            .is_some_and(|value| value.is_truthy())
+        {
+            widths.push((0, false));
+            pos += 1;
+            continue;
+        }
+        match interp.buffer.char_at(pos) {
+            Some('\t') => widths.push((usize::MAX, true)),
+            Some(' ') => widths.push((1, true)),
+            Some(_) => widths.push((1, false)),
+            None => widths.push((0, false)),
+        }
+        pos += 1;
+    }
+    widths
+}
+
+/// Screen-line segment start positions of the logical line [bol, eol),
+/// modeling GNU's batch display: continuation at frame-width (reserving the
+/// continuation column unless word-wrapping) minus prefix widths.
+fn visual_segment_starts(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    bol: usize,
+    eol: usize,
+) -> Vec<usize> {
+    let mut starts = vec![bol];
+    if interp
+        .lookup_var("truncate-lines", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return starts;
+    }
+    // GNU's batch display wraps mid-word at frame-width minus the
+    // continuation column, even under `word-wrap' (vmotion in indent.c).
+    let frame_width = interp.frame_width().max(2) as usize;
+    let reserve = 1;
+    let line_prefix_width = {
+        let prop = interp.buffer.text_property_at(bol, "line-prefix");
+        prefix_property_width(interp, env, prop)
+    };
+    let wrap_prefix_width = {
+        let prop = interp.buffer.text_property_at(bol, "wrap-prefix");
+        prefix_property_width(interp, env, prop)
+    };
+    let widths = visual_char_widths(interp, env, bol, eol);
+    let mut seg_start = bol;
+    let mut first = true;
+    loop {
+        let usable = frame_width
+            .saturating_sub(reserve)
+            .saturating_sub(if first {
+                line_prefix_width
+            } else {
+                wrap_prefix_width
+            })
+            .max(1);
+        let mut pos = seg_start;
+        let mut col = 0usize;
+        let mut wrap_at: Option<usize> = None;
+        while pos < eol {
+            let (raw, _) = widths[pos - bol];
+            let width = if raw == usize::MAX {
+                8 - (col % 8)
+            } else {
+                raw
+            };
+            if col + width > usable && pos > seg_start {
+                wrap_at = Some(pos);
+                break;
+            }
+            col += width;
+            pos += 1;
+        }
+        let Some(next_start) = wrap_at else { break };
+        if next_start <= seg_start {
+            break;
+        }
+        starts.push(next_start);
+        seg_start = next_start;
+        first = false;
+    }
+    starts
+}
+
+fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let mut bol = pos.max(point_min);
+    while bol > point_min && interp.buffer.char_at(bol - 1) != Some('\n') {
+        bol -= 1;
+    }
+    let mut eol = pos.max(point_min);
+    while eol < point_max && interp.buffer.char_at(eol) != Some('\n') {
+        eol += 1;
+    }
+    (bol, eol)
+}
+
+/// GNU `vertical-motion': move by screen lines, honoring continuation.
+fn visual_vertical_motion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    n: i64,
+    goal_col: Option<usize>,
+) -> Result<i64, LispError> {
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let point = interp.buffer.point();
+    let (mut bol, mut eol) = visual_line_bounds(interp, point);
+    let mut starts = visual_segment_starts(interp, env, bol, eol);
+    let mut index = starts
+        .iter()
+        .rposition(|&start| start <= point)
+        .unwrap_or(0);
+    let mut moved = 0i64;
+    let mut exhausted_forward = false;
+    while moved < n {
+        if index + 1 < starts.len() {
+            index += 1;
+            moved += 1;
+        } else if eol < point_max {
+            let (next_bol, next_eol) = visual_line_bounds(interp, eol + 1);
+            bol = next_bol;
+            eol = next_eol;
+            starts = visual_segment_starts(interp, env, bol, eol);
+            index = 0;
+            moved += 1;
+        } else {
+            exhausted_forward = true;
+            break;
+        }
+    }
+    while moved > n {
+        if index > 0 {
+            index -= 1;
+            moved -= 1;
+        } else if bol > point_min {
+            let (prev_bol, prev_eol) = visual_line_bounds(interp, bol - 1);
+            bol = prev_bol;
+            eol = prev_eol;
+            starts = visual_segment_starts(interp, env, bol, eol);
+            index = starts.len().saturating_sub(1);
+            moved -= 1;
+        } else {
+            break;
+        }
+    }
+    // GNU's batch path ignores a cons LINES's goal column: point lands at
+    // the start of the target screen line (or buffer end on overshoot).
+    let _ = goal_col;
+    let target = if exhausted_forward {
+        point_max
+    } else {
+        starts[index]
+    };
+    interp.buffer.goto_char(target);
+    Ok(moved)
 }

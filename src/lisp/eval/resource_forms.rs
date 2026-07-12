@@ -19,10 +19,18 @@ impl Interpreter {
         items: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        match self.sf_progn(&items[1..], env) {
+        let handler_start = self.push_condition_case_handler(vec![Value::Symbol("error".into())]);
+        let result = self.sf_progn(&items[1..], env);
+        self.pop_handler_bindings(handler_start);
+        match result {
             Ok(value) => Ok(value),
             Err(error @ LispError::Throw(_, _)) => Err(error),
-            Err(_) => Ok(Value::Nil),
+            Err(error) => {
+                if self.take_condition_case_suspend() {
+                    return Err(error);
+                }
+                Ok(Value::Nil)
+            }
         }
     }
 
@@ -38,20 +46,23 @@ impl Interpreter {
             ));
         }
 
-        match self.sf_progn(&items[2..], env) {
+        let handler_start = self.push_condition_case_handler(vec![items[1].clone()]);
+        let result = self.sf_progn(&items[2..], env);
+        self.pop_handler_bindings(handler_start);
+        match result {
             Ok(value) => Ok(value),
+            Err(error @ LispError::Throw(_, _)) => Err(error),
             Err(error) => {
+                if self.take_condition_case_suspend() {
+                    return Err(error);
+                }
                 let condition = error.condition_type();
-                let matches = match &items[1] {
-                    Value::Symbol(symbol) => symbol == &condition || symbol == "error",
-                    Value::Cons(_, _) => items[1]
-                        .to_vec()?
-                        .iter()
-                        .filter_map(symbol_name)
-                        .any(|symbol| symbol == condition || symbol == "error"),
-                    _ => false,
-                };
-                if matches { Ok(Value::Nil) } else { Err(error) }
+                let condition_list = self.error_condition_names(&condition);
+                if Self::clause_head_matches(&items[1], &condition, &condition_list) {
+                    Ok(Value::Nil)
+                } else {
+                    Err(error)
+                }
             }
         }
     }
@@ -71,10 +82,23 @@ impl Interpreter {
             other => return Err(wrong_type_argument("symbolp", other.clone())),
         };
 
-        self.condition_case_depth += 1;
+        // Register the clause heads so signal-time `handler-bind' dispatch
+        // can see this frame, like GNU's handlerlist.
+        let clause_heads = items[3..]
+            .iter()
+            .filter_map(|handler| {
+                let head = handler.to_vec().ok()?.first().cloned()?;
+                if matches!(&head, Value::Symbol(symbol) if symbol == ":success") {
+                    None
+                } else {
+                    Some(head)
+                }
+            })
+            .collect::<Vec<_>>();
+        let handler_start = self.push_condition_case_handler(clause_heads);
         let depth = env.len();
         let body_result = self.eval(&items[2], env);
-        self.condition_case_depth = self.condition_case_depth.saturating_sub(1);
+        self.pop_handler_bindings(handler_start);
         // An error unwinds any binding frames the body pushed before
         // signaling, like GNU's unbind_to at the handler point.
         if env.len() > depth {
@@ -115,41 +139,16 @@ impl Interpreter {
                 }
                 let condition = e.condition_type();
                 // GNU matches a handler when it is `memq' in the signaled
-                // symbol's `error-conditions'; fall back to the legacy
-                // condition-or-error rule when no property is defined.
-                let condition_list: Vec<String> = self
-                    .get_symbol_property(&condition, "error-conditions")
-                    .and_then(|value| value.to_vec().ok())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.as_symbol().ok().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let handler_matches = |symbol: &str| {
-                    if condition_list.is_empty() {
-                        symbol == condition || symbol == "error"
-                    } else {
-                        condition_list.iter().any(|entry| entry == symbol)
-                    }
-                };
+                // symbol's `error-conditions' (or is `t'); fall back to the
+                // legacy condition-or-error rule when no property is defined.
+                let condition_list = self.error_condition_names(&condition);
                 // Try to find a matching handler
                 for handler in &items[3..] {
                     let parts = handler.to_vec()?;
                     if parts.is_empty() {
                         continue;
                     }
-                    let matches = match &parts[0] {
-                        Value::Symbol(symbol) => handler_matches(symbol),
-                        Value::Cons(_, _) => parts[0]
-                            .to_vec()?
-                            .iter()
-                            .filter_map(symbol_name)
-                            .any(|symbol| handler_matches(&symbol)),
-                        _ => false,
-                    };
-                    if !matches {
+                    if !Self::clause_head_matches(&parts[0], &condition, &condition_list) {
                         continue;
                     }
                     if let Some(ref var_name) = var {
@@ -678,7 +677,17 @@ impl Interpreter {
         let target_id = self.resolve_buffer_id(&target)?;
         let saved_buffer_id = self.current_buffer_id;
         self.switch_to_buffer_id(target_id)?;
-        let result = self.sf_progn(&items[2..], env);
+        let result = if items.len() == 2 {
+            // The macro expands to (save-current-buffer (set-buffer BUF)),
+            // so with an empty BODY the value is `set-buffer's: the buffer.
+            let buffer_name = self
+                .get_buffer_by_id(target_id)
+                .map(|buffer| buffer.name.clone())
+                .unwrap_or_default();
+            Ok(Value::Buffer(target_id, buffer_name))
+        } else {
+            self.sf_progn(&items[2..], env)
+        };
         let _ = self.switch_to_buffer_id(saved_buffer_id);
         result
     }

@@ -1583,6 +1583,52 @@ pub(crate) fn format_zone_offset(
     rendered
 }
 
+pub(crate) fn weekday_name(datetime: &chrono::DateTime<FixedOffset>, abbrev: bool) -> String {
+    let names = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let n = chrono::Datelike::weekday(datetime).num_days_from_sunday() as usize;
+    if abbrev {
+        names[n][..3].to_string()
+    } else {
+        names[n].to_string()
+    }
+}
+
+pub(crate) fn month_name(datetime: &chrono::DateTime<FixedOffset>, abbrev: bool) -> String {
+    let names = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let n = (chrono::Datelike::month(datetime) as usize) - 1;
+    if abbrev {
+        names[n][..3].to_string()
+    } else {
+        names[n].to_string()
+    }
+}
+
+pub(crate) fn twelve_hour(hour: u32) -> u32 {
+    let h = hour % 12;
+    if h == 0 { 12 } else { h }
+}
+
 pub(crate) fn format_time_string_value(
     interp: &Interpreter,
     format: &str,
@@ -1636,6 +1682,67 @@ pub(crate) fn format_time_string_value(
                 }
             }
             'd' => format!("{:02}", datetime.day()),
+            'e' => format!("{:2}", datetime.day()),
+            'a' => weekday_name(&datetime, true),
+            'A' => weekday_name(&datetime, false),
+            'b' | 'h' => month_name(&datetime, true),
+            'B' => month_name(&datetime, false),
+            'y' => format!("{:02}", datetime.year().rem_euclid(100)),
+            'C' => format!("{:02}", datetime.year().div_euclid(100)),
+            'j' => format!("{:03}", chrono::Datelike::ordinal(&datetime)),
+            'u' => {
+                let n = chrono::Datelike::weekday(&datetime).num_days_from_sunday();
+                (if n == 0 { 7 } else { n }).to_string()
+            }
+            'w' => chrono::Datelike::weekday(&datetime)
+                .num_days_from_sunday()
+                .to_string(),
+            'D' => format!(
+                "{:02}/{:02}/{:02}",
+                datetime.month(),
+                datetime.day(),
+                datetime.year().rem_euclid(100)
+            ),
+            'x' => format!(
+                "{:02}/{:02}/{:02}",
+                datetime.month(),
+                datetime.day(),
+                datetime.year().rem_euclid(100)
+            ),
+            'X' => format!(
+                "{:02}:{:02}:{:02}",
+                datetime.hour(),
+                datetime.minute(),
+                datetime.second()
+            ),
+            'R' => format!("{:02}:{:02}", datetime.hour(), datetime.minute()),
+            'I' => format!("{:02}", twelve_hour(datetime.hour())),
+            'l' => format!("{:2}", twelve_hour(datetime.hour())),
+            'p' => if datetime.hour() < 12 { "AM" } else { "PM" }.to_string(),
+            'P' => if datetime.hour() < 12 { "am" } else { "pm" }.to_string(),
+            'r' => format!(
+                "{:02}:{:02}:{:02} {}",
+                twelve_hour(datetime.hour()),
+                datetime.minute(),
+                datetime.second(),
+                if datetime.hour() < 12 { "AM" } else { "PM" }
+            ),
+            'c' => format!(
+                "{} {} {:2} {:02}:{:02}:{:02} {}",
+                weekday_name(&datetime, true),
+                month_name(&datetime, true),
+                datetime.day(),
+                datetime.hour(),
+                datetime.minute(),
+                datetime.second(),
+                datetime.year()
+            ),
+            's' => {
+                let (whole_seconds, _) = time_floor_parts(time);
+                whole_seconds.to_string()
+            }
+            'n' => "\n".to_string(),
+            't' => "\t".to_string(),
             'H' => format!("{:02}", datetime.hour()),
             'M' => format!("{:02}", datetime.minute()),
             'S' => format!("{:02}", datetime.second()),
@@ -1957,12 +2064,16 @@ pub(crate) fn call_time_builtin(
             )?))
         }
         "current-time-zone" => {
-            need_arg_range(name, args, 0, 1)?;
-            let zone = if let Some(value) = args.first() {
-                let time = exact_time_from_value(interp, value, &now)?;
-                local_zone_spec(Some(&time))
+            need_arg_range(name, args, 0, 2)?;
+            let time = if let Some(value) = args.first().filter(|value| !value.is_nil()) {
+                Some(exact_time_from_value(interp, value, &now)?)
             } else {
-                local_zone_spec(None)
+                None
+            };
+            let zone = if let Some(zone_value) = args.get(1).filter(|value| !value.is_nil()) {
+                zone_spec_from_value(zone_value, time.as_ref())?
+            } else {
+                local_zone_spec(time.as_ref())
             };
             Ok(Value::list([
                 Value::Integer(zone.offset_seconds as i64),

@@ -123,9 +123,11 @@ pub(crate) fn key_sequence_binding_text(value: &Value) -> Result<String, LispErr
 }
 
 pub(crate) fn looks_like_textual_key_spec(text: &str) -> bool {
-    // Whitespace separates keys in a textual spec, but a string that is
-    // nothing but whitespace is a raw key sequence (like `" "' for SPC).
-    if text.contains(char::is_whitespace) && !text.chars().all(char::is_whitespace) {
+    // A space separates keys in a textual spec, but a string that is
+    // nothing but spaces is a raw key sequence (like `" "' for SPC).
+    // Other whitespace chars are raw control keys: "\C-c\C-j" contains a
+    // newline that must stay a C-j event, not a separator.
+    if text.contains(' ') && !text.chars().all(|ch| ch == ' ') {
         return true;
     }
     if text.contains('<') || text.contains('>') {

@@ -736,10 +736,22 @@ pub struct Interpreter {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
-    active_handlers: Vec<(String, Value)>,
+    active_handlers: Vec<ActiveHandler>,
     handler_dispatch_depth: usize,
     suspend_condition_case_count: usize,
-    condition_case_depth: usize,
+    window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
+}
+
+/// One entry in the dynamic handler stack, mirroring GNU's handlerlist.
+/// `signal' walks this innermost-first: a matching `condition-case' clause
+/// stops the search before any outer `handler-bind' functions run, while
+/// matching `handler-bind' functions run at the signal point (pre-unwind).
+#[derive(Clone)]
+pub(crate) enum ActiveHandler {
+    /// A single CONDITION/HANDLER pair from `handler-bind'.
+    Bind(String, Value),
+    /// The clause heads of an active `condition-case' (minus :success).
+    Case(Vec<Value>),
 }
 
 impl Default for Interpreter {
@@ -1080,7 +1092,7 @@ impl Interpreter {
             active_handlers: Vec::new(),
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
-            condition_case_depth: 0,
+            window_margins: Vec::new(),
         };
         for class_name in primitives::builtin_class_names() {
             interp.put_symbol_property(
@@ -2911,6 +2923,9 @@ fn cl_defmethod_around_previous_binding(
                     .split_once("class_")
                     .map(|(_, class_name)| class_name)
                     .unwrap_or(around_class_key);
+                // The specializer-less :around wrapper binds
+                // `..._around_class_t_method' (note the suffix).
+                let around_class = around_class.strip_suffix("_method").unwrap_or(around_class);
                 if is_applicable(around_class) {
                     let method_previous_name = format!("{name}_method");
                     let current_method_name = format!("{method_previous_name}_current");

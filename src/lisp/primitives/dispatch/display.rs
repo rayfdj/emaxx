@@ -81,6 +81,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "window-hscroll"
             | "window-vscroll"
             | "set-window-hscroll"
+            | "window-margins"
+            | "set-window-margins"
             | "pos-visible-in-window-p"
             | "window-width"
             | "window-height"
@@ -1220,6 +1222,37 @@ pub(super) fn call(
             need_arg_range(name, args, 2, 3)?;
             Ok(args.get(1).cloned().unwrap_or(Value::Integer(0)))
         }
+        "set-window-margins" => {
+            need_arg_range(name, args, 1, 3)?;
+            let window_id = if args.first().is_none_or(|value| value.is_nil()) {
+                interp.selected_window_id()
+            } else {
+                crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
+                    .ok_or_else(|| LispError::TypeError("window".into(), args[0].type_name()))?
+            };
+            let margin = |value: Option<&Value>| -> Result<Option<i64>, LispError> {
+                match value {
+                    None | Some(Value::Nil) => Ok(None),
+                    Some(value) => Ok(Some(value.as_integer()?.max(0))),
+                }
+            };
+            let left = margin(args.get(1))?;
+            let right = margin(args.get(2))?;
+            interp.set_window_margins(window_id, left, right);
+            Ok(Value::T)
+        }
+        "window-margins" => {
+            need_arg_range(name, args, 0, 1)?;
+            let window_id = if args.first().is_none_or(|value| value.is_nil()) {
+                interp.selected_window_id()
+            } else {
+                crate::lisp::primitives::window::window_record_id_from_value(interp, &args[0])
+                    .ok_or_else(|| LispError::TypeError("window".into(), args[0].type_name()))?
+            };
+            let (left, right) = interp.window_margins(window_id);
+            let to_value = |margin: Option<i64>| margin.map(Value::Integer).unwrap_or(Value::Nil);
+            Ok(Value::cons(to_value(left), to_value(right)))
+        }
         "pos-visible-in-window-p" => {
             need_arg_range(name, args, 0, 3)?;
             if interp
@@ -1325,13 +1358,52 @@ pub(super) fn call(
             // Without a graphical frame there is no font, so report the
             // widest line's character count as the pixel width and the line
             // count as the pixel height (one nominal unit per character).
-            let text = interp.buffer.buffer_string();
-            let width = text
+            // Like GNU, honor `display' replacements: a string spec
+            // substitutes for the covered text and a margin spec removes it
+            // from the line flow entirely.
+            let point_min = interp.buffer.point_min();
+            let point_max = interp.buffer.point_max();
+            let mut effective = String::new();
+            let mut pos = point_min;
+            while pos < point_max {
+                let display = interp.buffer.text_property_at(pos, "display");
+                if let Some(display_value) = display.clone().filter(|value| !value.is_nil()) {
+                    let mut end = pos;
+                    while end < point_max
+                        && interp.buffer.text_property_at(end, "display") == display
+                    {
+                        end += 1;
+                    }
+                    if let Some(replacement) = string_like(&display_value) {
+                        effective.push_str(&replacement.text);
+                        pos = end;
+                        continue;
+                    }
+                    let in_margin = display_value.to_vec().is_ok_and(|items| {
+                        items.first().is_some_and(|head| {
+                            head.to_vec().is_ok_and(|spec| {
+                                matches!(spec.first(),
+                                    Some(Value::Symbol(kind)) if kind == "margin")
+                            })
+                        })
+                    });
+                    if in_margin {
+                        pos = end;
+                        continue;
+                    }
+                }
+                match interp.buffer.char_at(pos) {
+                    Some(ch) => effective.push(ch),
+                    None => break,
+                }
+                pos += 1;
+            }
+            let width = effective
                 .lines()
                 .map(|line| line.chars().count())
                 .max()
                 .unwrap_or(0);
-            let height = text.lines().count().max(1);
+            let height = effective.lines().count().max(1);
             Ok(Value::cons(
                 Value::Integer(width as i64),
                 Value::Integer(height as i64),

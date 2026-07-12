@@ -19,6 +19,45 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2811/7080: erc-button (2766..2770),
+  erc-dcc (2771..2780), erc-fill (2781), erc-goodies (2782..2796),
+  erc-join (2797..2806), erc-match (2807..2811) all pass; 136-file
+  prefix sweep (prefix-files18.txt) on frozen binaries is the gate
+  (erc-join and erc-match passed without further code changes).  Key semantics (full detail in the continuation doc):
+  - condition-case `t' handler; signal-time handler-bind dispatch walks
+    a unified handler stack so an inner matching condition-case
+    suppresses outer handler-bind functions (ert's should-error).
+  - GNU field motion: `pos-bol'/`pos-eol' ignore fields;
+    `line-beginning-position'/`line-end-position' constrain with
+    ONLY-IN-LINE (and ESCAPE-FROM-EDGE after line motion); field-
+    beginning/field-end take ESCAPE-FROM-EDGE + LIMIT; constrain-to-
+    field implements GNU's near-field gate and other-side check.
+  - indent-rigidly edits leading whitespace in place (keeps props).
+  - format-time-string %a %A %b %B %c %C %D %e %I %j %l %p %P %r %s
+    %u %w %x %X %y and friends; current-time-zone accepts ZONE.
+  - visual-line vertical-motion (batch wraps at frame-width-1, ignores
+    word-wrap and cons goal columns, like GNU's vmotion); beginning/
+    end-of-visual-line + kill-visual-line + posn-at-point ports.
+  - GNU kill ring (kill-new/append/current-kill/kill-region/yank/
+    yank-pop + subr.el yank helpers); C-y/M-y/C-w/M-w default bindings;
+    kbd-macro dispatch applies command remapping; raw "\C-c\C-j" key
+    strings no longer misparse the newline as a separator.
+  - capf-driven completion-at-point (try/test/all-completion + exit
+    functions + *Completions* or "Next char not unique"); minibuffer.el
+    quoted completion tables ported verbatim.
+  - local hooks mirror into a buffer-local "(fns... t)" value (member/
+    local-variable-p see them); remove-hook LOCAL is arg 3 and kills
+    the local when empty; global add-hook writes the default when a
+    mirror exists; define-minor-mode runs MODE-hook on every toggle.
+  - buffer-local-value falls back to the default value, never another
+    buffer's local; (with-current-buffer BUF) returns the buffer.
+  - native ert runner wraps each test in a temp buffer and binds
+    ert--running-tests; timers are GNU 10-slot vectors with a working
+    timer-event-handler; print-circle labels resolve inside propertized
+    string reads; equal-including-properties compares positions.
+- NEXT: erc-networks-tests.el (2812..2854): 19/43 pass. Then
+  erc-nicks (13/16), erc-sasl (crashes the runner — investigate
+  first). Milestone 3000 sits inside the erc series.
 - Verified through selector 2765/7080: viper (2747..2751, 5/5), env
   (2752..2754), epg-config (2755..2758), epg (2759..2765, 7/7) all
   pass; 130-file prefix sweep (prefix-files15.txt) is the gate.

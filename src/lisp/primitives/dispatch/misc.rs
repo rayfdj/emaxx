@@ -87,6 +87,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "run-with-timer"
             | "run-with-idle-timer"
             | "cancel-timer"
+            | "timer-event-handler"
             | "timerp"
             | "lossage-size"
             | "executable-find"
@@ -1108,10 +1109,10 @@ pub(super) fn call(
         }
         "describe-function" => {
             need_args(name, args, 1)?;
-            let _ = get_or_create_buffer(interp, "*Help*");
+            let (help_id, _) = get_or_create_buffer(interp, "*Help*");
             let mut docs = Vec::new();
-            let target = args[0].as_symbol().ok();
-            if let Some(symbol) = target {
+            let target = args[0].as_symbol().ok().map(str::to_string);
+            if let Some(symbol) = target.as_deref() {
                 if let Some(doc) =
                     interp.get_symbol_property(symbol, "emaxx-cl-defgeneric-documentation")
                 {
@@ -1127,9 +1128,33 @@ pub(super) fn call(
                         docs.push(string_text(&doc)?);
                     }
                 }
+                if docs.is_empty() {
+                    // Same fallbacks as `documentation': the version's DOC
+                    // file, then the lisp sources on the load path.
+                    if let Some(doc) = builtin_doc_from_doc_file(symbol)
+                        .or_else(|| builtin_doc_from_lisp_sources(symbol))
+                    {
+                        docs.push(doc);
+                    }
+                }
             } else if let Some(doc) = function_documentation(interp, &args[0], env) {
                 docs.push(string_text(&doc)?);
             }
+            // GNU renders the description into *Help*: a "NAME is a
+            // function" header line followed by the docstring.
+            let mut help_text = String::new();
+            if let Some(symbol) = target.as_deref() {
+                help_text.push_str(&format!("{symbol} is a function.\n\n"));
+            }
+            help_text.push_str(&docs.join("\n"));
+            help_text.push('\n');
+            let previous_buffer = interp.current_buffer_id();
+            interp.switch_to_buffer_id(help_id)?;
+            let start = interp.buffer.point_min();
+            let end = interp.buffer.point_max();
+            let _ = interp.delete_region_current_buffer(start, end);
+            interp.insert_current_buffer(&help_text);
+            interp.switch_to_buffer_id(previous_buffer)?;
             Ok(Value::String(docs.join("\n")))
         }
         "macroexp-quote" => {
@@ -1233,9 +1258,49 @@ pub(super) fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             interp.schedule_timer(args[2].clone(), args[3..].to_vec());
-            Ok(Value::String("#<timer>".into()))
+            // GNU returns a 10-slot timer vector (timer.el's cl-defstruct
+            // with :type vector): [triggered high low usecs repeat-delay
+            // function args idle-delay psecs integral-multiple].
+            Ok(Value::list([
+                Value::symbol("vector-literal"),
+                Value::Nil,
+                Value::Integer(0),
+                Value::Integer(0),
+                Value::Integer(0),
+                args.get(1).cloned().unwrap_or(Value::Nil),
+                args[2].clone(),
+                Value::list(args[3..].to_vec()),
+                if name == "run-with-idle-timer" {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+                Value::Integer(0),
+                Value::Nil,
+            ]))
         }
-        "cancel-timer" => Ok(Value::Nil),
+        "cancel-timer" => {
+            need_arg_range(name, args, 1, 1)?;
+            if let Ok(items) = vector_items(&args[0])
+                && items.len() == 10
+            {
+                interp.unschedule_timer_by_function(&items[5]);
+            }
+            Ok(Value::Nil)
+        }
+        "timer-event-handler" => {
+            need_args(name, args, 1)?;
+            let items = vector_items(&args[0])?;
+            if items.len() != 10 {
+                return Err(LispError::TypeError("timerp".into(), args[0].type_name()));
+            }
+            // Fire the timer once, removing it from the native queue so a
+            // later drain doesn't run it twice.  GNU reschedules repeating
+            // timers; the native queue models one-shot firing.
+            interp.unschedule_timer_by_function(&items[5]);
+            let timer_args = items[6].to_vec().unwrap_or_default();
+            call_function_value(interp, &items[5], &timer_args, env)
+        }
         "timerp" => {
             need_args(name, args, 1)?;
             // GNU timer.el: timers are plain 10-slot vectors.
@@ -1286,6 +1351,16 @@ pub(super) fn call(
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
                     .unwrap_or_default()
+            } else if interp
+                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                .is_some()
+            {
+                // The buffer-local mirror (fns... t) shadows the global
+                // value here; GNU's global add-hook reads the DEFAULT.
+                interp
+                    .default_value(&hook_name)
+                    .map(|value| value.to_vec().unwrap_or_default())
+                    .unwrap_or_default()
             } else {
                 interp
                     .lookup_var(&hook_name, env)
@@ -1303,7 +1378,25 @@ pub(super) fn call(
                 hooks.sort_by_key(post_self_insert_hook_depth);
             }
             if local {
-                interp.set_buffer_local_hook(interp.current_buffer_id(), &hook_name, hooks);
+                let buffer_id = interp.current_buffer_id();
+                interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
+                // GNU represents local hooks as a buffer-local variable
+                // value ending in `t' (the marker for "also run the
+                // default"); reads like (member #'f hook-var) rely on it.
+                hooks.push(Value::T);
+                interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
+            } else if interp
+                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                .is_some()
+            {
+                // A plain set would hit the buffer-local mirror; GNU's
+                // global add-hook writes the default (setq-default).
+                super::call(
+                    interp,
+                    "set-default",
+                    &[Value::Symbol(hook_name.clone()), Value::list(hooks)],
+                    env,
+                )?;
             } else {
                 interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
             }
@@ -1403,10 +1496,9 @@ pub(super) fn call(
             }
             let hook_name = args[0].as_symbol()?;
             let wrapper = resolve_callable(interp, &args[1], env)?;
-            let hook_values = interp
-                .lookup_var(hook_name, env)
-                .map(|value| value.to_vec().unwrap_or_default())
-                .unwrap_or_default();
+            // Merge global and buffer-local members like `run-hooks'
+            // (also strips the local-hook `t' sentinel).
+            let hook_values = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
             for hook in hook_values {
                 let mut wrapper_args = vec![hook];
                 wrapper_args.extend_from_slice(&args[2..]);
@@ -1446,13 +1538,21 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let hook_name = args[0].as_symbol()?.to_string();
             let function = args[1].clone();
-            let local = args
-                .get(2)
-                .is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
-                || args.get(3).is_some_and(|value| value.is_truthy());
+            // (remove-hook HOOK FUNCTION &optional LOCAL) — no DEPTH slot.
+            let local = args.get(2).is_some_and(|value| value.is_truthy());
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                    .unwrap_or_default()
+            } else if interp
+                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                .is_some()
+            {
+                // The buffer-local mirror (fns... t) shadows the global
+                // value here; GNU's global add-hook reads the DEFAULT.
+                interp
+                    .default_value(&hook_name)
+                    .map(|value| value.to_vec().unwrap_or_default())
                     .unwrap_or_default()
             } else {
                 interp
@@ -1462,7 +1562,32 @@ pub(super) fn call(
             };
             hooks.retain(|hook| hook != &function);
             if local {
-                interp.set_buffer_local_hook(interp.current_buffer_id(), &hook_name, hooks);
+                let buffer_id = interp.current_buffer_id();
+                if hooks.is_empty() {
+                    // GNU kills the local binding when only the `t'
+                    // sentinel would remain.
+                    interp.remove_buffer_local_hook(buffer_id, &hook_name);
+                    super::call(
+                        interp,
+                        "kill-local-variable",
+                        &[Value::Symbol(hook_name.clone())],
+                        env,
+                    )?;
+                } else {
+                    interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
+                    hooks.push(Value::T);
+                    interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
+                }
+            } else if interp
+                .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                .is_some()
+            {
+                super::call(
+                    interp,
+                    "set-default",
+                    &[Value::Symbol(hook_name.clone()), Value::list(hooks)],
+                    env,
+                )?;
             } else {
                 interp.set_variable(&hook_name, Value::list(hooks), &mut Vec::new());
             }
