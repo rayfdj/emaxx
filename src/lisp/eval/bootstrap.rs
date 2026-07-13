@@ -209,6 +209,27 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             plist: coding_plist('?', std::iter::empty()),
         },
         CodingSystemState {
+            name: "undecided-unix".into(),
+            base: "undecided".into(),
+            kind: "undecided".into(),
+            eol_type: Some(0),
+            plist: coding_plist('?', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "undecided-dos".into(),
+            base: "undecided".into(),
+            kind: "undecided".into(),
+            eol_type: Some(1),
+            plist: coding_plist('?', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "undecided-mac".into(),
+            base: "undecided".into(),
+            kind: "undecided".into(),
+            eol_type: Some(2),
+            plist: coding_plist('?', std::iter::empty()),
+        },
+        CodingSystemState {
             name: "no-conversion".into(),
             base: "no-conversion".into(),
             kind: "raw-text".into(),

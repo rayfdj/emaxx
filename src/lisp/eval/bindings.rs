@@ -28,29 +28,36 @@ impl Interpreter {
                 }
             }
         }
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
+        // Cow avoids a per-lookup String allocation for the overwhelmingly
+        // common non-aliased name.
+        let resolved: std::borrow::Cow<str> = if self.direct_variable_alias(name).is_none() {
+            name.into()
+        } else {
+            self.resolve_variable_name(name)
+                .unwrap_or_else(|_| name.to_string())
+                .into()
+        };
+        let resolved = resolved.as_ref();
         let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
             restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
         });
         // DEFVAR_PER_BUFFER semantics: the current buffer's own local wins
         // over a global `let' made in another buffer.
-        if self.is_auto_buffer_local(&resolved)
-            && let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved)
+        if self.is_auto_buffer_local(resolved)
+            && let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved)
         {
             return Some(value);
         }
-        if active_global_special && let Some(value) = self.global_value(&resolved) {
+        if active_global_special && let Some(value) = self.global_value(resolved) {
             return Some(value);
         }
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved) {
             return Some(value);
         }
-        if let Some(value) = self.global_value(&resolved) {
+        if let Some(value) = self.global_value(resolved) {
             return Some(value);
         }
-        self.builtin_var_value(&resolved)
+        self.builtin_var_value(resolved)
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
@@ -668,24 +675,25 @@ impl Interpreter {
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
-        if primitives::prefer_builtin_override(name) {
+        let facts = primitives::name_facts(name);
+        if facts.prefer_override {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
-        let name_is_builtin =
-            primitives::is_builtin(name) || primitives::is_special_form_name(name);
+        let name_is_builtin = facts.builtin || facts.special_form;
         for frame in env.iter().rev() {
+            // Marker frames (oclosure slots, cl-flet/cl-labels functions)
+            // always carry their marker as the FIRST entry, so one
+            // comparison classifies the frame.
+            let frame_marker = frame.first().map(|(key, _)| key.as_str());
             // Oclosure slot frames bind names like `car'/`cdr' as VALUES;
             // GNU never resolves the function position through them.
-            if frame
-                .iter()
-                .any(|(k, _)| k == crate::lisp::eval::OCLOSURE_TYPE_MARKER)
-            {
+            if frame_marker == Some(crate::lisp::eval::OCLOSURE_TYPE_MARKER) {
                 continue;
             }
             // A builtin's function position can only be shadowed by a real
             // function frame (cl-flet/cl-labels); a plain `let' binding a
             // VARIABLE named `car' to a lambda must not hijack `(car x)'.
-            if name_is_builtin && !frame.iter().any(|(k, _)| k == FUNCTION_FRAME_MARKER) {
+            if name_is_builtin && frame_marker != Some(FUNCTION_FRAME_MARKER) {
                 continue;
             }
             for (k, v) in frame.iter().rev() {
@@ -703,16 +711,71 @@ impl Interpreter {
         if matches!(name, "incf" | "decf") {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
-        if primitives::is_builtin(name) {
-            return Some(Value::BuiltinFunc(name.to_string()));
-        }
         // Special forms live in function cells in GNU Emacs, so symbol
         // indirection (indirect-function, fboundp, macrop) must resolve them
         // instead of signaling a void-function error.
-        if primitives::is_special_form_name(name) {
+        if name_is_builtin {
             return Some(Value::BuiltinFunc(name.to_string()));
         }
         None
+    }
+
+    /// Resolve NAME the way GNU macro dispatch sees the function cell:
+    /// macros live in function cells, so only genuine function-binding
+    /// frames (cl-flet/cl-labels push FUNCTION_FRAME_MARKER as their
+    /// FIRST entry) can shadow them — a plain `let'-bound value never
+    /// does in GNU.  Skipping the per-entry scan of ordinary frames
+    /// keeps the per-form macro probe cheap on deep call stacks.  The
+    /// bool is true when the binding came from an env frame (such a
+    /// verdict must not be cached as a global fact).
+    fn macro_position_binding(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
+        let facts = primitives::name_facts(name);
+        if facts.prefer_override {
+            return Some((Value::BuiltinFunc(name.to_string()), false));
+        }
+        for frame in env.iter().rev() {
+            if frame
+                .first()
+                .is_none_or(|(key, _)| key != FUNCTION_FRAME_MARKER)
+            {
+                continue;
+            }
+            for (key, value) in frame.iter().rev() {
+                if key == name && matches!(value, Value::BuiltinFunc(_) | Value::Lambda(_, _, _)) {
+                    return Some((value.clone(), true));
+                }
+            }
+        }
+        if let Some(value) = self.functions_index.get(name) {
+            return Some((value.clone(), false));
+        }
+        if let Some(value) = builtin_autoload_function(name) {
+            return Some((value, false));
+        }
+        if matches!(name, "incf" | "decf") || facts.builtin || facts.special_form {
+            return Some((Value::BuiltinFunc(name.to_string()), false));
+        }
+        None
+    }
+
+    /// `macro_position_binding' with symbol-alias indirection, for the
+    /// is-this-an-autoloaded-macro probe in macro expansion.  The bool
+    /// is true when any step resolved through an env frame.
+    pub(crate) fn macro_position_function(&self, name: &str, env: &Env) -> Option<(Value, bool)> {
+        let mut current = name.to_string();
+        let mut seen = HashSet::new();
+        let mut from_frame = false;
+        loop {
+            if !seen.insert(current.clone()) {
+                return None;
+            }
+            let (binding, frame_hit) = self.macro_position_binding(&current, env)?;
+            from_frame |= frame_hit;
+            match binding {
+                Value::Symbol(next) => current = next,
+                other => return Some((other, from_frame)),
+            }
+        }
     }
 
     pub fn lookup_function(&self, name: &str, env: &Env) -> Result<Value, LispError> {
@@ -785,6 +848,7 @@ impl Interpreter {
     /// every push/extend into `macros` must call this.
     pub(crate) fn note_macro_added(&mut self, name: &str) {
         *self.macros_name_counts.entry(name.to_string()).or_insert(0) += 1;
+        self.note_definition_changed();
     }
 
     /// Track a macro-table removal (drain/rename); the counterpart of
@@ -797,6 +861,51 @@ impl Interpreter {
                 *count -= 1;
             }
         }
+        self.note_definition_changed();
+    }
+
+    /// Invalidate all cached not-a-macro verdicts; called on every
+    /// function or macro (re)definition.
+    pub(crate) fn note_definition_changed(&mut self) {
+        self.definition_generation = self.definition_generation.wrapping_add(1);
+    }
+
+    /// Whether the macroexpansion probe already concluded (at the current
+    /// definition generation) that NAME is not a macro.
+    pub(crate) fn known_not_macro(&self, name: &str) -> bool {
+        self.not_macro_names.get(name).copied() == Some(self.definition_generation)
+    }
+
+    /// Record a global (frame-independent) not-a-macro verdict for NAME.
+    pub(crate) fn note_not_macro(&mut self, name: &str) {
+        let generation = self.definition_generation;
+        self.not_macro_names.insert(name.to_string(), generation);
+    }
+
+    /// A still-current cached expansion for FORM (keyed by its car cell
+    /// identity — the entry pins the form so the address can't be reused).
+    pub(crate) fn cached_macro_expansion(&self, form: &Value) -> Option<Value> {
+        let Value::Cons(car, _) = form else {
+            return None;
+        };
+        let key = std::rc::Rc::as_ptr(car) as usize;
+        let (generation, expanded, _) = self.macro_expansion_cache.get(&key)?;
+        (*generation == self.definition_generation).then(|| expanded.clone())
+    }
+
+    /// Cache FORM's macro expansion at the current definition generation.
+    pub(crate) fn cache_macro_expansion(&mut self, form: &Value, expanded: Value) {
+        let Value::Cons(car, _) = form else {
+            return;
+        };
+        let key = std::rc::Rc::as_ptr(car) as usize;
+        // A runaway cache would pin unbounded transient forms; the cap is
+        // far above any real load (function bodies are finite).
+        if self.macro_expansion_cache.len() >= (1 << 20) {
+            self.macro_expansion_cache.clear();
+        }
+        self.macro_expansion_cache
+            .insert(key, (self.definition_generation, expanded, form.clone()));
     }
 
     /// Append cl-macrolet-style local macros to the positional table,
@@ -1071,7 +1180,7 @@ impl Interpreter {
     pub(crate) fn function_cell_macro_expander(&self, name: &str, env: &Env) -> Option<Value> {
         let mut current = name.to_string();
         for _ in 0..10 {
-            let binding = self.raw_function_binding(&current, env)?;
+            let (binding, _) = self.macro_position_binding(&current, env)?;
             match binding {
                 Value::Symbol(next) => current = next,
                 Value::Cons(car, cdr) => {
@@ -1132,6 +1241,7 @@ impl Interpreter {
         self.functions_index
             .insert(name.to_string(), function.clone());
         self.functions.push((name.to_string(), function));
+        self.note_definition_changed();
     }
 
     /// Rebuild the last-wins index entry for NAME after an ad-hoc removal
@@ -1146,6 +1256,7 @@ impl Interpreter {
                 self.functions_index.remove(name);
             }
         }
+        self.note_definition_changed();
     }
 
     pub fn function_binding_name(&self, function: &Value) -> Option<String> {
@@ -1186,6 +1297,7 @@ impl Interpreter {
     pub fn remove_all_function_bindings(&mut self, name: &str) {
         self.functions.retain(|(fname, _)| fname != name);
         self.functions_index.remove(name);
+        self.note_definition_changed();
     }
 
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {

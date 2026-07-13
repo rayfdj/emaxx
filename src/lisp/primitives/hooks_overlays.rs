@@ -53,7 +53,7 @@ pub(crate) fn hook_values(
             base = interp.default_value(hook_name);
         }
     }
-    let mut hooks = base
+    let mut global = base
         .map(|value| {
             if value.is_nil() {
                 Vec::new()
@@ -64,11 +64,25 @@ pub(crate) fn hook_values(
         .unwrap_or_default();
     // GNU's `t' inside a hook value means "run the default here"; the
     // store-merge below covers the local functions, so drop the sentinel.
-    hooks.retain(|hook| !matches!(hook, Value::T));
-    if let Some(local) = local {
-        hooks.extend(local);
+    global.retain(|hook| !matches!(hook, Value::T));
+    match local {
+        // GNU runs a buffer-local hook by walking its value
+        // `(local-fns... t)' and splicing the global handlers at the `t'
+        // sentinel (stored last here), so buffer-local functions run
+        // BEFORE the global ones — e.g. `erc-once-with-server-event'
+        // installs a local one-shot at depth -95 that must pre-empt the
+        // global `erc-networks-on-MOTD-end' and stop the
+        // `run-hook-with-args-until-success' chain.
+        Some(local) => {
+            let mut result: Vec<Value> = local
+                .into_iter()
+                .filter(|h| !matches!(h, Value::T))
+                .collect();
+            result.extend(global);
+            result
+        }
+        None => global,
     }
-    hooks
 }
 
 pub(crate) fn run_named_hooks(

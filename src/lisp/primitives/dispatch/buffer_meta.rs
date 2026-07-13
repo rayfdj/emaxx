@@ -94,6 +94,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "coding-system-get"
             | "coding-system-put"
             | "coding-system-eol-type"
+            | "coding-system-change-eol-conversion"
             | "coding-system-base"
             | "coding-system-equal"
             | "check-coding-systems-region"
@@ -1255,6 +1256,61 @@ pub(super) fn call(
                 .coding_system_base_name(&coding)
                 .map(Value::Symbol)
                 .unwrap_or(Value::Nil))
+        }
+        "coding-system-change-eol-conversion" => {
+            // GNU mule-cmds.el: return CODING-SYSTEM's variant with the
+            // given EOL-TYPE (unix/dos/mac/0/1/2), the base when EOL-TYPE
+            // is nil (auto-detect), or CODING-SYSTEM itself when nothing
+            // changes.  In emaxx's model a base system has eol_type None
+            // (GNU's vector of variants) and variants are "BASE-unix" etc.
+            need_args(name, args, 2)?;
+            // GNU: nil is a valid designator (base no-conversion, eol 0).
+            let (base, original) = if args[0].is_nil() {
+                ("no-conversion".to_string(), Some(0))
+            } else {
+                let coding = checked_coding_symbol(interp, &args[0])?;
+                (
+                    interp
+                        .coding_system_base_name(&coding)
+                        .unwrap_or_else(|| coding.clone()),
+                    interp.coding_system_eol_type_value(&coding),
+                )
+            };
+            let eol_type = match &args[1] {
+                Value::Nil => None,
+                Value::Integer(n) => Some(*n),
+                Value::Symbol(symbol) => match symbol.as_str() {
+                    "unix" => Some(0),
+                    "dos" => Some(1),
+                    "mac" => Some(2),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(eol_type) = eol_type else {
+                // nil EOL-TYPE: an already-undetermined system stays
+                // as-is, a fixed one falls back to its base.
+                return Ok(if original.is_none() {
+                    args[0].clone()
+                } else {
+                    Value::Symbol(base)
+                });
+            };
+            if original == Some(eol_type) {
+                return Ok(args[0].clone());
+            }
+            let suffix = match eol_type {
+                0 => "unix",
+                1 => "dos",
+                2 => "mac",
+                _ => return Ok(Value::Nil),
+            };
+            let variant = format!("{base}-{suffix}");
+            Ok(if interp.has_coding_system(&variant) {
+                Value::Symbol(variant)
+            } else {
+                Value::Nil
+            })
         }
         "coding-system-equal" => {
             need_args(name, args, 2)?;

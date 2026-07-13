@@ -1274,9 +1274,7 @@ pub(super) fn call(
             let lexical = interp
                 .lookup_var("lexical-binding", env)
                 .is_some_and(|value| value.is_truthy());
-            if !lexical
-                || interp.is_dynamic_binding_name(var)
-                || interp.local_special_declared(var)
+            if !lexical || interp.is_dynamic_binding_name(var) || interp.local_special_declared(var)
             {
                 return Ok(Value::T);
             }

@@ -720,11 +720,23 @@ pub(super) fn call(
         "featurep" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            Ok(if interp.has_feature(symbol) {
-                Value::T
-            } else {
-                Value::Nil
-            })
+            if !interp.has_feature(symbol) {
+                return Ok(Value::Nil);
+            }
+            // GNU: with SUBFEATURE, check (memq SUBFEATURE (get FEATURE
+            // 'subfeatures)) — `member', since subfeatures are lists like
+            // (:family local).
+            if let Some(subfeature) = args.get(1).filter(|value| value.is_truthy()) {
+                let subfeatures = interp
+                    .get_symbol_property(symbol, "subfeatures")
+                    .unwrap_or(Value::Nil);
+                let found =
+                    subfeatures.to_vec().unwrap_or_default().iter().any(|item| {
+                        crate::lisp::primitives::values_equal(interp, item, subfeature)
+                    });
+                return Ok(if found { Value::T } else { Value::Nil });
+            }
+            Ok(Value::T)
         }
         "zlib-available-p" => Ok(Value::T),
         // Built without GnuTLS, like a GNU build configured --without-gnutls.

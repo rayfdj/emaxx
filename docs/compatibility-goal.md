@@ -19,7 +19,107 @@ counts as the progress denominator.
 
 ## Current State
 
-- Verified through selector 2881/7080:
+- Verified through selector 2896/7080: `erc-scenarios-match.el'
+  passes check-all (2895..2896; the intervening join/log scenario
+  files select 0).  Root cause was `goto-char' RETURN VALUE: GNU
+  `Fgoto_char' returns its POSITION argument UNCHANGED (a marker stays
+  a marker), while emaxx returned the clamped integer point.
+  `erc-display-msg' does `(marker-position (goto-char erc-insert-marker))'
+  — with the integer return, `marker-position' got an integer and
+  signalled `wrong-type-argument'.  Supporting compat additions the
+  same scenario needed (all oracle-validated in isolation):
+  - `coding-system-change-eol-conversion' native (buffer_meta.rs):
+    returns the eol variant (unix/dos/mac/0/1/2), the base for nil
+    eol-type, or the system itself when unchanged; nil designator maps
+    to no-conversion/eol 0.  Added `undecided-{unix,dos,mac}' variants
+    to the coding-system bootstrap so `undecided' has a full eol set.
+  - `filepos-to-bufferpos' / `bufferpos-to-filepos' /
+    `filepos-to-bufferpos--dos' ported verbatim from GNU mule-util.el
+    into simple_compat.el (`erc--split-line' splits outgoing lines at
+    encoded byte boundaries).
+  - `find-composition' subset in simple_compat.el: emaxx has no
+    automatic-composition engine, so it consults only the
+    `composition' text property (erc avoids splitting a composed run).
+  NOTE: `goto-char' is heavily used — full 141-file sweep + 1125 unit
+  tests confirm the return-value change regresses nothing.
+- Verified through selector 2894/7080: `erc-scenarios-internal.el'
+  passes check-all (all erc-d-tests.el selectors, including the three
+  timer-teardown tests and the unix-socket test).  Two fronts:
+  - GNU process semantics (the "timer race" was really a MISSING
+    SENTINEL): `delete-process' on a network process runs the
+    process's own sentinel SYNCHRONOUSLY with "deleted\n"
+    (Fdelete_process sets status (exit 0) and calls status_notify
+    in-line; a process whose death was already notified is out of the
+    process list, so the sentinel never fires twice —
+    `delete_process_notifying' in processes.rs notifies while the
+    network runtime is still attached, demoting sentinel errors like
+    exec_sentinel unless debug-on-error).  erc-d's teardown chain
+    rides on that sentinel: the first `erc-d--expire' finalizer
+    deletes its client, the "deleted" event reaches
+    `erc-d--process-sentinel', and THAT calls `erc-d--teardown' —
+    deterministically at ~1.03s like the oracle, no timer race at all.
+  - `process-contact' fidelity: the full keyword contact plist is now
+    stored per process (GNU p->childp) with :service resolved and
+    :local/:remote sockaddr vectors ([127 0 0 1 PORT]) appended;
+    accepted children get the server's plist with :server nil, :host
+    peer-ip, :service peer-port; KEY t returns the plist, any KEY on a
+    real child returns t; children are named "NAME <HOST:PORT>" (with
+    the space, like GNU server_accept_connection).
+    `erc-d-run-nonstandard-messages' needed exactly this (its log id
+    is `(aref (plist-get (process-contact P t) :remote) 4)').
+  - Unix domain sockets (`:family local', erc-d-unix-socket-direct):
+    NetworkRuntime::UnixListener/UnixStream; :service is the socket
+    PATH; contact :local is the path (server) / "" (client), children
+    are "NAME <N>" (GNU connect_counter) with :host t :remote "";
+    delete-process leaves the socket file for the test to delete.
+    Two-argument `featurep' checks (get FEATURE 'subfeatures), and
+    make-network-process is provided with GNU's subfeature list.
+  - Interpreter throughput (erc-d-run-no-block is a pure client-speed
+    race: the fuzzy ~join-bar exchange expires 1.5s after creation,
+    and erc must send JOIN #bar through flood control and have the
+    in-process dumb server match it first).  Message handling went
+    ~205ms -> ~90ms per PRIVMSG:
+    - Per-callsite MACRO-EXPANSION CACHE (the big one): compiled GNU
+      code expands each macro call once, while emaxx re-expanded
+      pcase/rx/when-let machinery on every evaluation
+      (internal--build-bindings alone was 320 calls/message).  Cached
+      by the form's car-cell identity — the entry pins the form so
+      the address can't be reused — and validated against a
+      definition generation bumped on every function/macro/advice
+      (re)definition, cl-macrolet push/drain, and gv-expander/
+      gv-setter/setf-method/cl-deftype-handler property writes.
+    - A not-a-macro name verdict cache (same generation) skips the
+      whole macro probe for plain function calls; verdicts influenced
+      by cl-flet frame shadowing are never cached, and frame shadowing
+      can only make a name LESS of a macro so cached verdicts stay
+      correct under any frames.
+    - `name_facts' memo (dispatch.rs): is_builtin/special-form/
+      prefer-override/dispatch-module routing were giant linear
+      `matches!' chains consulted per form; now one hash lookup.
+    - Macro-position resolution scans only FUNCTION_FRAME_MARKER
+      frames (GNU: value bindings never shadow macros in function
+      cells); marker frames carry the marker as their FIRST entry.
+    - `sf_if' runs an allocation-free setcdr pre-scan before engaging
+      the self-mutating-form tail-alias machinery; variable lookup
+      fast-paths non-aliased names (Cow, no per-lookup String).
+    - EMAXX_PROFILE=<path> (dev-only): flat per-name call/self-time
+      profiler in call_function_value, dumped periodically.
+- NEXT = selector 2897 (erc-scenarios-misc-commands--AMSG-GMSG-AME-GME
+  — the ONLY manifest-selected test in misc-commands.el; MOTD/SQUERY
+  etc. are check-all-only, NOT frontier selectors, so don't chase
+  them).  Bug: emaxx double-sends — it calls erc--send-message-nested
+  an EXTRA time with the raw "/amsg ..." input, so the dumb server
+  gets "PRIVMSG #foo :/amsg 1 foonet only" instead of ":1 foonet only"
+  (details + trace pointers in the continuation doc).  Then
+  erc-scenarios-stamp.el 2898..2900 (date-mode/left-and-right,
+  left/display-margin-mode, legacy-date-stamps), erc-services-tests
+  (2901..2917), erc-stamp-tests, erc-tests.  ALWAYS consult
+  `selected=' in compat/oracle_tests_all.txt before working a
+  check-all failure — most scenario-file check-all failures are on
+  NON-selected tests and don't gate the frontier.  Sweep gate =
+  /tmp/probes/sweepH.sh over prefix-files20.txt + znc = 142 runs on
+  frozen /tmp/probes/bin binaries.
+- Previous milestone — verified through selector 2881/7080:
   `erc-scenarios-base-upstream-recon-znc.el' (2881) passes check-all
   (both `--znc/severed' and the :expensive two-network `--znc' test).
   The decisive fix was a NATIVE `format-spec' (prefer_builtin_override
@@ -123,26 +223,29 @@ counts as the progress denominator.
     marker-free templates as-is (GNU structure sharing) with a
     per-template verdict cache.  erc message processing dropped from
     ~250ms to low-ms per line, fitting erc-d dialog timeouts.
-- NEXT: erc-scenarios-internal (2882..2894) — 6 remaining check-all
-  failures form a coherent erc-d server-side cluster (the manifest
-  selectors are erc-d unit tests, but check-all also compares the
-  :expensive erc-d-run-* live tests): erc-d-run-{linger-direct} and
-  erc-d-run-unexpected-depleted (FIXED by the forward-list scan-error
-  change) fail on "dumb-server death" (server teardown timer never
-  fires); erc-d-run-{no-block,nonstandard-messages} miss server reply
-  timers — no-block's server matches through mode-foo but the client's
-  MODE #bar never draws mode-bar's 324/329 (an erc-d fuzzy-exchange /
-  incremental advance-or-die ordering subtlety, not a plain
-  reply-dispatch bug); erc-d-run-proxy-direct-subprocess{,-lib} fail a
-  `(car libs)' cl-assertion (subprocess spawn); erc-d-t-with-cleanup
-  spares `*foo*' correctly in isolation but fails when an `echo'
-  start-process binding is present.  All route through erc-d
-  scheduling everything (replies, teardown, self-rescheduling
-  erc-d--on-request) via `run-at-time nil' timers that the eager pump
-  must fire in the right order during the client's
-  accept-process-output waits.  Then match 2895..2896, misc-commands
-  2897, stamp 2898..2900, erc-services (2901..2917, plstore cluster),
-  erc-stamp (2918..2929), erc-tests (2930..3023).
+- NEXT: erc-scenarios-internal (2882..2894) — 3 remaining check-all
+  failures (down from 6; the manifest selectors are erc-d unit tests,
+  but check-all also compares the :expensive erc-d-run-* live tests).
+  FIXED this batch: erc-d-run-unexpected-depleted (forward-list
+  scan-error at EOF), erc-d-run-proxy-direct-subprocess{,-lib}
+  (locate-library now honors its PATH arg), erc-d-t-with-cleanup
+  (start-process/make-process now name the process from the NAME arg,
+  not the program — the test reads `(process-name echo)').  STILL
+  FAILING, a deep timer-coordination cluster: erc-d-run-linger-direct
+  (:unstable; oracle passes deterministically in ~1.03s), no-block,
+  nonstandard-messages.  The cancel-timer args-by-identity fix (was
+  matching sibling dialog records by structural `equal', cross-
+  cancelling the wrong linger timer) helped but did not close them —
+  the residual is that emaxx's eager-pump timer model doesn't
+  reproduce real Emacs's coordination of two near-simultaneous
+  `erc-d--expire' timers with intervening `finalize-dialog' /
+  `delete-process' (only one dialog's teardown-this-dialog-at-least
+  reaches `erc-d--teardown', so the server never dies).  This needs
+  the pump to fire due timers and interleave process events the way
+  the C event loop does; it is NOT a one-liner.  Then match
+  2895..2896, misc-commands 2897, stamp 2898..2900, erc-services
+  (2901..2917, plstore cluster), erc-stamp (2918..2929), erc-tests
+  (2930..3023).
 - Verified through selector 2879/7080: erc-networks (2812..2854,
   43/43), erc-nicks (2855..2870, 16/16), erc-sasl (2871..2879, 9/9
   selected; the unstable ecdsa placeholder now SKIPS like GNU);

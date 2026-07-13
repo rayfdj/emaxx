@@ -1233,6 +1233,34 @@ pub(super) fn call(
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
             let library = string_text(&args[0])?;
+            // Third argument: an explicit search PATH overriding `load-path'
+            // (erc-d's subprocess launcher locates its own library this way).
+            if let Some(path_arg) = args.get(2).filter(|value| value.is_truthy()) {
+                let nosuffix = args.get(1).is_some_and(Value::is_truthy);
+                let has_ext = library.ends_with(".el") || library.ends_with(".elc");
+                // GNU searches load-suffixes (.elc before .el) unless the
+                // NOSUFFIX arg is set or the name already carries one.  The
+                // package tests compile to .elc and gzip the .el, so the
+                // .elc must win — matching real locate-library.
+                let suffixes: &[&str] = if nosuffix || has_ext {
+                    &[""]
+                } else {
+                    &[".elc", ".el"]
+                };
+                for dir in path_arg.to_vec()? {
+                    let Ok(dir_text) = string_text(&dir) else {
+                        continue;
+                    };
+                    for suffix in suffixes {
+                        let candidate =
+                            std::path::Path::new(&dir_text).join(format!("{library}{suffix}"));
+                        if candidate.is_file() {
+                            return Ok(Value::String(candidate.display().to_string()));
+                        }
+                    }
+                }
+                return Ok(Value::Nil);
+            }
             Ok(resolve_load_target_in_env(interp, &library, env)
                 .map(|path| Value::String(path.display().to_string()))
                 .unwrap_or(Value::Nil))
@@ -2108,13 +2136,14 @@ pub(super) fn call(
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
         "make-process" | "make-pipe-process" => {
-            let (buffer_id, program, argv, filter, coding) = parse_make_process_args(interp, args)?;
+            let (buffer_id, program, argv, filter, coding, name) =
+                parse_make_process_args(interp, args)?;
             let runtime = if let Some(command) = program.as_ref() {
                 Some(spawn_persistent_process(interp, command, &argv, env)?)
             } else {
                 None
             };
-            let process = interp.create_process(buffer_id, program, argv, runtime)?;
+            let process = interp.create_process(buffer_id, program, argv, runtime, name)?;
             let process_id = interp.resolve_process_id(&process)?;
             interp.set_process_filter(process_id, filter)?;
             if let Some((decoding, encoding)) = coding {
@@ -2131,7 +2160,14 @@ pub(super) fn call(
                 .map(string_text)
                 .collect::<Result<Vec<_>, _>>()?;
             let runtime = spawn_persistent_process(interp, &program, &argv, env)?;
-            interp.create_process(buffer_id, Some(program), argv, Some(runtime))
+            let process_name = string_text(&args[0])?;
+            interp.create_process(
+                buffer_id,
+                Some(program),
+                argv,
+                Some(runtime),
+                Some(process_name),
+            )
         }
         "get-buffer-process" => {
             need_arg_range(name, args, 0, 1)?;
@@ -2277,35 +2313,28 @@ pub(super) fn call(
                 .unwrap_or(Value::Nil))
         }
         "process-contact" => {
+            // GNU Fprocess_contact: the stored contact plist (p->childp)
+            // is t for a real child and is returned as-is no matter the
+            // KEY; for a network process KEY t returns the whole plist,
+            // KEY nil the (HOST SERVICE) pair, any other KEY a plist_get.
             need_arg_range(name, args, 1, 3)?;
             let process_id = interp.resolve_process_id(&args[0])?;
-            let Some((host, service, remote, is_server)) = interp.process_contact_info(process_id)
-            else {
-                return Ok(Value::Nil);
-            };
-            let key = args.get(1).and_then(|value| value.as_symbol().ok());
-            // erc-d only calls (process-contact PROC) and, via the format
-            // helper, reads :service / :host from the full plist form.
-            match key {
-                Some(":service") => Ok(service
-                    .map(Value::Integer)
-                    .unwrap_or_else(|| Value::Integer(0))),
-                Some(":host") => Ok(host
-                    .map(Value::String)
-                    .unwrap_or_else(|| Value::String("local".into()))),
-                Some(":server") => Ok(if is_server { Value::T } else { Value::Nil }),
-                _ => {
-                    // (HOST SERVICE) list, or T for a server with no info.
-                    let host_value = remote
-                        .clone()
-                        .or(host)
-                        .map(Value::String)
-                        .unwrap_or_else(|| Value::String("local".into()));
-                    let service_value = service
-                        .map(Value::Integer)
-                        .unwrap_or_else(|| Value::Integer(0));
-                    Ok(Value::list([host_value, service_value]))
-                }
+            let contact = interp
+                .process_contact_plist(process_id)
+                .unwrap_or(Value::Nil);
+            if !matches!(contact, Value::Cons(_, _)) {
+                return Ok(contact);
+            }
+            match args.get(1) {
+                Some(Value::T) => Ok(contact),
+                None | Some(Value::Nil) => Ok(Value::list([
+                    contact_plist_get(&contact, ":host"),
+                    contact_plist_get(&contact, ":service"),
+                ])),
+                Some(key) => Ok(key
+                    .as_symbol()
+                    .map(|key| contact_plist_get(&contact, key))
+                    .unwrap_or(Value::Nil)),
             }
         }
         "make-network-process" => make_network_process(interp, args, env),
@@ -2362,7 +2391,7 @@ pub(super) fn call(
                 ));
             };
             let process_id = interp.resolve_process_id(&process_value)?;
-            interp.delete_process(process_id)?;
+            delete_process_notifying(interp, process_id, env)?;
             Ok(Value::Nil)
         }
         "set-process-query-on-exit-flag" => {

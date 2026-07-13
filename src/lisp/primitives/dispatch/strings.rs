@@ -1093,11 +1093,7 @@ pub(super) fn call(
                         apply_format_spec_flags_indexed(replacement, &parsed);
                     rep_props.push(replacement_props);
                     let instance = rep_props.len();
-                    provenance.extend(
-                        sources
-                            .iter()
-                            .map(|source| (instance, *source, spec_start)),
-                    );
+                    provenance.extend(sources.iter().map(|source| (instance, *source, spec_start)));
                     result.push_str(&formatted);
                     if split {
                         split_result.push(Value::String(formatted));
@@ -1228,13 +1224,13 @@ pub(super) fn call(
                 if spans.is_empty() {
                     Ok(Value::String(result))
                 } else {
-                    Ok(Value::StringObject(std::rc::Rc::new(std::cell::RefCell::new(
-                        crate::lisp::types::SharedStringState {
+                    Ok(Value::StringObject(std::rc::Rc::new(
+                        std::cell::RefCell::new(crate::lisp::types::SharedStringState {
                             text: result,
                             props: spans,
                             multibyte: format_multibyte,
-                        },
-                    ))))
+                        }),
+                    )))
                 }
             }
         }

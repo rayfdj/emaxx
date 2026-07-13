@@ -305,6 +305,15 @@ impl Interpreter {
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
+        // Some macro expansions read symbol properties (setf goes through
+        // gv-expander/gv-setter); changing one must invalidate cached
+        // expansions like a definition change does.
+        if matches!(
+            property,
+            "gv-expander" | "gv-setter" | "setf-method" | "cl-deftype-handler"
+        ) {
+            self.note_definition_changed();
+        }
         let value = Self::stored_value(value);
         if let Some(index) = self.symbol_property_index(name) {
             if let Some(prop_index) = self.symbol_properties[index]
@@ -476,8 +485,13 @@ impl Interpreter {
     }
 
     pub fn resolve_variable_name(&self, name: &str) -> Result<String, LispError> {
-        let mut seen = vec![name.to_string()];
-        let mut current = name.to_string();
+        // Overwhelmingly common: not an alias — skip the cycle
+        // bookkeeping (this runs on every global variable reference).
+        let Some(first) = self.direct_variable_alias(name) else {
+            return Ok(name.to_string());
+        };
+        let mut seen = vec![name.to_string(), first.clone()];
+        let mut current = first;
         while let Some(target) = self.direct_variable_alias(&current) {
             if seen.iter().any(|existing| existing == &target) {
                 return Err(LispError::SignalValue(Value::list([

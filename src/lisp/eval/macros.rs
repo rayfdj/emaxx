@@ -360,6 +360,17 @@ impl Interpreter {
             return Ok(None);
         }
 
+        // A cached (and still current) not-a-macro verdict skips the whole
+        // probe.  cl-flet frame shadowing can only make a name LESS of a
+        // macro, so a global "not a macro" verdict stays correct under any
+        // frames; verdicts influenced by frames are never cached.
+        if self.known_not_macro(name) {
+            if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
+                return Ok(Some(expanded));
+            }
+            return Ok(None);
+        }
+
         let mut attempted_autoload = false;
         let (params, body) = loop {
             if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
@@ -379,11 +390,15 @@ impl Interpreter {
             }
 
             if attempted_autoload {
+                self.note_not_macro(name);
                 return Ok(None);
             }
-            let mut function = match self.lookup_function(name, env) {
-                Ok(function) => function,
-                Err(_) => return Ok(None),
+            // Only global state can hold an autoload stub (env frames
+            // never resolve to autoload conses), so probe the macro
+            // position without scanning ordinary frames.
+            let Some((mut function, from_frame)) = self.macro_position_function(name, env) else {
+                self.note_not_macro(name);
+                return Ok(None);
             };
             // A native fallback arm can shadow a preloaded macro autoload
             // (add-function before nadvice.el loads): honor the autoload.
@@ -394,11 +409,15 @@ impl Interpreter {
                 function = stub;
             }
             let Some((file, _, _kind)) = crate::lisp::primitives::autoload_parts(&function) else {
+                if !from_frame {
+                    self.note_not_macro(name);
+                }
                 return Ok(None);
             };
             let loads_macro =
                 crate::lisp::primitives::autoload_is_macro(self, Some(name), &function);
             if !loads_macro {
+                self.note_not_macro(name);
                 return Ok(None);
             }
             // A file-less environment (unit tests) falls back to whatever
