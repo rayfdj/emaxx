@@ -5,6 +5,86 @@ fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
     matches!(record.slots.get(2), Some(Value::Symbol(symbol)) if symbol == "dynamic-binding")
 }
 
+// ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
+// Per-name call counts, cumulative and self wall time; the report file is
+// rewritten every few thousand calls.  Zero cost unless the variable is
+// set (one cached Option check per call).
+
+fn profile_path() -> Option<&'static str> {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| std::env::var("EMAXX_PROFILE").ok())
+        .as_deref()
+}
+
+struct ProfileEntry {
+    count: u64,
+    total: std::time::Duration,
+    self_time: std::time::Duration,
+}
+
+thread_local! {
+    static PROFILE_CHILD_STACK: std::cell::RefCell<Vec<std::time::Duration>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static PROFILE_TABLE: std::cell::RefCell<std::collections::HashMap<String, ProfileEntry>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PROFILE_DUMP_COUNTDOWN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn profile_enter() {
+    PROFILE_CHILD_STACK.with(|stack| stack.borrow_mut().push(std::time::Duration::ZERO));
+}
+
+fn profile_leave(name: Option<&str>, elapsed: std::time::Duration, path: &str) {
+    let child_time = PROFILE_CHILD_STACK
+        .with(|stack| stack.borrow_mut().pop())
+        .unwrap_or_default();
+    PROFILE_CHILD_STACK.with(|stack| {
+        if let Some(parent) = stack.borrow_mut().last_mut() {
+            *parent += elapsed;
+        }
+    });
+    let name = name.unwrap_or("<anonymous>");
+    PROFILE_TABLE.with(|table| {
+        let mut table = table.borrow_mut();
+        let entry = table.entry(name.to_string()).or_insert(ProfileEntry {
+            count: 0,
+            total: std::time::Duration::ZERO,
+            self_time: std::time::Duration::ZERO,
+        });
+        entry.count += 1;
+        entry.total += elapsed;
+        entry.self_time += elapsed.saturating_sub(child_time);
+    });
+    let due = PROFILE_DUMP_COUNTDOWN.with(|countdown| {
+        let remaining = countdown.get();
+        if remaining == 0 {
+            countdown.set(50_000);
+            true
+        } else {
+            countdown.set(remaining - 1);
+            false
+        }
+    });
+    if due {
+        PROFILE_TABLE.with(|table| {
+            let table = table.borrow();
+            let mut rows: Vec<_> = table.iter().collect();
+            rows.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.self_time));
+            let mut out = String::new();
+            for (name, entry) in rows.iter().take(80) {
+                out.push_str(&format!(
+                    "{:9} calls  self {:9.3}ms  total {:9.3}ms  {}\n",
+                    entry.count,
+                    entry.self_time.as_secs_f64() * 1000.0,
+                    entry.total.as_secs_f64() * 1000.0,
+                    name
+                ));
+            }
+            let _ = std::fs::write(path, out);
+        });
+    }
+}
+
 impl Interpreter {
     // This evaluator recurses once per subform rather than once per
     // funcall/eval level like GNU Emacs, so the same Lisp program nests
@@ -665,11 +745,19 @@ impl Interpreter {
                     }
                 }
 
-                // Check for macro expansion
-                if let Value::Symbol(name) = &items[0]
-                    && let Some(expanded) = self.try_macroexpand(name, &items[1..], env)?
-                {
-                    return self.eval(&expanded, env);
+                // Check for macro expansion.  A callsite's expansion is
+                // cached against the definition generation: compiled GNU
+                // code expands each macro call exactly once, and per-eval
+                // re-expansion (pcase/rx/when-let machinery) dominated
+                // interpreted hot loops.
+                if let Value::Symbol(name) = &items[0] {
+                    if let Some(expanded) = self.cached_macro_expansion(expr) {
+                        return self.eval(&expanded, env);
+                    }
+                    if let Some(expanded) = self.try_macroexpand(name, &items[1..], env)? {
+                        self.cache_macro_expansion(expr, expanded.clone());
+                        return self.eval(&expanded, env);
+                    }
                 }
 
                 // Regular function call
@@ -716,6 +804,25 @@ impl Interpreter {
     }
 
     pub fn call_function_value(
+        &mut self,
+        func: Value,
+        original_name: Option<&str>,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
+        // call counts and self-time, periodically rewriting <path>.
+        if let Some(path) = profile_path() {
+            let started = std::time::Instant::now();
+            profile_enter();
+            let result = self.call_function_value_inner(func, original_name, args, env);
+            profile_leave(original_name, started.elapsed(), path);
+            return result;
+        }
+        self.call_function_value_inner(func, original_name, args, env)
+    }
+
+    fn call_function_value_inner(
         &mut self,
         func: Value,
         original_name: Option<&str>,

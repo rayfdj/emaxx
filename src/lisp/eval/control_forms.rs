@@ -37,11 +37,19 @@ impl Interpreter {
         let Some(test_form) = items.get(1) else {
             return Ok(Value::Nil);
         };
-        let tail_aliases =
-            setcdr_tail_aliases(self, test_form, &Value::list(items[1..].to_vec()), env);
+        // The tail-alias machinery guards a self-mutating test form
+        // ((setcdr X ...) where X aliases the `if' form's own tail);
+        // an allocation-free pre-scan skips it for every ordinary `if'.
+        let mut scan_budget = 512u32;
+        let tail_aliases = if crate::lisp::eval::form_mentions_setcdr(test_form, &mut scan_budget) {
+            setcdr_tail_aliases(self, test_form, &Value::list(items[1..].to_vec()), env)
+        } else {
+            Vec::new()
+        };
         let saved_aliases = snapshot_tail_alias_values(self, &tail_aliases, env);
         let cond_result = self.eval(test_form, env);
-        let tail_became_improper = tail_aliases_became_improper(self, &tail_aliases, env);
+        let tail_became_improper =
+            !tail_aliases.is_empty() && tail_aliases_became_improper(self, &tail_aliases, env);
         restore_tail_alias_values(self, &saved_aliases, env);
         let cond = cond_result?;
         if tail_became_improper {

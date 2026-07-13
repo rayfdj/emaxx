@@ -3,6 +3,46 @@ use super::*;
 /// (host, service, remote-peer, is-server) for `process-contact'.
 pub(crate) type ProcessContactInfo = (Option<String>, Option<i64>, Option<String>, bool);
 
+/// Drain a non-blocking stream: bytes read plus whether the peer closed.
+fn drain_nonblocking<R: std::io::Read>(stream: &mut R) -> (Vec<u8>, bool) {
+    let mut out = Vec::new();
+    let mut closed = false;
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                closed = true;
+                break;
+            }
+        }
+    }
+    (out, closed)
+}
+
+/// Write all of INPUT to a non-blocking stream, napping through WouldBlock.
+fn send_all<W: std::io::Write>(stream: &mut W, input: &[u8]) -> Result<(), LispError> {
+    let mut written = 0;
+    while written < input.len() {
+        match stream.write(&input[written..]) {
+            Ok(n) => written += n,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(LispError::Signal(error.to_string())),
+        }
+    }
+    let _ = stream.flush();
+    Ok(())
+}
+
 impl Interpreter {
     pub(super) fn find_thread_state(&self, record_id: u64) -> Option<&ThreadState> {
         self.thread_states
@@ -115,7 +155,11 @@ impl Interpreter {
         program: Option<String>,
         argv: Vec<String>,
         runtime: Option<Child>,
+        name: Option<String>,
     ) -> Result<Value, LispError> {
+        // GNU names the process after the NAME argument (uniquified with
+        // <N> on collision), not the program.
+        let name = self.unique_process_name(&name.or_else(|| program.clone()).unwrap_or_default());
         let process = self.create_record("process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
             unreachable!("create_record returns a record")
@@ -135,7 +179,7 @@ impl Interpreter {
             filter: None,
             sentinel: None,
             log: None,
-            name: program.clone().unwrap_or_default(),
+            name,
             _query_on_exit_flag: false,
             decoding: Value::Nil,
             encoding: Value::Nil,
@@ -150,6 +194,7 @@ impl Interpreter {
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
             plist: Value::Nil,
+            contact: Value::T,
         });
         Ok(process)
     }
@@ -170,10 +215,11 @@ impl Interpreter {
         contact_service: Option<i64>,
         remote: Option<String>,
         parent_server_id: Option<u64>,
+        contact: Value,
     ) -> Result<Value, LispError> {
         let status = match &network {
-            NetworkRuntime::Listener(_) => ProcessStatus::Listen,
-            NetworkRuntime::Stream(_) => ProcessStatus::Open,
+            NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => ProcessStatus::Listen,
+            NetworkRuntime::Stream(_) | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
         };
         let process = self.create_record("process", Vec::new());
         let Value::Record(record_id) = process.clone() else {
@@ -209,8 +255,16 @@ impl Interpreter {
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
             plist,
+            contact,
         });
         Ok(process)
+    }
+
+    /// GNU p->childp (process-contact with KEY t): t for a real child,
+    /// the full contact plist for a network process.
+    pub fn process_contact_plist(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id)
+            .map(|process| process.contact.clone())
     }
 
     pub fn process_name(&self, record_id: u64) -> Option<String> {
@@ -260,7 +314,10 @@ impl Interpreter {
                 process.contact_host.clone(),
                 process.contact_service,
                 process.remote.clone(),
-                matches!(process.network, Some(NetworkRuntime::Listener(_))),
+                matches!(
+                    process.network,
+                    Some(NetworkRuntime::Listener(_)) | Some(NetworkRuntime::UnixListener(_))
+                ),
             )
         })
     }
@@ -284,8 +341,10 @@ impl Interpreter {
         self.process_states
             .iter()
             .filter(|process| {
-                matches!(process.network, Some(NetworkRuntime::Listener(_)))
-                    && process.status.is_live()
+                matches!(
+                    process.network,
+                    Some(NetworkRuntime::Listener(_)) | Some(NetworkRuntime::UnixListener(_))
+                ) && process.status.is_live()
             })
             .map(|process| process.record_id)
             .collect()
@@ -295,34 +354,47 @@ impl Interpreter {
         self.process_states
             .iter()
             .filter(|process| {
-                matches!(process.network, Some(NetworkRuntime::Stream(_)))
-                    && process.status.is_live()
+                matches!(
+                    process.network,
+                    Some(NetworkRuntime::Stream(_)) | Some(NetworkRuntime::UnixStream(_))
+                ) && process.status.is_live()
             })
             .map(|process| process.record_id)
             .collect()
     }
 
     /// Accept one pending connection on a server listener, if any.
-    /// Returns the accepted stream and the peer's address string.
-    pub fn accept_network_connection(
+    /// Returns the accepted stream's runtime and, for inet listeners, the
+    /// peer's socket address (unix peers are unnamed).
+    pub(crate) fn accept_network_connection(
         &mut self,
         server_id: u64,
-    ) -> Result<Option<(std::net::TcpStream, String)>, LispError> {
+    ) -> Result<Option<(NetworkRuntime, Option<std::net::SocketAddr>)>, LispError> {
         let Some(process) = self.find_process_state_mut(server_id) else {
             return Ok(None);
         };
-        let Some(NetworkRuntime::Listener(listener)) = process.network.as_ref() else {
-            return Ok(None);
-        };
-        match listener.accept() {
-            Ok((stream, addr)) => {
-                stream
-                    .set_nonblocking(true)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                Ok(Some((stream, addr.to_string())))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(LispError::Signal(error.to_string())),
+        match process.network.as_ref() {
+            Some(NetworkRuntime::Listener(listener)) => match listener.accept() {
+                Ok((stream, addr)) => {
+                    stream
+                        .set_nonblocking(true)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    Ok(Some((NetworkRuntime::Stream(stream), Some(addr))))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                Err(error) => Err(LispError::Signal(error.to_string())),
+            },
+            Some(NetworkRuntime::UnixListener(listener)) => match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_nonblocking(true)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    Ok(Some((NetworkRuntime::UnixStream(stream), None)))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                Err(error) => Err(LispError::Signal(error.to_string())),
+            },
+            _ => Ok(None),
         }
     }
 
@@ -332,27 +404,11 @@ impl Interpreter {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Ok((Vec::new(), false));
         };
-        let Some(NetworkRuntime::Stream(stream)) = process.network.as_mut() else {
-            return Ok((Vec::new(), false));
+        let (out, closed) = match process.network.as_mut() {
+            Some(NetworkRuntime::Stream(stream)) => drain_nonblocking(stream),
+            Some(NetworkRuntime::UnixStream(stream)) => drain_nonblocking(stream),
+            _ => return Ok((Vec::new(), false)),
         };
-        let mut out = Vec::new();
-        let mut closed = false;
-        let mut chunk = [0u8; 4096];
-        loop {
-            match std::io::Read::read(stream, &mut chunk) {
-                Ok(0) => {
-                    closed = true;
-                    break;
-                }
-                Ok(n) => out.extend_from_slice(&chunk[..n]),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    closed = true;
-                    break;
-                }
-            }
-        }
         if closed {
             process.status = ProcessStatus::Closed;
             process.network = None;
@@ -364,23 +420,11 @@ impl Interpreter {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Err(wrong_type_argument("processp", Value::Record(record_id)));
         };
-        let Some(NetworkRuntime::Stream(stream)) = process.network.as_mut() else {
-            return Err(LispError::Signal("Process is not a network stream".into()));
-        };
-        use std::io::Write as _;
-        let mut written = 0;
-        while written < input.len() {
-            match stream.write(&input[written..]) {
-                Ok(n) => written += n,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(LispError::Signal(error.to_string())),
-            }
+        match process.network.as_mut() {
+            Some(NetworkRuntime::Stream(stream)) => send_all(stream, input),
+            Some(NetworkRuntime::UnixStream(stream)) => send_all(stream, input),
+            _ => Err(LispError::Signal("Process is not a network stream".into())),
         }
-        let _ = stream.flush();
-        Ok(())
     }
 
     pub(super) fn refresh_process_state(process: &mut ProcessState) -> Result<(), LispError> {
@@ -533,8 +577,16 @@ impl Interpreter {
             let _ = runtime.child.wait();
         }
         if let Some(network) = process.network.take() {
-            if let NetworkRuntime::Stream(stream) = &network {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
+            match &network {
+                NetworkRuntime::Stream(stream) => {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+                NetworkRuntime::UnixStream(stream) => {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+                // GNU leaves a unix listener's socket file behind; the
+                // tests delete it themselves.
+                NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => {}
             }
             process.status = ProcessStatus::Closed;
             process.runtime = None;
@@ -702,24 +754,29 @@ impl Interpreter {
 
     /// Cancel the timer matching both FUNCTION and ARGS (GNU cancel-timer
     /// removes one specific timer object; several timers often share a
-    /// function and differ only in their arguments).  When no exact match
-    /// exists the timer already fired or was cancelled, and GNU's
+    /// function and differ only in their arguments).  Match args by
+    /// IDENTITY (`eq'), not `equal': erc-d schedules per-exchange
+    /// `erc-d--expire' timers whose args are dialog/exchange RECORDS, and
+    /// two sibling dialogs can be structurally `equal' while distinct —
+    /// deep matching would cancel the wrong dialog's linger timer.  When no
+    /// match exists the timer already fired or was cancelled, and GNU's
     /// cancel-timer is a harmless no-op — never fall back to function-only
-    /// matching, which would cancel an unrelated timer (e.g. another
-    /// buffer's pending `erc-server-send-queue' drain).
+    /// matching, which would cancel an unrelated timer (another buffer's
+    /// pending `erc-server-send-queue' drain).
     pub fn unschedule_timer_by_function_and_args(&mut self, function: &Value, args: &[Value]) {
         let candidates: Vec<(Value, Vec<Value>)> = self
             .pending_timers
             .iter()
             .map(|timer| (timer.function.clone(), timer.args.clone()))
             .collect();
+        let empty_env = Vec::new();
         if let Some(index) = candidates.iter().position(|(candidate, timer_args)| {
-            crate::lisp::primitives::values_equal(self, candidate, function)
+            crate::lisp::primitives::values_eq_in_env(self, candidate, function, &empty_env)
                 && timer_args.len() == args.len()
                 && timer_args
                     .iter()
                     .zip(args)
-                    .all(|(a, b)| crate::lisp::primitives::values_equal(self, a, b))
+                    .all(|(a, b)| crate::lisp::primitives::values_eq_in_env(self, a, b, &empty_env))
         }) {
             self.pending_timers.remove(index);
         }

@@ -16,7 +16,110 @@ mod predicates;
 mod search_coding;
 mod strings;
 
+/// Memoized per-name facts.  Every predicate cached here is a pure
+/// function of the name (giant static `matches!` lists), but they are
+/// consulted on every form evaluation — the linear string matching was
+/// a top profile entry under erc's message-processing load.
+#[derive(Clone, Copy)]
+pub(crate) struct NameFacts {
+    pub(crate) builtin: bool,
+    pub(crate) special_form: bool,
+    pub(crate) prefer_override: bool,
+    resets_undo: bool,
+    module: DispatchModule,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DispatchModule {
+    Sqlite,
+    Time,
+    Lcms,
+    Numeric,
+    Predicates,
+    Lists,
+    Strings,
+    BufferEdit,
+    BufferMeta,
+    FilesProcess,
+    Display,
+    Misc,
+    MiscKeymaps,
+    Overlays,
+    Collections,
+    SearchCoding,
+    ComposedAccessor,
+    None,
+}
+
+fn compute_name_facts(name: &str) -> NameFacts {
+    // Probe order mirrors `call' so the cached route dispatches to the
+    // same module the sequential scan would have reached.
+    let module = if sqlite::is_builtin(name) {
+        DispatchModule::Sqlite
+    } else if is_time_builtin(name) {
+        DispatchModule::Time
+    } else if is_lcms_builtin(name) {
+        DispatchModule::Lcms
+    } else if numeric::handles(name) {
+        DispatchModule::Numeric
+    } else if predicates::handles(name) {
+        DispatchModule::Predicates
+    } else if lists::handles(name) {
+        DispatchModule::Lists
+    } else if strings::handles(name) {
+        DispatchModule::Strings
+    } else if buffer_edit::handles(name) {
+        DispatchModule::BufferEdit
+    } else if buffer_meta::handles(name) {
+        DispatchModule::BufferMeta
+    } else if files_process::handles(name) {
+        DispatchModule::FilesProcess
+    } else if display::handles(name) {
+        DispatchModule::Display
+    } else if misc::handles(name) {
+        DispatchModule::Misc
+    } else if misc_keymaps::handles(name) {
+        DispatchModule::MiscKeymaps
+    } else if overlays::handles(name) {
+        DispatchModule::Overlays
+    } else if collections::handles(name) {
+        DispatchModule::Collections
+    } else if search_coding::handles(name) {
+        DispatchModule::SearchCoding
+    } else if is_composed_accessor_name(name) {
+        DispatchModule::ComposedAccessor
+    } else {
+        DispatchModule::None
+    };
+    NameFacts {
+        builtin: is_builtin_uncached(name),
+        special_form: crate::lisp::primitives::is_special_form_name(name),
+        prefer_override: crate::lisp::primitives::prefer_builtin_override(name),
+        resets_undo: resets_undo_sequence(name),
+        module,
+    }
+}
+
+pub(crate) fn name_facts(name: &str) -> NameFacts {
+    thread_local! {
+        static NAME_FACTS: std::cell::RefCell<std::collections::HashMap<String, NameFacts>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    NAME_FACTS.with(|cache| {
+        if let Some(facts) = cache.borrow().get(name) {
+            return *facts;
+        }
+        let facts = compute_name_facts(name);
+        cache.borrow_mut().insert(name.to_string(), facts);
+        facts
+    })
+}
+
 pub fn is_builtin(name: &str) -> bool {
+    name_facts(name).builtin
+}
+
+fn is_builtin_uncached(name: &str) -> bool {
     matches!(
         name,
         // Arithmetic
@@ -680,6 +783,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "coding-system-get"
             | "coding-system-put"
             | "coding-system-eol-type"
+            | "coding-system-change-eol-conversion"
             | "coding-system-base"
             | "coding-system-equal"
             | "check-coding-systems-region"
@@ -1529,26 +1633,8 @@ pub fn is_builtin(name: &str) -> bool {
         || is_lcms_builtin(name)
 }
 
-/// Dispatch a builtin function call.
-pub fn call(
-    interp: &mut Interpreter,
-    name: &str,
-    args: &[Value],
-    env: &mut crate::lisp::types::Env,
-) -> Result<Value, LispError> {
-    if sqlite::is_builtin(name) {
-        return sqlite::call(interp, name, args, env);
-    }
-
-    if is_time_builtin(name) {
-        return call_time_builtin(interp, name, args, env);
-    }
-
-    if is_lcms_builtin(name) {
-        return call_lcms_builtin(name, args);
-    }
-
-    if matches!(
+fn resets_undo_sequence(name: &str) -> bool {
+    matches!(
         name,
         "undo-boundary"
             | "insert"
@@ -1577,65 +1663,40 @@ pub fn call(
             | "set-buffer-multibyte"
             | "write-region"
             | "save-buffer"
-    ) {
+    )
+}
+
+/// Dispatch a builtin function call.
+pub fn call(
+    interp: &mut Interpreter,
+    name: &str,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    let facts = name_facts(name);
+
+    if facts.resets_undo {
         interp.reset_undo_sequence();
     }
 
-    if numeric::handles(name) {
-        return numeric::call(interp, name, args, env);
+    match facts.module {
+        DispatchModule::Sqlite => sqlite::call(interp, name, args, env),
+        DispatchModule::Time => call_time_builtin(interp, name, args, env),
+        DispatchModule::Lcms => call_lcms_builtin(name, args),
+        DispatchModule::Numeric => numeric::call(interp, name, args, env),
+        DispatchModule::Predicates => predicates::call(interp, name, args, env),
+        DispatchModule::Lists => lists::call(interp, name, args, env),
+        DispatchModule::Strings => strings::call(interp, name, args, env),
+        DispatchModule::BufferEdit => buffer_edit::call(interp, name, args, env),
+        DispatchModule::BufferMeta => buffer_meta::call(interp, name, args, env),
+        DispatchModule::FilesProcess => files_process::call(interp, name, args, env),
+        DispatchModule::Display => display::call(interp, name, args, env),
+        DispatchModule::Misc => misc::call(interp, name, args, env),
+        DispatchModule::MiscKeymaps => misc_keymaps::call(interp, name, args, env),
+        DispatchModule::Overlays => overlays::call(interp, name, args, env),
+        DispatchModule::Collections => collections::call(interp, name, args, env),
+        DispatchModule::SearchCoding => search_coding::call(interp, name, args, env),
+        DispatchModule::ComposedAccessor => call_composed_accessor(interp, name, args),
+        DispatchModule::None => Err(LispError::Signal(format!("Unknown function: {}", name))),
     }
-
-    if predicates::handles(name) {
-        return predicates::call(interp, name, args, env);
-    }
-
-    if lists::handles(name) {
-        return lists::call(interp, name, args, env);
-    }
-
-    if strings::handles(name) {
-        return strings::call(interp, name, args, env);
-    }
-
-    if buffer_edit::handles(name) {
-        return buffer_edit::call(interp, name, args, env);
-    }
-
-    if buffer_meta::handles(name) {
-        return buffer_meta::call(interp, name, args, env);
-    }
-
-    if files_process::handles(name) {
-        return files_process::call(interp, name, args, env);
-    }
-
-    if display::handles(name) {
-        return display::call(interp, name, args, env);
-    }
-
-    if misc::handles(name) {
-        return misc::call(interp, name, args, env);
-    }
-
-    if misc_keymaps::handles(name) {
-        return misc_keymaps::call(interp, name, args, env);
-    }
-
-    if overlays::handles(name) {
-        return overlays::call(interp, name, args, env);
-    }
-
-    if collections::handles(name) {
-        return collections::call(interp, name, args, env);
-    }
-
-    if search_coding::handles(name) {
-        return search_coding::call(interp, name, args, env);
-    }
-
-    if is_composed_accessor_name(name) {
-        return call_composed_accessor(interp, name, args);
-    }
-
-    Err(LispError::Signal(format!("Unknown function: {}", name)))
 }

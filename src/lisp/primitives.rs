@@ -503,6 +503,7 @@ pub(crate) fn arith_error() -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol("arith-error".into())]))
 }
 
+pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::oclosure_type_of;
 pub use dispatch::{call, is_builtin};
 

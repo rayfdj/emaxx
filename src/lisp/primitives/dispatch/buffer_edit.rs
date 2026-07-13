@@ -561,7 +561,10 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let pos = position_from_value(interp, &args[0])?;
             interp.buffer.goto_char(pos);
-            Ok(Value::Integer(interp.buffer.point() as i64))
+            // GNU Fgoto_char returns its POSITION argument unchanged (a
+            // marker stays a marker), not the clamped integer point —
+            // erc-display-msg does (marker-position (goto-char MARKER)).
+            Ok(args[0].clone())
         }
         "forward-char" => {
             let n = if args.is_empty() || args[0].is_nil() {

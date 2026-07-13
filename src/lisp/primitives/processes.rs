@@ -147,6 +147,7 @@ type MakeProcessArgs = (
     Vec<String>,
     Option<Value>,
     Option<(Value, Value)>,
+    Option<String>,
 );
 
 pub(crate) fn parse_make_process_args(
@@ -164,11 +165,13 @@ pub(crate) fn parse_make_process_args(
     let mut argv = Vec::new();
     let mut filter = None;
     let mut coding = None;
+    let mut name = None;
 
     for pair in args.chunks_exact(2) {
         let key = pair[0].as_symbol()?;
         let value = &pair[1];
         match key {
+            ":name" => name = Some(string_text(value)?),
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
             ":command" => {
                 let (parsed_program, parsed_argv) = process_command_parts(value)?;
@@ -181,7 +184,7 @@ pub(crate) fn parse_make_process_args(
         }
     }
 
-    Ok((buffer_id, program, argv, filter, coding))
+    Ok((buffer_id, program, argv, filter, coding, name))
 }
 
 pub(crate) fn deliver_process_output(
@@ -581,6 +584,102 @@ pub(crate) fn pump_external_process_output(
 
 // ── Network processes (GNU process.c make-network-process) ──
 
+/// GNU conv_sockaddr_to_lisp: an inet address as [a b c d port] (ipv4)
+/// or [w0 .. w7 port] (ipv6).
+fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
+    let mut items = vec![Value::symbol("vector-literal")];
+    match addr.ip() {
+        std::net::IpAddr::V4(ip) => {
+            items.extend(
+                ip.octets()
+                    .iter()
+                    .map(|octet| Value::Integer(*octet as i64)),
+            );
+        }
+        std::net::IpAddr::V6(ip) => {
+            items.extend(
+                ip.segments()
+                    .iter()
+                    .map(|segment| Value::Integer(*segment as i64)),
+            );
+        }
+    }
+    items.push(Value::Integer(addr.port() as i64));
+    Value::list(items)
+}
+
+/// plist_get on a proper-list plist value by keyword name.
+pub(crate) fn contact_plist_get(plist: &Value, key: &str) -> Value {
+    let Ok(items) = plist.to_vec() else {
+        return Value::Nil;
+    };
+    let mut index = 0;
+    while index + 1 < items.len() {
+        if items[index].as_symbol().is_ok_and(|name| name == key) {
+            return items[index + 1].clone();
+        }
+        index += 2;
+    }
+    Value::Nil
+}
+
+/// plist_put on a flat Vec of plist items: replace KEY's value in place,
+/// or append the pair (GNU plist_put appends missing keys at the end).
+fn plist_items_put(items: &mut Vec<Value>, key: &str, value: Value) {
+    let mut index = 0;
+    while index + 1 < items.len() {
+        if items[index].as_symbol().is_ok_and(|name| name == key) {
+            items[index + 1] = value;
+            return;
+        }
+        index += 2;
+    }
+    items.push(Value::symbol(key));
+    items.push(value);
+}
+
+/// GNU Fdelete_process on a network process: set status to (exit 0) and
+/// run status_notify SYNCHRONOUSLY, so the process's own sentinel sees
+/// "deleted\n" before delete-process returns.  A process whose death was
+/// already notified is gone from the process list by then (status_notify
+/// removes it under delete-exited-processes), so the sentinel never
+/// fires twice; emaxx mirrors that by only notifying while the network
+/// runtime is still attached.  Sentinel errors are demoted to a message
+/// unless debug-on-error asks for the debugger (exec_sentinel).
+pub(crate) fn delete_process_notifying(
+    interp: &mut Interpreter,
+    process_id: u64,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let was_network = interp.is_network_process(process_id);
+    interp.delete_process(process_id)?;
+    if !was_network {
+        return Ok(());
+    }
+    match run_process_sentinel(interp, process_id, "deleted\n", env) {
+        Ok(()) => Ok(()),
+        Err(error @ LispError::Throw(_, _)) => Err(error),
+        Err(error) => {
+            if interp
+                .lookup_var("debug-on-error", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                return Err(error);
+            }
+            let _ = crate::lisp::primitives::call(
+                interp,
+                "message",
+                &[
+                    Value::String("error in process sentinel: %S".into()),
+                    crate::lisp::eval::error_condition_value(&error),
+                ],
+                env,
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Create a network server (`:server t`) or client stream.  emaxx models
 /// the subset erc-d exercises: a local/ipv4 TCP server with :filter,
 /// :sentinel and :log, plus TCP client streams.
@@ -602,8 +701,10 @@ pub(crate) fn make_network_process(
     let mut log = None;
     let mut plist = Value::Nil;
     let mut is_server = false;
+    let mut family_local = false;
     let mut host: Option<String> = None;
     let mut service: Option<i64> = None;
+    let mut service_path: Option<String> = None;
 
     for pair in args.chunks_exact(2) {
         let key = pair[0].as_symbol()?;
@@ -616,6 +717,9 @@ pub(crate) fn make_network_process(
             ":log" => log = (!value.is_nil()).then(|| value.clone()),
             ":plist" => plist = value.clone(),
             ":server" => is_server = value.is_truthy(),
+            ":family" => {
+                family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
+            }
             ":host" => {
                 host = match value {
                     Value::Nil => None,
@@ -629,7 +733,10 @@ pub(crate) fn make_network_process(
                     Value::T => Some(0),
                     Value::Integer(port) => Some(*port),
                     Value::String(_) | Value::StringObject(_) => {
-                        string_text(value)?.parse::<i64>().ok()
+                        let text = string_text(value)?;
+                        // `:family local' names a socket file, not a port.
+                        service_path = Some(text.clone());
+                        text.parse::<i64>().ok()
                     }
                     _ => None,
                 }
@@ -639,6 +746,65 @@ pub(crate) fn make_network_process(
     }
 
     let name = interp.unique_process_name(&name);
+    // GNU keeps the original keyword plist as the process's contact info
+    // (p->childp), updating :service and appending the resolved :local /
+    // :remote address vectors after the socket is set up.
+    let mut contact_items: Vec<Value> = args.to_vec();
+
+    if family_local {
+        // `:family local' — a unix domain socket named by :service.  GNU
+        // conv_sockaddr_to_lisp yields the PATH string for :local/:remote
+        // (a client's own end is unnamed, hence "").
+        let path = service_path.ok_or_else(|| {
+            LispError::Signal("make-network-process: local family needs a :service path".into())
+        })?;
+        if is_server {
+            let listener = std::os::unix::net::UnixListener::bind(&path)
+                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            plist_items_put(&mut contact_items, ":local", Value::String(path.clone()));
+            return interp.create_network_process(
+                &name,
+                buffer_id,
+                filter,
+                sentinel,
+                log,
+                plist,
+                crate::lisp::eval::NetworkRuntime::UnixListener(listener),
+                Some(path),
+                None,
+                None,
+                None,
+                Value::list(contact_items),
+            );
+        }
+        let stream = std::os::unix::net::UnixStream::connect(&path)
+            .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+        stream
+            .set_nonblocking(true)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        plist_items_put(&mut contact_items, ":remote", Value::String(path.clone()));
+        plist_items_put(&mut contact_items, ":local", Value::String(String::new()));
+        let process = interp.create_network_process(
+            &name,
+            buffer_id,
+            filter,
+            sentinel,
+            log,
+            plist,
+            crate::lisp::eval::NetworkRuntime::UnixStream(stream),
+            Some(path),
+            None,
+            None,
+            None,
+            Value::list(contact_items),
+        )?;
+        let process_id = interp.resolve_process_id(&process)?;
+        run_process_sentinel(interp, process_id, "open\n", env)?;
+        return Ok(process);
+    }
 
     if is_server {
         let bind_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
@@ -648,11 +814,14 @@ pub(crate) fn make_network_process(
         listener
             .set_nonblocking(true)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let bound_port = listener
-            .local_addr()
-            .ok()
-            .map(|addr| addr.port() as i64)
-            .or(service);
+        let local_addr = listener.local_addr().ok();
+        let bound_port = local_addr.map(|addr| addr.port() as i64).or(service);
+        if let Some(port) = bound_port {
+            plist_items_put(&mut contact_items, ":service", Value::Integer(port));
+        }
+        if let Some(addr) = local_addr {
+            plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
+        }
         interp.create_network_process(
             &name,
             buffer_id,
@@ -665,6 +834,7 @@ pub(crate) fn make_network_process(
             bound_port,
             None,
             None,
+            Value::list(contact_items),
         )
     } else {
         let connect_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
@@ -674,6 +844,12 @@ pub(crate) fn make_network_process(
         stream
             .set_nonblocking(true)
             .map_err(|error| LispError::Signal(error.to_string()))?;
+        if let Ok(addr) = stream.peer_addr() {
+            plist_items_put(&mut contact_items, ":remote", sockaddr_vector(addr));
+        }
+        if let Ok(addr) = stream.local_addr() {
+            plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
+        }
         let process = interp.create_network_process(
             &name,
             buffer_id,
@@ -686,6 +862,7 @@ pub(crate) fn make_network_process(
             service,
             None,
             None,
+            Value::list(contact_items),
         )?;
         // GNU runs the sentinel with "open\n" once a client connects.
         let process_id = interp.resolve_process_id(&process)?;
@@ -789,10 +966,13 @@ pub(crate) fn pump_network_processes(
     // Accept new connections on every server listener.
     for server_id in interp.network_listener_ids() {
         loop {
-            let Some((stream, remote)) = interp.accept_network_connection(server_id)? else {
+            let Some((child_runtime, peer_addr)) = interp.accept_network_connection(server_id)?
+            else {
                 break;
             };
             progressed = true;
+            interp.network_connect_counter += 1;
+            let connect_number = interp.network_connect_counter;
             // GNU server_accept_connection gives each child a fresh copy of
             // the server's plist (Fcopy_sequence), so the child's later
             // `process-put' (plist-put mutates value cells in place) never
@@ -802,12 +982,54 @@ pub(crate) fn pump_network_processes(
                 Ok(items) => Value::list(items),
                 Err(_) => server_plist,
             };
+            // The child's contact info is the server's with :server nil,
+            // :host/:service naming the peer, and :remote its address.
+            // Unix peers are unnamed: :host t, :remote "", :service and
+            // :local keep the server's socket path.
+            let mut contact_items = interp
+                .process_contact_plist(server_id)
+                .unwrap_or(Value::Nil)
+                .to_vec()
+                .unwrap_or_default();
+            plist_items_put(&mut contact_items, ":server", Value::Nil);
+            let remote = match peer_addr {
+                Some(peer_addr) => {
+                    plist_items_put(
+                        &mut contact_items,
+                        ":host",
+                        Value::String(peer_addr.ip().to_string()),
+                    );
+                    plist_items_put(
+                        &mut contact_items,
+                        ":service",
+                        Value::Integer(peer_addr.port() as i64),
+                    );
+                    if let crate::lisp::eval::NetworkRuntime::Stream(stream) = &child_runtime
+                        && let Ok(addr) = stream.local_addr()
+                    {
+                        plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
+                    }
+                    plist_items_put(&mut contact_items, ":remote", sockaddr_vector(peer_addr));
+                    peer_addr.to_string()
+                }
+                None => {
+                    plist_items_put(&mut contact_items, ":host", Value::T);
+                    plist_items_put(&mut contact_items, ":remote", Value::String(String::new()));
+                    String::new()
+                }
+            };
             let server_filter = interp.process_filter(server_id);
             let server_sentinel = interp.process_sentinel(server_id);
             let server_log = interp.process_log_function(server_id);
             let server_buffer = interp.process_buffer_id(server_id);
             let base_name = interp.process_name(server_id).unwrap_or_default();
-            let child_name = interp.unique_process_name(&format!("{base_name}<{remote}>"));
+            // GNU names inet children "NAME <HOST:PORT>" (note the space)
+            // and unnamed-peer children "NAME <N>" from connect_counter.
+            let child_name = if peer_addr.is_some() {
+                interp.unique_process_name(&format!("{base_name} <{remote}>"))
+            } else {
+                interp.unique_process_name(&format!("{base_name} <{connect_number}>"))
+            };
             let child = interp.create_network_process(
                 &child_name,
                 server_buffer,
@@ -815,11 +1037,12 @@ pub(crate) fn pump_network_processes(
                 server_sentinel,
                 server_log,
                 server_plist,
-                crate::lisp::eval::NetworkRuntime::Stream(stream),
+                child_runtime,
                 None,
                 None,
                 Some(remote.clone()),
                 Some(server_id),
+                Value::list(contact_items),
             )?;
             let child_id = interp.resolve_process_id(&child)?;
             run_process_log(

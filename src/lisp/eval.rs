@@ -514,6 +514,9 @@ impl ProcessStatus {
 pub(crate) enum NetworkRuntime {
     Listener(std::net::TcpListener),
     Stream(std::net::TcpStream),
+    /// `:family local' — unix domain sockets (erc-d's direct tests).
+    UnixListener(std::os::unix::net::UnixListener),
+    UnixStream(std::os::unix::net::UnixStream),
 }
 
 impl std::fmt::Debug for NetworkRuntime {
@@ -565,6 +568,11 @@ struct ProcessState {
     pending_stderr: Vec<u8>,
     /// The process property list (process-put/process-get).
     plist: Value,
+    /// GNU p->childp: t for a real child process; for a network process
+    /// the full keyword contact plist as make-network-process received
+    /// it, with :service resolved and :local/:remote address vectors
+    /// appended (process-contact with KEY t).
+    contact: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -747,6 +755,25 @@ pub struct Interpreter {
     /// Last-wins index over `functions` so the hot function-lookup path is
     /// O(1); every mutation of `functions` keeps this in sync.
     functions_index: HashMap<String, Value>,
+    /// GNU connect_counter: numbers accepted server-child connections
+    /// (unix children are named "NAME <N>" from it).
+    pub(crate) network_connect_counter: u64,
+    /// Bumped on every function/macro (re)definition; validates the
+    /// `not_macro_names` verdicts below.
+    definition_generation: u64,
+    /// Names the macroexpansion probe determined are NOT macros, from
+    /// GLOBAL state only (no cl-flet frame involved), stamped with the
+    /// generation that verdict was computed at.  Skips the whole probe on
+    /// the hot per-form path while any definition change invalidates all
+    /// verdicts at once.
+    not_macro_names: HashMap<String, u64>,
+    /// Per-callsite macro expansions, keyed by the form's car cell
+    /// address and validated against `definition_generation` (compiled
+    /// GNU code expands each macro call once; interpreted emaxx would
+    /// otherwise re-expand per evaluation — the dominant cost under
+    /// erc's message load).  The cached entry holds the ORIGINAL form
+    /// too, so its cons stays alive and the address is never reused.
+    macro_expansion_cache: HashMap<usize, (u64, Value, Value)>,
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
@@ -1106,12 +1133,20 @@ impl Interpreter {
             macros_name_counts: HashMap::new(),
             functions: Vec::new(),
             functions_index: HashMap::new(),
+            network_connect_counter: 0,
+            definition_generation: 0,
+            not_macro_names: HashMap::new(),
+            macro_expansion_cache: HashMap::new(),
             provided_features: vec![
                 "emacs".into(),
                 "emaxx".into(),
                 "ert".into(),
                 "kqueue".into(),
                 "lcms2".into(),
+                // GNU process.c provides make-network-process with its
+                // capability subfeatures; the property is set alongside in
+                // Interpreter::new (featurep consults it).
+                "make-network-process".into(),
                 "native-compile".into(),
                 // GNU preloads oclosure.el (loadup.el); emaxx implements
                 // oclosures natively, so (require 'oclosure) must not load
@@ -1186,6 +1221,31 @@ impl Interpreter {
         };
         interp.globals_index = interp.globals.iter().cloned().collect();
         interp.special_variables_index = interp.special_variables.iter().cloned().collect();
+        // GNU process.c: (provide 'make-network-process '(...subfeatures)),
+        // consulted by two-argument `featurep' (erc-d's unix-socket test
+        // checks (featurep 'make-network-process '(:family local))).
+        {
+            let pair = |key: &str, value: Value| Value::list([Value::Symbol(key.into()), value]);
+            let subfeatures = Value::list([
+                Value::Symbol(":reuseaddr".into()),
+                Value::Symbol(":priority".into()),
+                Value::Symbol(":oobinline".into()),
+                Value::Symbol(":linger".into()),
+                Value::Symbol(":keepalive".into()),
+                Value::Symbol(":dontroute".into()),
+                Value::Symbol(":broadcast".into()),
+                Value::Symbol(":bindtodevice".into()),
+                pair(":server", Value::T),
+                pair(":service", Value::T),
+                pair(":family", Value::Symbol("ipv6".into())),
+                pair(":family", Value::Symbol("ipv4".into())),
+                pair(":family", Value::Symbol("local".into())),
+                pair(":type", Value::Symbol("seqpacket".into())),
+                pair(":type", Value::Symbol("datagram".into())),
+                pair(":nowait", Value::T),
+            ]);
+            interp.put_symbol_property("make-network-process", "subfeatures", subfeatures);
+        }
         for class_name in primitives::builtin_class_names() {
             interp.put_symbol_property(
                 class_name,
@@ -2255,11 +2315,18 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
 }
 
 fn is_record_literal_reader_form(value: &Value) -> bool {
+    // Cheap car probe first: every list evaluation passes through here,
+    // and to_vec would allocate for each one.
+    let Value::Cons(car, _) = value else {
+        return false;
+    };
+    if !matches!(&*car.borrow(), Value::Symbol(name) if name == RECORD_LITERAL_SYMBOL) {
+        return false;
+    }
     let Ok(items) = value.to_vec() else {
         return false;
     };
-    matches!(items.first(), Some(Value::Symbol(name)) if name == RECORD_LITERAL_SYMBOL)
-        && items[1..].iter().all(is_record_literal_slot_form)
+    items[1..].iter().all(is_record_literal_slot_form)
 }
 
 fn is_quote_form(value: &Value) -> bool {
@@ -3787,6 +3854,25 @@ fn setcdr_tail_aliases(
     let mut aliases = Vec::new();
     collect_setcdr_tail_aliases(interp, value, tail, env, &mut aliases);
     aliases
+}
+
+/// Allocation-free pre-scan for `setcdr' anywhere in FORM, so the hot
+/// `if' path skips the tail-alias machinery entirely.  BUDGET caps the
+/// walk (reader forms can be circular); an exhausted budget reports
+/// true, deferring to the cycle-safe slow path.
+pub(crate) fn form_mentions_setcdr(value: &Value, budget: &mut u32) -> bool {
+    if *budget == 0 {
+        return true;
+    }
+    *budget -= 1;
+    match value {
+        Value::Symbol(name) => name == "setcdr",
+        Value::Cons(car, cdr) => {
+            form_mentions_setcdr(&car.borrow(), budget)
+                || form_mentions_setcdr(&cdr.borrow(), budget)
+        }
+        _ => false,
+    }
 }
 
 fn collect_setcdr_tail_aliases(
