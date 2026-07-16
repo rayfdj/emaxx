@@ -261,36 +261,64 @@ counts as the progress denominator.
   multi-hour detour on a non-selector.  To run one selector:
   `compat-harness run --scope all --selector <name> --file <f>' or
   emaxx `-l ert -l <proxy> --eval (ert-run-tests-batch-and-exit "<name>")'.
-- IN PROGRESS — AMSG-GMSG-AME-GME (2897, NOT yet passing): emaxx calls
-  `erc--send-message-nested' TWICE for a single `/amsg 1 foonet only'
-  — once correctly with the command's generated text "1 foonet only"
-  (→ PRIVMSG #foo :1 foonet only, what the server expects) and once
-  EXTRA with the RAW outer input "/amsg 1 foonet only\n" (→ PRIVMSG
-  #foo :/amsg 1 foonet only, which the dumb server rejects: "Match
-  failed").  The ORACLE calls nested exactly once.  Confirmed with
-  /tmp/probes/full.el (ordered trace of erc-process-input-line /
-  erc-cmd-AMSG / erc-send-message / erc--send-message-nested /
-  erc-send-input-line): oracle = one nested→one send; emaxx = two
-  nested (second raw).  All the obvious pieces are CORRECT in emaxx:
-  erc-command-regexp matches (g1=amsg g2=" 1 foonet only"),
-  erc-extract-command-from-line → (erc-cmd-AMSG " 1 foonet only"),
-  erc--make-input-split sets cmdp=0 (truthy; the struct's LAST slot —
-  print order is string,insertp,sendp,substxt,refoldp,lines,abortp,
-  cmdp), erc--split-line returns the line intact, erc-cmd-AMSG gets
-  " 1 foonet only" and calls (erc-send-message "1 foonet only").
-  The EXTRA nested call's origin is still unlocated — backtrace-frames
-  returns nothing useful in emaxx batch, and adding :before advice to
-  the send chain PERTURBS it so the double-send stops reproducing
-  (Heisenbug — likely a re-entrancy or a hook running twice).  Prime
-  suspect: `erc--run-send-hooks' runs erc-send-pre-hook /
-  erc-pre-send-functions / erc-send-modify-hook; if emaxx runs one of
-  those hook FUNCTIONS twice (buffer-local + global duplicate, or a
-  pre-send fn that re-submits) the raw outer input gets re-sent.
-  NOTE the double-send PREDATES this session's hook-ordering fix (AMSG
-  failed identically before it), so it's not caused by [local,global].
-  Next: instrument WITHOUT advice — a Rust-side or minimal-footprint
-  probe — or bisect erc-pre-send-functions / erc-send-modify-hook
-  membership to find the re-entrant sender.
+- IN PROGRESS — AMSG-GMSG-AME-GME (2897, NOT yet passing, but the two
+  root causes below are FIXED and only a third, deep erc-d timing bug
+  remains).  Diagnosed with Rust-side EMAXX_*_TRACE probes (advice-free,
+  so no Heisenbug).  The scenario now runs from an immediate error all
+  the way to the FINAL message before timing out.
+  ROOT CAUSE 1 (FIXED — the "double-send") = `str' locally-special
+  lookup.  `erc--run-send-hooks' does `(defvar str)' (bare, locally
+  special) then `(let* ((str ...)))'; the NESTED invocation (via
+  `erc--send-message-nested' during /amsg) must read its OWN dynamic
+  `str' ("1 foonet only"), but emaxx's `lookup'/`lookup_var' only broke
+  at the special-scan floor for `is_dynamic_binding_name' names, NOT for
+  locally-special ones — so it fell through the floor to
+  `erc-send-current-line's LEXICAL `str' ("/amsg 1 foonet only") and
+  re-sent the raw command.  FIX (src/lisp/eval/bindings.rs, both lookup
+  sites): the floor-break also fires for `local_special_active(name,env)'
+  (marker above the floor => the name is dynamic in THIS scope, so a
+  caller's same-named lexical binding is invisible).
+  ROOT CAUSE 2 (FIXED — the disconnect hang) = ERC client processes had
+  NO sentinel.  simple_compat.el shadowed the Rust `set-process-sentinel'
+  primitive with a no-op stub `(defun set-process-sentinel (_process
+  sentinel) sentinel)', so `(set-process-sentinel proc #'erc-process-
+  sentinel)' (erc-backend.el:783) never stored it; when the barnet
+  connection dropped after /QUIT the pump fired "connection broken" with
+  `has_sentinel=false' => no `erc-process-sentinel' => "ERC finished"
+  never displayed => the test hung on that expect.  FIX: removed the
+  Lisp stub AND guarded the Rust `set-process-sentinel' dispatch
+  (files_process.rs) to store the sentinel ONLY for network processes
+  (`is_network_process') — subprocess/tramp/gpg sentinels stay inert
+  exactly as before (the pump only dispatches NETWORK sentinels), so the
+  flaky :unstable autorevert-remote (tramp "mock" subprocess) is
+  unaffected.  Verified: all 12 erc sweep files PASS (incl. znc,
+  scenarios-internal, scenarios-match); autorevert flakiness is
+  identical to str-only (pre-existing bug#32645, NOT a regression).
+  REMAINING BLOCKER (erc-d server-side, deep) = after the barnet /QUIT,
+  the last two foonet messages `/gmsg 7 all live nets' and
+  `/gme 8 all live nets' arrive at the erc-d server COALESCED in one
+  read ("PRIVMSG #foo :7...\r\nPRIVMSG #foo :\1ACTION 8...\1\r\n"), so
+  erc-d--filter queues BOTH.  on-request matches "7", meters its 0.1s
+  reply ("alice: Excellent workman"), enters `sending' state; during
+  that 0.1s the queued ACTION 8 gets ring-remove'd + ring-insert-at-
+  beginning'ed by erc-d--on-request every tick (busy loop).  After the
+  reply, the dialog advances to the ACTION 8 exchange, but ACTION 8 is
+  never re-matched — erc-d--expire fires the 10s timeout ("Timed out
+  awaiting request ... ACTION 8").  Confirmed via Rust NET-SEND +
+  FIRE(timer) traces: "Excellent workman" IS sent, then only
+  erc-d--command-handle-all/erc-d--expire fire, no ACTION-8 match.  The
+  WORKING pair 5/6 does NOT hit this because privmsg-5 has NO reply (no
+  `sending' phase, no busy loop).  So the trigger is: two messages
+  delivered COALESCED where the FIRST has a delayed reply => the second
+  is lost/never-rematched across the `sending' metering window.  This is
+  the same class as the deferred MOTD-timer issue.  NEXT: trace the
+  erc-d dialog QUEUE contents (Lisp-level, e.g. a native probe of the
+  ring) across the resume/advance boundary to see whether ACTION 8 is
+  still queued when the dialog reaches its exchange, or whether the
+  ring churn under the busy loop drops it; likely fix is in how emaxx
+  drives the `run-at-time nil nil' on-request reschedule vs the 0.1s
+  resume timer, or a ring-mutation aliasing bug under rapid
+  insert-at-beginning/remove.
 - MILESTONE 2896: erc-scenarios-match.el PASSES check-all (2895..2896;
   the join-*/log scenario files between internal and match select 0).
   ROOT CAUSE was `goto-char' RETURN VALUE.  GNU `Fgoto_char' returns

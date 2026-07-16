@@ -16,9 +16,16 @@ impl Interpreter {
         for (index, frame) in env.iter().enumerate().rev() {
             // Below the caller boundary, references to SPECIAL variables
             // resolve dynamically like GNU rather than through a caller's
-            // same-named lexical binding (bug#47552 semantics).
+            // same-named lexical binding (bug#47552 semantics).  A name made
+            // locally special by a `defvar' in THIS scope (marker above the
+            // floor) is dynamic here too, so it must likewise not resolve to
+            // a caller's same-named lexical binding — e.g. `erc--run-send-hooks'
+            // reads its own dynamic `str', never `erc-send-current-line's
+            // lexical one.
             if index < self.special_scan_floor
-                && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name))
+                && *special.get_or_insert_with(|| {
+                    self.is_dynamic_binding_name(name) || self.local_special_active(name, env)
+                })
             {
                 break;
             }
@@ -638,9 +645,16 @@ impl Interpreter {
         for (index, frame) in env.iter().enumerate().rev() {
             // Below the caller boundary, references to SPECIAL variables
             // resolve dynamically like GNU rather than through a caller's
-            // same-named lexical binding (bug#47552 semantics).
+            // same-named lexical binding (bug#47552 semantics).  A name made
+            // locally special by a `defvar' in THIS scope (marker above the
+            // floor) is dynamic here too, so it must likewise not resolve to
+            // a caller's same-named lexical binding — e.g. `erc--run-send-hooks'
+            // reads its own dynamic `str', never `erc-send-current-line's
+            // lexical one.
             if index < self.special_scan_floor
-                && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name))
+                && *special.get_or_insert_with(|| {
+                    self.is_dynamic_binding_name(name) || self.local_special_active(name, env)
+                })
             {
                 break;
             }
