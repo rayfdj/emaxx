@@ -107,10 +107,17 @@ counts as the progress denominator.
 - NEXT = selector 2897 (erc-scenarios-misc-commands--AMSG-GMSG-AME-GME
   — the ONLY manifest-selected test in misc-commands.el; MOTD/SQUERY
   etc. are check-all-only, NOT frontier selectors, so don't chase
-  them).  Bug: emaxx double-sends — it calls erc--send-message-nested
-  an EXTRA time with the raw "/amsg ..." input, so the dumb server
-  gets "PRIVMSG #foo :/amsg 1 foonet only" instead of ":1 foonet only"
-  (details + trace pointers in the continuation doc).  Then
+  them).  Two of its three root causes are FIXED: (1) the double-send
+  was `str' locally-special lookup falling through the special-scan
+  floor to a caller's lexical binding (bindings.rs floor-break now
+  honors local_special_active); (2) ERC clients had NO sentinel — a
+  simple_compat.el no-op stub shadowed the Rust set-process-sentinel;
+  removed, with the Rust dispatch guarded to NETWORK processes only
+  (subprocess sentinels stay inert — tramp/gpg unaffected).  The
+  scenario now reaches its FINAL message; remaining blocker is an
+  erc-d server-side timing bug (coalesced 7+ACTION-8 delivery where
+  7's metered reply loses ACTION 8 — full diagnosis in the
+  continuation doc).  Then
   erc-scenarios-stamp.el 2898..2900 (date-mode/left-and-right,
   left/display-margin-mode, legacy-date-stamps), erc-services-tests
   (2901..2917), erc-stamp-tests, erc-tests.  ALWAYS consult

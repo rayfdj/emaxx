@@ -7044,11 +7044,6 @@ Hard links are not supported in this environment."
     (when (processp proc)
       (delete-process proc))))
 
-(defun set-process-sentinel (_process sentinel)
-  "Give PROCESS the sentinel function SENTINEL.
-Process sentinels are not dispatched in this batch environment."
-  sentinel)
-
 (defun vc-responsible-backend (_file &optional _no-error)
   "Return the version-control backend responsible for FILE.
 Version control is not integrated in this environment."

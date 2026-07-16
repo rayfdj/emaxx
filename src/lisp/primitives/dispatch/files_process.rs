@@ -2273,8 +2273,16 @@ pub(super) fn call(
         "set-process-sentinel" => {
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;
-            let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
-            interp.set_process_sentinel(process_id, sentinel);
+            // Only network processes have their sentinels dispatched by the
+            // event pump (on peer close / delete-process); erc relies on this
+            // to run `erc-process-sentinel' and display "ERC finished" when a
+            // connection drops.  Subprocess sentinels are NOT yet dispatched
+            // here, so keep them inert (matching the historical no-op) to
+            // avoid firing tramp/gpg sentinels the runtime can't service.
+            if interp.is_network_process(process_id) {
+                let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
+                interp.set_process_sentinel(process_id, sentinel);
+            }
             Ok(args[1].clone())
         }
         "set-process-buffer" => {
