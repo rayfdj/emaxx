@@ -851,6 +851,18 @@ fn format_spec_supports_function_values_and_split() {
 }
 
 #[test]
+fn format_spec_renders_buffers_with_princ_semantics() {
+    assert_eq!(
+        eval_str(
+            r##"(with-temp-buffer
+                 (rename-buffer "#format-spec-buffer")
+                 (format-spec "buffer=%b" `((?b . ,(current-buffer)))))"##
+        ),
+        Value::String("buffer=#format-spec-buffer".into())
+    );
+}
+
+#[test]
 fn custom_add_choice_extends_choice_types_without_duplicates() {
     assert_eq!(
         eval_str(

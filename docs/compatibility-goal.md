@@ -19,6 +19,22 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2929/7080: all 17 manifest-selected
+  `erc-services-tests.el' tests and all 12 selected
+  `erc-stamp-tests.el' tests pass their default oracle comparisons.
+  The services plstore cleanup exposed GNU's `(kill-buffer nil)'
+  semantics: nil or an omitted argument means the current buffer.
+  The stamp date-dedup test exposed three independent runtime gaps:
+  `add-hook' ignored numeric depth (so ERC stamped at depth 70 before
+  filling at depth 60 and fill wrapped the right stamp onto a new line),
+  `format-spec' rendered a buffer with prin1 instead of princ semantics,
+  and native `ert-deftest' stored conditional `:tags' forms unevaluated.
+  Hook depth metadata, stable global/local ordering, and the local `t'
+  default-hook splice now follow GNU; buffers in `format-spec' become
+  their names; ERT metadata expressions are evaluated at definition time.
+  The selector-2897 socket scenario remains green and the non-manifest
+  `erc-d-run-no-block' speed race passes three consecutive runs.  All 1133
+  Rust library tests and the auxiliary binary/integration suites pass.
 - Verified through selector 2900/7080: all three manifest-selected
   `erc-scenarios-stamp.el' tests pass.  Selector 2898 needed real
   nonblocking-connect semantics: `make-network-process :nowait t' now
@@ -315,12 +331,10 @@ counts as the progress denominator.
     setup-hook runs the hook inside the minibuffer buffer with
     active-minibuffer-window non-nil, define-minor-mode maintains
     GNU's `local-minor-modes', and `read-hide-char' is defined.
-- NEXT: erc-scenarios-* selected tests (statusmsg 2880, znc 2881,
-  internal 2882..2894, match 2895..2896, misc-commands 2897, stamp
-  2898..2900) need the erc-d fake-server machinery; erc-services
-  (2901..2917, 14/17 — plstore cluster fails), erc-stamp (2918..2929,
-  10/12), erc-tests (2930..3023, 57/99). Milestone 3000 sits inside
-  erc-tests.
+- NEXT: selector 2930, the first of 94 manifest-selected tests in
+  `test/lisp/erc/erc-tests.el' (2930..3023).  Milestone 3000 sits inside
+  that file.  The preceding erc scenario, services, and stamp blocks are
+  verified through 2929.
 - Verified through selector 2811/7080: erc-button (2766..2770),
   erc-dcc (2771..2780), erc-fill (2781), erc-goodies (2782..2796),
   erc-join (2797..2806), erc-match (2807..2811) all pass; 136-file

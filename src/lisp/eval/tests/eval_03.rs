@@ -3892,6 +3892,30 @@ fn ert_selector_excludes_expensive_tests_by_tag() {
 }
 
 #[test]
+fn ert_deftest_evaluates_conditional_tag_expressions() {
+    let mut interp = Interpreter::new();
+    eval_str_with(
+        &mut interp,
+        r#"
+            (progn
+              (setenv "EMAXX_ERT_CONDITIONAL_TAG" nil)
+              (ert-deftest conditional-tag-test ()
+                :tags (and (null (getenv "EMAXX_ERT_CONDITIONAL_TAG"))
+                           '(:unstable))
+                (should t)))
+            "#,
+    );
+    let selector = Reader::new("(not (tag :unstable))")
+        .read_all()
+        .unwrap()
+        .remove(0);
+    let summary = interp.run_ert_tests_with_selector(Some(&selector));
+    assert_eq!(summary.total, 0);
+    assert!(interp.last_selected_tests.is_empty());
+    assert_eq!(interp.discovered_tests()[0].tags, vec![":unstable"]);
+}
+
+#[test]
 fn should_error_checks_error_type() {
     let mut interp = Interpreter::new();
     eval_str_with(

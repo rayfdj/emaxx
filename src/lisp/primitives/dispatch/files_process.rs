@@ -2693,7 +2693,8 @@ pub(super) fn call(
             Ok(Value::Integer(status.code().unwrap_or(1) as i64))
         }
         "kill-buffer" => {
-            let id = if let Some(buffer) = args.first() {
+            need_arg_range(name, args, 0, 1)?;
+            let id = if let Some(buffer) = args.first().filter(|buffer| !buffer.is_nil()) {
                 match interp.resolve_buffer_id(buffer) {
                     Ok(id) => id,
                     Err(_) if matches!(buffer, Value::Buffer(_, _)) => return Ok(Value::Nil),

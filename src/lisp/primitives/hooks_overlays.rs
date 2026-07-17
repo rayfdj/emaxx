@@ -47,9 +47,11 @@ pub(crate) fn hook_values(
     // mirror, the effective global part is the DEFAULT value (the store
     // below already carries the local functions).
     if let (Some(local_hooks), Some(base_value)) = (&local, &base) {
-        let mut mirror = local_hooks.clone();
-        mirror.push(Value::T);
-        if crate::lisp::primitives::values_equal(interp, base_value, &Value::list(mirror)) {
+        if crate::lisp::primitives::values_equal(
+            interp,
+            base_value,
+            &Value::list(local_hooks.clone()),
+        ) {
             base = interp.default_value(hook_name);
         }
     }
@@ -66,19 +68,19 @@ pub(crate) fn hook_values(
     // store-merge below covers the local functions, so drop the sentinel.
     global.retain(|hook| !matches!(hook, Value::T));
     match local {
-        // GNU runs a buffer-local hook by walking its value
-        // `(local-fns... t)' and splicing the global handlers at the `t'
-        // sentinel (stored last here), so buffer-local functions run
-        // BEFORE the global ones — e.g. `erc-once-with-server-event'
-        // installs a local one-shot at depth -95 that must pre-empt the
-        // global `erc-networks-on-MOTD-end' and stop the
-        // `run-hook-with-args-until-success' chain.
+        // GNU walks the depth-sorted local value and splices the global
+        // handlers exactly where its `t' sentinel occurs.  Negative local
+        // depths therefore run before the global hook and positive depths
+        // after it.
         Some(local) => {
-            let mut result: Vec<Value> = local
-                .into_iter()
-                .filter(|h| !matches!(h, Value::T))
-                .collect();
-            result.extend(global);
+            let mut result = Vec::new();
+            for hook in local {
+                if matches!(hook, Value::T) {
+                    result.extend(global.iter().cloned());
+                } else {
+                    result.push(hook);
+                }
+            }
             result
         }
         None => global,

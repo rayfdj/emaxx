@@ -1459,34 +1459,30 @@ pub(super) fn call(
             need_args(name, args, 2)?;
             let hook_name = args[0].as_symbol()?.to_string();
             let function = args[1].clone();
-            let append = args.get(2).is_some_and(|value| {
-                value.is_truthy() && !matches!(value, Value::Symbol(symbol) if symbol == ":local")
-            });
-            let local = args
-                .get(2)
-                .is_some_and(|value| matches!(value, Value::Symbol(symbol) if symbol == ":local"))
-                || args.get(3).is_some_and(|value| value.is_truthy());
+            // Since Emacs 29 the third argument is a numeric DEPTH.  The
+            // historical non-nil APPEND values retain their old meaning by
+            // mapping to depth 90.
+            let depth = match args.get(2) {
+                Some(Value::Integer(depth)) => *depth,
+                Some(value) if value.is_truthy() => 90,
+                _ => 0,
+            };
+            let local = args.get(3).is_some_and(|value| value.is_truthy());
             // GNU add-hook: a hook whose current value is a single function
             // (not a list) is first wrapped in a one-element list, so the
             // existing handler survives (erc's `422' hook holds the bare
             // symbol `erc-server-376' before the networks module adds to it).
-            let hook_value_to_vec = |value: Value| -> Vec<Value> {
-                match value.to_vec() {
-                    Ok(items) => items,
-                    Err(_) if value.is_nil() => Vec::new(),
-                    Err(_) => vec![value],
-                }
-            };
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| vec![Value::T])
             } else if interp
                 .buffer_local_hook(interp.current_buffer_id(), &hook_name)
                 .is_some()
             {
-                // The buffer-local mirror (fns... t) shadows the global
-                // value here; GNU's global add-hook reads the DEFAULT.
+                // The buffer-local mirror (including its `t' splice
+                // sentinel) shadows the global value here; GNU's global
+                // add-hook reads the DEFAULT.
                 interp
                     .default_value(&hook_name)
                     .map(hook_value_to_vec)
@@ -1498,22 +1494,25 @@ pub(super) fn call(
                     .unwrap_or_default()
             };
             if !hooks.contains(&function) {
-                if append {
+                if depth > 0 {
                     hooks.push(function);
                 } else {
                     hooks.insert(0, function);
                 }
-            }
-            if hook_name == "post-self-insert-hook" {
-                hooks.sort_by_key(post_self_insert_hook_depth);
+                if depth != 0 {
+                    set_hook_function_depth(interp, &hook_name, &args[1], depth, local);
+                }
+                if let Some(depths) = hook_function_depths(interp, &hook_name, local) {
+                    hooks.sort_by_key(|hook| hook_function_depth(&depths, hook));
+                }
             }
             if local {
                 let buffer_id = interp.current_buffer_id();
                 interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
-                // GNU represents local hooks as a buffer-local variable
-                // value ending in `t' (the marker for "also run the
-                // default"); reads like (member #'f hook-var) rely on it.
-                hooks.push(Value::T);
+                // Keep GNU's `t' sentinel in its depth-sorted position.  It
+                // splices the default hook at depth zero, so positive local
+                // functions run after the default while negative ones run
+                // before it.
                 interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
             } else if interp
                 .buffer_local_hook(interp.current_buffer_id(), &hook_name)
@@ -1670,6 +1669,13 @@ pub(super) fn call(
             let function = args[1].clone();
             // (remove-hook HOOK FUNCTION &optional LOCAL) — no DEPTH slot.
             let local = args.get(2).is_some_and(|value| value.is_truthy());
+            if local
+                && interp
+                    .buffer_local_hook(interp.current_buffer_id(), &hook_name)
+                    .is_none()
+            {
+                return Ok(Value::Nil);
+            }
             let mut hooks = if local {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), &hook_name)
@@ -1678,24 +1684,29 @@ pub(super) fn call(
                 .buffer_local_hook(interp.current_buffer_id(), &hook_name)
                 .is_some()
             {
-                // The buffer-local mirror (fns... t) shadows the global
-                // value here; GNU's global add-hook reads the DEFAULT.
+                // The buffer-local mirror (including its `t' splice
+                // sentinel) shadows the global value here; GNU's global
+                // remove-hook reads the DEFAULT.
                 interp
                     .default_value(&hook_name)
-                    .map(|value| value.to_vec().unwrap_or_default())
+                    .map(hook_value_to_vec)
                     .unwrap_or_default()
             } else {
                 interp
                     .lookup_var(&hook_name, env)
-                    .map(|value| value.to_vec().unwrap_or_default())
+                    .map(hook_value_to_vec)
                     .unwrap_or_default()
             };
+            let removed = hooks.iter().find(|hook| *hook == &function).cloned();
             hooks.retain(|hook| hook != &function);
+            if let Some(removed) = removed {
+                remove_hook_function_depth(interp, &hook_name, &removed, local);
+            }
             if local {
                 let buffer_id = interp.current_buffer_id();
-                if hooks.is_empty() {
-                    // GNU kills the local binding when only the `t'
-                    // sentinel would remain.
+                if hooks == [Value::T] {
+                    // GNU kills the local binding when only the default-hook
+                    // sentinel remains.
                     interp.remove_buffer_local_hook(buffer_id, &hook_name);
                     super::call(
                         interp,
@@ -1705,7 +1716,6 @@ pub(super) fn call(
                     )?;
                 } else {
                     interp.set_buffer_local_hook(buffer_id, &hook_name, hooks.clone());
-                    hooks.push(Value::T);
                     interp.set_buffer_local_value(buffer_id, &hook_name, Value::list(hooks));
                 }
             } else if interp
@@ -1727,18 +1737,122 @@ pub(super) fn call(
     }
 }
 
-fn post_self_insert_hook_depth(hook: &Value) -> i32 {
-    match hook {
-        Value::Symbol(name) if name == "electric-layout-post-self-insert-function" => 40,
-        Value::Symbol(name)
-            if name == "electric-pair-post-self-insert-function"
-                || name == "electric-pair-open-newline-between-pairs-psif" =>
-        {
-            50
-        }
-        Value::Symbol(name) if name == "electric-indent-post-self-insert-function" => 60,
-        _ => 50,
+fn hook_value_to_vec(value: Value) -> Vec<Value> {
+    match value.to_vec() {
+        Ok(items) => items,
+        Err(_) if value.is_nil() => Vec::new(),
+        Err(_) => vec![value],
     }
+}
+
+fn hook_depth_symbol_name(interp: &Interpreter, hook_name: &str) -> Option<String> {
+    interp
+        .get_symbol_property(hook_name, "hook--depth-alist")
+        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+}
+
+fn ensure_hook_depth_symbol(interp: &mut Interpreter, hook_name: &str) -> String {
+    if let Some(name) = hook_depth_symbol_name(interp, hook_name) {
+        return name;
+    }
+    let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let name = crate::lisp::types::make_uninterned_symbol_name("depth-alist", id);
+    interp.put_symbol_property(hook_name, "hook--depth-alist", Value::Symbol(name.clone()));
+    interp.set_global_binding(&name, Value::Nil);
+    name
+}
+
+fn hook_function_depths(
+    interp: &Interpreter,
+    hook_name: &str,
+    local: bool,
+) -> Option<Vec<(Value, i64)>> {
+    let depth_name = hook_depth_symbol_name(interp, hook_name)?;
+    let value = if local {
+        interp
+            .buffer_local_value(interp.current_buffer_id(), &depth_name)
+            .or_else(|| interp.default_value(&depth_name))
+    } else {
+        interp.default_value(&depth_name)
+    }
+    .unwrap_or(Value::Nil);
+    Some(
+        value
+            .to_vec()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                let (function, depth) = entry.cons_values()?;
+                Some((function, depth.as_integer().ok()?))
+            })
+            .collect(),
+    )
+}
+
+fn store_hook_function_depths(
+    interp: &mut Interpreter,
+    depth_name: &str,
+    depths: Vec<(Value, i64)>,
+    local: bool,
+) {
+    let value = Value::list(
+        depths
+            .into_iter()
+            .map(|(function, depth)| Value::cons(function, Value::Integer(depth))),
+    );
+    if local {
+        interp.set_buffer_local_value(interp.current_buffer_id(), depth_name, value);
+    } else {
+        interp.set_global_binding(depth_name, value);
+    }
+}
+
+fn set_hook_function_depth(
+    interp: &mut Interpreter,
+    hook_name: &str,
+    function: &Value,
+    depth: i64,
+    local: bool,
+) {
+    let depth_name = ensure_hook_depth_symbol(interp, hook_name);
+    if local
+        && interp
+            .buffer_local_value(interp.current_buffer_id(), &depth_name)
+            .is_none()
+    {
+        let inherited = interp.default_value(&depth_name).unwrap_or(Value::Nil);
+        interp.set_buffer_local_value(interp.current_buffer_id(), &depth_name, inherited);
+    }
+    let mut depths = hook_function_depths(interp, hook_name, local).unwrap_or_default();
+    depths.retain(|(existing, _)| existing != function);
+    depths.push((function.clone(), depth));
+    store_hook_function_depths(interp, &depth_name, depths, local);
+}
+
+fn remove_hook_function_depth(
+    interp: &mut Interpreter,
+    hook_name: &str,
+    function: &Value,
+    local: bool,
+) {
+    let Some(depth_name) = hook_depth_symbol_name(interp, hook_name) else {
+        return;
+    };
+    let Some(mut depths) = hook_function_depths(interp, hook_name, local) else {
+        return;
+    };
+    let before = depths.len();
+    depths.retain(|(existing, _)| existing != function);
+    if depths.len() != before {
+        store_hook_function_depths(interp, &depth_name, depths, local);
+    }
+}
+
+fn hook_function_depth(depths: &[(Value, i64)], hook: &Value) -> i64 {
+    depths
+        .iter()
+        .find_map(|(function, depth)| (function == hook).then_some(*depth))
+        .unwrap_or(0)
 }
 
 fn cl_generic_method_file_entries(
