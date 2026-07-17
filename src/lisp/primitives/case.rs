@@ -308,6 +308,7 @@ pub(crate) fn casify_string(
 ) -> Result<String, LispError> {
     let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
     let (down_table, up_table) = current_case_table_ids(interp)?;
+    let ascii_only = interp.is_ascii_case_table(down_table);
     let chars: Vec<char> = input.chars().collect();
     let mut output = String::new();
     let mut in_word = false;
@@ -317,23 +318,33 @@ pub(crate) fn casify_string(
             .get(idx + 1)
             .copied()
             .is_some_and(|next| case_word_char(interp, next, case_symbols_as_words));
-        let piece = match action {
-            CaseAction::Up => full_upcase_string(interp, up_table, ch),
-            CaseAction::Down => {
-                full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
+        let explicit_non_ascii_mapping = match action {
+            CaseAction::Down => explicit_case_table_mapping(interp, down_table, ch as u32),
+            CaseAction::Up | CaseAction::Capitalize | CaseAction::UpcaseInitials => {
+                explicit_case_table_mapping(interp, up_table, ch as u32)
             }
-            CaseAction::Capitalize => {
-                if is_word && !in_word {
-                    full_titlecase_string(interp, up_table, ch)
-                } else {
+        };
+        let piece = if ascii_only && !ch.is_ascii() && explicit_non_ascii_mapping.is_none() {
+            ch.to_string()
+        } else {
+            match action {
+                CaseAction::Up => full_upcase_string(interp, up_table, ch),
+                CaseAction::Down => {
                     full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
                 }
-            }
-            CaseAction::UpcaseInitials => {
-                if is_word && !in_word {
-                    full_titlecase_string(interp, up_table, ch)
-                } else {
-                    ch.to_string()
+                CaseAction::Capitalize => {
+                    if is_word && !in_word {
+                        full_titlecase_string(interp, up_table, ch)
+                    } else {
+                        full_downcase_string(interp, down_table, ch, in_word && !next_is_word)
+                    }
+                }
+                CaseAction::UpcaseInitials => {
+                    if is_word && !in_word {
+                        full_titlecase_string(interp, up_table, ch)
+                    } else {
+                        ch.to_string()
+                    }
                 }
             }
         };

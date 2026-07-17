@@ -300,6 +300,34 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             plist: coding_plist('L', std::iter::empty()),
         },
         CodingSystemState {
+            name: "cyrillic-koi8".into(),
+            base: "cyrillic-koi8".into(),
+            kind: "charset".into(),
+            eol_type: None,
+            plist: coding_plist('K', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "cyrillic-koi8-unix".into(),
+            base: "cyrillic-koi8".into(),
+            kind: "charset".into(),
+            eol_type: Some(0),
+            plist: coding_plist('K', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "cyrillic-koi8-dos".into(),
+            base: "cyrillic-koi8".into(),
+            kind: "charset".into(),
+            eol_type: Some(1),
+            plist: coding_plist('K', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "cyrillic-koi8-mac".into(),
+            base: "cyrillic-koi8".into(),
+            kind: "charset".into(),
+            eol_type: Some(2),
+            plist: coding_plist('K', std::iter::empty()),
+        },
+        CodingSystemState {
             name: "utf-8".into(),
             base: "utf-8".into(),
             kind: "utf-8".into(),
@@ -496,9 +524,13 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
 pub(super) fn builtin_coding_aliases() -> Vec<(String, String)> {
     vec![
         ("ascii".into(), "us-ascii".into()),
+        ("latin-1".into(), "iso-latin-1".into()),
+        ("latin-1-unix".into(), "iso-latin-1-unix".into()),
+        ("latin-1-dos".into(), "iso-latin-1-dos".into()),
         ("iso-8859-1".into(), "iso-latin-1".into()),
         ("iso-8859-1-unix".into(), "iso-latin-1-unix".into()),
         ("iso-8859-1-dos".into(), "iso-latin-1-dos".into()),
+        ("koi8-r".into(), "cyrillic-koi8".into()),
         ("binary".into(), "raw-text".into()),
         ("utf8".into(), "utf-8".into()),
         ("utf-8-emacs".into(), "utf-8".into()),

@@ -217,6 +217,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-find-class"
             | "cl--find-class"
             | "cl--struct-get-class"
+            | "cl--struct-class-type"
+            | "cl--class-index-table"
             | "cl-struct-define"
             | "cl-old-struct-compat-mode"
             | "cl--class-name"
@@ -2832,6 +2834,49 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(interp.class_value(symbol).unwrap_or(Value::Nil))
+        }
+        "cl--struct-class-type" => {
+            need_args(name, args, 1)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(wrong_type_argument("cl--struct-class-p", args[0].clone()));
+            };
+            Ok(interp
+                .get_symbol_property(&class_name, "emaxx-struct-sequence-type")
+                .unwrap_or(Value::Nil))
+        }
+        "cl--class-index-table" => {
+            need_args(name, args, 1)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(wrong_type_argument("class-p", args[0].clone()));
+            };
+            let sequence_type = interp
+                .get_symbol_property(&class_name, "emaxx-struct-sequence-type")
+                .unwrap_or(Value::Nil);
+            let offset = usize::from(sequence_type.is_nil());
+            let slots = interp
+                .get_symbol_property(&class_name, "emaxx-struct-slots")
+                .or_else(|| interp.get_symbol_property(&class_name, "emaxx-class-slots"))
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default();
+            let table = super::call(interp, "make-hash-table", &[], env)?;
+            for (index, slot) in slots.into_iter().enumerate() {
+                let slot_name = match slot {
+                    Value::Symbol(name) => Value::Symbol(name),
+                    Value::Cons(_, _) => slot.car().unwrap_or(Value::Nil),
+                    _ => continue,
+                };
+                super::call(
+                    interp,
+                    "puthash",
+                    &[
+                        slot_name,
+                        Value::Integer((index + offset) as i64),
+                        table.clone(),
+                    ],
+                    env,
+                )?;
+            }
+            Ok(table)
         }
         "cl-struct-define" => {
             need_args(name, args, 9)?;

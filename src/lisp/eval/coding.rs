@@ -440,6 +440,16 @@ impl Interpreter {
         self.standard_case_table_id = Some(id);
     }
 
+    pub fn mark_ascii_case_table(&mut self, id: u64) {
+        if !self.ascii_case_table_ids.contains(&id) {
+            self.ascii_case_table_ids.push(id);
+        }
+    }
+
+    pub fn is_ascii_case_table(&self, id: u64) -> bool {
+        self.ascii_case_table_ids.contains(&id)
+    }
+
     pub fn standard_syntax_table_id(&self) -> u64 {
         self.standard_syntax_table_id
     }

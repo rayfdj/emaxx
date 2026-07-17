@@ -559,6 +559,61 @@ pub(crate) fn encode_iso_latin_bytes(text: &str) -> Result<Vec<u8>, LispError> {
     encode_raw_text_bytes(text)
 }
 
+const KOI8_R_LOWER: &str = "юабцдефгхийклмнопярстужвьызшэщчъ";
+const KOI8_R_UPPER: &str = "ЮАБЦДЕФГХИЙКЛМНОПЯРСТУЖВЬЫЗШЭЩЧЪ";
+
+fn koi8_r_byte(ch: char) -> Option<u8> {
+    match ch {
+        'ё' => Some(0xA3),
+        'Ё' => Some(0xB3),
+        _ => KOI8_R_LOWER
+            .chars()
+            .position(|candidate| candidate == ch)
+            .map(|index| 0xC0 + index as u8)
+            .or_else(|| {
+                KOI8_R_UPPER
+                    .chars()
+                    .position(|candidate| candidate == ch)
+                    .map(|index| 0xE0 + index as u8)
+            }),
+    }
+}
+
+fn encode_koi8_r_bytes(text: &str) -> Result<Vec<u8>, LispError> {
+    text.chars()
+        .map(|ch| {
+            if let Some(byte) = raw_byte_from_regex_char(ch) {
+                Ok(byte)
+            } else if ch.is_ascii() {
+                Ok(ch as u8)
+            } else {
+                koi8_r_byte(ch)
+                    .ok_or_else(|| LispError::Signal("Character cannot be encoded".into()))
+            }
+        })
+        .collect()
+}
+
+fn decode_koi8_r_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| match *byte {
+            0x00..=0x7F => char::from(*byte),
+            0xA3 => 'ё',
+            0xB3 => 'Ё',
+            0xC0..=0xDF => KOI8_R_LOWER
+                .chars()
+                .nth((*byte - 0xC0) as usize)
+                .unwrap_or_else(|| raw_byte_regex_char(*byte)),
+            0xE0..=0xFF => KOI8_R_UPPER
+                .chars()
+                .nth((*byte - 0xE0) as usize)
+                .unwrap_or_else(|| raw_byte_regex_char(*byte)),
+            _ => raw_byte_regex_char(*byte),
+        })
+        .collect()
+}
+
 pub(crate) fn encode_ascii_bytes(text: &str) -> Result<Vec<u8>, LispError> {
     let mut bytes = Vec::new();
     for ch in text.chars() {
@@ -665,6 +720,9 @@ pub(crate) fn encode_text_bytes(
         .unwrap_or_else(|| canonical.clone());
     let eol_type = interp.coding_system_eol_type_value(&canonical);
     let text = encode_text_with_eol(text, eol_type);
+    if interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8") {
+        return encode_koi8_r_bytes(&text);
+    }
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" => encode_utf8_bytes(&text, false),
         "utf-8-with-signature" => encode_utf8_bytes(&text, true),
@@ -763,6 +821,9 @@ pub(crate) fn decode_text_bytes(
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
+    if interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8") {
+        return Ok(decode_koi8_r_bytes(bytes));
+    }
     match kind.as_str() {
         "utf-8" | "prefer-utf-8" | "utf-8-auto" | "utf-8-with-signature" => {
             Ok(decode_utf8_bytes(bytes))
@@ -785,6 +846,7 @@ pub(crate) fn string_unencodable_positions(
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
+    let koi8_r = interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8");
     let mut failures = Vec::new();
     for (index, ch) in text.chars().enumerate() {
         let raw_byte = raw_byte_from_regex_char(ch);
@@ -793,6 +855,7 @@ pub(crate) fn string_unencodable_positions(
             "utf-8" | "utf-8-with-signature" | "utf-8-auto" | "prefer-utf-8" | "undecided" => {
                 ch != json::INVALID_UNICODE_SENTINEL
             }
+            _ if koi8_r => raw_byte.is_some() || ch.is_ascii() || koi8_r_byte(ch).is_some(),
             "iso-latin-1" | "raw-text" | "no-conversion" => raw_byte.is_some() || code <= 0xFF,
             "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "sjis" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F || ch == 'あ',
@@ -817,6 +880,8 @@ pub(crate) fn string_identity_for_coding(
     let kind = interp
         .coding_system_kind_name(coding)
         .unwrap_or_else(|| coding.to_string());
+    let koi8_r = interp.coding_system_base_name(coding).as_deref() == Some("cyrillic-koi8");
+    let single_byte_translation = koi8_r || kind == "iso-latin-1";
     if encode {
         if matches!(eol_type, Some(1) | Some(2)) && text.contains('\n') {
             return false;
@@ -824,7 +889,16 @@ pub(crate) fn string_identity_for_coding(
         if kind == "utf-8-with-signature" {
             return false;
         }
+        if single_byte_translation
+            && text
+                .chars()
+                .any(|ch| raw_byte_from_regex_char(ch).is_some() || !ch.is_ascii())
+        {
+            return false;
+        }
     } else if matches!(eol_type, Some(1) | Some(2)) && text.contains('\r') {
+        return false;
+    } else if single_byte_translation && text.chars().any(is_raw_byte_regex_char) {
         return false;
     }
     true
@@ -1225,12 +1299,19 @@ pub(crate) fn decode_coding_text(
     // GNU decodes the byte stream for utf-8 family codings: raw bytes
     // (emaxx's unibyte representation) become the decoded characters,
     // with undecodable bytes preserved as raw bytes.
-    let text = if text.chars().any(is_raw_byte_regex_char)
-        && (canonical == "utf-8"
+    let text = if text.chars().any(is_raw_byte_regex_char) {
+        if canonical == "utf-8"
             || canonical.starts_with("utf-8-")
-            || canonical.starts_with("prefer-utf-8"))
-    {
-        utf8_text_from_bytes_keeping_raw(&encode_raw_text_bytes(&text)?)
+            || canonical.starts_with("prefer-utf-8")
+        {
+            utf8_text_from_bytes_keeping_raw(&encode_raw_text_bytes(&text)?)
+        } else if interp.coding_system_base_name(&canonical).as_deref() == Some("cyrillic-koi8") {
+            decode_koi8_r_bytes(&encode_raw_text_bytes(&text)?)
+        } else if interp.coding_system_kind_name(&canonical).as_deref() == Some("iso-latin-1") {
+            decode_latin_bytes(&encode_raw_text_bytes(&text)?)
+        } else {
+            text
+        }
     } else {
         text
     };

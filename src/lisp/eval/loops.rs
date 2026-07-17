@@ -119,9 +119,6 @@ impl Interpreter {
         let dynamic =
             self.is_dynamic_binding_name(&var_name) || self.local_special_active(&var_name, env);
         let frame_index = env.len();
-        if !dynamic {
-            Self::push_marked_frame(env, vec![(var_name.clone(), Value::Nil)]);
-        }
         let mut outcome = Ok(());
         for item in list_items {
             if dynamic {
@@ -133,11 +130,14 @@ impl Interpreter {
                     break;
                 }
             } else {
-                let frame = env
-                    .get_mut(frame_index)
-                    .expect("dolist binding frame remains active during loop");
-                Self::upsert_frame_binding(frame, var_name.clone(), item);
-                if let Err(error) = self.sf_progn(&items[2..], env) {
+                // The macro expansion uses a distinct lexical `let' for
+                // every iteration.  Give each one a fresh frame identity so
+                // closures retain that iteration's value instead of sharing
+                // the next iteration's binding cell.
+                Self::push_marked_frame(env, vec![(var_name.clone(), item)]);
+                let body_result = self.sf_progn(&items[2..], env);
+                env.truncate(frame_index);
+                if let Err(error) = body_result {
                     outcome = Err(error);
                     break;
                 }

@@ -1219,7 +1219,11 @@ fn simulated_completing_read(
 ) -> Result<Value, LispError> {
     let collection = args.get(1).cloned().unwrap_or(Value::Nil);
     let predicate = args.get(2).filter(|value| !value.is_nil()).cloned();
-    let mut contents = String::new();
+    let require_match = args.get(3).is_some_and(Value::is_truthy);
+    let default = args.get(6).and_then(string_like).map(|string| string.text);
+    let mut contents = Vec::<char>::new();
+    let mut cursor = 0usize;
+    let mut accepted = None;
     loop {
         let Ok(event) = crate::lisp::primitives::pop_unread_command_event_value(interp, env) else {
             break;
@@ -1228,11 +1232,38 @@ fn simulated_completing_read(
             continue;
         };
         match ch {
-            '\r' | '\n' => break,
+            '\r' | '\n' => {
+                let used_default = contents.is_empty() && default.is_some();
+                let entered = if used_default {
+                    default.clone().unwrap_or_default()
+                } else {
+                    contents.iter().collect()
+                };
+                // GNU accepts DEFAULT on blank input even when REQUIRE-MATCH
+                // and PREDICATE would otherwise reject that default.
+                if require_match && !used_default {
+                    let ignore_case = completion_ignores_case(interp, env);
+                    let matches = filtered_completion_matches(
+                        interp,
+                        &entered,
+                        &collection,
+                        predicate.as_ref(),
+                        env,
+                    )?;
+                    if !matches.iter().any(|candidate| {
+                        completion_strings_equal(&candidate.name, &entered, ignore_case)
+                    }) {
+                        continue;
+                    }
+                }
+                accepted = Some(entered);
+                break;
+            }
             '\t' => {
+                let current: String = contents.iter().collect();
                 let matches = filtered_completion_matches(
                     interp,
-                    &contents,
+                    &current,
                     &collection,
                     predicate.as_ref(),
                     env,
@@ -1240,10 +1271,11 @@ fn simulated_completing_read(
                 if !matches.is_empty() {
                     let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
                     let lcp = common_prefix(&names);
-                    if lcp.len() > contents.len() {
-                        contents = lcp;
+                    if lcp.chars().count() > contents.len() {
+                        contents = lcp.chars().collect();
+                        cursor = contents.len();
                     }
-                } else if let Some(trimmed) = contents.strip_suffix('/') {
+                } else if let Some(trimmed) = current.strip_suffix('/') {
                     // "dir-prefix/" — complete the component before the
                     // trailing slash (partial-completion's trailing case).
                     let matches = filtered_completion_matches(
@@ -1256,28 +1288,45 @@ fn simulated_completing_read(
                     if !matches.is_empty() {
                         let names: Vec<String> = matches.into_iter().map(|m| m.name).collect();
                         let lcp = common_prefix(&names);
-                        if lcp.len() > trimmed.len() {
-                            contents = lcp;
+                        if lcp.chars().count() > trimmed.chars().count() {
+                            contents = lcp.chars().collect();
+                            cursor = contents.len();
                         }
                     }
                 } else if let Some(expanded) = partial_completion_expand(
                     interp,
-                    &contents,
+                    &current,
                     &collection,
                     predicate.as_ref(),
                     env,
                 )? {
-                    contents = expanded;
+                    contents = expanded.chars().collect();
+                    cursor = contents.len();
                 }
             }
-            _ => contents.push(ch),
+            '\u{1}' => cursor = 0,                        // C-a
+            '\u{2}' => cursor = cursor.saturating_sub(1), // C-b
+            '\u{4}' if cursor < contents.len() => {
+                contents.remove(cursor); // C-d
+            }
+            '\u{5}' => cursor = contents.len(), // C-e
+            '\u{6}' => cursor = (cursor + 1).min(contents.len()), // C-f
+            '\u{8}' | '\u{7f}' if cursor > 0 => {
+                cursor -= 1;
+                contents.remove(cursor);
+            }
+            '\u{b}' => contents.truncate(cursor), // C-k
+            '\u{15}' => {
+                contents.clear(); // C-u
+                cursor = 0;
+            }
+            _ => {
+                contents.insert(cursor, ch);
+                cursor += 1;
+            }
         }
     }
-    if contents.is_empty()
-        && let Some(default) = args.get(6)
-        && let Some(string) = string_like(default)
-    {
-        return Ok(Value::String(string.text));
-    }
-    Ok(Value::String(contents))
+    Ok(Value::String(
+        accepted.unwrap_or_else(|| contents.iter().collect()),
+    ))
 }

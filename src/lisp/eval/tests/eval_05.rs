@@ -128,6 +128,115 @@ fn coding_system_type_reports_known_coding_kind() {
 }
 
 #[test]
+fn cyrillic_koi8_is_a_single_byte_round_tripping_coding() {
+    assert_eq!(
+        eval_str(
+            "(let ((encoded (encode-coding-string \"Русский\" 'cyrillic-koi8)))
+               (list (coding-system-type 'cyrillic-koi8)
+                     (coding-system-change-eol-conversion
+                      'cyrillic-koi8 'unix)
+                     (string-bytes encoded)
+                     (decode-coding-string encoded 'cyrillic-koi8)))"
+        ),
+        Value::list([
+            Value::Symbol("charset".into()),
+            Value::Symbol("cyrillic-koi8-unix".into()),
+            Value::Integer(7),
+            Value::String("Русский".into()),
+        ])
+    );
+}
+
+#[test]
+fn latin_1_aliases_resolve_to_iso_latin_1() {
+    assert_eq!(
+        eval_str(
+            "(list (coding-system-base 'latin-1)
+                   (coding-system-change-eol-conversion 'latin-1 'unix)
+                   (decode-coding-string
+                    (encode-coding-string \"Hyvää päivää\" 'latin-1)
+                    'latin-1))"
+        ),
+        Value::list([
+            Value::symbol("iso-latin-1"),
+            Value::symbol("iso-latin-1-unix"),
+            Value::String("Hyvää päivää".into()),
+        ]),
+    );
+}
+
+#[test]
+fn find_composition_keeps_combining_buffer_characters_together() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((old (window-buffer (selected-window))))
+               (unwind-protect
+                   (with-temp-buffer
+                     (set-window-buffer (selected-window) (current-buffer))
+                     (insert \"__Åström\")
+                     (let ((composition (find-composition 9 10)))
+                       (list (car composition) (cadr composition))))
+                 (set-window-buffer (selected-window) old)))"
+        ),
+        Value::list([Value::Integer(8), Value::Integer(10)]),
+    );
+}
+
+#[test]
+fn ascii_case_table_leaves_non_ascii_letters_unchanged() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(with-case-table ascii-case-table (downcase \"ABC 123 ΔΞΩΣ\"))"
+        ),
+        Value::String("abc 123 ΔΞΩΣ".into()),
+    );
+}
+
+#[test]
+fn read_buffer_simulation_enforces_its_predicate_and_accepts_default() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (get-buffer-create \"#chan\")
+               (get-buffer-create \"#fake\")
+               (let ((predicate (lambda (name) (string= name \"#chan\"))))
+                 (list
+                  (let ((unread-command-events
+                         (append (kbd \"#chan C-m\")
+                                 '(?\\C-g ?\\C-g ?\\C-g))))
+                    (read-buffer \"Buffer: \" \"#chan\" t predicate))
+                  (let ((unread-command-events
+                         (append (kbd \"#fake C-m C-a C-k C-m\")
+                                 '(?\\C-g ?\\C-g ?\\C-g))))
+                    (read-buffer \"Buffer: \" \"#fake\" t predicate)))))"
+        ),
+        Value::list([Value::String("#chan".into()), Value::String("#fake".into()),]),
+    );
+}
+
+#[test]
 fn mode_hook_delay_variables_have_default_bindings() {
     assert_eq!(
         eval_str("(list delay-mode-hooks delayed-mode-hooks delayed-after-hook-functions)"),
@@ -1003,6 +1112,20 @@ fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
     assert_eq!(
         eval_str("(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"),
         Value::String(" ".into())
+    );
+}
+
+#[test]
+fn execute_kbd_macro_reports_an_undefined_key_sequence() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (ert-with-message-capture messages
+                  (execute-kbd-macro "\C-c\C-z")
+                  messages)
+                "#
+        ),
+        Value::String("C-c C-z is undefined\n".into())
     );
 }
 
@@ -2627,7 +2750,7 @@ fn ert_x_remote_temp_directory_loads_after_tramp() {
 }
 
 #[test]
-fn simple_compat_preloads_custom_and_view_entry_points() {
+fn simple_compat_preloads_custom_url_and_view_entry_points() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
@@ -2648,6 +2771,9 @@ fn simple_compat_preloads_custom_and_view_entry_points() {
                (list (custom-group-of-mode 'sample-mode)
                      (custom-group-of-mode 'fallback-mode)
                      (custom-group-of-mode 'missing-mode)
+                     (let ((url (url-generic-parse-url
+                                 \"ircs://tester@irc.example:6697\")))
+                       (url-host url))
                      (with-temp-buffer
                        (view-mode-enter)
                        view-mode)))",
@@ -2656,6 +2782,7 @@ fn simple_compat_preloads_custom_and_view_entry_points() {
             Value::Symbol("sample".into()),
             Value::Symbol("fallback".into()),
             Value::Nil,
+            Value::String("irc.example".into()),
             Value::T,
         ])
     );

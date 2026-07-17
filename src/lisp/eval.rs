@@ -714,6 +714,8 @@ pub struct Interpreter {
     standard_category_table_id: Option<u64>,
     /// Shared standard case table.
     standard_case_table_id: Option<u64>,
+    /// Case tables derived from GNU's ASCII-only case table.
+    ascii_case_table_ids: Vec<u64>,
     /// Buffer-local case tables keyed by buffer id.
     buffer_case_tables: Vec<(u64, u64)>,
     /// Next char-table ID for identity tracking.
@@ -1100,6 +1102,7 @@ impl Interpreter {
             keyboard_coding: None,
             standard_category_table_id: None,
             standard_case_table_id: None,
+            ascii_case_table_ids: Vec::new(),
             buffer_case_tables: Vec::new(),
             next_char_table_id: 4,
             records: vec![RecordState {
@@ -1581,6 +1584,10 @@ impl Interpreter {
         // which records the binding buffer, so a setq from another buffer
         // creates that buffer's own local instead of mutating the binding.
         interp.mark_special_variable("default-directory");
+        // GNU's C-level `obarray' defvar is special.  In particular, test
+        // harnesses and package loaders let-bind a private obarray and expect
+        // `intern' calls in separately defined functions to see it.
+        interp.mark_special_variable("obarray");
         interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
         interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
         interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
@@ -1743,7 +1750,45 @@ impl Interpreter {
                 }
             }
         }
+        // Lexical bindings are shared cells in GNU Emacs.  Two sibling
+        // closures can capture different snapshots of the surrounding
+        // environment (for example, consecutive `let*' initializers) while
+        // still sharing the frames that already existed.  Propagate updates
+        // by the frames' stable identity stamps so a mutation through one
+        // closure is immediately visible through the other.
+        let shared_frame_updates = call_env
+            .iter()
+            .take(captured_snapshot.len())
+            .filter(|frame| Self::frame_identity(frame).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        self.sync_cached_closure_frames(&shared_frame_updates);
         result
+    }
+
+    fn sync_cached_closure_frames(&mut self, updates: &[Vec<(String, Value)>]) {
+        if updates.is_empty() {
+            return;
+        }
+        self.closure_capture_cache
+            .retain(|(_, weak)| weak.strong_count() > 0);
+        for (_, weak) in &self.closure_capture_cache {
+            let Some(shared) = weak.upgrade() else {
+                continue;
+            };
+            let mut captured = shared.borrow_mut();
+            for frame in captured.iter_mut() {
+                let Some(identity) = Self::frame_identity(frame) else {
+                    continue;
+                };
+                if let Some(update) = updates
+                    .iter()
+                    .find(|candidate| Self::frame_identity(candidate) == Some(identity))
+                {
+                    *frame = update.clone();
+                }
+            }
+        }
     }
 
     // Append echo-area output to the active `ert-with-message-capture'
@@ -2254,6 +2299,22 @@ fn function_declare_gv_setter(form: &Value) -> Option<String> {
     })
 }
 
+fn function_declare_gv_setter_handler(form: &Value) -> Option<Value> {
+    let items = form.to_vec().ok()?;
+    if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
+        return None;
+    }
+    items[1..].iter().find_map(|declaration| {
+        let declaration_items = declaration.to_vec().ok()?;
+        match declaration_items.as_slice() {
+            [Value::Symbol(kind), handler @ Value::Cons(_, _)] if kind == "gv-setter" => {
+                Some(handler.clone())
+            }
+            _ => None,
+        }
+    })
+}
+
 pub(crate) fn function_declare_gv_expander(form: &Value) -> Option<Value> {
     let items = form.to_vec().ok()?;
     if !matches!(items.first(), Some(Value::Symbol(name)) if name == "declare") {
@@ -2710,7 +2771,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 ));
             };
             (
-                normalize_cl_defun_keyword(keyword_name),
+                keyword_name.clone(),
                 variable_name.clone(),
                 Value::Nil,
                 None,
@@ -2725,7 +2786,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 ));
             };
             (
-                normalize_cl_defun_keyword(keyword_name),
+                keyword_name.clone(),
                 variable_name.clone(),
                 default_value.clone(),
                 None,
@@ -2744,7 +2805,7 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
                 ));
             };
             (
-                normalize_cl_defun_keyword(keyword_name),
+                keyword_name.clone(),
                 variable_name.clone(),
                 default_value.clone(),
                 Some(supplied_name.clone()),
@@ -2763,14 +2824,6 @@ fn parse_cl_defun_key_binding(spec: Value) -> Result<ClKeyBinding, LispError> {
         default_value,
         supplied_name,
     })
-}
-
-fn normalize_cl_defun_keyword(name: &str) -> String {
-    if name.starts_with(':') {
-        name.to_string()
-    } else {
-        format!(":{name}")
-    }
 }
 
 fn is_lambda_list_keyword(symbol: &str) -> bool {

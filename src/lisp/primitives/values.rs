@@ -3349,6 +3349,14 @@ pub(crate) fn key_sequence_is_prefix(
     key: &str,
     env: &Env,
 ) -> Result<bool, LispError> {
+    // These prefix maps are present in GNU's standard global map even when
+    // none of their descendants are represented in Emaxx's compact default
+    // binding table.  In particular, C-c remains a prefix after a mode
+    // removes its last C-c binding, so the command loop reports the complete
+    // unbound sequence rather than declaring C-c itself undefined.
+    if matches!(key, "C-c" | "C-x" | "C-x 4" | "C-x 5" | "ESC") {
+        return Ok(true);
+    }
     let requested = approximate_key_parts(key);
     if requested.is_empty() {
         return Ok(false);

@@ -1298,6 +1298,75 @@ fn cl_defun_supports_basic_key_arguments() {
 }
 
 #[test]
+fn cl_defun_preserves_explicit_key_names() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defun explicit-key-test
+                   (&key ((bare-key bare-value)) ((:colon-key colon-value)))
+                 (list bare-value colon-value))
+               (explicit-key-test 'bare-key 11 :colon-key 22))"
+        ),
+        Value::list([Value::Integer(11), Value::Integer(22)])
+    );
+}
+
+#[test]
+fn cl_struct_class_type_reports_the_backing_sequence() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defstruct class-type-record value)
+               (cl-defstruct (class-type-list (:type list)) value)
+               (cl-defstruct (class-type-vector (:type vector)) value)
+               (list
+                (cl--struct-class-type
+                 (cl--struct-get-class 'class-type-record))
+                (cl--struct-class-type
+                 (cl--struct-get-class 'class-type-list))
+                (cl--struct-class-type
+                 (cl--struct-get-class 'class-type-vector))
+                (gethash 'value (cl--class-index-table
+                                 (cl--struct-get-class 'class-type-record)))
+                (gethash 'value (cl--class-index-table
+                                 (cl--struct-get-class 'class-type-list)))
+                (gethash 'value (cl--class-index-table
+                                 (cl--struct-get-class 'class-type-vector)))))"
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("list".into()),
+            Value::Symbol("vector".into()),
+            Value::Integer(1),
+            Value::Integer(0),
+            Value::Integer(0),
+        ])
+    );
+}
+
+#[test]
+fn cl_defstruct_include_preserves_and_overrides_slot_defaults() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar included-dynamic-default 7)
+               (cl-defstruct included-parent (first 1) (second 2))
+               (cl-defstruct
+                   (included-child
+                    (:include included-parent
+                              (second included-dynamic-default)))
+                 third)
+               (let ((included-dynamic-default 9))
+                 (let ((value (make-included-child)))
+                   (list (included-child-first value)
+                         (included-child-second value)
+                         (included-child-third value)))))"
+        ),
+        Value::list([Value::Integer(1), Value::Integer(9), Value::Nil])
+    );
+}
+
+#[test]
 fn cl_defun_wraps_body_in_named_block() {
     assert_eq!(
         eval_str(

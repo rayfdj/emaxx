@@ -610,7 +610,12 @@ impl Interpreter {
                                 Value::Symbol("rx-let-eval".into()),
                             ])));
                         }
-                        "require" => {
+                        "require"
+                            if matches!(
+                                self.lookup_function("require", env),
+                                Ok(Value::BuiltinFunc(ref name)) if name == "require"
+                            ) =>
+                        {
                             if let Some(feature_expr) = items.get(1) {
                                 let feature_value = self.eval(feature_expr, env)?;
                                 let feature = feature_value.as_symbol()?.to_string();
@@ -646,7 +651,12 @@ impl Interpreter {
                             }
                             return Ok(Value::Nil);
                         }
-                        "provide" => {
+                        "provide"
+                            if matches!(
+                                self.lookup_function("provide", env),
+                                Ok(Value::BuiltinFunc(ref name)) if name == "provide"
+                            ) =>
+                        {
                             if let Some(feature_expr) = items.get(1) {
                                 let feature_value = self.eval(feature_expr, env)?;
                                 let feature = feature_value.as_symbol()?.to_string();

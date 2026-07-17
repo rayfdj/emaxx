@@ -349,10 +349,10 @@ pub(crate) fn unread_command_events(
 
 pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
     match value {
-        Value::Integer(code) if *code >= 0 => char::from_u32(*code as u32),
+        Value::Integer(code) if *code >= 0 => modified_event_code_char(*code),
         Value::Cons(car, cdr) if matches!(car.borrow().clone(), Value::T) => {
             match cdr.borrow().clone() {
-                Value::Integer(code) if code >= 0 => char::from_u32(code as u32),
+                Value::Integer(code) if code >= 0 => modified_event_code_char(code),
                 _ => None,
             }
         }
@@ -360,6 +360,31 @@ pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
         Value::StringObject(state) => state.borrow().text.chars().next(),
         _ => None,
     }
+}
+
+fn modified_event_code_char(code: i64) -> Option<char> {
+    const ALT: i64 = 1 << 22;
+    const SUPER: i64 = 1 << 23;
+    const HYPER: i64 = 1 << 24;
+    const SHIFT: i64 = 1 << 25;
+    const CONTROL: i64 = 1 << 26;
+    const META: i64 = 1 << 27;
+    const MODIFIERS: i64 = ALT | SUPER | HYPER | SHIFT | CONTROL | META;
+
+    let mut base = code & !MODIFIERS;
+    if code & CONTROL != 0 && base != 0 {
+        base = match base {
+            0x3f => 0x7f,
+            n if (b'a' as i64..=b'z' as i64).contains(&n) => (n - b'a' as i64) + 1,
+            n if (b'A' as i64..=b'Z' as i64).contains(&n) => (n - b'A' as i64) + 1,
+            n => n & 0x1f,
+        };
+    } else if code & SHIFT != 0
+        && let Some(ch) = char::from_u32(base as u32)
+    {
+        base = ch.to_ascii_uppercase() as i64;
+    }
+    char::from_u32(base as u32)
 }
 
 pub(crate) fn unread_prefix_matches(events: &[Value], prefix: &str) -> Option<usize> {
