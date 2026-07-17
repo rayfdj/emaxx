@@ -1891,9 +1891,11 @@ pub(super) fn call(
             let from = position_from_value(interp, &args[0])?;
             let to = position_from_value(interp, &args[1])?;
             ensure_region_modifiable(interp, from, to, env)?;
+            let (start, end) = if from <= to { (from, to) } else { (to, from) };
+            let props = interp.buffer.substring_property_spans(start, end);
             Ok(string_like_value(
                 delete_region_with_hooks(interp, from, to, env)?,
-                Vec::new(),
+                props,
             ))
         }
         "kill-region" => {

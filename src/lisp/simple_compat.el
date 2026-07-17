@@ -4093,9 +4093,22 @@ Defaults to `error'."
    "\\)?"
    "\\([^ \t\n]+\\)"))
 
-;; GNU loaddefs autoloads these major modes.
+;; GNU loaddefs autoloads these entry points.
 (autoload 'sh-mode "sh-script" nil t)
 (autoload 'shell-script-mode "sh-script" nil t)
+(autoload 'view-mode-enter "view")
+
+;; GNU preloads custom.el; ERC resolves module groups through this helper.
+(defun custom-group-of-mode (mode)
+  "Return the custom group corresponding to the major or minor MODE.
+If no such group is found, return nil."
+  (or (get mode 'custom-mode-group)
+      (if (or (get mode 'custom-group)
+              (and (string-match "-mode\\'" (symbol-name mode))
+                   (get (setq mode (intern (substring (symbol-name mode)
+                                                     0 (match-beginning 0))))
+                        'custom-group)))
+          mode)))
 
 ;; GNU preloads isearch.el; char-fold's symmetric mode reads these.
 (defvar isearch-regexp nil)

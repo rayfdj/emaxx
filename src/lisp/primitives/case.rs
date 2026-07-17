@@ -225,9 +225,7 @@ pub(crate) fn case_symbols_as_words_enabled(interp: &Interpreter, env: &Env) -> 
 }
 
 pub(crate) fn case_word_char(interp: &Interpreter, ch: char, case_symbols_as_words: bool) -> bool {
-    ch.is_alphanumeric()
-        || (case_symbols_as_words && ch == '_')
-        || interp.is_syntax_word_char(normalize_case_key(ch as u32))
+    syntax::current_syntax_word_char(interp, normalize_case_key(ch as u32), case_symbols_as_words)
 }
 
 pub(crate) fn full_upcase_string(interp: &Interpreter, up_table: u64, ch: char) -> String {

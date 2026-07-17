@@ -319,6 +319,15 @@ pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u
         .unwrap_or_else(|| default_syntax_entry(ch))
 }
 
+pub(super) fn current_syntax_word_char(
+    interp: &Interpreter,
+    code: u32,
+    include_symbols: bool,
+) -> bool {
+    let class = syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class;
+    class == SyntaxClass::Word || (include_symbols && class == SyntaxClass::Symbol)
+}
+
 fn syntax_entry_for_char(interp: &Interpreter, table_id: u64, ch: char) -> SyntaxEntry {
     syntax_entry_for_code(interp, table_id, ch as u32)
 }

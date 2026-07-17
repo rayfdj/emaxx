@@ -882,6 +882,30 @@ fn start_process_routes_command_output_to_its_buffer() {
     )
     .expect("second process-send-string should succeed");
 
+    // Process output is asynchronous.  Under full-suite contention, `cat`
+    // may not echo within process-send-string's short opportunistic drain.
+    // Wait explicitly, as Lisp callers must, before asserting on its buffer.
+    let current_contents = interp
+        .get_buffer_by_id(buffer_id)
+        .expect("process buffer")
+        .buffer_substring(
+            1,
+            interp
+                .get_buffer_by_id(buffer_id)
+                .expect("process buffer")
+                .point_max(),
+        )
+        .expect("process output");
+    if current_contents != "secret\nsecond\n" {
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[process.clone(), Value::Float(1.0)],
+            &mut env,
+        )
+        .expect("accept-process-output should receive the echo");
+    }
+
     let contents = interp
         .get_buffer_by_id(buffer_id)
         .expect("process buffer")
@@ -1044,6 +1068,42 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
         .expect("accept-process-output should succeed");
 
     assert_eq!(interp.lookup_var("timer-fired", &env), Some(Value::T));
+}
+
+#[test]
+fn accept_process_output_honors_seconds_with_no_millis_argument() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let buffer = Value::Buffer(interp.current_buffer_id(), String::new());
+    let process = call(
+        &mut interp,
+        "start-process",
+        &[
+            Value::String("accept-output-test".into()),
+            buffer,
+            Value::String("sh".into()),
+            Value::String("-c".into()),
+            Value::String("printf ready".into()),
+        ],
+        &mut env,
+    )
+    .expect("start-process should launch a writer");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "accept-process-output",
+            &[process, Value::Integer(1)],
+            &mut env,
+        )
+        .expect("accept-process-output should wait for output"),
+        Value::T
+    );
+    assert_eq!(interp.buffer.full_buffer_string(), "ready");
+    assert_eq!(
+        wait_duration(&[Value::Integer(10)]).expect("ten-second wait should be valid"),
+        std::time::Duration::from_secs(10)
+    );
 }
 
 #[test]
@@ -1503,6 +1563,52 @@ fn buffer_substring_accepts_reversed_bounds() {
         )
         .expect("buffer-substring-no-properties should accept reversed bounds"),
         Value::String("bcd".into())
+    );
+}
+
+#[test]
+fn delete_and_extract_region_preserves_text_properties() {
+    let mut interp = Interpreter::new();
+    interp.buffer.insert("abcdef");
+    let mut env = Vec::new();
+    call(
+        &mut interp,
+        "put-text-property",
+        &[
+            Value::Integer(2),
+            Value::Integer(5),
+            Value::Symbol("face".into()),
+            Value::Symbol("bold".into()),
+        ],
+        &mut env,
+    )
+    .expect("put-text-property should install buffer props");
+
+    let extracted = call(
+        &mut interp,
+        "delete-and-extract-region",
+        &[Value::Integer(5), Value::Integer(2)],
+        &mut env,
+    )
+    .expect("delete-and-extract-region should accept reversed bounds");
+
+    assert_eq!(string_text(&extracted).unwrap(), "bcd");
+    assert_eq!(
+        interp
+            .buffer
+            .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
+            .unwrap(),
+        "aef"
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "text-properties-at",
+            &[Value::Integer(0), extracted],
+            &mut env,
+        )
+        .expect("extracted string should retain properties"),
+        Value::list([Value::Symbol("face".into()), Value::Symbol("bold".into()),])
     );
 }
 
@@ -2287,6 +2393,41 @@ fn case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings() {
         assert_eq!(actual_string.text, expected_string.text);
         assert!(!actual_string.multibyte);
     }
+}
+
+#[test]
+fn capitalize_uses_current_syntax_table_word_boundaries() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let forms = Reader::new(
+        r#"
+            (with-temp-buffer
+              (fundamental-mode)
+              (list (char-syntax ?%)
+                    (capitalize "padding (%d)")
+                    (let ((case-symbols-as-words nil))
+                      (capitalize "FOO-BAR"))
+                    (let ((case-symbols-as-words t))
+                      (capitalize "FOO-BAR"))
+                    (progn
+                      (modify-syntax-entry ?% ".")
+                      (capitalize "padding (%d)"))
+                    (progn
+                      (modify-syntax-entry ?A ".")
+                      (capitalize "xA XAX"))))
+            "#,
+    )
+    .read_all()
+    .expect("syntax-aware capitalize test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("syntax-aware capitalize forms should evaluate");
+
+    assert_eq!(
+        result.to_string(),
+        r#"(119 "Padding (%d)" "Foo-Bar" "Foo-bar" "Padding (%D)" "Xa XaX")"#
+    );
 }
 
 #[test]
