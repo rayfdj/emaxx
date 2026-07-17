@@ -373,45 +373,66 @@ pub(super) fn call(
                 _ => string_text(&args[0])?,
             };
             let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
-            match args.get(1) {
-                Some(obarray) if !obarray.is_nil() => {
-                    intern_in_obarray(interp, obarray, &symbol_name)
-                }
-                _ => {
-                    interp.intern_symbol_name(&symbol_name);
-                    Ok(crate::lisp::types::interned_symbol_value(symbol_name))
-                }
+            let obarray = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .cloned()
+                .or_else(|| {
+                    interp
+                        .lookup_var("obarray", env)
+                        .filter(|value| !value.is_nil())
+                });
+            if let Some(obarray) = obarray {
+                intern_in_obarray(interp, &obarray, &symbol_name)
+            } else {
+                interp.intern_symbol_name(&symbol_name);
+                Ok(crate::lisp::types::interned_symbol_value(symbol_name))
             }
         }
         "intern-soft" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
+            let obarray = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .cloned()
+                .or_else(|| {
+                    interp
+                        .lookup_var("obarray", env)
+                        .filter(|value| !value.is_nil())
+                });
             let symbol_name = match &args[0] {
-                Value::Symbol(symbol) if args.get(1).is_none_or(Value::is_nil) => {
+                Value::Symbol(symbol) if obarray.is_none() => {
                     return Ok(Value::Symbol(symbol.clone()));
                 }
                 Value::Symbol(symbol) => symbol.clone(),
                 _ => string_text(&args[0])?,
             };
             let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
-            match args.get(1) {
-                Some(obarray) if !obarray.is_nil() => {
-                    intern_soft_in_obarray(interp, obarray, &symbol_name)
-                }
-                _ => Ok(default_intern_soft_result(interp, &symbol_name, env)),
+            if let Some(obarray) = obarray {
+                intern_soft_in_obarray(interp, &obarray, &symbol_name)
+            } else {
+                Ok(default_intern_soft_result(interp, &symbol_name, env))
             }
         }
         "unintern" => {
             need_arg_range(name, args, 1, 2)?;
-            match args.get(1) {
-                Some(obarray) if !obarray.is_nil() => {
-                    Ok(if unintern_from_obarray(interp, obarray, &args[0], env)? {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    })
-                }
+            let obarray = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .cloned()
+                .or_else(|| {
+                    interp
+                        .lookup_var("obarray", env)
+                        .filter(|value| !value.is_nil())
+                });
+            match obarray {
+                Some(obarray) => Ok(if unintern_from_obarray(interp, &obarray, &args[0], env)? {
+                    Value::T
+                } else {
+                    Value::Nil
+                }),
                 _ => Ok(Value::Nil),
             }
         }

@@ -821,6 +821,21 @@ impl Interpreter {
             {
                 self.sf_setf_gv_setter(name, &place, &items[2], env)
             }
+            Some(Value::Symbol(name))
+                if self
+                    .get_symbol_property(name, "emaxx-gv-setter-handler")
+                    .is_some() =>
+            {
+                let handler = self
+                    .get_symbol_property(name, "emaxx-gv-setter-handler")
+                    .expect("checked above");
+                let mut handler_args = Vec::with_capacity(place.len());
+                handler_args.push(items[2].clone());
+                handler_args.extend(place[1..].iter().cloned());
+                let store_expression =
+                    self.call_function_value(handler, None, &handler_args, env)?;
+                self.eval(&store_expression, env)
+            }
             Some(Value::Symbol(name)) if name == "alist-get" => {
                 self.sf_setf_alist_get(&place, &items[2], env)
             }
@@ -2435,9 +2450,34 @@ impl Interpreter {
                 && let Some(parent_slots) = self.get_symbol_property(parent, "emaxx-struct-slots")
                 && let Ok(parent_names) = parent_slots.to_vec()
             {
-                for slot in parent_names {
+                let parent_defaults = self
+                    .get_symbol_property(parent, "emaxx-struct-defaults")
+                    .and_then(|value| value.to_vec().ok())
+                    .unwrap_or_default();
+                for (index, slot) in parent_names.into_iter().enumerate() {
                     if let Value::Symbol(slot_name) = slot {
-                        slot_specs.push((slot_name, Value::Nil));
+                        slot_specs.push((
+                            slot_name,
+                            parent_defaults.get(index).cloned().unwrap_or(Value::Nil),
+                        ));
+                    }
+                }
+                // GNU :include accepts replacement slot specs after the
+                // parent name.  Preserve their initforms for each child
+                // constructor; ERC uses dynamically evaluated send/insert
+                // defaults here.
+                for override_spec in parts.iter().skip(2) {
+                    let Ok(override_parts) = override_spec.to_vec() else {
+                        continue;
+                    };
+                    let Some(Value::Symbol(slot_name)) = override_parts.first() else {
+                        continue;
+                    };
+                    if let Some((_, default)) = slot_specs
+                        .iter_mut()
+                        .find(|(existing, _)| existing == slot_name)
+                    {
+                        *default = override_parts.get(1).cloned().unwrap_or(Value::Nil);
                     }
                 }
             }
@@ -2566,10 +2606,17 @@ impl Interpreter {
         );
         let slot_names_value =
             Value::list([Value::Symbol("quote".into()), slot_names_list.clone()]);
-        let slot_defaults_value =
-            Value::list([Value::Symbol("quote".into()), Value::list(slot_defaults)]);
+        let slot_defaults_value = Value::list([
+            Value::Symbol("quote".into()),
+            Value::list(slot_defaults.clone()),
+        ]);
 
         self.put_symbol_property(&name, "emaxx-struct-slots", slot_names_list.clone());
+        self.put_symbol_property(
+            &name,
+            "emaxx-struct-defaults",
+            Value::list(slot_defaults.clone()),
+        );
         // GNU cl-struct-sequence-type: list / vector / nil (record).
         self.put_symbol_property(
             &name,
@@ -3034,6 +3081,27 @@ impl Interpreter {
             }
         }
         if body_start < normalized_forms.len()
+            && let Some(handler) = function_declare_gv_setter_handler(&normalized_forms[body_start])
+            && let Ok(handler_items) = handler.to_vec()
+            && handler_items.len() >= 3
+            && matches!(handler_items.first(), Some(Value::Symbol(head)) if head == "lambda")
+            && let Ok(handler_params) = handler_items[1].to_vec()
+        {
+            // A `(gv-setter (lambda (VALUE) ...))' declaration is a macro
+            // generator: VALUE and the accessor's arguments are unevaluated
+            // forms, and its result is the store expression.
+            let mut setter_params = handler_params;
+            setter_params.extend(params.iter().cloned().map(Value::Symbol));
+            let setter_form = Value::list(
+                std::iter::once(Value::Symbol("lambda".into()))
+                    .chain(std::iter::once(Value::list(setter_params)))
+                    .chain(handler_items[2..].iter().cloned())
+                    .collect::<Vec<_>>(),
+            );
+            let setter = self.eval(&setter_form, env)?;
+            self.put_symbol_property(&name, "emaxx-gv-setter-handler", setter);
+        }
+        if body_start < normalized_forms.len()
             && let Some(handler) = function_declare_gv_expander(&normalized_forms[body_start])
             && let Ok(handler_items) = handler.to_vec()
             && handler_items.len() >= 3
@@ -3368,7 +3436,14 @@ impl Interpreter {
                     lowered_cl_defun.keyword_rest_param.clone().ok_or_else(|| {
                         LispError::Signal("cl-defun keyword lowering lost its rest source".into())
                     })?;
-                let keyword_symbol = Value::Symbol(binding.keyword_name.clone());
+                // Explicit CL key names need not be keywords (ERC uses a
+                // bare `--interactive-env--' key).  Quote every lookup key
+                // so non-keyword symbols are compared as data, not read as
+                // variables; quoting regular :keywords is equivalent.
+                let keyword_symbol = Value::list([
+                    Value::Symbol("quote".into()),
+                    Value::Symbol(binding.keyword_name.clone()),
+                ]);
                 let keyword_source = Value::Symbol(keyword_rest_param);
                 let_bindings.push(Value::list([
                     Value::Symbol(present_name.clone()),

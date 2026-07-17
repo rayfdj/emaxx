@@ -1241,30 +1241,38 @@ pub(super) fn call(
             Ok(Value::String(c.to_string()))
         }
         "find-composition-internal" => {
-            // (find-composition-internal POS LIMIT STRING DETAIL-P): for
-            // string-glyph-split, report a grapheme cluster (>1 char) that
-            // begins at POS as (FROM TO nil).  Emacs composes emoji ZWJ /
-            // skin-tone / combining sequences into single glyphs.
+            // (find-composition-internal POS LIMIT STRING DETAIL-P): report
+            // the grapheme cluster containing POS.  String positions are
+            // zero-based, while buffer positions are one-based.  Emacs uses
+            // this both for `string-glyph-split' and to keep byte-limited ERC
+            // lines from splitting a base character from its combining mark.
             need_arg_range(name, args, 4, 4)?;
-            let pos = args[0].as_integer()?.max(0) as usize;
-            let Some(string) = string_like(&args[2]) else {
-                return Ok(Value::Nil);
+            let raw_pos = args[0].as_integer()?.max(0) as usize;
+            let (text, pos, position_base) = if let Some(string) = string_like(&args[2]) {
+                (string.text, raw_pos, 0usize)
+            } else if args[2].is_nil() {
+                (
+                    interp.current_buffer().full_buffer_string(),
+                    raw_pos.saturating_sub(1),
+                    1usize,
+                )
+            } else {
+                return Err(LispError::TypeError("string".into(), args[2].type_name()));
             };
             use unicode_segmentation::UnicodeSegmentation;
-            let chars: Vec<char> = string.text.chars().collect();
-            if pos >= chars.len() {
+            if pos >= text.chars().count() {
                 return Ok(Value::Nil);
             }
-            // Walk grapheme clusters, tracking char offsets, to find the one
-            // starting at POS.
+            // Walk grapheme clusters, tracking character offsets, to find the
+            // one containing POS.
             let mut char_offset = 0usize;
-            for cluster in string.text.graphemes(true) {
+            for cluster in text.graphemes(true) {
                 let cluster_len = cluster.chars().count();
-                if char_offset == pos {
+                if (char_offset..char_offset + cluster_len).contains(&pos) {
                     if cluster_len > 1 {
                         return Ok(Value::list([
-                            Value::Integer(pos as i64),
-                            Value::Integer((pos + cluster_len) as i64),
+                            Value::Integer((char_offset + position_base) as i64),
+                            Value::Integer((char_offset + cluster_len + position_base) as i64),
                             Value::Nil,
                         ]));
                     }

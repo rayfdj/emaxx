@@ -594,6 +594,11 @@ impl Interpreter {
             .resolve_variable_name(name)
             .unwrap_or_else(|_| name.to_string());
         let value = Self::stored_value(value);
+        if name == "ascii-case-table"
+            && let Value::CharTable(id) = &value
+        {
+            self.mark_ascii_case_table(*id);
+        }
         self.globals_index.insert(name.clone(), value.clone());
         if let Some(index) = self.globals.iter().rposition(|(symbol, _)| symbol == &name) {
             self.globals[index].1 = value;

@@ -1304,6 +1304,9 @@ impl Interpreter {
             id: new_id,
             ..source
         });
+        if self.is_ascii_case_table(id) {
+            self.mark_ascii_case_table(new_id);
+        }
         Ok(Value::CharTable(new_id))
     }
 

@@ -128,6 +128,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "read-from-minibuffer"
             | "read-no-blanks-input"
             | "completing-read"
+            | "read-buffer"
             | "format-prompt"
     )
 }
@@ -381,6 +382,16 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         }
         pending_keys.clear();
         advance_kbd_macro_index(interp, 1);
+        // The command loop reports an unbound complete sequence and stops
+        // the executing macro.  ERC's keymap tests observe this through
+        // ert-with-message-capture after removing module bindings.
+        super::call(
+            interp,
+            "message",
+            &[Value::String(format!("{binding_key} is undefined"))],
+            env,
+        )?;
+        return Ok(());
     }
 }
 
@@ -2204,15 +2215,19 @@ pub(super) fn call(
                     return Ok(parsed.cons_values().map(|(car, _)| car).unwrap_or(parsed));
                 }
                 if contents.is_empty() {
-                    let default_index = if name == "read-from-minibuffer" { 5 } else { 3 };
-                    if let Some(default) = args.get(default_index) {
+                    // GNU read-string returns DEFAULT-VALUE unchanged on
+                    // empty input, even when it is not a string.  A list
+                    // default contributes its first element.  In contrast,
+                    // read-from-minibuffer's DEFAULT is only history input
+                    // and does not replace an empty return value.
+                    if name == "read-string"
+                        && let Some(default) = args.get(3)
+                    {
                         let default = match default.cons_values() {
                             Some((head, _)) => head,
                             None => default.clone(),
                         };
-                        if let Some(text) = string_like(&default) {
-                            return Ok(Value::String(text.text));
-                        }
+                        return Ok(default);
                     }
                 }
                 return Ok(Value::String(contents));
@@ -2220,6 +2235,31 @@ pub(super) fn call(
             Ok(Value::String(String::new()))
         }
         "completing-read" => completing_read(interp, args, env),
+        "read-buffer" => {
+            need_arg_range(name, args, 1, 4)?;
+            let buffers = super::call(interp, "buffer-list", &[], env)?
+                .to_vec()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|buffer| match buffer {
+                    Value::Buffer(_, buffer_name) => Some(Value::String(buffer_name)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            completing_read(
+                interp,
+                &[
+                    args[0].clone(),
+                    Value::list(buffers),
+                    args.get(3).cloned().unwrap_or(Value::Nil),
+                    args.get(2).cloned().unwrap_or(Value::Nil),
+                    Value::Nil,
+                    Value::Nil,
+                    args.get(1).cloned().unwrap_or(Value::Nil),
+                ],
+                env,
+            )
+        }
         "read-file-name" => {
             need_arg_range(name, args, 1, 6)?;
             let prompt = args[0].clone();

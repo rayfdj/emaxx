@@ -1341,6 +1341,8 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "cl-find-class"
             | "cl--find-class"
             | "cl--struct-get-class"
+            | "cl--struct-class-type"
+            | "cl--class-index-table"
             | "cl-struct-define"
             | "cl-old-struct-compat-mode"
             | "cl--class-name"

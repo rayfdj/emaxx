@@ -476,6 +476,26 @@ fn call_interactively_handles_prefix_argument_specs() {
 }
 
 #[test]
+fn read_string_preserves_non_string_defaults_on_empty_input() {
+    assert_eq!(
+        eval_str(
+            "(list
+               (let ((unread-command-events '(?\\r)))
+                 (read-string \"Port: \" nil nil 6667))
+               (let ((unread-command-events '(?\\r)))
+                 (read-string \"Choice: \" nil nil '(answer fallback)))
+               (let ((unread-command-events '(?\\r)))
+                 (read-from-minibuffer \"Raw: \" nil nil nil nil 42)))"
+        ),
+        Value::list([
+            Value::Integer(6667),
+            Value::Symbol("answer".into()),
+            Value::String(String::new()),
+        ])
+    );
+}
+
+#[test]
 fn call_interactively_skips_interactive_guard_prefixes() {
     assert_eq!(
         eval_str(
@@ -3049,6 +3069,82 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
     );
     assert_eq!(eval_str(r#"(minibuffer-prompt-end)"#), Value::Integer(1));
     assert_eq!(eval_str(r#"case-replace"#), Value::T);
+}
+
+#[test]
+fn intern_primitives_honor_the_dynamically_bound_obarray() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-intern-in-callee (name) (intern name))
+                  (let ((obarray (obarray-make)))
+                    (let ((symbol (emaxx-intern-in-callee "scoped-symbol")))
+                      (list (special-variable-p 'obarray)
+                            (eq symbol (intern-soft "scoped-symbol"))
+                          (eq symbol (intern-soft "scoped-symbol" obarray))
+                          (unintern "scoped-symbol")
+                            (null (intern-soft "scoped-symbol" obarray))))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn lexical_onload_closure_can_define_a_function_in_a_dynamic_obarray() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((obarray (obarray-make))
+                       (on-load nil)
+                       (mk-cmd
+                        (lambda (module)
+                          (let ((mode (intern (format "erc-%s-mode" module))))
+                            (fset mode (lambda (_n) t)))))
+                       (add-onload
+                        (lambda (module feature installer)
+                          (put (intern module) 'erc--feature feature)
+                          (push (cons feature
+                                      (lambda () (funcall installer module)))
+                                on-load))))
+                  (funcall add-onload "lo2" 'explicit-feature-lib mk-cmd)
+                  (let* ((module (intern-soft "lo2"))
+                         (feature (get module 'erc--feature)))
+                    (cl-letf (((symbol-function 'require)
+                               (lambda (requested &rest _)
+                                 (when-let ((handler
+                                             (alist-get requested on-load)))
+                                   (funcall handler)))))
+                      (require feature nil 'noerror))
+                    (let ((mode (intern-soft "erc-lo2-mode")))
+                      (list (and mode (symbol-name mode))
+                            (and mode (fboundp mode))))))
+                "#
+        ),
+        Value::list([Value::String("erc-lo2-mode".into()), Value::T]),
+    );
+}
+
+#[test]
+fn setf_uses_lambda_gv_setter_declarations() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun emaxx-cell-value (cell)
+                    (declare
+                     (gv-setter
+                      (lambda (value)
+                        `(progn (setcar ,cell ,value) ,value))))
+                    (car cell))
+                  (let ((cell (list 0)))
+                    (list (setf (emaxx-cell-value cell) 7)
+                          (emaxx-cell-value cell))))
+                "#
+        ),
+        Value::list([Value::Integer(7), Value::Integer(7)]),
+    );
 }
 
 #[test]

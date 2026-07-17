@@ -18,18 +18,18 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 2960/7080.  Exact oracle runs pass for the
-  first 31 manifest selectors in `test/lisp/erc/erc-tests.el'
-  (2930..2960), and the file-wide default run is now 76/94 passing.
-  The batch fixed syntax-table-aware case word boundaries, preloaded
-  `view-mode-enter' plus `custom-group-of-mode', preserved text properties
-  through `delete-and-extract-region', and repaired
-  `accept-process-output' parsing of `(PROCESS SECONDS)' plus its erroneous
-  one-second wait cap.  The unrestricted test suite is green: 1137 library
-  tests and all auxiliary suites.  `erc-d-run-no-block' passes three fresh
-  runs and selector 2897 still passes.  NEXT = selector 2961,
-  `erc--interactive': `url-generic-parse-url' is currently read as a void
-  variable.  Do not fold that unproven fix into the completed 2960 batch.
+- Verified through selector 3000/7080.  Exact oracle runs pass for the
+  first 71 manifest selectors in `test/lisp/erc/erc-tests.el'
+  (2930..3000), and the file-wide default run is now 91/94 passing.
+  The batch fixed URL autoloading, explicit CL `&key' names, blank/default
+  minibuffer input, `read-buffer' completion, dynamic private obarrays,
+  sibling lexical-closure mutation, lambda-form `gv-setter' declarations,
+  CL struct metadata/defaults, KOI8-R and Latin-1 coding, grapheme-aware
+  split boundaries, and ASCII-only case-table behavior.  Each runtime fix
+  has a focused Rust regression.  The unrestricted suite is green (1150
+  library tests plus every auxiliary suite), `erc-d-run-no-block' passes a
+  fresh exact run, and selector 2897 still matches GNU.  NEXT = selector
+  3001, `erc-hide-prompt'.
 - Verified through selector 2881/7080:
   `erc-scenarios-base-upstream-recon-znc.el' passes check-all.  The
   decisive lever was a NATIVE `format-spec' (primitives.rs
@@ -259,8 +259,8 @@ counts as the progress denominator.
     (`load' checks cwd-relative names first): a stale /tmp/probes/
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
-- FRONTIER NOW = 2961 (`erc--interactive' in
-  test/lisp/erc/erc-tests.el); selectors 2930..2960 pass exactly.
+- FRONTIER NOW = 3001 (`erc-hide-prompt' in
+  test/lisp/erc/erc-tests.el); selectors 2930..3000 pass exactly.
   CRUCIAL: the frontier counts MANIFEST-SELECTED selectors, NOT all
   check-all tests (compat/oracle_tests_all.txt: `selected=N' per file).
   misc-commands.el selects ONLY AMSG-GMSG-AME-GME (MOTD/SQUERY/etc. are

@@ -4097,6 +4097,7 @@ Defaults to `error'."
 (autoload 'sh-mode "sh-script" nil t)
 (autoload 'shell-script-mode "sh-script" nil t)
 (autoload 'view-mode-enter "view")
+(autoload 'url-generic-parse-url "url-parse")
 
 ;; GNU preloads custom.el; ERC resolves module groups through this helper.
 (defun custom-group-of-mode (mode)
@@ -10575,18 +10576,19 @@ QUALITY can be:
                                           coding-system tmp-buf)))
                 (buffer-size))))))))))
 
-;; composite.el subset: emaxx has no automatic composition engine, so
-;; only the `composition' text property is consulted (erc--split-line
-;; avoids splitting inside a composed sequence).
-(defun find-composition (pos &optional _limit string _detail-p)
+;; composite.el subset: consult explicit composition properties first, then
+;; use emaxx's grapheme-aware primitive (erc--split-line avoids splitting a
+;; base character from its combining marks).
+(defun find-composition (pos &optional limit string detail-p)
   "Return (FROM TO VALID-P) for a `composition' property at POS, else nil.
 STRING non-nil means look in STRING instead of the current buffer."
   (let ((prop (get-text-property pos 'composition string)))
-    (when prop
-      (let ((from (if string
-                      (or (previous-single-property-change (1+ pos) 'composition string) 0)
-                    (or (previous-single-property-change (1+ pos) 'composition) (point-min))))
-            (to (if string
-                    (or (next-single-property-change pos 'composition string) (length string))
-                  (or (next-single-property-change pos 'composition) (point-max)))))
-        (list from to t)))))
+    (or (when prop
+          (let ((from (if string
+                          (or (previous-single-property-change (1+ pos) 'composition string) 0)
+                        (or (previous-single-property-change (1+ pos) 'composition) (point-min))))
+                (to (if string
+                        (or (next-single-property-change pos 'composition string) (length string))
+                      (or (next-single-property-change pos 'composition) (point-max)))))
+            (list from to t)))
+        (find-composition-internal pos limit string detail-p))))
