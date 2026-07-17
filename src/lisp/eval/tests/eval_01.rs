@@ -716,6 +716,83 @@ fn run_hook_with_args_until_failure_stops_at_first_nil_result() {
 }
 
 #[test]
+fn add_hook_orders_functions_by_gnu_depth() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar depth-order-hook nil)
+               (defvar depth-order-log nil)
+               (setq depth-order-hook nil depth-order-log nil)
+               (defun depth-order-f70 () (push 'f70 depth-order-log))
+               (defun depth-order-f60 () (push 'f60 depth-order-log))
+               (defun depth-order-fzero () (push 'fzero depth-order-log))
+               (defun depth-order-fneg () (push 'fneg depth-order-log))
+               (defun depth-order-flate () (push 'flate depth-order-log))
+               (add-hook 'depth-order-hook #'depth-order-f70 70)
+               (add-hook 'depth-order-hook #'depth-order-f60 60)
+               (add-hook 'depth-order-hook #'depth-order-fzero)
+               (add-hook 'depth-order-hook #'depth-order-fneg -10)
+               (add-hook 'depth-order-hook #'depth-order-flate 'append)
+               (list depth-order-hook
+                     (progn (run-hooks 'depth-order-hook)
+                            (nreverse depth-order-log))
+                     (symbolp (get 'depth-order-hook 'hook--depth-alist))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("depth-order-fneg".into()),
+                Value::Symbol("depth-order-fzero".into()),
+                Value::Symbol("depth-order-f60".into()),
+                Value::Symbol("depth-order-f70".into()),
+                Value::Symbol("depth-order-flate".into()),
+            ]),
+            Value::list([
+                Value::Symbol("fneg".into()),
+                Value::Symbol("fzero".into()),
+                Value::Symbol("f60".into()),
+                Value::Symbol("f70".into()),
+                Value::Symbol("flate".into()),
+            ]),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn local_hook_depth_splices_the_default_at_depth_zero() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar depth-splice-hook nil)
+               (defvar depth-splice-log nil)
+               (setq depth-splice-hook nil depth-splice-log nil)
+               (defun depth-splice-global () (push 'global depth-splice-log))
+               (defun depth-splice-before () (push 'before depth-splice-log))
+               (defun depth-splice-after () (push 'after depth-splice-log))
+               (add-hook 'depth-splice-hook #'depth-splice-global)
+               (with-temp-buffer
+                 (add-hook 'depth-splice-hook #'depth-splice-after 60 t)
+                 (add-hook 'depth-splice-hook #'depth-splice-before -60 t)
+                 (list depth-splice-hook
+                       (progn (run-hooks 'depth-splice-hook)
+                              (nreverse depth-splice-log)))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("depth-splice-before".into()),
+                Value::T,
+                Value::Symbol("depth-splice-after".into()),
+            ]),
+            Value::list([
+                Value::Symbol("before".into()),
+                Value::Symbol("global".into()),
+                Value::Symbol("after".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn advice_member_p_defaults_to_nil_for_untracked_advice() {
     assert_eq!(
         eval_str("(advice-member-p 'sample-advice 'sample-function)"),
@@ -1847,6 +1924,20 @@ fn killing_selected_window_buffer_moves_window_to_live_buffer() {
                    (buffer-live-p (window-buffer)))"
         ),
         Value::T
+    );
+}
+
+#[test]
+fn kill_buffer_nil_kills_the_current_buffer() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(let ((victim (get-buffer-create \" kill-buffer-nil-victim\")))
+               (switch-to-buffer victim)
+               (list (kill-buffer nil) (buffer-live-p victim)))"
+        ),
+        Value::list([Value::T, Value::Nil])
     );
 }
 

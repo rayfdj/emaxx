@@ -247,20 +247,40 @@ counts as the progress denominator.
     (`load' checks cwd-relative names first): a stale /tmp/probes/
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
-- FRONTIER NOW = 2901
-  (erc--auth-source-determine-params-merge in erc-services-tests.el).
+- FRONTIER NOW = 2930
+  (the first manifest-selected test in test/lisp/erc/erc-tests.el).
   CRUCIAL: the frontier counts MANIFEST-SELECTED selectors, NOT all
   check-all tests (compat/oracle_tests_all.txt: `selected=N' per file).
   misc-commands.el selects ONLY AMSG-GMSG-AME-GME (MOTD/SQUERY/etc. are
   discovered but NOT selected — do NOT chase them); misc.el selects 0
   (base-flood/kill-server-track/dcc are NON-selectors — ignore); after
-  AMSG and stamp.el (2898..2900) now pass; the frontier is
-  erc-services-tests (2901..2917, 17 sel),
-  erc-stamp-tests (12 sel), erc-tests (94 sel).  ALWAYS check
+  AMSG and stamp.el (2898..2900), erc-services-tests (2901..2917,
+  17 selected), and erc-stamp-tests (2918..2929, 12 selected) now pass;
+  the frontier is erc-tests (2930..3023, 94 selected).  ALWAYS check
   `selected=' before burning time on a check-all failure — MOTD was a
   multi-hour detour on a non-selector.  To run one selector:
   `compat-harness run --scope all --selector <name> --file <f>' or
   emaxx `-l ert -l <proxy> --eval (ert-run-tests-batch-and-exit "<name>")'.
+- MILESTONE 2929 — default oracle comparisons PASS for all 17 selected
+  erc-services-tests.el tests and all 12 selected erc-stamp-tests.el tests.
+  Services' three plstore failures came from cleanup calling
+  `(kill-buffer (get-file-buffer FILE))' when get-file-buffer returned nil:
+  GNU treats omitted/nil kill-buffer arguments as the current buffer, while
+  emaxx rejected nil.  The stamp dedupe failure was a general add-hook bug:
+  ERC registers fill at depth 60 and stamp at 70; emaxx ignored numeric
+  depth, prepended both, and therefore filled AFTER stamping, folding every
+  right stamp onto a physical line.  add-hook now maintains GNU-style
+  hook--depth-alist metadata, stable numeric ordering, and a depth-zero local
+  `t' sentinel that splices the default hook between negative and positive
+  local depths; remove-hook cleans the metadata.  Once layout matched, the
+  same test exposed format-spec using prin1 for non-string replacements
+  (`#<buffer NAME>') instead of GNU's `%s'/princ rendering (`NAME').  Finally,
+  native ert-deftest now evaluates :tags/:expected-result expressions when
+  defining a test, so conditional `(:unstable)' metadata matches the oracle
+  and default selection excludes erc-echo-timestamp.  Focused Rust tests cover
+  all four behaviors.  Selector 2897 still passes, and erc-d-run-no-block
+  passes three consecutive local-socket runs; all 1133 Rust library tests and
+  auxiliary suites pass, and diagnostic probes were removed.
 - MILESTONE 2900 — all three selected erc-scenarios-stamp.el tests PASS.
   Selector 2898 exposed ignored `:nowait' semantics: emaxx's blocking
   TCP connect returned an already-`open' process, so ERC skipped its
@@ -1791,15 +1811,14 @@ regressions when touching nearby code):
   completion-table-subvert, completion-table-with-quoting,
   completion--twq-try/all) are verbatim ports; the native
   completion-table-case-fold fallback builds the same closure.
-- Local hooks now mirror into a buffer-local variable value
-  "(fns... t)" so Lisp reads and local-variable-p see them; the
-  buffer_local_hooks store stays authoritative for running
-  (hook_values strips the `t' sentinel and swaps the mirror for the
-  default value).  remove-hook's LOCAL is its THIRD argument and
-  kills the local binding when only the sentinel remains; global
+- Local hooks mirror their exact depth-sorted buffer-local value, including
+  the `t' default-hook sentinel at depth zero, so Lisp reads and
+  local-variable-p see GNU's ordering.  hook_values splices the default at
+  that sentinel (negative local depths before it, positive depths after it).
+  remove-hook's LOCAL is its THIRD argument, removes auxiliary depth metadata,
+  and kills the local binding when only the sentinel remains; global
   add/remove-hook write through set-default when a mirror exists.
-  define-minor-mode runs MODE-hook (and MODE-on/off-hook) on every
-  toggle.
+  define-minor-mode runs MODE-hook (and MODE-on/off-hook) on every toggle.
 - buffer-local-value falls back to the DEFAULT value (never another
   buffer's local or the last-set global cell);
   (with-current-buffer BUF) with an empty body returns the buffer.

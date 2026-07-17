@@ -918,7 +918,10 @@ pub(crate) fn format_spec_replacement(
         return Ok(Some((
             string_like(&value_value)
                 .map(|value| value.text)
-                .unwrap_or_else(|| value_value.to_string()),
+                // GNU format-spec renders non-strings with `%s'/`princ'
+                // semantics.  In particular, buffers become their names,
+                // not their `#<buffer ...>' printed representations.
+                .unwrap_or_else(|| render_princ(&value_value)),
             props,
         )));
     }

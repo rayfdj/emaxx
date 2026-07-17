@@ -78,7 +78,7 @@ impl Interpreter {
     pub(super) fn sf_ert_deftest(
         &mut self,
         items: &[Value],
-        env: &Env,
+        env: &mut Env,
     ) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Ok(Value::Nil);
@@ -114,8 +114,12 @@ impl Interpreter {
             let keyword = keyword_symbol_name(&items[cursor]).unwrap_or_default();
             let value = &items[cursor + 1];
             match keyword.as_str() {
-                ":tags" => tags = parse_ert_tags(value),
-                ":expected-result" => expected_result = selector_atom(value),
+                // ert-deftest is a macro in GNU: metadata expressions become
+                // arguments to make-ert-test and are evaluated when the test
+                // is defined.  This matters for conditional tag forms such
+                // as `(and (null (getenv "CI")) '(:unstable))'.
+                ":tags" => tags = parse_ert_tags(&self.eval(value, env)?),
+                ":expected-result" => expected_result = selector_atom(&self.eval(value, env)?),
                 _ => {}
             }
             cursor += 2;
