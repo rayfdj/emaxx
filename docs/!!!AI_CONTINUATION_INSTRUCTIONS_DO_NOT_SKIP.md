@@ -247,7 +247,8 @@ counts as the progress denominator.
     (`load' checks cwd-relative names first): a stale /tmp/probes/
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
-- FRONTIER NOW = 2897 (erc-scenarios-misc-commands--AMSG-GMSG-AME-GME).
+- FRONTIER NOW = 2898
+  (erc-scenarios-stamp--date-mode/left-and-right).
   CRUCIAL: the frontier counts MANIFEST-SELECTED selectors, NOT all
   check-all tests (compat/oracle_tests_all.txt: `selected=N' per file).
   misc-commands.el selects ONLY AMSG-GMSG-AME-GME (MOTD/SQUERY/etc. are
@@ -261,11 +262,8 @@ counts as the progress denominator.
   multi-hour detour on a non-selector.  To run one selector:
   `compat-harness run --scope all --selector <name> --file <f>' or
   emaxx `-l ert -l <proxy> --eval (ert-run-tests-batch-and-exit "<name>")'.
-- IN PROGRESS — AMSG-GMSG-AME-GME (2897, NOT yet passing, but the two
-  root causes below are FIXED and only a third, deep erc-d timing bug
-  remains).  Diagnosed with Rust-side EMAXX_*_TRACE probes (advice-free,
-  so no Heisenbug).  The scenario now runs from an immediate error all
-  the way to the FINAL message before timing out.
+- MILESTONE 2897 — AMSG-GMSG-AME-GME PASSES.  Diagnosed with temporary,
+  environment-gated Rust traces (removed before commit).
   ROOT CAUSE 1 (FIXED — the "double-send") = `str' locally-special
   lookup.  `erc--run-send-hooks' does `(defvar str)' (bare, locally
   special) then `(let* ((str ...)))'; the NESTED invocation (via
@@ -294,7 +292,7 @@ counts as the progress denominator.
   unaffected.  Verified: all 12 erc sweep files PASS (incl. znc,
   scenarios-internal, scenarios-match); autorevert flakiness is
   identical to str-only (pre-existing bug#32645, NOT a regression).
-  REMAINING BLOCKER (erc-d server-side, deep) = after the barnet /QUIT,
+  ROOT CAUSE 3 (FIXED — dropped timer-batch tail) = after the barnet /QUIT,
   the last two foonet messages `/gmsg 7 all live nets' and
   `/gme 8 all live nets' arrive at the erc-d server COALESCED in one
   read ("PRIVMSG #foo :7...\r\nPRIVMSG #foo :\1ACTION 8...\1\r\n"), so
@@ -302,23 +300,29 @@ counts as the progress denominator.
   reply ("alice: Excellent workman"), enters `sending' state; during
   that 0.1s the queued ACTION 8 gets ring-remove'd + ring-insert-at-
   beginning'ed by erc-d--on-request every tick (busy loop).  After the
-  reply, the dialog advances to the ACTION 8 exchange, but ACTION 8 is
-  never re-matched — erc-d--expire fires the 10s timeout ("Timed out
-  awaiting request ... ACTION 8").  Confirmed via Rust NET-SEND +
-  FIRE(timer) traces: "Excellent workman" IS sent, then only
-  erc-d--command-handle-all/erc-d--expire fire, no ACTION-8 match.  The
-  WORKING pair 5/6 does NOT hit this because privmsg-5 has NO reply (no
-  `sending' phase, no busy loop).  So the trigger is: two messages
-  delivered COALESCED where the FIRST has a delayed reply => the second
-  is lost/never-rematched across the `sending' metering window.  This is
-  the same class as the deferred MOTD-timer issue.  NEXT: trace the
-  erc-d dialog QUEUE contents (Lisp-level, e.g. a native probe of the
-  ring) across the resume/advance boundary to see whether ACTION 8 is
-  still queued when the dialog reaches its exchange, or whether the
-  ring churn under the busy loop drops it; likely fix is in how emaxx
-  drives the `run-at-time nil nil' on-request reschedule vs the 0.1s
-  resume timer, or a ring-mutation aliasing bug under rapid
-  insert-at-beginning/remove.
+  reply, the dialog advances to the ACTION 8 exchange, but ACTION 8 was
+  never re-matched.  Exact identity/timing traces disproved both earlier
+  suspects: ACTION-7's exchange timer was successfully canceled, and the
+  newly created ACTION-8 timer fired only after its full 10 seconds.
+  Queue traces also showed ACTION 8's parsed record remaining at length 1
+  throughout `sending', disproving ring loss.  The actual cause was an ERT
+  negative-expect timeout lambda performing a nonlocal `throw' while
+  `run_pending_timers' held all due timers in a detached local Vec.  The
+  function returned immediately and dropped the unfired tail, including
+  the self-rescheduled `erc-d--on-request'.  Fix (threads.rs): iterate the
+  detached batch explicitly and, before propagating a throw/debug error,
+  prepend its unfired tail back onto `pending_timers'.  Unit regression:
+  two due timers, first throws to a surrounding catch, second must remain
+  active and fire at the next pump (failed before, passes after).
+  PREREQUISITE FIX: make-network-process now honors `:family ipv4' for
+  listener resolution.  Rust otherwise bound `localhost' to `[::1]' on
+  this host while ERC connected to `127.0.0.1', failing before any dialog.
+  Focused IPv4 listener test added.  Verified: selector 2897 PASS; default
+  scenarios-internal PASS; scenarios-match check-all PASS; 1127 Rust
+  library tests + auxiliary binaries PASS.  The non-manifest check-all
+  extra erc-d-run-no-block currently fails its known debug-build speed
+  race; A/B testing with timer-tail restoration disabled fails identically,
+  so this is not a regression from root cause 3.
 - MILESTONE 2896: erc-scenarios-match.el PASSES check-all (2895..2896;
   the join-*/log scenario files between internal and match select 0).
   ROOT CAUSE was `goto-char' RETURN VALUE.  GNU `Fgoto_char' returns

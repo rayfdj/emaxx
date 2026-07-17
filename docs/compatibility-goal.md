@@ -19,6 +19,26 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2897/7080:
+  `erc-scenarios-misc-commands--AMSG-GMSG-AME-GME' passes.  The final
+  ACTION-8 timeout was not an early/stale expiry and not a ring-loss bug:
+  ACTION-7's timer was canceled, ACTION-8 stayed queued throughout the
+  metered reply, and ACTION-8's own timer fired on time after 10 seconds.
+  The real loss was in `run_pending_timers': an ERT timeout callback used a
+  nonlocal `throw' while the runtime had all due timers detached in a local
+  batch, so returning early silently discarded the later
+  `erc-d--on-request' continuation.  `restore_unfired_timer_batch' now puts
+  that tail back ahead of timers scheduled by callbacks.  A focused unit
+  test reproduces the throw/catch sequence and failed before the fix.
+  A prerequisite network fix now honors `:family ipv4' when resolving a
+  listening host; on this machine `localhost' resolves to `::1' first while
+  ERC connects to `127.0.0.1', which previously caused an earlier
+  connection-refused failure.  Selector 2897, the default internal suite,
+  scenarios-match check-all, and all 1127 Rust library tests pass.
+  The non-manifest `erc-d-run-no-block' check-all extra remains a known
+  debug-build speed race (the final message arrives before its negative
+  assertion); an A/B run fails identically with timer-tail restoration
+  disabled, so it is not a regression from this fix.
 - Verified through selector 2896/7080: `erc-scenarios-match.el'
   passes check-all (2895..2896; the intervening join/log scenario
   files select 0).  Root cause was `goto-char' RETURN VALUE: GNU
@@ -104,20 +124,7 @@ counts as the progress denominator.
       fast-paths non-aliased names (Cow, no per-lookup String).
     - EMAXX_PROFILE=<path> (dev-only): flat per-name call/self-time
       profiler in call_function_value, dumped periodically.
-- NEXT = selector 2897 (erc-scenarios-misc-commands--AMSG-GMSG-AME-GME
-  — the ONLY manifest-selected test in misc-commands.el; MOTD/SQUERY
-  etc. are check-all-only, NOT frontier selectors, so don't chase
-  them).  Two of its three root causes are FIXED: (1) the double-send
-  was `str' locally-special lookup falling through the special-scan
-  floor to a caller's lexical binding (bindings.rs floor-break now
-  honors local_special_active); (2) ERC clients had NO sentinel — a
-  simple_compat.el no-op stub shadowed the Rust set-process-sentinel;
-  removed, with the Rust dispatch guarded to NETWORK processes only
-  (subprocess sentinels stay inert — tramp/gpg unaffected).  The
-  scenario now reaches its FINAL message; remaining blocker is an
-  erc-d server-side timing bug (coalesced 7+ACTION-8 delivery where
-  7's metered reply loses ACTION 8 — full diagnosis in the
-  continuation doc).  Then
+- NEXT = selector 2898, the first of three selected tests in
   erc-scenarios-stamp.el 2898..2900 (date-mode/left-and-right,
   left/display-margin-mode, legacy-date-stamps), erc-services-tests
   (2901..2917), erc-stamp-tests, erc-tests.  ALWAYS consult

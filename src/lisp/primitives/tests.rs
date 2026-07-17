@@ -1047,6 +1047,56 @@ fn run_with_timer_callbacks_fire_on_accept_process_output() {
 }
 
 #[test]
+fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let process = call(
+        &mut interp,
+        "make-network-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("ipv4-listener".into()),
+            Value::Symbol(":server".into()),
+            Value::T,
+            Value::Symbol(":family".into()),
+            Value::Symbol("ipv4".into()),
+            Value::Symbol(":host".into()),
+            Value::String("localhost".into()),
+            Value::Symbol(":service".into()),
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("IPv4 listener should bind");
+
+    let local = call(
+        &mut interp,
+        "process-contact",
+        &[process.clone(), Value::Symbol(":local".into())],
+        &mut env,
+    )
+    .expect("process-contact should expose the listener address");
+    assert_eq!(
+        call(
+            &mut interp,
+            "length",
+            std::slice::from_ref(&local),
+            &mut env,
+        )
+        .expect("address vector length"),
+        Value::Integer(5)
+    );
+
+    call(
+        &mut interp,
+        "delete-process",
+        std::slice::from_ref(&process),
+        &mut env,
+    )
+    .expect("listener cleanup should succeed");
+}
+
+#[test]
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");

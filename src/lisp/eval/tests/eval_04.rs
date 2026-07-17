@@ -572,6 +572,22 @@ fn loaded_timer_queue_fires_during_waits() {
 }
 
 #[test]
+fn nonlocal_exit_from_timer_preserves_later_due_timers() {
+    assert_eq!(
+        eval_str(
+            "(progn
+                 (setq later-timer-fired nil)
+                 (run-at-time nil nil (lambda () (throw 'timer-stop t)))
+                 (run-at-time nil nil (lambda () (setq later-timer-fired t)))
+                 (catch 'timer-stop (sleep-for 0))
+                 (sleep-for 0)
+                 later-timer-fired)"
+        ),
+        Value::T
+    );
+}
+
+#[test]
 fn auto_revert_mode_reloads_changed_file() {
     let path = std::env::temp_dir().join(format!(
         "emaxx-auto-revert-{}",

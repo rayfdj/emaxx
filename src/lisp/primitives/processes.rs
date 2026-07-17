@@ -702,6 +702,7 @@ pub(crate) fn make_network_process(
     let mut plist = Value::Nil;
     let mut is_server = false;
     let mut family_local = false;
+    let mut family_ipv4 = false;
     let mut host: Option<String> = None;
     let mut service: Option<i64> = None;
     let mut service_path: Option<String> = None;
@@ -719,6 +720,7 @@ pub(crate) fn make_network_process(
             ":server" => is_server = value.is_truthy(),
             ":family" => {
                 family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
+                family_ipv4 = matches!(value, Value::Symbol(symbol) if symbol == "ipv4");
             }
             ":host" => {
                 host = match value {
@@ -808,9 +810,22 @@ pub(crate) fn make_network_process(
 
     if is_server {
         let bind_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
-        let listener =
-            std::net::TcpListener::bind((bind_host.as_str(), service.unwrap_or(0) as u16))
-                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+        let bind_port = service.unwrap_or(0) as u16;
+        let listener = if family_ipv4 {
+            let address =
+                std::net::ToSocketAddrs::to_socket_addrs(&(bind_host.as_str(), bind_port))
+                    .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?
+                    .find(std::net::SocketAddr::is_ipv4)
+                    .ok_or_else(|| {
+                        LispError::Signal(format!(
+                            "make-network-process: no IPv4 address for {bind_host}"
+                        ))
+                    })?;
+            std::net::TcpListener::bind(address)
+        } else {
+            std::net::TcpListener::bind((bind_host.as_str(), bind_port))
+        }
+        .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
         listener
             .set_nonblocking(true)
             .map_err(|error| LispError::Signal(error.to_string()))?;

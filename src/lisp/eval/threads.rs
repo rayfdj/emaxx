@@ -782,6 +782,16 @@ impl Interpreter {
         }
     }
 
+    /// Put the still-unfired tail of a due-timer batch back before timers
+    /// scheduled by callbacks from that batch.  A timer callback can perform
+    /// a nonlocal exit (`throw'); GNU leaves every other timer active, while
+    /// dropping our detached batch here would silently cancel them.
+    fn restore_unfired_timer_batch(&mut self, pending: impl Iterator<Item = ScheduledTimer>) {
+        let mut unfired = pending.collect::<Vec<_>>();
+        unfired.append(&mut self.pending_timers);
+        self.pending_timers = unfired;
+    }
+
     pub fn schedule_timer(&mut self, function: Value, args: Vec<Value>) {
         self.schedule_timer_after(function, args, 0.0, None);
     }
@@ -862,7 +872,8 @@ impl Interpreter {
             .into_iter()
             .partition(|timer| timer.due.is_none_or(|due| due <= now));
         self.pending_timers = not_yet;
-        for timer in pending {
+        let mut pending = pending.into_iter();
+        while let Some(timer) = pending.next() {
             if let Some(repeat) = timer.repeat {
                 self.pending_timers.push(ScheduledTimer {
                     function: timer.function.clone(),
@@ -880,7 +891,10 @@ impl Interpreter {
             );
             match outcome {
                 Ok(_) => {}
-                Err(error @ LispError::Throw(_, _)) => return Err(error),
+                Err(error @ LispError::Throw(_, _)) => {
+                    self.restore_unfired_timer_batch(pending);
+                    return Err(error);
+                }
                 Err(error) => {
                     // `timer-event-handler' demotes timer errors to a message
                     // unless `debug-on-error' asks for the debugger.
@@ -888,6 +902,7 @@ impl Interpreter {
                         .lookup_var("debug-on-error", env)
                         .is_some_and(|value| value.is_truthy())
                     {
+                        self.restore_unfired_timer_batch(pending);
                         return Err(error);
                     }
                     let label = timer
