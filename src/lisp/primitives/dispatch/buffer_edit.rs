@@ -2321,8 +2321,8 @@ pub(super) fn call(
             let start = interp.buffer.point();
             interp.buffer.goto_char(saved);
             let mut pos = start;
+            let mut current_col = 0;
             while pos < interp.buffer.point_max() {
-                let current_col = column_at(interp, env, start, pos);
                 if current_col >= target {
                     break;
                 }
@@ -2333,25 +2333,26 @@ pub(super) fn call(
                     break;
                 }
                 let next_col = column_after(interp, env, current_col, pos, ch);
-                if next_col > target && force && ch == '\t' && !char_is_invisible(interp, pos, env)
-                {
+                if next_col > target && force && ch == '\t' {
                     interp.buffer.goto_char(pos);
                     interp.insert_current_buffer(&" ".repeat(target - current_col));
                     pos = interp.buffer.point();
+                    current_col = target;
                     break;
                 }
+                current_col = next_col;
                 pos += 1;
             }
             if force {
-                let current_col = column_at(interp, env, start, pos);
                 if current_col < target {
                     interp.buffer.goto_char(pos);
                     interp.insert_current_buffer(&" ".repeat(target - current_col));
                     pos = interp.buffer.point();
+                    current_col = target;
                 }
             }
             interp.buffer.goto_char(pos);
-            Ok(Value::Integer(column_at(interp, env, start, pos) as i64))
+            Ok(Value::Integer(current_col as i64))
         }
         "indent-rigidly" => {
             need_arg_range(name, args, 3, 4)?;

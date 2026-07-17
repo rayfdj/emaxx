@@ -503,6 +503,25 @@ impl Interpreter {
             .map(|process| Value::Symbol(process.status.symbol().into()))
     }
 
+    pub(crate) fn mark_network_process_connecting(&mut self, record_id: u64) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        process.status = ProcessStatus::Connect;
+        true
+    }
+
+    pub(crate) fn open_connecting_network_processes(&mut self) -> Vec<u64> {
+        let mut opened = Vec::new();
+        for process in &mut self.process_states {
+            if process.status == ProcessStatus::Connect && process.network.is_some() {
+                process.status = ProcessStatus::Open;
+                opened.push(process.record_id);
+            }
+        }
+        opened
+    }
+
     pub fn process_is_live(&mut self, record_id: u64) -> bool {
         let _ = self.refresh_process_id(record_id);
         self.find_process_state(record_id)

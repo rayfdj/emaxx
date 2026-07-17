@@ -703,6 +703,7 @@ pub(crate) fn make_network_process(
     let mut is_server = false;
     let mut family_local = false;
     let mut family_ipv4 = false;
+    let mut nowait = false;
     let mut host: Option<String> = None;
     let mut service: Option<i64> = None;
     let mut service_path: Option<String> = None;
@@ -718,6 +719,7 @@ pub(crate) fn make_network_process(
             ":log" => log = (!value.is_nil()).then(|| value.clone()),
             ":plist" => plist = value.clone(),
             ":server" => is_server = value.is_truthy(),
+            ":nowait" => nowait = value.is_truthy(),
             ":family" => {
                 family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
                 family_ipv4 = matches!(value, Value::Symbol(symbol) if symbol == "ipv4");
@@ -804,7 +806,11 @@ pub(crate) fn make_network_process(
             Value::list(contact_items),
         )?;
         let process_id = interp.resolve_process_id(&process)?;
-        run_process_sentinel(interp, process_id, "open\n", env)?;
+        if nowait {
+            interp.mark_network_process_connecting(process_id);
+        } else {
+            run_process_sentinel(interp, process_id, "open\n", env)?;
+        }
         return Ok(process);
     }
 
@@ -881,7 +887,11 @@ pub(crate) fn make_network_process(
         )?;
         // GNU runs the sentinel with "open\n" once a client connects.
         let process_id = interp.resolve_process_id(&process)?;
-        run_process_sentinel(interp, process_id, "open\n", env)?;
+        if nowait {
+            interp.mark_network_process_connecting(process_id);
+        } else {
+            run_process_sentinel(interp, process_id, "open\n", env)?;
+        }
         Ok(process)
     }
 }
@@ -977,6 +987,15 @@ pub(crate) fn pump_network_processes(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     let mut progressed = false;
+
+    // `:nowait t' exposes a freshly created client as `connect' until the
+    // event loop reports completion.  The OS connection is already usable
+    // in this compatibility runtime, but deferring the `open' transition
+    // lets callers install their sentinel before it runs, like GNU Emacs.
+    for process_id in interp.open_connecting_network_processes() {
+        progressed = true;
+        run_process_sentinel(interp, process_id, "open\n", env)?;
+    }
 
     // Accept new connections on every server listener.
     for server_id in interp.network_listener_ids() {

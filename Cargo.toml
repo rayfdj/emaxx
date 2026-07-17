@@ -33,3 +33,10 @@ unicode-segmentation = "1.13.3"
 unicode-normalization = "0.1.25"
 
 [dev-dependencies]
+
+# Compatibility scenarios exercise real-time network and timer behavior.
+# Optimize the interpreter itself in development builds so their upstream
+# wall-clock deadlines measure semantics instead of debug-code throughput;
+# dependency builds and debug assertions remain unchanged.
+[profile.dev.package.emaxx]
+opt-level = 1
