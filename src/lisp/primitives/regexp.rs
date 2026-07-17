@@ -986,9 +986,39 @@ struct CompiledElispRegexKey {
 
 const COMPILED_ELISP_REGEX_CACHE_LIMIT: usize = 256;
 
+#[derive(Default)]
+struct CompiledElispRegexCache {
+    entries: std::collections::HashMap<CompiledElispRegexKey, (CompiledElispRegex, u64)>,
+    use_counter: u64,
+}
+
+impl CompiledElispRegexCache {
+    fn get(&mut self, key: &CompiledElispRegexKey) -> Option<CompiledElispRegex> {
+        self.use_counter = self.use_counter.wrapping_add(1);
+        let (compiled, last_used) = self.entries.get_mut(key)?;
+        *last_used = self.use_counter;
+        Some(compiled.clone())
+    }
+
+    fn insert(&mut self, key: CompiledElispRegexKey, compiled: CompiledElispRegex) {
+        self.use_counter = self.use_counter.wrapping_add(1);
+        if self.entries.len() >= COMPILED_ELISP_REGEX_CACHE_LIMIT
+            && !self.entries.contains_key(&key)
+            && let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, last_used))| *last_used)
+                .map(|(key, _)| key.clone())
+        {
+            self.entries.remove(&victim);
+        }
+        self.entries.insert(key, (compiled, self.use_counter));
+    }
+}
+
 thread_local! {
-    static COMPILED_ELISP_REGEX_CACHE: RefCell<Vec<(CompiledElispRegexKey, CompiledElispRegex)>> =
-        const { RefCell::new(Vec::new()) };
+    static COMPILED_ELISP_REGEX_CACHE: RefCell<CompiledElispRegexCache> =
+        RefCell::new(CompiledElispRegexCache::default());
 }
 
 pub(super) fn compile_elisp_regex(
@@ -998,7 +1028,6 @@ pub(super) fn compile_elisp_regex(
     point_assertion: &str,
     at_absolute_start: bool,
 ) -> Result<CompiledElispRegex, LispError> {
-    enforce_elisp_repeat_limit(&pattern.text)?;
     // GNU resolves `\s<'/`\s>' against the current buffer's syntax table;
     // rewrite them into explicit character classes before translation (the
     // rewritten pattern doubles as the cache key, so different tables cache
@@ -1013,18 +1042,12 @@ pub(super) fn compile_elisp_regex(
         at_absolute_start,
         case_fold,
     };
-    if let Some(compiled) = COMPILED_ELISP_REGEX_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let index = cache
-            .iter()
-            .position(|(cached_key, _)| cached_key == &key)?;
-        let (cached_key, compiled) = cache.remove(index);
-        cache.push((cached_key, compiled.clone()));
-        Some(compiled)
-    }) {
+    if let Some(compiled) = COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().get(&key)) {
         return Ok(compiled);
     }
 
+    validate_elisp_regex(&pattern.text)?;
+    enforce_elisp_repeat_limit(&pattern.text)?;
     let translated = translate_elisp_regex_with_point(
         &pattern_text,
         point_assertion,
@@ -1046,13 +1069,7 @@ pub(super) fn compile_elisp_regex(
             .map_err(|error| invalid_regexp_error(error.to_string()))?,
         capture_mapping: elisp_capture_mapping(&pattern.text)?,
     };
-    COMPILED_ELISP_REGEX_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= COMPILED_ELISP_REGEX_CACHE_LIMIT {
-            cache.remove(0);
-        }
-        cache.push((key, compiled.clone()));
-    });
+    COMPILED_ELISP_REGEX_CACHE.with(|cache| cache.borrow_mut().insert(key, compiled.clone()));
     Ok(compiled)
 }
 
@@ -1175,7 +1192,6 @@ pub(super) fn string_match_impl(
         .ok_or_else(|| LispError::TypeError("string".into(), args[0].type_name()))?;
     let haystack = string_like(&args[1])
         .ok_or_else(|| LispError::TypeError("string".into(), args[1].type_name()))?;
-    validate_elisp_regex(&pattern.text)?;
     let haystack_len = haystack.text.chars().count() as i64;
     let start = normalize_string_index(args.get(2), 0, haystack_len)? as usize;
     let tail: String = haystack.text.chars().skip(start).collect();
@@ -1324,7 +1340,6 @@ pub(super) fn split_string_impl(
                 .map(|(index, ch)| part_value(ch.to_string(), index, index + 1))
                 .collect::<Vec<_>>()
         } else {
-            validate_elisp_regex(&separator.text)?;
             let regex = compile_elisp_regex(interp, &separator, env, "", true)?;
             let mut parts = Vec::new();
             let mut last_end = 0usize;

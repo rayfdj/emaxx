@@ -486,6 +486,8 @@ struct ConditionVariableState {
 enum ProcessStatus {
     Run,
     Exit,
+    /// Nonblocking network connection not yet reported as established.
+    Connect,
     /// Network connection established (client or accepted server child).
     Open,
     /// Network connection closed.
@@ -499,6 +501,7 @@ impl ProcessStatus {
         match self {
             Self::Run => "run",
             Self::Exit => "exit",
+            Self::Connect => "connect",
             Self::Open => "open",
             Self::Closed => "closed",
             Self::Listen => "listen",
@@ -506,7 +509,7 @@ impl ProcessStatus {
     }
 
     fn is_live(&self) -> bool {
-        matches!(self, Self::Run | Self::Open | Self::Listen)
+        matches!(self, Self::Run | Self::Connect | Self::Open | Self::Listen)
     }
 }
 

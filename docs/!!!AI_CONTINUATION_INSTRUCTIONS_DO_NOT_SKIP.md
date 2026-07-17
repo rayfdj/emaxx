@@ -247,21 +247,34 @@ counts as the progress denominator.
     (`load' checks cwd-relative names first): a stale /tmp/probes/
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
-- FRONTIER NOW = 2898
-  (erc-scenarios-stamp--date-mode/left-and-right).
+- FRONTIER NOW = 2901
+  (erc--auth-source-determine-params-merge in erc-services-tests.el).
   CRUCIAL: the frontier counts MANIFEST-SELECTED selectors, NOT all
   check-all tests (compat/oracle_tests_all.txt: `selected=N' per file).
   misc-commands.el selects ONLY AMSG-GMSG-AME-GME (MOTD/SQUERY/etc. are
   discovered but NOT selected — do NOT chase them); misc.el selects 0
   (base-flood/kill-server-track/dcc are NON-selectors — ignore); after
-  AMSG the frontier is stamp.el (2898..2900:
-  date-mode/left-and-right, left/display-margin-mode,
-  legacy-date-stamps), then erc-services-tests (2901..2917, 17 sel),
+  AMSG and stamp.el (2898..2900) now pass; the frontier is
+  erc-services-tests (2901..2917, 17 sel),
   erc-stamp-tests (12 sel), erc-tests (94 sel).  ALWAYS check
   `selected=' before burning time on a check-all failure — MOTD was a
   multi-hour detour on a non-selector.  To run one selector:
   `compat-harness run --scope all --selector <name> --file <f>' or
   emaxx `-l ert -l <proxy> --eval (ert-run-tests-batch-and-exit "<name>")'.
+- MILESTONE 2900 — all three selected erc-scenarios-stamp.el tests PASS.
+  Selector 2898 exposed ignored `:nowait' semantics: emaxx's blocking
+  TCP connect returned an already-`open' process, so ERC skipped its
+  "Opening connection" insertion and registered/login immediately.  GNU
+  returns `connect' for `make-network-process :nowait t', reports `open'
+  from the next event-loop turn, and invokes the sentinel only after the
+  caller has installed it.  Emaxx now mirrors that observable sequence
+  while retaining its already-connected OS socket; a focused socket test
+  covers initial status, deferred transition, and the `open\n' sentinel.
+  The non-manifest erc-d-run-no-block debug speed race is resolved too:
+  move-to-column is O(n) rather than O(n^2), compiled-regexp cache hits use
+  an O(1) LRU index and validate only on misses, and Cargo optimizes only
+  the local emaxx crate in dev builds (debug assertions remain).  Repeated
+  no-block runs PASS; selector 2897 and all 1128 Rust tests remain green.
 - MILESTONE 2897 — AMSG-GMSG-AME-GME PASSES.  Diagnosed with temporary,
   environment-gated Rust traces (removed before commit).
   ROOT CAUSE 1 (FIXED — the "double-send") = `str' locally-special
@@ -319,10 +332,8 @@ counts as the progress denominator.
   this host while ERC connected to `127.0.0.1', failing before any dialog.
   Focused IPv4 listener test added.  Verified: selector 2897 PASS; default
   scenarios-internal PASS; scenarios-match check-all PASS; 1127 Rust
-  library tests + auxiliary binaries PASS.  The non-manifest check-all
-  extra erc-d-run-no-block currently fails its known debug-build speed
-  race; A/B testing with timer-tail restoration disabled fails identically,
-  so this is not a regression from root cause 3.
+  library tests + auxiliary binaries PASS.  (The former non-manifest
+  erc-d-run-no-block speed race was resolved in milestone 2900.)
 - MILESTONE 2896: erc-scenarios-match.el PASSES check-all (2895..2896;
   the join-*/log scenario files between internal and match select 0).
   ROOT CAUSE was `goto-char' RETURN VALUE.  GNU `Fgoto_char' returns

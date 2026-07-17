@@ -19,6 +19,20 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2900/7080: all three manifest-selected
+  `erc-scenarios-stamp.el' tests pass.  Selector 2898 needed real
+  nonblocking-connect semantics: `make-network-process :nowait t' now
+  reports `connect' initially, transitions to `open' on the next event
+  pump, and only then calls the newly installed sentinel.  ERC therefore
+  inserts its "Opening connection" status before logging in, as GNU does.
+  A focused socket test covers the status and sentinel sequence.
+  The former non-manifest `erc-d-run-no-block' speed race is also resolved:
+  `move-to-column' is now single-pass instead of quadratic, compiled-regexp
+  cache hits are constant-time and skip redundant validation, and dev builds
+  optimize only the local `emaxx' crate so upstream wall-clock deadlines do
+  not measure unoptimized interpreter overhead (debug assertions remain).
+  `erc-d-run-no-block' passes repeated runs, selector 2897 remains green,
+  and all 1128 Rust library tests plus auxiliary suites pass.
 - Verified through selector 2897/7080:
   `erc-scenarios-misc-commands--AMSG-GMSG-AME-GME' passes.  The final
   ACTION-8 timeout was not an early/stale expiry and not a ring-loss bug:
@@ -35,10 +49,6 @@ counts as the progress denominator.
   ERC connects to `127.0.0.1', which previously caused an earlier
   connection-refused failure.  Selector 2897, the default internal suite,
   scenarios-match check-all, and all 1127 Rust library tests pass.
-  The non-manifest `erc-d-run-no-block' check-all extra remains a known
-  debug-build speed race (the final message arrives before its negative
-  assertion); an A/B run fails identically with timer-tail restoration
-  disabled, so it is not a regression from this fix.
 - Verified through selector 2896/7080: `erc-scenarios-match.el'
   passes check-all (2895..2896; the intervening join/log scenario
   files select 0).  Root cause was `goto-char' RETURN VALUE: GNU
@@ -124,10 +134,9 @@ counts as the progress denominator.
       fast-paths non-aliased names (Cow, no per-lookup String).
     - EMAXX_PROFILE=<path> (dev-only): flat per-name call/self-time
       profiler in call_function_value, dumped periodically.
-- NEXT = selector 2898, the first of three selected tests in
-  erc-scenarios-stamp.el 2898..2900 (date-mode/left-and-right,
-  left/display-margin-mode, legacy-date-stamps), erc-services-tests
-  (2901..2917), erc-stamp-tests, erc-tests.  ALWAYS consult
+- NEXT = selector 2901, the first of 17 selected tests in
+  erc-services-tests.el (2901..2917), followed by erc-stamp-tests and
+  erc-tests.  ALWAYS consult
   `selected=' in compat/oracle_tests_all.txt before working a
   check-all failure — most scenario-file check-all failures are on
   NON-selected tests and don't gate the frontier.  Sweep gate =

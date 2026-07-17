@@ -1097,6 +1097,100 @@ fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
 }
 
 #[test]
+fn make_network_process_nowait_opens_on_the_next_event_pump() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let server = call(
+        &mut interp,
+        "make-network-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("nowait-server".into()),
+            Value::Symbol(":server".into()),
+            Value::T,
+            Value::Symbol(":family".into()),
+            Value::Symbol("ipv4".into()),
+            Value::Symbol(":host".into()),
+            Value::String("127.0.0.1".into()),
+            Value::Symbol(":service".into()),
+            Value::T,
+        ],
+        &mut env,
+    )
+    .expect("server should bind");
+    let port = call(
+        &mut interp,
+        "process-contact",
+        &[server.clone(), Value::Symbol(":service".into())],
+        &mut env,
+    )
+    .expect("server should expose its port");
+    let sentinel = Value::Lambda(
+        vec!["process".into(), "event".into()],
+        vec![Value::list([
+            Value::Symbol("setq".into()),
+            Value::Symbol("nowait-event".into()),
+            Value::Symbol("event".into()),
+        ])],
+        shared_env(Vec::new()),
+    );
+    let client = call(
+        &mut interp,
+        "make-network-process",
+        &[
+            Value::Symbol(":name".into()),
+            Value::String("nowait-client".into()),
+            Value::Symbol(":family".into()),
+            Value::Symbol("ipv4".into()),
+            Value::Symbol(":host".into()),
+            Value::String("127.0.0.1".into()),
+            Value::Symbol(":service".into()),
+            port,
+            Value::Symbol(":nowait".into()),
+            Value::T,
+            Value::Symbol(":sentinel".into()),
+            sentinel,
+        ],
+        &mut env,
+    )
+    .expect("client should begin connecting");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-status",
+            std::slice::from_ref(&client),
+            &mut env,
+        )
+        .expect("initial process status"),
+        Value::Symbol("connect".into())
+    );
+    assert_eq!(interp.lookup_var("nowait-event", &env), None);
+
+    call(
+        &mut interp,
+        "accept-process-output",
+        &[Value::Nil, Value::Float(0.05)],
+        &mut env,
+    )
+    .expect("event pump should report the connection");
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-status",
+            std::slice::from_ref(&client),
+            &mut env,
+        )
+        .expect("opened process status"),
+        Value::Symbol("open".into())
+    );
+    assert_eq!(
+        interp.lookup_var("nowait-event", &env),
+        Some(Value::String("open\n".into()))
+    );
+}
+
+#[test]
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
