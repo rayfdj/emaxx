@@ -19,6 +19,21 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 2960/7080: the first 31 manifest-selected
+  `erc-tests.el' selectors (2930..2960) pass exact oracle comparisons;
+  the file's default comparison improved to 76/94 passing.  This batch
+  closed four general compatibility gaps: case conversion now uses the
+  current syntax table for word boundaries; the preload surface includes
+  `view-mode-enter' and `custom-group-of-mode';
+  `delete-and-extract-region' preserves string text properties; and
+  `accept-process-output' correctly handles a seconds argument without an
+  optional milliseconds argument and no longer truncates waits to one
+  second.  Focused Rust regressions cover each behavior.  The full test
+  suite passes (1137 library tests plus all auxiliary suites).  The
+  non-manifest `erc-d-run-no-block' speed race passes three fresh
+  end-to-end runs, and selector 2897 remains green.  NEXT is selector 2961,
+  `erc--interactive', currently failing because `url-generic-parse-url' is
+  read as a void variable.
 - Verified through selector 2929/7080: all 17 manifest-selected
   `erc-services-tests.el' tests and all 12 selected
   `erc-stamp-tests.el' tests pass their default oracle comparisons.
@@ -331,10 +346,10 @@ counts as the progress denominator.
     setup-hook runs the hook inside the minibuffer buffer with
     active-minibuffer-window non-nil, define-minor-mode maintains
     GNU's `local-minor-modes', and `read-hide-char' is defined.
-- NEXT: selector 2930, the first of 94 manifest-selected tests in
-  `test/lisp/erc/erc-tests.el' (2930..3023).  Milestone 3000 sits inside
-  that file.  The preceding erc scenario, services, and stamp blocks are
-  verified through 2929.
+- NEXT: selector 2961, `erc--interactive', in the 94-selector
+  `test/lisp/erc/erc-tests.el' block (2930..3023).  Selectors 2930..2960
+  and all preceding ERC scenario, services, and stamp blocks are verified.
+  Milestone 3000 remains inside this file.
 - Verified through selector 2811/7080: erc-button (2766..2770),
   erc-dcc (2771..2780), erc-fill (2781), erc-goodies (2782..2796),
   erc-join (2797..2806), erc-match (2807..2811) all pass; 136-file

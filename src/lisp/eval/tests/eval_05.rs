@@ -2625,3 +2625,38 @@ fn ert_x_remote_temp_directory_loads_after_tramp() {
         ])
     );
 }
+
+#[test]
+fn simple_compat_preloads_custom_and_view_entry_points() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (put 'sample-mode 'custom-mode-group 'sample)
+               (put 'fallback 'custom-group '((option custom-variable)))
+               (list (custom-group-of-mode 'sample-mode)
+                     (custom-group-of-mode 'fallback-mode)
+                     (custom-group-of-mode 'missing-mode)
+                     (with-temp-buffer
+                       (view-mode-enter)
+                       view-mode)))",
+        ),
+        Value::list([
+            Value::Symbol("sample".into()),
+            Value::Symbol("fallback".into()),
+            Value::Nil,
+            Value::T,
+        ])
+    );
+}

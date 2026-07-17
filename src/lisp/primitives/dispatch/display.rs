@@ -486,7 +486,11 @@ pub(super) fn call(
             // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
             // JUST-THIS-ONE) - the wait always comes from args 2 and 3, and
             // the call returns as soon as any output is handled.
-            let duration_args = args.get(1..3).unwrap_or(&[]);
+            let duration_args = if args.len() > 1 {
+                &args[1..args.len().min(3)]
+            } else {
+                &[]
+            };
             let delivered =
                 wait_pumping_processes(interp, env, wait_duration(duration_args)?, true)?;
             Ok(if delivered { Value::T } else { Value::Nil })

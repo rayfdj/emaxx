@@ -18,6 +18,18 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 2960/7080.  Exact oracle runs pass for the
+  first 31 manifest selectors in `test/lisp/erc/erc-tests.el'
+  (2930..2960), and the file-wide default run is now 76/94 passing.
+  The batch fixed syntax-table-aware case word boundaries, preloaded
+  `view-mode-enter' plus `custom-group-of-mode', preserved text properties
+  through `delete-and-extract-region', and repaired
+  `accept-process-output' parsing of `(PROCESS SECONDS)' plus its erroneous
+  one-second wait cap.  The unrestricted test suite is green: 1137 library
+  tests and all auxiliary suites.  `erc-d-run-no-block' passes three fresh
+  runs and selector 2897 still passes.  NEXT = selector 2961,
+  `erc--interactive': `url-generic-parse-url' is currently read as a void
+  variable.  Do not fold that unproven fix into the completed 2960 batch.
 - Verified through selector 2881/7080:
   `erc-scenarios-base-upstream-recon-znc.el' passes check-all.  The
   decisive lever was a NATIVE `format-spec' (primitives.rs
@@ -247,8 +259,8 @@ counts as the progress denominator.
     (`load' checks cwd-relative names first): a stale /tmp/probes/
     fill.el turned an erc test run into an infinite autoload loop.
     Keep probe basenames un-library-like.
-- FRONTIER NOW = 2930
-  (the first manifest-selected test in test/lisp/erc/erc-tests.el).
+- FRONTIER NOW = 2961 (`erc--interactive' in
+  test/lisp/erc/erc-tests.el); selectors 2930..2960 pass exactly.
   CRUCIAL: the frontier counts MANIFEST-SELECTED selectors, NOT all
   check-all tests (compat/oracle_tests_all.txt: `selected=N' per file).
   misc-commands.el selects ONLY AMSG-GMSG-AME-GME (MOTD/SQUERY/etc. are
@@ -256,7 +268,7 @@ counts as the progress denominator.
   (base-flood/kill-server-track/dcc are NON-selectors — ignore); after
   AMSG and stamp.el (2898..2900), erc-services-tests (2901..2917,
   17 selected), and erc-stamp-tests (2918..2929, 12 selected) now pass;
-  the frontier is erc-tests (2930..3023, 94 selected).  ALWAYS check
+  the active block is erc-tests (2930..3023, 94 selected).  ALWAYS check
   `selected=' before burning time on a check-all failure — MOTD was a
   multi-hour detour on a non-selector.  To run one selector:
   `compat-harness run --scope all --selector <name> --file <f>' or

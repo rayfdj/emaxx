@@ -66,7 +66,7 @@ pub(crate) fn wait_duration(args: &[Value]) -> Result<Duration, LispError> {
     if !total.is_finite() || total <= 0.0 {
         return Ok(Duration::ZERO);
     }
-    Ok(Duration::from_secs_f64(total.min(1.0)))
+    Ok(Duration::from_secs_f64(total))
 }
 
 #[derive(Clone)]
