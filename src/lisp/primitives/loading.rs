@@ -349,6 +349,7 @@ fn eval_buffer_forms(
     let forms = crate::lisp::reader::Reader::new(&text).read_all()?;
     let mut result = Value::Nil;
     for form in forms {
+        interp.intern_symbols_in_value(&form);
         result = eager_expand_eval(interp, &form, env)?;
     }
     Ok(result)

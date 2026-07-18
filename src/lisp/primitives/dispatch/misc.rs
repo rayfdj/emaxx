@@ -406,6 +406,16 @@ pub(super) fn call(
                 Value::Symbol(symbol) if obarray.is_none() => {
                     return Ok(Value::Symbol(symbol.clone()));
                 }
+                Value::Symbol(symbol)
+                    if matches!(&obarray, Some(Value::Record(id)) if interp.is_standard_obarray_id(*id))
+                        && crate::lisp::types::visible_symbol_name(symbol) == symbol =>
+                {
+                    // An ordinary symbol object read by Lisp is already a
+                    // member of the standard obarray.  Synthetic `make-symbol'
+                    // and private-obarray names carry identity markers and
+                    // must still miss here.
+                    return Ok(Value::Symbol(symbol.clone()));
+                }
                 Value::Symbol(symbol) => symbol.clone(),
                 _ => string_text(&args[0])?,
             };

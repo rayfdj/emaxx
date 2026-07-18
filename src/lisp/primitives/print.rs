@@ -1765,6 +1765,7 @@ pub(crate) fn read_from_lisp_source(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let value = read_from_lisp_source_raw(interp, source, env)?;
+    interp.intern_symbols_in_value(&value);
     materialize_read_hash_table_literals(interp, &value)
 }
 

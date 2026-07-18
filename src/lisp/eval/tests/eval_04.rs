@@ -3153,6 +3153,65 @@ fn minibuffer_completion_primitives_cover_batch_cases() {
 }
 
 #[test]
+fn standard_obarray_completion_enumerates_defined_functions() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun sample-standard-obarray-command () t)
+                  (list
+                   (obarrayp obarray)
+                   (test-completion "sample-standard-obarray-command"
+                                    obarray #'functionp)
+                   (all-completions "sample-standard-obarray-"
+                                    obarray #'functionp)))
+            "#
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::list([Value::String("sample-standard-obarray-command".into())]),
+        ])
+    );
+}
+
+#[test]
+fn read_interns_ordinary_symbols_in_the_standard_obarray() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((name "sample-read-interned-symbol-7a91"))
+                  (list
+                   (intern-soft name obarray)
+                   (read name)
+                   (intern-soft name obarray)))
+            "#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::Symbol("sample-read-interned-symbol-7a91".into()),
+            Value::Symbol("sample-read-interned-symbol-7a91".into()),
+        ])
+    );
+}
+
+#[test]
+fn eval_buffer_interns_symbols_read_from_loaded_source() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (with-temp-buffer
+                    (insert "'sample-loaded-source-symbol-4c82")
+                    (eval-buffer))
+                  (intern-soft "sample-loaded-source-symbol-4c82" obarray))
+            "#
+        ),
+        Value::Symbol("sample-loaded-source-symbol-4c82".into())
+    );
+}
+
+#[test]
 fn inhibited_interaction_uses_expected_condition_type() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();

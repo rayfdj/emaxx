@@ -347,7 +347,6 @@ impl Interpreter {
             ])),
             "ls-lisp-use-insert-directory-program" => Some(Value::T),
             "transient-mark-mode" => Some(Value::T),
-            "obarray" => Some(Value::Nil),
             "desktop-buffer-mode-handlers" => Some(Value::Nil),
             "find-file-visit-truename" => Some(Value::Nil),
             "insert-directory-wildcard-in-dir-p" => Some(Value::Nil),

@@ -19,26 +19,25 @@ counts as the progress denominator.
 
 ## Current State
 
-- Verified through selector 3043/7080: all five selected
-  `em-basic-tests.el' selectors (3039..3043) pass the file-wide `check-all'
-  oracle comparison.  The setter tests exposed a general lexical-cell bug,
-  not an Eshell or `umask' special case: a closure invoked through a fresh
-  `(eval ...)' environment mutated only its captured snapshot, leaving the
-  still-live outer frame stale.  Captured mutation now has a canonical overlay
-  keyed by exact frame identity and binding name, with weak closure-owner
-  tracking; unrelated frames that merely bind the same names never alias.
-  Four fast Rust regressions cover fresh-eval mutation, assignment after
-  capture, immediate sibling visibility, and distinct same-named cells.  The
-  five order-sensitive overlay modification-hook regressions also pass.  The
-  full gate passes 1172 library tests, 11 compatibility-harness tests, the
-  perf-harness test, and all three integration ERT runners.
-  NEXT is selector 3044, `em-cmpl-test/command-completion' in
-  `test/lisp/eshell/em-cmpl-tests.el': GNU completes `listif' to `listify ',
-  while Emaxx makes no change.  The first probe reaches the pcomplete CAPF but
-  its programmed table returns no candidates; Emaxx currently exposes the
-  standard `obarray' as nil, so command completion cannot enumerate the
-  loaded `eshell/listify' function.  Treat this as a standard-obarray and
-  completion contract, not an Eshell-specific spelling fix.
+- Verified through selector 3044/7080: `em-cmpl-test/command-completion' now
+  matches GNU and completes `listif' to `listify '.  The failure was the shared
+  standard-obarray contract, not Eshell completion logic: Emaxx published
+  `obarray' as nil and therefore could not enumerate loaded functions.  The
+  interpreter now owns a real standard-obarray record whose deterministic
+  symbol view follows globals, functions, macros, properties, explicit
+  interning, and ordinary symbols read from Lisp or loaded source.  A hash
+  membership index keeps source interning from degenerating into quadratic
+  scans; circular reader data and propertized strings are handled explicitly.
+  The full Rust suite caught and preserved the related canonical rules for
+  `nil'/`t' and the distinction between interned symbols and `make-symbol'
+  objects.  Three new fast regressions cover function completion, runtime
+  `read', and `eval-buffer' source interning; the full gate passes 1175 library
+  tests, 11 compatibility-harness tests, the perf-harness test, and all three
+  integration ERT runners, with rustfmt and clippy clean.
+  NEXT is selector 3045, `em-cmpl-test/file-completion/after-list' in
+  `test/lisp/eshell/em-cmpl-tests.el': GNU passes, while Emaxx fails with
+  `wrong-type-argument characterp'.  Diagnose that character contract
+  independently; do not attribute it to the now-green standard obarray.
 - Verified through selector 3038/7080: the remaining selected ERC core and
   track selectors (3001..3030) pass, followed by all eight selected
   `em-alias-tests.el' selectors (3031..3038).  File-wide `check-all' matches

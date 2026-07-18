@@ -90,8 +90,11 @@ fn md5_accepts_buffer_sources_and_coding_symbols() {
 #[test]
 fn intern_soft_accepts_symbol_arguments() {
     assert_eq!(
-        eval_str("(intern-soft 'sample-symbol)"),
-        Value::Symbol("sample-symbol".into())
+        eval_str(
+            "(list (intern-soft 'sample-symbol)\
+                   (intern-soft (make-symbol \"sample-symbol\")))"
+        ),
+        Value::list([Value::Symbol("sample-symbol".into()), Value::Nil])
     );
 }
 
