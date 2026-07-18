@@ -18,6 +18,37 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 3081/7080.  All 11 selected tests in
+  `test/lisp/eshell/em-dirs-tests.el' pass both the grouped oracle replay and
+  the fast native ERT runner.  Selector 3072 exposed a shared representation
+  bug: GNU `directory-files' creates ordinary mutable Lisp strings, and
+  Eshell immediately adds display properties to those names; Emaxx returned
+  immutable `Value::String' values.  `directory_files' now creates shared,
+  property-bearing strings with the correct multibyte flag.  The tempting
+  symptom fix--making `add-text-properties' silently accept immutable
+  strings--was rejected because it would discard observable GNU properties.
+  The native full-file replay then exposed two startup contracts that the
+  heavy harness's explicit load of `ert.el' had masked: GNU dumps `seq.el'
+  and autoloads the complete public `pp.el' surface (`pp-to-string' is needed
+  for multi-index Eshell expansion).  Fast fixtures now use the real shared
+  batch initializer instead of reconstructing startup ad hoc, resolvable
+  preloads fail loudly instead of having their errors discarded, and the
+  `pp.el' autoloads retain their GNU interactive flags.  A forward `em-ls'
+  replay also found the omitted GNU `customize-set-value' autoload; it now
+  loads the existing Elisp `cus-edit.el' implementation, preserving the
+  Elisp/host boundary, and all four selected `em-ls-tests.el' cases pass.
+  IMPORTANT DIAGNOSIS: the apparent directory-ring order failures were not
+  state leakage--single-index output was already correct, while only list
+  output failed with `void-variable pp-to-string'.  Inspect the exact nested
+  error/output before changing state isolation.  Fast Rust coverage includes
+  mutable returned filenames, strict/dumped startup behavior, the `seq' and
+  `pp'/`cus-edit' contracts, the end-to-end `cd' metadata case, and all 11
+  `em-dirs' tests in one interpreter.  Affected grouped oracle replays pass
+  for `em-dirs' (11), `em-cmpl' (27), `dired-tests' (16), and `em-ls' (4).
+  Full gate: 1196 library tests, 11 compatibility-harness tests, one
+  perf-harness test, and three integration ERT runners pass; rustfmt, clippy
+  with `-D warnings', and `git diff --check' are clean.  NEXT = selector 3082,
+  `em-extpipe-test-1' in `test/lisp/eshell/em-extpipe-tests.el'.
 - Verified through selector 3070/7080.  All 27 selected tests in
   `test/lisp/eshell/em-cmpl-tests.el' pass their grouped oracle replay.  This
   batch fixed shared contracts rather than individual Eshell cases: local hook

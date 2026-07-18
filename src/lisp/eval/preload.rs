@@ -556,6 +556,10 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         | "comment-normalize-vars"
         | "comment-search-forward" => Some(builtin_file_autoload("newcomment", Value::Nil)),
         "common-lisp-indent-function" => Some(builtin_file_autoload("cl-indent", Value::Nil)),
+        // GNU loaddefs.el autoloads this public cus-edit setter.  Keep the
+        // implementation in cus-edit.el; require_feature_with_target already
+        // loads that library's dumped dependencies in startup order.
+        "customize-set-value" => Some(builtin_file_autoload("cus-edit", Value::T)),
         // GNU preloads nadvice.el; the old advice.el is autoloaded.
         "add-function" | "remove-function" => Some(builtin_macro_autoload("nadvice")),
         // advice-add/remove/member-p defer to GNU nadvice.el when its file
@@ -574,7 +578,17 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "ad-activate" | "ad-deactivate" | "ad-add-advice" | "ad-is-active" => {
             Some(builtin_file_autoload("advice", Value::Nil))
         }
-        "pp" => Some(builtin_file_autoload("pp", Value::Nil)),
+        // GNU loaddefs.el autoloads pp.el's complete public entry-point
+        // surface.  In particular, Eshell uses pp-to-string when an
+        // expansion produces a list before anything has required `pp'.
+        "pp-to-string" | "pp" | "pp-display-expression" | "pp-emacs-lisp-code" => {
+            Some(builtin_file_autoload("pp", Value::Nil))
+        }
+        "pp-buffer"
+        | "pp-eval-expression"
+        | "pp-macroexpand-expression"
+        | "pp-eval-last-sexp"
+        | "pp-macroexpand-last-sexp" => Some(builtin_file_autoload("pp", Value::T)),
         // GNU autoloads these entry points (package.el install flows).
         // byte-recompile-directory is NOT routed to bytecomp.el: loading it
         // would shadow the native byte-compile machinery (simple_compat.el

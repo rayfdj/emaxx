@@ -150,7 +150,9 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     }
 }
 
-fn initialize_batch_interpreter(options: &BatchRunOptions) -> Result<Interpreter, String> {
+pub(crate) fn initialize_batch_interpreter(
+    options: &BatchRunOptions,
+) -> Result<Interpreter, String> {
     let mut interpreter = Interpreter::new();
     interpreter.set_load_path(options.load_path.clone());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
@@ -164,7 +166,9 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
             continue;
         }
-        let _ = interpreter.load_target(feature);
+        interpreter
+            .load_target(feature)
+            .map_err(|error| format!("preload {feature}: {error}"))?;
     }
 
     for compat_library in ["src/lisp/faces_compat.el", "src/lisp/simple_compat.el"] {
@@ -570,6 +574,67 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove temp root");
+    }
+
+    #[test]
+    fn batch_runtime_rejects_a_broken_resolvable_preload() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-batch-broken-preload-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create temp root");
+        fs::write(root.join("seq.el"), "(error \"broken seq preload\")\n")
+            .expect("write broken seq preload");
+
+        let options = BatchRunOptions {
+            load_path: vec![root.clone()],
+            ..Default::default()
+        };
+        let error = match initialize_batch_interpreter(&options) {
+            Ok(_) => panic!("a resolvable dumped-library preload must not fail silently"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("preload seq"), "{error}");
+        assert!(error.contains("broken seq preload"), "{error}");
+        fs::remove_dir_all(root).expect("remove temp root");
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_dumped_seq_surface() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'seq) (fboundp 'seq-elt) \
+                       (seq-elt '(a b) 1) (seq-elt [a b] 1))",
+            )
+            .read_all()
+            .expect("read seq startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate seq startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::Symbol("b".into()),
+                    Value::Symbol("b".into()),
+                ])
+            );
+        });
     }
 
     #[test]

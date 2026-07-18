@@ -19,6 +19,29 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 3081/7080: all 11 selected
+  `test/lisp/eshell/em-dirs-tests.el' cases match GNU in the grouped replay
+  and pass together in the fast native runner.  The thematic repair is at the
+  producer boundary: `directory-files' now returns mutable, property-bearing
+  strings like GNU's `directory_files_internal', so Eshell can decorate names
+  without losing text properties.  Fast startup coverage also caught gaps
+  masked by the oracle harness loading `ert.el': the shared batch initializer
+  supplies GNU's dumped `seq' contract, preload errors are no longer ignored,
+  and the complete public `pp.el' autoload surface is present with matching
+  interactive flags.  The Eshell test fixture now uses that initializer rather
+  than duplicating only part of startup.  A targeted forward replay restored
+  GNU's `customize-set-value' autoload to the existing Elisp `cus-edit.el'
+  implementation, making all four selected `em-ls-tests.el' cases pass without
+  moving the Elisp/Rust boundary.  The apparent directory-ring order failure
+  was disproved: only list-valued expansion failed, specifically because
+  `pp-to-string' was absent.  Focused Rust tests cover each contract plus the
+  end-to-end `cd' metadata behavior and all 11 directory-module tests in one
+  interpreter.  Grouped replays pass for `em-dirs' (11), `em-cmpl' (27),
+  `dired-tests' (16), and `em-ls' (4).  The full gate passes 1196 library
+  tests, 11 compatibility-harness tests, the perf-harness test, and all three
+  integration ERT runners; rustfmt, clippy with `-D warnings', and
+  `git diff --check' are clean.  NEXT is selector 3082, `em-extpipe-test-1' in
+  `test/lisp/eshell/em-extpipe-tests.el'.
 - Verified through selector 3070/7080: all 27 selected
   `test/lisp/eshell/em-cmpl-tests.el' cases match GNU in the grouped replay.
   The fixes are thematic: correct local/default hook composition; nested

@@ -1069,14 +1069,18 @@ pub(crate) fn directory_files(
         entries.truncate(count);
     }
     Ok(Value::list(entries.into_iter().map(|entry| {
-        Value::String(if full {
+        let text = if full {
             Path::new(directory)
                 .join(&entry)
                 .to_string_lossy()
                 .into_owned()
         } else {
             entry
-        })
+        };
+        let multibyte = text
+            .chars()
+            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
+        make_shared_string_value_with_multibyte(text, Vec::new(), multibyte)
     })))
 }
 

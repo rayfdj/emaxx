@@ -3173,30 +3173,28 @@ fn completion_at_point_displays_ambiguous_candidates_after_no_progress() {
     );
 }
 
-fn eshell_completion_test_interpreter() -> Interpreter {
-    let mut interp = Interpreter::new();
-    interp.set_load_path(
-        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+fn eshell_test_interpreter(test_file: &str) -> Interpreter {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
-    );
-    load_faces_compat(&mut interp);
+        ..Default::default()
+    };
+    let mut interp = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize Eshell batch interpreter");
     crate::lisp::load_file_strict(
         &mut interp,
-        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+        &upstream_emacs_repo()
+            .join("test/lisp/eshell")
+            .join(test_file),
     )
-    .expect("load simple compat");
-    crate::lisp::load_file_strict(
-        &mut interp,
-        &upstream_emacs_repo().join("test/lisp/eshell/em-cmpl-tests.el"),
-    )
-    .expect("load Eshell completion tests");
+    .expect("load Eshell tests");
     interp
 }
 
 #[test]
 fn eshell_glob_completion_inserts_its_single_match() {
     run_with_large_stack(|| {
-        let mut interp = eshell_completion_test_interpreter();
+        let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
             eval_str_with(
@@ -3215,7 +3213,7 @@ fn eshell_glob_completion_inserts_its_single_match() {
 #[test]
 fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
     run_with_large_stack(|| {
-        let mut interp = eshell_completion_test_interpreter();
+        let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
             eval_str_with(
@@ -3239,7 +3237,7 @@ fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
 #[test]
 fn eshell_completes_lisp_function_names_in_forms_and_subcommands() {
     run_with_large_stack(|| {
-        let mut interp = eshell_completion_test_interpreter();
+        let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
             eval_str_with(
@@ -3261,7 +3259,7 @@ fn eshell_completes_lisp_function_names_in_forms_and_subcommands() {
 #[test]
 fn eshell_completes_function_quoted_and_backquoted_lisp_symbols() {
     run_with_large_stack(|| {
-        let mut interp = eshell_completion_test_interpreter();
+        let mut interp = eshell_test_interpreter("em-cmpl-tests.el");
 
         assert_eq!(
             eval_str_with(
@@ -3277,5 +3275,48 @@ fn eshell_completes_function_quoted_and_backquoted_lisp_symbols() {
                 Value::String("echo `system-name ".into()),
             ])
         );
+    });
+}
+
+#[test]
+fn eshell_cd_can_list_files_without_replacing_last_command_metadata() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-dirs-tests.el");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(let ((eshell-list-files-after-cd t))
+                     (ert-with-temp-directory tmpdir
+                       (write-region "text" nil
+                                     (expand-file-name "file.txt" tmpdir))
+                       (with-temp-eshell
+                         (eshell-insert-command (format "cd '%s'" tmpdir))
+                         (eshell-wait-for-subprocess)
+                         (list (eshell-last-output)
+                               (equal default-directory tmpdir)
+                               eshell-last-command-name
+                               (equal eshell-last-arguments
+                                      (list tmpdir))))))"#,
+            ),
+            Value::list([
+                Value::String("file.txt\n".into()),
+                Value::T,
+                Value::String("#<function eshell/cd>".into()),
+                Value::T,
+            ])
+        );
+    });
+}
+
+#[test]
+fn eshell_directory_module_cases_pass_in_native_runner() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-dirs-tests.el");
+        let summary = interp.run_ert_tests_with_selector(None);
+
+        assert_eq!(summary.total, 11, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 11, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
     });
 }
