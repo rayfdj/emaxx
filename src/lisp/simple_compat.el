@@ -8023,6 +8023,153 @@ case sensitive instead."
     (let ((completion-ignore-case (not dont-fold)))
       (complete-with-action action table string pred))))
 
+;; GNU preloads minibuffer.el, so libraries may use these completion-table
+;; combinators without requiring it.  Keep the small, generic combinator
+;; family together here instead of growing per-caller fallbacks.
+(defun completion-table-with-cache (fun &optional ignore-case)
+  "Create a dynamic completion table from function FUN, with a prefix cache."
+  (let* (last-arg last-result
+         (new-fun
+          (lambda (arg)
+            (if (and last-arg (string-prefix-p last-arg arg ignore-case))
+                last-result
+              (prog1
+                  (setq last-result (funcall fun arg))
+                (setq last-arg arg))))))
+    (completion-table-dynamic new-fun)))
+
+(defmacro lazy-completion-table (var fun)
+  "Initialize VAR with a completion table populated lazily by FUN."
+  (let ((str (make-symbol "string")))
+    `(completion-table-dynamic
+      (lambda (,str)
+        (when (functionp ,var)
+          (setq ,var (funcall #',fun)))
+        ,var)
+      'do-switch-buffer)))
+
+(defun completion-table-with-context (prefix table string pred action)
+  "Complete STRING in TABLE and prepend PREFIX to completion results."
+  (let ((pred
+         (if (not (functionp pred))
+             pred
+           (cond
+            ((obarrayp table)
+             (lambda (sym) (funcall pred (concat prefix (symbol-name sym)))))
+            ((hash-table-p table)
+             (lambda (s _v) (funcall pred (concat prefix s))))
+            ((functionp table)
+             (lambda (s) (funcall pred (concat prefix s))))
+            (t
+             (lambda (s)
+               (funcall pred (concat prefix (if (consp s) (car s) s)))))))))
+    (if (eq (car-safe action) 'boundaries)
+        (let* ((len (length prefix))
+               (bound (completion-boundaries string table pred (cdr action))))
+          `(boundaries ,(+ (car bound) len) . ,(cdr bound)))
+      (let ((comp (complete-with-action action table string pred)))
+        (if (stringp comp) (concat prefix comp) comp)))))
+
+(defun completion-table-with-terminator (terminator table string pred action)
+  "Complete STRING in TABLE, appending TERMINATOR to complete results."
+  (cond
+   ((eq (car-safe action) 'boundaries)
+    (let* ((suffix (cdr action))
+           (bounds (completion-boundaries string table pred suffix))
+           (terminator-regexp (if (consp terminator)
+                                  (cdr terminator)
+                                (regexp-quote terminator)))
+           (max (and terminator-regexp
+                     (string-match terminator-regexp suffix))))
+      `(boundaries ,(car bounds)
+                   . ,(min (cdr bounds) (or max (length suffix))))))
+   ((eq action nil)
+    (let ((comp (try-completion string table pred)))
+      (if (consp terminator) (setq terminator (car terminator)))
+      (if (eq comp t)
+          (if (functionp terminator)
+              (funcall terminator string)
+            (concat string terminator))
+        (if (and (stringp comp) (not (zerop (length comp)))
+                 (let ((newbounds (completion-boundaries comp table pred "")))
+                   (< (car newbounds) (length comp)))
+                 (eq (try-completion comp table pred) t))
+            (if (functionp terminator)
+                (funcall terminator comp)
+              (concat comp terminator))
+          comp))))
+   ((eq action 'lambda) nil)
+   (t (complete-with-action action table string pred))))
+
+(defun completion-table-with-predicate (table pred1 strict string pred2 action)
+  "Complete STRING in TABLE while filtering candidates through PRED1."
+  (cond
+   ((and (not strict) (eq action 'lambda))
+    (test-completion string table pred2))
+   (t
+    (or (complete-with-action action table string
+                              (if (not (and pred1 pred2))
+                                  (or pred1 pred2)
+                                (lambda (x)
+                                  (and (funcall pred1 x)
+                                       (funcall pred2 x)))))
+        (and (not strict) pred1
+             (complete-with-action action table string pred2))))))
+
+(defun completion-table-in-turn (&rest tables)
+  "Create a completion table that tries each table in TABLES in turn."
+  (lambda (string pred action)
+    (seq-some (lambda (table)
+                (complete-with-action action table string pred))
+              tables)))
+
+(defun completion-table-merge (&rest tables)
+  "Create a completion table that collects completions from TABLES."
+  (lambda (string pred action)
+    (cond
+     ((null action)
+      (let ((retvals (mapcar (lambda (table)
+                               (try-completion string table pred))
+                             tables)))
+        (if (member string retvals)
+            string
+          (try-completion string
+                          (mapcar (lambda (value)
+                                    (if (eq value t) string value))
+                                  (delq nil retvals))
+                          pred))))
+     ((eq action t)
+      (apply #'append (mapcar (lambda (table)
+                                (all-completions string table pred))
+                              tables)))
+     (t
+      (seq-some (lambda (table)
+                  (complete-with-action action table string pred))
+                tables)))))
+
+(defun completion-file-name-table (string pred action)
+  "Completion table for file names, backed by Emaxx file primitives."
+  (condition-case nil
+      (cond
+       ((eq action 'metadata) '(metadata (category . file)))
+       ((eq (car-safe action) 'boundaries)
+        (let ((start (length (file-name-directory string)))
+              (end (string-search "/" (cdr action))))
+          `(boundaries ,(min start (length string)) . ,end)))
+       ((eq action 'lambda)
+        (and (not (zerop (length string)))
+             (funcall (or pred #'file-exists-p) string)))
+       (t
+        (let* ((name (file-name-nondirectory string))
+               (directory (file-name-directory string))
+               (real-directory (or directory default-directory))
+               (table (file-name-all-completions name real-directory))
+               (result (complete-with-action action table name pred)))
+          (if (and (null action) (stringp result))
+              (concat directory result)
+            result))))
+    (file-error nil)))
+
 ;; GNU subr.el (verbatim): pcomplete quoting helpers.
 (defun combine-and-quote-strings (strings &optional separator)
   "Concatenate the STRINGS, adding the SEPARATOR (default \" \").

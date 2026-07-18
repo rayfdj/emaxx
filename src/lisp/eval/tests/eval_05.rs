@@ -3036,3 +3036,246 @@ fn simple_compat_exposes_preloaded_iteration_forms_as_macros() {
         ])
     );
 }
+
+#[test]
+fn simple_compat_exposes_preloaded_completion_table_combinators() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(list
+                 (mapcar #'fboundp
+                         '(completion-table-with-cache
+                           completion-table-with-context
+                           completion-table-with-terminator
+                           completion-table-with-predicate
+                           completion-table-in-turn
+                           completion-table-merge))
+                 (macrop 'lazy-completion-table)
+                 (completion-table-with-predicate
+                  '("aa" "ab") (lambda (value) (equal value "aa"))
+                  'strict "a" nil t)
+                 (all-completions
+                  "b" (completion-table-in-turn '("aa") '("bb")))
+                 (all-completions
+                  "a" (completion-table-merge '("aa") '("ab")))
+                 (completion-table-with-terminator
+                  "/" '("dir") "dir" nil nil)
+                 (completion-table-with-context
+                  "pre-" '("one") "o" nil nil))"#
+        ),
+        Value::list([
+            Value::list([Value::T, Value::T, Value::T, Value::T, Value::T, Value::T,]),
+            Value::T,
+            Value::list([Value::String("aa".into())]),
+            Value::list([Value::String("bb".into())]),
+            Value::list([Value::String("aa".into()), Value::String("ab".into())]),
+            Value::String("dir/".into()),
+            Value::String("pre-one".into()),
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_exposes_preloaded_file_name_completion_table() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((directory (make-temp-file "emaxx-file-table-" t)))
+                 (unwind-protect
+                     (let ((default-directory
+                            (file-name-as-directory directory)))
+                       (write-region "" nil "file.txt")
+                       (list
+                        (fboundp 'completion-file-name-table)
+                        (completion-file-name-table "fi" nil nil)
+                        (completion-file-name-table "fi" nil t)
+                        (completion-file-name-table "fi" nil 'metadata)
+                        (completion-file-name-table
+                         "sub/fi" nil '(boundaries . "/tail"))))
+                   (delete-directory directory t)))"#
+        ),
+        Value::list([
+            Value::T,
+            Value::String("file.txt".into()),
+            Value::list([Value::String("file.txt".into())]),
+            Value::list([
+                Value::Symbol("metadata".into()),
+                Value::cons(
+                    Value::Symbol("category".into()),
+                    Value::Symbol("file".into())
+                ),
+            ]),
+            Value::cons(
+                Value::Symbol("boundaries".into()),
+                Value::cons(Value::Integer(4), Value::Integer(0)),
+            ),
+        ])
+    );
+}
+
+#[test]
+fn completion_at_point_uses_partial_completion_wildcards() {
+    let mut interp = Interpreter::new();
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (insert "fi*.el")
+                 (let ((completion-styles '(basic partial-completion emacs22))
+                       (completion-at-point-functions
+                        (list (lambda ()
+                                (list (point-min) (point-max)
+                                      '("file.el" "file.txt"))))))
+                   (completion-at-point)
+                   (buffer-string)))"#,
+        ),
+        Value::String("file.el".into())
+    );
+}
+
+#[test]
+fn completion_at_point_displays_ambiguous_candidates_after_no_progress() {
+    let mut interp = Interpreter::new();
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (insert "fi")
+                 (let ((completion-at-point-functions
+                        (list (lambda ()
+                                (list (point-min) (point-max)
+                                      '("file.el" "file.txt"))))))
+                   (completion-at-point)
+                   (let ((first (buffer-string))
+                         (shown-first (get-buffer-window "*Completions*")))
+                     (completion-at-point)
+                     (list first
+                           shown-first
+                           (not (null (get-buffer-window "*Completions*")))))))"#,
+        ),
+        Value::list([Value::String("file.".into()), Value::Nil, Value::T])
+    );
+}
+
+fn eshell_completion_test_interpreter() -> Interpreter {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    load_faces_compat(&mut interp);
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &upstream_emacs_repo().join("test/lisp/eshell/em-cmpl-tests.el"),
+    )
+    .expect("load Eshell completion tests");
+    interp
+}
+
+#[test]
+fn eshell_glob_completion_inserts_its_single_match() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_completion_test_interpreter();
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(with-temp-eshell
+                     (ert-with-temp-directory default-directory
+                       (write-region nil nil (expand-file-name "file.txt"))
+                       (write-region nil nil (expand-file-name "file.el"))
+                       (eshell-insert-and-complete "echo fi*.el")))"#
+            ),
+            Value::String("echo file.el ".into())
+        );
+    });
+}
+
+#[test]
+fn eshell_ambiguous_completion_displays_candidates_on_second_attempt() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_completion_test_interpreter();
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(with-temp-eshell
+                     (ert-with-temp-directory default-directory
+                       (write-region nil nil (expand-file-name "file.txt"))
+                       (write-region nil nil (expand-file-name "file.el"))
+                       (let ((first (eshell-insert-and-complete "echo fi")))
+                         (completion-at-point)
+                         (list first
+                               (not (null
+                                     (get-buffer-window
+                                      "*Completions*")))))))"#,
+            ),
+            Value::list([Value::String("echo file.".into()), Value::T])
+        );
+    });
+}
+
+#[test]
+fn eshell_completes_lisp_function_names_in_forms_and_subcommands() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_completion_test_interpreter();
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(list
+                     (with-temp-eshell
+                       (eshell-insert-and-complete "echo (eshell/ech"))
+                     (with-temp-eshell
+                       (eshell-insert-and-complete "echo $(eshell/ech")))"#,
+            ),
+            Value::list([
+                Value::String("echo (eshell/echo".into()),
+                Value::String("echo $(eshell/echo".into()),
+            ])
+        );
+    });
+}
+
+#[test]
+fn eshell_completes_function_quoted_and_backquoted_lisp_symbols() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_completion_test_interpreter();
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(list
+                     (with-temp-eshell
+                       (eshell-insert-and-complete "echo #'system-nam"))
+                     (with-temp-eshell
+                       (eshell-insert-and-complete "echo `system-nam")))"#,
+            ),
+            Value::list([
+                Value::String("echo #'system-name ".into()),
+                Value::String("echo `system-name ".into()),
+            ])
+        );
+    });
+}

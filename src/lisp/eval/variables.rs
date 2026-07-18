@@ -677,6 +677,31 @@ impl Interpreter {
         }
     }
 
+    /// Return the active global special binding as seen from the current
+    /// buffer.  Automatically buffer-local variables can have nested global
+    /// specbind layers belonging to other buffers; those layers must be
+    /// peeled back until this buffer's binding or the top-level value is
+    /// reached.
+    pub(super) fn active_global_special_value(&self, name: &str) -> Option<Option<Value>> {
+        let mut value = self.global_value(name);
+        let current_buffer_id = self.current_buffer_id();
+        let mut found = false;
+        for restore in self.active_special_restores.iter().rev().filter(|restore| {
+            restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
+        }) {
+            found = true;
+            if restore
+                .binding_buffer_id
+                .is_some_and(|buffer_id| buffer_id != current_buffer_id)
+            {
+                value = restore.previous.clone();
+            } else {
+                break;
+            }
+        }
+        found.then_some(value)
+    }
+
     pub(super) fn active_global_toplevel_value(&self, name: &str) -> Option<Option<Value>> {
         self.active_special_restores
             .iter()

@@ -3342,6 +3342,12 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         builtin_macro_autoload("files-x")
     );
     assert_eq!(
+        interp
+            .lookup_function("elisp-completion-at-point", &env)
+            .unwrap(),
+        builtin_file_autoload("elisp-mode", Value::Nil)
+    );
+    assert_eq!(
         interp.lookup_function("key-valid-p", &env).unwrap(),
         builtin_file_autoload("keymap", Value::Nil)
     );
@@ -3352,6 +3358,42 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
     assert_eq!(
         interp.lookup_function("pp", &env).unwrap(),
         builtin_file_autoload("pp", Value::Nil)
+    );
+}
+
+#[test]
+fn builtin_autoloads_cover_pcomplete_command_families() {
+    let mut interp = Interpreter::new();
+    let env = Vec::new();
+    for (function, file) in [
+        ("pcomplete/cvs", "pcmpl-cvs"),
+        ("pcomplete/git", "pcmpl-git"),
+        ("pcomplete/tar", "pcmpl-gnu"),
+        ("pcomplete/systemctl", "pcmpl-linux"),
+        ("pcomplete/rpm", "pcmpl-rpm"),
+        ("pcomplete/echo", "pcmpl-unix"),
+        ("pcomplete/rg", "pcmpl-x"),
+    ] {
+        assert_eq!(
+            interp.lookup_function(function, &env).unwrap(),
+            builtin_file_autoload(file, Value::Nil),
+            "autoload for {function}"
+        );
+    }
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (intern-soft \"pcomplete/echo\")\
+                   (intern-soft \"pcomplete/echo\" obarray)\
+                   (let ((private (obarray-make)))\
+                     (intern-soft \"pcomplete/echo\" private)))",
+        ),
+        Value::list([
+            Value::Symbol("pcomplete/echo".into()),
+            Value::Symbol("pcomplete/echo".into()),
+            Value::Nil,
+        ])
     );
 }
 

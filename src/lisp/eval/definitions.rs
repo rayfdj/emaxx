@@ -4993,12 +4993,26 @@ impl Interpreter {
         let params = self.parse_params(&items[1])?;
         let (_, body) = self.normalize_function_body_documentation(&items[2..], env)?;
         let keep_full_context = body_closure_dont_trim_context(&body);
-        let closure_env = if self.lambda_capture_override().unwrap_or(true) {
-            if !keep_full_context && self.lambda_trim_override() {
-                self.capture_closure_env(trim_lambda_closure_env(env, &body))
+        let capture_override = self.lambda_capture_override();
+        let closure_env = if capture_override.unwrap_or(true) {
+            let mut captured = if !keep_full_context && self.lambda_trim_override() {
+                trim_lambda_closure_env(env, &body)
             } else {
-                self.capture_closure_env(env.clone())
+                env.clone()
+            };
+            // An empty LEXICAL capture is still a scope boundary.  Preserve
+            // one identity-only frame so it cannot fall through to caller
+            // locals.  Dynamic source deliberately keeps the historical
+            // empty environment, which is how dynamic lambdas see their
+            // caller's bindings.
+            let lexical_source = capture_override == Some(true)
+                || self
+                    .lookup_var("lexical-binding", env)
+                    .is_some_and(|value| value.is_truthy());
+            if captured.is_empty() && lexical_source {
+                captured.push(vec![Self::fresh_frame_identity()]);
             }
+            self.capture_closure_env(captured)
         } else {
             shared_env(Vec::new())
         };
@@ -5035,7 +5049,20 @@ fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
             let last_used = frame
                 .iter()
                 .rposition(|(name, _)| referenced.contains(name.as_str()))?;
-            Some(frame[..=last_used].to_vec())
+            let mut trimmed = frame[..=last_used].to_vec();
+            // The stamp is part of the lexical cell's identity, not a
+            // user-visible binding.  Keep it even when all referenced values
+            // precede it, otherwise two unrelated trimmed frames with the
+            // same names can be merged when nested closures call each other.
+            if let Some(identity) = frame
+                .iter()
+                .rev()
+                .find(|(name, _)| name == super::loops::FRAME_IDENTITY_MARKER)
+                .filter(|identity| !trimmed.contains(identity))
+            {
+                trimmed.push(identity.clone());
+            }
+            Some(trimmed)
         })
         .collect()
 }

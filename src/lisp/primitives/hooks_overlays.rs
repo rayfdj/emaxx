@@ -40,50 +40,51 @@ pub(crate) fn hook_values(
     env: &crate::lisp::types::Env,
     buffer_id: Option<u64>,
 ) -> Vec<Value> {
-    let local = buffer_id.and_then(|id| interp.buffer_local_hook(id, hook_name));
-    let mut base = interp.lookup_var(hook_name, env);
-    // Local hooks are mirrored into a buffer-local value "(fns... t)" so
-    // Lisp reads see them; when the plain lookup returns exactly that
-    // mirror, the effective global part is the DEFAULT value (the store
-    // below already carries the local functions).
-    if let (Some(local_hooks), Some(base_value)) = (&local, &base)
-        && crate::lisp::primitives::values_equal(
-            interp,
-            base_value,
-            &Value::list(local_hooks.clone()),
-        )
-    {
-        base = interp.default_value(hook_name);
-    }
-    let mut global = base
-        .map(|value| {
-            if value.is_nil() {
-                Vec::new()
-            } else {
-                value.to_vec().unwrap_or_else(|_| vec![value])
-            }
-        })
-        .unwrap_or_default();
-    // GNU's `t' inside a hook value means "run the default here"; the
-    // store-merge below covers the local functions, so drop the sentinel.
-    global.retain(|hook| !matches!(hook, Value::T));
-    match local {
-        // GNU walks the depth-sorted local value and splices the global
-        // handlers exactly where its `t' sentinel occurs.  Negative local
-        // depths therefore run before the global hook and positive depths
-        // after it.
-        Some(local) => {
+    let value_hooks = |value: Option<Value>| {
+        value
+            .map(|value| {
+                if value.is_nil() {
+                    Vec::new()
+                } else {
+                    value.to_vec().unwrap_or_else(|_| vec![value])
+                }
+            })
+            .unwrap_or_default()
+    };
+    let current = interp.lookup_var(hook_name, env);
+    match buffer_id.and_then(|id| interp.buffer_local_hook(id, hook_name)) {
+        Some(stored_local) => {
+            let mirror = Value::list(stored_local.clone());
+            // A dynamic `let' can filter or replace the visible local hook
+            // value.  In that case its list, rather than the backing metadata,
+            // is authoritative; a `t' sentinel still splices the default.
+            let local = match current {
+                Some(value) if !crate::lisp::primitives::values_equal(interp, &value, &mirror) => {
+                    value_hooks(Some(value))
+                }
+                _ => stored_local,
+            };
+            let mut default = value_hooks(interp.default_value(hook_name));
+            default.retain(|hook| !matches!(hook, Value::T));
+
+            // GNU walks the depth-sorted local value and splices the default
+            // handlers exactly where `t' occurs.  Negative local depths run
+            // before the default hook and positive depths after it.
             let mut result = Vec::new();
             for hook in local {
                 if matches!(hook, Value::T) {
-                    result.extend(global.iter().cloned());
+                    result.extend(default.iter().cloned());
                 } else {
                     result.push(hook);
                 }
             }
             result
         }
-        None => global,
+        None => {
+            let mut hooks = value_hooks(current);
+            hooks.retain(|hook| !matches!(hook, Value::T));
+            hooks
+        }
     }
 }
 
