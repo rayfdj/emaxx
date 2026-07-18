@@ -546,6 +546,8 @@ struct ProcessState {
     status: ProcessStatus,
     filter: Option<Value>,
     sentinel: Option<Value>,
+    /// Whether the terminal subprocess status has already invoked SENTINEL.
+    sentinel_notified: bool,
     /// Network process :log function (server connection events).
     log: Option<Value>,
     /// The process name (process-name / get-process).
@@ -555,6 +557,10 @@ struct ProcessState {
     encoding: Value,
     program: Option<String>,
     argv: Vec<String>,
+    /// Optional pipe process receiving this child's standard error.
+    stderr_process_id: Option<u64>,
+    /// Child exit code; nil for a signal/forced deletion or live processes.
+    exit_code: Option<i32>,
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
     /// Network :host/:service as given at creation (process-contact).
@@ -925,8 +931,27 @@ impl Interpreter {
                 ("inhibit-read-only".into(), Value::Nil),
                 ("kill-emacs-hook".into(), Value::Nil),
                 ("null-device".into(), Value::String("/dev/null".into())),
+                (
+                    "default-process-coding-system".into(),
+                    Value::cons(Value::symbol("utf-8-unix"), Value::symbol("utf-8-unix")),
+                ),
+                ("delete-exited-processes".into(), Value::T),
+                ("fast-read-process-output".into(), Value::T),
+                ("internal--daemon-sockname".into(), Value::Nil),
+                (
+                    "interrupt-process-functions".into(),
+                    Value::list([Value::symbol("internal-default-interrupt-process")]),
+                ),
+                ("process-adaptive-read-buffering".into(), Value::T),
                 ("process-connection-type".into(), Value::T),
+                ("process-error-pause-time".into(), Value::Integer(1)),
+                ("process-prioritize-lower-fds".into(), Value::Nil),
+                ("read-process-output-max".into(), Value::Integer(65_536)),
                 ("selection-converter-alist".into(), Value::Nil),
+                (
+                    "signal-process-functions".into(),
+                    Value::list([Value::symbol("internal-default-signal-process")]),
+                ),
                 ("system-uses-terminfo".into(), Value::T),
                 ("warning-fill-column".into(), Value::Integer(78)),
                 ("warning-fill-prefix".into(), Value::Nil),
@@ -1030,9 +1055,19 @@ impl Interpreter {
                 "load-read-function".into(),
                 "null-device".into(),
                 "overwrite-mode".into(),
+                "default-process-coding-system".into(),
+                "delete-exited-processes".into(),
+                "fast-read-process-output".into(),
+                "internal--daemon-sockname".into(),
+                "interrupt-process-functions".into(),
+                "process-adaptive-read-buffering".into(),
                 "process-connection-type".into(),
+                "process-error-pause-time".into(),
                 "process-environment".into(),
+                "process-prioritize-lower-fds".into(),
+                "read-process-output-max".into(),
                 "selection-converter-alist".into(),
+                "signal-process-functions".into(),
                 "warning-fill-prefix".into(),
                 "warning-prefix-function".into(),
                 "warning-series".into(),

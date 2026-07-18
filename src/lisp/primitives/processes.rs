@@ -141,14 +141,16 @@ pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispE
     Err(LispError::TypeError("cons".into(), value.type_name()))
 }
 
-type MakeProcessArgs = (
-    Option<u64>,
-    Option<String>,
-    Vec<String>,
-    Option<Value>,
-    Option<(Value, Value)>,
-    Option<String>,
-);
+pub(crate) struct MakeProcessArgs {
+    pub(crate) buffer_id: Option<u64>,
+    pub(crate) program: Option<String>,
+    pub(crate) argv: Vec<String>,
+    pub(crate) filter: Option<Value>,
+    pub(crate) sentinel: Option<Value>,
+    pub(crate) coding: Option<(Value, Value)>,
+    pub(crate) name: Option<String>,
+    pub(crate) stderr_process_id: Option<u64>,
+}
 
 pub(crate) fn parse_make_process_args(
     interp: &mut Interpreter,
@@ -164,8 +166,10 @@ pub(crate) fn parse_make_process_args(
     let mut program = None;
     let mut argv = Vec::new();
     let mut filter = None;
+    let mut sentinel = None;
     let mut coding = None;
     let mut name = None;
+    let mut stderr_process_id = None;
 
     for pair in args.chunks_exact(2) {
         let key = pair[0].as_symbol()?;
@@ -179,12 +183,25 @@ pub(crate) fn parse_make_process_args(
                 argv = parsed_argv;
             }
             ":filter" => filter = (!value.is_nil()).then(|| value.clone()),
+            ":sentinel" => sentinel = (!value.is_nil()).then(|| value.clone()),
             ":coding" => coding = Some(process_coding_pair(value)?),
+            ":stderr" if !value.is_nil() => {
+                stderr_process_id = Some(interp.resolve_process_id(value)?);
+            }
             _ => {}
         }
     }
 
-    Ok((buffer_id, program, argv, filter, coding, name))
+    Ok(MakeProcessArgs {
+        buffer_id,
+        program,
+        argv,
+        filter,
+        sentinel,
+        coding,
+        name,
+        stderr_process_id,
+    })
 }
 
 pub(crate) fn deliver_process_output(
@@ -355,6 +372,31 @@ pub(crate) fn append_process_bytes_to_buffer(
         interp.switch_to_buffer_id(original_id)?;
     }
     Ok(())
+}
+
+/// Deliver the two child streams to their GNU process objects.  A `:stderr'
+/// pipe has its own filter/buffer; folding stderr into the primary process
+/// loses that observable routing during synchronous send/EOF drains.
+pub(crate) fn deliver_process_streams(
+    interp: &mut Interpreter,
+    process_id: u64,
+    stdout: &[u8],
+    stderr: &[u8],
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let mut delivered = false;
+    if !stdout.is_empty() {
+        let output = String::from_utf8_lossy(stdout).into_owned();
+        deliver_process_output(interp, process_id, &output, env)?;
+        delivered = true;
+    }
+    if !stderr.is_empty() {
+        let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
+        let output = String::from_utf8_lossy(stderr).into_owned();
+        deliver_process_output(interp, stderr_process_id, &output, env)?;
+        delivered = true;
+    }
+    Ok(delivered)
 }
 
 pub(crate) fn write_process_bytes_to_file(
@@ -568,18 +610,16 @@ pub(crate) fn pump_external_process_output(
     env: &mut Env,
 ) -> Result<bool, LispError> {
     let ids = interp.live_external_process_ids();
-    let mut delivered = false;
+    let mut progressed = false;
     for process_id in ids {
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
-        if stdout.is_empty() && stderr.is_empty() {
-            continue;
-        }
-        let mut output = String::from_utf8_lossy(&stdout).into_owned();
-        output.push_str(&String::from_utf8_lossy(&stderr));
-        deliver_process_output(interp, process_id, &output, env)?;
-        delivered = true;
+        progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
-    Ok(delivered)
+    for (process_id, event) in interp.take_pending_subprocess_exit_events() {
+        run_process_sentinel(interp, process_id, &event, env)?;
+        progressed = true;
+    }
+    Ok(progressed)
 }
 
 // ── Network processes (GNU process.c make-network-process) ──

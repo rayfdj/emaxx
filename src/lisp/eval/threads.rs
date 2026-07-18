@@ -171,6 +171,10 @@ impl Interpreter {
         let initial_position =
             buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
+        let (decoding, encoding) = self
+            .lookup_var("default-process-coding-system", &Env::new())
+            .and_then(|value| value.cons_values())
+            .unwrap_or((Value::Nil, Value::Nil));
         self.process_states.push(ProcessState {
             record_id,
             buffer_id,
@@ -178,13 +182,16 @@ impl Interpreter {
             status: ProcessStatus::Run,
             filter: None,
             sentinel: None,
+            sentinel_notified: false,
             log: None,
             name,
             _query_on_exit_flag: false,
-            decoding: Value::Nil,
-            encoding: Value::Nil,
+            decoding,
+            encoding,
             program,
             argv,
+            stderr_process_id: None,
+            exit_code: None,
             runtime: runtime.map(|child| RunningProcess { child }),
             network: None,
             contact_host: None,
@@ -239,6 +246,7 @@ impl Interpreter {
             status,
             filter,
             sentinel,
+            sentinel_notified: false,
             log,
             name: name.to_string(),
             _query_on_exit_flag: false,
@@ -246,6 +254,8 @@ impl Interpreter {
             encoding: Value::Nil,
             program: None,
             argv: Vec::new(),
+            stderr_process_id: None,
+            exit_code: None,
             runtime: None,
             network: Some(network),
             contact_host,
@@ -270,6 +280,22 @@ impl Interpreter {
     pub fn process_name(&self, record_id: u64) -> Option<String> {
         self.find_process_state(record_id)
             .map(|process| process.name.clone())
+    }
+
+    /// GNU `process-command': child processes expose the program followed by
+    /// its argument vector; pipe and network process records have no command.
+    pub fn process_command_value(&self, record_id: u64) -> Option<Value> {
+        self.find_process_state(record_id).map(|process| {
+            let Some(program) = process.program.as_ref() else {
+                return Value::Nil;
+            };
+            Value::list(
+                std::iter::once(program)
+                    .chain(process.argv.iter())
+                    .cloned()
+                    .map(Value::String),
+            )
+        })
     }
 
     pub fn find_process_id_by_name(&self, name: &str) -> Option<u64> {
@@ -306,6 +332,66 @@ impl Interpreter {
         };
         process.sentinel = sentinel;
         true
+    }
+
+    pub fn set_process_stderr(&mut self, record_id: u64, stderr_process_id: Option<u64>) -> bool {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return false;
+        };
+        process.stderr_process_id = stderr_process_id;
+        true
+    }
+
+    pub fn process_stderr(&self, record_id: u64) -> Option<u64> {
+        self.find_process_state(record_id)
+            .and_then(|process| process.stderr_process_id)
+    }
+
+    /// Return child/pipe exit events that still need their one terminal
+    /// sentinel call.  A child's linked stderr pipe closes first, matching
+    /// GNU's pipe EOF ordering and allowing Eshell's primary sentinel to
+    /// finish after its shared stderr-live flag is cleared.
+    pub fn take_pending_subprocess_exit_events(&mut self) -> Vec<(u64, String)> {
+        let completed_children = self
+            .process_states
+            .iter()
+            .filter(|process| {
+                process.network.is_none()
+                    && process.status == ProcessStatus::Exit
+                    && process.stderr_process_id.is_some()
+            })
+            .filter_map(|process| {
+                process
+                    .stderr_process_id
+                    .map(|stderr_id| (stderr_id, process.exit_code))
+            })
+            .collect::<Vec<_>>();
+        for (stderr_id, exit_code) in completed_children {
+            if let Some(stderr) = self.find_process_state_mut(stderr_id)
+                && stderr.status.is_live()
+            {
+                stderr.status = ProcessStatus::Exit;
+                stderr.exit_code = exit_code;
+            }
+        }
+
+        let mut events = Vec::new();
+        for process in &mut self.process_states {
+            if process.network.is_some()
+                || process.status != ProcessStatus::Exit
+                || process.sentinel_notified
+            {
+                continue;
+            }
+            process.sentinel_notified = true;
+            let event = match process.exit_code {
+                Some(0) => "finished\n".to_string(),
+                Some(code) => format!("exited abnormally with code {code}\n"),
+                None => "killed\n".to_string(),
+            };
+            events.push((process.record_id, event));
+        }
+        events
     }
 
     pub fn process_contact_info(&self, record_id: u64) -> Option<ProcessContactInfo> {
@@ -434,11 +520,10 @@ impl Interpreter {
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok(());
         };
-        if runtime
+        if let Some(status) = runtime
             .child
             .try_wait()
             .map_err(|error| LispError::Signal(error.to_string()))?
-            .is_some()
         {
             // Drain whatever the child wrote before exiting so the next
             // pump still delivers it to the filter (gpg's final status
@@ -456,6 +541,7 @@ impl Interpreter {
                 }
             }
             process.status = ProcessStatus::Exit;
+            process.exit_code = status.code();
             process.runtime = None;
         }
         Ok(())
@@ -503,6 +589,12 @@ impl Interpreter {
             .map(|process| Value::Symbol(process.status.symbol().into()))
     }
 
+    pub fn process_exit_status_value(&mut self, record_id: u64) -> Option<Value> {
+        let _ = self.refresh_process_id(record_id);
+        self.find_process_state(record_id)
+            .map(|process| Value::Integer(process.exit_code.unwrap_or(0) as i64))
+    }
+
     pub(crate) fn mark_network_process_connecting(&mut self, record_id: u64) -> bool {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
@@ -522,8 +614,11 @@ impl Interpreter {
         opened
     }
 
-    pub fn process_is_live(&mut self, record_id: u64) -> bool {
-        let _ = self.refresh_process_id(record_id);
+    pub fn process_is_live(&self, record_id: u64) -> bool {
+        // GNU `process-live-p' observes the status last delivered by the
+        // process event loop; it does not reap a fast child itself.  Eager
+        // refresh here can make Eshell skip deferral before the sentinel has
+        // closed handles and resumed the command.
         self.find_process_state(record_id)
             .is_some_and(|process| process.status.is_live())
     }
@@ -581,12 +676,6 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn process_command(&self, record_id: u64) -> Option<(String, Vec<String>)> {
-        let process = self.find_process_state(record_id)?;
-        let program = process.program.clone()?;
-        Some((program, process.argv.clone()))
-    }
-
     pub fn delete_process(&mut self, record_id: u64) -> Result<(), LispError> {
         let process = self
             .find_process_state_mut(record_id)
@@ -612,6 +701,7 @@ impl Interpreter {
             return Ok(());
         }
         process.status = ProcessStatus::Exit;
+        process.exit_code = None;
         process.runtime = None;
         Ok(())
     }
@@ -658,13 +748,13 @@ impl Interpreter {
             if let Some(pipe) = runtime.child.stderr.as_mut() {
                 made_progress |= read_nonblocking_pipe(pipe, &mut stderr)?;
             }
-            if runtime
+            if let Some(status) = runtime
                 .child
                 .try_wait()
                 .map_err(|error| LispError::Signal(error.to_string()))?
-                .is_some()
             {
                 process.status = ProcessStatus::Exit;
+                process.exit_code = status.code();
                 process.runtime = None;
                 break;
             }
@@ -700,11 +790,10 @@ impl Interpreter {
             if let Some(pipe) = runtime.child.stderr.as_mut() {
                 read_nonblocking_pipe(pipe, &mut stderr)?;
             }
-            if runtime
+            if let Some(status) = runtime
                 .child
                 .try_wait()
                 .map_err(|error| LispError::Signal(error.to_string()))?
-                .is_some()
             {
                 if let Some(pipe) = runtime.child.stdout.as_mut() {
                     read_nonblocking_pipe(pipe, &mut stdout)?;
@@ -713,6 +802,7 @@ impl Interpreter {
                     read_nonblocking_pipe(pipe, &mut stderr)?;
                 }
                 process.status = ProcessStatus::Exit;
+                process.exit_code = status.code();
                 process.runtime = None;
                 break;
             }
@@ -757,11 +847,10 @@ impl Interpreter {
         if let Some(pipe) = runtime.child.stderr.as_mut() {
             read_nonblocking_pipe(pipe, &mut stderr)?;
         }
-        if runtime
+        if let Some(status) = runtime
             .child
             .try_wait()
             .map_err(|error| LispError::Signal(error.to_string()))?
-            .is_some()
         {
             // The child can exit between the non-blocking reads above and
             // `try_wait'.  Drain once more after observing exit: all pipe
@@ -775,6 +864,7 @@ impl Interpreter {
                 read_nonblocking_pipe(pipe, &mut stderr)?;
             }
             process.status = ProcessStatus::Exit;
+            process.exit_code = status.code();
             process.runtime = None;
         }
         Ok((stdout, stderr))

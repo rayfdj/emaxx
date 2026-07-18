@@ -18,6 +18,34 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 3098/7080.  All 17 selected tests in
+  `test/lisp/eshell/em-extpipe-tests.el' pass the grouped GNU oracle replay.
+  Selector 3082 first exposed missing dumped `process.c' state and accessors,
+  but the decisive failure was deeper: Emaxx's `unwind-protect' discarded
+  errors and nonlocal exits from cleanup forms.  Eshell intentionally rethrows
+  `eshell-defer' from a cleanup; losing that throw cleared the foreground
+  command while its fast child was still running.  Cleanup exits now supersede
+  the protected result and stop later cleanup forms, matching GNU.  Process
+  completion is event-loop-driven: `process-live-p' no longer reaps a fast
+  child ahead of output delivery; the pump drains stdout/stderr, closes a
+  linked stderr pipe before the primary process, and invokes each terminal
+  sentinel once.  `make-process' now retains `:sentinel' and `:stderr';
+  `process-command', `process-exit-status', pipe-backed `process-tty-name',
+  GNU's dumped process variables, and the default `utf-8-unix' coding pair are
+  present.  Selector 3091 (`em-extpipe-test-2' in manifest order) then exposed
+  a shared regexp bug: forward search honored `\\=' only when it began the
+  pattern, although GNU asserts the original search point wherever `\\='
+  occurs.  Nested point assertions now use the search point as the delegate
+  haystack origin, so Eshell correctly separates an ordinary `|' before a
+  later `*>'.  No Eshell policy moved into Rust: GNU's Eshell remains Elisp;
+  Rust implements the existing `process.c', search, and evaluator boundaries.
+  Fast Rust regressions cover cleanup precedence, nested `\\=' match data,
+  dumped process state/accessors, event-driven exit and exact stderr/primary
+  sentinel order, both external-pipeline shapes, and immediate redirected file
+  contents.  Full gate: 1206 library tests, 11 compatibility-harness tests, one
+  perf-harness test, and three integration ERT runners pass.  NEXT = selector
+  3099, `em-glob-test/convert/absolute-start-directory' in
+  `test/lisp/eshell/em-glob-tests.el'.
 - Verified through selector 3081/7080.  All 11 selected tests in
   `test/lisp/eshell/em-dirs-tests.el' pass both the grouped oracle replay and
   the fast native ERT runner.  Selector 3072 exposed a shared representation

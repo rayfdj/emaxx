@@ -19,6 +19,25 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 3098/7080: all 17 selected
+  `test/lisp/eshell/em-extpipe-tests.el' cases match GNU together.  The
+  thematic repairs are below Eshell: `unwind-protect' now propagates a cleanup
+  form's newer error/nonlocal exit instead of silently discarding it; forward
+  regexp search treats nested `\\=' as an assertion at the original search
+  point; and subprocess state changes are owned by the event pump so a fast
+  child cannot appear dead before its output and sentinels are delivered.
+  Linked stderr is drained/notified before the primary sentinel and terminal
+  sentinels fire once.  The native `process.c' surface also supplies GNU's
+  dumped defaults, default `utf-8-unix' coding pair, `:sentinel' and `:stderr'
+  make-process options, and `process-command', `process-exit-status', and
+  pipe-backed `process-tty-name'.  GNU Eshell policy remains in the upstream
+  Elisp; the Rust changes stay at the evaluator, regexp, and process host
+  boundaries.  Focused Rust tests cover every contract, including both
+  end-to-end external pipeline forms and immediate redirected output.  The
+  full gate passes 1206 library tests, 11 compatibility-harness tests, the
+  perf-harness test, and all three integration ERT runners.  NEXT is selector
+  3099, `em-glob-test/convert/absolute-start-directory' in
+  `test/lisp/eshell/em-glob-tests.el'.
 - Verified through selector 3081/7080: all 11 selected
   `test/lisp/eshell/em-dirs-tests.el' cases match GNU in the grouped replay
   and pass together in the fast native runner.  The thematic repair is at the

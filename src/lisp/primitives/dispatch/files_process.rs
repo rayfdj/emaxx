@@ -138,6 +138,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "process-buffer"
             | "process-mark"
             | "process-status"
+            | "process-exit-status"
             | "process-plist"
             | "set-process-plist"
             | "process-get"
@@ -151,6 +152,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "set-process-buffer"
             | "process-sentinel"
             | "process-name"
+            | "process-command"
+            | "process-tty-name"
             | "get-process"
             | "process-contact"
             | "make-network-process"
@@ -2136,17 +2139,29 @@ pub(super) fn call(
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
         "make-process" | "make-pipe-process" => {
-            let (buffer_id, program, argv, filter, coding, name) =
-                parse_make_process_args(interp, args)?;
-            let runtime = if let Some(command) = program.as_ref() {
-                Some(spawn_persistent_process(interp, command, &argv, env)?)
+            let parsed = parse_make_process_args(interp, args)?;
+            let runtime = if let Some(command) = parsed.program.as_ref() {
+                Some(spawn_persistent_process(
+                    interp,
+                    command,
+                    &parsed.argv,
+                    env,
+                )?)
             } else {
                 None
             };
-            let process = interp.create_process(buffer_id, program, argv, runtime, name)?;
+            let process = interp.create_process(
+                parsed.buffer_id,
+                parsed.program,
+                parsed.argv,
+                runtime,
+                parsed.name,
+            )?;
             let process_id = interp.resolve_process_id(&process)?;
-            interp.set_process_filter(process_id, filter)?;
-            if let Some((decoding, encoding)) = coding {
+            interp.set_process_filter(process_id, parsed.filter)?;
+            interp.set_process_sentinel(process_id, parsed.sentinel);
+            interp.set_process_stderr(process_id, parsed.stderr_process_id);
+            if let Some((decoding, encoding)) = parsed.coding {
                 interp.set_process_coding_system(process_id, decoding, encoding)?;
             }
             Ok(process)
@@ -2201,6 +2216,13 @@ pub(super) fn call(
             let process_id = interp.resolve_process_id(&args[0])?;
             interp
                 .process_status_value(process_id)
+                .ok_or_else(|| LispError::Signal("Invalid process state".into()))
+        }
+        "process-exit-status" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            interp
+                .process_exit_status_value(process_id)
                 .ok_or_else(|| LispError::Signal("Invalid process state".into()))
         }
         "process-plist" => {
@@ -2273,16 +2295,8 @@ pub(super) fn call(
         "set-process-sentinel" => {
             need_args(name, args, 2)?;
             let process_id = interp.resolve_process_id(&args[0])?;
-            // Only network processes have their sentinels dispatched by the
-            // event pump (on peer close / delete-process); erc relies on this
-            // to run `erc-process-sentinel' and display "ERC finished" when a
-            // connection drops.  Subprocess sentinels are NOT yet dispatched
-            // here, so keep them inert (matching the historical no-op) to
-            // avoid firing tramp/gpg sentinels the runtime can't service.
-            if interp.is_network_process(process_id) {
-                let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
-                interp.set_process_sentinel(process_id, sentinel);
-            }
+            let sentinel = (!args[1].is_nil()).then(|| args[1].clone());
+            interp.set_process_sentinel(process_id, sentinel);
             Ok(args[1].clone())
         }
         "set-process-buffer" => {
@@ -2308,6 +2322,20 @@ pub(super) fn call(
                 .process_name(process_id)
                 .map(Value::String)
                 .unwrap_or(Value::Nil))
+        }
+        "process-command" => {
+            need_args(name, args, 1)?;
+            let process_id = interp.resolve_process_id(&args[0])?;
+            Ok(interp
+                .process_command_value(process_id)
+                .unwrap_or(Value::Nil))
+        }
+        "process-tty-name" => {
+            need_arg_range(name, args, 1, 2)?;
+            interp.resolve_process_id(&args[0])?;
+            // Emaxx currently implements child processes with pipes, not
+            // pseudo-terminals, so neither stdin nor stdout has a tty name.
+            Ok(Value::Nil)
         }
         "get-process" => {
             need_args(name, args, 1)?;
@@ -2509,9 +2537,7 @@ pub(super) fn call(
             };
             let process_id = interp.resolve_process_id(&process)?;
             let (stdout, stderr) = interp.process_send_eof(process_id)?;
-            let mut output = String::from_utf8_lossy(&stdout).into_owned();
-            output.push_str(&String::from_utf8_lossy(&stderr));
-            deliver_process_output(interp, process_id, &output, env)?;
+            deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
             Ok(process)
         }
         "process-send-string" => {
@@ -2522,9 +2548,7 @@ pub(super) fn call(
             // byte value; epg pipes binary signatures to gpg this way.
             let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
             let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
-            let mut output = String::from_utf8_lossy(&stdout).into_owned();
-            output.push_str(&String::from_utf8_lossy(&stderr));
-            deliver_process_output(interp, process_id, &output, env)?;
+            deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
             Ok(Value::Nil)
         }
         "process-lines" => {
