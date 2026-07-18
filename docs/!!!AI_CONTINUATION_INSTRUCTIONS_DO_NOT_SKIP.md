@@ -18,6 +18,27 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 3125/7080.  All 27 selected tests in
+  `test/lisp/eshell/em-glob-tests.el' pass the grouped GNU oracle replay.
+  Selector 3125's remote `~/file.txt' case exposed a shared mock-Tramp
+  boundary, not an Eshell glob defect.  GNU initially reports `~/file.txt' as
+  the localname, then resolves it to the remote home after the test's
+  accessibility probe establishes the mock connection; `eshell-glob-convert'
+  consequently sees an absolute literal path and returns the original remote
+  string even when unmatched globs are errors.  Emaxx's native mock transport
+  stripped the remote prefix but left `~' unresolved, so Eshell misread it as
+  its exclusion glob operator.  Mock remote localnames now pass through the
+  existing host-home resolver consistently for `file-local-name',
+  `file-remote-p' localname queries, and native file operations.  Ordinary
+  remote methods retain their parsed localname.  This keeps GNU's Eshell in
+  Elisp and repairs the existing mock file boundary in Rust.  Fast Rust
+  regressions cover the primitive localname/file-operation contract and the
+  upstream Eshell scenario end to end.  Full gate: 1208 library tests, 11
+  compatibility-harness tests, one perf-harness test, and three integration
+  ERT runners pass; rustfmt, clippy with `-D warnings', and `git diff --check'
+  are clean.  NEXT = selector 3126,
+  `em-hist-test/add-to-history/allow-dups' in
+  `test/lisp/eshell/em-hist-tests.el'.
 - Verified through selector 3098/7080.  All 17 selected tests in
   `test/lisp/eshell/em-extpipe-tests.el' pass the grouped GNU oracle replay.
   Selector 3082 first exposed missing dumped `process.c' state and accessors,

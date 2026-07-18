@@ -990,7 +990,7 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let file = string_text(&args[0])?;
             Ok(parse_remote_file_name(&file)
-                .map(|remote| Value::String(remote.localname))
+                .map(|remote| Value::String(resolved_remote_localname(&remote)))
                 .unwrap_or(Value::String(file)))
         }
         "file-local-copy" => {
@@ -1016,7 +1016,7 @@ pub(super) fn call(
                 Some("method") => Value::String(remote.method),
                 Some("user") => remote.user.map(Value::String).unwrap_or(Value::Nil),
                 Some("host") => Value::String(remote.host),
-                Some("localname") => Value::String(remote.localname),
+                Some("localname") => Value::String(resolved_remote_localname(&remote)),
                 _ => Value::String(remote.prefix),
             };
             Ok(result)

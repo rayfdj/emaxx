@@ -1810,6 +1810,20 @@ fn file_remote_p_parses_tramp_style_names() {
 }
 
 #[test]
+fn mock_remote_home_localname_uses_the_local_host_home() {
+    assert_eq!(
+        eval_str(
+            r#"(let* ((remote "/mock::~/file.txt")
+                       (expected (expand-file-name "~/file.txt")))
+                  (list (equal (file-local-name remote) expected)
+                        (equal (file-remote-p remote 'localname) expected)
+                        (file-directory-p "/mock::~/")))"#,
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn copy_alist_copies_entry_cells() {
     assert_eq!(
         eval_str(
