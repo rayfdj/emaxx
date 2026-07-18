@@ -3390,3 +3390,24 @@ fn eshell_internal_command_feeds_external_pipeline_before_returning() {
         );
     });
 }
+
+#[test]
+fn eshell_remote_user_directory_is_not_misread_as_a_glob() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-glob-tests.el");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(and (eshell-tests-remote-accessible-p)
+                         (let* ((default-directory
+                                  ert-remote-temporary-file-directory)
+                                (remote (file-remote-p default-directory))
+                                (path (format "%s~/file.txt" remote))
+                                (eshell-error-if-no-glob t))
+                           (equal (eshell-extended-glob path) path)))"#,
+            ),
+            Value::T
+        );
+    });
+}

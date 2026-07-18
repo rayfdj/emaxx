@@ -329,7 +329,7 @@ pub(crate) fn expand_file_name_runtime(
 
 pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &str) -> String {
     if let Some(remote) = parse_remote_file_name(path) {
-        return remote.localname;
+        return resolved_remote_localname(&remote);
     }
     if Path::new(path).is_absolute() {
         return path.to_string();
@@ -338,6 +338,14 @@ pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &s
         .lookup_var("default-directory", env)
         .and_then(|value| string_like(&value).map(|string| string.text));
     expand_file_name(path, base.as_deref())
+}
+
+pub(crate) fn resolved_remote_localname(remote: &RemoteFileNameParts) -> String {
+    if remote.method == "mock" {
+        expand_home_prefix(&remote.localname)
+    } else {
+        remote.localname.clone()
+    }
 }
 
 pub(crate) fn substitute_in_file_name(path: &str) -> String {

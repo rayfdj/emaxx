@@ -19,6 +19,21 @@ counts as the progress denominator.
 
 ## Current State
 
+- Verified through selector 3125/7080: all 27 selected
+  `test/lisp/eshell/em-glob-tests.el' cases match GNU together.  The final
+  remote-home case was a mock-Tramp localname contract, not Eshell policy:
+  GNU resolves a mock remote `~/file.txt' to the remote home once file access
+  establishes the connection, while Emaxx stripped the remote prefix but left
+  the tilde for Eshell to misinterpret as a glob operator.  Mock localnames now
+  use the existing host-home resolver consistently in `file-local-name',
+  `file-remote-p' localname queries, and native file operations; other remote
+  methods keep their parsed localname.  The Elisp/host boundary is unchanged.
+  Focused Rust tests cover both that producer contract and the upstream Eshell
+  case end to end.  The full gate passes 1208 library tests, 11
+  compatibility-harness tests, the perf-harness test, and all three integration
+  ERT runners; rustfmt, clippy with `-D warnings', and `git diff --check' are
+  clean.  NEXT is selector 3126, `em-hist-test/add-to-history/allow-dups' in
+  `test/lisp/eshell/em-hist-tests.el'.
 - Verified through selector 3098/7080: all 17 selected
   `test/lisp/eshell/em-extpipe-tests.el' cases match GNU together.  The
   thematic repairs are below Eshell: `unwind-protect' now propagates a cleanup
