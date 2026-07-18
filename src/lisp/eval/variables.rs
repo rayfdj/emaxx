@@ -334,13 +334,48 @@ impl Interpreter {
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
-        if !self
-            .interned_symbols
-            .iter()
-            .any(|existing| existing == name)
-        {
+        if self.interned_symbol_names.insert(name.to_string()) {
             self.interned_symbols.push(name.to_string());
         }
+    }
+
+    /// Register ordinary symbols constructed by the Lisp reader in the
+    /// standard obarray.  Reader data may be circular and propertized strings
+    /// may hide symbols in their property values, so walk iteratively with an
+    /// identity guard instead of assuming a proper tree.
+    pub(crate) fn intern_symbols_in_value(&mut self, value: &Value) {
+        let mut pending = vec![value.clone()];
+        let mut seen_cons_cells = HashSet::new();
+        let mut seen_strings = HashSet::new();
+
+        while let Some(current) = pending.pop() {
+            match current {
+                Value::Symbol(name) => {
+                    if crate::lisp::types::visible_symbol_name(&name) == name {
+                        self.intern_symbol_name(&name);
+                    }
+                }
+                Value::Cons(car, cdr) => {
+                    if seen_cons_cells.insert(Rc::as_ptr(&car) as usize) {
+                        pending.push(cdr.borrow().clone());
+                        pending.push(car.borrow().clone());
+                    }
+                }
+                Value::StringObject(state) if seen_strings.insert(Rc::as_ptr(&state) as usize) => {
+                    for span in &state.borrow().props {
+                        for (property, property_value) in &span.props {
+                            self.intern_symbol_name(property);
+                            pending.push(property_value.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {
+        id == self.standard_obarray_id
     }
 
     pub fn remove_symbol_property(&mut self, name: &str, property: &str) {

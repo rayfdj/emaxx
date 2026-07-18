@@ -210,6 +210,13 @@ pub(crate) fn obarray_symbols(
     let Value::Record(id) = obarray else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
+    if interp.is_standard_obarray_id(*id) {
+        return Ok(interp
+            .known_symbol_names()
+            .into_iter()
+            .map(crate::lisp::types::interned_symbol_value)
+            .collect());
+    }
     let Some(record) = interp.find_record(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
@@ -231,10 +238,11 @@ pub(crate) fn obarray_symbols(
 }
 
 pub(crate) fn obarray_symbol_matches(value: &Value, symbol_name: &str) -> bool {
-    matches!(
-        value,
-        Value::Symbol(name) if crate::lisp::types::visible_symbol_name(name) == symbol_name
-    )
+    matches!((value, symbol_name), (Value::Nil, "nil") | (Value::T, "t"))
+        || matches!(
+            value,
+            Value::Symbol(name) if crate::lisp::types::visible_symbol_name(name) == symbol_name
+        )
 }
 
 pub(crate) fn intern_in_obarray(
@@ -245,6 +253,12 @@ pub(crate) fn intern_in_obarray(
     let Value::Record(id) = obarray else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
+    if interp.is_standard_obarray_id(*id) {
+        interp.intern_symbol_name(symbol_name);
+        return Ok(crate::lisp::types::interned_symbol_value(
+            symbol_name.to_string(),
+        ));
+    }
     let Some(record) = interp.find_record_mut(*id) else {
         return Err(LispError::TypeError("obarray".into(), obarray.type_name()));
     };
@@ -526,6 +540,8 @@ pub(crate) fn default_intern_soft_result(
 pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError> {
     match value {
         Value::String(_) | Value::StringObject(_) => string_text(value),
+        Value::Nil => Ok("nil".into()),
+        Value::T => Ok("t".into()),
         Value::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(symbol).to_string()),
         _ => Err(LispError::TypeError(
             "string-or-symbol".into(),

@@ -665,6 +665,14 @@ pub struct Interpreter {
     symbol_properties: Vec<(String, Vec<(String, Value)>)>,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<String>,
+    /// Membership index for `interned_symbols'.  Keeping insertion order in
+    /// the vector makes completion deterministic, while this set prevents
+    /// source loading from turning symbol interning into a quadratic scan.
+    interned_symbol_names: HashSet<String>,
+    /// Runtime record representing GNU's preloaded standard `obarray'.  Its
+    /// symbol view is synthesized from the interpreter's canonical namespace
+    /// indexes rather than duplicated in the record's storage slot.
+    standard_obarray_id: u64,
     /// Variable watchers keyed by canonical variable name.
     variable_watchers: Vec<(String, Vec<Value>)>,
     /// The current buffer being operated on.
@@ -887,10 +895,12 @@ impl Default for Interpreter {
 impl Interpreter {
     pub fn new() -> Self {
         let main_thread_id = 1u64;
+        let standard_obarray_id = 2u64;
         let standard_syntax_table_id = 1u64;
         let mut interp = Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
+                ("obarray".into(), Value::Record(standard_obarray_id)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
                 ("cl-old-struct-compat-mode".into(), Value::Nil),
                 (
@@ -1038,6 +1048,8 @@ impl Interpreter {
             ],
             symbol_properties: builtin_symbol_properties(),
             interned_symbols: Vec::new(),
+            interned_symbol_names: HashSet::new(),
+            standard_obarray_id,
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
             current_buffer_id: 0,
@@ -1117,14 +1129,21 @@ impl Interpreter {
             ascii_case_table_ids: Vec::new(),
             buffer_case_tables: Vec::new(),
             next_char_table_id: 4,
-            records: vec![RecordState {
-                id: main_thread_id,
-                type_name: "thread".into(),
-                slots: Vec::new(),
-            }],
+            records: vec![
+                RecordState {
+                    id: main_thread_id,
+                    type_name: "thread".into(),
+                    slots: Vec::new(),
+                },
+                RecordState {
+                    id: standard_obarray_id,
+                    type_name: "obarray".into(),
+                    slots: vec![Value::Nil],
+                },
+            ],
             sqlite_handles: Vec::new(),
             advice_registry: std::collections::HashMap::new(),
-            next_record_id: 2,
+            next_record_id: 3,
             next_finalizer_id: 1,
             next_generated_symbol_id: 1,
             buffer_local_hooks: Vec::new(),

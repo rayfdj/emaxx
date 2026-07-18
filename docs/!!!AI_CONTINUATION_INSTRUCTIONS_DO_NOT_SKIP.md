@@ -18,28 +18,25 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 3043/7080.  All five selected
-  `em-basic-tests.el' selectors (3039..3043) pass file-wide `check-all'.
-  The three setters were a shared lexical-cell contract failure: Eshell calls
-  a `cl-letf' setter through a fresh `(eval ...)' environment, and Emaxx used
-  to mutate only the closure's captured frame snapshot while the test's live
-  outer frame retained the old value.  The evaluator now maintains canonical
-  captured-cell updates keyed by the frame's exact identity stamp plus binding
-  name and tracks closure owners weakly.  It refreshes live and captured
-  snapshots from those cells, including sibling closures called before their
-  writer returns.  Never broaden this to name or frame-shape matching: four
-  fast Rust regressions cover the positive and negative cases, and all five
-  order-sensitive overlay modification-hook regressions remain green.  Full
-  Rust gate: 1172 library tests, 11 compatibility-harness tests, one
-  perf-harness test, and three integration ERT runners pass.
-  NEXT = selector 3044, `em-cmpl-test/command-completion' in
-  `em-cmpl-tests.el'.  GNU changes `listif' to `listify '; Emaxx leaves it
-  unchanged.  A direct probe shows `pcomplete-completions-at-point' returns a
-  CAPF spec, but `funcall'/`try-completion'/`all-completions' on its programmed
-  table return nil.  The likely shared boundary is the standard obarray:
-  Emaxx currently publishes `obarray' as nil, so the table cannot enumerate
-  the loaded `eshell/listify' function.  Fix and test the standard-obarray /
-  completion contract rather than special-casing this command.
+- Verified through selector 3044/7080.  `em-cmpl-test/command-completion' in
+  `em-cmpl-tests.el' now matches GNU (`listif' becomes `listify ').  The shared
+  defect was the standard obarray, which Emaxx previously exposed as nil.  It
+  is now a real runtime obarray record with a deterministic synthesized view
+  over the interpreter's canonical namespace.  Ordinary symbols are interned
+  at the `read' and source-load boundaries, including symbols in circular data
+  and propertized strings.  Keep the vector plus hash membership index: the
+  vector makes completion order deterministic and the hash avoids quadratic
+  source-loading scans.  Canonical `nil'/`t' values remain symbols for obarray
+  matching and completion, while `make-symbol' objects remain uninterned.
+  Fast Rust regressions cover standard-obarray function completion, runtime
+  `read', `eval-buffer' source interning, canonical `nil'/`t', and the negative
+  uninterned-symbol case.  Full gate: 1175 library tests, 11
+  compatibility-harness tests, one perf-harness test, and three integration
+  ERT runners pass; rustfmt and clippy with `-D warnings' are clean.
+  NEXT = selector 3045, `em-cmpl-test/file-completion/after-list' in
+  `em-cmpl-tests.el'.  GNU passes; Emaxx fails with
+  `wrong-type-argument characterp'.  Treat this as a new character/file
+  completion contract, not a continuation of the fixed obarray defect.
 - Verified through selector 3038/7080.  Selectors 3001..3030 finish the
   selected ERC core/track batch, and all eight `em-alias-tests.el'
   selectors (3031..3038) pass; both ERC files and the Eshell alias file also
