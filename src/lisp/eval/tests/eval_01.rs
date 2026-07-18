@@ -9,6 +9,123 @@ fn eval_atoms() {
 }
 
 #[test]
+fn unwind_protect_cleanup_nonlocal_exit_supersedes_the_protected_result() {
+    assert_eq!(
+        eval_str(
+            r#"(let (cleaned log)
+                 (list
+                  (catch 'done
+                    (unwind-protect 'protected
+                      (throw 'done 'cleanup)))
+                  (condition-case err
+                      (unwind-protect (error "protected")
+                        (error "cleanup"))
+                    (error (cadr err)))
+                  (catch 'done
+                    (unwind-protect 'protected
+                      (push 'first log)
+                      (throw 'done (nreverse log))
+                      (push 'late log)))
+                  (catch 'done
+                    (unwind-protect (throw 'done 'protected)
+                      (setq cleaned t)))
+                  cleaned))"#,
+        ),
+        Value::list([
+            Value::Symbol("cleanup".into()),
+            Value::String("cleanup".into()),
+            Value::list([Value::Symbol("first".into())]),
+            Value::Symbol("protected".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn subprocess_exit_is_event_driven_and_notifies_stderr_before_primary_once() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r#"(let* ((shell (executable-find "sh"))
+                         (command (list shell "-c" "printf err >&2"))
+                         (events nil)
+                         (stderr
+                          (make-pipe-process
+                           :name "event-order-stderr"
+                           :sentinel
+                           (lambda (_process _event)
+                             (setq events (append events '(stderr))))))
+                         (child
+                          (make-process
+                           :name "event-order-primary"
+                           :command command
+                           :stderr stderr
+                           :sentinel
+                           (lambda (_process _event)
+                             (setq events (append events '(primary))))))
+                         (initially-live (process-live-p child)))
+                    (while (process-live-p child)
+                      (sit-for 0.01))
+                    ;; A second pump must not repeat either terminal event.
+                    (sit-for 0.01)
+                    (list initially-live
+                          events
+                          (process-exit-status child)
+                          (process-live-p child)
+                          (equal (process-command child) command)))"#,
+            ),
+            Value::list([
+                Value::T,
+                Value::list([
+                    Value::Symbol("stderr".into()),
+                    Value::Symbol("primary".into()),
+                ]),
+                Value::Integer(0),
+                Value::Nil,
+                Value::T,
+            ])
+        );
+    });
+}
+
+#[test]
+fn process_send_eof_keeps_linked_stderr_separate_from_stdout() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str(
+                r#"(let* ((shell (executable-find "sh"))
+                         (stdout "")
+                         (stderr-output "")
+                         (stderr
+                          (make-pipe-process
+                           :name "send-eof-stderr"
+                           :filter
+                           (lambda (_process text)
+                             (setq stderr-output
+                                   (concat stderr-output text)))))
+                         (child
+                          (make-process
+                           :name "send-eof-primary"
+                           :command
+                           (list shell "-c"
+                                 "input=$(cat); printf 'out:%s' \"$input\"; printf err >&2")
+                           :stderr stderr
+                           :filter
+                           (lambda (_process text)
+                             (setq stdout (concat stdout text))))))
+                    (process-send-string child "value")
+                    (process-send-eof child)
+                    (list stdout stderr-output))"#,
+            ),
+            Value::list([
+                Value::String("out:value".into()),
+                Value::String("err".into()),
+            ])
+        );
+    });
+}
+
+#[test]
 fn with_demoted_errors_returns_nil_after_catching_errors() {
     run_with_large_stack(|| {
         assert_eq!(
@@ -1287,6 +1404,29 @@ fn re_search_forward_respects_limit_argument() {
 }
 
 #[test]
+fn re_search_forward_honors_nested_point_assertion_at_search_start() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "xxx| rev *>temp")
+                 (goto-char 4)
+                 (list
+                  (re-search-forward
+                   "\\(?:\\=\\|[^*]\\|\\S-\\*\\)\\(|\\)" nil t)
+                  (match-beginning 0)
+                  (match-beginning 1)
+                  (match-end 0)))"#,
+        ),
+        Value::list([
+            Value::Integer(5),
+            Value::Integer(4),
+            Value::Integer(4),
+            Value::Integer(5),
+        ])
+    );
+}
+
+#[test]
 fn re_search_forward_respects_positive_count_argument() {
     assert_eq!(
         eval_str(
@@ -1792,6 +1932,46 @@ fn editing_command_state_defaults_are_bound() {
         ),
         Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil, Value::Nil])
     );
+}
+
+#[test]
+fn process_runtime_defaults_match_dumped_process_c_state() {
+    assert_eq!(
+        eval_str(
+            "(list delete-exited-processes
+                   default-process-coding-system
+                   process-connection-type
+                   process-adaptive-read-buffering
+                   process-prioritize-lower-fds
+                   interrupt-process-functions
+                   signal-process-functions
+                   internal--daemon-sockname
+                   read-process-output-max
+                   fast-read-process-output
+                   process-error-pause-time)"
+        ),
+        Value::list([
+            Value::T,
+            Value::cons(
+                Value::Symbol("utf-8-unix".into()),
+                Value::Symbol("utf-8-unix".into()),
+            ),
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::list([Value::Symbol("internal-default-interrupt-process".into())]),
+            Value::list([Value::Symbol("internal-default-signal-process".into())]),
+            Value::Nil,
+            Value::Integer(65_536),
+            Value::T,
+            Value::Integer(1),
+        ])
+    );
+}
+
+#[test]
+fn coding_system_eol_type_treats_nil_as_no_conversion() {
+    assert_eq!(eval_str("(coding-system-eol-type nil)"), Value::Integer(0));
 }
 
 #[test]

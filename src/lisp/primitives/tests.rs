@@ -1279,6 +1279,62 @@ fn make_network_process_nowait_opens_on_the_next_event_pump() {
 }
 
 #[test]
+fn process_command_reports_child_argv_and_nil_for_connection_records() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let child = interp
+        .create_process(
+            None,
+            Some("sh".into()),
+            vec!["-c".into(), "printf child".into()],
+            None,
+            Some("child".into()),
+        )
+        .expect("create child process record");
+    let connection = interp
+        .create_process(None, None, Vec::new(), None, Some("pipe".into()))
+        .expect("create connection process record");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-command",
+            std::slice::from_ref(&child),
+            &mut env,
+        )
+        .expect("read child command"),
+        Value::list([
+            Value::String("sh".into()),
+            Value::String("-c".into()),
+            Value::String("printf child".into()),
+        ])
+    );
+    assert_eq!(
+        call(&mut interp, "process-command", &[connection], &mut env,)
+            .expect("read connection command"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(
+            &mut interp,
+            "process-tty-name",
+            &[child.clone(), Value::Symbol("stdin".into())],
+            &mut env,
+        )
+        .expect("pipe-backed child has no tty"),
+        Value::Nil
+    );
+    assert_eq!(
+        call(&mut interp, "process-coding-system", &[child], &mut env,)
+            .expect("read child coding systems"),
+        Value::cons(
+            Value::Symbol("utf-8-unix".into()),
+            Value::Symbol("utf-8-unix".into()),
+        )
+    );
+}
+
+#[test]
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");

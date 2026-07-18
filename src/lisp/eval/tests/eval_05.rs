@@ -3320,3 +3320,73 @@ fn eshell_directory_module_cases_pass_in_native_runner() {
         assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
     });
 }
+
+#[test]
+fn eshell_external_pipeline_finishes_redirected_output_before_returning() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(ert-with-temp-file temp
+                     (with-temp-eshell
+                       (eshell-insert-command
+                        (format "echo \"bar\" *| rev >%s" temp))
+                       (eshell-wait-for-subprocess)
+                       (list (eshell-last-output)
+                             (with-temp-buffer
+                               (insert-file-contents temp)
+                               (buffer-string)))))"#,
+            ),
+            Value::list([Value::String(String::new()), Value::String("rab\n".into()),])
+        );
+    });
+}
+
+#[test]
+fn eshell_external_pipeline_parser_only_shells_the_external_segment() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(with-temp-eshell
+                     (let ((shell-file-name "sh")
+                           (shell-command-switch "-c"))
+                       (prin1-to-string
+                        (cadadr
+                         (eshell-parse-command
+                          "echo \"bar\" | rev *>temp")))))"#,
+            ),
+            Value::String(
+                "(eshell-execute-pipeline '((eshell-named-command \"echo\" (list (eshell-escape-arg \"bar\"))) (eshell-named-command \"sh\" (list \"-c\" \"rev >temp\"))))"
+                    .into()
+            )
+        );
+    });
+}
+
+#[test]
+fn eshell_internal_command_feeds_external_pipeline_before_returning() {
+    run_with_large_stack(|| {
+        let mut interp = eshell_test_interpreter("em-extpipe-tests.el");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                r#"(ert-with-temp-file temp
+                     (with-temp-eshell
+                       (eshell-insert-command
+                        (format "echo \"bar\" | rev *>%s" temp))
+                       (eshell-wait-for-subprocess)
+                       (list (eshell-last-output)
+                             (with-temp-buffer
+                               (insert-file-contents temp)
+                               (buffer-string)))))"#,
+            ),
+            Value::list([Value::String(String::new()), Value::String("rab\n".into()),])
+        );
+    });
+}

@@ -17,6 +17,16 @@ pub(super) fn translate_elisp_regex(pattern: &str) -> String {
     translate_elisp_regex_with_point(pattern, "", r"\A")
 }
 
+fn contains_point_assertion(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && chars.next() == Some('=') {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegexGroupPrefix {
     Capturing(Option<usize>),
@@ -1798,7 +1808,13 @@ pub(super) fn buffer_regex_search(
                 ])))
             };
         }
-        let point_asserted = pattern.text.starts_with(r"\=");
+        // GNU `\=' asserts the buffer position where this search began,
+        // wherever it occurs in the regexp (often in an alternative).  Make
+        // that position the delegate haystack's origin so translated `\A'
+        // retains the assertion without preventing other alternatives from
+        // searching forward.  Looking only at a leading `\=' breaks Eshell's
+        // `(?:\=\|...)' delimiter patterns.
+        let point_asserted = contains_point_assertion(&pattern.text);
         let haystack_start = if point_asserted {
             start
         } else {

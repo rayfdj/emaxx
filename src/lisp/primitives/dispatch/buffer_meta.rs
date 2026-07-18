@@ -1243,6 +1243,9 @@ pub(super) fn call(
         }
         "coding-system-eol-type" => {
             need_args(name, args, 1)?;
+            if args[0].is_nil() {
+                return Ok(Value::Integer(0));
+            }
             let coding = checked_coding_symbol(interp, &args[0])?;
             Ok(interp
                 .coding_system_eol_type_value(&coding)

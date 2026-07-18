@@ -7,9 +7,12 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let result = self.eval(&items[1], env);
-        // Always run cleanup forms
+        // Always run cleanup forms.  If a cleanup itself exits nonlocally,
+        // GNU lets that newer exit supersede the protected form's result
+        // (including an older error/throw), and does not run later cleanup
+        // forms from this unwind-protect.
         for form in &items[2..] {
-            let _ = self.eval(form, env);
+            self.eval(form, env)?;
         }
         result
     }
