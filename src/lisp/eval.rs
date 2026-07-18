@@ -1409,6 +1409,10 @@ impl Interpreter {
             interp.make_char_table(Some("char-script-table".into()), Value::Nil);
         interp.set_global_binding("char-script-table", char_script_table);
         interp.set_global_binding("buffer-read-only", Value::Nil);
+        // GNU defines this C variable as both special and automatically
+        // buffer-local.  A dynamic binding therefore belongs to the buffer
+        // where it was made and must not make a newly selected buffer read-only.
+        interp.mark_special_variable("buffer-read-only");
         interp.mark_auto_buffer_local("buffer-read-only");
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");

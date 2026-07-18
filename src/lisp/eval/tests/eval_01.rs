@@ -796,6 +796,34 @@ fn local_hook_depth_splices_the_default_at_depth_zero() {
 }
 
 #[test]
+fn dynamically_filtered_local_hook_still_splices_the_default() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar dynamic-splice-hook nil)
+               (defvar dynamic-splice-log nil)
+               (defun dynamic-splice-global ()
+                 (push 'global dynamic-splice-log))
+               (defun dynamic-splice-a () (push 'a dynamic-splice-log))
+               (defun dynamic-splice-b () (push 'b dynamic-splice-log))
+               (add-hook 'dynamic-splice-hook #'dynamic-splice-global)
+               (with-temp-buffer
+                 (add-hook 'dynamic-splice-hook #'dynamic-splice-a nil t)
+                 (add-hook 'dynamic-splice-hook #'dynamic-splice-b nil t)
+                 (let ((dynamic-splice-hook
+                        (remq #'dynamic-splice-a dynamic-splice-hook)))
+                   (run-hooks 'dynamic-splice-hook)
+                   (list dynamic-splice-hook
+                         (nreverse dynamic-splice-log)))))"
+        ),
+        Value::list([
+            Value::list([Value::Symbol("dynamic-splice-b".into()), Value::T]),
+            Value::list([Value::Symbol("b".into()), Value::Symbol("global".into()),]),
+        ])
+    );
+}
+
+#[test]
 fn advice_member_p_defaults_to_nil_for_untracked_advice() {
     assert_eq!(
         eval_str("(advice-member-p 'sample-advice 'sample-function)"),
@@ -1676,6 +1704,17 @@ fn float_constants_are_available_as_builtin_variables() {
 }
 
 #[test]
+fn preloaded_system_name_variable_matches_the_host_primitive() {
+    assert_eq!(
+        eval_str(
+            "(list (boundp 'system-name) (stringp system-name)\
+                        (equal system-name (system-name)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn gc_counter_variables_are_available_for_benchmark() {
     assert_eq!(
         eval_str("(list gcs-done gc-elapsed)"),
@@ -1753,6 +1792,85 @@ fn editing_command_state_defaults_are_bound() {
         ),
         Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil, Value::Nil])
     );
+}
+
+#[test]
+fn buffer_read_only_let_binding_is_local_to_its_buffer() {
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                  (let ((buffer-read-only t))
+                    (list
+                     (condition-case err
+                         (progn (insert "blocked") 'wrong)
+                       (buffer-read-only (car err)))
+                     (with-temp-buffer
+                       (insert "writable")
+                       (buffer-string))
+                     buffer-read-only)))"#
+        ),
+        Value::list([
+            Value::Symbol("buffer-read-only".into()),
+            Value::String("writable".into()),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn new_buffers_inherit_default_directory_but_not_read_only() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((default-directory "/tmp/emaxx-inherited-directory/")
+                     (buffer-read-only t))
+                  (with-temp-buffer
+                    (list default-directory buffer-read-only)))"#,
+        ),
+        Value::list([
+            Value::String("/tmp/emaxx-inherited-directory/".into()),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn trimmed_closure_frame_does_not_alias_same_shaped_caller_frame() {
+    let mut interp = Interpreter::new();
+    interp.push_lambda_eval_context(true, true);
+    let result = eval_str_with(
+        &mut interp,
+        r#"(let* ((make-inner
+                    (lambda (string pred action)
+                      (lambda () action)))
+                   (inner (funcall make-inner "captured" nil nil))
+                   (make-caller
+                    (lambda (string pred action)
+                      (lambda ()
+                        (ignore string pred action)
+                        (funcall inner))))
+                   (caller
+                    (funcall make-caller "current" nil 'lambda)))
+              (funcall caller))"#,
+    );
+    interp.pop_lambda_capture_override();
+
+    assert_eq!(result, Value::Nil);
+}
+
+#[test]
+fn letstar_initializer_closure_does_not_capture_a_later_binding() {
+    let mut interp = Interpreter::new();
+    interp.set_global_binding("later-binding", Value::Symbol("global".into()));
+    interp.push_lambda_eval_context(true, false);
+    let result = eval_str_with(
+        &mut interp,
+        r#"(let* ((reader (lambda () later-binding))
+                      (later-binding 'local))
+                 (funcall reader))"#,
+    );
+    interp.pop_lambda_capture_override();
+
+    assert_eq!(result, Value::Symbol("global".into()));
 }
 
 #[test]

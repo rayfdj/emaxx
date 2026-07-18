@@ -1738,12 +1738,8 @@ pub(super) fn call(
                         }
                         Ok(())
                     };
-                    let comp = super::call(
-                        interp,
-                        "try-completion",
-                        &[string_value.clone(), table.clone(), predicate.clone()],
-                        env,
-                    )?;
+                    let comp =
+                        try_completion_with_styles(interp, &string_value, &table, &predicate, env)?;
                     match comp {
                         Value::T => {
                             call_exit(interp, env, &string, "finished")?;
@@ -1830,6 +1826,12 @@ pub(super) fn call(
                                 }
                                 interp.insert_current_buffer(&content);
                                 interp.switch_to_buffer_id(saved_id)?;
+                                let _ = super::call(
+                                    interp,
+                                    "display-buffer",
+                                    std::slice::from_ref(&buffer),
+                                    env,
+                                )?;
                             }
                             return Ok(Value::T);
                         }

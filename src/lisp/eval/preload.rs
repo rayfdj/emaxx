@@ -447,7 +447,60 @@ pub(crate) fn builtin_macro_autoload(file: &str) -> Value {
     ])
 }
 
+fn builtin_pcomplete_autoload_file(name: &str) -> Option<&'static str> {
+    match name {
+        "pcomplete/cvs" => Some("pcmpl-cvs"),
+        "pcomplete/git" => Some("pcmpl-git"),
+        "pcomplete/gzip"
+        | "pcomplete/bzip2"
+        | "pcomplete/make"
+        | "pcomplete/tar"
+        | "pcomplete/find"
+        | "pcomplete/awk"
+        | "pcomplete/gpg"
+        | "pcomplete/gdb"
+        | "pcomplete/emacs"
+        | "pcomplete/emacsclient" => Some("pcmpl-gnu"),
+        "pcomplete/kill"
+        | "pcomplete/umount"
+        | "pcomplete/mount"
+        | "pcomplete/systemctl"
+        | "pcomplete/journalctl" => Some("pcmpl-linux"),
+        "pcomplete/rpm" | "pcomplete/dnf" => Some("pcmpl-rpm"),
+        "pcomplete/cd" | "pcomplete/rmdir" | "pcomplete/rm" | "pcomplete/xargs"
+        | "pcomplete/time" | "pcomplete/which" | "pcomplete/cat" | "pcomplete/tac"
+        | "pcomplete/nl" | "pcomplete/od" | "pcomplete/base32" | "pcomplete/basenc"
+        | "pcomplete/fmt" | "pcomplete/pr" | "pcomplete/fold" | "pcomplete/head"
+        | "pcomplete/tail" | "pcomplete/split" | "pcomplete/csplit" | "pcomplete/wc"
+        | "pcomplete/sum" | "pcomplete/cksum" | "pcomplete/b2sum" | "pcomplete/md5sum"
+        | "pcomplete/sort" | "pcomplete/shuf" | "pcomplete/uniq" | "pcomplete/comm"
+        | "pcomplete/ptx" | "pcomplete/tsort" | "pcomplete/cut" | "pcomplete/paste"
+        | "pcomplete/join" | "pcomplete/tr" | "pcomplete/expand" | "pcomplete/unexpand"
+        | "pcomplete/ls" | "pcomplete/cp" | "pcomplete/dd" | "pcomplete/install"
+        | "pcomplete/mv" | "pcomplete/shred" | "pcomplete/ln" | "pcomplete/mkdir"
+        | "pcomplete/mkfifo" | "pcomplete/mknod" | "pcomplete/readlink" | "pcomplete/chown"
+        | "pcomplete/chgrp" | "pcomplete/chmod" | "pcomplete/touch" | "pcomplete/df"
+        | "pcomplete/du" | "pcomplete/stat" | "pcomplete/sync" | "pcomplete/truncate"
+        | "pcomplete/echo" | "pcomplete/test" | "pcomplete/tee" | "pcomplete/basename"
+        | "pcomplete/dirname" | "pcomplete/pathchk" | "pcomplete/mktemp" | "pcomplete/realpath"
+        | "pcomplete/id" | "pcomplete/groups" | "pcomplete/who" | "pcomplete/date"
+        | "pcomplete/nproc" | "pcomplete/uname" | "pcomplete/hostname" | "pcomplete/uptime"
+        | "pcomplete/chcon" | "pcomplete/runcon" | "pcomplete/chroot" | "pcomplete/env"
+        | "pcomplete/nice" | "pcomplete/nohup" | "pcomplete/stdbuf" | "pcomplete/timeout"
+        | "pcomplete/numfmt" | "pcomplete/seq" | "pcomplete/ssh" | "pcomplete/scp"
+        | "pcomplete/telnet" | "pcomplete/sudo" | "pcomplete/doas" => Some("pcmpl-unix"),
+        "pcomplete/tex" | "pcomplete/luatex" | "pcomplete/tlmgr" | "pcomplete/rg"
+        | "pcomplete/ack" | "pcomplete/ag" | "pcomplete/bcc32" | "pcomplete/rclone" => {
+            Some("pcmpl-x")
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
+    if let Some(file) = builtin_pcomplete_autoload_file(name) {
+        return Some(builtin_file_autoload(file, Value::Nil));
+    }
     match name {
         "command-line-1" => Some(preloaded_command_line_1()),
         "completion-table-dynamic" => Some(preloaded_completion_table_dynamic()),
@@ -466,6 +519,10 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "connection-local-value" => Some(builtin_macro_autoload("files-x")),
         "dired" => Some(builtin_file_autoload("dired", Value::T)),
         "define-skeleton" => Some(builtin_macro_autoload("skeleton")),
+        // GNU dumps elisp-mode.el, so callers such as Eshell can invoke its
+        // completion entry point without an explicit require.  Loading the
+        // upstream library lazily preserves that startup contract here.
+        "elisp-completion-at-point" => Some(builtin_file_autoload("elisp-mode", Value::Nil)),
         "eval-defun" => Some(preloaded_eval_defun()),
         "fill-paragraph" => Some(builtin_file_autoload("fill", Value::Nil)),
         "fill-region" => Some(builtin_file_autoload("fill", Value::Nil)),

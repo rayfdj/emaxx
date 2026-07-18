@@ -421,7 +421,19 @@ pub(super) fn call(
             };
             let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
             if let Some(obarray) = obarray {
-                intern_soft_in_obarray(interp, &obarray, &symbol_name)
+                let interned = intern_soft_in_obarray(interp, &obarray, &symbol_name)?;
+                if interned.is_nil()
+                    && matches!(&obarray, Value::Record(id) if interp.is_standard_obarray_id(*id))
+                {
+                    // Built-in loaddefs entries are part of the standard
+                    // obarray even before their libraries are loaded.  The
+                    // compact preload index does not duplicate those names
+                    // in `known_symbol_names', so consult function/value
+                    // cells after an ordinary standard-obarray miss.
+                    Ok(default_intern_soft_result(interp, &symbol_name, env))
+                } else {
+                    Ok(interned)
+                }
             } else {
                 Ok(default_intern_soft_result(interp, &symbol_name, env))
             }

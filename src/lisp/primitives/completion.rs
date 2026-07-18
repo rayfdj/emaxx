@@ -1186,6 +1186,140 @@ fn common_prefix(names: &[String]) -> String {
     prefix.into_iter().collect()
 }
 
+fn partial_completion_wildcard_matches(pattern: &str, candidate: &str, ignore_case: bool) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let candidate = candidate.chars().collect::<Vec<_>>();
+    let (mut pattern_index, mut candidate_index) = (0usize, 0usize);
+    let (mut star_index, mut star_candidate_index) = (None, 0usize);
+
+    while candidate_index < candidate.len() {
+        let literal_matches = pattern.get(pattern_index).is_some_and(|literal| {
+            *literal != '*'
+                && if ignore_case {
+                    literal.eq_ignore_ascii_case(&candidate[candidate_index])
+                } else {
+                    *literal == candidate[candidate_index]
+                }
+        });
+        if literal_matches {
+            pattern_index += 1;
+            candidate_index += 1;
+        } else if pattern.get(pattern_index) == Some(&'*') {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            star_candidate_index = candidate_index;
+        } else if let Some(star) = star_index {
+            star_candidate_index += 1;
+            candidate_index = star_candidate_index;
+            pattern_index = star + 1;
+        } else {
+            return false;
+        }
+    }
+
+    pattern[pattern_index..]
+        .iter()
+        .all(|character| *character == '*')
+}
+
+fn partial_completion_wildcard_try(
+    interp: &mut Interpreter,
+    input: &str,
+    collection: &Value,
+    predicate: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Some(wildcard) = input.find('*') else {
+        return Ok(Value::Nil);
+    };
+    let query = &input[..wildcard];
+    let candidates = all_completions(
+        interp,
+        &[
+            Value::String(query.into()),
+            collection.clone(),
+            predicate.clone(),
+        ],
+        env,
+    )?;
+    let ignore_case = completion_ignores_case(interp, env);
+    let mut matches = candidates
+        .to_vec()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|candidate| completion_display_name(&candidate).ok())
+        .filter(|candidate| partial_completion_wildcard_matches(input, candidate, ignore_case))
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+
+    // A unique wildcard expansion is unambiguous.  For multiple matches,
+    // replacing the pattern with their textual prefix can discard a literal
+    // suffix after `*`; leave that case to the normal completion listing.
+    Ok(match matches.as_slice() {
+        [only] => Value::String(only.clone()),
+        _ => Value::Nil,
+    })
+}
+
+/// Try the configured completion styles without moving the Lisp/host boundary.
+/// Raw `try-completion` is the basic prefix style; partial completion adds the
+/// wildcard interpretation used by programmable completion clients such as
+/// pcomplete.
+pub(crate) fn try_completion_with_styles(
+    interp: &mut Interpreter,
+    input: &Value,
+    collection: &Value,
+    predicate: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let input_text = string_text(input)?;
+    let styles = interp
+        .lookup_var("completion-styles", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_else(|| {
+            vec![
+                Value::Symbol("basic".into()),
+                Value::Symbol("partial-completion".into()),
+                Value::Symbol("emacs22".into()),
+            ]
+        });
+    let mut tried_prefix = false;
+
+    for style in styles {
+        match style.as_symbol().ok() {
+            Some("basic") | Some("emacs22") => {
+                if tried_prefix {
+                    continue;
+                }
+                tried_prefix = true;
+                let result = try_completion(
+                    interp,
+                    &[input.clone(), collection.clone(), predicate.clone()],
+                    env,
+                )?;
+                if !result.is_nil() {
+                    return Ok(result);
+                }
+            }
+            Some("partial-completion") => {
+                let result = partial_completion_wildcard_try(
+                    interp,
+                    &input_text,
+                    collection,
+                    predicate,
+                    env,
+                )?;
+                if !result.is_nil() {
+                    return Ok(result);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Value::Nil)
+}
+
 // GNU partial-completion over '/'-separated components: expand each
 // component as a prefix against the table, one directory level at a time.
 fn partial_completion_expand(

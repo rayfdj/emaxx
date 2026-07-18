@@ -19,25 +19,23 @@ counts as the progress denominator.
 
 ## Current State
 
-- Verified through selector 3044/7080: `em-cmpl-test/command-completion' now
-  matches GNU and completes `listif' to `listify '.  The failure was the shared
-  standard-obarray contract, not Eshell completion logic: Emaxx published
-  `obarray' as nil and therefore could not enumerate loaded functions.  The
-  interpreter now owns a real standard-obarray record whose deterministic
-  symbol view follows globals, functions, macros, properties, explicit
-  interning, and ordinary symbols read from Lisp or loaded source.  A hash
-  membership index keeps source interning from degenerating into quadratic
-  scans; circular reader data and propertized strings are handled explicitly.
-  The full Rust suite caught and preserved the related canonical rules for
-  `nil'/`t' and the distinction between interned symbols and `make-symbol'
-  objects.  Three new fast regressions cover function completion, runtime
-  `read', and `eval-buffer' source interning; the full gate passes 1175 library
-  tests, 11 compatibility-harness tests, the perf-harness test, and all three
-  integration ERT runners, with rustfmt and clippy clean.
-  NEXT is selector 3045, `em-cmpl-test/file-completion/after-list' in
-  `test/lisp/eshell/em-cmpl-tests.el': GNU passes, while Emaxx fails with
-  `wrong-type-argument characterp'.  Diagnose that character contract
-  independently; do not attribute it to the now-green standard obarray.
+- Verified through selector 3070/7080: all 27 selected
+  `test/lisp/eshell/em-cmpl-tests.el' cases match GNU in the grouped replay.
+  The fixes are thematic: correct local/default hook composition; nested
+  lexical `let*' scopes and identity-safe closure cells without breaking
+  dynamic callbacks; one consistent per-buffer/special variable resolver;
+  GNU-style new-buffer initialization for `default-directory' versus
+  `buffer-read-only'; dumped/autoload symbol discovery through the standard
+  obarray; pcomplete command-family and Elisp-completion preload contracts;
+  host-derived `system-name'; Lisp completion-table combinators; and native
+  wildcard/ambiguous candidate behavior.  Completion-table policy remains in
+  the Lisp compatibility layer and the host completion driver remains Rust.
+  Every repaired contract has a fast Rust regression, including end-to-end
+  Eshell completion cases.  The full gate passes 1190 library tests, 11
+  compatibility-harness tests, the perf-harness test, and all three integration
+  ERT runners; rustfmt and clippy with `-D warnings' are clean.  NEXT is
+  selector 3071, `em-dirs-test/cd' in
+  `test/lisp/eshell/em-dirs-tests.el'.
 - Verified through selector 3038/7080: the remaining selected ERC core and
   track selectors (3001..3030) pass, followed by all eight selected
   `em-alias-tests.el' selectors (3031..3038).  File-wide `check-all' matches

@@ -724,7 +724,6 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         for (name, value) in special_bindings {
             restores.push(self.bind_special_variable(&name, value, env)?);
         }
-        frame.push(Self::fresh_frame_identity());
         Self::push_marked_frame(env, frame);
         let result = self.sf_progn(&items[2..], env);
         env.pop();
@@ -811,34 +810,39 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
         let bindings = items[1].to_vec()?;
-        env.push(vec![Self::fresh_frame_identity()]);
-        for binding in &bindings {
-            match binding {
-                Value::Symbol(name) => {
-                    Self::check_let_binding_name(name)?;
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    frame.push((name.clone(), Value::Nil));
-                }
-                Value::Cons(_, _) => {
-                    let parts = binding.to_vec()?;
-                    let Some(name_value) = parts.first() else {
-                        return Err(LispError::ReadError("bad let* binding".into()));
-                    };
-                    let name = name_value.as_symbol()?.to_string();
-                    Self::check_let_binding_name(&name)?;
-                    let val = if parts.len() > 1 {
-                        self.eval(&parts[1], env)?
-                    } else {
-                        Value::Nil
-                    };
-                    let frame = env.last_mut().expect("env frame just pushed");
-                    frame.push((name, Self::stored_value(val)));
-                }
-                _ => return Err(wrong_type_argument("listp", binding.clone())),
+        let original_depth = env.len();
+        let setup = (|| -> Result<(), LispError> {
+            for binding in &bindings {
+                let (name, value) = match binding {
+                    Value::Symbol(name) => {
+                        Self::check_let_binding_name(name)?;
+                        (name.clone(), Value::Nil)
+                    }
+                    Value::Cons(_, _) => {
+                        let parts = binding.to_vec()?;
+                        let Some(name_value) = parts.first() else {
+                            return Err(LispError::ReadError("bad let* binding".into()));
+                        };
+                        let name = name_value.as_symbol()?.to_string();
+                        Self::check_let_binding_name(&name)?;
+                        let value = if parts.len() > 1 {
+                            self.eval(&parts[1], env)?
+                        } else {
+                            Value::Nil
+                        };
+                        (name, value)
+                    }
+                    _ => return Err(wrong_type_argument("listp", binding.clone())),
+                };
+                Self::push_marked_frame(env, vec![(name, Self::stored_value(value))]);
             }
-        }
-        let result = self.sf_progn(&items[2..], env);
-        env.pop();
+            Ok(())
+        })();
+        let result = match setup {
+            Ok(()) => self.sf_progn(&items[2..], env),
+            Err(error) => Err(error),
+        };
+        env.truncate(original_depth);
         result
     }
 
@@ -875,7 +879,6 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             }
         }
 
-        frame.push(Self::fresh_frame_identity());
         Self::push_marked_frame(env, frame);
         for (name, initializer) in names.iter().zip(initializers.iter()) {
             let value = if let Some(initializer) = initializer {
@@ -906,50 +909,57 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             return Err(wrong_type_argument("listp", items[1].clone()));
         }
         let bindings = items[1].to_vec()?;
-        env.push(vec![Self::fresh_frame_identity()]);
+        let original_depth = env.len();
         let mut restores = Vec::new();
+        let setup = (|| -> Result<(), LispError> {
+            for binding in &bindings {
+                let (name, value) = match binding {
+                    Value::Symbol(name) => {
+                        Self::check_let_binding_name(name)?;
+                        (name.clone(), Value::Nil)
+                    }
+                    Value::Cons(_, _) => {
+                        let parts = binding.to_vec()?;
+                        let Some(name_value) = parts.first() else {
+                            return Err(LispError::ReadError("bad let* binding".into()));
+                        };
+                        let name = name_value.as_symbol()?.to_string();
+                        Self::check_let_binding_name(&name)?;
+                        let value = if parts.len() > 1 {
+                            self.eval(&parts[1], env)?
+                        } else {
+                            Value::Nil
+                        };
+                        (name, value)
+                    }
+                    _ => return Err(wrong_type_argument("listp", binding.clone())),
+                };
+                if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env) {
+                    restores.push(self.bind_special_variable(&name, value, env)?);
+                } else {
+                    Self::push_marked_frame(env, vec![(name, Self::stored_value(value))]);
+                }
+            }
+            Ok(())
+        })();
 
-        for binding in &bindings {
-            match binding {
-                Value::Symbol(name) => {
-                    Self::check_let_binding_name(name)?;
-                    if self.is_dynamic_binding_name(name) || self.local_special_active(name, env) {
-                        restores.push(self.bind_special_variable(name, Value::Nil, env)?);
-                    } else {
-                        let frame = env.last_mut().expect("env frame just pushed");
-                        frame.push((name.clone(), Value::Nil));
-                    }
-                }
-                Value::Cons(_, _) => {
-                    let parts = binding.to_vec()?;
-                    let Some(name_value) = parts.first() else {
-                        return Err(LispError::ReadError("bad let* binding".into()));
-                    };
-                    let name = name_value.as_symbol()?.to_string();
-                    Self::check_let_binding_name(&name)?;
-                    let val = if parts.len() > 1 {
-                        self.eval(&parts[1], env)?
-                    } else {
-                        Value::Nil
-                    };
-                    if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env)
-                    {
-                        restores.push(self.bind_special_variable(&name, val, env)?);
-                    } else {
-                        let frame = env.last_mut().expect("env frame just pushed");
-                        frame.push((name, Self::stored_value(val)));
-                    }
-                }
-                _ => return Err(wrong_type_argument("listp", binding.clone())),
+        let result = match setup {
+            Ok(()) => self.sf_progn(&items[2..], env),
+            Err(error) => Err(error),
+        };
+        env.truncate(original_depth);
+        let mut restore_error = None;
+        for restore in restores.into_iter().rev() {
+            if let Err(error) = self.restore_special_binding(restore, env)
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
             }
         }
-
-        let result = self.sf_progn(&items[2..], env);
-        env.pop();
-        for restore in restores.into_iter().rev() {
-            self.restore_special_binding(restore, env)?;
+        match result {
+            Ok(value) => restore_error.map_or(Ok(value), Err),
+            Err(error) => Err(error),
         }
-        result
     }
 
     pub(super) fn sf_cl_progv(

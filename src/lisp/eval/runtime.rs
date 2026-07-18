@@ -346,10 +346,18 @@ impl Interpreter {
 
     /// Create and register a new empty buffer.
     pub fn create_buffer(&mut self, name: &str) -> (u64, String) {
+        // GNU reset_buffer initializes a new buffer's directory from the
+        // current buffer, while other per-buffer state such as read-only is
+        // reset.  Materialize that inherited value on the new buffer instead
+        // of making unrelated dynamic per-buffer bindings leak at lookup.
+        let inherited_directory = self.lookup_var("default-directory", &Env::new());
         let id = self.alloc_buffer_id();
         self.inactive_buffers
             .push((id, crate::buffer::Buffer::new(name)));
         self.buffer_list.push((id, name.to_string()));
+        if let Some(directory) = inherited_directory {
+            self.set_buffer_local_value(id, "default-directory", directory);
+        }
         (id, name.to_string())
     }
 

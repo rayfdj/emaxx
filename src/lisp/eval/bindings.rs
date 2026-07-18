@@ -12,6 +12,24 @@ pub(crate) const FUNCTION_FRAME_MARKER: &str = "--emaxx-function-frame--";
 
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
+        // Cow avoids a per-lookup String allocation for the overwhelmingly
+        // common non-aliased name.
+        let resolved: std::borrow::Cow<str> = if self.direct_variable_alias(name).is_none() {
+            name.into()
+        } else {
+            self.resolve_variable_name(name)
+                .unwrap_or_else(|_| name.to_string())
+                .into()
+        };
+        self.lookup_var_with_resolved_name(name, resolved.as_ref(), env)
+    }
+
+    fn lookup_var_with_resolved_name(
+        &self,
+        name: &str,
+        resolved: &str,
+        env: &Env,
+    ) -> Option<Value> {
         let mut special: Option<bool> = None;
         for (index, frame) in env.iter().enumerate().rev() {
             // Below the caller boundary, references to SPECIAL variables
@@ -42,19 +60,6 @@ impl Interpreter {
                 }
             }
         }
-        // Cow avoids a per-lookup String allocation for the overwhelmingly
-        // common non-aliased name.
-        let resolved: std::borrow::Cow<str> = if self.direct_variable_alias(name).is_none() {
-            name.into()
-        } else {
-            self.resolve_variable_name(name)
-                .unwrap_or_else(|_| name.to_string())
-                .into()
-        };
-        let resolved = resolved.as_ref();
-        let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
-            restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
-        });
         // DEFVAR_PER_BUFFER semantics: the current buffer's own local wins
         // over a global `let' made in another buffer.
         if self.is_auto_buffer_local(resolved)
@@ -62,8 +67,8 @@ impl Interpreter {
         {
             return Some(value);
         }
-        if active_global_special && let Some(value) = self.global_value(resolved) {
-            return Some(value);
+        if let Some(value) = self.active_global_special_value(resolved) {
+            return value.or_else(|| self.builtin_var_value(resolved));
         }
         if let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved) {
             return Some(value);
@@ -76,40 +81,8 @@ impl Interpreter {
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
-        let active_global_special = self.active_special_restores.iter().rev().any(|restore| {
-            restore.name == resolved && matches!(restore.scope, SpecialBindingScope::Global)
-        });
-        // DEFVAR_PER_BUFFER semantics, as in lookup_var above.
-        if self.is_auto_buffer_local(&resolved)
-            && let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved)
-        {
-            return Ok(value);
-        }
-        if active_global_special && let Some(value) = self.global_value(&resolved) {
-            return Ok(value);
-        }
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
-            return Ok(value);
-        }
-        if matches!(
-            resolved.as_str(),
-            "buffer-file-name" | "buffer-file-truename"
-        ) && let Some(value) = self.builtin_var_value(&resolved)
-        {
-            return Ok(value);
-        }
-        if let Some(value) = self.global_value(&resolved) {
-            return Ok(value);
-        }
-        if let Some(value) = self.builtin_var_value(&resolved) {
-            return Ok(value);
-        }
-        if resolved == "buffer-undo-list" {
-            return Ok(crate::lisp::primitives::buffer_undo_list_value(
-                &self.buffer,
-            ));
-        }
-        Err(LispError::Void(resolved))
+        self.lookup_var_with_resolved_name(&resolved, &resolved, &Env::new())
+            .ok_or(LispError::Void(resolved))
     }
 
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
@@ -150,6 +123,9 @@ impl Interpreter {
             } else {
                 Value::Nil
             }),
+            "buffer-undo-list" => Some(crate::lisp::primitives::buffer_undo_list_value(
+                &self.buffer,
+            )),
             "buffer-file-name" => Some(
                 self.buffer
                     .file
@@ -507,6 +483,9 @@ impl Interpreter {
             "user-login-name" => Some(Value::String(
                 primitives::current_user_login_name().unwrap_or_else(|| "user".into()),
             )),
+            // sysdep.c initializes this dumped variable from the same host
+            // identity returned by the `system-name' primitive.
+            "system-name" => Some(Value::String(primitives::system_name_value())),
             "user-full-name" => Some(Value::String(
                 primitives::current_user_full_name()
                     .or_else(primitives::current_user_login_name)
@@ -646,59 +625,9 @@ impl Interpreter {
 
     /// Look up a variable in the given local env, then globals.
     pub(crate) fn lookup(&self, name: &str, env: &Env) -> Result<Value, LispError> {
-        // Search local frames from innermost to outermost
-        let mut special: Option<bool> = None;
-        for (index, frame) in env.iter().enumerate().rev() {
-            // Below the caller boundary, references to SPECIAL variables
-            // resolve dynamically like GNU rather than through a caller's
-            // same-named lexical binding (bug#47552 semantics).  A name made
-            // locally special by a `defvar' in THIS scope (marker above the
-            // floor) is dynamic here too, so it must likewise not resolve to
-            // a caller's same-named lexical binding — e.g. `erc--run-send-hooks'
-            // reads its own dynamic `str', never `erc-send-current-line's
-            // lexical one.
-            if index < self.special_scan_floor
-                && *special.get_or_insert_with(|| {
-                    self.is_dynamic_binding_name(name) || self.local_special_active(name, env)
-                })
-            {
-                break;
-            }
-            let shared_updates = Self::frame_identity(frame)
-                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
-            for (k, v) in frame.iter().rev() {
-                if k == name {
-                    return Ok(shared_updates
-                        .and_then(|updates| updates.get(name))
-                        .cloned()
-                        .unwrap_or_else(|| v.clone()));
-                }
-            }
-        }
         let resolved = self.resolve_variable_name(name)?;
-        // Search globals
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), &resolved) {
-            return Ok(value);
-        }
-        if matches!(
-            resolved.as_str(),
-            "buffer-file-name" | "buffer-file-truename"
-        ) && let Some(value) = self.builtin_var_value(&resolved)
-        {
-            return Ok(value);
-        }
-        if let Some(value) = self.global_value(&resolved) {
-            return Ok(value);
-        }
-        if resolved == "buffer-undo-list" {
-            return Ok(crate::lisp::primitives::buffer_undo_list_value(
-                &self.buffer,
-            ));
-        }
-        if let Some(value) = self.builtin_var_value(&resolved) {
-            return Ok(value);
-        }
-        Err(LispError::Void(resolved))
+        self.lookup_var_with_resolved_name(name, &resolved, env)
+            .ok_or(LispError::Void(resolved))
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {

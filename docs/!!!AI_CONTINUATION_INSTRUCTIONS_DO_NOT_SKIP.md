@@ -18,25 +18,31 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 3044/7080.  `em-cmpl-test/command-completion' in
-  `em-cmpl-tests.el' now matches GNU (`listif' becomes `listify ').  The shared
-  defect was the standard obarray, which Emaxx previously exposed as nil.  It
-  is now a real runtime obarray record with a deterministic synthesized view
-  over the interpreter's canonical namespace.  Ordinary symbols are interned
-  at the `read' and source-load boundaries, including symbols in circular data
-  and propertized strings.  Keep the vector plus hash membership index: the
-  vector makes completion order deterministic and the hash avoids quadratic
-  source-loading scans.  Canonical `nil'/`t' values remain symbols for obarray
-  matching and completion, while `make-symbol' objects remain uninterned.
-  Fast Rust regressions cover standard-obarray function completion, runtime
-  `read', `eval-buffer' source interning, canonical `nil'/`t', and the negative
-  uninterned-symbol case.  Full gate: 1175 library tests, 11
-  compatibility-harness tests, one perf-harness test, and three integration
-  ERT runners pass; rustfmt and clippy with `-D warnings' are clean.
-  NEXT = selector 3045, `em-cmpl-test/file-completion/after-list' in
-  `em-cmpl-tests.el'.  GNU passes; Emaxx fails with
-  `wrong-type-argument characterp'.  Treat this as a new character/file
-  completion contract, not a continuation of the fixed obarray defect.
+- Verified through selector 3070/7080.  All 27 selected tests in
+  `test/lisp/eshell/em-cmpl-tests.el' pass their grouped oracle replay.  This
+  batch fixed shared contracts rather than individual Eshell cases: local hook
+  lists are authoritative and splice the default hook at `t'; lexical `let*'
+  uses nested binding scopes with stable frame identities; trimmed/empty
+  lexical closures cannot alias same-shaped caller frames or see later
+  bindings; dynamic empty closures still see their caller; per-buffer special
+  values are read through one resolver; new buffers inherit
+  `default-directory' but reset `buffer-read-only'; the standard obarray makes
+  dumped/autoload symbols visible through `intern-soft'; the complete pcomplete
+  command families, `elisp-completion-at-point', and host-derived `system-name'
+  variable are available at startup; and the native completion driver handles
+  partial-completion wildcards plus second-attempt candidate display.  The
+  Lisp completion-table combinators and file-name table remain in
+  `simple_compat.el`; no Lisp/Rust boundary was moved.
+  Fast Rust regressions cover each contract and end-to-end Eshell glob,
+  ambiguous, Lisp-function, and Lisp-symbol completion.  Two broad attempts
+  were rejected by the full suite: making every empty closure lexical broke
+  dynamic callbacks, and hiding every cross-buffer per-buffer binding broke
+  inherited `default-directory'.  The final implementation keys the former on
+  lexical source context and models the latter during buffer creation.  Full
+  gate: 1190 library tests, 11 compatibility-harness tests, one perf-harness
+  test, and three integration ERT runners pass; rustfmt and clippy with
+  `-D warnings' are clean.  NEXT = selector 3071, `em-dirs-test/cd' in
+  `test/lisp/eshell/em-dirs-tests.el'.
 - Verified through selector 3038/7080.  Selectors 3001..3030 finish the
   selected ERC core/track batch, and all eight `em-alias-tests.el'
   selectors (3031..3038) pass; both ERC files and the Eshell alias file also
@@ -1701,6 +1707,10 @@ policy, but `archive.ubuntu.com` is reachable:
    surface for the behavior.
 10. Commit and push each coherent passing compatibility batch before moving to
     the next frontier.
+11. Preserve the current Elisp/host-language boundary.  Use GNU source to learn
+    the observable contract, then implement it through Emaxx's existing Lisp
+    compatibility layer or Rust runtime as appropriate; do not move behavior
+    across that boundary merely to make a selector pass.
 
 ## Working Method: Thematic Fixes With Controlled Refactoring
 
@@ -1708,7 +1718,9 @@ The ordered oracle is a discovery tool, not a request to patch 7080 symptoms
 one at a time.  For every mismatch:
 
 1. Reproduce the smallest observable difference and inspect the GNU call path
-   far enough to identify the semantic contract being exercised.
+   far enough to identify the semantic contract being exercised.  Read GNU
+   source for intent and confirm ambiguous details with probes; do not copy its
+   implementation or abandon Emaxx's idiomatic Rust architecture.
 2. Search nearby failures and existing implementation shortcuts for the same
    contract.  Preload state, lexical/dynamic binding, object identity, buffer
    versus window state, event ordering, and completion tables are recurring
