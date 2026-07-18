@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- Verified through selector 3043/7080.  All five selected
+  `em-basic-tests.el' selectors (3039..3043) pass file-wide `check-all'.
+  The three setters were a shared lexical-cell contract failure: Eshell calls
+  a `cl-letf' setter through a fresh `(eval ...)' environment, and Emaxx used
+  to mutate only the closure's captured frame snapshot while the test's live
+  outer frame retained the old value.  The evaluator now maintains canonical
+  captured-cell updates keyed by the frame's exact identity stamp plus binding
+  name and tracks closure owners weakly.  It refreshes live and captured
+  snapshots from those cells, including sibling closures called before their
+  writer returns.  Never broaden this to name or frame-shape matching: four
+  fast Rust regressions cover the positive and negative cases, and all five
+  order-sensitive overlay modification-hook regressions remain green.  Full
+  Rust gate: 1172 library tests, 11 compatibility-harness tests, one
+  perf-harness test, and three integration ERT runners pass.
+  NEXT = selector 3044, `em-cmpl-test/command-completion' in
+  `em-cmpl-tests.el'.  GNU changes `listif' to `listify '; Emaxx leaves it
+  unchanged.  A direct probe shows `pcomplete-completions-at-point' returns a
+  CAPF spec, but `funcall'/`try-completion'/`all-completions' on its programmed
+  table return nil.  The likely shared boundary is the standard obarray:
+  Emaxx currently publishes `obarray' as nil, so the table cannot enumerate
+  the loaded `eshell/listify' function.  Fix and test the standard-obarray /
+  completion contract rather than special-casing this command.
 - Verified through selector 3038/7080.  Selectors 3001..3030 finish the
   selected ERC core/track batch, and all eight `em-alias-tests.el'
   selectors (3031..3038) pass; both ERC files and the Eshell alias file also
@@ -1682,6 +1704,39 @@ policy, but `archive.ubuntu.com` is reachable:
    surface for the behavior.
 10. Commit and push each coherent passing compatibility batch before moving to
     the next frontier.
+
+## Working Method: Thematic Fixes With Controlled Refactoring
+
+The ordered oracle is a discovery tool, not a request to patch 7080 symptoms
+one at a time.  For every mismatch:
+
+1. Reproduce the smallest observable difference and inspect the GNU call path
+   far enough to identify the semantic contract being exercised.
+2. Search nearby failures and existing implementation shortcuts for the same
+   contract.  Preload state, lexical/dynamic binding, object identity, buffer
+   versus window state, event ordering, and completion tables are recurring
+   themes that often explain a whole cluster.
+3. Add a focused Rust regression that is red before the fix and fast enough to
+   run routinely.  Include a negative/order-dependent case whenever the
+   tempting implementation could synchronize or mutate too broadly.
+4. Fix the shared Rust abstraction boundary.  Do not encode a selector name,
+   fixture value, timing coincidence, or one library's private spelling.
+5. Replay the exact selector, then its grouped file when practical, plus
+   nearby oracle files affected by the shared boundary.  The Rust suite catches
+   local regressions quickly; only the oracle establishes GNU compatibility.
+
+Opportunistic cleanup is encouraged only inside the code directly implicated
+by the failure.  Refactor convoluted, non-idiomatic, duplicated, or
+wrong-abstraction-level Rust when doing so makes the semantic fix smaller and
+more testable.  Keep that cleanup in the same bounded subsystem, preserve
+behavior with focused tests, and defer unrelated architecture work so frontier
+progress remains reviewable.  If a broad first design causes unrelated tests
+to fail, narrow it using real identity/lifetime/order information instead of
+adding exceptions.
+
+Record both the theme and the rejected overly broad approach in this handoff.
+That prevents future continuations from rediscovering the same traps and keeps
+the project moving by semantic clusters rather than oracle whack-a-mole.
 
 ## Compatibility Harness Usage
 

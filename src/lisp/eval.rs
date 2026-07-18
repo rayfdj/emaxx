@@ -815,6 +815,16 @@ pub struct Interpreter {
     current_activation_id: u64,
     next_activation_id: u64,
     closure_capture_cache: Vec<(u64, std::rc::Weak<std::cell::RefCell<Env>>)>,
+    /// Canonical values for mutated captured lexical cells, keyed first by
+    /// the exact identity stamp of their frame and then by binding name.
+    /// Environments are still represented as cheap snapshots; this overlay
+    /// gives those snapshots GNU's shared-cell mutation semantics without
+    /// ever aliasing unrelated frames that merely have the same shape.
+    lexical_cell_updates: HashMap<i64, HashMap<String, Value>>,
+    /// Weak owners of captured frames.  This lets assignments distinguish a
+    /// genuinely captured lexical cell from an ordinary marked local without
+    /// retaining every closure ever created.
+    captured_lexical_frames: HashMap<i64, Vec<std::rc::Weak<std::cell::RefCell<Env>>>>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     face_inheritance: Vec<(String, Option<String>)>,
@@ -1185,6 +1195,8 @@ impl Interpreter {
             current_activation_id: 0,
             next_activation_id: 0,
             closure_capture_cache: Vec::new(),
+            lexical_cell_updates: HashMap::new(),
+            captured_lexical_frames: HashMap::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
             face_inheritance: Vec::new(),
@@ -1720,6 +1732,65 @@ impl Interpreter {
         self.lambda_trim_overrides.last().copied().unwrap_or(false)
     }
 
+    pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
+        let frame_ids = closure_env
+            .borrow()
+            .iter()
+            .filter_map(|frame| Self::frame_identity(frame))
+            .collect::<Vec<_>>();
+        let owner = Rc::downgrade(closure_env);
+        for frame_id in frame_ids {
+            let owners = self.captured_lexical_frames.entry(frame_id).or_default();
+            owners.retain(|weak| weak.strong_count() > 0);
+            if !owners
+                .iter()
+                .any(|weak| weak.as_ptr() == Rc::as_ptr(closure_env))
+            {
+                owners.push(owner.clone());
+            }
+        }
+    }
+
+    pub(crate) fn record_lexical_cell_update_if_captured(
+        &mut self,
+        frame_id: i64,
+        name: &str,
+        value: &Value,
+    ) {
+        let already_shared = self.lexical_cell_updates.contains_key(&frame_id);
+        let has_live_owner =
+            self.captured_lexical_frames
+                .get_mut(&frame_id)
+                .is_some_and(|owners| {
+                    owners.retain(|weak| weak.strong_count() > 0);
+                    !owners.is_empty()
+                });
+        if !has_live_owner {
+            self.captured_lexical_frames.remove(&frame_id);
+        }
+        if already_shared || has_live_owner {
+            self.lexical_cell_updates
+                .entry(frame_id)
+                .or_default()
+                .insert(name.to_string(), value.clone());
+        }
+    }
+
+    fn refresh_captured_lexical_cells(&self, env: &mut Env) {
+        for frame in env {
+            let Some(updates) = Self::frame_identity(frame)
+                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id))
+            else {
+                continue;
+            };
+            for (name, value) in frame {
+                if let Some(updated) = updates.get(name) {
+                    *value = updated.clone();
+                }
+            }
+        }
+    }
+
     pub(crate) fn eval_with_closure_env<F>(
         &mut self,
         closure_env: &SharedEnv,
@@ -1729,7 +1800,9 @@ impl Interpreter {
     where
         F: FnOnce(&mut Self, &mut Env) -> Result<Value, LispError>,
     {
-        let captured_snapshot = closure_env.borrow().clone();
+        self.register_captured_lexical_frames(closure_env);
+        let mut captured_snapshot = closure_env.borrow().clone();
+        self.refresh_captured_lexical_cells(&mut captured_snapshot);
         if captured_snapshot.is_empty() {
             return evaluate(self, env);
         }
@@ -1737,6 +1810,7 @@ impl Interpreter {
         if env_has_truthy_binding(env, "__closure-isolated-current-env") {
             let mut call_env = captured_snapshot.clone();
             let result = evaluate(self, &mut call_env);
+            self.refresh_captured_lexical_cells(&mut call_env);
             {
                 let mut stored_env = closure_env.borrow_mut();
                 if stored_env.len() != captured_snapshot.len() {
@@ -1753,9 +1827,11 @@ impl Interpreter {
             return result;
         }
 
+        self.refresh_captured_lexical_cells(env);
         let frame_mapping = Self::align_captured_frames(&captured_snapshot, env);
         let mut call_env = Self::merge_lexical_lambda_env(env, &captured_snapshot, &frame_mapping);
         let result = evaluate(self, &mut call_env);
+        self.refresh_captured_lexical_cells(&mut call_env);
         {
             let mut stored_env = closure_env.borrow_mut();
             if stored_env.len() != captured_snapshot.len() {
@@ -1774,6 +1850,7 @@ impl Interpreter {
                 }
             }
         }
+        self.refresh_captured_lexical_cells(env);
         // Lexical bindings are shared cells in GNU Emacs.  Two sibling
         // closures can capture different snapshots of the surrounding
         // environment (for example, consecutive `let*' initializers) while
@@ -1838,17 +1915,24 @@ impl Interpreter {
     // Capture a lambda's lexical environment, sharing the environment cell
     // with sibling closures from the same activation whose captured content
     // is identical.
-    pub(crate) fn capture_closure_env(&mut self, captured: Env) -> SharedEnv {
+    pub(crate) fn capture_closure_env(&mut self, mut captured: Env) -> SharedEnv {
+        self.refresh_captured_lexical_cells(&mut captured);
         let activation = self.current_activation_id;
         self.closure_capture_cache
             .retain(|(_, weak)| weak.strong_count() > 0);
+        let mut matching = None;
         for (id, weak) in self.closure_capture_cache.iter().rev() {
             if *id == activation
                 && let Some(existing) = weak.upgrade()
                 && bounded_env_eq(&existing.borrow(), &captured, &mut 4096)
             {
-                return existing;
+                matching = Some(existing);
+                break;
             }
+        }
+        if let Some(existing) = matching {
+            self.register_captured_lexical_frames(&existing);
+            return existing;
         }
         let shared = shared_env(captured);
         self.closure_capture_cache
@@ -1856,6 +1940,7 @@ impl Interpreter {
         if self.closure_capture_cache.len() > 128 {
             self.closure_capture_cache.remove(0);
         }
+        self.register_captured_lexical_frames(&shared);
         shared
     }
 

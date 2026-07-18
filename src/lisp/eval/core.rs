@@ -945,6 +945,7 @@ impl Interpreter {
                 }
             }
             Value::Lambda(ref params, ref body, ref closure_env) => {
+                self.register_captured_lexical_frames(closure_env);
                 if is_semantic_lambda_params(params) {
                     return self.call_semantic_lambda(body, closure_env, args);
                 }
