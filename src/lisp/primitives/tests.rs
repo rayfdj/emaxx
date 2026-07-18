@@ -600,7 +600,7 @@ fn ert_gcc_is_clang_matches_upstream_apple_markers() {
 }
 
 #[test]
-fn directory_files_returns_sorted_names_with_dot_entries() {
+fn directory_files_returns_mutable_sorted_names_with_dot_entries() {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -625,6 +625,30 @@ fn directory_files_returns_sorted_names_with_dot_entries() {
             Value::String("..".into()),
             Value::String("ext4".into()),
         ])
+    );
+
+    let file_name = result.to_vec().expect("directory entries")[2].clone();
+    call(
+        &mut interp,
+        "add-text-properties",
+        &[
+            Value::Integer(0),
+            Value::Integer(4),
+            Value::list([Value::Symbol("face".into()), Value::Symbol("bold".into())]),
+            file_name.clone(),
+        ],
+        &mut env,
+    )
+    .expect("directory file names should accept text properties");
+    assert_eq!(
+        call(
+            &mut interp,
+            "get-text-property",
+            &[Value::Integer(0), Value::Symbol("face".into()), file_name,],
+            &mut env,
+        )
+        .expect("read file-name text property"),
+        Value::Symbol("bold".into())
     );
 
     let _ = std::fs::remove_dir_all(&directory);

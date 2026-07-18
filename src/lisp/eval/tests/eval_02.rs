@@ -3356,9 +3356,80 @@ fn builtin_autoloads_cover_saveplace_dependencies() {
         builtin_file_autoload("keymap", Value::Nil)
     );
     assert_eq!(
-        interp.lookup_function("pp", &env).unwrap(),
-        builtin_file_autoload("pp", Value::Nil)
+        interp.lookup_function("customize-set-value", &env).unwrap(),
+        builtin_file_autoload("cus-edit", Value::T)
     );
+    for function in [
+        "pp-to-string",
+        "pp",
+        "pp-display-expression",
+        "pp-emacs-lisp-code",
+    ] {
+        assert_eq!(
+            interp.lookup_function(function, &env).unwrap(),
+            builtin_file_autoload("pp", Value::Nil),
+            "autoload for {function}"
+        );
+    }
+    for function in [
+        "pp-buffer",
+        "pp-eval-expression",
+        "pp-macroexpand-expression",
+        "pp-eval-last-sexp",
+        "pp-macroexpand-last-sexp",
+    ] {
+        assert_eq!(
+            interp.lookup_function(function, &env).unwrap(),
+            builtin_file_autoload("pp", Value::T),
+            "interactive autoload for {function}"
+        );
+    }
+}
+
+#[test]
+fn pp_to_string_autoloads_from_clean_startup() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(list (featurep 'pp) (pp-to-string '(a b)) (featurep 'pp))",
+            ),
+            Value::list([Value::Nil, Value::String("(a b)\n".into()), Value::T,])
+        );
+    });
+}
+
+#[test]
+fn customize_set_value_autoloads_the_elisp_implementation() {
+    run_with_large_stack(|| {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+                .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interp = crate::batch::initialize_batch_interpreter(&options)
+            .expect("initialize batch interpreter");
+
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(progn (defvar sample-custom-value nil)\
+                        (list (featurep 'cus-edit)\
+                              (customize-set-value 'sample-custom-value 42)\
+                              sample-custom-value\
+                              (featurep 'cus-edit)))",
+            ),
+            Value::list([Value::Nil, Value::Integer(42), Value::Integer(42), Value::T,])
+        );
+    });
 }
 
 #[test]
