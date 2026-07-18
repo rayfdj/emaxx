@@ -1058,7 +1058,25 @@ pub(crate) fn builtin_class_names() -> &'static [&'static str] {
         "overlay",
         "finalizer",
         "hash-table",
+        "condvar",
+        "font-entity",
+        "font-object",
+        "font-spec",
+        "frame",
+        "module-function",
+        "mutex",
+        "native-comp-function",
+        "obarray",
+        "process",
         "record",
+        "terminal",
+        "thread",
+        "tree-sitter-compiled-query",
+        "tree-sitter-node",
+        "tree-sitter-parser",
+        "user-ptr",
+        "window",
+        "window-configuration",
         "native-comp-unit",
         "compiled-function",
         "closure",
@@ -1079,8 +1097,31 @@ pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
         "integer-or-marker" => &["number-or-marker"],
         "null" => &["symbol", "list"],
         "boolean" => &["symbol"],
-        "symbol" | "buffer" | "overlay" | "finalizer" | "hash-table" | "record"
-        | "native-comp-unit" | "subr" | "function" => &["atom"],
+        "symbol"
+        | "buffer"
+        | "overlay"
+        | "finalizer"
+        | "hash-table"
+        | "condvar"
+        | "font-entity"
+        | "font-object"
+        | "font-spec"
+        | "frame"
+        | "mutex"
+        | "obarray"
+        | "process"
+        | "record"
+        | "terminal"
+        | "thread"
+        | "tree-sitter-compiled-query"
+        | "tree-sitter-node"
+        | "tree-sitter-parser"
+        | "user-ptr"
+        | "window"
+        | "window-configuration"
+        | "native-comp-unit"
+        | "subr"
+        | "function" => &["atom"],
         "list" => &["sequence"],
         "symbol-with-pos" => &["cons"],
         "fixnum" | "bignum" => &["integer"],
@@ -1095,6 +1136,8 @@ pub(crate) fn builtin_class_parents(name: &str) -> &'static [&'static str] {
         "byte-code-function" => &["compiled-function", "closure"],
         "interpreted-function" => &["closure"],
         "primitive-function" | "special-form" => &["subr"],
+        "module-function" => &["function"],
+        "native-comp-function" => &["subr", "compiled-function"],
         _ => &[],
     }
 }
@@ -1156,7 +1199,32 @@ pub(crate) fn builtin_class_allparents(name: &str) -> Option<&'static [&'static 
         "overlay" => &["overlay", "atom", "t"],
         "finalizer" => &["finalizer", "atom", "t"],
         "hash-table" => &["hash-table", "atom", "t"],
+        "condvar" => &["condvar", "atom", "t"],
+        "font-entity" => &["font-entity", "atom", "t"],
+        "font-object" => &["font-object", "atom", "t"],
+        "font-spec" => &["font-spec", "atom", "t"],
+        "frame" => &["frame", "atom", "t"],
+        "module-function" => &["module-function", "function", "atom", "t"],
+        "mutex" => &["mutex", "atom", "t"],
+        "native-comp-function" => &[
+            "native-comp-function",
+            "subr",
+            "compiled-function",
+            "function",
+            "atom",
+            "t",
+        ],
+        "obarray" => &["obarray", "atom", "t"],
+        "process" => &["process", "atom", "t"],
         "record" => &["record", "atom", "t"],
+        "terminal" => &["terminal", "atom", "t"],
+        "thread" => &["thread", "atom", "t"],
+        "tree-sitter-compiled-query" => &["tree-sitter-compiled-query", "atom", "t"],
+        "tree-sitter-node" => &["tree-sitter-node", "atom", "t"],
+        "tree-sitter-parser" => &["tree-sitter-parser", "atom", "t"],
+        "user-ptr" => &["user-ptr", "atom", "t"],
+        "window" => &["window", "atom", "t"],
+        "window-configuration" => &["window-configuration", "atom", "t"],
         "native-comp-unit" => &["native-comp-unit", "atom", "t"],
         "compiled-function" => &["compiled-function", "function", "atom", "t"],
         "closure" => &["closure", "function", "atom", "t"],
@@ -1199,7 +1267,16 @@ pub(crate) fn builtin_class_predicate(name: &str) -> Option<&'static str> {
         "overlay" => Some("overlayp"),
         "finalizer" => Some("finalizerp"),
         "hash-table" => Some("hash-table-p"),
+        "condvar" => Some("condition-variable-p"),
+        "frame" => Some("framep"),
+        "mutex" => Some("mutexp"),
+        "native-comp-function" => Some("native-comp-function-p"),
+        "obarray" => Some("obarrayp"),
+        "process" => Some("processp"),
         "record" => Some("recordp"),
+        "thread" => Some("threadp"),
+        "window" => Some("windowp"),
+        "window-configuration" => Some("window-configuration-p"),
         "function" => Some("functionp"),
         "compiled-function" => Some("compiled-function-p"),
         "byte-code-function" => Some("byte-code-function-p"),
@@ -1247,7 +1324,25 @@ pub(crate) fn cl_type_name(interp: &Interpreter, value: &Value) -> Result<&'stat
             .unwrap_or("record")
         {
             "bool-vector" => "bool-vector",
+            "condition-variable" => "condvar",
+            "font-entity" => "font-entity",
+            "font-object" => "font-object",
+            "font-spec" => "font-spec",
+            "frame" => "frame",
+            "module-function" => "module-function",
+            "mutex" => "mutex",
+            "native-comp-function" => "native-comp-function",
             "native-comp-unit" => "native-comp-unit",
+            "obarray" => "obarray",
+            "process" => "process",
+            "terminal" => "terminal",
+            "thread" => "thread",
+            "tree-sitter-compiled-query" => "tree-sitter-compiled-query",
+            "tree-sitter-node" => "tree-sitter-node",
+            "tree-sitter-parser" => "tree-sitter-parser",
+            "user-ptr" => "user-ptr",
+            "window" => "window",
+            "window-configuration" => "window-configuration",
             "byte-code-function" => "byte-code-function",
             _ => "record",
         },

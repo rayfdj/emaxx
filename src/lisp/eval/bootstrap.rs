@@ -17,6 +17,40 @@ fn syntax_spec_value(spec: &str) -> Value {
     Value::String(spec.to_string())
 }
 
+pub(super) fn default_mode_line_format() -> Value {
+    let symbol = |name: &str| Value::Symbol(name.into());
+    Value::list([
+        Value::String("%e".into()),
+        symbol("mode-line-front-space"),
+        Value::list([
+            symbol(":propertize"),
+            Value::list([
+                Value::String(String::new()),
+                symbol("mode-line-mule-info"),
+                symbol("mode-line-client"),
+                symbol("mode-line-modified"),
+                symbol("mode-line-remote"),
+                symbol("mode-line-window-dedicated"),
+            ]),
+            symbol("display"),
+            Value::list([symbol("min-width"), Value::list([Value::Float(6.0)])]),
+        ]),
+        symbol("mode-line-frame-identification"),
+        symbol("mode-line-buffer-identification"),
+        Value::String("   ".into()),
+        symbol("mode-line-position"),
+        Value::list([
+            symbol("project-mode-line"),
+            symbol("project-mode-line-format"),
+        ]),
+        Value::list([symbol("vc-mode"), symbol("vc-mode")]),
+        Value::String("  ".into()),
+        symbol("mode-line-modes"),
+        symbol("mode-line-misc-info"),
+        symbol("mode-line-end-spaces"),
+    ])
+}
+
 pub(super) fn standard_syntax_table_entries() -> Vec<CharTableEntry> {
     vec![
         CharTableEntry {

@@ -8,6 +8,39 @@
 
 ;;; Code:
 
+(defvar display-buffer--same-window-action
+  '(display-buffer-same-window
+    (inhibit-same-window . nil))
+  "Action used to display a buffer in the selected window.")
+
+(defcustom display-comint-buffer-action
+  (append display-buffer--same-window-action '((category . comint)))
+  "Action used to display Comint buffers."
+  :type 'sexp
+  :risky t
+  :group 'windows)
+
+(defun file-user-uid ()
+  "Return the connection-local effective user ID."
+  (if-let ((handler
+            (find-file-name-handler default-directory 'file-user-uid)))
+      (funcall handler 'file-user-uid)
+    (user-uid)))
+
+(defun file-group-gid ()
+  "Return the connection-local effective group ID."
+  (if-let ((handler
+            (find-file-name-handler default-directory 'file-group-gid)))
+      (funcall handler 'file-group-gid)
+    (group-gid)))
+
+(defun exec-path ()
+  "Return the connection-local executable search path."
+  (let ((handler (find-file-name-handler default-directory 'exec-path)))
+    (if handler
+        (funcall handler 'exec-path)
+      exec-path)))
+
 (defvar values nil
   "List of values returned by expressions evaluated with `eval-expression'.")
 
@@ -162,6 +195,97 @@ The batch frame always shows a single window."
 
 (defvar with-timeout-timers nil
   "List of timers armed by `with-timeout' forms currently in flight.")
+
+;; These are preloaded macros in GNU.  Keep their function-cell identity as
+;; well as their behavior: macro consumers such as generator.el must see and
+;; transform the expanded let/while forms.
+(defmacro when (condition &rest body)
+  "Evaluate BODY when CONDITION is non-nil."
+  (declare (indent 1) (debug t))
+  (list 'if condition (cons 'progn body)))
+
+(defmacro unless (condition &rest body)
+  "Evaluate BODY when CONDITION is nil."
+  (declare (indent 1) (debug t))
+  (list 'if condition nil (cons 'progn body)))
+
+(defmacro dolist (spec &rest body)
+  "Loop over a list according to SPEC, evaluating BODY for each element."
+  (declare (indent 1) (debug ((symbolp form &optional form) body)))
+  (unless (consp spec)
+    (signal 'wrong-type-argument (list 'consp spec)))
+  (unless (<= 2 (length spec) 3)
+    (signal 'wrong-number-of-arguments (list '(2 . 3) (length spec))))
+  (let ((tail (make-symbol "tail")))
+    `(let ((,tail ,(nth 1 spec)))
+       (while ,tail
+         (let ((,(car spec) (car ,tail)))
+           ,@body
+           (setq ,tail (cdr ,tail))))
+       ,@(cdr (cdr spec)))))
+
+(defmacro dotimes (spec &rest body)
+  "Loop COUNT times according to SPEC, evaluating BODY each time."
+  (declare (indent 1) (debug dolist))
+  (let ((var (nth 0 spec))
+        (end (nth 1 spec))
+        (upper-bound (make-symbol "upper-bound"))
+        (counter (make-symbol "counter")))
+    `(let ((,upper-bound ,end)
+           (,counter 0))
+       (while (< ,counter ,upper-bound)
+         (let ((,var ,counter))
+           ,@body)
+         (setq ,counter (1+ ,counter)))
+       ,@(if (cddr spec)
+             `((let ((,var ,counter)) ,@(cddr spec)))))))
+
+(defmacro dotimes-with-progress-reporter (spec reporter-or-message &rest body)
+  "Loop according to SPEC while updating REPORTER-OR-MESSAGE."
+  (declare (indent 2) (debug ((symbolp form &optional form) form body)))
+  (let ((prep (make-symbol "--dotimes-prep--"))
+        (end (make-symbol "--dotimes-end--")))
+    `(let ((,prep ,reporter-or-message)
+           (,end ,(cadr spec)))
+       (when (stringp ,prep)
+         (setq ,prep (make-progress-reporter ,prep 0 ,end)))
+       (dotimes (,(car spec) ,end)
+         ,@body
+         (progress-reporter-update ,prep (1+ ,(car spec))))
+       (progress-reporter-done ,prep)
+       (or ,@(cdr (cdr spec)) nil))))
+
+(defmacro dolist-with-progress-reporter (spec reporter-or-message &rest body)
+  "Loop according to SPEC while updating REPORTER-OR-MESSAGE."
+  (declare (indent 2) (debug ((symbolp form &optional form) form body)))
+  (let ((prep (make-symbol "--dolist-progress-reporter--"))
+        (count (make-symbol "--dolist-count--"))
+        (list (make-symbol "--dolist-list--")))
+    `(let ((,prep ,reporter-or-message)
+           (,count 0)
+           (,list ,(cadr spec)))
+       (when (stringp ,prep)
+         (setq ,prep (make-progress-reporter ,prep 0 (length ,list))))
+       (dolist (,(car spec) ,list)
+         ,@body
+         (progress-reporter-update ,prep (setq ,count (1+ ,count))))
+       (progress-reporter-done ,prep)
+       (or ,@(cdr (cdr spec)) nil))))
+
+(defmacro condition-case-unless-debug (var bodyform &rest handlers)
+  "Like `condition-case', while allowing debugging of caught signals."
+  (declare (debug condition-case) (indent 2))
+  `(condition-case ,var
+       ,bodyform
+     ,@(mapcar (lambda (handler)
+                 (let ((condition (car handler)))
+                   (if (eq condition :success)
+                       handler
+                     `((debug ,@(if (listp condition)
+                                    condition
+                                  (list condition)))
+                       ,@(cdr handler)))))
+               handlers)))
 
 ;; GNU emacs-lisp/timer.el (verbatim): run BODY with a timeout.
 (defmacro with-timeout (list &rest body)
@@ -4098,6 +4222,13 @@ Defaults to `error'."
 (autoload 'shell-script-mode "sh-script" nil t)
 (autoload 'view-mode-enter "view")
 (autoload 'url-generic-parse-url "url-parse")
+(autoload 'widget-convert "wid-edit")
+
+;; GNU preloads files.el; ange-ftp reads this while Eshell is loading.
+(defcustom remote-shell-program (or (executable-find "ssh") "ssh")
+  "Program used to execute commands on a remote host."
+  :group 'environment
+  :type 'file)
 
 ;; GNU preloads custom.el; ERC resolves module groups through this helper.
 (defun custom-group-of-mode (mode)
@@ -4922,7 +5053,9 @@ property list, or no properties if there is no plist before it."
 ;; font-core.el: the default `font-lock-function'; the native
 ;; `font-lock-mode' has already recorded the mode state when a custom
 ;; function delegates here.
-(defun font-lock-default-function (_mode) nil)
+(defun font-lock-default-function (mode)
+  (when mode
+    (setq-local char-property-alias-alist '((face font-lock-face)))))
 
 ;; help.el: run BODY with the help buffer erased, then display it.
 (defmacro with-help-window (buffer-or-name &rest body)

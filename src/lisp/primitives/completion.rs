@@ -1224,10 +1224,7 @@ fn simulated_completing_read(
     let mut contents = Vec::<char>::new();
     let mut cursor = 0usize;
     let mut accepted = None;
-    loop {
-        let Ok(event) = crate::lisp::primitives::pop_unread_command_event_value(interp, env) else {
-            break;
-        };
+    while let Ok(event) = crate::lisp::primitives::pop_unread_command_event_value(interp, env) {
         let Some(ch) = crate::lisp::primitives::unread_event_char(&event) else {
             continue;
         };

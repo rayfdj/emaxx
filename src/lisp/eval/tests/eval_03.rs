@@ -1396,6 +1396,32 @@ fn cl_defmethod_lowers_specialized_arguments() {
 }
 
 #[test]
+fn cl_generic_dispatch_recognizes_record_backed_builtin_types() {
+    let mut interp = Interpreter::new();
+    let process = interp
+        .create_process(None, None, Vec::new(), None, Some("sample-process".into()))
+        .expect("create process");
+    interp.set_global_binding("sample-process", process);
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn
+               (cl-defgeneric sample-record-type (value))
+               (cl-defmethod sample-record-type ((_value process)) 'process)
+               (list (cl-typep sample-process 'process)
+                     (cl-type-of sample-process)
+                     (sample-record-type sample-process)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("process".into()),
+            Value::Symbol("process".into()),
+        ])
+    );
+}
+
+#[test]
 fn cl_defmethod_context_specializers_see_dynamic_bindings() {
     // GNU dispatches the &context method when the context variable is
     // let-bound around the call: (text base).
@@ -2575,11 +2601,15 @@ fn bindat_signed_integer_types_round_trip_wide_values() {
             eval_str_with(
                 &mut interp,
                 r#"
-                    (let* ((bitlen 72)
-                           (stype (bindat-type sint bitlen nil))
-                           (values (list -1 0 42 (1- (ash 1 63)) (- (ash 1 63)))))
-                      (cl-loop for n in values
-                               always (equal (bindat-unpack stype (bindat-pack stype n)) n)))
+                    (eval
+                     '(let* ((bitlen 72)
+                             (stype (bindat-type sint bitlen nil))
+                             (values (list -1 0 42 (1- (ash 1 63)) (- (ash 1 63)))))
+                        (cl-loop for n in values
+                                 always (equal (bindat-unpack stype
+                                                              (bindat-pack stype n))
+                                               n)))
+                     t)
                     "#
             ),
             Value::T
@@ -3551,6 +3581,53 @@ fn save_excursion_restores_current_buffer_after_switching() {
 }
 
 #[test]
+fn current_buffer_scopes_never_restore_by_displaying_a_buffer() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((origin (current-buffer))
+                       (other (get-buffer-create " *current-buffer-scope-other*"))
+                       (window (selected-window))
+                       (inside
+                        (with-current-buffer other
+                          (list (eq (current-buffer) other)
+                                (eq (window-buffer window) origin))))
+                       after-save-current
+                       after-save-excursion
+                       after-error)
+                  (save-current-buffer
+                    (switch-to-buffer other))
+                  (setq after-save-current
+                        (list (eq (current-buffer) origin)
+                              (eq (window-buffer window) other)))
+                  (switch-to-buffer origin)
+                  (save-excursion
+                    (switch-to-buffer other))
+                  (setq after-save-excursion
+                        (list (eq (current-buffer) origin)
+                              (eq (window-buffer window) other)))
+                  (switch-to-buffer origin)
+                  (condition-case nil
+                      (save-current-buffer
+                        (switch-to-buffer other)
+                        (error "boom"))
+                    (error nil))
+                  (setq after-error
+                        (list (eq (current-buffer) origin)
+                              (eq (window-buffer window) other)))
+                  (list inside after-save-current after-save-excursion after-error))
+                "#
+        ),
+        Value::list([
+            Value::list([Value::T, Value::T]),
+            Value::list([Value::T, Value::T]),
+            Value::list([Value::T, Value::T]),
+            Value::list([Value::T, Value::T]),
+        ])
+    );
+}
+
+#[test]
 fn save_restriction_restores_the_original_buffer_restriction() {
     assert_eq!(
         eval_str(
@@ -3722,6 +3799,27 @@ fn display_buffer_preserves_current_buffer_and_updates_window_buffer() {
 }
 
 #[test]
+fn switch_to_buffer_displays_a_target_that_is_already_current() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let ((visible (current-buffer))
+                      (hidden (get-buffer-create " *set-buffer-hidden*"))
+                      (window (selected-window)))
+                  (set-buffer hidden)
+                  (let ((before (and (eq (current-buffer) hidden)
+                                     (eq (window-buffer window) visible))))
+                    (switch-to-buffer hidden)
+                    (list before
+                          (eq (current-buffer) hidden)
+                          (eq (window-buffer window) hidden))))
+                "#
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
 fn display_buffer_respects_inhibit_same_window_action() {
     let mut interp = Interpreter::new();
     assert_eq!(
@@ -3734,6 +3832,42 @@ fn display_buffer_respects_inhibit_same_window_action() {
                         (eq (window-buffer (selected-window)) original)))"#
         ),
         Value::list([Value::Nil, Value::T])
+    );
+}
+
+#[test]
+fn display_buffer_alist_matches_modes_and_merges_actions() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((target (get-buffer-create " display-alist-target")) calls)
+                 (with-current-buffer target (setq major-mode 'erc-mode))
+                 (cl-letf (((symbol-function 'match-target)
+                            (lambda (_buffer action)
+                              (push (list 'matched
+                                          (alist-get 'bar (cdr action)))
+                                    calls)
+                              t))
+                           ((symbol-function 'show-target)
+                            (lambda (_buffer action)
+                              (push (list 'shown
+                                          (alist-get 'foo action)
+                                          (alist-get 'bar action))
+                                    calls)
+                              (selected-window))))
+                   (let ((display-buffer-alist
+                          '(((and (major-mode . erc-mode) match-target)
+                             show-target (foo . 42)))))
+                     (display-buffer target '(nil (bar . 7)))))
+                 (nreverse calls))"#
+        ),
+        Value::list([
+            Value::list([Value::Symbol("matched".into()), Value::Integer(7)]),
+            Value::list([
+                Value::Symbol("shown".into()),
+                Value::Integer(42),
+                Value::Integer(7),
+            ]),
+        ])
     );
 }
 

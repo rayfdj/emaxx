@@ -1089,11 +1089,15 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
     )
     .expect("start-process should launch a writer");
 
+    // This is a deadline, not a sleep: the process normally returns at
+    // once.  Keep it generous because the full parallel suite can leave a
+    // newly spawned shell unscheduled for more than one second on a busy
+    // host.  The exact seconds-only parsing contract is asserted below.
     assert_eq!(
         call(
             &mut interp,
             "accept-process-output",
-            &[process, Value::Integer(1)],
+            &[process, Value::Integer(10)],
             &mut env,
         )
         .expect("accept-process-output should wait for output"),
@@ -1592,12 +1596,12 @@ fn delete_and_extract_region_preserves_text_properties() {
     )
     .expect("delete-and-extract-region should accept reversed bounds");
 
-    assert_eq!(string_text(&extracted).unwrap(), "bcd");
+    assert_eq!(string_text(&extracted).expect("extracted text"), "bcd");
     assert_eq!(
         interp
             .buffer
             .buffer_substring(interp.buffer.point_min(), interp.buffer.point_max())
-            .unwrap(),
+            .expect("remaining buffer text"),
         "aef"
     );
     assert_eq!(

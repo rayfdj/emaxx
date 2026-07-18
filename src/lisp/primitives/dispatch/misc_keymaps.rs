@@ -556,10 +556,7 @@ pub(super) fn call(
             // keymaps (the parent is spliced into the keymap's tail).
             let mut keymap = args[1].clone();
             let mut visited = std::collections::HashSet::new();
-            loop {
-                let Some(id) = keymap_record_id(interp, &keymap) else {
-                    break;
-                };
+            while let Some(id) = keymap_record_id(interp, &keymap) {
                 if !visited.insert(id) {
                     break;
                 }
@@ -2571,6 +2568,7 @@ pub(super) fn call(
                 if interp
                     .get_symbol_property(name, "permanent-local")
                     .is_some_and(|value| value.is_truthy())
+                    || interp.has_active_buffer_local_special_binding(buffer_id, name)
                 {
                     permanent.push((name.clone(), value.clone()));
                     continue;

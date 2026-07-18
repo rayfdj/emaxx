@@ -485,15 +485,6 @@ pub(crate) fn plist_value(props: &[(String, Value)]) -> Value {
     Value::list(items)
 }
 
-pub(crate) fn plist_value_reversed(props: &[(String, Value)]) -> Value {
-    let mut items = Vec::new();
-    for (key, value) in props.iter().rev() {
-        items.push(Value::Symbol(key.clone()));
-        items.push(value.clone());
-    }
-    Value::list(items)
-}
-
 pub(crate) fn object_intervals_value(
     interp: &mut Interpreter,
     object: &Value,
@@ -536,7 +527,7 @@ pub(crate) fn object_intervals_value(
         let props = spans
             .iter()
             .find(|span| span.start <= start && start < span.end)
-            .map(|span| plist_value_reversed(&span.props))
+            .map(|span| plist_value(&span.props))
             .unwrap_or(Value::Nil);
         intervals.push(Value::list([
             Value::Integer(start as i64),
@@ -619,11 +610,31 @@ pub(crate) fn property_from_props_with_category(
     props: &[(String, Value)],
     prop: &str,
 ) -> Option<Value> {
-    props
+    let direct = props
         .iter()
         .find(|(name, _)| name == prop)
         .map(|(_, value)| value.clone())
-        .or_else(|| property_from_category_symbol(interp, props, prop))
+        .or_else(|| property_from_category_symbol(interp, props, prop));
+    if direct.is_some() {
+        return direct;
+    }
+    let aliases = interp
+        .buffer_local_value(interp.current_buffer_id(), "char-property-alias-alist")
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let aliases = aliases.into_iter().find_map(|entry| {
+        let key = entry.car().ok()?;
+        matches!(&key, Value::Symbol(name) if name == prop)
+            .then(|| entry.cdr().ok()?.to_vec().ok())?
+    })?;
+    aliases.into_iter().find_map(|alias| {
+        let alias = alias.as_symbol().ok()?;
+        props
+            .iter()
+            .find(|(name, _)| name == alias)
+            .map(|(_, value)| value.clone())
+            .or_else(|| property_from_category_symbol(interp, props, alias))
+    })
 }
 
 pub(crate) fn buffer_property_at_with_category(

@@ -167,6 +167,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "minibuffer-window-active-p"
             | "get-mru-window"
             | "get-buffer-window-list"
+            | "buffer-match-p"
             | "display-buffer"
             | "quit-window"
             | "active-minibuffer-window"
@@ -273,6 +274,188 @@ fn window_list_value(interp: &Interpreter, env: &Env, minibuf: Option<&Value>) -
     } else {
         Value::list([selected, minibuffer])
     }
+}
+
+fn display_action_parts(
+    interp: &Interpreter,
+    action: &Value,
+    env: &Env,
+) -> (Vec<Value>, Vec<Value>) {
+    if action.is_nil() {
+        return (Vec::new(), Vec::new());
+    }
+    if callable_display_action_function(interp, action, env).is_some() {
+        return (vec![action.clone()], Vec::new());
+    }
+    let Ok(functions) = action.car() else {
+        return (Vec::new(), Vec::new());
+    };
+    let functions = if callable_display_action_function(interp, &functions, env).is_some() {
+        vec![functions]
+    } else {
+        functions
+            .to_vec()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|function| callable_display_action_function(interp, function, env).is_some())
+            .collect()
+    };
+    if functions.is_empty()
+        && let Ok(entries) = action.to_vec()
+        && entries.first().is_some_and(|entry| {
+            entry
+                .car()
+                .is_ok_and(|key| callable_display_action_function(interp, &key, env).is_none())
+        })
+    {
+        // A bare action alist such as `((inhibit-same-window . t))' has no
+        // function head.  Its first entry is part of the alist, not a failed
+        // attempt at naming an action function.
+        return (Vec::new(), entries);
+    }
+    let alist = action
+        .cdr()
+        .ok()
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    (functions, alist)
+}
+
+fn display_alist_value(interp: &Interpreter, alist: &[Value], key: &str) -> Value {
+    alist
+        .iter()
+        .find_map(|entry| {
+            let entry_key = entry.car().ok()?;
+            if values_equal(interp, &entry_key, &Value::Symbol(key.into())) {
+                entry.cdr().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Value::Nil)
+}
+
+fn buffer_match_condition(
+    interp: &mut Interpreter,
+    condition: &Value,
+    buffer: &Value,
+    extra_args: &[Value],
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    if condition.is_nil() {
+        return Ok(false);
+    }
+    if matches!(condition, Value::T) {
+        return Ok(true);
+    }
+    if string_like(condition).is_some() {
+        let buffer_id = interp.resolve_buffer_id(buffer)?;
+        let buffer_name = interp
+            .get_buffer_by_id(buffer_id)
+            .map(|buffer| buffer.name.clone())
+            .unwrap_or_default();
+        return Ok(super::call(
+            interp,
+            "string-match-p",
+            &[condition.clone(), Value::String(buffer_name)],
+            env,
+        )?
+        .is_truthy());
+    }
+    if let Some((operator, operands)) = condition.cons_values()
+        && let Ok(operator) = operator.as_symbol()
+    {
+        let conditions = || operands.to_vec().unwrap_or_default();
+        match operator {
+            "major-mode" | "derived-mode" => {
+                let buffer_id = interp.resolve_buffer_id(buffer)?;
+                let mode = interp
+                    .buffer_local_value(buffer_id, "major-mode")
+                    .or_else(|| interp.lookup_var("major-mode", env))
+                    .unwrap_or(Value::Nil);
+                return if operator == "major-mode" {
+                    Ok(values_equal(interp, &mode, &operands))
+                } else {
+                    Ok(
+                        super::call(interp, "provided-mode-derived-p", &[mode, operands], env)?
+                            .is_truthy(),
+                    )
+                };
+            }
+            "category" => {
+                let action_alist = extra_args
+                    .first()
+                    .map(|action| display_action_parts(interp, action, env).1)
+                    .unwrap_or_default();
+                return Ok(values_equal(
+                    interp,
+                    &display_alist_value(interp, &action_alist, "category"),
+                    &operands,
+                ));
+            }
+            "not" => {
+                for nested in conditions() {
+                    if buffer_match_condition(interp, &nested, buffer, extra_args, env)? {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+            "or" => {
+                for nested in conditions() {
+                    if buffer_match_condition(interp, &nested, buffer, extra_args, env)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            "and" => {
+                for nested in conditions() {
+                    if !buffer_match_condition(interp, &nested, buffer, extra_args, env)? {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+            _ => {}
+        }
+    }
+    let Some(function) = callable_display_action_function(interp, condition, env) else {
+        return Ok(false);
+    };
+    let mut args = Vec::with_capacity(extra_args.len() + 1);
+    args.push(buffer.clone());
+    args.extend_from_slice(extra_args);
+    Ok(interp
+        .call_function_value(function, condition.as_symbol().ok(), &args, env)?
+        .is_truthy())
+}
+
+fn matching_display_buffer_action(
+    interp: &mut Interpreter,
+    buffer: &Value,
+    action: &Value,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let entries = interp
+        .lookup_var("display-buffer-alist", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    for entry in entries {
+        let Ok(condition) = entry.car() else {
+            continue;
+        };
+        if buffer_match_condition(
+            interp,
+            &condition,
+            buffer,
+            std::slice::from_ref(action),
+            env,
+        )? {
+            return Ok(entry.cdr().ok());
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn call(
@@ -2007,6 +2190,16 @@ pub(super) fn call(
                 Value::Nil
             })
         }
+        "buffer-match-p" => {
+            need_args(name, args, 2)?;
+            Ok(
+                if buffer_match_condition(interp, &args[0], &args[1], &args[2..], env)? {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
         "display-buffer" => {
             need_arg_range(name, args, 1, 2)?;
             let buffer_id = if let Some(name) = string_like(&args[0]).map(|string| string.text) {
@@ -2028,9 +2221,23 @@ pub(super) fn call(
                     .unwrap_or_else(|| interp.buffer.name.clone())
             };
             let buffer = Value::Buffer(buffer_id, buffer_name);
-            let (action_function, action_alist) =
-                split_display_buffer_action(interp, args.get(1), env);
-            if let Some(function) = action_function {
+            let action = args.get(1).cloned().unwrap_or(Value::Nil);
+            let mut actions = Vec::new();
+            if let Some(user_action) =
+                matching_display_buffer_action(interp, &buffer, &action, env)?
+            {
+                actions.push(user_action);
+            }
+            actions.push(action);
+            let mut functions = Vec::new();
+            let mut alist = Vec::new();
+            for action in actions {
+                let (action_functions, action_alist) = display_action_parts(interp, &action, env);
+                functions.extend(action_functions);
+                alist.extend(action_alist);
+            }
+            let action_alist = Value::list(alist);
+            for function in functions {
                 let result = interp.call_function_value(
                     function.clone(),
                     function.as_symbol().ok(),

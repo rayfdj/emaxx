@@ -19,18 +19,20 @@ counts as the progress denominator.
 
 ## Current State
 
-- Verified through selector 3000/7080: the first 71 manifest-selected
-  `erc-tests.el' selectors (2930..3000) pass exact oracle comparisons;
-  the file's default comparison is now 91/94 passing.  This batch added
-  GNU-compatible URL autoloads, explicit CL `&key' names, minibuffer and
-  `read-buffer' behavior, dynamic private obarrays, sibling lexical-closure
-  cells, lambda-form `gv-setter' declarations, CL struct metadata/defaults,
-  KOI8-R and Latin-1 coding, grapheme-aware composition boundaries, and
-  ASCII-only case-table semantics.  Focused Rust regressions cover every
-  runtime fix.  The unrestricted suite passes (1150 library tests plus all
-  auxiliary suites), the non-manifest `erc-d-run-no-block' speed race
-  passes a fresh exact run, and selector 2897 still matches GNU.  NEXT is
-  selector 3001, `erc-hide-prompt'.
+- Verified through selector 3038/7080: the remaining selected ERC core and
+  track selectors (3001..3030) pass, followed by all eight selected
+  `em-alias-tests.el' selectors (3031..3038).  File-wide `check-all' matches
+  GNU for `erc-tests.el', `erc-track-tests.el', and `em-alias-tests.el'.
+  The repairs are thematic rather than test-specific: current-buffer versus
+  displayed-window state, complete display action parsing, GNU macro identity
+  for iteration/control forms consumed by generator.el, lexical file-load and
+  eval/macroexpansion context, preload/default contracts, final subprocess
+  pipe draining, ellipsis width reservation, nested lexical message capture,
+  and exact stored text-property plist order.  Focused Rust regressions cover
+  each behavior.  The final gate passes 1168 library tests and every auxiliary
+  target; rustfmt is clean and clippy passes all targets with `-D warnings'.
+  NEXT is selector 3039, `em-basic-test/umask/print-numeric' in
+  `test/lisp/eshell/em-basic-tests.el'.
 - Verified through selector 2929/7080: all 17 manifest-selected
   `erc-services-tests.el' tests and all 12 selected
   `erc-stamp-tests.el' tests pass their default oracle comparisons.

@@ -817,11 +817,14 @@ impl Interpreter {
         let name = self.resolve_variable_name(name)?;
         let value = self.prepare_variable_assignment(&name, value)?;
         let buffer_id = self.current_buffer_id();
+        let binding_id = self.next_special_binding_id;
+        self.next_special_binding_id += 1;
         let restore = if self.buffer_local_value(buffer_id, &name).is_some() {
             let previous = self.buffer_local_value(buffer_id, &name);
             self.notify_variable_watchers(&name, value.clone(), "let", Some(buffer_id), env)?;
             self.set_buffer_local_value(buffer_id, &name, value);
             SpecialBindingRestore {
+                binding_id,
                 name,
                 scope: SpecialBindingScope::BufferLocal(buffer_id),
                 binding_buffer_id: None,
@@ -843,6 +846,7 @@ impl Interpreter {
                 self.globals.push((name.clone(), value));
             }
             SpecialBindingRestore {
+                binding_id,
                 name,
                 scope: SpecialBindingScope::Global,
                 binding_buffer_id,
@@ -873,6 +877,16 @@ impl Interpreter {
         self.restore_special_binding(restore, env)
     }
 
+    pub(crate) fn has_active_buffer_local_special_binding(
+        &self,
+        buffer_id: u64,
+        name: &str,
+    ) -> bool {
+        self.active_special_restores.iter().any(|restore| {
+            restore.name == name && restore.scope == SpecialBindingScope::BufferLocal(buffer_id)
+        })
+    }
+
     pub(super) fn restore_special_binding(
         &mut self,
         restore: SpecialBindingRestore,
@@ -881,7 +895,7 @@ impl Interpreter {
         let restore = if let Some(index) = self
             .active_special_restores
             .iter()
-            .rposition(|active| active.name == restore.name && active.scope == restore.scope)
+            .rposition(|active| active.binding_id == restore.binding_id)
         {
             self.active_special_restores.remove(index)
         } else {

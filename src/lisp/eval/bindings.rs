@@ -684,8 +684,10 @@ impl Interpreter {
                 &self.buffer,
             ));
         }
-        self.builtin_var_value(&resolved)
-            .ok_or(LispError::Void(resolved))
+        if let Some(value) = self.builtin_var_value(&resolved) {
+            return Ok(value);
+        }
+        Err(LispError::Void(resolved))
     }
 
     pub fn raw_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
@@ -829,6 +831,9 @@ impl Interpreter {
     pub fn known_symbol_names(&self) -> Vec<String> {
         let mut names = Vec::new();
         let mut push_name = |name: &str| {
+            if crate::lisp::types::visible_symbol_name(name) != name {
+                return;
+            }
             if !names.iter().any(|existing| existing == name) {
                 names.push(name.to_string());
             }

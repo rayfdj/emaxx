@@ -372,6 +372,7 @@ pub(crate) struct PendingUrlRetrieval {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SpecialBindingRestore {
+    binding_id: u64,
     name: String,
     scope: SpecialBindingScope,
     binding_buffer_id: Option<u64>,
@@ -744,6 +745,7 @@ pub struct Interpreter {
     auto_buffer_locals: Vec<String>,
     /// Active dynamic special bindings in stack order.
     active_special_restores: Vec<SpecialBindingRestore>,
+    next_special_binding_id: u64,
     /// Active labeled restrictions keyed by (buffer id, label, start, end).
     labeled_restrictions: Vec<(u64, String, usize, usize)>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
@@ -1132,6 +1134,7 @@ impl Interpreter {
                 "vertical-scroll-bar".into(),
             ],
             active_special_restores: Vec::new(),
+            next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
             change_hooks_running: 0,
@@ -1350,6 +1353,20 @@ impl Interpreter {
         interp.mark_auto_buffer_local("major-mode");
         interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
         interp.mark_auto_buffer_local("mode-name");
+        let mode_line_format = default_mode_line_format();
+        interp.set_global_binding("mode-line-format", mode_line_format.clone());
+        interp.mark_special_variable("mode-line-format");
+        interp.mark_auto_buffer_local("mode-line-format");
+        interp.put_symbol_property(
+            "mode-line-format",
+            "standard-value",
+            Value::list([quoted_literal(&mode_line_format)]),
+        );
+        for name in ["header-line-format", "tab-line-format"] {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+            interp.mark_auto_buffer_local(name);
+        }
         interp.set_global_binding(
             "mode-line-buffer-identification",
             Value::list([Value::String("%12b".into())]),
@@ -1588,6 +1605,13 @@ impl Interpreter {
         // harnesses and package loaders let-bind a private obarray and expect
         // `intern' calls in separately defined functions to see it.
         interp.mark_special_variable("obarray");
+        // GNU keeps this dynamically scoped variable globally bound to nil;
+        // loading a lexical file binds it to t only for that load.
+        interp.set_global_binding("lexical-binding", Value::Nil);
+        interp.mark_special_variable("lexical-binding");
+        interp.mark_auto_buffer_local("lexical-binding");
+        interp.set_global_binding("char-property-alias-alist", Value::Nil);
+        interp.mark_special_variable("char-property-alias-alist");
         interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
         interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
         interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
