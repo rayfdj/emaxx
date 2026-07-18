@@ -18,18 +18,30 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
-- Verified through selector 3000/7080.  Exact oracle runs pass for the
-  first 71 manifest selectors in `test/lisp/erc/erc-tests.el'
-  (2930..3000), and the file-wide default run is now 91/94 passing.
-  The batch fixed URL autoloading, explicit CL `&key' names, blank/default
-  minibuffer input, `read-buffer' completion, dynamic private obarrays,
-  sibling lexical-closure mutation, lambda-form `gv-setter' declarations,
-  CL struct metadata/defaults, KOI8-R and Latin-1 coding, grapheme-aware
-  split boundaries, and ASCII-only case-table behavior.  Each runtime fix
-  has a focused Rust regression.  The unrestricted suite is green (1150
-  library tests plus every auxiliary suite), `erc-d-run-no-block' passes a
-  fresh exact run, and selector 2897 still matches GNU.  NEXT = selector
-  3001, `erc-hide-prompt'.
+- Verified through selector 3038/7080.  Selectors 3001..3030 finish the
+  selected ERC core/track batch, and all eight `em-alias-tests.el'
+  selectors (3031..3038) pass; both ERC files and the Eshell alias file also
+  pass file-wide `check-all' comparisons.  NEXT = selector 3039,
+  `em-basic-test/umask/print-numeric' in `em-basic-tests.el'.
+  This batch fixed contracts at their shared abstraction boundaries:
+  current-buffer scopes now use set-buffer semantics without displaying the
+  buffer; `switch-to-buffer' still displays an already-current hidden target;
+  display action alists retain a bare first entry; preloaded iteration/control
+  forms have GNU macro identity so generator.el can transform Eshell's
+  `dolist'/`when' bodies; lexical-binding file cookies are scoped and restored,
+  including compact modelines and nested loads; and `(eval FORM LEXICAL)'
+  supplies the lexical mode to macro expanders without changing ordinary
+  `lexical-binding' variable lookup.  Preload/default repairs cover
+  `widget-convert', character-property aliases, mode/header/tab line values,
+  `remote-shell-program', display-comint, file UID/GID/exec-path contracts,
+  and the built-in CL type universe.  The broader ERC replay additionally
+  exposed and drove general fixes for ellipsis-width reservation,
+  nested lexical `ert-with-message-capture', and stored text-property plist
+  order.  Fast subprocess polling now drains once after observed exit, while
+  its contention test uses a generous deadline but separately asserts exact
+  seconds parsing.  Every behavior change has a focused Rust regression.
+  Final gate: 1168 Rust library tests plus all auxiliary targets pass,
+  rustfmt is clean, and clippy passes all targets with `-D warnings'.
 - Verified through selector 2881/7080:
   `erc-scenarios-base-upstream-recon-znc.el' passes check-all.  The
   decisive lever was a NATIVE `format-spec' (primitives.rs

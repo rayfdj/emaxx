@@ -757,14 +757,23 @@ impl Interpreter {
         if let Some(pipe) = runtime.child.stderr.as_mut() {
             read_nonblocking_pipe(pipe, &mut stderr)?;
         }
-        if stdout.is_empty()
-            && stderr.is_empty()
-            && runtime
-                .child
-                .try_wait()
-                .map_err(|error| LispError::Signal(error.to_string()))?
-                .is_some()
+        if runtime
+            .child
+            .try_wait()
+            .map_err(|error| LispError::Signal(error.to_string()))?
+            .is_some()
         {
+            // The child can exit between the non-blocking reads above and
+            // `try_wait'.  Drain once more after observing exit: all pipe
+            // writers are closed now, so this owns the final bytes before
+            // dropping the runtime.  Without this drain a fast process can
+            // make `accept-process-output' time out with an empty buffer.
+            if let Some(pipe) = runtime.child.stdout.as_mut() {
+                read_nonblocking_pipe(pipe, &mut stdout)?;
+            }
+            if let Some(pipe) = runtime.child.stderr.as_mut() {
+                read_nonblocking_pipe(pipe, &mut stderr)?;
+            }
             process.status = ProcessStatus::Exit;
             process.runtime = None;
         }

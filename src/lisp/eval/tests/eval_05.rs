@@ -747,6 +747,23 @@ fn eval_accepts_explicit_lexical_alist() {
 }
 
 #[test]
+fn eval_lexical_argument_controls_macroexpander_lexical_binding() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defmacro sample-eval-lexical-probe () lexical-binding)
+               (let ((lexical-binding nil))
+                 (list (eval '(sample-eval-lexical-probe) nil)
+                       (eval '(sample-eval-lexical-probe) t)
+                       (eval '(list lexical-binding
+                                    (sample-eval-lexical-probe))
+                             t))))"
+        ),
+        Value::list([Value::Nil, Value::T, Value::list([Value::Nil, Value::T]),])
+    );
+}
+
+#[test]
 fn backquote_splices_vector_values_without_internal_marker() {
     assert_eq!(
         eval_str("(let ((vec [ba bb bc])) `(a ,@vec c))"),
@@ -1108,6 +1125,14 @@ fn self_insert_command_uses_last_command_event_and_runs_hook() {
 }
 
 #[test]
+fn self_insert_command_accepts_an_explicit_character() {
+    assert_eq!(
+        eval_str("(with-temp-buffer (self-insert-command 2 ?/) (buffer-string))"),
+        Value::String("//".into())
+    );
+}
+
+#[test]
 fn execute_kbd_macro_self_insert_binding_sets_last_command_event() {
     assert_eq!(
         eval_str("(with-temp-buffer (execute-kbd-macro (kbd \"SPC\")) (buffer-string))"),
@@ -1126,6 +1151,46 @@ fn execute_kbd_macro_reports_an_undefined_key_sequence() {
                 "#
         ),
         Value::String("C-c C-z is undefined\n".into())
+    );
+}
+
+#[test]
+fn message_capture_updates_inside_nested_lexical_callbacks() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun sample-message-capture-caller (callback)
+                   (funcall callback))
+                 (ert-with-message-capture messages
+                   (sample-message-capture-caller
+                    (lambda ()
+                      (setq messages "")
+                      (let ((inhibit-message t))
+                        (message "Padding"))
+                      messages))))"#
+        ),
+        Value::String("Padding\n".into())
+    );
+}
+
+#[test]
+fn object_intervals_preserve_each_strings_stored_plist_order() {
+    assert_eq!(
+        eval_str(
+            r#"(and
+                 (equal
+                  (object-intervals
+                   #("abc"
+                     0 1 (face default foo 1)
+                     1 3 (face (default italic) bar "2")))
+                  '((0 1 (face default foo 1))
+                    (1 3 (face (default italic) bar "2"))))
+                 (equal
+                  (object-intervals
+                   (propertize "a" 'foo 1 'face 'default))
+                  '((0 1 (foo 1 face default)))))"#
+        ),
+        Value::T
     );
 }
 
@@ -2000,6 +2065,47 @@ fn mapatoms_scans_standard_obarray_symbols() {
 }
 
 #[test]
+fn mapatoms_excludes_symbols_in_private_obarrays() {
+    assert_eq!(
+        eval_str(
+            "(let ((private (obarray-make)) seen)
+               (put (intern \"private-propertied-symbol\" private) 'sample-property t)
+               (mapatoms
+                (lambda (symbol)
+                  (when (string= (symbol-name symbol) \"private-propertied-symbol\")
+                    (push symbol seen))))
+               seen)"
+        ),
+        Value::Nil
+    );
+}
+
+#[test]
+fn character_property_alias_applies_to_string_lookup_and_changes() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (setq-local char-property-alias-alist '((face font-lock-face)))
+               (let ((text (copy-sequence \"abc\")))
+                 (put-text-property 1 3 'font-lock-face 'bold text)
+                 (list char-property-alias-alist
+                       (get-text-property 1 'face text)
+                       (next-single-property-change 0 'face text)
+                       (next-single-property-change 1 'face text 3))))"
+        ),
+        Value::list([
+            Value::list([Value::list([
+                Value::Symbol("face".into()),
+                Value::Symbol("font-lock-face".into()),
+            ])]),
+            Value::Symbol("bold".into()),
+            Value::Integer(1),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
 fn booleanp_matches_nil_and_t_only() {
     assert_eq!(
         eval_str("(list (booleanp nil) (booleanp t) (booleanp 0) (booleanp 'false))"),
@@ -2750,7 +2856,73 @@ fn ert_x_remote_temp_directory_loads_after_tramp() {
 }
 
 #[test]
-fn simple_compat_preloads_custom_url_and_view_entry_points() {
+fn dumped_bootstrap_exposes_core_preload_contracts() {
+    let mut interp = Interpreter::new();
+    interp.set_load_path(
+        crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+    );
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (boundp 'lexical-binding)
+                   (special-variable-p 'lexical-binding)
+                   lexical-binding
+                   (boundp 'char-property-alias-alist)
+                   (special-variable-p 'char-property-alias-alist)
+                   char-property-alias-alist
+                   (mapcar (lambda (function) (fboundp function))
+                           '(widget-convert url-generic-parse-url
+                             view-mode-enter sh-mode))
+                   (boundp 'remote-shell-program)
+                   (special-variable-p 'remote-shell-program)
+                   (equal remote-shell-program
+                          (or (executable-find \"ssh\") \"ssh\"))
+                   (boundp 'display-comint-buffer-action)
+                   (special-variable-p 'display-comint-buffer-action)
+                   (equal display-comint-buffer-action
+                          '(display-buffer-same-window
+                            (inhibit-same-window . nil)
+                            (category . comint)))
+                   (fboundp 'file-user-uid)
+                   (fboundp 'file-group-gid)
+                   (= (file-user-uid) (user-uid))
+                   (= (file-group-gid) (group-gid))
+                   (fboundp 'exec-path)
+                   (equal (exec-path) exec-path))",
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::Nil,
+            Value::list([Value::T, Value::T, Value::T, Value::T]),
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_preloads_custom_url_view_and_widget_entry_points() {
     let mut interp = Interpreter::new();
     interp.set_load_path(
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
@@ -2774,6 +2946,12 @@ fn simple_compat_preloads_custom_url_and_view_entry_points() {
                      (let ((url (url-generic-parse-url
                                  \"ircs://tester@irc.example:6697\")))
                        (url-host url))
+                     (car (widget-convert 'string))
+                     (equal remote-shell-program
+                            (or (executable-find \"ssh\") \"ssh\"))
+                     (with-temp-buffer
+                       (font-lock-default-function 1)
+                       char-property-alias-alist)
                      (with-temp-buffer
                        (view-mode-enter)
                        view-mode)))",
@@ -2783,7 +2961,78 @@ fn simple_compat_preloads_custom_url_and_view_entry_points() {
             Value::Symbol("fallback".into()),
             Value::Nil,
             Value::String("irc.example".into()),
+            Value::Symbol("string".into()),
             Value::T,
+            Value::list([Value::list([
+                Value::Symbol("face".into()),
+                Value::Symbol("font-lock-face".into()),
+            ])]),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn simple_compat_exposes_condition_case_unless_debug_as_a_macro() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list (macrop 'condition-case-unless-debug)
+                   (special-form-p 'condition-case-unless-debug)
+                   (condition-case-unless-debug err
+                       (error \"boom\")
+                     (error (car err))))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::Symbol("error".into()),])
+    );
+}
+
+#[test]
+fn simple_compat_exposes_preloaded_iteration_forms_as_macros() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list
+               (mapcar (lambda (form)
+                         (list (macrop form) (special-form-p form)))
+                       '(when unless dolist dotimes dolist-with-progress-reporter
+                         dotimes-with-progress-reporter))
+               (let (seen)
+                 (dolist (elem '(a b c) (nreverse seen))
+                   (push elem seen)))
+               (let (seen)
+                 (dotimes (index 3 (nreverse seen))
+                   (push index seen))))"
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::T, Value::Nil]),
+                Value::list([Value::T, Value::Nil]),
+                Value::list([Value::T, Value::Nil]),
+                Value::list([Value::T, Value::Nil]),
+                Value::list([Value::T, Value::Nil]),
+                Value::list([Value::T, Value::Nil]),
+            ]),
+            Value::list([
+                Value::Symbol("a".into()),
+                Value::Symbol("b".into()),
+                Value::Symbol("c".into()),
+            ]),
+            Value::list([Value::Integer(0), Value::Integer(1), Value::Integer(2),]),
         ])
     );
 }

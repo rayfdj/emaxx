@@ -194,14 +194,20 @@ impl Interpreter {
                         "if-let*" if !self.has_macro_binding("if-let*") => {
                             return self.sf_if_let_star(&items, env);
                         }
-                        "when" | "static-when" => return self.sf_when(&items, env),
+                        "when" if !self.has_macro_binding("when") => {
+                            return self.sf_when(&items, env);
+                        }
+                        "static-when" => return self.sf_when(&items, env),
                         "when-let" if !self.has_macro_binding("when-let") => {
                             return self.sf_when_let(&items, env);
                         }
                         "when-let*" if !self.has_macro_binding("when-let*") => {
                             return self.sf_when_let_star(&items, env);
                         }
-                        "unless" | "static-unless" => return self.sf_unless(&items, env),
+                        "unless" if !self.has_macro_binding("unless") => {
+                            return self.sf_unless(&items, env);
+                        }
+                        "static-unless" => return self.sf_unless(&items, env),
                         "bound-and-true-p" => return self.sf_bound_and_true_p(&items, env),
                         "cond" => {
                             // Keep the in-progress form visible in
@@ -428,7 +434,7 @@ impl Interpreter {
                             self.pop_backtrace_frame();
                             return result;
                         }
-                        "dolist" => {
+                        "dolist" if !self.has_macro_binding("dolist") => {
                             // Keep the in-progress form visible in
                             // backtraces like GNU's eval frames.
                             self.push_backtrace_frame_with_evald(
@@ -440,13 +446,17 @@ impl Interpreter {
                             self.pop_backtrace_frame();
                             return result;
                         }
-                        "dolist-with-progress-reporter" => {
+                        "dolist-with-progress-reporter"
+                            if !self.has_macro_binding("dolist-with-progress-reporter") =>
+                        {
                             return self.sf_dolist_with_progress_reporter(&items, env);
                         }
                         "pcase-dolist" if !self.has_macro_binding("pcase-dolist") => {
                             return self.sf_pcase_dolist(&items, env);
                         }
-                        "dotimes" => return self.sf_dotimes(&items, env),
+                        "dotimes" if !self.has_macro_binding("dotimes") => {
+                            return self.sf_dotimes(&items, env);
+                        }
                         // The preloaded GNU `cl-loop' macro takes precedence;
                         // the native special form remains as a bootstrap
                         // fallback before simple_compat.el is loaded.
@@ -456,7 +466,12 @@ impl Interpreter {
                         "unwind-protect" => return self.sf_unwind_protect(&items, env),
                         "ignore-error" => return self.sf_ignore_error(&items, env),
                         "ignore-errors" => return self.sf_ignore_errors(&items, env),
-                        "condition-case" | "condition-case-unless-debug" => {
+                        "condition-case" => {
+                            return self.sf_condition_case(&items, env);
+                        }
+                        "condition-case-unless-debug"
+                            if !self.has_macro_binding("condition-case-unless-debug") =>
+                        {
                             return self.sf_condition_case(&items, env);
                         }
                         "handler-bind" => return self.sf_handler_bind(&items, env),

@@ -314,6 +314,39 @@ impl Interpreter {
         macro_environment: Option<&Value>,
         env: &mut Env,
     ) -> Result<Option<Value>, LispError> {
+        let Some(lexical) = self.lambda_capture_override() else {
+            return self.try_macroexpand_with_environment_inner(name, args, macro_environment, env);
+        };
+
+        // GNU's evaluator tells macro expanders whether the form being
+        // evaluated is lexical.  This is deliberately narrower than a
+        // binding around the whole form: `(eval FORM t)' does not change
+        // an ordinary reference to `lexical-binding' inside FORM, but a
+        // macro expanding in FORM sees it as non-nil.  Conversely, an
+        // explicit nil lexical environment makes the macro see nil even
+        // when the caller dynamically bound `lexical-binding' to t.
+        let restore = self.bind_special_variable(
+            "lexical-binding",
+            if lexical { Value::T } else { Value::Nil },
+            env,
+        )?;
+        let result =
+            self.try_macroexpand_with_environment_inner(name, args, macro_environment, env);
+        let restore_result = self.restore_special_binding(restore, env);
+        match (result, restore_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(expanded), Ok(())) => Ok(expanded),
+        }
+    }
+
+    fn try_macroexpand_with_environment_inner(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        macro_environment: Option<&Value>,
+        env: &mut Env,
+    ) -> Result<Option<Value>, LispError> {
         if let Some(expander) = macro_environment_expander(macro_environment, name) {
             return self
                 .call_macro_environment_expander(expander, name, args)

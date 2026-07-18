@@ -369,9 +369,12 @@ pub(super) fn call(
         "insert-and-inherit" => insert_impl(interp, args, env, true, false),
         "insert-char" => insert_char_impl(interp, args, env),
         "self-insert-command" => {
-            need_arg_range(name, args, 0, 1)?;
-            let event = interp
-                .lookup_var("last-command-event", env)
+            need_arg_range(name, args, 0, 2)?;
+            let event = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .cloned()
+                .or_else(|| interp.lookup_var("last-command-event", env))
                 .unwrap_or(Value::Nil);
             let ch = match event {
                 Value::Integer(code) => char::from_u32(code as u32),
@@ -2345,13 +2348,11 @@ pub(super) fn call(
                 current_col = next_col;
                 pos += 1;
             }
-            if force {
-                if current_col < target {
-                    interp.buffer.goto_char(pos);
-                    interp.insert_current_buffer(&" ".repeat(target - current_col));
-                    pos = interp.buffer.point();
-                    current_col = target;
-                }
+            if force && current_col < target {
+                interp.buffer.goto_char(pos);
+                interp.insert_current_buffer(&" ".repeat(target - current_col));
+                pos = interp.buffer.point();
+                current_col = target;
             }
             interp.buffer.goto_char(pos);
             Ok(Value::Integer(current_col as i64))
@@ -2733,9 +2734,11 @@ pub(super) fn call(
                 let pos = args[0].as_integer()?.max(0) as usize;
                 let text = string_text(object)?;
                 let max_pos = limit.unwrap_or(text.chars().count());
-                let initial = string_property_at(object, pos, &prop).unwrap_or(Value::Nil);
+                let initial = string_property_at_with_category(interp, object, pos, &prop)
+                    .unwrap_or(Value::Nil);
                 for cursor in pos.saturating_add(1)..max_pos {
-                    let current = string_property_at(object, cursor, &prop).unwrap_or(Value::Nil);
+                    let current = string_property_at_with_category(interp, object, cursor, &prop)
+                        .unwrap_or(Value::Nil);
                     if current != initial {
                         return Ok(Value::Integer(cursor as i64));
                     }
@@ -2795,9 +2798,11 @@ pub(super) fn call(
                 let pos = args[0].as_integer()?.max(0) as usize;
                 let text = string_text(object)?;
                 let max_pos = limit.unwrap_or(text.chars().count());
-                let initial = string_property_at(object, pos, &prop).unwrap_or(Value::Nil);
+                let initial = string_property_at_with_category(interp, object, pos, &prop)
+                    .unwrap_or(Value::Nil);
                 for cursor in pos.saturating_add(1)..max_pos {
-                    let current = string_property_at(object, cursor, &prop).unwrap_or(Value::Nil);
+                    let current = string_property_at_with_category(interp, object, cursor, &prop)
+                        .unwrap_or(Value::Nil);
                     if current != initial {
                         return Ok(Value::Integer(cursor as i64));
                     }

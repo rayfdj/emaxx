@@ -1702,6 +1702,38 @@ fn case_fold_search_is_special_and_auto_buffer_local() {
 }
 
 #[test]
+fn line_formats_are_bound_special_and_auto_buffer_local() {
+    let mut interp = Interpreter::new();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((default-mode-line mode-line-format))
+                 (list
+                  (mapcar (lambda (variable)
+                            (list (boundp variable)
+                                  (special-variable-p variable)
+                                  (local-variable-if-set-p variable)))
+                          '(mode-line-format header-line-format tab-line-format))
+                  (with-temp-buffer
+                    (setq mode-line-format '(temporary))
+                    (list mode-line-format
+                          (equal (default-value 'mode-line-format)
+                                 default-mode-line)))
+                  (equal mode-line-format default-mode-line)))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::list([Value::T, Value::T, Value::T]),
+                Value::list([Value::T, Value::T, Value::T]),
+                Value::list([Value::T, Value::T, Value::T]),
+            ]),
+            Value::list([Value::list([Value::Symbol("temporary".into())]), Value::T,]),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
 fn editing_command_state_defaults_are_bound() {
     let mut interp = Interpreter::new();
     assert_eq!(
@@ -1872,6 +1904,19 @@ fn window_buffer_tracks_selected_buffer() {
                    (buffer-name (window-buffer (selected-window))))"
         ),
         Value::String("foo".into())
+    );
+}
+
+#[test]
+fn with_temp_buffer_does_not_change_the_selected_windows_buffer() {
+    assert_eq!(
+        eval_str(
+            "(let ((shown (window-buffer)))
+               (with-temp-buffer
+                 (list (eq (window-buffer) (current-buffer))
+                       (eq (window-buffer) shown))))"
+        ),
+        Value::list([Value::Nil, Value::T])
     );
 }
 

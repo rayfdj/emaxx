@@ -896,9 +896,9 @@ pub(crate) fn string_identity_for_coding(
         {
             return false;
         }
-    } else if matches!(eol_type, Some(1) | Some(2)) && text.contains('\r') {
-        return false;
-    } else if single_byte_translation && text.chars().any(is_raw_byte_regex_char) {
+    } else if (matches!(eol_type, Some(1) | Some(2)) && text.contains('\r'))
+        || (single_byte_translation && text.chars().any(is_raw_byte_regex_char))
+    {
         return false;
     }
     true

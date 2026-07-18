@@ -3103,13 +3103,17 @@ fn truncate_string_to_width_uses_display_columns() {
             "(list (truncate-string-to-width \"abcdef\" 3)
                        (truncate-string-to-width \"界a\" 2)
                        (truncate-string-to-width \"a\" 3 0 ?.)
-                       (truncate-string-to-width \"abcdef\" 4 2))"
+                       (truncate-string-to-width \"abcdef\" 4 2)
+                       (truncate-string-to-width \"hun2\" 2 0 nil t)
+                       (truncate-string-to-width \"hi\" 2 0 nil t))"
         ),
         Value::list([
             Value::String("abc".into()),
             Value::String("界".into()),
             Value::String("a..".into()),
             Value::String("cd".into()),
+            Value::String("h…".into()),
+            Value::String("hi".into()),
         ])
     );
 }
@@ -3894,7 +3898,7 @@ fn load_target_resolves_repeated_directory_autoload_aliases() {
 }
 
 #[test]
-fn load_file_strict_sets_lexical_binding_from_file_cookie() {
+fn load_file_strict_scopes_lexical_binding_to_the_loaded_file() {
     run_with_large_stack(|| {
         let path = std::env::temp_dir().join(format!(
             "emaxx-lexical-binding-{}.el",
@@ -3905,7 +3909,7 @@ fn load_file_strict_sets_lexical_binding_from_file_cookie() {
         ));
         std::fs::write(
             &path,
-            ";;; lexical-cookie -*- lexical-binding: t -*-\n(provide 'sample)\n",
+            ";;; lexical-cookie -*- lexical-binding: t -*-\n(unless lexical-binding (error \"missing lexical binding\"))\n(provide 'sample)\n",
         )
         .unwrap();
 
@@ -3913,7 +3917,7 @@ fn load_file_strict_sets_lexical_binding_from_file_cookie() {
         crate::lisp::load_file_strict(&mut interp, &path).unwrap();
         assert_eq!(
             interp.lookup_var("lexical-binding", &Vec::new()),
-            Some(Value::T)
+            Some(Value::Nil)
         );
 
         std::fs::remove_file(path).unwrap();
@@ -4602,7 +4606,49 @@ fn load_file_strict_keeps_lexical_binding_for_cl_iter_defun() {
 }
 
 #[test]
-fn load_file_strict_restores_lexical_binding_after_nested_require() {
+fn lexical_iter_defun_keeps_dolist_variables_in_value_position() {
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-iter-defun-dolist-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            ";;; -*- lexical-binding: t -*-\n(require 'generator)\n(iter-defun sample-iter-defun (items)\n  (dolist (elem items)\n    (when (listp elem)\n      (iter-yield elem))))\n",
+        )
+        .unwrap();
+
+        let mut interp = Interpreter::new();
+        interp.set_load_path(vec![
+            std::path::PathBuf::from("../emacs/lisp"),
+            std::path::PathBuf::from("../emacs/lisp/emacs-lisp"),
+        ]);
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+        )
+        .expect("load simple compat");
+        let result = crate::lisp::load_file_strict(&mut interp, &path);
+        let _ = std::fs::remove_file(path);
+        result.unwrap();
+        assert_eq!(
+            eval_str_with(
+                &mut interp,
+                "(let ((iterator (sample-iter-defun '(skip (one) (two)))))\n                   (list (iter-next iterator) (iter-next iterator)))"
+            ),
+            Value::list([
+                Value::list([Value::Symbol("one".into())]),
+                Value::list([Value::Symbol("two".into())]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
     run_with_large_stack(|| {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4634,9 +4680,25 @@ fn load_file_strict_restores_lexical_binding_after_nested_require() {
         result.unwrap();
         assert_eq!(
             interp.lookup_var("lexical-binding", &Vec::new()),
-            Some(Value::T)
+            Some(Value::Nil)
         );
     });
+}
+
+#[test]
+fn mode_reset_preserves_active_buffer_local_special_bindings() {
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (setq-local lexical-binding nil)
+               (list (let ((lexical-binding t))
+                       (kill-all-local-variables)
+                       lexical-binding)
+                     lexical-binding
+                     (local-variable-p 'lexical-binding)))"
+        ),
+        Value::list([Value::T, Value::Nil, Value::T])
+    );
 }
 
 #[test]

@@ -231,9 +231,9 @@ impl Interpreter {
         };
         let (temp_id, _) = self.create_buffer(&temp_name);
         self.set_buffer_hooks_inhibited(temp_id, true);
-        self.switch_to_buffer_id(temp_id)?;
+        self.set_current_buffer_id(temp_id)?;
         let result = self.sf_progn(&items[1..], env);
-        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        let _ = self.set_current_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
         result
     }
@@ -322,10 +322,10 @@ impl Interpreter {
             );
         }
         let saved_buffer_id = self.current_buffer_id();
-        self.switch_to_buffer_id(temp_id)?;
+        self.set_current_buffer_id(temp_id)?;
         let result = self.sf_progn(&items[2..], env);
         if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.switch_to_buffer_id(saved_buffer_id);
+            let _ = self.set_current_buffer_id(saved_buffer_id);
         }
         if result.is_ok() && self.has_buffer_id(temp_id) {
             self.kill_buffer_id(temp_id);
@@ -419,55 +419,32 @@ impl Interpreter {
             ));
         }
         let name = items[1].as_symbol()?.to_string();
-        // Upstream expands to `(let* ((VAR "")) ...)`, so special variables
-        // get a live dynamic binding for the whole body.
-        let special_restore = if self.is_special_variable(&name) {
-            Some(self.bind_special_variable(&name, Value::String(String::new()), env)?)
-        } else {
-            Self::push_marked_frame(env, vec![(name.clone(), Value::String(String::new()))]);
-            None
+        // GNU's macro closes its message advice over VAR, so callbacks
+        // nested anywhere in BODY observe each append immediately.  Model
+        // that shared lexical cell with a scoped dynamic binding: unlike a
+        // permanent `defvar', the dlet marker neither changes
+        // `special-variable-p' nor escapes this native compatibility form.
+        self.enter_dlet_name(&name);
+        let restore = match self.bind_special_variable(&name, Value::String(String::new()), env) {
+            Ok(restore) => restore,
+            Err(error) => {
+                self.leave_dlet_name(&name);
+                return Err(error);
+            }
         };
         self.message_capture_stack.push(MessageCapture {
             text: String::new(),
-            live_var: special_restore.is_some().then(|| name.clone()),
+            live_var: Some(name.clone()),
         });
-        let mut last = Value::Nil;
-        let mut result = Ok(());
-        for form in &items[2..] {
-            match self.eval(form, env) {
-                Ok(value) => {
-                    last = value;
-                    if special_restore.is_none()
-                        && let Some(captured) = self
-                            .message_capture_stack
-                            .last()
-                            .map(|capture| capture.text.clone())
-                        && let Some(frame) = env.last_mut()
-                        && let Some((_, binding)) = frame.iter_mut().find(|(var, _)| var == &name)
-                    {
-                        *binding = Value::String(captured);
-                    }
-                }
-                Err(error) => {
-                    result = Err(error);
-                    break;
-                }
-            }
-        }
+        let result = self.sf_progn(&items[2..], env);
         self.message_capture_stack.pop();
-        match special_restore {
-            Some(restore) => {
-                if let Err(error) = self.restore_special_binding(restore, env)
-                    && result.is_ok()
-                {
-                    result = Err(error);
-                }
-            }
-            None => {
-                env.pop();
-            }
+        let restore_result = self.restore_special_binding(restore, env);
+        self.leave_dlet_name(&name);
+        match (result, restore_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) => Ok(value),
         }
-        result.map(|()| last)
     }
 
     pub(super) fn sf_with_output_to_string(
@@ -491,7 +468,7 @@ impl Interpreter {
         };
         let (temp_id, _) = self.create_buffer(&temp_name);
         self.set_buffer_hooks_inhibited(temp_id, true);
-        self.switch_to_buffer_id(temp_id)?;
+        self.set_current_buffer_id(temp_id)?;
         // Upstream expands to `let'; `standard-output' is special, so the
         // binding must be dynamic for `princ' in callees to see it.
         let restore = self.bind_special_variable(
@@ -506,7 +483,7 @@ impl Interpreter {
             body_result = Err(error);
         }
         let output = Value::String(self.buffer.buffer_string());
-        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        let _ = self.set_current_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
         body_result?;
         Ok(output)
@@ -528,7 +505,7 @@ impl Interpreter {
         let saved_buffer_id = self.current_buffer_id;
         let (temp_id, _) = self.create_buffer(" *temp file*");
         self.set_buffer_hooks_inhibited(temp_id, true);
-        self.switch_to_buffer_id(temp_id)?;
+        self.set_current_buffer_id(temp_id)?;
         let body_result = self.sf_progn(&items[2..], env);
         let write_result = if body_result.is_ok() {
             crate::lisp::primitives::call(
@@ -547,7 +524,7 @@ impl Interpreter {
         } else {
             Ok(())
         };
-        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        let _ = self.set_current_buffer_id(saved_buffer_id);
         self.kill_buffer_id(temp_id);
         let body_value = body_result?;
         write_result?;
@@ -733,7 +710,7 @@ impl Interpreter {
         // that switches buffers as a side effect must not leak.
         let saved_buffer_id = self.current_buffer_id;
         let restore_on_err = |interp: &mut Self, err: LispError| {
-            let _ = interp.switch_to_buffer_id(saved_buffer_id);
+            let _ = interp.set_current_buffer_id(saved_buffer_id);
             Err(err)
         };
         let target = match self.eval(&items[1], env) {
@@ -744,7 +721,7 @@ impl Interpreter {
             Ok(id) => id,
             Err(err) => return restore_on_err(self, err),
         };
-        self.switch_to_buffer_id(target_id)?;
+        self.set_current_buffer_id(target_id)?;
         let result = if items.len() == 2 {
             // The macro expands to (save-current-buffer (set-buffer BUF)),
             // so with an empty BODY the value is `set-buffer's: the buffer.
@@ -756,7 +733,7 @@ impl Interpreter {
         } else {
             self.sf_progn(&items[2..], env)
         };
-        let _ = self.switch_to_buffer_id(saved_buffer_id);
+        let _ = self.set_current_buffer_id(saved_buffer_id);
         result
     }
 
@@ -826,11 +803,11 @@ impl Interpreter {
             );
         }
         self.set_selected_window_id(window_id);
-        self.switch_to_buffer_id(target_buffer_id)?;
+        self.set_current_buffer_id(target_buffer_id)?;
         let result = self.sf_progn(&items[2..], env);
         self.set_selected_window_id(saved_window_id);
         if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.switch_to_buffer_id(saved_buffer_id);
+            let _ = self.set_current_buffer_id(saved_buffer_id);
         }
         self.set_global_binding(
             "emaxx-minibuffer-selected-window",
@@ -1139,7 +1116,7 @@ impl Interpreter {
         self.set_marker(saved_marker_id, Some(saved_pt), Some(saved_buffer_id))?;
         let result = self.sf_progn(&items[1..], env);
         if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.switch_to_buffer_id(saved_buffer_id);
+            let _ = self.set_current_buffer_id(saved_buffer_id);
             let restore_pt = self
                 .marker_position(saved_marker_id)
                 .unwrap_or(saved_pt)
@@ -1212,7 +1189,7 @@ impl Interpreter {
         let saved_buffer_id = self.current_buffer_id();
         let result = self.sf_progn(&items[1..], env);
         if self.has_buffer_id(saved_buffer_id) {
-            let _ = self.switch_to_buffer_id(saved_buffer_id);
+            let _ = self.set_current_buffer_id(saved_buffer_id);
         }
         result
     }
@@ -1273,12 +1250,12 @@ impl Interpreter {
             let final_buffer_id = self.current_buffer_id();
             if self.has_buffer_id(saved_buffer_id) {
                 if final_buffer_id != saved_buffer_id {
-                    let _ = self.switch_to_buffer_id(saved_buffer_id);
+                    let _ = self.set_current_buffer_id(saved_buffer_id);
                 }
                 let full_end = self.buffer.size_total() + 1;
                 self.buffer.restore_restriction(1, full_end);
                 if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
-                    let _ = self.switch_to_buffer_id(final_buffer_id);
+                    let _ = self.set_current_buffer_id(final_buffer_id);
                 }
             }
             return result;
@@ -1310,11 +1287,11 @@ impl Interpreter {
         let restore_zv = self.marker_position(end_id).unwrap_or(saved_zv);
         if self.has_buffer_id(saved_buffer_id) {
             if final_buffer_id != saved_buffer_id {
-                let _ = self.switch_to_buffer_id(saved_buffer_id);
+                let _ = self.set_current_buffer_id(saved_buffer_id);
             }
             self.buffer.restore_restriction(restore_begv, restore_zv);
             if final_buffer_id != saved_buffer_id && self.has_buffer_id(final_buffer_id) {
-                let _ = self.switch_to_buffer_id(final_buffer_id);
+                let _ = self.set_current_buffer_id(final_buffer_id);
             }
         }
         let _ = self.set_marker(beg_id, None, None);

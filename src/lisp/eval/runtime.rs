@@ -353,13 +353,27 @@ impl Interpreter {
         (id, name.to_string())
     }
 
-    /// Switch the current buffer to a different live buffer ID.
-    ///
-    /// Like `set-buffer', this never reorders the buffer list; only
-    /// `record_buffer_front' callers (GNU record_buffer: `switch-to-buffer',
-    /// `pop-to-buffer', `select-window' without NORECORD) do.
+    /// Switch the current buffer and display it in the selected window.
     pub fn switch_to_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
         self.switch_to_buffer_id_with_window_history(id, true)
+    }
+
+    /// Change the current buffer without displaying it in any window.
+    pub fn set_current_buffer_id(&mut self, id: u64) -> Result<(), LispError> {
+        if id == self.current_buffer_id {
+            return Ok(());
+        }
+        let pos = self
+            .inactive_buffers
+            .iter()
+            .position(|(buffer_id, _)| *buffer_id == id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {id}")))?;
+        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
+        let current_id = self.current_buffer_id;
+        let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
+        self.inactive_buffers.push((current_id, current_buffer));
+        self.current_buffer_id = id;
+        Ok(())
     }
 
     /// Move a buffer to the front of the buffer list (GNU record_buffer).
@@ -386,19 +400,18 @@ impl Interpreter {
         id: u64,
         record_previous_window_buffer: bool,
     ) -> Result<(), LispError> {
-        if id == self.current_buffer_id {
+        let current_id = self.current_buffer_id;
+        let selected_window_already_displays_target = self
+            .find_record(self.selected_window_id)
+            .and_then(|window| window.slots.first())
+            .and_then(|value| value.as_integer().ok())
+            == Some(id as i64);
+        if id == current_id && selected_window_already_displays_target {
             return Ok(());
         }
-        let pos = self
-            .inactive_buffers
-            .iter()
-            .position(|(buffer_id, _)| *buffer_id == id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))?;
-        let (_, next_buffer) = self.inactive_buffers.swap_remove(pos);
-        let current_id = self.current_buffer_id;
-        let current_buffer = std::mem::replace(&mut self.buffer, next_buffer);
-        self.inactive_buffers.push((current_id, current_buffer));
-        self.current_buffer_id = id;
+        if id != current_id {
+            self.set_current_buffer_id(id)?;
+        }
         let point_min = self.buffer.point_min() as i64;
         if let Some(window) = self.find_record_mut(self.selected_window_id) {
             let previous = window

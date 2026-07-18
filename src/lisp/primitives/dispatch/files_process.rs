@@ -209,7 +209,7 @@ pub(super) fn call(
         "set-buffer" => {
             need_args(name, args, 1)?;
             let id = interp.resolve_buffer_id(&args[0])?;
-            interp.switch_to_buffer_id(id)?;
+            interp.set_current_buffer_id(id)?;
             Ok(Value::Buffer(id, interp.buffer.name.clone()))
         }
         "switch-to-buffer" => {

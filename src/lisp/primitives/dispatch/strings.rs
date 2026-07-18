@@ -498,44 +498,53 @@ pub(super) fn call(
                 })
                 .transpose()?;
 
+            let tab_width = interp
+                .lookup_var("tab-width", &Vec::new())
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(8)
+                .max(1) as usize;
+            let display_width = |ch: char| {
+                if ch == '\t' {
+                    tab_width
+                } else {
+                    ch.width().unwrap_or(0)
+                }
+            };
+            let source_end_column = text.chars().map(display_width).sum::<usize>();
+            let target_width = end_column.saturating_sub(start_column);
+            let ellipsis_width = ellipsis
+                .as_ref()
+                .map(|text| text.chars().map(display_width).sum::<usize>())
+                .unwrap_or(0);
+            let truncated = source_end_column > end_column;
+            let content_width =
+                target_width.saturating_sub(if truncated { ellipsis_width } else { 0 });
+
             let mut result = String::new();
             let mut column = 0usize;
             let mut result_width = 0usize;
             for ch in text.chars() {
-                let width = if ch == '\t' {
-                    interp
-                        .lookup_var("tab-width", &Vec::new())
-                        .and_then(|value| value.as_integer().ok())
-                        .unwrap_or(8)
-                        .max(1) as usize
-                } else {
-                    ch.width().unwrap_or(0)
-                };
+                let width = display_width(ch);
                 let next_column = column + width;
                 if next_column <= start_column {
                     column = next_column;
                     continue;
                 }
-                if next_column > end_column {
-                    if let Some(ellipsis) = &ellipsis {
-                        let ellipsis_width = ellipsis
-                            .chars()
-                            .map(|ch| ch.width().unwrap_or(0))
-                            .sum::<usize>();
-                        if result_width + ellipsis_width <= end_column.saturating_sub(start_column)
-                        {
-                            result.push_str(ellipsis);
-                            result_width += ellipsis_width;
-                        }
-                    }
+                if next_column > end_column || result_width + width > content_width {
                     break;
                 }
                 result.push(ch);
                 result_width += width;
                 column = next_column;
             }
+            if truncated
+                && let Some(ellipsis) = &ellipsis
+                && result_width + ellipsis_width <= target_width
+            {
+                result.push_str(ellipsis);
+                result_width += ellipsis_width;
+            }
             if let Some(padding) = padding {
-                let target_width = end_column.saturating_sub(start_column);
                 let pad_width = padding.width().unwrap_or(1).max(1);
                 while result_width + pad_width <= target_width {
                     result.push(padding);

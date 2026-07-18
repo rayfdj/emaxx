@@ -194,10 +194,8 @@ fn read_source(path: &Path) -> Result<String, types::LispError> {
 }
 
 fn source_settings(source: &str) -> Result<SourceFileSettings, types::LispError> {
-    let lexical_binding = source
-        .lines()
-        .take(2)
-        .any(|line| line.contains("lexical-binding: t"));
+    let lexical_binding =
+        extract_mode_line_variable(source, "lexical-binding").as_deref() == Some("t");
     let read_symbol_shorthands = match extract_file_local_variable(source, "read-symbol-shorthands")
     {
         Some(raw_value) => parse_symbol_shorthands(&raw_value)?,
@@ -207,6 +205,27 @@ fn source_settings(source: &str) -> Result<SourceFileSettings, types::LispError>
         lexical_binding,
         read_symbol_shorthands,
     })
+}
+
+fn extract_mode_line_variable(source: &str, variable: &str) -> Option<String> {
+    for line in source.lines().take(2) {
+        let Some(start) = line.find("-*-") else {
+            continue;
+        };
+        let contents = &line[start + 3..];
+        let Some(end) = contents.find("-*-") else {
+            continue;
+        };
+        for field in contents[..end].split(';') {
+            let Some((name, value)) = field.split_once(':') else {
+                continue;
+            };
+            if name.trim() == variable {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
@@ -224,7 +243,9 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
         if comment_text == "Local Variables:" {
             break;
         }
-        let (name, value) = comment_text.split_once(':')?;
+        let Some((name, value)) = comment_text.split_once(':') else {
+            continue;
+        };
         if name.trim() == variable {
             return Some(value.trim().to_string());
         }
@@ -302,15 +323,16 @@ pub fn load_file_strict(
     let previous_read_symbol_shorthands = interp
         .lookup_var("read-symbol-shorthands", &types::Env::new())
         .unwrap_or(types::Value::Nil);
-    let previous_lexical_binding = interp.lookup_var("lexical-binding", &types::Env::new());
-    interp.set_global_binding(
+    let mut env = types::Env::new();
+    let lexical_restore = interp.bind_special_dynamic(
         "lexical-binding",
         if settings.lexical_binding {
             types::Value::T
         } else {
             types::Value::Nil
         },
-    );
+        &mut env,
+    )?;
     interp.set_global_binding(
         "read-symbol-shorthands",
         read_symbol_shorthands_value(&settings.read_symbol_shorthands),
@@ -327,9 +349,9 @@ pub fn load_file_strict(
     {
         Ok(forms) => forms,
         Err(error) => {
+            let _ = interp.restore_special_dynamic(lexical_restore, &mut env);
             restore_load_dynamic_bindings(
                 interp,
-                previous_lexical_binding,
                 previous_read_symbol_shorthands,
                 previous_load_list,
             );
@@ -338,11 +360,10 @@ pub fn load_file_strict(
         }
     };
     for form in &forms {
-        let mut env = types::Env::new();
         if let Err(error) = interp.eval(form, &mut env) {
+            let _ = interp.restore_special_dynamic(lexical_restore, &mut env);
             restore_load_dynamic_bindings(
                 interp,
-                previous_lexical_binding,
                 previous_read_symbol_shorthands,
                 previous_load_list,
             );
@@ -375,12 +396,8 @@ pub fn load_file_strict(
     if let Some(message) = warning_message {
         append_message(interp, &message);
     }
-    restore_load_dynamic_bindings(
-        interp,
-        previous_lexical_binding,
-        previous_read_symbol_shorthands,
-        previous_load_list,
-    );
+    interp.restore_special_dynamic(lexical_restore, &mut env)?;
+    restore_load_dynamic_bindings(interp, previous_read_symbol_shorthands, previous_load_list);
     interp.set_current_load_file(previous);
     Ok(())
 }
@@ -400,15 +417,16 @@ pub fn run_ert_file(
     let previous_read_symbol_shorthands = interp
         .lookup_var("read-symbol-shorthands", &types::Env::new())
         .unwrap_or(types::Value::Nil);
-    let previous_lexical_binding = interp.lookup_var("lexical-binding", &types::Env::new());
-    interp.set_global_binding(
+    let mut env = types::Env::new();
+    let lexical_restore = interp.bind_special_dynamic(
         "lexical-binding",
         if settings.lexical_binding {
             types::Value::T
         } else {
             types::Value::Nil
         },
-    );
+        &mut env,
+    )?;
     interp.set_global_binding(
         "read-symbol-shorthands",
         read_symbol_shorthands_value(&settings.read_symbol_shorthands),
@@ -425,9 +443,9 @@ pub fn run_ert_file(
     {
         Ok(forms) => forms,
         Err(error) => {
+            let _ = interp.restore_special_dynamic(lexical_restore, &mut env);
             restore_load_dynamic_bindings(
                 &mut interp,
-                previous_lexical_binding,
                 previous_read_symbol_shorthands,
                 previous_load_list,
             );
@@ -438,13 +456,12 @@ pub fn run_ert_file(
 
     // Evaluate all top-level forms (this collects ert-deftest definitions)
     for form in &forms {
-        let mut env = types::Env::new();
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);
     }
+    interp.restore_special_dynamic(lexical_restore, &mut env)?;
     restore_load_dynamic_bindings(
         &mut interp,
-        previous_lexical_binding,
         previous_read_symbol_shorthands,
         previous_load_list,
     );
@@ -469,13 +486,9 @@ pub fn run_ert_file(
 
 fn restore_load_dynamic_bindings(
     interp: &mut eval::Interpreter,
-    previous_lexical_binding: Option<types::Value>,
     previous_read_symbol_shorthands: types::Value,
     previous_load_list: types::Value,
 ) {
-    if let Some(value) = previous_lexical_binding {
-        interp.set_global_binding("lexical-binding", value);
-    }
     interp.set_global_binding("read-symbol-shorthands", previous_read_symbol_shorthands);
     interp.set_global_binding("current-load-list", previous_load_list);
 }
@@ -485,12 +498,38 @@ mod tests {
     use super::{extract_file_local_variable, parse_symbol_shorthands, source_settings};
 
     #[test]
+    fn parses_compact_lexical_binding_modelines() {
+        for source in [
+            ";;; -*- lexical-binding:t -*-\n",
+            "#!/bin/sh\n;;; -*- mode: emacs-lisp; lexical-binding: t; -*-\n",
+        ] {
+            assert!(
+                source_settings(source)
+                    .expect("source settings should parse a valid modeline")
+                    .lexical_binding
+            );
+        }
+
+        for source in [
+            ";;; -*- lexical-binding:nil -*-\n",
+            ";;; -*- not-lexical-binding: t -*-\n",
+        ] {
+            assert!(
+                !source_settings(source)
+                    .expect("source settings should reject unrelated or nil fields")
+                    .lexical_binding
+            );
+        }
+    }
+
+    #[test]
     fn parses_read_symbol_shorthands_from_local_variables_block() {
         let source = r#"
 (ert-deftest ft-sample ())
 
 ;; Local Variables:
 ;; read-symbol-shorthands: (("ft-" . "fns-tests-"))
+;; This comment is not a variable assignment.
 ;; End:
 "#;
 

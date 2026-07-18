@@ -46,14 +46,14 @@ pub(crate) fn hook_values(
     // Lisp reads see them; when the plain lookup returns exactly that
     // mirror, the effective global part is the DEFAULT value (the store
     // below already carries the local functions).
-    if let (Some(local_hooks), Some(base_value)) = (&local, &base) {
-        if crate::lisp::primitives::values_equal(
+    if let (Some(local_hooks), Some(base_value)) = (&local, &base)
+        && crate::lisp::primitives::values_equal(
             interp,
             base_value,
             &Value::list(local_hooks.clone()),
-        ) {
-            base = interp.default_value(hook_name);
-        }
+        )
+    {
+        base = interp.default_value(hook_name);
     }
     let mut global = base
         .map(|value| {
@@ -318,25 +318,6 @@ pub(crate) fn callable_display_action_function(
         Value::Symbol(name) if interp.lookup_function(name, env).is_ok() => Some(value.clone()),
         _ => None,
     }
-}
-
-pub(crate) fn split_display_buffer_action(
-    interp: &Interpreter,
-    action: Option<&Value>,
-    env: &Env,
-) -> (Option<Value>, Value) {
-    let Some(action) = action.filter(|value| !value.is_nil()) else {
-        return (None, Value::Nil);
-    };
-    if let Some(function) = callable_display_action_function(interp, action, env) {
-        return (Some(function), Value::Nil);
-    }
-    if let Some((car, cdr)) = action.cons_values()
-        && let Some(function) = callable_display_action_function(interp, &car, env)
-    {
-        return (Some(function), cdr);
-    }
-    (None, action.clone())
 }
 
 pub(crate) fn display_action_inhibits_same_window(action_alist: &Value) -> bool {
