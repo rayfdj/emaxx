@@ -29,9 +29,16 @@ impl Interpreter {
             {
                 break;
             }
+            let shared_updates = Self::frame_identity(frame)
+                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
             for (k, v) in frame.iter().rev() {
                 if k == name {
-                    return Some(v.clone());
+                    return Some(
+                        shared_updates
+                            .and_then(|updates| updates.get(name))
+                            .cloned()
+                            .unwrap_or_else(|| v.clone()),
+                    );
                 }
             }
         }
@@ -658,9 +665,14 @@ impl Interpreter {
             {
                 break;
             }
+            let shared_updates = Self::frame_identity(frame)
+                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id));
             for (k, v) in frame.iter().rev() {
                 if k == name {
-                    return Ok(v.clone());
+                    return Ok(shared_updates
+                        .and_then(|updates| updates.get(name))
+                        .cloned()
+                        .unwrap_or_else(|| v.clone()));
                 }
             }
         }
@@ -988,11 +1000,14 @@ impl Interpreter {
             if index < floor && *special.get_or_insert_with(|| self.is_dynamic_binding_name(name)) {
                 break;
             }
-            for (k, v) in frame.iter_mut().rev() {
-                if k == name {
-                    *v = Self::stored_value(value);
-                    return;
+            let frame_id = Self::frame_identity(frame);
+            if let Some(binding_index) = frame.iter().rposition(|(key, _)| key == name) {
+                let stored = Self::stored_value(value);
+                frame[binding_index].1 = stored.clone();
+                if let Some(frame_id) = frame_id {
+                    self.record_lexical_cell_update_if_captured(frame_id, name, &stored);
                 }
+                return;
             }
         }
         self.set_symbol_value_cell(name, value);

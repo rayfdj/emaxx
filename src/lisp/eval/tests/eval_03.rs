@@ -522,6 +522,85 @@ fn lexical_closures_preserve_mutated_bindings_across_funcalls() {
 }
 
 #[test]
+fn lexical_closure_mutation_through_fresh_eval_updates_live_outer_binding() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun sample-invoke-through-fresh-eval (function value)
+                    (eval (list function value)))
+                  (let ((captured 0))
+                    (cl-letf (((symbol-function 'sample-captured-setter)
+                               (lambda (value) (setq captured value))))
+                      (sample-invoke-through-fresh-eval
+                       'sample-captured-setter 42)
+                      captured)))
+            "#
+        ),
+        Value::Integer(42)
+    );
+}
+
+#[test]
+fn escaped_lexical_closure_sees_assignment_made_after_capture() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (setq sample-escaped-reader nil)
+                  (let ((captured 0))
+                    (setq sample-escaped-reader (lambda () captured))
+                    (setq captured 17))
+                  (funcall sample-escaped-reader))
+            "#
+        ),
+        Value::Integer(17)
+    );
+}
+
+#[test]
+fn sibling_closure_called_during_writer_sees_the_immediate_update() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (let* ((captured 0)
+                       (reader (lambda () captured))
+                       (write-and-read
+                        (lambda (value)
+                          (setq captured value)
+                          (funcall reader))))
+                  (funcall write-and-read 23))
+            "#
+        ),
+        Value::Integer(23)
+    );
+}
+
+#[test]
+fn same_named_lexical_cells_from_distinct_frames_never_alias() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (progn
+                  (defun sample-make-independent-cell (initial)
+                    (let ((cell initial))
+                      (list (lambda () cell)
+                            (lambda (value) (setq cell value)))))
+                  (let ((first (sample-make-independent-cell 'first))
+                        (second (sample-make-independent-cell 'second)))
+                    (funcall (cadr first) 'changed)
+                    (list (funcall (car first))
+                          (funcall (car second)))))
+            "#
+        ),
+        Value::list([
+            Value::Symbol("changed".into()),
+            Value::Symbol("second".into()),
+        ])
+    );
+}
+
+#[test]
 fn lexical_closures_do_not_capture_same_shaped_record_frames() {
     assert_eq!(
         eval_str(

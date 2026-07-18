@@ -4995,7 +4995,7 @@ impl Interpreter {
         let keep_full_context = body_closure_dont_trim_context(&body);
         let closure_env = if self.lambda_capture_override().unwrap_or(true) {
             if !keep_full_context && self.lambda_trim_override() {
-                shared_env(trim_lambda_closure_env(env, &body))
+                self.capture_closure_env(trim_lambda_closure_env(env, &body))
             } else {
                 self.capture_closure_env(env.clone())
             }
