@@ -213,6 +213,7 @@ pub(crate) fn deliver_process_output(
     if output.is_empty() {
         return Ok(());
     }
+    interp.note_process_output_delivery(process_id);
 
     // The process buffer may have been killed before straggler output is
     // delivered (epg-reset kills it right after completion); GNU discards
@@ -345,6 +346,9 @@ pub(crate) fn append_process_bytes_to_buffer(
     interp: &mut Interpreter,
     destination: &Value,
     bytes: &[u8],
+    operation: &str,
+    operation_args: &[Value],
+    env: &mut Env,
 ) -> Result<(), LispError> {
     if bytes.is_empty() {
         return Ok(());
@@ -367,7 +371,75 @@ pub(crate) fn append_process_bytes_to_buffer(
     if target_id != original_id {
         interp.switch_to_buffer_id(target_id)?;
     }
-    interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+    let mut coding = interp
+        .lookup_var("coding-system-for-read", env)
+        .filter(|value| !value.is_nil())
+        .map(|value| checked_coding_symbol(interp, &value))
+        .transpose()?;
+    if coding.is_none() {
+        let mut lookup_args = Vec::with_capacity(operation_args.len() + 1);
+        lookup_args.push(Value::Symbol(operation.into()));
+        lookup_args.extend_from_slice(operation_args);
+        let operation_coding = find_operation_coding_system_value(interp, &lookup_args, env)?;
+        coding = operation_coding
+            .cons_values()
+            .and_then(|(decoding, _)| (!decoding.is_nil()).then_some(decoding))
+            .map(|value| checked_coding_symbol(interp, &value))
+            .transpose()?;
+    }
+    if coding.is_none() {
+        coding = interp
+            .lookup_var("default-process-coding-system", env)
+            .and_then(|value| value.cons_values())
+            .and_then(|(decoding, _)| (!decoding.is_nil()).then_some(decoding))
+            .map(|value| checked_coding_symbol(interp, &value))
+            .transpose()?;
+    }
+    let mut coding = coding.unwrap_or_else(|| "undecided".into());
+    if !interp.buffer.is_multibyte() {
+        coding = coding_variant_name(
+            interp,
+            "raw-text",
+            interp.coding_system_eol_type_value(&coding),
+        );
+    }
+    let (text, coding_used) =
+        if interp.coding_system_kind_name(&coding).as_deref() == Some("undecided") {
+            let (detected, normalized) = auto_detect_coding(interp, bytes);
+            (decode_text_bytes(interp, &normalized, &detected)?, detected)
+        } else {
+            let actual_eol = detect_eol_type(bytes);
+            let normalized = decode_bytes_with_explicit_eol(
+                bytes,
+                interp
+                    .coding_system_eol_type_value(&coding)
+                    .unwrap_or(actual_eol),
+            );
+            let canonical = interp
+                .coding_system_canonical_name(&coding)
+                .unwrap_or(coding);
+            let base = interp
+                .coding_system_base_name(&canonical)
+                .unwrap_or_else(|| canonical.clone());
+            let coding_used = if interp.coding_system_eol_type_value(&canonical).is_some() {
+                canonical
+            } else {
+                coding_variant_name(interp, &base, Some(actual_eol))
+            };
+            let source = if interp.coding_system_kind_name(&coding_used).as_deref()
+                == Some("utf-8-with-signature")
+            {
+                strip_utf8_bom(&normalized).1
+            } else {
+                &normalized
+            };
+            (
+                decode_text_bytes(interp, source, &coding_used)?,
+                coding_used,
+            )
+        };
+    interp.insert_current_buffer(&text);
+    interp.set_variable("last-coding-system-used", Value::Symbol(coding_used), env);
     if target_id != original_id {
         interp.switch_to_buffer_id(original_id)?;
     }
@@ -423,6 +495,9 @@ pub(crate) fn write_process_output(
     destination: &Value,
     stdout: &[u8],
     stderr: &[u8],
+    operation: &str,
+    operation_args: &[Value],
+    env: &mut Env,
 ) -> Result<(), LispError> {
     if destination.is_nil() {
         return Ok(());
@@ -437,10 +512,17 @@ pub(crate) fn write_process_output(
             }
             return Ok(());
         }
-        append_process_bytes_to_buffer(interp, &items[0], stdout)?;
+        append_process_bytes_to_buffer(interp, &items[0], stdout, operation, operation_args, env)?;
         if !stderr.is_empty() {
             if items[1] == Value::T {
-                append_process_bytes_to_buffer(interp, &items[0], stderr)?;
+                append_process_bytes_to_buffer(
+                    interp,
+                    &items[0],
+                    stderr,
+                    operation,
+                    operation_args,
+                    env,
+                )?;
             } else if !items[1].is_nil() {
                 let path = string_text(&items[1])?;
                 write_process_bytes_to_file(&path, stderr, false)?;
@@ -449,10 +531,24 @@ pub(crate) fn write_process_output(
         return Ok(());
     }
     if let Some((stdout_destination, stderr_destination)) = destination.cons_values() {
-        append_process_bytes_to_buffer(interp, &stdout_destination, stdout)?;
+        append_process_bytes_to_buffer(
+            interp,
+            &stdout_destination,
+            stdout,
+            operation,
+            operation_args,
+            env,
+        )?;
         if !stderr.is_empty() {
             if stderr_destination == Value::T {
-                append_process_bytes_to_buffer(interp, &stdout_destination, stderr)?;
+                append_process_bytes_to_buffer(
+                    interp,
+                    &stdout_destination,
+                    stderr,
+                    operation,
+                    operation_args,
+                    env,
+                )?;
             } else if !stderr_destination.is_nil() {
                 let path = string_text(&stderr_destination)?;
                 write_process_bytes_to_file(&path, stderr, false)?;
@@ -460,8 +556,8 @@ pub(crate) fn write_process_output(
         }
         return Ok(());
     }
-    append_process_bytes_to_buffer(interp, destination, stdout)?;
-    append_process_bytes_to_buffer(interp, destination, stderr)?;
+    append_process_bytes_to_buffer(interp, destination, stdout, operation, operation_args, env)?;
+    append_process_bytes_to_buffer(interp, destination, stderr, operation, operation_args, env)?;
     Ok(())
 }
 
@@ -987,20 +1083,41 @@ pub(crate) fn wait_pumping_processes(
     env: &mut Env,
     total: std::time::Duration,
     return_on_delivery: bool,
+    target_process_id: Option<u64>,
 ) -> Result<bool, LispError> {
     let deadline = std::time::Instant::now() + total;
     let mut delivered = false;
+    let target_start =
+        target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
     loop {
         let mut progressed = pump_external_process_output(interp, env)?;
         progressed |= pump_network_processes(interp, env)?;
         progressed |= run_pending_url_retrievals(interp, env)?;
         delivered |= progressed;
         interp.drive_threads(env, true)?;
-        if return_on_delivery && delivered {
+        let requested_process_delivered = target_process_id.is_some_and(|process_id| {
+            interp.process_output_delivery_count(process_id) != target_start
+        });
+        if return_on_delivery
+            && if target_process_id.is_some() {
+                requested_process_delivered
+            } else {
+                delivered
+            }
+        {
             break;
         }
         let now = std::time::Instant::now();
         if now >= deadline {
+            // Timer/thread callbacks above can consume the remainder of the
+            // deadline while the requested child becomes readable.  Drain
+            // readiness once more before reporting a timeout; otherwise the
+            // bytes are left for the next caller, producing a deterministic
+            // one-wait lag under load.
+            let mut final_progress = pump_external_process_output(interp, env)?;
+            final_progress |= pump_network_processes(interp, env)?;
+            final_progress |= run_pending_url_retrievals(interp, env)?;
+            delivered |= final_progress;
             break;
         }
         if progressed {
@@ -1017,7 +1134,12 @@ pub(crate) fn wait_pumping_processes(
             .max(std::time::Duration::from_millis(1));
         std::thread::sleep(nap);
     }
-    Ok(delivered)
+    let result = if let Some(process_id) = target_process_id {
+        interp.process_output_delivery_count(process_id) != target_start
+    } else {
+        delivered
+    };
+    Ok(result)
 }
 
 /// Accept pending server connections and deliver stream input/closure to

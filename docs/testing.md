@@ -165,6 +165,31 @@ Run a different selector:
 cargo run --bin compat-harness -- run --scope src --selector check-all --file test/src/comp-tests.el
 ```
 
+Every execution has a 120-second per-runner timeout unless
+`--timeout-seconds` or `EMACS_TEST_TIMEOUT` supplies another positive value.
+The harness prints the newly-created artifact directory; it never reuses an
+existing run directory.
+
+### Compare Two Emaxx Revisions Safely
+
+Use one current harness to build and run both source checkouts.  Do not copy a
+harness or Emaxx executable between target directories:
+
+```bash
+cargo run --release --bin compat-harness -- run --scope all --selector check-all --through-file test/lisp/example-tests.el --subject-root /path/to/baseline --timeout-seconds 120
+cargo run --release --bin compat-harness -- run --scope all --selector check-all --through-file test/lisp/example-tests.el --timeout-seconds 120
+cargo run --release --bin compat-harness -- compare-subjects --baseline /first/printed/artifact --candidate /second/printed/artifact
+```
+
+The comparison fails closed unless both artifacts used the same harness,
+oracle executable and helper, selector, file list, name filter, Cargo profile,
+and timeout.  It also fails for pass-to-fail, pass-to-skip, missing, or added
+subject results.  Each source checkout builds in its own owned
+`target/compat-subject` cache; source and executable hashes are checked again
+before a valid summary is written.  A copied harness, a shared cache, a
+concurrent run against the same subject, or source changes during a run are
+rejected.
+
 ### What The Harness Compares
 
 For each file, the harness compares:
@@ -197,6 +222,8 @@ Each run includes per-file data such as:
 - oracle JSON report
 - `emaxx` JSON report
 - comparison report
+- aggregate summary with harness, subject, oracle, source, binary, profile,
+  timeout, Git, and SHA-256 provenance
 
 Use this when:
 

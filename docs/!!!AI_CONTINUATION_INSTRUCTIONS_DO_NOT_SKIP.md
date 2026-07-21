@@ -18,6 +18,49 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- ACTIVE UNCOMMITTED THEMATIC REGRESSION BATCH AFTER 3125 IS READY TO COMMIT.
+  The final cumulative artifact is
+  `target/compat/run-1784589326956761000-16406` (201 files through
+  `test/lisp/eshell/em-glob-tests.el`: 169 exact file matches and 32 known
+  historical/oracle-environment mismatches).  Its Emaxx-only comparison
+  against the pre-fix artifact
+  `target/compat/run-1784558452909597000-74441` reports ZERO pass-to-fail,
+  six fail-to-pass, no changed failures, and complete result coverage.  The
+  repaired tests are `cl-macs--progv`, `cl-macs-test--symbol-macrolet`,
+  `core-elisp-tests-3-backquote`, `test-map-into`,
+  `test-map-merge-empty`, and
+  `test-with-buffer-unmodified-if-unchanged`.  The comparison correctly notes
+  different harness hashes because this batch also fixed artifact provenance;
+  do not pretend the artifacts are provenance-identical.
+- The six final repairs are shared contracts, not selector patches.  Nil-env
+  `(eval FORM)` now gives directly evaluated forms dynamic binding while
+  lexical function boundaries retain their definition-time semantics;
+  symbolic `gv-expander` declarations install the named function; nested
+  backquotes track quotation depth; core and cl-generic condition ancestry is
+  available before Lisp preloads; and GNU's preloaded `with-temp-buffer`
+  remains publicly visible as a macro rather than only an evaluator shortcut.
+  Macro bindings now store callable expander closures instead of raw
+  `(params, body)` tuples, so `cl-macrolet` expander arguments remain lexical
+  even inside dynamic eval.  This last abstraction repair removed the one
+  transient self-introduced regression, `edebug-tests-cl-macrolet`; the full
+  Edebug oracle file passes in
+  `target/compat/run-1784588888832318000-14442` and in cumulative order.
+  The rejected broad approach was to let dynamic eval mode govern the body of
+  a separately invoked macro expander; GNU probes prove the eval mode governs
+  FORM, not the expander function's lexical parameter scope.
+- The harness now writes synthesized load-failure reports to their advertised
+  JSON paths, so completed artifact coverage cannot silently omit failed
+  runners.  Subject builds remain source-owned, synchronously rebuilt, locked
+  against concurrent gates, and checked by source/binary/harness hashes; a
+  gate cannot test stale Emaxx code.  The final fast gate passes 1297 library
+  tests, 25 harness tests, one perf test, and three integration tests.  Clippy
+  passes all targets with `-D warnings`; rustfmt and `git diff --check` are
+  clean.  Fast regressions include the exact upstream files plus direct
+  semantic assertions for dynamic eval, condition ancestry, nested
+  backquote, the public `with-temp-buffer` macro surface, synthesized report
+  persistence, and lexical `cl-macrolet` expansion.  NEXT remains selector
+  3126, `em-hist-test/add-to-history/allow-dups` in
+  `test/lisp/eshell/em-hist-tests.el`, after committing this batch.
 - Verified through selector 3125/7080.  All 27 selected tests in
   `test/lisp/eshell/em-glob-tests.el' pass the grouped GNU oracle replay.
   Selector 3125's remote `~/file.txt' case exposed a shared mock-Tramp
@@ -1827,6 +1870,24 @@ Record both the theme and the rejected overly broad approach in this handoff.
 That prevents future continuations from rediscovering the same traps and keeps
 the project moving by semantic clusters rather than oracle whack-a-mole.
 
+## Deferred Post-7080 Performance Work
+
+- Create/track GitHub issue **"Optimize Dired listings for large directories
+  after 7080 compatibility"**.  During the 3125+ cumulative replay,
+  `dired-test-bug27496` and `dired-test-bug30624` exceeded a 20-second probe
+  when the host `$TMPDIR` contained roughly 1,000 entries; both passed when run
+  against a clean isolated temp directory.  This is not an Eshell or
+  `process-send-string` correctness failure: the tests enumerate the system
+  temp directory, and Emaxx's Dired/file path scales much worse than GNU's on
+  a large directory.  Defer optimization until all 7080 selected compatibility
+  tests are green, then profile the shared directory enumeration/stat/Dired
+  path and optimize the producer boundary with correctness regressions intact.
+- The issue was prepared on 2026-07-19, but both the GitHub integration and the
+  local `gh` credential lacked issue-write access (`github_create_issue`
+  returned HTTP 403; `gh auth status` reported an invalid token).  Retry issue
+  creation once GitHub issue-write authentication is restored; until an issue
+  URL is recorded here, this section is the durable tracking record.
+
 ## Compatibility Harness Usage
 
 Use the harness to compare emaxx against the sibling GNU Emacs checkout. The
@@ -1835,6 +1896,33 @@ normal exact replay shape is:
 ```sh
 cargo run --bin compat-harness -- run --scope all --selector SELECTOR --file PATH/TO/TEST.el
 ```
+
+Do not compare revisions by copying `compat-harness`, copying `emaxx`, or
+sharing `CARGO_TARGET_DIR`.  The harness embeds its compile-time source/target
+identity and rejects execution after being copied.  Use `--subject-root` to
+run an archived baseline; every subject is synchronously built with `--locked`
+in its own source-owned `target/compat-subject` cache.  The exact source tree,
+subject binary, harness, oracle helper, and GNU binary are hashed, recorded in
+`summary.json`, and rechecked before the summary is accepted.  A nonblocking
+subject lock rejects concurrent gates against the same build target.
+
+For revision comparisons, run the same current release harness once with
+`--subject-root BASELINE` and once without it, using the same explicit
+`--timeout-seconds`.  Save the two artifact paths printed by the harness, then
+run:
+
+```sh
+cargo run --release --bin compat-harness -- compare-subjects --baseline BASELINE_ARTIFACT --candidate CANDIDATE_ARTIFACT
+```
+
+`compare-subjects` deliberately rejects legacy/incomplete summaries and
+artifacts that differ in harness, oracle executable/helper, selector, exact
+file list, name filter, profile, or timeout.  Pass-to-skip, missing results,
+and extra results are not silently treated as success.  Do not weaken these
+checks to reuse an old artifact: regenerate both sides with the current
+harness.  The default timeout is 120 seconds; CLI values take precedence over
+`EMACS_TEST_TIMEOUT`.  Artifact directory names use nanosecond time plus PID
+and are created exclusively, so a run cannot append to an older run.
 
 For the next known frontier, run:
 

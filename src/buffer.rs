@@ -649,14 +649,52 @@ impl Buffer {
         self.insert_with_properties(s, None)
     }
 
-    pub fn insert_and_inherit(&mut self, s: &str) -> usize {
-        let inherit_from = if self.pt > self.point_min() {
-            self.pt - 1
+    /// Properties inherited by `insert-and-inherit' at POS.
+    ///
+    /// GNU text-property inheritance is directional: rear-sticky values on
+    /// the preceding character normally win, front-sticky values on the
+    /// following character fill gaps, and the two stickiness-control
+    /// properties never propagate to the inserted text themselves.
+    pub fn inherited_text_properties(
+        &self,
+        pos: usize,
+        default_nonsticky: Option<&Value>,
+    ) -> Vec<(String, Value)> {
+        let previous = if pos > self.point_min() {
+            self.text_properties_at(pos - 1)
         } else {
-            self.pt
+            Vec::new()
         };
-        let props = self.text_properties_at(inherit_from);
-        self.insert_with_properties(s, Some(props))
+        let following = if pos < self.point_max() {
+            self.text_properties_at(pos)
+        } else {
+            Vec::new()
+        };
+        let rear_nonsticky = property_value(&previous, "rear-nonsticky").cloned();
+        let front_sticky = property_value(&following, "front-sticky").cloned();
+        let mut inherited = Vec::new();
+
+        for (name, value) in previous {
+            if is_stickiness_control(&name)
+                || default_property_nonsticky(default_nonsticky, &name)
+                || property_named_by_stickiness(rear_nonsticky.as_ref(), &name)
+                || value.is_nil()
+            {
+                continue;
+            }
+            inherited.push((name, value));
+        }
+        for (name, value) in following {
+            if is_stickiness_control(&name)
+                || !property_named_by_stickiness(front_sticky.as_ref(), &name)
+                || value.is_nil()
+                || inherited.iter().any(|(existing, _)| existing == &name)
+            {
+                continue;
+            }
+            inherited.push((name, value));
+        }
+        inherited
     }
 
     pub fn insert_with_properties(
@@ -1455,6 +1493,42 @@ fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(String, Va
         .unwrap_or_default()
 }
 
+fn property_value<'a>(props: &'a [(String, Value)], name: &str) -> Option<&'a Value> {
+    props
+        .iter()
+        .find(|(property, _)| property == name)
+        .map(|(_, value)| value)
+}
+
+fn is_stickiness_control(name: &str) -> bool {
+    matches!(name, "front-sticky" | "rear-nonsticky")
+}
+
+fn property_named_by_stickiness(setting: Option<&Value>, name: &str) -> bool {
+    match setting {
+        Some(Value::T) => true,
+        Some(value @ Value::Cons(_, _)) => value.to_vec().is_ok_and(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item, Value::Symbol(property) if property == name))
+        }),
+        _ => false,
+    }
+}
+
+fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
+    let Some(defaults) = defaults.and_then(|value| value.to_vec().ok()) else {
+        return false;
+    };
+    defaults.iter().any(|entry| {
+        let Value::Cons(property, nonsticky) = entry else {
+            return false;
+        };
+        matches!(&*property.borrow(), Value::Symbol(candidate) if candidate == name)
+            && nonsticky.borrow().is_truthy()
+    })
+}
+
 fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
     spans.retain(|span| span.start < span.end && !span.props.is_empty());
     spans.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
@@ -1591,6 +1665,71 @@ mod tests {
         buf.insert("b");
         assert_eq!(buf.buffer_string(), "abc");
         assert_eq!(buf.point(), 3); // after 'b'
+    }
+
+    #[test]
+    fn inherited_text_properties_obey_directional_stickiness() {
+        let mut prompt = Buffer::from_text("prompt", "p");
+        prompt.set_text_properties(
+            1,
+            2,
+            &[
+                ("field".into(), Value::Symbol("prompt".into())),
+                ("read-only".into(), Value::T),
+                (
+                    "front-sticky".into(),
+                    Value::list([
+                        Value::Symbol("field".into()),
+                        Value::Symbol("read-only".into()),
+                    ]),
+                ),
+                (
+                    "rear-nonsticky".into(),
+                    Value::list([
+                        Value::Symbol("field".into()),
+                        Value::Symbol("read-only".into()),
+                    ]),
+                ),
+            ],
+        );
+        assert!(prompt.inherited_text_properties(2, None).is_empty());
+
+        let mut adjacent = Buffer::from_text("adjacent", "ab");
+        adjacent.set_text_properties(
+            1,
+            2,
+            &[
+                ("from-rear".into(), Value::Integer(1)),
+                (
+                    "rear-nonsticky".into(),
+                    Value::list([Value::Symbol("face".into())]),
+                ),
+            ],
+        );
+        adjacent.set_text_properties(
+            2,
+            3,
+            &[
+                ("from-front".into(), Value::Integer(2)),
+                (
+                    "front-sticky".into(),
+                    Value::list([Value::Symbol("from-front".into())]),
+                ),
+            ],
+        );
+        assert_eq!(
+            adjacent.inherited_text_properties(2, None),
+            vec![
+                ("from-rear".into(), Value::Integer(1)),
+                ("from-front".into(), Value::Integer(2)),
+            ]
+        );
+
+        let defaults = Value::list([Value::cons(Value::Symbol("from-rear".into()), Value::T)]);
+        assert_eq!(
+            adjacent.inherited_text_properties(2, Some(&defaults)),
+            vec![("from-front".into(), Value::Integer(2))]
+        );
     }
 
     #[test]

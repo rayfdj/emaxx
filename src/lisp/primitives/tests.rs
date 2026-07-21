@@ -906,9 +906,10 @@ fn start_process_routes_command_output_to_its_buffer() {
     )
     .expect("second process-send-string should succeed");
 
-    // Process output is asynchronous.  Under full-suite contention, `cat`
-    // may not echo within process-send-string's short opportunistic drain.
-    // Wait explicitly, as Lisp callers must, before asserting on its buffer.
+    // Process output is asynchronous.  Wait explicitly, as Lisp callers
+    // must, before asserting on its buffer.  The long deadline does not slow
+    // the normal case (accept returns on delivery), but avoids mistaking CPU
+    // starvation in the parallel fast suite for a process semantic failure.
     let current_contents = interp
         .get_buffer_by_id(buffer_id)
         .expect("process buffer")
@@ -924,7 +925,7 @@ fn start_process_routes_command_output_to_its_buffer() {
         call(
             &mut interp,
             "accept-process-output",
-            &[process.clone(), Value::Float(1.0)],
+            &[process.clone(), Value::Integer(10)],
             &mut env,
         )
         .expect("accept-process-output should receive the echo");
@@ -1135,6 +1136,76 @@ fn accept_process_output_honors_seconds_with_no_millis_argument() {
 }
 
 #[test]
+fn accept_process_output_ignores_distractor_output_until_target_delivers() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let target_buffer = call(
+        &mut interp,
+        "generate-new-buffer",
+        &[Value::String(" *accept-target*".into())],
+        &mut env,
+    )
+    .expect("create target buffer");
+    let target_buffer_id = interp
+        .resolve_buffer_id(&target_buffer)
+        .expect("resolve target buffer");
+    let distractor_buffer = call(
+        &mut interp,
+        "generate-new-buffer",
+        &[Value::String(" *accept-distractor*".into())],
+        &mut env,
+    )
+    .expect("create distractor buffer");
+    let target = call(
+        &mut interp,
+        "start-process",
+        &[
+            Value::String("accept-target".into()),
+            target_buffer,
+            Value::String("sh".into()),
+            Value::String("-c".into()),
+            Value::String("sleep 0.15; printf target".into()),
+        ],
+        &mut env,
+    )
+    .expect("start delayed target");
+    call(
+        &mut interp,
+        "start-process",
+        &[
+            Value::String("accept-distractor".into()),
+            distractor_buffer,
+            Value::String("sh".into()),
+            Value::String("-c".into()),
+            Value::String("printf distractor".into()),
+        ],
+        &mut env,
+    )
+    .expect("start immediate distractor");
+
+    assert_eq!(
+        call(
+            &mut interp,
+            "accept-process-output",
+            // This is only a deadline: the delayed writer normally arrives
+            // in 150ms, while a saturated parallel test host may leave the
+            // newly spawned shell unscheduled for several seconds.
+            &[target, Value::Integer(10)],
+            &mut env,
+        )
+        .expect("wait for requested process"),
+        Value::T
+    );
+    assert_eq!(
+        interp
+            .get_buffer_by_id(target_buffer_id)
+            .expect("live target buffer")
+            .full_buffer_string(),
+        "target"
+    );
+}
+
+#[test]
 fn make_network_process_ipv4_family_prefers_an_ipv4_listener() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -1338,6 +1409,7 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
 fn indent_rigidly_shifts_each_line_in_region() {
     let mut interp = Interpreter::new();
     interp.buffer = crate::buffer::Buffer::from_text("*test*", "a\nb\n");
+    interp.buffer.goto_char(interp.buffer.point_max());
     let mut env = Vec::new();
 
     call(
@@ -1355,6 +1427,7 @@ fn indent_rigidly_shifts_each_line_in_region() {
             .expect("buffer contents"),
         "  a\n  b\n"
     );
+    assert_eq!(interp.buffer.point(), 9);
 }
 
 #[test]

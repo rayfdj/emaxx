@@ -35,7 +35,6 @@ impl Interpreter {
         s: &str,
         props: Option<Vec<(String, Value)>>,
         before_markers: bool,
-        inherit: bool,
     ) {
         let current_id = self.current_buffer_id();
         let nchars = s.chars().count();
@@ -46,9 +45,7 @@ impl Interpreter {
             if let Some(buffer) = self.get_buffer_by_id_mut(*buffer_id) {
                 let saved_point = buffer.point();
                 buffer.goto_char(pos);
-                if inherit {
-                    buffer.insert_and_inherit(s);
-                } else if let Some(props) = props.clone() {
+                if let Some(props) = props.clone() {
                     buffer.insert_with_properties(s, Some(props));
                 } else {
                     buffer.insert(s);
@@ -97,7 +94,7 @@ impl Interpreter {
         let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, None, false, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, None, false);
     }
 
     pub fn insert_current_buffer_with_properties(
@@ -110,16 +107,20 @@ impl Interpreter {
         let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert_with_properties(s, props.clone());
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, props, false, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, props, false);
     }
 
     pub fn insert_current_buffer_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.insert_and_inherit(s);
+        let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
+        let props = self
+            .buffer
+            .inherited_text_properties(pos, defaults.as_ref());
+        self.buffer.insert_with_properties(s, Some(props.clone()));
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, false);
-        self.mirror_insert_to_related_buffers(&related, pos, s, None, false, true);
+        self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), false);
     }
 
     pub fn insert_current_buffer_before_markers(&mut self, s: &str) {
@@ -128,16 +129,20 @@ impl Interpreter {
         let related = self.related_buffer_ids(self.current_buffer_id());
         self.buffer.insert(s);
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
-        self.mirror_insert_to_related_buffers(&related, pos, s, None, true, false);
+        self.mirror_insert_to_related_buffers(&related, pos, s, None, true);
     }
 
     pub fn insert_current_buffer_before_markers_and_inherit(&mut self, s: &str) {
         let pos = self.buffer.point();
         let nchars = s.chars().count();
         let related = self.related_buffer_ids(self.current_buffer_id());
-        self.buffer.insert_and_inherit(s);
+        let defaults = self.lookup_var("text-property-default-nonsticky", &Env::new());
+        let props = self
+            .buffer
+            .inherited_text_properties(pos, defaults.as_ref());
+        self.buffer.insert_with_properties(s, Some(props.clone()));
         self.adjust_markers_for_insert(self.current_buffer_id(), pos, nchars, true);
-        self.mirror_insert_to_related_buffers(&related, pos, s, None, true, true);
+        self.mirror_insert_to_related_buffers(&related, pos, s, Some(props), true);
     }
 
     pub fn delete_region_current_buffer(

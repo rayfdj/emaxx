@@ -1146,53 +1146,70 @@ pub(crate) fn find_operation_coding_system_value(
             0,
         ));
     }
-    let _operation = args[0].as_symbol()?;
-    let Some(file) = args.get(1) else {
-        return Ok(Value::Nil);
+    let operation = args[0].as_symbol()?;
+    let (target_index, alist_name) = match operation {
+        "insert-file-contents" => (0, "file-coding-system-alist"),
+        "write-region" => (2, "file-coding-system-alist"),
+        "call-process" => (0, "process-coding-system-alist"),
+        "call-process-region" | "start-process" => (2, "process-coding-system-alist"),
+        "open-network-stream" => (3, "network-coding-system-alist"),
+        _ => {
+            return Err(LispError::Signal(format!(
+                "Invalid first argument: {operation}"
+            )));
+        }
     };
-    let file = match file {
-        Value::Cons(car, _) => string_text(&car.borrow())?,
-        _ => string_text(file)?,
+    let Some(target) = args.get(target_index + 1) else {
+        return Err(LispError::Signal(format!(
+            "Too few arguments for operation `{operation}'"
+        )));
     };
-    let Some(alist) = interp.lookup_var("file-coding-system-alist", env) else {
+    let operation_target = match target {
+        Value::Cons(car, _) if operation == "insert-file-contents" => car.borrow().clone(),
+        other => other.clone(),
+    };
+    let Some(alist) = interp.lookup_var(alist_name, env) else {
         return Ok(Value::Nil);
     };
     for entry in alist.to_vec()? {
         let Some((pattern, target)) = entry.cons_values() else {
             continue;
         };
-        let pattern = string_text(&pattern)?;
-        let Ok(regex) = Regex::new(&regexp::translate_elisp_regex(&pattern)) else {
-            continue;
+        let matches = match (&pattern, &operation_target) {
+            (Value::Integer(pattern), Value::Integer(target)) => pattern == target,
+            (pattern, target) => {
+                let (Ok(pattern), Ok(target)) = (string_text(pattern), string_text(target)) else {
+                    continue;
+                };
+                Regex::new(&regexp::translate_elisp_regex(&pattern))
+                    .is_ok_and(|regex| regex.is_match(&target))
+            }
         };
-        if !regex.is_match(&file) {
+        if !matches {
             continue;
         }
-        let target = match target {
-            Value::Cons(value, tail) if matches!(*tail.borrow(), Value::Nil) => {
-                value.borrow().clone()
-            }
-            // (REGEXP DECODING . ENCODING): return the pair verbatim.
-            Value::Cons(decode, encode) => {
-                return Ok(Value::cons(
-                    decode.borrow().clone(),
-                    encode.borrow().clone(),
-                ));
-            }
-            other => other,
-        };
+        // A cons is already the requested (DECODING . ENCODING) pair.
+        if matches!(target, Value::Cons(_, _)) {
+            return Ok(target);
+        }
         let coding = match target {
             Value::Symbol(symbol) if interp.has_coding_system(&symbol) => interp
                 .coding_system_canonical_name(&symbol)
                 .unwrap_or(symbol),
             Value::Symbol(symbol) => {
                 let result =
-                    call_named_function(interp, &symbol, &[Value::list(args[1..].to_vec())], env)?;
+                    call_named_function(interp, &symbol, &[Value::list(args.to_vec())], env)?;
+                if let Some((decode, encode)) = result.cons_values() {
+                    return Ok(Value::cons(decode, encode));
+                }
                 checked_coding_symbol(interp, &result)?
             }
             other => {
                 let result =
-                    call_function_value(interp, &other, &[Value::list(args[1..].to_vec())], env)?;
+                    call_function_value(interp, &other, &[Value::list(args.to_vec())], env)?;
+                if let Some((decode, encode)) = result.cons_values() {
+                    return Ok(Value::cons(decode, encode));
+                }
                 checked_coding_symbol(interp, &result)?
             }
         };

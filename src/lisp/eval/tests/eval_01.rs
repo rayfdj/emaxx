@@ -1404,6 +1404,24 @@ fn re_search_forward_respects_limit_argument() {
 }
 
 #[test]
+fn search_spaces_regexp_binding_crosses_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-test-search-spaces ()
+                   (with-temp-buffer
+                     (insert "a \n\t b")
+                     (goto-char (point-min))
+                     (re-search-forward "a b" nil t)))
+                 (let ((search-spaces-regexp "\\s-+"))
+                   (list (special-variable-p 'search-spaces-regexp)
+                         (emaxx-test-search-spaces))))"#
+        ),
+        Value::list([Value::T, Value::Integer(7)])
+    );
+}
+
+#[test]
 fn re_search_forward_honors_nested_point_assertion_at_search_start() {
     assert_eq!(
         eval_str(
@@ -1714,6 +1732,27 @@ fn ert_resource_file_uses_test_defining_file_during_execution() {
 }
 
 #[test]
+fn macroexp_file_name_survives_nested_ert_macro_expansion() {
+    let mut interp = Interpreter::new();
+    let test_file = "/tmp/emaxx-nested-resource-tests.el";
+    interp.set_current_load_file(Some(test_file.into()));
+    eval_str_with(
+        &mut interp,
+        &format!(
+            r#"
+                (defmacro emaxx-test-call-site-file ()
+                  `(quote ,(macroexp-file-name)))
+                (ert-deftest macroexp-file-name-keeps-defining-file ()
+                  (should (string= (emaxx-test-call-site-file) "{test_file}")))
+                "#
+        ),
+    );
+    interp.set_current_load_file(None);
+    let (passed, failed, total) = interp.run_ert_tests();
+    assert_eq!((passed, failed, total), (1, 0, 1));
+}
+
+#[test]
 fn keyword_symbols_self_evaluate() {
     assert_eq!(eval_str(":default"), Value::Symbol(":default".into()));
 }
@@ -1949,6 +1988,145 @@ fn editing_command_state_defaults_are_bound() {
 }
 
 #[test]
+fn command_loop_c_variables_are_dynamic_across_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-test-command-loop-state ()
+                   (list this-command
+                         real-this-command
+                         this-original-command
+                         last-command))
+                 (let ((this-command 'self-insert-command)
+                       (real-this-command 'self-insert-command)
+                       (this-original-command 'self-insert-command)
+                       (last-command 'previous-command))
+                   (list
+                    (emaxx-test-command-loop-state)
+                    (memq this-command '(self-insert-command delete-backward-char))
+                    (mapcar #'special-variable-p
+                            '(this-command real-this-command
+                              this-original-command last-command)))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("self-insert-command".into()),
+                Value::Symbol("self-insert-command".into()),
+                Value::Symbol("self-insert-command".into()),
+                Value::Symbol("previous-command".into()),
+            ]),
+            Value::list([
+                Value::Symbol("self-insert-command".into()),
+                Value::Symbol("delete-backward-char".into()),
+            ]),
+            Value::list([Value::T, Value::T, Value::T, Value::T]),
+        ])
+    );
+}
+
+#[test]
+fn installation_directory_c_variables_are_dynamic_across_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-test-installation-directories ()
+                   (list source-directory data-directory doc-directory
+                         configure-info-directory))
+                 (let ((source-directory "/source/")
+                       (data-directory "/data/")
+                       (doc-directory "/doc/")
+                       (configure-info-directory "/info/"))
+                   (list
+                    (emaxx-test-installation-directories)
+                    (mapcar #'special-variable-p
+                            '(source-directory data-directory doc-directory
+                              configure-info-directory)))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::String("/source/".into()),
+                Value::String("/data/".into()),
+                Value::String("/doc/".into()),
+                Value::String("/info/".into()),
+            ]),
+            Value::list([Value::T, Value::T, Value::T, Value::T]),
+        ])
+    );
+}
+
+#[test]
+fn recursive_minibuffer_c_policy_is_bound_and_special() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-test-recursive-minibuffer-policy ()
+                   enable-recursive-minibuffers)
+                 (list enable-recursive-minibuffers
+                       (special-variable-p 'enable-recursive-minibuffers)
+                       (let ((enable-recursive-minibuffers t))
+                         (emaxx-test-recursive-minibuffer-policy))))"#
+        ),
+        Value::list([Value::Nil, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn evaluator_debugger_policy_is_bound_and_dynamic_across_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defun emaxx-test-active-debugger-policy ()
+                   (list debugger debug-on-error debug-on-quit debug-on-signal
+                         debugger-may-continue debug-on-next-call
+                         backtrace-on-error-noninteractive))
+                 (list
+                  (emaxx-test-active-debugger-policy)
+                  (mapcar #'special-variable-p
+                          '(debugger debug-on-error debug-on-quit debug-on-signal
+                            debugger-may-continue debug-on-next-call
+                            backtrace-on-error-noninteractive))
+                  (let ((debugger 'emaxx-test-debugger)
+                        (debug-on-error t)
+                        (debug-on-quit t)
+                        (debug-on-signal t)
+                        (debugger-may-continue nil)
+                        (debug-on-next-call t)
+                        (backtrace-on-error-noninteractive nil))
+                    (emaxx-test-active-debugger-policy))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Symbol("debug".into()),
+                Value::Nil,
+                Value::Nil,
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+                Value::T,
+            ]),
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+            ]),
+            Value::list([
+                Value::Symbol("emaxx-test-debugger".into()),
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+            ]),
+        ])
+    );
+}
+
+#[test]
 fn process_runtime_defaults_match_dumped_process_c_state() {
     assert_eq!(
         eval_str(
@@ -2024,6 +2202,83 @@ fn new_buffers_inherit_default_directory_but_not_read_only() {
             Value::String("/tmp/emaxx-inherited-directory/".into()),
             Value::Nil,
         ])
+    );
+}
+
+#[test]
+fn native_per_buffer_manifest_is_special_and_automatically_local() {
+    let interp = Interpreter::new();
+    for name in GNU_NATIVE_PER_BUFFER_VARIABLES {
+        assert!(
+            interp.is_per_buffer_special(name),
+            "GNU DEFVAR_PER_BUFFER `{name}` must retain native forwarding semantics"
+        );
+        assert!(
+            interp.is_auto_buffer_local(name),
+            "GNU DEFVAR_PER_BUFFER `{name}` must become local when assigned"
+        );
+        assert_eq!(
+            interp.is_always_buffer_local_special(name),
+            GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES.contains(name),
+            "GNU DEFVAR_PER_BUFFER `{name}` has the wrong default-inheriting/always-local subtype"
+        );
+    }
+}
+
+#[test]
+fn gnu_lread_c_variables_are_declared_special() {
+    let interp = Interpreter::new();
+    for name in GNU_LREAD_SPECIAL_VARIABLES {
+        assert!(
+            interp.is_special_variable(name),
+            "GNU lread.c DEFVAR `{name}` must remain dynamically scoped"
+        );
+    }
+}
+
+#[test]
+fn fill_column_binding_crosses_lexical_function_boundaries_and_assigns_locally() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                  (defun emaxx-test-read-fill-column () fill-column)
+                  (let ((original (current-buffer)))
+                    (list
+                     (special-variable-p 'fill-column)
+                     (let ((fill-column 5))
+                       (list (emaxx-test-read-fill-column)
+                             (with-temp-buffer
+                               (emaxx-test-read-fill-column))))
+                     (let ((buffer-file-name "outer"))
+                       (with-temp-buffer buffer-file-name))
+                     (progn
+                       (setq fill-column 30)
+                       (with-temp-buffer
+                         (list fill-column
+                               (progn (setq fill-column 40) fill-column)
+                               (with-current-buffer original fill-column)))))))"#,
+        ),
+        Value::list([
+            Value::T,
+            Value::list([Value::Integer(5), Value::Integer(5)]),
+            Value::Nil,
+            Value::list([Value::Integer(70), Value::Integer(40), Value::Integer(30),]),
+        ])
+    );
+}
+
+#[test]
+fn host_noninteractive_flag_is_dynamically_visible_across_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                  (setq noninteractive t)
+                  (defun emaxx-test-read-noninteractive () noninteractive)
+                  (list (let ((noninteractive nil))
+                          (emaxx-test-read-noninteractive))
+                        noninteractive))"#,
+        ),
+        Value::list([Value::Nil, Value::T])
     );
 }
 

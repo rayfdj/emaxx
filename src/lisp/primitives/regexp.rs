@@ -427,19 +427,26 @@ fn translate_zero_width_assertion(
     }
 }
 
-// Rewrite `\s<' / `\S<' / `\s>' / `\S>' atoms into bracket expressions
-// listing the characters the current syntax table assigns those classes;
-// an empty class becomes a never-matching / always-matching alternative.
-fn resolve_comment_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
+// Rewrite syntax atoms whose meaning cannot be represented by a fixed Rust
+// regex character class.  Comment delimiters come from explicit table
+// entries; symbol constituents must distinguish GNU's `\s_' from `\sw' and
+// include mode-specific ASCII entries such as `:' in Emacs Lisp mode.
+fn resolve_table_syntax_classes(interp: &Interpreter, pattern: &str) -> String {
     if !pattern.contains("\\s<")
         && !pattern.contains("\\S<")
         && !pattern.contains("\\s>")
         && !pattern.contains("\\S>")
+        && !pattern.contains("\\s_")
+        && !pattern.contains("\\S_")
     {
         return pattern.to_string();
     }
     let class_expansion = |class_char: char, negated: bool| -> String {
-        let chars = super::syntax::syntax_class_explicit_chars(interp, class_char);
+        let chars = if class_char == '_' {
+            super::syntax::syntax_class_ascii_chars(interp, class_char)
+        } else {
+            super::syntax::syntax_class_explicit_chars(interp, class_char)
+        };
         if chars.is_empty() {
             return if negated {
                 // Anything (GNU: no character has the class).
@@ -453,11 +460,20 @@ fn resolve_comment_syntax_classes(interp: &Interpreter, pattern: &str) -> String
         if negated {
             set.push('^');
         }
-        for ch in chars {
-            if matches!(ch, ']' | '^' | '-' | '\\') {
+        // This bracket expression is an internal bridge to the delegate,
+        // not an Emacs regexp returned to Lisp.  Keep `-' last so our Emacs
+        // bracket parser treats it as a literal member.  Escaping it in its
+        // ASCII sort position can form a spurious `\\-/' range and silently
+        // drop both symbol constituents.
+        let contains_hyphen = chars.contains(&'-');
+        for ch in chars.into_iter().filter(|ch| *ch != '-') {
+            if matches!(ch, ']' | '^' | '\\') {
                 set.push('\\');
             }
             set.push(ch);
+        }
+        if contains_hyphen {
+            set.push('-');
         }
         format!("[{set}]")
     };
@@ -474,7 +490,7 @@ fn resolve_comment_syntax_classes(interp: &Interpreter, pattern: &str) -> String
                 let mut lookahead = chars.clone();
                 lookahead.next();
                 match lookahead.peek() {
-                    Some('<') | Some('>') => {
+                    Some('<') | Some('>') | Some('_') => {
                         chars.next();
                         let class_char = chars.next().expect("peeked class");
                         result.push_str(&class_expansion(class_char, escape == 'S'));
@@ -1038,11 +1054,10 @@ pub(super) fn compile_elisp_regex(
     point_assertion: &str,
     at_absolute_start: bool,
 ) -> Result<CompiledElispRegex, LispError> {
-    // GNU resolves `\s<'/`\s>' against the current buffer's syntax table;
-    // rewrite them into explicit character classes before translation (the
-    // rewritten pattern doubles as the cache key, so different tables cache
-    // separately).
-    let pattern_text = resolve_comment_syntax_classes(interp, &pattern.text);
+    // GNU resolves syntax atoms against the current buffer's syntax table.
+    // The rewritten pattern doubles as the cache key, so changing tables
+    // cannot reuse a stale class expansion.
+    let pattern_text = resolve_table_syntax_classes(interp, &pattern.text);
     let case_fold = interp
         .lookup_var("case-fold-search", env)
         .is_some_and(|value| value.is_truthy());

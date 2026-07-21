@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -9,11 +13,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use walkdir::WalkDir;
 
-use emaxx::compat::{self, BatchReport, FileStatus, OracleLocalConfig, OracleLock, Scope};
+use emaxx::compat::{
+    self, BatchReport, FileStatus, OracleLocalConfig, OracleLock, Scope, TestStatus,
+};
 
 const ADVANCE_COMPAT_PREFIX: &str = "Advance compatibility for ";
 const COMPAT_REGRESSION_MANIFEST_PATH: &str = "compat/compat_regressions.json";
+const TARGET_OWNER_FILE: &str = ".emaxx-source-root";
+const SUBJECT_LOCK_FILE: &str = ".emaxx-compat.lock";
+const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 
 struct CompatRunPlan<'a> {
     mode: &'a str,
@@ -21,9 +32,11 @@ struct CompatRunPlan<'a> {
     selector: &'a str,
     files: Vec<PathBuf>,
     name_filter: Option<&'a Regex>,
+    name_filter_expression: Option<&'a str>,
     artifact_root: &'a Path,
     timeout: Option<Duration>,
-    emaxx_binary: &'a Path,
+    subject: &'a SubjectBuild,
+    provenance: &'a RunProvenance,
 }
 
 #[derive(Debug, Parser)]
@@ -41,6 +54,8 @@ enum Commands {
     Run(RunArgs),
     Landed(LandedArgs),
     Regressions(RegressionArgs),
+    /// Compare only Emaxx outcomes from two completed artifact directories.
+    CompareSubjects(CompareSubjectsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -95,6 +110,9 @@ struct ListArgs {
     file: Option<String>,
     #[arg(long)]
     name: Option<String>,
+    /// Per-runner timeout (default 120 seconds).
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -105,8 +123,25 @@ struct RunArgs {
     selector: String,
     #[arg(long)]
     file: Option<String>,
+    /// Run the canonical sorted prefix ending with this file.
+    #[arg(long, conflicts_with = "file")]
+    through_file: Option<String>,
     #[arg(long)]
     name: Option<String>,
+    /// Source checkout whose Emaxx binary should be built and tested.
+    #[arg(long)]
+    subject_root: Option<PathBuf>,
+    /// Per-runner timeout.  This is recorded in summary provenance.
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct CompareSubjectsArgs {
+    #[arg(long)]
+    baseline: PathBuf,
+    #[arg(long)]
+    candidate: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -119,6 +154,9 @@ struct LandedArgs {
     file: Option<String>,
     #[arg(long)]
     name: Option<String>,
+    /// Per-runner timeout (default 120 seconds).
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -141,6 +179,9 @@ struct RegressionRunArgs {
     file: Option<String>,
     #[arg(long)]
     name: Option<String>,
+    /// Per-runner timeout (default 120 seconds).
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -149,6 +190,9 @@ struct RegressionAddArgs {
     file: String,
     #[arg(long, default_value = "check-all")]
     selector: String,
+    /// Per-runner timeout (default 120 seconds).
+    #[arg(long)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -171,7 +215,18 @@ struct RunnerArtifacts {
     process: ProcessResult,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+struct RunnerTempDirectory {
+    path: PathBuf,
+}
+
+impl Drop for RunnerTempDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct AggregateReport {
     mode: String,
     selector: String,
@@ -181,6 +236,76 @@ struct AggregateReport {
     mismatching_files: usize,
     files: Vec<String>,
     mismatches: Vec<String>,
+    name_filter: Option<String>,
+    provenance: RunProvenance,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct RunProvenance {
+    harness_source_root: String,
+    harness_compiled_target_dir: String,
+    harness_binary: String,
+    harness_sha256: String,
+    oracle_helper_sha256: String,
+    subject_source_root: String,
+    subject_source_sha256: String,
+    subject_git_head: Option<String>,
+    subject_git_dirty: Option<bool>,
+    subject_target_dir: String,
+    subject_profile: String,
+    subject_binary: String,
+    subject_sha256: String,
+    oracle_binary: String,
+    oracle_sha256: String,
+    oracle_repo: String,
+    oracle_repo_commit: String,
+    oracle_emacs_version: String,
+    oracle_system_type: String,
+    oracle_native_compilation: bool,
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug)]
+struct SubjectBuild {
+    source_root: PathBuf,
+    target_dir: PathBuf,
+    profile: String,
+    binary: PathBuf,
+    source_sha256: String,
+    _lock: SubjectLock,
+}
+
+#[derive(Debug)]
+struct SubjectLock {
+    _file: fs::File,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct SubjectTransition {
+    file: String,
+    test: String,
+    baseline_status: String,
+    baseline_condition: Option<String>,
+    candidate_status: String,
+    candidate_condition: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct SubjectComparison {
+    baseline: String,
+    candidate: String,
+    incompatible: Vec<String>,
+    pass_to_fail: Vec<SubjectTransition>,
+    fail_to_pass: Vec<SubjectTransition>,
+    changed_failures: Vec<SubjectTransition>,
+    missing_from_candidate: Vec<String>,
+    added_in_candidate: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NormalizedSubjectOutcome {
+    status: TestStatus,
+    condition: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -302,6 +427,7 @@ fn try_main() -> Result<u8, String> {
         Commands::Run(args) => run_compat(args),
         Commands::Landed(args) => run_landed_compat(args),
         Commands::Regressions(args) => run_regressions(args),
+        Commands::CompareSubjects(args) => compare_subject_artifacts(args),
     }
 }
 
@@ -310,6 +436,20 @@ fn pin_oracle(args: PinArgs) -> Result<(), String> {
     let emacs_repo = compat::canonicalize_path(&args.repo)?;
     let runtime = compat::current_emacs_runtime(&emacs_binary)?;
     let commit = compat::current_repo_commit(&emacs_repo)?;
+    let (_, dirty) = git_state(&emacs_repo)?;
+    if dirty != Some(false) {
+        return Err(format!(
+            "refusing to pin dirty GNU Emacs checkout {}; commit identity alone would not describe the oracle sources",
+            emacs_repo.display()
+        ));
+    }
+    if runtime.repository_version.as_deref() != Some(commit.as_str()) {
+        return Err(format!(
+            "refusing to pin GNU Emacs binary {}: checkout is {commit}, binary reports repository version {:?}; rebuild the oracle first",
+            emacs_binary.display(),
+            runtime.repository_version
+        ));
+    }
     let lock = OracleLock::current(
         commit,
         runtime.emacs_version.clone(),
@@ -349,9 +489,11 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
         &context.local.emacs_repo,
         args.scope.into(),
         args.file.as_deref(),
+        None,
     )?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("list")?;
+    let timeout = resolve_run_timeout(args.timeout_seconds)?;
 
     for file in files {
         let relative = compat::relative_test_path(&context.local.emacs_repo, &file)?;
@@ -362,7 +504,7 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
             &file,
             &selector,
             &per_file_dir,
-            compat::resolve_timeout()?,
+            timeout,
         )?;
         let filtered = compat::filter_report_by_name(&oracle.report, name_filter.as_ref());
         match filtered.file_status {
@@ -399,11 +541,13 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
         &context.local.emacs_repo,
         args.scope.into(),
         args.file.as_deref(),
+        args.through_file.as_deref(),
     )?;
-    let timeout = compat::resolve_timeout()?;
+    let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("run")?;
-    let emaxx_binary = ensure_emaxx_binary()?;
+    let subject = ensure_emaxx_binary(args.subject_root.as_deref())?;
+    let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
         &context,
@@ -413,11 +557,308 @@ fn run_compat(args: RunArgs) -> Result<u8, String> {
             selector: &selector,
             files,
             name_filter: name_filter.as_ref(),
+            name_filter_expression: args.name.as_deref(),
             artifact_root: &artifact_root,
             timeout,
-            emaxx_binary: &emaxx_binary,
+            subject: &subject,
+            provenance: &provenance,
         },
     )
+}
+
+fn compare_subject_artifacts(args: CompareSubjectsArgs) -> Result<u8, String> {
+    let baseline_root = compat::canonicalize_path(&args.baseline)?;
+    let candidate_root = compat::canonicalize_path(&args.candidate)?;
+    let baseline_summary = load_aggregate_report(&baseline_root)?;
+    let candidate_summary = load_aggregate_report(&candidate_root)?;
+    let baseline = load_subject_outcomes(&baseline_root, &baseline_summary)?;
+    let candidate = load_subject_outcomes(&candidate_root, &candidate_summary)?;
+    let comparison = compare_subject_outcomes(
+        baseline_root.display().to_string(),
+        candidate_root.display().to_string(),
+        &baseline_summary,
+        &candidate_summary,
+        &baseline,
+        &candidate,
+    );
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&comparison)
+            .map_err(|error| format!("serialize subject comparison: {error}"))?
+    );
+    if comparison.incompatible.is_empty()
+        && comparison.pass_to_fail.is_empty()
+        && comparison.missing_from_candidate.is_empty()
+        && comparison.added_in_candidate.is_empty()
+    {
+        Ok(0)
+    } else {
+        Ok(1)
+    }
+}
+
+fn load_aggregate_report(artifact_root: &Path) -> Result<AggregateReport, String> {
+    let path = artifact_root.join("summary.json");
+    let data = fs::read_to_string(&path)
+        .map_err(|error| format!("read required artifact summary {}: {error}", path.display()))?;
+    serde_json::from_str(&data).map_err(|error| {
+        format!(
+            "parse required artifact summary {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn load_subject_outcomes(
+    artifact_root: &Path,
+    summary: &AggregateReport,
+) -> Result<BTreeMap<String, NormalizedSubjectOutcome>, String> {
+    let mut outcomes = BTreeMap::new();
+    let mut reports = 0usize;
+    for entry in WalkDir::new(artifact_root) {
+        let entry = entry.map_err(|error| {
+            format!(
+                "walk subject artifacts under {}: {error}",
+                artifact_root.display()
+            )
+        })?;
+        if !entry.file_type().is_file() || entry.file_name() != "emaxx.json" {
+            continue;
+        }
+        reports += 1;
+        let data = fs::read_to_string(entry.path())
+            .map_err(|error| format!("read {}: {error}", entry.path().display()))?;
+        let report: BatchReport = serde_json::from_str(&data)
+            .map_err(|error| format!("parse {}: {error}", entry.path().display()))?;
+        if !report_selector_matches_summary(&report.selector, &summary.selector) {
+            return Err(format!(
+                "Emaxx report {} used selector `{}` but summary records `{}`",
+                entry.path().display(),
+                report.selector,
+                summary.selector
+            ));
+        }
+        let file_key = format!("{}|<file-load>", report.file);
+        if outcomes
+            .insert(
+                file_key.clone(),
+                NormalizedSubjectOutcome {
+                    status: if report.file_status == FileStatus::Loaded {
+                        TestStatus::Passed
+                    } else {
+                        TestStatus::Failed
+                    },
+                    condition: report.file_error,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!(
+                "duplicate Emaxx outcome `{file_key}` under {}",
+                artifact_root.display()
+            ));
+        }
+        for result in report.results {
+            let key = format!("{}|{}", report.file, result.name);
+            if outcomes
+                .insert(
+                    key.clone(),
+                    NormalizedSubjectOutcome {
+                        status: result.status,
+                        condition: result.condition_type,
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!(
+                    "duplicate Emaxx outcome `{key}` under {}",
+                    artifact_root.display()
+                ));
+            }
+        }
+    }
+    if reports == 0 {
+        return Err(format!(
+            "no emaxx.json reports found under {}",
+            artifact_root.display()
+        ));
+    }
+    let reported_files = outcomes
+        .keys()
+        .filter_map(|key| key.strip_suffix("|<file-load>"))
+        .collect::<BTreeSet<_>>();
+    let expected_files = summary
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if reported_files != expected_files {
+        return Err(format!(
+            "Emaxx reports under {} do not exactly cover summary file list: {}",
+            artifact_root.display(),
+            format_name_diff_sets(&expected_files, &reported_files)
+        ));
+    }
+    if reports != summary.total_files {
+        return Err(format!(
+            "found {reports} Emaxx reports under {} but summary records {} files",
+            artifact_root.display(),
+            summary.total_files
+        ));
+    }
+    Ok(outcomes)
+}
+
+fn report_selector_matches_summary(report_selector: &str, summary_selector: &str) -> bool {
+    report_selector == summary_selector || report_selector == format!("'{summary_selector}")
+}
+
+fn format_name_diff_sets(expected: &BTreeSet<&str>, actual: &BTreeSet<&str>) -> String {
+    let missing = expected.difference(actual).copied().collect::<Vec<_>>();
+    let extra = actual.difference(expected).copied().collect::<Vec<_>>();
+    format!("missing={missing:?}, extra={extra:?}")
+}
+
+fn compare_subject_outcomes(
+    baseline_name: String,
+    candidate_name: String,
+    baseline_summary: &AggregateReport,
+    candidate_summary: &AggregateReport,
+    baseline: &BTreeMap<String, NormalizedSubjectOutcome>,
+    candidate: &BTreeMap<String, NormalizedSubjectOutcome>,
+) -> SubjectComparison {
+    let mut comparison = SubjectComparison {
+        baseline: baseline_name,
+        candidate: candidate_name,
+        incompatible: artifact_incompatibilities(baseline_summary, candidate_summary),
+        pass_to_fail: Vec::new(),
+        fail_to_pass: Vec::new(),
+        changed_failures: Vec::new(),
+        missing_from_candidate: Vec::new(),
+        added_in_candidate: Vec::new(),
+    };
+    for (key, before) in baseline {
+        let Some(after) = candidate.get(key) else {
+            comparison.missing_from_candidate.push(key.clone());
+            continue;
+        };
+        let transition = || subject_transition(key, before, after);
+        match (&before.status, &after.status) {
+            (TestStatus::Passed, status) if *status != TestStatus::Passed => {
+                comparison.pass_to_fail.push(transition())
+            }
+            (status, TestStatus::Passed) if *status != TestStatus::Passed => {
+                comparison.fail_to_pass.push(transition())
+            }
+            (before_status, after_status)
+                if *before_status != TestStatus::Passed
+                    && *after_status != TestStatus::Passed
+                    && (before_status != after_status || before.condition != after.condition) =>
+            {
+                comparison.changed_failures.push(transition())
+            }
+            _ => {}
+        }
+    }
+    for key in candidate.keys() {
+        if !baseline.contains_key(key) {
+            comparison.added_in_candidate.push(key.clone());
+        }
+    }
+    comparison
+}
+
+fn artifact_incompatibilities(
+    baseline: &AggregateReport,
+    candidate: &AggregateReport,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    macro_rules! require_equal {
+        ($label:literal, $left:expr, $right:expr) => {
+            if $left != $right {
+                issues.push(format!(
+                    "{} differs: baseline={:?}, candidate={:?}",
+                    $label, $left, $right
+                ));
+            }
+        };
+    }
+    require_equal!("selector", baseline.selector, candidate.selector);
+    require_equal!("files", baseline.files, candidate.files);
+    require_equal!("name_filter", baseline.name_filter, candidate.name_filter);
+    require_equal!("total_files", baseline.total_files, candidate.total_files);
+    require_equal!("scope", baseline.scope, candidate.scope);
+    require_equal!("mode", baseline.mode, candidate.mode);
+    require_equal!(
+        "provenance.harness_sha256",
+        baseline.provenance.harness_sha256,
+        candidate.provenance.harness_sha256
+    );
+    require_equal!(
+        "provenance.oracle_helper_sha256",
+        baseline.provenance.oracle_helper_sha256,
+        candidate.provenance.oracle_helper_sha256
+    );
+    require_equal!(
+        "provenance.subject_profile",
+        baseline.provenance.subject_profile,
+        candidate.provenance.subject_profile
+    );
+    require_equal!(
+        "provenance.oracle_sha256",
+        baseline.provenance.oracle_sha256,
+        candidate.provenance.oracle_sha256
+    );
+    require_equal!(
+        "provenance.oracle_repo_commit",
+        baseline.provenance.oracle_repo_commit,
+        candidate.provenance.oracle_repo_commit
+    );
+    require_equal!(
+        "provenance.oracle_emacs_version",
+        baseline.provenance.oracle_emacs_version,
+        candidate.provenance.oracle_emacs_version
+    );
+    require_equal!(
+        "provenance.oracle_system_type",
+        baseline.provenance.oracle_system_type,
+        candidate.provenance.oracle_system_type
+    );
+    require_equal!(
+        "provenance.oracle_native_compilation",
+        baseline.provenance.oracle_native_compilation,
+        candidate.provenance.oracle_native_compilation
+    );
+    require_equal!(
+        "provenance.timeout_seconds",
+        baseline.provenance.timeout_seconds,
+        candidate.provenance.timeout_seconds
+    );
+    issues
+}
+
+fn subject_transition(
+    key: &str,
+    baseline: &NormalizedSubjectOutcome,
+    candidate: &NormalizedSubjectOutcome,
+) -> SubjectTransition {
+    let (file, test) = key.split_once('|').unwrap_or((key, ""));
+    SubjectTransition {
+        file: file.to_string(),
+        test: test.to_string(),
+        baseline_status: test_status_name(&baseline.status).into(),
+        baseline_condition: baseline.condition.clone(),
+        candidate_status: test_status_name(&candidate.status).into(),
+        candidate_condition: candidate.condition.clone(),
+    }
+}
+
+fn test_status_name(status: &TestStatus) -> &'static str {
+    match status {
+        TestStatus::Passed => "passed",
+        TestStatus::Failed => "failed",
+        TestStatus::Skipped => "skipped",
+    }
 }
 
 fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
@@ -436,10 +877,11 @@ fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
             context.local.emacs_repo.display()
         ));
     }
-    let timeout = compat::resolve_timeout()?;
+    let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
     let artifact_root = make_artifact_root("landed")?;
-    let emaxx_binary = ensure_emaxx_binary()?;
+    let subject = ensure_emaxx_binary(None)?;
+    let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     run_compat_files(
         &context,
@@ -449,9 +891,11 @@ fn run_landed_compat(args: LandedArgs) -> Result<u8, String> {
             selector: &selector,
             files,
             name_filter: name_filter.as_ref(),
+            name_filter_expression: args.name.as_deref(),
             artifact_root: &artifact_root,
             timeout,
-            emaxx_binary: &emaxx_binary,
+            subject: &subject,
+            provenance: &provenance,
         },
     )
 }
@@ -485,9 +929,10 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
     }
 
     let name_filter = compat::compile_name_filter(args.name.as_deref())?;
-    let timeout = compat::resolve_timeout()?;
+    let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let artifact_root = make_artifact_root("regressions")?;
-    let emaxx_binary = ensure_emaxx_binary()?;
+    let subject = ensure_emaxx_binary(None)?;
+    let provenance = collect_run_provenance(&context, &subject, timeout)?;
     let entries = manifest_entries_for_file_filter(&manifest, args.file.as_deref())?;
 
     let mut grouped = BTreeMap::<String, Vec<PathBuf>>::new();
@@ -507,9 +952,11 @@ fn run_regressions_audit(args: RegressionRunArgs) -> Result<u8, String> {
                 selector: &selector,
                 files,
                 name_filter: name_filter.as_ref(),
+                name_filter_expression: args.name.as_deref(),
                 artifact_root: &artifact_root,
                 timeout,
-                emaxx_binary: &emaxx_binary,
+                subject: &subject,
+                provenance: &provenance,
             },
         )?;
         if run_status != 0 {
@@ -523,9 +970,10 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
     let context = load_context()?;
     let selector = compat::resolve_selector(&context.lock, &args.selector)?;
     let file = resolve_manifest_path_from_cli(&context.local.emacs_repo, &args.file)?;
-    let timeout = compat::resolve_timeout()?;
+    let timeout = resolve_run_timeout(args.timeout_seconds)?;
     let artifact_root = make_artifact_root("regression-add")?;
-    let emaxx_binary = ensure_emaxx_binary()?;
+    let subject = ensure_emaxx_binary(None)?;
+    let provenance = collect_run_provenance(&context, &subject, timeout)?;
 
     let status = run_compat_files(
         &context,
@@ -535,9 +983,11 @@ fn add_regression(args: RegressionAddArgs) -> Result<u8, String> {
             selector: &selector,
             files: vec![file.clone()],
             name_filter: None,
+            name_filter_expression: None,
             artifact_root: &artifact_root,
             timeout,
-            emaxx_binary: &emaxx_binary,
+            subject: &subject,
+            provenance: &provenance,
         },
     )?;
     if status != 0 {
@@ -611,9 +1061,11 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         selector,
         files,
         name_filter,
+        name_filter_expression,
         artifact_root,
         timeout,
-        emaxx_binary,
+        subject,
+        provenance,
     } = plan;
     let mut matching_files = 0usize;
     let mut mismatches = Vec::new();
@@ -635,7 +1087,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
             timeout,
         )?;
         let emaxx = run_emaxx(
-            emaxx_binary,
+            &subject.binary,
             &context.local.emacs_repo,
             &relative,
             &file,
@@ -676,7 +1128,10 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         mismatching_files: mismatches.len(),
         files: relative_files,
         mismatches,
+        name_filter: name_filter_expression.map(ToOwned::to_owned),
+        provenance: provenance.clone(),
     };
+    verify_run_inputs_unchanged(provenance)?;
     write_json(
         &artifact_root.join("summary.json"),
         &aggregate,
@@ -949,6 +1404,13 @@ fn load_context() -> Result<Context, String> {
     let lock = compat::load_oracle_lock()?;
     let local = compat::load_oracle_local_config()?;
     compat::validate_oracle(&lock, &local)?;
+    let (head, dirty) = git_state(&local.emacs_repo)?;
+    if head.as_deref() != Some(lock.emacs_repo_commit.as_str()) || dirty != Some(false) {
+        return Err(format!(
+            "GNU Emacs oracle checkout must be clean at pinned commit {}: found head={head:?}, dirty={dirty:?}",
+            lock.emacs_repo_commit
+        ));
+    }
     Ok(Context { lock, local })
 }
 
@@ -956,9 +1418,10 @@ fn selected_files(
     repo_root: &Path,
     scope: Scope,
     file_filter: Option<&str>,
+    through_file: Option<&str>,
 ) -> Result<Vec<PathBuf>, String> {
     let files = compat::discover_test_files(repo_root, scope)?;
-    let filtered = compat::filter_files(&files, repo_root, file_filter)?;
+    let mut filtered = compat::filter_files(&files, repo_root, file_filter)?;
     if file_filter.is_some() && filtered.is_empty() {
         return Err(format!(
             "no test file matched `{}` under {}",
@@ -966,24 +1429,213 @@ fn selected_files(
             repo_root.display()
         ));
     }
+    truncate_files_through(&mut filtered, repo_root, through_file)?;
     Ok(filtered)
+}
+
+fn truncate_files_through(
+    files: &mut Vec<PathBuf>,
+    repo_root: &Path,
+    through_file: Option<&str>,
+) -> Result<(), String> {
+    let Some(through_file) = through_file else {
+        return Ok(());
+    };
+    let Some(index) = files.iter().position(|file| {
+        compat::relative_test_path(repo_root, file).as_deref() == Ok(through_file)
+    }) else {
+        return Err(format!(
+            "no prefix endpoint matched `{through_file}` under {}",
+            repo_root.display()
+        ));
+    };
+    files.truncate(index + 1);
+    Ok(())
+}
+
+fn resolve_run_timeout(timeout_seconds: Option<u64>) -> Result<Option<Duration>, String> {
+    match timeout_seconds {
+        Some(0) => Err("--timeout-seconds must be greater than zero".into()),
+        Some(seconds) => Ok(Some(Duration::from_secs(seconds))),
+        None => {
+            Ok(compat::resolve_timeout()?.or(Some(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS))))
+        }
+    }
+}
+
+fn collect_run_provenance(
+    context: &Context,
+    subject: &SubjectBuild,
+    timeout: Option<Duration>,
+) -> Result<RunProvenance, String> {
+    let harness_binary = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
+    let harness_source_root = compat::canonicalize_path(&compat::project_root())?;
+    let harness_compiled_target_dir = compat::canonicalize_path(&compiled_target_dir()?)?;
+    let (subject_git_head, subject_git_dirty) = git_state(&subject.source_root)?;
+    let oracle_runtime = compat::current_emacs_runtime(&context.local.emacs_binary)?;
+    Ok(RunProvenance {
+        harness_source_root: harness_source_root.display().to_string(),
+        harness_compiled_target_dir: harness_compiled_target_dir.display().to_string(),
+        harness_binary: harness_binary.display().to_string(),
+        harness_sha256: sha256_file(&harness_binary)?,
+        oracle_helper_sha256: sha256_file(&compat::oracle_helper_path())?,
+        subject_source_root: subject.source_root.display().to_string(),
+        subject_source_sha256: subject.source_sha256.clone(),
+        subject_git_head,
+        subject_git_dirty,
+        subject_target_dir: subject.target_dir.display().to_string(),
+        subject_profile: subject.profile.clone(),
+        subject_binary: subject.binary.display().to_string(),
+        subject_sha256: sha256_file(&subject.binary)?,
+        oracle_binary: context.local.emacs_binary.display().to_string(),
+        oracle_sha256: sha256_file(&context.local.emacs_binary)?,
+        oracle_repo: context.local.emacs_repo.display().to_string(),
+        oracle_repo_commit: context.lock.emacs_repo_commit.clone(),
+        oracle_emacs_version: context.lock.emacs_version.clone(),
+        oracle_system_type: oracle_runtime.system_type,
+        oracle_native_compilation: oracle_runtime.native_compilation,
+        timeout_seconds: timeout.map(|duration| duration.as_secs()),
+    })
+}
+
+fn verify_run_inputs_unchanged(provenance: &RunProvenance) -> Result<(), String> {
+    let checks = [
+        (
+            "compatibility harness binary",
+            Path::new(&provenance.harness_binary),
+            &provenance.harness_sha256,
+        ),
+        (
+            "oracle helper",
+            &compat::oracle_helper_path(),
+            &provenance.oracle_helper_sha256,
+        ),
+        (
+            "Emaxx subject binary",
+            Path::new(&provenance.subject_binary),
+            &provenance.subject_sha256,
+        ),
+        (
+            "GNU Emacs oracle binary",
+            Path::new(&provenance.oracle_binary),
+            &provenance.oracle_sha256,
+        ),
+    ];
+    for (label, path, expected) in checks {
+        let actual = sha256_file(path)?;
+        if &actual != expected {
+            return Err(format!(
+                "{label} changed during compatibility run: {} was {expected}, now {actual}; refusing to write a valid summary",
+                path.display()
+            ));
+        }
+    }
+
+    let source_root = Path::new(&provenance.subject_source_root);
+    let actual_source = subject_source_fingerprint(source_root)?;
+    if actual_source != provenance.subject_source_sha256 {
+        return Err(format!(
+            "Emaxx subject sources changed during compatibility run: {} was {}, now {}; refusing to write a valid summary",
+            source_root.display(),
+            provenance.subject_source_sha256,
+            actual_source
+        ));
+    }
+
+    let oracle_repo = Path::new(&provenance.oracle_repo);
+    let (head, dirty) = git_state(oracle_repo)?;
+    if head.as_deref() != Some(provenance.oracle_repo_commit.as_str()) || dirty != Some(false) {
+        return Err(format!(
+            "GNU Emacs oracle checkout changed during compatibility run: expected clean {}, found head={head:?}, dirty={dirty:?}; refusing to write a valid summary",
+            provenance.oracle_repo_commit
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("open {} for hashing: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read {} for hashing: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn git_state(root: &Path) -> Result<(Option<String>, Option<bool>), String> {
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("inspect Git HEAD in {}: {error}", root.display()))?;
+    if !head.status.success() {
+        return Ok((None, None));
+    }
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let status = Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("inspect Git state in {}: {error}", root.display()))?;
+    if !status.status.success() {
+        return Err(format!("git status failed in {}", root.display()));
+    }
+    Ok((Some(head), Some(!status.stdout.is_empty())))
 }
 
 fn make_artifact_root(prefix: &str) -> Result<PathBuf, String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("clock error: {error}"))?
-        .as_secs();
-    let root = compat::project_root()
-        .join("target")
-        .join("compat")
-        .join(format!("{prefix}-{timestamp}"));
-    fs::create_dir_all(&root).map_err(|error| format!("create {}: {error}", root.display()))?;
+        .as_nanos();
+    let base = compat::project_root().join("target").join("compat");
+    fs::create_dir_all(&base).map_err(|error| format!("create {}: {error}", base.display()))?;
+    let root = base.join(format!("{prefix}-{timestamp}-{}", std::process::id()));
+    fs::create_dir(&root).map_err(|error| {
+        format!(
+            "create unique compatibility artifact directory {}: {error}",
+            root.display()
+        )
+    })?;
+    println!("Artifacts: {}", root.display());
     Ok(root)
 }
 
 fn per_file_artifact_dir(artifact_root: &Path, relative: &str) -> PathBuf {
     artifact_root.join(relative).with_extension("compat")
+}
+
+fn configure_isolated_temp_directory(
+    command: &mut Command,
+    runner: &str,
+) -> Result<RunnerTempDirectory, String> {
+    let temp_directory = env::temp_dir().join(format!(
+        "emaxx-compat-{runner}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("clock error: {error}"))?
+            .as_nanos()
+    ));
+    fs::create_dir(&temp_directory)
+        .map_err(|error| format!("create {}: {error}", temp_directory.display()))?;
+    // Keep each side independent of the developer's shared temp directory
+    // and of artifacts left by a crashed peer run.  Cover Unix and Windows
+    // conventions; unused variables are harmless on either platform.
+    for variable in ["TMPDIR", "TMP", "TEMP"] {
+        command.env(variable, &temp_directory);
+    }
+    Ok(RunnerTempDirectory {
+        path: temp_directory,
+    })
 }
 
 fn run_oracle(
@@ -1001,6 +1653,7 @@ fn run_oracle(
     let test_directory = local.emacs_repo.join("test");
     let mut command = Command::new(&local.emacs_binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
+    let _temp_directory = configure_isolated_temp_directory(&mut command, "oracle")?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     command.env("EMAXX_COMPAT_RELATIVE_FILE", relative_file);
     command.env("EMAXX_COMPAT_SELECTOR", format!("(quote {selector})"));
@@ -1041,6 +1694,7 @@ fn run_emaxx(
     let load_paths = compat::emaxx_upstream_load_path(repo_root)?;
     let mut command = Command::new(emaxx_binary);
     compat::configure_upstream_like_env(&mut command, &test_directory);
+    let _temp_directory = configure_isolated_temp_directory(&mut command, "emaxx")?;
     command.env(compat::BATCH_RESULT_FILE_ENV, &result_path);
     command.arg("--no-init-file");
     command.arg("--no-site-file");
@@ -1094,12 +1748,13 @@ fn load_or_synthesize_report(
     } else {
         "process terminated without a status code".to_string()
     };
-    Ok(BatchReport::load_error(
-        runner,
-        relative_file,
-        selector,
-        message,
-    ))
+    let report = BatchReport::load_error(runner, relative_file, selector, message);
+    // A synthesized timeout/crash report is part of the immutable run
+    // artifact, not merely an in-memory summary convenience.  Persist it at
+    // the same path the child would have written so aggregate loading and
+    // compare-subjects see exactly the file coverage recorded by summary.json.
+    report.write_json(result_path)?;
+    Ok(report)
 }
 
 fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<ProcessResult, String> {
@@ -1190,36 +1845,656 @@ fn write_json(path: &Path, value: &impl Serialize, label: &str) -> Result<(), St
     fs::write(path, json).map_err(|error| format!("write {}: {error}", path.display()))
 }
 
-fn ensure_emaxx_binary() -> Result<PathBuf, String> {
+fn ensure_emaxx_binary(subject_root: Option<&Path>) -> Result<SubjectBuild, String> {
     let current = env::current_exe().map_err(|error| format!("current exe: {error}"))?;
-    let Some(bin_dir) = current.parent() else {
-        return Err(format!(
-            "cannot locate binary directory for {}",
-            current.display()
-        ));
+    validate_harness_runtime_location(&current)?;
+    let harness_layout = emaxx_build_layout(&current)?;
+    let compiled_root = compat::canonicalize_path(&compat::project_root())?;
+    let source_root = match subject_root {
+        Some(root) => compat::canonicalize_path(root)?,
+        None => compiled_root.clone(),
     };
-    let candidate = bin_dir.join("emaxx");
+    if !source_root.join("Cargo.toml").is_file() {
+        return Err(format!(
+            "subject root {} does not contain Cargo.toml",
+            source_root.display()
+        ));
+    }
+    let layout = subject_build_layout(&source_root, &harness_layout.profile);
+    claim_target_directory(&layout.target_dir, &source_root, false)?;
+    let subject_lock = acquire_subject_lock(&layout.target_dir)?;
+    let source_sha256 = subject_source_fingerprint(&source_root)?;
 
-    let status = Command::new("cargo")
-        .arg("build")
-        .arg("--quiet")
-        .arg("--bin")
-        .arg("emaxx")
-        .current_dir(compat::project_root())
+    // `cargo run --bin compat-harness' only guarantees that this harness is
+    // current; Cargo does not also rebuild its sibling `emaxx' target.  Ask
+    // Cargo to validate/build the exact profile whose sibling we are about
+    // to execute, so a stale executable can never produce an oracle result.
+    let mut build = Command::new("cargo");
+    build.args(["build", "--quiet", "--locked", "--bin", "emaxx"]);
+    // Pin Cargo to the target directory containing this harness.  Otherwise
+    // an inherited CARGO_TARGET_DIR could build a fresh Emaxx elsewhere while
+    // the gate continued to execute an old sibling from this directory.
+    build.arg("--target-dir").arg(&layout.target_dir);
+    match layout.profile.as_str() {
+        "dev" => {}
+        "release" => {
+            build.arg("--release");
+        }
+        profile => {
+            build.args(["--profile", profile]);
+        }
+    }
+    // Do not merely trust that Cargo will replace an existing sibling.  By
+    // removing it before the synchronous build, success plus the file check
+    // below proves that the executable this run receives was materialized by
+    // this build invocation; an old Emaxx executable cannot survive as a
+    // fallback.
+    remove_existing_emaxx_candidate(&layout.candidate)?;
+    let status = build
+        .current_dir(&source_root)
         .status()
         .map_err(|error| format!("build emaxx binary: {error}"))?;
     if !status.success() {
-        return Err("`cargo build --quiet --bin emaxx` failed".into());
+        return Err(format!(
+            "building emaxx in Cargo profile `{}` failed",
+            layout.profile
+        ));
     }
-    if !candidate.exists() {
-        return Err(format!("expected emaxx binary at {}", candidate.display()));
+    if !layout.candidate.is_file() {
+        return Err(format!(
+            "expected emaxx binary at {}",
+            layout.candidate.display()
+        ));
     }
-    Ok(candidate)
+    let source_after_build = subject_source_fingerprint(&source_root)?;
+    if source_after_build != source_sha256 {
+        return Err(format!(
+            "Emaxx subject sources changed while building {}: before={source_sha256}, after={source_after_build}",
+            source_root.display()
+        ));
+    }
+    Ok(SubjectBuild {
+        source_root,
+        target_dir: layout.target_dir,
+        profile: layout.profile,
+        binary: layout.candidate,
+        source_sha256,
+        _lock: subject_lock,
+    })
+}
+
+fn subject_build_layout(source_root: &Path, profile: &str) -> EmaxxBuildLayout {
+    let target_dir = source_root.join("target").join("compat-subject");
+    let binary_profile = if profile == "dev" { "debug" } else { profile };
+    EmaxxBuildLayout {
+        profile: profile.to_string(),
+        candidate: target_dir
+            .join(binary_profile)
+            .join(format!("emaxx{}", env::consts::EXE_SUFFIX)),
+        target_dir,
+    }
+}
+
+fn subject_source_fingerprint(source_root: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    for relative in ["Cargo.toml", "Cargo.lock", "build.rs"] {
+        let path = source_root.join(relative);
+        if path.exists() {
+            files.push(path);
+        }
+    }
+    for directory in [".cargo", "src"] {
+        let root = source_root.join(directory);
+        if !root.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(&root).follow_links(false) {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "walk Emaxx subject inputs under {}: {error}",
+                    root.display()
+                )
+            })?;
+            if entry.file_type().is_file() || entry.file_type().is_symlink() {
+                files.push(entry.into_path());
+            }
+        }
+    }
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    for path in files {
+        let relative = path.strip_prefix(source_root).map_err(|error| {
+            format!(
+                "subject input {} is outside {}: {error}",
+                path.display(),
+                source_root.display()
+            )
+        })?;
+        let name = relative.to_string_lossy();
+        hasher.update((name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        if path.is_symlink() {
+            let target = fs::read_link(&path)
+                .map_err(|error| format!("read symlink {}: {error}", path.display()))?;
+            let target = target.to_string_lossy();
+            hasher.update(b"symlink");
+            hasher.update((target.len() as u64).to_le_bytes());
+            hasher.update(target.as_bytes());
+        } else {
+            let mut file = fs::File::open(&path)
+                .map_err(|error| format!("open subject input {}: {error}", path.display()))?;
+            let size = file
+                .metadata()
+                .map_err(|error| format!("stat subject input {}: {error}", path.display()))?
+                .len();
+            hasher.update(b"file");
+            hasher.update(size.to_le_bytes());
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|error| format!("read subject input {}: {error}", path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(unix)]
+fn acquire_subject_lock(target_dir: &Path) -> Result<SubjectLock, String> {
+    let path = target_dir.join(SUBJECT_LOCK_FILE);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| format!("open subject lock {}: {error}", path.display()))?;
+    // The lock is deliberately nonblocking: a second gate must fail rather
+    // than wait behind (and potentially interfere with) a multi-hour sweep.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        return Err(format!(
+            "another compatibility run is already using subject target {}; refusing concurrent rebuild/test",
+            target_dir.display()
+        ));
+    }
+    Ok(SubjectLock { _file: file })
+}
+
+#[cfg(not(unix))]
+fn acquire_subject_lock(_target_dir: &Path) -> Result<SubjectLock, String> {
+    Err("compatibility subject locking is not implemented on this platform".into())
+}
+
+fn claim_target_directory(
+    target_dir: &Path,
+    source_root: &Path,
+    allow_unowned_existing: bool,
+) -> Result<(), String> {
+    fs::create_dir_all(target_dir)
+        .map_err(|error| format!("create target directory {}: {error}", target_dir.display()))?;
+    let source_root = compat::canonicalize_path(source_root)?;
+    let marker = target_dir.join(TARGET_OWNER_FILE);
+    if marker.exists() {
+        let owner = fs::read_to_string(&marker)
+            .map_err(|error| format!("read target owner {}: {error}", marker.display()))?;
+        let owner = PathBuf::from(owner.trim());
+        if owner != source_root {
+            return Err(format!(
+                "refusing to share Cargo target {}: owned by {}, requested by {}",
+                target_dir.display(),
+                owner.display(),
+                source_root.display()
+            ));
+        }
+        return Ok(());
+    }
+    if !allow_unowned_existing
+        && fs::read_dir(target_dir)
+            .map_err(|error| format!("read target directory {}: {error}", target_dir.display()))?
+            .next()
+            .is_some()
+    {
+        return Err(format!(
+            "refusing unowned non-empty Cargo target {}; use an empty subject target",
+            target_dir.display()
+        ));
+    }
+    fs::write(&marker, format!("{}\n", source_root.display()))
+        .map_err(|error| format!("write target owner {}: {error}", marker.display()))
+}
+
+fn compiled_target_dir() -> Result<PathBuf, String> {
+    Ok(PathBuf::from(env!("EMAXX_COMPILED_TARGET_DIR")))
+}
+
+fn validate_harness_runtime_location(harness_binary: &Path) -> Result<(), String> {
+    let runtime_target = emaxx_build_layout(harness_binary)?.target_dir;
+    let compiled_target = compiled_target_dir()?;
+    let runtime_target = compat::canonicalize_path(&runtime_target)?;
+    let compiled_target = compat::canonicalize_path(&compiled_target)?;
+    if runtime_target != compiled_target {
+        return Err(format!(
+            "refusing copied compatibility harness: running from target {}, compiled for {}",
+            runtime_target.display(),
+            compiled_target.display()
+        ));
+    }
+    Ok(())
+}
+
+fn remove_existing_emaxx_candidate(candidate: &Path) -> Result<(), String> {
+    match fs::remove_file(candidate) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "remove stale emaxx candidate {}: {error}",
+            candidate.display()
+        )),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct EmaxxBuildLayout {
+    profile: String,
+    target_dir: PathBuf,
+    candidate: PathBuf,
+}
+
+fn emaxx_build_layout(harness_binary: &Path) -> Result<EmaxxBuildLayout, String> {
+    let bin_dir = harness_binary.parent().ok_or_else(|| {
+        format!(
+            "cannot locate binary directory for {}",
+            harness_binary.display()
+        )
+    })?;
+    let target_dir = bin_dir.parent().ok_or_else(|| {
+        format!(
+            "cannot locate Cargo target directory for {}",
+            harness_binary.display()
+        )
+    })?;
+    Ok(EmaxxBuildLayout {
+        profile: cargo_profile_for_binary_directory(bin_dir)?,
+        target_dir: target_dir.to_path_buf(),
+        candidate: bin_dir.join(format!("emaxx{}", env::consts::EXE_SUFFIX)),
+    })
+}
+
+fn cargo_profile_for_binary_directory(bin_dir: &Path) -> Result<String, String> {
+    let directory = bin_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("cannot determine Cargo profile from {}", bin_dir.display()))?;
+    Ok(if directory == "debug" {
+        "dev".into()
+    } else {
+        directory.into()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_provenance() -> RunProvenance {
+        RunProvenance {
+            harness_source_root: "/harness".into(),
+            harness_compiled_target_dir: "/harness/target".into(),
+            harness_binary: "/harness/target/release/compat-harness".into(),
+            harness_sha256: "harness".into(),
+            oracle_helper_sha256: "helper".into(),
+            subject_source_root: "/subject".into(),
+            subject_source_sha256: "source".into(),
+            subject_git_head: Some("head".into()),
+            subject_git_dirty: Some(false),
+            subject_target_dir: "/subject/target/compat-subject".into(),
+            subject_profile: "release".into(),
+            subject_binary: "/subject/target/compat-subject/release/emaxx".into(),
+            subject_sha256: "subject".into(),
+            oracle_binary: "/oracle/src/emacs".into(),
+            oracle_sha256: "oracle".into(),
+            oracle_repo: "/oracle".into(),
+            oracle_repo_commit: "oracle-head".into(),
+            oracle_emacs_version: "30.2".into(),
+            oracle_system_type: "darwin".into(),
+            oracle_native_compilation: true,
+            timeout_seconds: Some(DEFAULT_TIMEOUT_SECONDS),
+        }
+    }
+
+    fn test_summary() -> AggregateReport {
+        AggregateReport {
+            mode: "run".into(),
+            selector: "t".into(),
+            scope: "All".into(),
+            total_files: 1,
+            matching_files: 1,
+            mismatching_files: 0,
+            files: vec!["a.el".into()],
+            mismatches: Vec::new(),
+            name_filter: None,
+            provenance: test_provenance(),
+        }
+    }
+
+    #[test]
+    fn emaxx_build_uses_the_harness_binary_profile() {
+        let debug = emaxx_build_layout(Path::new("/repo/target/debug/compat-harness")).unwrap();
+        assert_eq!(debug.profile, "dev");
+        assert_eq!(debug.target_dir, Path::new("/repo/target"));
+        assert_eq!(debug.candidate, Path::new("/repo/target/debug/emaxx"));
+
+        let release = emaxx_build_layout(Path::new("/repo/target/release/compat-harness")).unwrap();
+        assert_eq!(release.profile, "release");
+        assert_eq!(release.target_dir, Path::new("/repo/target"));
+        assert_eq!(release.candidate, Path::new("/repo/target/release/emaxx"));
+
+        let custom =
+            emaxx_build_layout(Path::new("/repo/target/compat-ci/compat-harness")).unwrap();
+        assert_eq!(custom.profile, "compat-ci");
+        assert_eq!(custom.target_dir, Path::new("/repo/target"));
+        assert_eq!(custom.candidate, Path::new("/repo/target/compat-ci/emaxx"));
+    }
+
+    #[test]
+    fn stale_emaxx_candidate_must_be_removed_before_build() {
+        let root = env::temp_dir().join(format!(
+            "emaxx-stale-candidate-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let candidate = root.join(format!("emaxx{}", env::consts::EXE_SUFFIX));
+        fs::write(&candidate, b"stale executable").unwrap();
+
+        remove_existing_emaxx_candidate(&candidate).unwrap();
+        assert!(!candidate.exists());
+        // Absence is also valid, so first-time builds take the same path.
+        remove_existing_emaxx_candidate(&candidate).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn synthesized_runner_failure_is_persisted_as_a_batch_report() {
+        let root = env::temp_dir().join(format!(
+            "emaxx-synthesized-report-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let result_path = root.join("test/lisp/example.compat/emaxx.json");
+        let process = ProcessResult {
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+        };
+
+        let report =
+            load_or_synthesize_report(&result_path, "emaxx", "test/lisp/example.el", "t", &process)
+                .unwrap();
+
+        assert!(result_path.is_file());
+        assert_eq!(BatchReport::read_json(&result_path).unwrap(), report);
+        assert_eq!(report.file_status, FileStatus::LoadError);
+        assert_eq!(report.file_error.as_deref(), Some("process timed out"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn cargo_target_cannot_be_shared_between_source_roots() {
+        let root = env::temp_dir().join(format!(
+            "emaxx-target-owner-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("target");
+        let source_a = root.join("source-a");
+        let source_b = root.join("source-b");
+        fs::create_dir_all(&source_a).unwrap();
+        fs::create_dir_all(&source_b).unwrap();
+
+        claim_target_directory(&target, &source_a, false).unwrap();
+        claim_target_directory(&target, &source_a, false).unwrap();
+        let error = claim_target_directory(&target, &source_b, false).unwrap_err();
+        assert!(error.contains("refusing to share Cargo target"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_subject_use_is_rejected() {
+        let root = env::temp_dir().join(format!(
+            "emaxx-subject-lock-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        let first = acquire_subject_lock(&root).unwrap();
+        let error = acquire_subject_lock(&root).unwrap_err();
+        assert!(error.contains("another compatibility run"));
+        drop(first);
+        acquire_subject_lock(&root).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn subject_fingerprint_detects_runtime_or_rust_source_changes() {
+        let root = env::temp_dir().join(format!(
+            "emaxx-subject-fingerprint-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src/lisp")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='probe'\n").unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n").unwrap();
+        fs::write(root.join("src/lisp/simple_compat.el"), "(provide 'probe)\n").unwrap();
+        let initial = subject_source_fingerprint(&root).unwrap();
+
+        fs::write(
+            root.join("src/lisp/simple_compat.el"),
+            "(provide 'changed)\n",
+        )
+        .unwrap();
+        assert_ne!(subject_source_fingerprint(&root).unwrap(), initial);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn copied_harness_location_is_rejected() {
+        let root = env::temp_dir().join(format!(
+            "emaxx-copied-harness-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin_dir = root.join("release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let error = validate_harness_runtime_location(&bin_dir.join("compat-harness")).unwrap_err();
+        assert!(error.contains("refusing copied compatibility harness"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn every_subject_uses_a_dedicated_target_cache() {
+        let layout = subject_build_layout(Path::new("/baseline"), "release");
+        assert_eq!(
+            layout.target_dir,
+            Path::new("/baseline/target/compat-subject")
+        );
+        assert_eq!(
+            layout.candidate,
+            Path::new("/baseline/target/compat-subject/release/emaxx")
+        );
+    }
+
+    #[test]
+    fn explicit_zero_timeout_is_rejected() {
+        assert!(resolve_run_timeout(Some(0)).is_err());
+        assert_eq!(
+            resolve_run_timeout(Some(17)).unwrap(),
+            Some(Duration::from_secs(17))
+        );
+        assert_eq!(
+            resolve_run_timeout(None).unwrap(),
+            Some(Duration::from_secs(DEFAULT_TIMEOUT_SECONDS))
+        );
+    }
+
+    #[test]
+    fn subject_comparison_separates_regressions_fixes_and_changed_failures() {
+        let baseline = BTreeMap::from([
+            (
+                "a.el|pass".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Passed,
+                    condition: None,
+                },
+            ),
+            (
+                "a.el|fail".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Failed,
+                    condition: Some("old-error".into()),
+                },
+            ),
+            (
+                "a.el|changed".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Failed,
+                    condition: Some("first-error".into()),
+                },
+            ),
+        ]);
+        let candidate = BTreeMap::from([
+            (
+                "a.el|pass".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Failed,
+                    condition: Some("regression".into()),
+                },
+            ),
+            (
+                "a.el|fail".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Passed,
+                    condition: None,
+                },
+            ),
+            (
+                "a.el|changed".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Failed,
+                    condition: Some("later-error".into()),
+                },
+            ),
+        ]);
+
+        let summary = test_summary();
+        let comparison = compare_subject_outcomes(
+            "baseline".into(),
+            "candidate".into(),
+            &summary,
+            &summary,
+            &baseline,
+            &candidate,
+        );
+        assert!(comparison.incompatible.is_empty());
+        assert_eq!(comparison.pass_to_fail.len(), 1);
+        assert_eq!(comparison.pass_to_fail[0].test, "pass");
+        assert_eq!(comparison.fail_to_pass.len(), 1);
+        assert_eq!(comparison.fail_to_pass[0].test, "fail");
+        assert_eq!(comparison.changed_failures.len(), 1);
+        assert_eq!(comparison.changed_failures[0].test, "changed");
+        assert!(comparison.missing_from_candidate.is_empty());
+        assert!(comparison.added_in_candidate.is_empty());
+    }
+
+    #[test]
+    fn subject_comparison_rejects_incompatible_runs_and_pass_to_skip() {
+        let baseline_summary = test_summary();
+        let mut candidate_summary = test_summary();
+        candidate_summary.selector = "(not (tag :unstable))".into();
+        candidate_summary.provenance.oracle_sha256 = "different-oracle".into();
+        let baseline = BTreeMap::from([(
+            "a.el|test".into(),
+            NormalizedSubjectOutcome {
+                status: TestStatus::Passed,
+                condition: None,
+            },
+        )]);
+        let candidate = BTreeMap::from([
+            (
+                "a.el|test".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Skipped,
+                    condition: Some("ert-test-skipped".into()),
+                },
+            ),
+            (
+                "a.el|extra".into(),
+                NormalizedSubjectOutcome {
+                    status: TestStatus::Passed,
+                    condition: None,
+                },
+            ),
+        ]);
+
+        let comparison = compare_subject_outcomes(
+            "baseline".into(),
+            "candidate".into(),
+            &baseline_summary,
+            &candidate_summary,
+            &baseline,
+            &candidate,
+        );
+
+        assert_eq!(comparison.incompatible.len(), 2);
+        assert_eq!(comparison.pass_to_fail.len(), 1);
+        assert_eq!(comparison.pass_to_fail[0].candidate_status, "skipped");
+        assert_eq!(comparison.added_in_candidate, vec!["a.el|extra"]);
+    }
+
+    #[test]
+    fn subject_report_accepts_the_batch_runners_quoted_selector_spelling() {
+        assert!(report_selector_matches_summary("t", "t"));
+        assert!(report_selector_matches_summary("'t", "t"));
+        assert!(report_selector_matches_summary(
+            "'(not (tag :unstable))",
+            "(not (tag :unstable))"
+        ));
+        assert!(!report_selector_matches_summary("nil", "t"));
+    }
 
     #[test]
     fn per_file_artifact_directory_preserves_tree_shape() {
@@ -1229,6 +2504,55 @@ mod tests {
             dir,
             PathBuf::from("/tmp/compat/test/src/buffer-tests.compat")
         );
+    }
+
+    #[test]
+    fn through_file_selects_the_canonical_inclusive_prefix() {
+        let repo_root = Path::new("/repo");
+        let mut files = vec![
+            PathBuf::from("/repo/test/lisp/a-tests.el"),
+            PathBuf::from("/repo/test/lisp/b-tests.el"),
+            PathBuf::from("/repo/test/lisp/c-tests.el"),
+        ];
+
+        truncate_files_through(&mut files, repo_root, Some("test/lisp/b-tests.el")).unwrap();
+
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from("/repo/test/lisp/a-tests.el"),
+                PathBuf::from("/repo/test/lisp/b-tests.el"),
+            ]
+        );
+    }
+
+    #[test]
+    fn runner_temp_directory_is_isolated_and_exported_portably() {
+        let mut command = Command::new("emaxx-test-command");
+        let configured = configure_isolated_temp_directory(&mut command, "oracle")
+            .expect("configure isolated runner temp directory");
+        let configured_path = configured.path.clone();
+
+        assert_eq!(configured_path.parent(), Some(env::temp_dir().as_path()));
+        assert!(configured_path.is_dir());
+        assert!(
+            configured_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("emaxx-compat-oracle-"))
+        );
+        let exported = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| (name.to_string_lossy().into_owned(), PathBuf::from(value)))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for variable in ["TMPDIR", "TMP", "TEMP"] {
+            assert_eq!(exported.get(variable), Some(&configured_path));
+        }
+
+        drop(configured);
+        assert!(!configured_path.exists());
     }
 
     #[test]

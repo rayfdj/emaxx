@@ -358,6 +358,10 @@ impl Interpreter {
         if let Some(directory) = inherited_directory {
             self.set_buffer_local_value(id, "default-directory", directory);
         }
+        // GNU reset_buffer materializes buffer-read-only as a local nil in
+        // every new buffer.  This keeps a process-wide dynamic binding in
+        // the creating buffer from making a fresh temporary buffer read-only.
+        self.set_buffer_local_value(id, "buffer-read-only", Value::Nil);
         (id, name.to_string())
     }
 
@@ -1441,10 +1445,7 @@ impl Interpreter {
 
     pub(crate) fn has_lisp_macro(&self, name: &str) -> bool {
         self.macros_name_counts.contains_key(name)
-            && self
-                .macros
-                .iter()
-                .any(|(macro_name, _, _)| macro_name == name)
+            && self.macros.iter().any(|binding| binding.name == name)
     }
 
     pub fn provide_feature(&mut self, feature: &str) {
@@ -1474,6 +1475,33 @@ impl Interpreter {
         }
         // GNU LOADHIST_ATTACH conses onto the front: the source file name
         // stays the LAST element (`macroexp-file-name' reads it there).
+        self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
+    }
+
+    pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
+        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
+            return;
+        };
+        if current_load_list.is_nil() {
+            return;
+        }
+        let entry = if kind == "defvar" {
+            Value::Symbol(name.to_string())
+        } else {
+            Value::cons(
+                Value::Symbol(kind.to_string()),
+                Value::Symbol(name.to_string()),
+            )
+        };
+        if current_load_list
+            .to_vec()
+            .is_ok_and(|items| items.iter().any(|item| item == &entry))
+        {
+            return;
+        }
+        // GNU's LOADHIST_ATTACH conses definitions onto the front.  The
+        // source-file string therefore remains last until build_load_history
+        // reverses the completed entry.
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
     }
 

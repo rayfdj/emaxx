@@ -559,6 +559,27 @@ fn escaped_lexical_closure_sees_assignment_made_after_capture() {
 }
 
 #[test]
+fn closure_equality_observes_assignments_made_after_capture() {
+    assert_eq!(
+        eval_str(
+            r#"(let (closures)
+                 (let ((captured 0))
+                   (push (lambda () captured) closures)
+                   (setq captured 17))
+                 (let ((captured 0))
+                   (push (lambda () captured) closures)
+                   (setq captured 23))
+                 (list (equal (car closures) (cadr closures))
+                       (mapcar #'funcall (reverse closures))))"#
+        ),
+        Value::list([
+            Value::Nil,
+            Value::list([Value::Integer(17), Value::Integer(23)]),
+        ])
+    );
+}
+
+#[test]
 fn sibling_closure_called_during_writer_sees_the_immediate_update() {
     assert_eq!(
         eval_str(
@@ -754,6 +775,17 @@ fn keymap_records_compare_equal_to_literal_lists() {
                 "#,
         ),
         Value::list([Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn independently_created_empty_keymaps_compare_structurally_equal() {
+    assert_eq!(
+        eval_str(
+            "(list (equal (make-keymap) (make-keymap))\
+                   (equal (make-sparse-keymap) (make-sparse-keymap)))"
+        ),
+        Value::list([Value::T, Value::T])
     );
 }
 
@@ -1337,6 +1369,27 @@ fn cl_destructuring_bind_keeps_missing_optional_slots_nil() {
 }
 
 #[test]
+fn cl_destructuring_bind_supports_nested_keys_defaults_and_supplied_flags() {
+    assert_eq!(
+        eval_str(
+            "(cl-destructuring-bind
+                 ((&key (alpha 10 alpha-p)
+                        (beta (1+ alpha) beta-p))
+                  body)
+                 '((:alpha 4) (tail))
+               (list alpha alpha-p beta beta-p body))"
+        ),
+        Value::list([
+            Value::Integer(4),
+            Value::T,
+            Value::Integer(5),
+            Value::Nil,
+            Value::list([Value::Symbol("tail".into())]),
+        ])
+    );
+}
+
+#[test]
 fn cl_destructuring_bind_supports_dotted_tail_patterns() {
     assert_eq!(
         eval_str("(cl-destructuring-bind (_ _ xy . rest) '(a b (184 . 95) tail) (list xy rest))"),
@@ -1373,6 +1426,118 @@ fn cl_defun_supports_basic_key_arguments() {
                    (register-test 7 :jump-func 'jump))"
         ),
         Value::list([Value::Integer(7), Value::Nil, Value::Symbol("jump".into()),])
+    );
+}
+
+#[test]
+fn cl_defun_optional_defaults_distinguish_omitted_from_explicit_nil() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (cl-defun optional-default-test
+                     (seed &optional (value (list seed) supplied))
+                   (list value supplied))
+                 (cl-defun optional-destructure-test
+                     (&optional ((left right) '(1 2) supplied))
+                   (list left right supplied))
+                 (list (optional-default-test 'default)
+                       (optional-default-test 'default nil)
+                       (optional-default-test 'default 'explicit)
+                       (optional-destructure-test)
+                       (optional-destructure-test '(3 4))))"#,
+        ),
+        Value::list([
+            Value::list([Value::list([Value::Symbol("default".into())]), Value::Nil,]),
+            Value::list([Value::Nil, Value::T]),
+            Value::list([Value::Symbol("explicit".into()), Value::T]),
+            Value::list([Value::Integer(1), Value::Integer(2), Value::Nil]),
+            Value::list([Value::Integer(3), Value::Integer(4), Value::T]),
+        ])
+    );
+}
+
+#[test]
+fn auto_buffer_local_global_special_binding_survives_buffer_switches() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defvar-local sample-cross-buffer-special :default)
+                 (let ((sample-cross-buffer-special :outer))
+                   (let ((original (current-buffer)))
+                     (list
+                      (with-temp-buffer sample-cross-buffer-special)
+                      (with-temp-buffer
+                        (setq sample-cross-buffer-special :local)
+                        sample-cross-buffer-special)
+                      sample-cross-buffer-special
+                      (with-temp-buffer
+                        (let ((sample-cross-buffer-special :inner))
+                          (list sample-cross-buffer-special
+                                (with-current-buffer
+                                    original
+                                  sample-cross-buffer-special))))))))"#
+        ),
+        Value::list([
+            Value::symbol(":outer"),
+            Value::symbol(":local"),
+            Value::symbol(":outer"),
+            Value::list([Value::symbol(":inner"), Value::symbol(":inner")]),
+        ])
+    );
+}
+
+#[test]
+fn make_local_variable_inside_dynamic_binding_moves_reads_to_local_cell() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defvar sample-localized-mid-binding 0)
+                 (list
+                  (with-temp-buffer
+                    (let ((sample-localized-mid-binding 1))
+                      (make-local-variable
+                       'sample-localized-mid-binding)
+                      (setq sample-localized-mid-binding 2)
+                      (list sample-localized-mid-binding
+                            (default-value
+                             'sample-localized-mid-binding)
+                            (local-variable-p
+                             'sample-localized-mid-binding))))
+                  sample-localized-mid-binding
+                  (default-value 'sample-localized-mid-binding)))"#
+        ),
+        Value::list([
+            Value::list([Value::Integer(2), Value::Integer(1), Value::T]),
+            Value::Integer(0),
+            Value::Integer(0),
+        ])
+    );
+}
+
+#[test]
+fn ordinary_buffer_local_wins_over_default_binding_from_another_buffer() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (defvar sample-cross-buffer-ordinary 0)
+                 (let ((first (generate-new-buffer " *sample-first*"))
+                       (second (generate-new-buffer " *sample-second*")))
+                   (unwind-protect
+                       (progn
+                         (with-current-buffer second
+                           (setq-local sample-cross-buffer-ordinary 20))
+                         (with-current-buffer first
+                           (let ((sample-cross-buffer-ordinary 1))
+                             (list
+                              sample-cross-buffer-ordinary
+                              (with-current-buffer second
+                                sample-cross-buffer-ordinary)
+                              (default-value
+                               'sample-cross-buffer-ordinary)))))
+                     (kill-buffer first)
+                     (kill-buffer second))))"#
+        ),
+        Value::list([Value::Integer(1), Value::Integer(20), Value::Integer(1)])
     );
 }
 
@@ -1419,6 +1584,33 @@ fn cl_struct_class_type_reports_the_backing_sequence() {
             Value::Integer(1),
             Value::Integer(0),
             Value::Integer(0),
+        ])
+    );
+}
+
+#[test]
+fn preloaded_cl_struct_class_slots_support_compiled_macroexpansion() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (cl-defstruct emaxx-preloaded-class-slot
+                 (value 7 :type integer)
+                 other)
+               (let ((slots
+                      (cl--struct-class-slots
+                       (cl--struct-get-class 'emaxx-preloaded-class-slot))))
+                 (list (length slots)
+                       (cl--slot-descriptor-name (aref slots 0))
+                       (cl--slot-descriptor-initform (aref slots 0))
+                       (cl--slot-descriptor-type (aref slots 0))
+                       (cl--slot-descriptor-props (aref slots 0)))))"
+        ),
+        Value::list([
+            Value::Integer(2),
+            Value::Symbol("value".into()),
+            Value::Integer(7),
+            Value::Symbol("integer".into()),
+            Value::Nil,
         ])
     );
 }
@@ -1472,6 +1664,34 @@ fn cl_defmethod_lowers_specialized_arguments() {
     let items = result.to_vec().unwrap();
     assert_eq!(primitives::string_text(&items[0]).unwrap(), "ok");
     assert_eq!(items[1], Value::Integer(3));
+}
+
+#[test]
+fn cl_defmethod_macroexpands_method_body_once_at_definition_time() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar sample-method-expansions 0)
+               (defmacro sample-method-expansion-probe ()
+                 (setq sample-method-expansions
+                       (1+ sample-method-expansions))
+                 nil)
+               (cl-defgeneric sample-expanded-method ())
+               (cl-defmethod sample-expanded-method ()
+                 (sample-method-expansion-probe)
+                 'ok)
+               (list sample-method-expansions
+                     (sample-expanded-method)
+                     (sample-expanded-method)
+                     sample-method-expansions))"
+        ),
+        Value::list([
+            Value::Integer(1),
+            Value::Symbol("ok".into()),
+            Value::Symbol("ok".into()),
+            Value::Integer(1),
+        ])
+    );
 }
 
 #[test]
@@ -2209,6 +2429,57 @@ fn setf_slot_value_updates_eieio_instances() {
             Value::String("new".into()),
             Value::String("/tmp/sample".into()),
         ])
+    );
+}
+
+#[test]
+fn macroexpanded_setf_follows_preferred_builtin_function_alias() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'eieio)
+               (require 'macroexp)
+               (defclass sample-expanded-setf-slot nil
+                 ((name :initarg :name)))
+               (let* ((object (make-instance 'sample-expanded-setf-slot
+                                             :name \"old\"))
+                      (expanded
+                       (macroexpand-all
+                        `(setf (slot-value ',object 'name) \"new\"))))
+                 (eval expanded t)
+                 (list (symbol-function 'slot-value)
+                       (slot-value object 'name))))"
+        ),
+        Value::list([
+            Value::Symbol("eieio-oref".into()),
+            Value::String("new".into()),
+        ])
+    );
+}
+
+#[test]
+fn macroexpanded_with_slots_setq_uses_the_generalized_setter() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            "(progn
+               (require 'eieio)
+               (defclass sample-virtual-slot nil
+                 ((base :initarg :base)))
+               (cl-defmethod slot-missing
+                 ((object sample-virtual-slot) slot operation
+                  &optional new-value)
+                 (if (eq slot 'derived)
+                     (with-slots (base) object
+                       (if (eq operation 'oref)
+                           (1+ base)
+                         (setq base (1- new-value))))
+                   (cl-call-next-method)))
+               (let ((object (sample-virtual-slot :base 1)))
+                 (eieio-oset object 'derived 5)
+                 (list (eieio-oref object 'base)
+                       (eieio-oref object 'derived))))"
+        ),
+        Value::list([Value::Integer(4), Value::Integer(5)])
     );
 }
 
@@ -3472,6 +3743,68 @@ fn pcase_matches_predicate_patterns() {
 }
 
 #[test]
+fn cl_struct_predicate_is_available_to_pcase_patterns() {
+    assert_eq!(
+        eval_str(
+            r#"(progn
+                 (cl-defstruct sample-pcase-struct value)
+                 (let ((object (make-sample-pcase-struct :value 7)))
+                   (list (cl-struct-p object)
+                         (cl-struct-p '(sample-pcase-struct 7))
+                         (pcase object
+                           ((pred cl-struct-p) 'struct)
+                           (_ 'other)))))"#
+        ),
+        Value::list([Value::T, Value::Nil, Value::symbol("struct")])
+    );
+}
+
+#[test]
+fn string_comparison_uses_visible_names_of_uninterned_symbols() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((symbol (make-symbol "same")))
+                 (list (eq 'same symbol)
+                       (string= 'same symbol)
+                       (string< 'same symbol)
+                       (string< symbol 'same)))"#
+        ),
+        Value::list([Value::Nil, Value::T, Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
+fn raw_byte_characters_build_multibyte_strings_across_character_apis() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((formatted (format "?%c" #x3fffff))
+                     (built (string #x3fffff))
+                     (single (char-to-string #x3fffff)))
+                 (and (multibyte-string-p formatted)
+                      (multibyte-string-p built)
+                      (multibyte-string-p single)
+                      (equal formatted (string-to-multibyte "?\xff"))
+                      (equal (append formatted nil) '(63 #x3fffff))
+                      (equal (append built nil) '(#x3fffff))
+                      (equal built single)))"#,
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn print_quoted_does_not_consume_an_elided_print_level() {
+    assert_eq!(
+        eval_str(
+            "(let ((print-level 1)
+                   (print-quoted t))
+               (prin1-to-string ''(a (b))))"
+        ),
+        Value::String("'(a ...)".into())
+    );
+}
+
+#[test]
 fn pcase_predicate_patterns_append_value_to_function_forms() {
     assert_eq!(
         eval_str(
@@ -3918,7 +4251,8 @@ fn display_buffer_respects_inhibit_same_window_action() {
 fn display_buffer_alist_matches_modes_and_merges_actions() {
     assert_eq!(
         eval_str(
-            r#"(let ((target (get-buffer-create " display-alist-target")) calls)
+            r#"(eval
+                '(let ((target (get-buffer-create " display-alist-target")) calls)
                  (with-current-buffer target (setq major-mode 'erc-mode))
                  (cl-letf (((symbol-function 'match-target)
                             (lambda (_buffer action)
@@ -3937,7 +4271,8 @@ fn display_buffer_alist_matches_modes_and_merges_actions() {
                           '(((and (major-mode . erc-mode) match-target)
                              show-target (foo . 42)))))
                      (display-buffer target '(nil (bar . 7)))))
-                 (nreverse calls))"#
+                 (nreverse calls))
+                t)"#
         ),
         Value::list([
             Value::list([Value::Symbol("matched".into()), Value::Integer(7)]),
@@ -3946,6 +4281,107 @@ fn display_buffer_alist_matches_modes_and_merges_actions() {
                 Value::Integer(42),
                 Value::Integer(7),
             ]),
+        ])
+    );
+}
+
+#[test]
+fn preloaded_display_buffer_actions_remain_dynamic_across_function_calls() {
+    assert_eq!(
+        eval_str(
+            r#"(eval
+                '(defun emaxx-test-display-buffer-from-separate-function (buffer)
+                   (display-buffer buffer))
+                t)
+               (eval
+                '(let ((target (get-buffer-create " display-dynamic-target")) calls)
+                     (with-current-buffer target (setq major-mode 'erc-mode))
+                     (cl-letf (((symbol-function 'emaxx-test-display-predicate)
+                                (lambda (buffer action)
+                                  (push (list 'matched buffer
+                                              (alist-get 'bar (cdr action)))
+                                        calls)))
+                               ((symbol-function 'emaxx-test-display-action)
+                                (lambda (buffer action)
+                                  (push (list 'shown buffer
+                                              (alist-get 'foo action))
+                                        calls)
+                                  (selected-window))))
+                       (let ((display-buffer-alist
+                              '(((and (major-mode . erc-mode)
+                                      emaxx-test-display-predicate)
+                                 emaxx-test-display-action (foo . 42)))))
+                         (emaxx-test-display-buffer-from-separate-function target)))
+                     (list (special-variable-p 'display-buffer-alist)
+                           (mapcar #'car (nreverse calls))))
+                t)"#
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::Symbol("matched".into()),
+                Value::Symbol("shown".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn gnu_add_function_composes_nested_advice_on_a_lexical_variable() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(eval
+                '(let ((target (lambda (value)
+                                 (list 'base value))))
+                   (mapc
+                    (lambda (tag)
+                      (let ((captured-tag nil))
+                        (let ((layer
+                               (lambda (oldfun value)
+                                 (cons captured-tag
+                                       (funcall oldfun value)))))
+                          ;; The closure already exists when this shared
+                          ;; lexical cell diverges from the next layer's.
+                          (setq captured-tag tag)
+                          (add-function :around (var target) layer))))
+                    '(outer inner))
+                   (funcall target 7))
+                t)"#,
+        ),
+        Value::list([
+            Value::Symbol("inner".into()),
+            Value::Symbol("outer".into()),
+            Value::Symbol("base".into()),
+            Value::Integer(7),
+        ])
+    );
+}
+
+#[test]
+fn gnu_add_function_composes_nested_advice_on_a_dynamic_variable() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(eval
+                '(progn
+                   (defvar emaxx-test-dynamic-function nil)
+                   (let ((emaxx-test-dynamic-function
+                          (lambda (value) (list 'base value))))
+                     (add-function
+                      :around (var emaxx-test-dynamic-function)
+                      (lambda (oldfun value)
+                        (cons 'outer (funcall oldfun value))))
+                     (add-function
+                      :around (var emaxx-test-dynamic-function)
+                      (lambda (oldfun value)
+                        (cons 'inner (funcall oldfun value))))
+                     (funcall emaxx-test-dynamic-function 7)))
+                t)"#,
+        ),
+        Value::list([
+            Value::Symbol("inner".into()),
+            Value::Symbol("outer".into()),
+            Value::Symbol("base".into()),
+            Value::Integer(7),
         ])
     );
 }
@@ -4198,6 +4634,20 @@ fn ert_deftest_evaluates_conditional_tag_expressions() {
 }
 
 #[test]
+fn ert_deftest_preserves_source_string_object_docstrings() {
+    assert_string_value(
+        eval_str(
+            r#"(progn
+                  (ert-deftest documented-source-test ()
+                    "The source docstring survives reader object identity."
+                    (should t))
+                  (aref (get 'documented-source-test 'ert--test) 2))"#,
+        ),
+        "The source docstring survives reader object identity.",
+    );
+}
+
+#[test]
 fn should_error_checks_error_type() {
     let mut interp = Interpreter::new();
     eval_str_with(
@@ -4310,6 +4760,35 @@ fn fset_can_define_function_aliases() {
     assert_eq!(
         eval_str("(progn (fset 'sample-head #'car) (sample-head '(1 2 3)))"),
         Value::Integer(1)
+    );
+}
+
+#[test]
+fn dumped_string_equal_alias_is_visible_to_metadata_consumers() {
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(
+        &mut interp,
+        &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+    )
+    .expect("load simple compat");
+    assert_eq!(
+        eval_str_with(&mut interp, "(function-alias-p 'string=)"),
+        Value::list([Value::Symbol("string-equal".into())])
+    );
+}
+
+#[test]
+fn uninterned_symbols_have_independent_function_cells() {
+    assert_eq!(
+        eval_str(
+            "(let ((function-name (make-symbol \"G\")))
+               (list (fboundp function-name)
+                     (progn (fset function-name 'if)
+                            (fboundp function-name))
+                     (eq (indirect-function function-name)
+                         (indirect-function 'if))))"
+        ),
+        Value::list([Value::Nil, Value::T, Value::T])
     );
 }
 

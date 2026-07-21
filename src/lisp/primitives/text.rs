@@ -253,9 +253,9 @@ pub(crate) fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
             return Err(LispError::TypeError("integer".into(), arg.type_name()));
         }
     };
-    char::from_u32(n as u32)
-        .map(|c| c.to_string())
-        .ok_or_else(|| LispError::Signal(format!("Invalid character: {}", n)))
+    char_from_integer(n)
+        .map(|character| character.to_string())
+        .map_err(|_| LispError::Signal(format!("Invalid character: {n}")))
 }
 
 pub(crate) fn format_s_conversion(

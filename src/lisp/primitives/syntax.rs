@@ -309,6 +309,21 @@ pub(crate) fn syntax_class_explicit_chars(interp: &Interpreter, class_char: char
     chars
 }
 
+/// ASCII characters whose effective entry in the current syntax table has
+/// CLASS_CHAR.  Regexp syntax atoms such as `\s_' are table-dependent; a
+/// fixed Unicode "word or symbol" approximation cannot distinguish `\sw'
+/// from `\s_' and misses Lisp constituents such as `:'.
+pub(crate) fn syntax_class_ascii_chars(interp: &Interpreter, class_char: char) -> Vec<char> {
+    let Some(class) = syntax_class_from_char(class_char) else {
+        return Vec::new();
+    };
+    let table_id = interp.current_syntax_table_id();
+    (0..=0x7F)
+        .filter(|&code| syntax_entry_for_code(interp, table_id, code).class == class)
+        .map(|code| char::from_u32(code).expect("ASCII codepoint"))
+        .collect()
+}
+
 pub(super) fn syntax_entry_for_code(interp: &Interpreter, table_id: u64, code: u32) -> SyntaxEntry {
     let Some(ch) = char::from_u32(code) else {
         return SyntaxEntry::default();

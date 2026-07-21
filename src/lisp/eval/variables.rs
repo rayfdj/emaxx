@@ -145,6 +145,32 @@ impl Interpreter {
             .any(|existing| existing == name)
     }
 
+    /// Mark a native DEFVAR_PER_BUFFER variable that inherits its default
+    /// until assigned locally (a positive buffer_local_flags index in GNU).
+    pub fn mark_per_buffer_special(&mut self, name: &str) {
+        self.mark_auto_buffer_local(name);
+        self.mark_special_variable(name);
+        self.put_symbol_property(name, "emaxx-per-buffer-special", Value::T);
+    }
+
+    /// Mark a native DEFVAR_PER_BUFFER variable whose GNU buffer slot has
+    /// index -1 and is therefore always local.  A dynamic binding made in one
+    /// buffer must not forward into another buffer for this subset.
+    pub fn mark_always_buffer_local_special(&mut self, name: &str) {
+        self.mark_per_buffer_special(name);
+        self.put_symbol_property(name, "emaxx-always-buffer-local-special", Value::T);
+    }
+
+    pub fn is_per_buffer_special(&self, name: &str) -> bool {
+        self.get_symbol_property(name, "emaxx-per-buffer-special")
+            .is_some_and(|value| value.is_truthy())
+    }
+
+    pub fn is_always_buffer_local_special(&self, name: &str) -> bool {
+        self.get_symbol_property(name, "emaxx-always-buffer-local-special")
+            .is_some_and(|value| value.is_truthy())
+    }
+
     pub fn mark_special_variable(&mut self, name: &str) {
         if self.special_variables_index.insert(name.to_string()) {
             self.special_variables.push(name.to_string());
@@ -236,6 +262,16 @@ impl Interpreter {
         self.soft_special_names.contains(name)
             || self.dlet_active_names.contains_key(name)
             || self.is_special_variable(name)
+    }
+
+    /// Whether a binding form must use GNU's dynamic value-cell semantics.
+    /// `(eval FORM)' supplies a nil lexical environment, so bindings made
+    /// directly by FORM are dynamic even for undeclared symbols.  Existing
+    /// lexical functions called by FORM mask this override at their boundary.
+    pub(crate) fn binding_is_dynamic(&self, name: &str, env: &Env) -> bool {
+        self.lambda_capture_override() == Some(false)
+            || self.is_dynamic_binding_name(name)
+            || self.local_special_active(name, env)
     }
 
     pub(crate) fn enter_dlet_name(&mut self, name: &str) {
@@ -679,9 +715,8 @@ impl Interpreter {
 
     /// Return the active global special binding as seen from the current
     /// buffer.  Automatically buffer-local variables can have nested global
-    /// specbind layers belonging to other buffers; those layers must be
-    /// peeled back until this buffer's binding or the top-level value is
-    /// reached.
+    /// specbind layers belonging to other buffers; peel those layers until
+    /// this buffer's binding or the top-level value is reached.
     pub(super) fn active_global_special_value(&self, name: &str) -> Option<Option<Value>> {
         let mut value = self.global_value(name);
         let current_buffer_id = self.current_buffer_id();
@@ -690,9 +725,10 @@ impl Interpreter {
             restore.name == name && matches!(restore.scope, SpecialBindingScope::Global)
         }) {
             found = true;
-            if restore
-                .binding_buffer_id
-                .is_some_and(|buffer_id| buffer_id != current_buffer_id)
+            if self.is_always_buffer_local_special(name)
+                && restore
+                    .binding_buffer_id
+                    .is_some_and(|buffer_id| buffer_id != current_buffer_id)
             {
                 value = restore.previous.clone();
             } else {
@@ -1029,9 +1065,37 @@ impl Interpreter {
             function,
             args,
             locals,
+            lexical_context: None,
             evald,
             debug_on_exit: false,
         });
+    }
+
+    /// Preserve the current evaluator environment for debugger operations.
+    ///
+    /// Cloning every environment at every call would be prohibitively
+    /// expensive.  GNU only needs this context while a debugger is active;
+    /// `backtrace-eval' itself also captures its immediate caller so direct
+    /// users of that primitive get the same activation semantics.
+    pub fn capture_current_backtrace_context(
+        &mut self,
+        function_name: Option<&str>,
+        env: &Env,
+        activation_frame: Option<&[(String, Value)]>,
+    ) {
+        let debugger_active = self
+            .lookup_var("edebug-entered", env)
+            .is_some_and(|value| value.is_truthy());
+        if function_name != Some("backtrace-eval") && !debugger_active {
+            return;
+        }
+        let mut context = env.clone();
+        if let Some(frame) = activation_frame {
+            context.push(frame.to_vec());
+        }
+        if let Some(backtrace) = self.backtrace_frames.last_mut() {
+            backtrace.lexical_context = Some(context);
+        }
     }
 
     pub fn pop_backtrace_frame(&mut self) {
@@ -1198,18 +1262,21 @@ impl Interpreter {
             .map(|frame| frame.locals.clone())
     }
 
-    // The lexical context visible at an activation frame: that frame's own
-    // locals plus every older frame's, with inner bindings shadowing outer
-    // ones.  `backtrace-eval' evaluates expressions against this view.
-    pub fn backtrace_frame_context_locals(
-        &self,
-        index: usize,
-        base: Option<&Value>,
-    ) -> Vec<(String, Value)> {
+    // The lexical context visible at an activation frame.  While Edebug is
+    // active this is the evaluator environment captured at the call
+    // boundary, including active `let' frames and their identity stamps.
+    // Fall back to the older argument-only view for ordinary backtraces.
+    pub fn backtrace_frame_context_env(&self, index: usize, base: Option<&Value>) -> Env {
         let frames: Vec<&BacktraceFrame> = self.backtrace_frames.iter().rev().collect();
         let start = base
             .and_then(|base| frames.iter().position(|frame| &frame.function == base))
             .unwrap_or(0);
+        if let Some(context) = frames
+            .get(start + index)
+            .and_then(|frame| frame.lexical_context.clone())
+        {
+            return context;
+        }
         let mut merged: Vec<(String, Value)> = Vec::new();
         for frame in frames.into_iter().skip(start + index) {
             for (name, value) in &frame.locals {
@@ -1221,7 +1288,7 @@ impl Interpreter {
         // Innermost bindings must win: binding lookup scans a frame back to
         // front, so store outer entries first.
         merged.reverse();
-        merged
+        vec![merged]
     }
 
     pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {

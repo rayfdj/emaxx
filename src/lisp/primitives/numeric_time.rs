@@ -1090,7 +1090,30 @@ pub(crate) fn local_zone_spec_for_civil(
     {
         return posix.zone_for_civil(year, month, day, hour, minute, second);
     }
-    local_zone_spec(None)
+    // A local civil time must be resolved with the offset that applied on
+    // that date, not today's offset.  Historical timezone changes can
+    // otherwise move midnight into the previous day when encode-time is
+    // followed by decode-time (icalendar's anniversary import does exactly
+    // that).  For an ambiguous or skipped wall time, use Chrono's earliest
+    // representable side; GNU likewise normalizes rather than substituting
+    // the current offset.
+    let local = chrono::NaiveDate::from_ymd_opt(year, month, day)
+        .and_then(|date| date.and_hms_opt(hour, minute, second))
+        .and_then(|civil| {
+            let resolved = Local.from_local_datetime(&civil);
+            resolved
+                .single()
+                .or_else(|| resolved.earliest())
+                .or_else(|| resolved.latest())
+        });
+    local.map_or_else(
+        || local_zone_spec(None),
+        |datetime| ZoneSpec {
+            offset_seconds: datetime.offset().local_minus_utc(),
+            abbreviation: datetime.format("%Z").to_string(),
+            is_dst: false,
+        },
+    )
 }
 
 pub(crate) fn normalize_decoded_civil_time(

@@ -106,12 +106,7 @@ pub(super) fn handles(name: &str) -> bool {
 /// Map an Emacs character code to a Rust char, translating the raw-byte
 /// range (RAW_BYTE8_BASE #x3FFF00..) to the internal private-use marker.
 fn char_for_codepoint(n: i64) -> Result<char, LispError> {
-    let code = n as u32;
-    if (0x3FFF00..=0x3FFFFF).contains(&code) {
-        let byte = (code - 0x3FFF00) as u8;
-        return Ok(char::from_u32(0xE000 + byte as u32).expect("raw byte marker"));
-    }
-    char::from_u32(code).ok_or_else(|| LispError::Signal(format!("Invalid character: {n}")))
+    char_from_integer(n).map_err(|_| LispError::Signal(format!("Invalid character: {n}")))
 }
 
 pub(super) fn call(
@@ -555,10 +550,17 @@ pub(super) fn call(
         }
         "string" => {
             let mut result = String::new();
+            let mut multibyte = false;
             for arg in args {
-                result.push(char_for_codepoint(arg.as_integer()?)?);
+                let code = arg.as_integer()?;
+                result.push(char_for_codepoint(code)?);
+                multibyte |= code > 0x7F;
             }
-            Ok(Value::String(result))
+            Ok(string_like_value_with_multibyte(
+                result,
+                Vec::new(),
+                multibyte,
+            ))
         }
         "string-to-list" => {
             need_args(name, args, 1)?;
@@ -742,6 +744,7 @@ pub(super) fn call(
             let fmt = string_text(fmt_value)?;
             let mut result = String::new();
             let mut result_props = Vec::new();
+            let mut result_multibyte = string_like(fmt_value).is_some_and(|s| s.multibyte);
             let mut arg_idx = 1;
             let chars: Vec<char> = fmt.chars().collect();
             let mut i = 0;
@@ -876,6 +879,12 @@ pub(super) fn call(
                 }
                 let arg = &args[aidx];
 
+                result_multibyte |= match conv {
+                    's' => string_like(arg).is_some_and(|string| string.multibyte),
+                    'c' => arg.as_integer().is_ok_and(|code| code > 0x7F),
+                    _ => false,
+                };
+
                 let (mut formatted, mut formatted_props) = match conv {
                     's' => format_s_conversion(interp, arg, precision, env)?,
                     'S' => (render_prin1_ephemeral(interp, arg, env)?, Vec::new()),
@@ -972,7 +981,14 @@ pub(super) fn call(
                     start,
                 ));
             }
-            Ok(string_like_value(result, merge_string_props(result_props)))
+            result_multibyte |= result
+                .chars()
+                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+            Ok(string_like_value_with_multibyte(
+                result,
+                merge_string_props(result_props),
+                result_multibyte,
+            ))
         }
         "format-network-address" => {
             need_arg_range(name, args, 1, 2)?;
@@ -1247,7 +1263,11 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let n = args[0].as_integer()?;
             let c = char_for_codepoint(n)?;
-            Ok(Value::String(c.to_string()))
+            Ok(string_like_value_with_multibyte(
+                c.to_string(),
+                Vec::new(),
+                n > 0x7F,
+            ))
         }
         "find-composition-internal" => {
             // (find-composition-internal POS LIMIT STRING DETAIL-P): report

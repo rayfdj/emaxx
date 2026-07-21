@@ -574,6 +574,7 @@ impl Interpreter {
         let Some(first) = forms.first() else {
             return Ok((None, Vec::new()));
         };
+        let mut explicit_documentation = false;
         let documentation = match first {
             Value::String(text) => Some(Value::String(text.clone())),
             Value::StringObject(state) => Some(Value::String(state.borrow().text.clone())),
@@ -581,6 +582,7 @@ impl Interpreter {
                 let items = first.to_vec()?;
                 match items.as_slice() {
                     [Value::Symbol(head), expression] if head == ":documentation" => {
+                        explicit_documentation = true;
                         let value = self.eval(expression, env)?;
                         let text = crate::lisp::primitives::string_like(&value)
                             .map(|string| string.text)
@@ -599,7 +601,19 @@ impl Interpreter {
             return Ok((None, forms.to_vec()));
         };
         let mut normalized = Vec::with_capacity(forms.len());
-        normalized.push(documentation.clone());
+        // Keep the original source object in the function body.  A
+        // one-form body consisting of a string is executable (it is only a
+        // docstring when another body form follows), and GNU returns the
+        // same literal object on every call.  The separately normalized
+        // documentation value is for metadata consumers only.  An explicit
+        // `(:documentation EXPR)' is different: GNU evaluates it at
+        // definition time and replaces the form with the resulting
+        // docstring, so it must never remain executable body code.
+        normalized.push(if explicit_documentation {
+            documentation.clone()
+        } else {
+            first.clone()
+        });
         normalized.extend(forms[1..].iter().cloned());
         Ok((Some(documentation), normalized))
     }
@@ -3100,33 +3114,72 @@ impl Interpreter {
             );
             let setter = self.eval(&setter_form, env)?;
             self.put_symbol_property(&name, "emaxx-gv-setter-handler", setter);
+
+            // This is the public half of GNU's `gv-setter' declaration
+            // contract.  `gv--defun-declaration' lowers the declaration to
+            // `gv-define-setter', which installs a `gv-expander'.  Keeping
+            // only the private native handler above makes an Emaxx-native
+            // `setf' work but leaves GNU macros (notably ERT's `should') to
+            // generate a nonexistent `(setf NAME)' function call.
+            //
+            // Install the same expander shape directly.  It is safe before
+            // gv.el is loaded: the closure calls `gv--defsetter' only when
+            // GNU's `gv-get' later invokes it, at which point gv.el is
+            // necessarily present.
+            let gv_expander_form = Value::list([
+                Value::Symbol("lambda".into()),
+                Value::list([
+                    Value::Symbol("do".into()),
+                    Value::Symbol("&rest".into()),
+                    Value::Symbol("args".into()),
+                ]),
+                Value::list([
+                    Value::Symbol("gv--defsetter".into()),
+                    Value::list([Value::Symbol("quote".into()), Value::Symbol(name.clone())]),
+                    setter_form,
+                    Value::Symbol("do".into()),
+                    Value::Symbol("args".into()),
+                ]),
+            ]);
+            let gv_expander = self.eval(&gv_expander_form, env)?;
+            self.put_symbol_property(&name, "gv-expander", gv_expander);
         }
         if body_start < normalized_forms.len()
             && let Some(handler) = function_declare_gv_expander(&normalized_forms[body_start])
-            && let Ok(handler_items) = handler.to_vec()
-            && handler_items.len() >= 3
-            && matches!(handler_items.first(), Some(Value::Symbol(head)) if head == "lambda")
-            && let Ok(handler_params) = handler_items[1].to_vec()
         {
-            // `(declare (gv-expander (lambda (do) ...)))' becomes an expander
-            // taking DO plus the function's own arguments, like
-            // `gv--defun-declaration'.
-            let mut expander_params = handler_params;
-            for param in &params {
-                expander_params.push(Value::Symbol(param.clone()));
-            }
-            let expander_form = Value::list(
-                std::iter::once(Value::Symbol("lambda".into()))
-                    .chain(std::iter::once(Value::list(expander_params)))
-                    .chain(handler_items[2..].iter().cloned())
-                    .collect::<Vec<_>>(),
-            );
-            let expander = self.eval(&expander_form, env)?;
+            let expander = match handler {
+                // GNU's symbolic declaration form installs the named
+                // function itself.  `gv-synthetic-place' uses `funcall', so
+                // ignoring this case makes GNU setf fall back to the bogus
+                // `(setf gv-synthetic-place)' function name.
+                Value::Symbol(handler_name) => self.lookup_function(&handler_name, env)?,
+                Value::Cons(_, _) => {
+                    let handler_items = handler.to_vec()?;
+                    if handler_items.len() < 3
+                        || !matches!(handler_items.first(), Some(Value::Symbol(head)) if head == "lambda")
+                    {
+                        return Err(LispError::Signal("Invalid gv-expander declaration".into()));
+                    }
+                    let mut expander_params = handler_items[1].to_vec()?;
+                    for param in &params {
+                        expander_params.push(Value::Symbol(param.clone()));
+                    }
+                    let expander_form = Value::list(
+                        std::iter::once(Value::Symbol("lambda".into()))
+                            .chain(std::iter::once(Value::list(expander_params)))
+                            .chain(handler_items[2..].iter().cloned())
+                            .collect::<Vec<_>>(),
+                    );
+                    self.eval(&expander_form, env)?
+                }
+                _ => return Err(LispError::Signal("Invalid gv-expander declaration".into())),
+            };
             self.put_symbol_property(&name, "gv-expander", expander);
         }
         let body: Vec<Value> = normalized_forms[body_start..].to_vec();
         if crate::lisp::primitives::prefer_builtin_override(&name) {
             self.push_function_binding(&name, Value::BuiltinFunc(name.clone()));
+            self.record_definition_in_load_history("defun", &name);
             return Ok(Value::Symbol(name));
         }
         // GNU eagerly macroexpands top-level forms when they are loaded or
@@ -3146,17 +3199,26 @@ impl Interpreter {
         } else {
             body
         };
-        let lambda = Value::Lambda(params, body, shared_env(env.clone()));
+        let closure_env = shared_env(env.clone());
+        if self
+            .lookup_var("lexical-binding", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            self.mark_lexical_closure_env(&closure_env);
+        }
+        let lambda = Value::Lambda(params, body, closure_env);
         // GNU defalias routes advised names through the symbol's
         // `defalias-fset-function' (nadvice's advice--defalias-fset), which
         // re-applies pending or existing advice around the new definition.
         if self.defalias_fset_function_handles(&name, &lambda, env) {
+            self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
             return Ok(Value::Symbol(name));
         }
         // A defun over a macro name erases the macro (GNU function cell).
         self.shadow_macro_binding(&name);
         self.push_function_binding(&name, lambda);
+        self.record_definition_in_load_history("defun", &name);
         self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
@@ -3175,7 +3237,7 @@ impl Interpreter {
         match items.first() {
             Some(Value::Symbol(head)) if head == "quote" => return Ok(form.clone()),
             Some(Value::Symbol(head)) if head == "cl-macrolet" && items.len() >= 3 => {
-                let local_macros = self.parse_cl_macrolet_bindings(&items[1])?;
+                let local_macros = self.parse_cl_macrolet_bindings(&items[1], env)?;
                 let (local_start, local_count) = self.push_local_macros(&local_macros);
                 let mut expanded_forms = Vec::with_capacity(items.len());
                 expanded_forms.push(Value::Symbol("progn".into()));
@@ -3427,15 +3489,36 @@ impl Interpreter {
                 executable_body.push(Value::Nil);
             }
         }
+        // CL argument bindings are sequential: required destructuring makes
+        // names visible to optional defaults, optionals consume the raw rest
+        // list left-to-right, then rest/key and finally &aux are bound.
+        // Build the wrappers inside-out so their runtime order stays explicit.
+        for (pattern, init) in lowered_cl_defun.aux_bindings.into_iter().rev() {
+            let mut wrapped = if matches!(pattern, Value::Symbol(_)) {
+                vec![
+                    Value::Symbol("--emaxx-lexical-let*".into()),
+                    Value::list([Value::list([pattern, init])]),
+                ]
+            } else {
+                vec![Value::Symbol("cl-destructuring-bind".into()), pattern, init]
+            };
+            wrapped.append(&mut executable_body);
+            executable_body = vec![Value::list(wrapped)];
+        }
         if !lowered_cl_defun.keyword_bindings.is_empty() {
             let mut let_bindings = Vec::new();
             for binding in &lowered_cl_defun.keyword_bindings {
                 let present_name =
                     format!("emaxx--cl-defun-{}-{}-present", name, binding.variable_name);
-                let keyword_rest_param =
-                    lowered_cl_defun.keyword_rest_param.clone().ok_or_else(|| {
-                        LispError::Signal("cl-defun keyword lowering lost its rest source".into())
-                    })?;
+                let remaining_args_name =
+                    lowered_cl_defun
+                        .remaining_args_name
+                        .clone()
+                        .ok_or_else(|| {
+                            LispError::Signal(
+                                "cl-defun keyword lowering lost its rest source".into(),
+                            )
+                        })?;
                 // Explicit CL key names need not be keywords (ERC uses a
                 // bare `--interactive-env--' key).  Quote every lookup key
                 // so non-keyword symbols are compared as data, not read as
@@ -3444,7 +3527,7 @@ impl Interpreter {
                     Value::Symbol("quote".into()),
                     Value::Symbol(binding.keyword_name.clone()),
                 ]);
-                let keyword_source = Value::Symbol(keyword_rest_param);
+                let keyword_source = Value::Symbol(remaining_args_name);
                 let_bindings.push(Value::list([
                     Value::Symbol(present_name.clone()),
                     Value::list([
@@ -3489,18 +3572,140 @@ impl Interpreter {
             wrapped.append(&mut executable_body);
             executable_body = vec![Value::list(wrapped)];
         }
-        for (pattern, init) in lowered_cl_defun.aux_bindings.into_iter().rev() {
+
+        if let Some(pattern) = lowered_cl_defun.rest_binding {
+            let remaining_args_name =
+                lowered_cl_defun
+                    .remaining_args_name
+                    .clone()
+                    .ok_or_else(|| {
+                        LispError::Signal("cl-defun rest lowering lost its rest source".into())
+                    })?;
             let mut wrapped = if matches!(pattern, Value::Symbol(_)) {
                 vec![
-                    Value::Symbol("let*".into()),
-                    Value::list([Value::list([pattern, init])]),
+                    Value::Symbol("--emaxx-lexical-let*".into()),
+                    Value::list([Value::list([pattern, Value::Symbol(remaining_args_name)])]),
                 ]
             } else {
-                vec![Value::Symbol("cl-destructuring-bind".into()), pattern, init]
+                vec![
+                    Value::Symbol("cl-destructuring-bind".into()),
+                    pattern,
+                    Value::Symbol(remaining_args_name),
+                ]
             };
             wrapped.append(&mut executable_body);
             executable_body = vec![Value::list(wrapped)];
         }
+
+        if lowered_cl_defun.reject_remaining_args {
+            let remaining_args_name =
+                lowered_cl_defun
+                    .remaining_args_name
+                    .clone()
+                    .ok_or_else(|| {
+                        LispError::Signal("cl-defun optional lowering lost its rest source".into())
+                    })?;
+            let raw_rest_param = lowered_cl_defun.raw_rest_param.clone().ok_or_else(|| {
+                LispError::Signal("cl-defun optional lowering lost its raw argument list".into())
+            })?;
+            executable_body.insert(
+                0,
+                Value::list([
+                    Value::Symbol("if".into()),
+                    Value::Symbol(remaining_args_name),
+                    Value::list([
+                        Value::Symbol("signal".into()),
+                        quoted_literal(&Value::Symbol("wrong-number-of-arguments".into())),
+                        Value::list([
+                            Value::Symbol("list".into()),
+                            quoted_literal(&Value::Symbol(name.clone())),
+                            Value::list([
+                                Value::Symbol("+".into()),
+                                Value::Integer(lowered_cl_defun.required_count as i64),
+                                Value::list([
+                                    Value::Symbol("length".into()),
+                                    Value::Symbol(raw_rest_param),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                    Value::Nil,
+                ]),
+            );
+        }
+
+        for (index, binding) in lowered_cl_defun
+            .optional_bindings
+            .into_iter()
+            .enumerate()
+            .rev()
+        {
+            let remaining_args_name =
+                lowered_cl_defun
+                    .remaining_args_name
+                    .clone()
+                    .ok_or_else(|| {
+                        LispError::Signal("cl-defun optional lowering lost its rest source".into())
+                    })?;
+            let supplied_form = Value::list([
+                Value::Symbol("and".into()),
+                Value::Symbol(remaining_args_name.clone()),
+                Value::T,
+            ]);
+            let value_form = Value::list([
+                Value::Symbol("if".into()),
+                Value::Symbol(remaining_args_name.clone()),
+                Value::list([
+                    Value::Symbol("pop".into()),
+                    Value::Symbol(remaining_args_name),
+                ]),
+                binding.default_value,
+            ]);
+            let mut let_bindings = Vec::new();
+            if let Some(supplied_name) = binding.supplied_name {
+                let_bindings.push(Value::list([Value::Symbol(supplied_name), supplied_form]));
+            }
+
+            let mut wrapped = if matches!(binding.pattern, Value::Symbol(_)) {
+                let_bindings.push(Value::list([binding.pattern, value_form]));
+                vec![
+                    Value::Symbol("--emaxx-lexical-let*".into()),
+                    Value::list(let_bindings),
+                ]
+            } else {
+                let temp_name = format!("emaxx--cl-defun-{name}-optional-{index}");
+                let_bindings.push(Value::list([Value::Symbol(temp_name.clone()), value_form]));
+                let mut destructured = vec![
+                    Value::Symbol("cl-destructuring-bind".into()),
+                    binding.pattern,
+                    Value::Symbol(temp_name),
+                ];
+                destructured.append(&mut executable_body);
+                executable_body = vec![Value::list(destructured)];
+                vec![
+                    Value::Symbol("--emaxx-lexical-let*".into()),
+                    Value::list(let_bindings),
+                ]
+            };
+            wrapped.append(&mut executable_body);
+            executable_body = vec![Value::list(wrapped)];
+        }
+
+        if let (Some(raw_rest_param), Some(remaining_args_name)) = (
+            lowered_cl_defun.raw_rest_param,
+            lowered_cl_defun.remaining_args_name,
+        ) {
+            let mut wrapped = vec![
+                Value::Symbol("--emaxx-lexical-let*".into()),
+                Value::list([Value::list([
+                    Value::Symbol(remaining_args_name),
+                    Value::Symbol(raw_rest_param),
+                ])]),
+            ];
+            wrapped.append(&mut executable_body);
+            executable_body = vec![Value::list(wrapped)];
+        }
+
         for (pattern, temp_name) in lowered_cl_defun.destructuring_bindings.into_iter().rev() {
             let mut wrapped = vec![
                 Value::Symbol("cl-destructuring-bind".into()),
@@ -3555,7 +3760,7 @@ impl Interpreter {
         lowered.push(Value::Symbol("defmacro".into()));
         lowered.push(Value::Symbol(name));
         lowered.extend(transformed.to_vec()?);
-        self.sf_defmacro(&lowered)
+        self.sf_defmacro(&lowered, env)
     }
 
     pub(super) fn sf_cl_defgeneric(
@@ -3848,6 +4053,16 @@ impl Interpreter {
         } else {
             normalized_method_forms
         };
+        // GNU's top-level cl-defmethod macro expands the method lambda body
+        // when the definition is evaluated.  Deferring that work until the
+        // first dispatch makes macro side effects depend on test/call order
+        // (Edebug's pcase-let* matcher consumed gensyms from the first
+        // caller's dynamic binding).  Store the already-expanded body, just
+        // as sf_defun does for an ordinary loaded function.
+        let executable_method_forms = executable_method_forms
+            .iter()
+            .map(|form| self.macroexpand_all_form_with_environment(form, None, env))
+            .collect::<Result<Vec<_>, _>>()?;
         if let Some(doc) = method_doc.clone() {
             self.add_cl_defmethod_documentation(&function_name_from_binding_form(&items[1])?, doc);
         }
@@ -4955,6 +5170,7 @@ impl Interpreter {
         let Value::Lambda(params, body, closure_env) = lambda else {
             return Err(LispError::Signal("oclosure-lambda lowering failed".into()));
         };
+        let lexical_closure = self.closure_env_is_lexical(&closure_env);
         // Nested advice objects share slot names (car/cdr/...); the identity
         // stamp keeps the frame-merge machinery from unifying two DIFFERENT
         // objects' identically-shaped slot frames (which would self-recurse),
@@ -4965,7 +5181,11 @@ impl Interpreter {
         // per object), so never share the captured env Rc.
         let mut contents = closure_env.borrow().clone();
         contents.push(frame);
-        Ok(Value::Lambda(params, body, shared_env(contents)))
+        let closure_env = shared_env(contents);
+        if lexical_closure {
+            self.mark_lexical_closure_env(&closure_env);
+        }
+        Ok(Value::Lambda(params, body, closure_env))
     }
 
     pub(super) fn sf_define_inline(
@@ -4995,24 +5215,24 @@ impl Interpreter {
         let keep_full_context = body_closure_dont_trim_context(&body);
         let capture_override = self.lambda_capture_override();
         let closure_env = if capture_override.unwrap_or(true) {
-            let mut captured = if !keep_full_context && self.lambda_trim_override() {
+            let captured = if !keep_full_context && self.lambda_trim_override() {
                 trim_lambda_closure_env(env, &body)
             } else {
                 env.clone()
             };
-            // An empty LEXICAL capture is still a scope boundary.  Preserve
-            // one identity-only frame so it cannot fall through to caller
-            // locals.  Dynamic source deliberately keeps the historical
-            // empty environment, which is how dynamic lambdas see their
-            // caller's bindings.
+            // A lexical lambda carries an explicit context marker even when
+            // it has no free variables.  Besides forming the scope boundary,
+            // invocation uses this marker to give delayed macro expansion
+            // the lexical-binding context in which the lambda was created.
             let lexical_source = capture_override == Some(true)
                 || self
                     .lookup_var("lexical-binding", env)
                     .is_some_and(|value| value.is_truthy());
-            if captured.is_empty() && lexical_source {
-                captured.push(vec![Self::fresh_frame_identity()]);
+            let closure_env = self.capture_closure_env(captured);
+            if lexical_source {
+                self.mark_lexical_closure_env(&closure_env);
             }
-            self.capture_closure_env(captured)
+            closure_env
         } else {
             shared_env(Vec::new())
         };
@@ -5046,9 +5266,12 @@ fn trim_lambda_closure_env(env: &Env, body: &[Value]) -> Env {
 
     env.iter()
         .filter_map(|frame| {
-            let last_used = frame
-                .iter()
-                .rposition(|(name, _)| referenced.contains(name.as_str()))?;
+            let last_used = frame.iter().rposition(|(name, _)| {
+                referenced.contains(name.as_str())
+                    || name
+                        .strip_prefix("--emaxx-local-special--")
+                        .is_some_and(|declared| referenced.contains(declared))
+            })?;
             let mut trimmed = frame[..=last_used].to_vec();
             // The stamp is part of the lexical cell's identity, not a
             // user-visible binding.  Keep it even when all referenced values

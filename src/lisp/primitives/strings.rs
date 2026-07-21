@@ -126,6 +126,9 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
     if code < 0 {
         return Err(LispError::Signal("Invalid character".into()));
     }
+    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&code) {
+        return Ok(raw_byte_regex_char((code - RAW_BYTE8_BASE as i64) as u8));
+    }
     char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))
 }
 
@@ -133,7 +136,7 @@ pub(crate) fn string_comparison_text(value: &Value) -> Result<String, LispError>
     match value {
         Value::Nil => Ok("nil".into()),
         Value::T => Ok("t".into()),
-        Value::Symbol(name) => Ok(name.clone()),
+        Value::Symbol(name) => Ok(crate::lisp::types::visible_symbol_name(name).to_string()),
         _ => string_text(value),
     }
 }

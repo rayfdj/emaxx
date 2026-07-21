@@ -7,6 +7,15 @@ use std::collections::HashSet;
 /// closure-environment alignment logic.
 pub(crate) const FRAME_IDENTITY_MARKER: &str = "--emaxx-frame-id--";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClDestructuringSection {
+    Required,
+    Optional,
+    AfterRest,
+    Key,
+    Aux,
+}
+
 impl Interpreter {
     fn dolist_items(value: &Value) -> Result<Vec<Value>, LispError> {
         let mut items = Vec::new();
@@ -23,14 +32,7 @@ impl Interpreter {
                             Value::String("Circular list".into()),
                         ])));
                     }
-                    let item = {
-                        let mut car_value = car.borrow_mut();
-                        if matches!(&*car_value, Value::String(_)) {
-                            *car_value = Self::stored_value(car_value.clone());
-                        }
-                        car_value.clone()
-                    };
-                    items.push(item);
+                    items.push(car.borrow().clone());
                     current = cdr.borrow().clone();
                 }
                 other => return Err(LispError::TypeError("list".into(), other.type_name())),
@@ -116,8 +118,7 @@ impl Interpreter {
 
         // Upstream expands to a fresh `let' per iteration, which binds
         // special names dynamically.
-        let dynamic =
-            self.is_dynamic_binding_name(&var_name) || self.local_special_active(&var_name, env);
+        let dynamic = self.binding_is_dynamic(&var_name, env);
         let frame_index = env.len();
         let mut outcome = Ok(());
         for item in list_items {
@@ -223,8 +224,7 @@ impl Interpreter {
 
         // Upstream expands to a fresh `let' per iteration, which binds
         // special names dynamically.
-        let dynamic =
-            self.is_dynamic_binding_name(&var_name) || self.local_special_active(&var_name, env);
+        let dynamic = self.binding_is_dynamic(&var_name, env);
         let frame_index = env.len();
         if !dynamic {
             Self::push_marked_frame(env, vec![(var_name.clone(), Value::Integer(0))]);
@@ -2628,6 +2628,286 @@ impl Interpreter {
                 }
             }
             other => Err(LispError::TypeError("list".into(), other.type_name())),
+        }
+    }
+
+    /// Bind a Common Lisp destructuring lambda list into the marked frame at
+    /// the end of `env'.  Unlike the lightweight loop-pattern binder above,
+    /// this implements the sequential/default-bearing sections used by
+    /// `cl-destructuring-bind' and by expansions of `cl-defmacro'.
+    pub(super) fn bind_cl_destructuring_pattern(
+        &mut self,
+        pattern: &Value,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        match pattern {
+            Value::Nil => {
+                if value.is_nil() {
+                    Ok(())
+                } else {
+                    Err(LispError::WrongNumberOfArgs(
+                        "cl-destructuring-bind".into(),
+                        value.to_vec().map_or(1, |items| items.len()),
+                    ))
+                }
+            }
+            Value::Symbol(name) if name == "nil" => Ok(()),
+            Value::Symbol(name) => {
+                let frame = env
+                    .last_mut()
+                    .expect("destructuring binding frame must be present");
+                Self::upsert_frame_binding(frame, name.clone(), Self::stored_value(value));
+                Ok(())
+            }
+            Value::Cons(_, _) => {
+                let pattern_items = match pattern.to_vec() {
+                    Ok(items) => items,
+                    Err(_) => return self.bind_cl_dotted_pattern(pattern, value, env),
+                };
+                let values = value.to_vec()?;
+                let mut pattern_index = 0usize;
+                let mut value_index = 0usize;
+                let mut section = ClDestructuringSection::Required;
+                let mut allow_other_keys = false;
+                let mut accepted_keys = Vec::new();
+
+                while pattern_index < pattern_items.len() {
+                    if let Value::Symbol(keyword) = &pattern_items[pattern_index] {
+                        match keyword.as_str() {
+                            "&whole" => {
+                                pattern_index += 1;
+                                let whole_pattern =
+                                    pattern_items.get(pattern_index).ok_or_else(|| {
+                                        LispError::Signal(
+                                        "Missing variable after &whole in destructuring pattern"
+                                            .into(),
+                                    )
+                                    })?;
+                                self.bind_cl_destructuring_pattern(
+                                    whole_pattern,
+                                    Value::list(values.clone()),
+                                    env,
+                                )?;
+                                pattern_index += 1;
+                                continue;
+                            }
+                            "&optional" => {
+                                section = ClDestructuringSection::Optional;
+                                pattern_index += 1;
+                                continue;
+                            }
+                            "&rest" | "&body" => {
+                                pattern_index += 1;
+                                let rest_pattern =
+                                    pattern_items.get(pattern_index).ok_or_else(|| {
+                                        LispError::Signal(
+                                            "Missing variable after &rest in destructuring pattern"
+                                                .into(),
+                                        )
+                                    })?;
+                                self.bind_cl_destructuring_pattern(
+                                    rest_pattern,
+                                    Value::list(values[value_index..].to_vec()),
+                                    env,
+                                )?;
+                                section = ClDestructuringSection::AfterRest;
+                                pattern_index += 1;
+                                continue;
+                            }
+                            "&key" => {
+                                section = ClDestructuringSection::Key;
+                                pattern_index += 1;
+                                continue;
+                            }
+                            "&allow-other-keys" if section == ClDestructuringSection::Key => {
+                                allow_other_keys = true;
+                                pattern_index += 1;
+                                continue;
+                            }
+                            "&aux" => {
+                                section = ClDestructuringSection::Aux;
+                                pattern_index += 1;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    match section {
+                        ClDestructuringSection::Required => {
+                            let Some(bound_value) = values.get(value_index).cloned() else {
+                                return Err(LispError::WrongNumberOfArgs(
+                                    "cl-destructuring-bind".into(),
+                                    values.len(),
+                                ));
+                            };
+                            self.bind_cl_destructuring_pattern(
+                                &pattern_items[pattern_index],
+                                bound_value,
+                                env,
+                            )?;
+                            value_index += 1;
+                        }
+                        ClDestructuringSection::Optional => {
+                            let binding = parse_cl_defun_optional_binding(
+                                pattern_items[pattern_index].clone(),
+                            )?;
+                            let supplied = value_index < values.len();
+                            let bound_value = if supplied {
+                                let value = values[value_index].clone();
+                                value_index += 1;
+                                value
+                            } else {
+                                self.eval(&binding.default_value, env)?
+                            };
+                            self.bind_cl_destructuring_pattern(&binding.pattern, bound_value, env)?;
+                            if let Some(supplied_name) = binding.supplied_name {
+                                let frame = env
+                                    .last_mut()
+                                    .expect("destructuring binding frame must be present");
+                                Self::upsert_frame_binding(
+                                    frame,
+                                    supplied_name,
+                                    if supplied { Value::T } else { Value::Nil },
+                                );
+                            }
+                        }
+                        ClDestructuringSection::AfterRest => {
+                            return Err(LispError::Signal(
+                                "Unexpected destructuring pattern after &rest".into(),
+                            ));
+                        }
+                        ClDestructuringSection::Key => {
+                            let binding =
+                                parse_cl_defun_key_binding(pattern_items[pattern_index].clone())?;
+                            accepted_keys.push(binding.keyword_name.clone());
+                            let key = Value::Symbol(binding.keyword_name);
+                            let matching = values[value_index..]
+                                .chunks(2)
+                                .find(|pair| pair.first() == Some(&key));
+                            let supplied = matching.is_some();
+                            let bound_value = match matching.and_then(|pair| pair.get(1)).cloned() {
+                                Some(value) => value,
+                                None if supplied => Value::Nil,
+                                None => self.eval(&binding.default_value, env)?,
+                            };
+                            self.bind_cl_destructuring_pattern(
+                                &Value::Symbol(binding.variable_name),
+                                bound_value,
+                                env,
+                            )?;
+                            if let Some(supplied_name) = binding.supplied_name {
+                                let frame = env
+                                    .last_mut()
+                                    .expect("destructuring binding frame must be present");
+                                Self::upsert_frame_binding(
+                                    frame,
+                                    supplied_name,
+                                    if supplied { Value::T } else { Value::Nil },
+                                );
+                            }
+                        }
+                        ClDestructuringSection::Aux => {
+                            let (aux_pattern, initializer) = match &pattern_items[pattern_index] {
+                                Value::Symbol(_) => {
+                                    (pattern_items[pattern_index].clone(), Value::Nil)
+                                }
+                                item => {
+                                    let parts = item.to_vec()?;
+                                    let aux_pattern = parts.first().cloned().ok_or_else(|| {
+                                        LispError::Signal("Empty &aux destructuring binding".into())
+                                    })?;
+                                    let initializer = parts.get(1).cloned().unwrap_or(Value::Nil);
+                                    (aux_pattern, initializer)
+                                }
+                            };
+                            let bound_value = self.eval(&initializer, env)?;
+                            self.bind_cl_destructuring_pattern(&aux_pattern, bound_value, env)?;
+                        }
+                    }
+                    pattern_index += 1;
+                }
+
+                if section == ClDestructuringSection::Key {
+                    if values[value_index..].len() % 2 != 0 {
+                        return Err(LispError::Signal(
+                            "Odd number of keyword arguments in destructuring pattern".into(),
+                        ));
+                    }
+                    if !allow_other_keys {
+                        let runtime_allows_other_keys =
+                            values[value_index..].chunks(2).any(|pair| {
+                                matches!(pair.first(), Some(Value::Symbol(key))
+                                    if key == ":allow-other-keys")
+                                    && pair.get(1).is_some_and(Value::is_truthy)
+                            });
+                        for pair in values[value_index..].chunks(2) {
+                            let Some(Value::Symbol(key)) = pair.first() else {
+                                return Err(LispError::Signal(
+                                    "Non-symbol keyword in destructuring pattern".into(),
+                                ));
+                            };
+                            if runtime_allows_other_keys || key == ":allow-other-keys" {
+                                continue;
+                            }
+                            if !accepted_keys.iter().any(|accepted| accepted == key) {
+                                return Err(LispError::Signal(format!(
+                                    "Keyword argument {key} not one of ({})",
+                                    accepted_keys.join(" ")
+                                )));
+                            }
+                        }
+                    }
+                } else if !matches!(
+                    section,
+                    ClDestructuringSection::AfterRest | ClDestructuringSection::Aux
+                ) && value_index < values.len()
+                {
+                    return Err(LispError::WrongNumberOfArgs(
+                        "cl-destructuring-bind".into(),
+                        values.len(),
+                    ));
+                }
+                Ok(())
+            }
+            other => Err(LispError::TypeError("list".into(), other.type_name())),
+        }
+    }
+
+    fn bind_cl_dotted_pattern(
+        &mut self,
+        pattern: &Value,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let mut current_pattern = pattern.clone();
+        let mut current_value = value;
+        loop {
+            match current_pattern {
+                Value::Cons(car, cdr) => {
+                    let Some((head, tail)) = current_value.cons_values() else {
+                        return Err(LispError::WrongNumberOfArgs(
+                            "cl-destructuring-bind".into(),
+                            0,
+                        ));
+                    };
+                    self.bind_cl_destructuring_pattern(&car.borrow().clone(), head, env)?;
+                    current_pattern = cdr.borrow().clone();
+                    current_value = tail;
+                }
+                Value::Nil => {
+                    return if current_value.is_nil() {
+                        Ok(())
+                    } else {
+                        Err(LispError::WrongNumberOfArgs(
+                            "cl-destructuring-bind".into(),
+                            1,
+                        ))
+                    };
+                }
+                other => return self.bind_cl_destructuring_pattern(&other, current_value, env),
+            }
         }
     }
 

@@ -1,5 +1,66 @@
 use super::*;
 
+fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
+    match setting {
+        Value::T => true,
+        Value::Cons(_, _) => setting.to_vec().is_ok_and(|items| {
+            items
+                .iter()
+                .any(|item| matches!(item, Value::Symbol(name) if name == prop))
+        }),
+        _ => false,
+    }
+}
+
+fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
+    defaults.to_vec().unwrap_or_default().iter().any(|entry| {
+        let Value::Cons(name, nonsticky) = entry else {
+            return false;
+        };
+        matches!(&*name.borrow(), Value::Symbol(candidate) if candidate == prop)
+            && nonsticky.borrow().is_truthy()
+    })
+}
+
+fn buffer_text_property_at_insertion(
+    interp: &Interpreter,
+    buffer: &crate::buffer::Buffer,
+    pos: usize,
+    prop: &str,
+    default_nonsticky: &Value,
+) -> Option<Value> {
+    let previous = pos
+        .checked_sub(1)
+        .filter(|previous| *previous >= buffer.point_min())
+        .and_then(|previous| buffer_property_at_with_category(interp, buffer, previous, prop))
+        .unwrap_or(Value::Nil);
+    let following =
+        buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil);
+    let rear_nonsticky = pos
+        .checked_sub(1)
+        .filter(|previous| *previous >= buffer.point_min())
+        .and_then(|previous| {
+            buffer_property_at_with_category(interp, buffer, previous, "rear-nonsticky")
+        })
+        .unwrap_or(Value::Nil);
+    let front_sticky =
+        buffer_property_at_with_category(interp, buffer, pos, "front-sticky").unwrap_or(Value::Nil);
+
+    let rear_sticky = pos > buffer.point_min()
+        && !property_is_default_nonsticky(default_nonsticky, prop)
+        && !stickiness_names_property(&rear_nonsticky, prop);
+    let front_sticky = stickiness_names_property(&front_sticky, prop);
+    let inherited = match (rear_sticky, front_sticky) {
+        (true, false) => previous,
+        (false, true) => following,
+        (false, false) => Value::Nil,
+        // Rear stickiness wins a conflict unless it would inherit nil.
+        (true, true) if previous.is_nil() => following,
+        (true, true) => previous,
+    };
+    (!inherited.is_nil()).then_some(inherited)
+}
+
 fn search_noerror_moves(noerror: Option<&Value>) -> bool {
     noerror.is_some_and(|value| value.is_truthy() && !matches!(value, Value::T))
 }
@@ -2363,59 +2424,73 @@ pub(super) fn call(
             let mut end = position_from_value(interp, &args[1])?;
             let count = args[2].as_integer()?;
             let saved_point = interp.buffer.point();
+            let saved_buffer_id = interp.current_buffer_id();
+            let Value::Marker(saved_point_marker) = interp.make_marker() else {
+                unreachable!("make_marker always returns a marker")
+            };
+            interp.set_marker(saved_point_marker, Some(saved_point), Some(saved_buffer_id))?;
             // GNU only touches lines that BEGIN inside the region: a
             // partial first line keeps its indentation.  Each line's
             // leading whitespace is replaced in place (indent-to plus a
             // delete of the old run), so the rest of the line keeps its
-            // text properties and markers.
-            interp.buffer.goto_char(start);
-            interp.buffer.beginning_of_line();
-            if interp.buffer.point() < start {
-                let mut pos = interp.buffer.point();
-                while let Some(ch) = interp.buffer.char_at(pos) {
-                    pos += 1;
-                    if ch == '\n' {
-                        break;
+            // text properties and markers.  The Lisp implementation wraps
+            // this work in `save-excursion', so saved point must likewise be
+            // a live marker rather than a stale absolute offset.
+            let result = (|| -> Result<(), LispError> {
+                interp.buffer.goto_char(start);
+                interp.buffer.beginning_of_line();
+                if interp.buffer.point() < start {
+                    let mut pos = interp.buffer.point();
+                    while let Some(ch) = interp.buffer.char_at(pos) {
+                        pos += 1;
+                        if ch == '\n' {
+                            break;
+                        }
                     }
+                    interp.buffer.goto_char(pos);
                 }
-                interp.buffer.goto_char(pos);
-            }
-            while interp.buffer.point() < end {
-                let bol = interp.buffer.point();
-                let mut ws_end = bol;
-                while matches!(interp.buffer.char_at(ws_end), Some(' ' | '\t')) {
-                    ws_end += 1;
-                }
-                let old_ws_len = ws_end - bol;
-                let eol_flag = matches!(interp.buffer.char_at(ws_end), None | Some('\n'));
-                if !eol_flag {
-                    let indent = column_at(interp, env, bol, ws_end) as i64;
-                    let target = (indent + count).max(0);
-                    super::call(interp, "indent-to", &[Value::Integer(target)], env)?;
-                }
-                // GNU deletes the old whitespace run unconditionally, so
-                // whitespace-only lines end up empty.
-                let after_insert = interp.buffer.point();
-                if old_ws_len > 0 {
-                    interp
-                        .delete_region_current_buffer(after_insert, after_insert + old_ws_len)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                }
-                let inserted = after_insert - bol;
-                end = (end + inserted).saturating_sub(old_ws_len);
-                // Move to the next line start.
-                let mut pos = interp.buffer.point();
-                while let Some(ch) = interp.buffer.char_at(pos) {
-                    pos += 1;
-                    if ch == '\n' {
-                        break;
+                while interp.buffer.point() < end {
+                    let bol = interp.buffer.point();
+                    let mut ws_end = bol;
+                    while matches!(interp.buffer.char_at(ws_end), Some(' ' | '\t')) {
+                        ws_end += 1;
                     }
+                    let old_ws_len = ws_end - bol;
+                    let eol_flag = matches!(interp.buffer.char_at(ws_end), None | Some('\n'));
+                    if !eol_flag {
+                        let indent = column_at(interp, env, bol, ws_end) as i64;
+                        let target = (indent + count).max(0);
+                        super::call(interp, "indent-to", &[Value::Integer(target)], env)?;
+                    }
+                    // GNU deletes the old whitespace run unconditionally, so
+                    // whitespace-only lines end up empty.
+                    let after_insert = interp.buffer.point();
+                    if old_ws_len > 0 {
+                        interp
+                            .delete_region_current_buffer(after_insert, after_insert + old_ws_len)
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                    }
+                    let inserted = after_insert - bol;
+                    end = (end + inserted).saturating_sub(old_ws_len);
+                    // Move to the next line start.
+                    let mut pos = interp.buffer.point();
+                    while let Some(ch) = interp.buffer.char_at(pos) {
+                        pos += 1;
+                        if ch == '\n' {
+                            break;
+                        }
+                    }
+                    interp.buffer.goto_char(pos);
                 }
-                interp.buffer.goto_char(pos);
-            }
-            interp
-                .buffer
-                .goto_char(saved_point.min(interp.buffer.point_max()));
+                Ok(())
+            })();
+            let restored_point = interp
+                .marker_position(saved_point_marker)
+                .unwrap_or(saved_point)
+                .clamp(interp.buffer.point_min(), interp.buffer.point_max());
+            interp.buffer.goto_char(restored_point);
+            let _ = interp.set_marker(saved_point_marker, None, None);
+            result?;
             Ok(Value::Nil)
         }
         "line-number-at-pos" => {
@@ -2631,6 +2706,13 @@ pub(super) fn call(
             let buffer = interp
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
+            let default_nonsticky = if name == "get-pos-property" {
+                interp
+                    .lookup_var("text-property-default-nonsticky", env)
+                    .unwrap_or(Value::Nil)
+            } else {
+                Value::Nil
+            };
             Ok(highest_priority_overlay_property(
                 interp,
                 buffer,
@@ -2638,7 +2720,19 @@ pub(super) fn call(
                 &prop,
                 name == "get-pos-property",
             )
-            .or_else(|| buffer_property_at_with_category(interp, buffer, pos, &prop))
+            .or_else(|| {
+                if name == "get-pos-property" {
+                    buffer_text_property_at_insertion(
+                        interp,
+                        buffer,
+                        pos,
+                        &prop,
+                        &default_nonsticky,
+                    )
+                } else {
+                    buffer_property_at_with_category(interp, buffer, pos, &prop)
+                }
+            })
             .unwrap_or(Value::Nil))
         }
         "get-text-property" => {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::primitives::string_like;
 use std::cell::RefCell;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
@@ -217,6 +218,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-find-class"
             | "cl--find-class"
             | "cl--struct-get-class"
+            | "cl--struct-class-slots"
             | "cl--struct-class-type"
             | "cl--class-index-table"
             | "cl-struct-define"
@@ -874,7 +876,7 @@ pub(super) fn call(
         "symbol-function" => {
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
-            if interp.raw_function_binding(symbol, env).is_none()
+            if interp.logical_function_binding(symbol, env).is_none()
                 && let Some(macro_function) = interp.macro_binding_as_function(symbol)
             {
                 // GNU's function cell for a macro holds (macro . EXPANDER).
@@ -884,7 +886,7 @@ pub(super) fn call(
                 interp.set_function_binding(symbol, Some(macro_function.clone()));
                 return Ok(macro_function);
             }
-            Ok(match interp.raw_function_binding(symbol, env) {
+            Ok(match interp.logical_function_binding(symbol, env) {
                 Some(value) => value,
                 None if is_special_form_name(symbol) => Value::BuiltinFunc(symbol.to_string()),
                 None if symbol == "benchmark-run" => Value::list([
@@ -919,6 +921,16 @@ pub(super) fn call(
                     .and_then(|test| test.source_file.clone())
                     .map(Value::String)
                     .unwrap_or(Value::Nil));
+            }
+            if let Ok(symbol) = args[0].as_symbol()
+                && let Some(file) = symbol_file_from_load_history(
+                    interp,
+                    symbol,
+                    args.get(1).and_then(|kind| kind.as_symbol().ok()),
+                    env,
+                )
+            {
+                return Ok(Value::String(file));
             }
             // GNU consults the dumped load-history; stand in for it with
             // the preloaded sources for defun/defvar/typeless queries.
@@ -2175,11 +2187,13 @@ pub(super) fn call(
             need_arg_range(name, args, 2, 3)?;
             let index = usize::try_from(args[1].as_integer()?).unwrap_or(0);
             let base = args.get(2).filter(|value| !value.is_nil());
-            let locals = interp.backtrace_frame_context_locals(index, base);
-            env.push(locals);
-            let result = interp.eval(&args[0], env);
-            env.pop();
-            result
+            let context = interp.backtrace_frame_context_env(index, base);
+            let shared_context = shared_env(context);
+            // Treat the suspended frames as captured lexical cells while the
+            // expression runs.  `setq' then records changes by frame
+            // identity, and the resumed activation observes them.
+            interp.register_captured_lexical_frames(&shared_context);
+            interp.eval(&args[0], &mut shared_context.borrow_mut())
         }
         "backtrace--locals" => {
             need_args(name, args, 2)?;
@@ -2834,6 +2848,53 @@ pub(super) fn call(
             need_args(name, args, 1)?;
             let symbol = args[0].as_symbol()?;
             Ok(interp.class_value(symbol).unwrap_or(Value::Nil))
+        }
+        "cl--struct-class-slots" => {
+            need_args(name, args, 1)?;
+            let Some(class_name) = interp.class_name_from_value(&args[0]) else {
+                return Err(wrong_type_argument("cl--struct-class-p", args[0].clone()));
+            };
+            let descriptors = if let Some(raw) = interp
+                .get_symbol_property(&class_name, "emaxx-struct-slot-descs")
+                .and_then(|value| value.to_vec().ok())
+            {
+                raw.into_iter()
+                    .skip(1) // GNU's class slot vector omits `cl-tag-slot'.
+                    .filter_map(|slot| {
+                        let parts = slot.to_vec().ok()?;
+                        let slot_name = parts.first()?.as_symbol().ok()?.to_string();
+                        let mut descriptor = EieioSlotDescriptor {
+                            name: slot_name,
+                            initform: parts.get(1).cloned(),
+                            slot_type: Value::T,
+                            props: Vec::new(),
+                            initargs: Vec::new(),
+                            class_allocated: false,
+                        };
+                        let mut index = 2;
+                        while index + 1 < parts.len() {
+                            let key = parts[index].as_symbol().ok()?.to_string();
+                            let value = parts[index + 1].clone();
+                            if key == ":type" {
+                                descriptor.slot_type = value;
+                            } else {
+                                descriptor.props.push((key, value));
+                            }
+                            index += 2;
+                        }
+                        Some(descriptor)
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                eieio_slot_descriptors(interp, &class_name)?
+            };
+            let records = descriptors
+                .iter()
+                .map(|descriptor| eieio_slot_descriptor_record(interp, env, descriptor))
+                .collect::<Vec<_>>();
+            Ok(Value::list(
+                std::iter::once(Value::Symbol("vector-literal".into())).chain(records),
+            ))
         }
         "cl--struct-class-type" => {
             need_args(name, args, 1)?;
@@ -3669,6 +3730,37 @@ pub(super) fn call(
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
     }
+}
+
+fn symbol_file_from_load_history(
+    interp: &Interpreter,
+    symbol: &str,
+    kind: Option<&str>,
+    env: &Env,
+) -> Option<String> {
+    let history = interp.lookup_var("load-history", env)?;
+    for load_entry in history.to_vec().ok()? {
+        let mut parts = load_entry.to_vec().ok()?.into_iter();
+        let file = parts.next().and_then(|value| string_like(&value))?.text;
+        let matches = parts.any(|definition| match kind {
+            Some("defvar") => matches!(&definition, Value::Symbol(name) if name == symbol),
+            Some(expected_kind) => definition.cons_values().is_some_and(|(entry_kind, name)| {
+                matches!(entry_kind, Value::Symbol(actual_kind) if actual_kind == expected_kind)
+                    && matches!(name, Value::Symbol(actual_name) if actual_name == symbol)
+            }),
+            None => {
+                matches!(&definition, Value::Symbol(name) if name == symbol)
+                    || definition.cons_values().is_some_and(|(entry_kind, name)| {
+                        !matches!(entry_kind, Value::Symbol(ref actual_kind) if actual_kind == "require")
+                            && matches!(name, Value::Symbol(actual_name) if actual_name == symbol)
+                    })
+            }
+        });
+        if matches {
+            return Some(file);
+        }
+    }
+    None
 }
 
 struct SemanticCurrentSymbol {
@@ -9387,7 +9479,15 @@ fn process_file_compat(
     let output = command
         .output()
         .map_err(|error| LispError::Signal(format!("process-file: {error}")))?;
-    write_process_output(interp, &args[2], &output.stdout, &output.stderr)?;
+    write_process_output(
+        interp,
+        &args[2],
+        &output.stdout,
+        &output.stderr,
+        "call-process",
+        args,
+        env,
+    )?;
     Ok(Value::Integer(output.status.code().unwrap_or(1) as i64))
 }
 
@@ -10371,11 +10471,12 @@ fn byte_compile_expand_defun(
     env: &mut Env,
     items: &[Value],
 ) -> Result<Value, LispError> {
-    let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
-        4
-    } else {
-        3
-    };
+    let body_start =
+        if items.len() > 3 && matches!(items[3], Value::String(_) | Value::StringObject(_)) {
+            4
+        } else {
+            3
+        };
     let mut expanded = Vec::with_capacity(items.len());
     expanded.extend(items[..body_start].iter().cloned());
     for body in &items[body_start..] {
@@ -11219,11 +11320,12 @@ impl ByteCompileDiagnostics {
                     .push((name.to_string(), required, maximum));
             }
         }
-        let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
-            4
-        } else {
-            3
-        };
+        let body_start =
+            if items.len() > 3 && matches!(items[3], Value::String(_) | Value::StringObject(_)) {
+                4
+            } else {
+                3
+            };
         if let Some(docstring) = items.get(3).and_then(format_string_literal) {
             self.warn_if_wide_docstring(&docstring);
         }
@@ -11257,11 +11359,12 @@ impl ByteCompileDiagnostics {
                 );
             }
         }
-        let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
-            4
-        } else {
-            3
-        };
+        let body_start =
+            if items.len() > 3 && matches!(items[3], Value::String(_) | Value::StringObject(_)) {
+                4
+            } else {
+                3
+            };
         self.scan_body(interp, items.get(body_start..).unwrap_or_default());
     }
 
@@ -11429,11 +11532,12 @@ impl ByteCompileDiagnostics {
             .get(1)
             .and_then(|value| byte_compile_lambda_parameters(value).ok())
             .unwrap_or_default();
-        let body_start = if items.len() > 3 && matches!(items[2], Value::String(_)) {
-            3
-        } else {
-            2
-        };
+        let body_start =
+            if items.len() > 3 && matches!(items[2], Value::String(_) | Value::StringObject(_)) {
+                3
+            } else {
+                2
+            };
         let body = items.get(body_start..).unwrap_or_default();
         let existing_bindings = self.lexical_bindings.len();
         self.lexical_bindings.extend(params.iter().cloned());
@@ -12400,9 +12504,13 @@ fn custom_type_symbol_is_valid(name: &str) -> bool {
 }
 
 fn custom_type_tag(args: &[Value]) -> Option<String> {
-    args.windows(2).find_map(|window| match window {
-        [Value::Symbol(keyword), Value::String(tag)] if keyword == ":tag" => Some(tag.clone()),
-        _ => None,
+    args.windows(2).find_map(|window| {
+        let [Value::Symbol(keyword), tag] = window else {
+            return None;
+        };
+        (keyword == ":tag")
+            .then(|| string_like(tag).map(|string| string.text))
+            .flatten()
     })
 }
 
@@ -12411,7 +12519,9 @@ fn custom_type_render(value: &Value) -> String {
         Value::Nil => "nil".into(),
         Value::T => "t".into(),
         Value::Symbol(symbol) => symbol.clone(),
-        Value::String(text) => format!("{text:?}"),
+        Value::String(_) | Value::StringObject(_) => string_like(value)
+            .map(|string| format!("{:?}", string.text))
+            .unwrap_or_default(),
         _ => format!("{value}"),
     }
 }

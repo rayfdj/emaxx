@@ -60,18 +60,16 @@ impl Interpreter {
                 }
             }
         }
-        // DEFVAR_PER_BUFFER semantics: the current buffer's own local wins
-        // over a global `let' made in another buffer.
-        if self.is_auto_buffer_local(resolved)
-            && let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved)
-        {
+        // A buffer-local cell always wins over a dynamically bound default.
+        // This also covers a plain special that becomes buffer-local while
+        // its global `let' is active: GNU then reads the newly created local
+        // cell, while the specbind layer continues to own/restores only the
+        // default value.
+        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved) {
             return Some(value);
         }
         if let Some(value) = self.active_global_special_value(resolved) {
             return value.or_else(|| self.builtin_var_value(resolved));
-        }
-        if let Some(value) = self.buffer_local_value(self.current_buffer_id(), resolved) {
-            return Some(value);
         }
         if let Some(value) = self.global_value(resolved) {
             return Some(value);
@@ -575,9 +573,20 @@ impl Interpreter {
             "ert-resource-directory-trim-right-regexp" => {
                 Some(Value::String("\\(-tests?\\)?\\.el".into()))
             }
-            "load-file-name" | "macroexp-file-name" => Some(
+            "load-file-name" => Some(
                 self.current_load_file
                     .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            // Macro expansion can happen when an interpreted ERT body is
+            // invoked, after its defining file has finished loading.  GNU's
+            // macroexp-file-name still identifies that call-site file; the
+            // native ERT runner retains it explicitly for this purpose.
+            "macroexp-file-name" => Some(
+                self.current_load_file
+                    .clone()
+                    .or_else(|| self.ert_test_source_file.clone())
                     .map(Value::String)
                     .unwrap_or(Value::Nil),
             ),
@@ -676,6 +685,19 @@ impl Interpreter {
         None
     }
 
+    /// Return the Lisp-visible function cell even when execution of NAME is
+    /// pinned to a native implementation.  GNU metadata consumers such as
+    /// gv-get follow symbol aliases through `symbol-function`; hiding an
+    /// alias here loses declarations attached to its target.
+    pub fn logical_function_binding(&self, name: &str, env: &Env) -> Option<Value> {
+        if primitives::name_facts(name).prefer_override
+            && let Some(binding) = self.functions_index.get(name)
+        {
+            return Some(binding.clone());
+        }
+        self.raw_function_binding(name, env)
+    }
+
     /// Resolve NAME the way GNU macro dispatch sees the function cell:
     /// macros live in function cells, so only genuine function-binding
     /// frames (cl-flet/cl-labels push FUNCTION_FRAME_MARKER as their
@@ -761,20 +783,18 @@ impl Interpreter {
     }
 
     pub(crate) fn macro_function_value(&self, name: &str) -> Option<Value> {
-        let (params, body) = self.resolve_macro_binding(name)?;
-        Some(Value::cons(
-            Value::Symbol("macro".into()),
-            Value::Lambda(params, body, shared_env(Vec::new())),
-        ))
+        let expander = self.resolve_macro_binding(name)?;
+        Some(Value::cons(Value::Symbol("macro".into()), expander))
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
         let mut names = Vec::new();
+        let mut seen = HashSet::new();
         let mut push_name = |name: &str| {
             if crate::lisp::types::visible_symbol_name(name) != name {
                 return;
             }
-            if !names.iter().any(|existing| existing == name) {
+            if seen.insert(name.to_string()) {
                 names.push(name.to_string());
             }
         };
@@ -789,9 +809,9 @@ impl Interpreter {
         for (name, _) in &self.functions {
             push_name(name);
         }
-        for (name, _, _) in &self.macros {
-            if !name.starts_with(MACRO_SHADOW_PREFIX) {
-                push_name(name);
+        for binding in &self.macros {
+            if !binding.name.starts_with(MACRO_SHADOW_PREFIX) {
+                push_name(&binding.name);
             }
         }
         for (name, _) in &self.symbol_properties {
@@ -801,6 +821,21 @@ impl Interpreter {
             push_name(name);
         }
         names
+    }
+
+    /// O(1) membership probe for GNU's standard obarray.  Enumeration keeps
+    /// a deterministic vector view for `mapatoms' and completion, but
+    /// `intern-soft' is a hash-table operation upstream and must not rebuild
+    /// that complete view for every lookup.
+    pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {
+        matches!(name, "nil" | "t")
+            || self.interned_symbol_names.contains(name)
+            || self.globals_index.contains_key(name)
+            || self.variable_aliases_index.contains_key(name)
+            || self.functions_index.contains_key(name)
+            || (self.macros_name_counts.contains_key(name)
+                && !name.starts_with(MACRO_SHADOW_PREFIX))
+            || self.symbol_property_index(name).is_some()
     }
 
     /// Track a macro-table insertion so name-count lookups stay in sync;
@@ -875,7 +910,7 @@ impl Interpreter {
     ) -> (usize, usize) {
         let local_start = self.macros.len();
         for binding in local_macros {
-            self.note_macro_added(&binding.0);
+            self.note_macro_added(&binding.name);
             self.macros.push(binding.clone());
         }
         (local_start, local_macros.len())
@@ -885,7 +920,7 @@ impl Interpreter {
     pub(crate) fn drain_local_macros(&mut self, local_start: usize, local_count: usize) {
         let names: Vec<String> = self.macros[local_start..local_start + local_count]
             .iter()
-            .map(|binding| binding.0.clone())
+            .map(|binding| binding.name.clone())
             .collect();
         self.macros.drain(local_start..local_start + local_count);
         for name in names {
@@ -893,7 +928,7 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn resolve_macro_binding(&self, name: &str) -> Option<(Vec<String>, Vec<Value>)> {
+    pub(super) fn resolve_macro_binding(&self, name: &str) -> Option<Value> {
         let mut current = name.to_string();
         let mut seen = Vec::new();
         loop {
@@ -902,13 +937,13 @@ impl Interpreter {
             }
             seen.push(current.clone());
             if self.macros_name_counts.contains_key(&current)
-                && let Some((_, params, body)) = self
+                && let Some(binding) = self
                     .macros
                     .iter()
                     .rev()
-                    .find(|(macro_name, _, _)| macro_name == &current)
+                    .find(|binding| binding.name == current)
             {
-                return Some((params.clone(), body.clone()));
+                return Some(binding.expander.clone());
             }
             let value = self.functions_index.get(&current)?;
             let Value::Symbol(next) = value else {
@@ -1128,13 +1163,8 @@ impl Interpreter {
         self.macros
             .iter()
             .rev()
-            .find(|(mname, _, _)| mname == name)
-            .map(|(_, params, body)| {
-                Value::cons(
-                    Value::Symbol("macro".into()),
-                    Value::Lambda(params.clone(), body.clone(), shared_env(Vec::new())),
-                )
-            })
+            .find(|binding| binding.name == name)
+            .map(|binding| Value::cons(Value::Symbol("macro".into()), binding.expander.clone()))
     }
 
     // Follow the function cell (through symbol aliases) to a
@@ -1188,8 +1218,8 @@ impl Interpreter {
     pub(crate) fn shadow_macro_binding(&mut self, name: &str) {
         let mut renamed = 0u32;
         for entry in self.macros.iter_mut() {
-            if entry.0 == name {
-                entry.0 = format!("{MACRO_SHADOW_PREFIX}{name}");
+            if entry.name == name {
+                entry.name = format!("{MACRO_SHADOW_PREFIX}{name}");
                 renamed += 1;
             }
         }

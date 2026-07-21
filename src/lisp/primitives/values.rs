@@ -123,6 +123,56 @@ pub(crate) fn keymap_records_equal(
     values_equal_recursive(interp, &left_parent, &right_parent, seen)
 }
 
+fn char_tables_equal(
+    interp: &Interpreter,
+    left_id: u64,
+    right_id: u64,
+    seen: &mut HashSet<(usize, usize)>,
+) -> bool {
+    if left_id == right_id {
+        return true;
+    }
+    // Keep char-table recursion keys disjoint from the small numeric record
+    // IDs used elsewhere in this equality walk.
+    let pair = (
+        (left_id as usize) ^ usize::MAX,
+        (right_id as usize) ^ usize::MAX,
+    );
+    if !seen.insert(pair) {
+        return true;
+    }
+    let (Some(left), Some(right)) = (
+        interp.find_char_table(left_id),
+        interp.find_char_table(right_id),
+    ) else {
+        return false;
+    };
+    left.subtype == right.subtype
+        && values_equal_recursive(interp, &left.default, &right.default, seen)
+        && left.extra_slots.len() == right.extra_slots.len()
+        && left
+            .extra_slots
+            .iter()
+            .zip(&right.extra_slots)
+            .all(|(left, right)| values_equal_recursive(interp, left, right, seen))
+        && left.entries.len() == right.entries.len()
+        && left
+            .entries
+            .iter()
+            .zip(&right.entries)
+            .all(|(left_entry, right_entry)| {
+                left_entry.start == right_entry.start
+                    && left_entry.end == right_entry.end
+                    && values_equal_recursive(interp, &left_entry.value, &right_entry.value, seen)
+            })
+        && left.category_docs == right.category_docs
+        && match (left.parent, right.parent) {
+            (None, None) => true,
+            (Some(left), Some(right)) => char_tables_equal(interp, left, right, seen),
+            _ => false,
+        }
+}
+
 pub(crate) fn keymap_record_equals_list(
     interp: &Interpreter,
     keymap_id: u64,
@@ -220,6 +270,9 @@ pub(crate) fn values_equal_recursive(
         (Value::Buffer(a, _), Value::Buffer(b, _)) => a == b,
         (Value::Marker(a), Value::Marker(b)) => markers_equal(interp, *a, *b),
         (Value::Overlay(a), Value::Overlay(b)) => overlays_equal(interp, *a, *b),
+        (Value::CharTable(left_id), Value::CharTable(right_id)) => {
+            char_tables_equal(interp, *left_id, *right_id, seen)
+        }
         (Value::Record(left_id), Value::Record(right_id))
             if interp
                 .find_record(*left_id)
@@ -325,8 +378,8 @@ pub(crate) fn values_equal_recursive(
             }
             symbols.iter().all(|symbol| {
                 match (
-                    lookup_captured_binding(left_env, symbol),
-                    lookup_captured_binding(right_env, symbol),
+                    interp.effective_captured_binding(left_env, symbol),
+                    interp.effective_captured_binding(right_env, symbol),
                 ) {
                     (None, None) => true,
                     (Some(left_value), Some(right_value)) => {
@@ -357,19 +410,6 @@ fn collect_free_symbol_candidates(form: &Value, symbols: &mut HashSet<String>) {
         }
         _ => {}
     }
-}
-
-/// Look up SYMBOL's innermost binding in a lambda's captured environment.
-fn lookup_captured_binding(env: &crate::lisp::types::SharedEnv, symbol: &str) -> Option<Value> {
-    let frames = env.borrow();
-    for frame in frames.iter().rev() {
-        for (name, value) in frame.iter().rev() {
-            if name == symbol {
-                return Some(value.clone());
-            }
-        }
-    }
-    None
 }
 
 pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {

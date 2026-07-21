@@ -687,14 +687,23 @@ fn get_byte_reads_unibyte_buffer_positions() {
 #[test]
 fn write_process_output_supports_stdout_buffer_and_stderr_file() {
     let mut interp = Interpreter::new();
+    let mut env = Vec::new();
     let stderr_path = std::env::temp_dir()
         .join("emaxx-process-stderr-test")
         .display()
         .to_string();
     let destination = Value::list([Value::T, Value::String(stderr_path.clone())]);
 
-    write_process_output(&mut interp, &destination, &[0xFF], b"warn\n")
-        .expect("write process output");
+    write_process_output(
+        &mut interp,
+        &destination,
+        &[0xFF],
+        b"warn\n",
+        "call-process",
+        &[Value::String("sample".into())],
+        &mut env,
+    )
+    .expect("write process output");
     assert_eq!(
         interp.buffer.buffer_string(),
         decode_raw_text_bytes(&[0xFF])
@@ -706,11 +715,75 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
 #[test]
 fn write_process_output_merges_stderr_for_t_cons_destination() {
     let mut interp = Interpreter::new();
+    let mut env = Vec::new();
     let destination = Value::cons(Value::T, Value::T);
 
-    write_process_output(&mut interp, &destination, b"out\n", b"err\n")
-        .expect("write merged process output");
+    write_process_output(
+        &mut interp,
+        &destination,
+        b"out\n",
+        b"err\n",
+        "call-process",
+        &[Value::String("sample".into())],
+        &mut env,
+    )
+    .expect("write merged process output");
     assert_eq!(interp.buffer.buffer_string(), "out\nerr\n");
+}
+
+#[test]
+fn write_process_output_decodes_with_the_default_process_coding_system() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+
+    write_process_output(
+        &mut interp,
+        &Value::T,
+        b"Symbol\xE2\x80\x99s\n",
+        b"",
+        "call-process",
+        &[Value::String("sample".into())],
+        &mut env,
+    )
+    .expect("decode process output");
+
+    assert_eq!(interp.buffer.buffer_string(), "Symbol’s\n");
+    assert_eq!(
+        interp.lookup_var("last-coding-system-used", &env),
+        Some(Value::Symbol("utf-8-unix".into()))
+    );
+}
+
+#[test]
+fn process_coding_alist_overrides_the_default_for_synchronous_output() {
+    let mut interp = Interpreter::new();
+    let mut env = vec![vec![(
+        "process-coding-system-alist".into(),
+        Value::list([Value::cons(
+            Value::String("sample\\'".into()),
+            Value::cons(
+                Value::Symbol("raw-text-unix".into()),
+                Value::Symbol("raw-text-unix".into()),
+            ),
+        )]),
+    )]];
+
+    write_process_output(
+        &mut interp,
+        &Value::T,
+        b"\xE2\x80\x99",
+        b"",
+        "call-process",
+        &[Value::String("sample".into())],
+        &mut env,
+    )
+    .expect("decode process output through process-coding-system-alist");
+
+    assert_eq!(interp.buffer.buffer_string().chars().count(), 3);
+    assert_eq!(
+        interp.lookup_var("last-coding-system-used", &env),
+        Some(Value::Symbol("raw-text-unix".into()))
+    );
 }
 
 #[test]

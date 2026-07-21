@@ -398,24 +398,38 @@ fn require_with_extensionless_target_uses_elc_when_el_is_empty() {
 
 #[test]
 fn require_uses_current_load_path_binding() {
-    let dir = std::env::temp_dir().join(format!(
+    let root = std::env::temp_dir().join(format!(
         "emaxx-require-load-path-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time after epoch")
             .as_nanos()
     ));
-    fs::create_dir_all(&dir).expect("create require load-path dir");
+    let library_dir = root.join("resources");
+    fs::create_dir_all(&library_dir).expect("create require load-path dir");
     fs::write(
-        dir.join("sample-load-path.el"),
+        library_dir.join("sample-load-path.el"),
         "(provide 'sample-load-path)\n",
     )
     .expect("write require target");
-    let dir_text = dir.to_string_lossy();
-    let form =
-        format!(r#"(let ((load-path (cons "{dir_text}" load-path))) (require 'sample-load-path))"#);
-    assert_eq!(eval_str(&form), Value::Symbol("sample-load-path".into()));
-    let _ = fs::remove_dir_all(dir);
+    let source_path = root.join("scenario.el");
+    fs::write(
+        &source_path,
+        format!(
+            ";;; -*- lexical-binding: t -*-\n\
+             (eval-and-compile\n\
+               (let ((load-path (cons {:?} load-path)))\n\
+                 (require 'sample-load-path)))\n",
+            library_dir.display().to_string()
+        ),
+    )
+    .expect("write lexical require caller");
+
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(&mut interp, &source_path)
+        .expect("lexical eval-and-compile should see dynamic load-path");
+    assert!(interp.has_feature("sample-load-path"));
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -472,6 +486,30 @@ fn call_interactively_handles_prefix_argument_specs() {
                            (lambda (arg) (interactive \"P\") arg))))"
         ),
         Value::list([Value::Integer(4), Value::list([Value::Integer(4)]),])
+    );
+}
+
+#[test]
+fn prefix_argument_variables_are_dynamic_across_function_calls() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defun emaxx-test-prefix-state ()
+                 (list prefix-arg last-prefix-arg current-prefix-arg))
+               (let ((prefix-arg '(4))
+                     (last-prefix-arg '-)
+                     (current-prefix-arg 7))
+                 (list (special-variable-p 'current-prefix-arg)
+                       (emaxx-test-prefix-state))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::list([Value::Integer(4)]),
+                Value::Symbol("-".into()),
+                Value::Integer(7),
+            ]),
+        ])
     );
 }
 
@@ -1281,9 +1319,11 @@ fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
 }
 
 #[test]
-fn framep_accepts_selected_frame_stub() {
+fn frame_predicates_track_the_single_live_frame() {
     assert_eq!(eval_str("(framep (selected-frame))"), Value::T);
     assert_eq!(eval_str("(framep nil)"), Value::Nil);
+    assert_eq!(eval_str("(frame-live-p (selected-frame))"), Value::T);
+    assert_eq!(eval_str("(frame-live-p nil)"), Value::Nil);
 }
 
 #[test]
@@ -2937,7 +2977,14 @@ fn regexp_syntax_classes_match_lisp_definition_forms() {
         crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
             .expect("upstream load path"),
     );
-    let _ = interp.load_target("completion");
+    interp
+        .load_target("completion")
+        .expect("load GNU completion library");
+
+    assert_eq!(
+        eval_str_with(&mut interp, r#"(string-match "\\s_" "-")"#),
+        Value::Integer(0)
+    );
 
     assert_eq!(
         eval_str_with(
@@ -3072,6 +3119,83 @@ fn assert_minibuffer_completion_primitives_cover_batch_cases() {
 }
 
 #[test]
+fn native_completion_observes_lexically_scoped_completion_policy() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (require 'cl-lib)
+                 (with-temp-buffer
+                   (insert "foo")
+                   (setq-local
+                    completion-at-point-functions
+                    (list (lambda ()
+                            (list (point-min) (point-max)
+                                  '("foobar" "foobaz")))))
+                   (let ((completion-auto-help nil)
+                         message-args)
+                     (cl-letf (((symbol-function #'minibuffer-message)
+                                (lambda (&rest args)
+                                  (setq message-args args))))
+                       (completion-at-point)
+                       (completion-at-point)
+                       (list (buffer-string)
+                             message-args
+                             (special-variable-p 'completion-auto-help))))))"#,
+        ),
+        Value::list([
+            Value::String("fooba".into()),
+            Value::list([Value::String("Next char not unique".into())]),
+            Value::T,
+        ])
+    );
+}
+
+#[test]
+fn describe_char_observes_preloaded_eldoc_multiline_policy() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (require 'descr-text)
+                 (with-temp-buffer
+                   (insert "…")
+                   (goto-char (point-min))
+                   (list
+                    eldoc-echo-area-use-multiline-p
+                    (special-variable-p 'eldoc-echo-area-use-multiline-p)
+                    (let ((eldoc-echo-area-use-multiline-p t))
+                      (describe-char-eldoc 'ignore)))))"#,
+        ),
+        Value::list([
+            Value::Symbol("truncate-sym-name-if-fit".into()),
+            Value::T,
+            Value::String("U+2026: Horizontal ellipsis (Po: Punctuation, Other)".into()),
+        ])
+    );
+}
+
+#[test]
+fn electric_newline_observes_c_basic_offset_binding() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (require 'electric)
+                 (require 'elec-pair)
+                 (with-temp-buffer
+                   (c-mode)
+                   (electric-pair-mode 1)
+                   (electric-indent-mode 1)
+                   (insert "int main {}")
+                   (backward-char 1)
+                   (let ((c-basic-offset 4))
+                     (newline 1 t))
+                   (list (buffer-string)
+                         (special-variable-p 'c-basic-offset))))"#,
+        ),
+        Value::list([Value::String("int main {\n    \n}".into()), Value::T,])
+    );
+}
+
+#[test]
 fn intern_primitives_honor_the_dynamically_bound_obarray() {
     assert_eq!(
         eval_str(
@@ -3088,6 +3212,43 @@ fn intern_primitives_honor_the_dynamically_bound_obarray() {
                 "#
         ),
         Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+    );
+}
+
+#[test]
+fn standard_obarray_intern_soft_stays_indexed_at_scale() {
+    let mut interp = Interpreter::new();
+    for index in 0..5_000 {
+        interp.intern_symbol_name(&format!("emaxx-indexed-obarray-{index}"));
+    }
+    let obarray = interp
+        .lookup_var("obarray", &Vec::new())
+        .expect("standard obarray");
+    let started = std::time::Instant::now();
+    for _ in 0..25 {
+        assert_eq!(
+            crate::lisp::primitives::intern_soft_in_obarray(
+                &interp,
+                &obarray,
+                "emaxx-indexed-obarray-4999",
+            )
+            .unwrap(),
+            Value::Symbol("emaxx-indexed-obarray-4999".into())
+        );
+        assert_eq!(
+            crate::lisp::primitives::intern_soft_in_obarray(
+                &interp,
+                &obarray,
+                "emaxx-indexed-obarray-missing",
+            )
+            .unwrap(),
+            Value::Nil
+        );
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "standard-obarray membership rebuilt the full symbol view: {:?}",
+        started.elapsed()
     );
 }
 

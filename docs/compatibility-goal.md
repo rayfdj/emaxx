@@ -17,8 +17,35 @@ The canonical ordered manifest is:
 The denominator is 7080 selected tests. Do not use source-tree `ert-deftest`
 counts as the progress denominator.
 
+Post-7080 performance follow-up: track **"Optimize Dired listings for large
+directories after 7080 compatibility"**.  Two Dired tests exceeded 20 seconds
+only when enumerating the host temp directory with roughly 1,000 entries and
+passed against an isolated empty temp directory, demonstrating a real Emaxx
+large-directory performance gap rather than a Dired correctness or process-I/O
+failure.  GitHub issue creation is currently blocked by missing issue-write
+authentication (integration HTTP 403 and invalid local `gh` token); the full
+handoff and retry instruction are in
+`docs/!!!AI_CONTINUATION_INSTRUCTIONS_DO_NOT_SKIP.md`.
+
 ## Current State
 
+- The post-3125 thematic regression batch is ready to commit.  Final
+  cumulative artifact `target/compat/run-1784589326956761000-16406` covers all
+  201 canonical files through `em-glob-tests.el`; the Emaxx-only comparison
+  with pre-fix artifact `target/compat/run-1784558452909597000-74441` has zero
+  pass-to-fail, six fail-to-pass, no changed failures, and no missing/added
+  results.  It repairs dynamic nil-env eval/progv, symbolic GV expanders,
+  nested backquote depth, preloaded condition ancestry, the public
+  `with-temp-buffer` macro contract, and lexical macro-expander invocation.
+  The latter stores macros as callable expander closures rather than raw
+  parameter/body tuples and clears `edebug-tests-cl-macrolet` both alone and
+  in cumulative order.  Synthesized runner failures are now persisted, and
+  source-owned locked builds plus provenance hashes prevent stale Emaxx gates.
+  The full gate passes 1297 library tests, 25 harness tests, the perf test, and
+  all three ERT integrations; rustfmt, Clippy with `-D warnings`, and diff
+  checks are clean.  NEXT is selector 3126,
+  `em-hist-test/add-to-history/allow-dups` in `em-hist-tests.el`, after this
+  batch is committed.
 - Verified through selector 3125/7080: all 27 selected
   `test/lisp/eshell/em-glob-tests.el' cases match GNU together.  The final
   remote-home case was a mock-Tramp localname contract, not Eshell policy:

@@ -307,7 +307,10 @@ impl Interpreter {
                         // prefer it once loaded and keep the native form
                         // as the no-file fallback.
                         "let-alist"
-                            if !self.macros.iter().any(|(name, _, _)| name == "let-alist") =>
+                            if !self
+                                .macros
+                                .iter()
+                                .any(|binding| binding.name == "let-alist") =>
                         {
                             return self.sf_let_alist(&items, env);
                         }
@@ -376,22 +379,31 @@ impl Interpreter {
                             if let (Some(Value::Symbol(name)), Some(args)) =
                                 (items.get(1), items.get(2))
                                 && let Ok(param_values) = args.to_vec()
-                                && let Ok(params) = param_values
+                                && param_values
                                     .iter()
                                     .map(|p| p.as_symbol().map(str::to_string))
                                     .collect::<Result<Vec<_>, _>>()
+                                    .is_ok()
                             {
                                 let rewriter_name = format!("cl-generic--context-rewriter--{name}");
+                                let lambda_form = Value::list(
+                                    std::iter::once(Value::Symbol("lambda".into()))
+                                        .chain(std::iter::once(args.clone()))
+                                        .chain(items[3..].iter().cloned()),
+                                );
+                                let expander = self.eval(&lambda_form, env)?;
                                 self.note_macro_added(&rewriter_name);
-                                self.macros
-                                    .push((rewriter_name, params, items[3..].to_vec()));
+                                self.macros.push(MacroBinding {
+                                    name: rewriter_name,
+                                    expander,
+                                });
                             }
                             return Ok(Value::Nil);
                         }
                         "oclosure-define" => return self.sf_oclosure_define(&items, env),
                         "oclosure-lambda" => return self.sf_oclosure_lambda(&items, env),
                         "define-inline" => return self.sf_define_inline(&items, env),
-                        "defmacro" => return self.sf_defmacro(&items),
+                        "defmacro" => return self.sf_defmacro(&items, env),
                         "with-memoization" => return self.sf_with_memoization(&items, env),
                         "easy-menu-define" => return self.sf_easy_menu_define(&items, env),
                         "cl-defstruct" | "emaxx--cl-defstruct" => {
@@ -476,7 +488,12 @@ impl Interpreter {
                         }
                         "handler-bind" => return self.sf_handler_bind(&items, env),
                         "cl-assert" => return self.sf_cl_assert(&items, env),
-                        "with-temp-buffer" => return self.sf_with_temp_buffer(&items, env),
+                        // GNU preloads `with-temp-buffer' as a subr.el macro.
+                        // Keep the native implementation only as a bootstrap
+                        // fallback before simple_compat.el is loaded.
+                        "with-temp-buffer" if !self.has_macro_binding("with-temp-buffer") => {
+                            return self.sf_with_temp_buffer(&items, env);
+                        }
                         "ert-with-test-buffer" => {
                             return self.sf_ert_with_test_buffer(&items, env);
                         }
@@ -524,7 +541,11 @@ impl Interpreter {
                         "with-suppressed-warnings" => {
                             return self.sf_with_suppressed_warnings(&items, env);
                         }
-                        "with-demoted-errors" => {
+                        // Prefer GNU's loaded macro.  Its
+                        // `condition-case-unless-debug' expansion cooperates
+                        // with ERT's debugger bindings; the native arm is
+                        // only a bootstrap fallback before subr is present.
+                        "with-demoted-errors" if !self.has_macro_binding("with-demoted-errors") => {
                             return self.sf_with_demoted_errors(&items, env);
                         }
                         "with-coding-priority" => {
@@ -580,14 +601,33 @@ impl Interpreter {
                         }
                         "catch" => return self.sf_catch(&items, env),
                         "add-to-list" => return self.sf_add_to_list(&items, env),
-                        "ert-deftest" => return self.sf_ert_deftest(&items, env),
-                        "should" => return self.sf_should(&items, env),
-                        "should-not" => return self.sf_should_not(&items, env),
-                        "should-error" => return self.sf_should_error(&items, env),
-                        "skip-unless" | "ert--skip-unless" => {
+                        // Keep the native definition path only for bootstrap
+                        // interpreters.  GNU ert.el macroexpands test bodies
+                        // when they are defined; deferring that work until a
+                        // test runs makes macro availability and caches depend
+                        // on the order in which tests execute.
+                        "ert-deftest" if !self.has_macro_binding("ert-deftest") => {
+                            return self.sf_ert_deftest(&items, env);
+                        }
+                        // These are native bootstrap fallbacks.  Once ert.el
+                        // has installed its real macros, their expansion owns
+                        // the observable condition payload and should-form
+                        // observer protocol used by nested `ert-run-test'.
+                        "should" if !self.has_macro_binding("should") => {
+                            return self.sf_should(&items, env);
+                        }
+                        "should-not" if !self.has_macro_binding("should-not") => {
+                            return self.sf_should_not(&items, env);
+                        }
+                        "should-error" if !self.has_macro_binding("should-error") => {
+                            return self.sf_should_error(&items, env);
+                        }
+                        "skip-unless" | "ert--skip-unless" if !self.has_macro_binding(name) => {
                             return self.sf_skip_unless(&items, env);
                         }
-                        "skip-when" | "ert--skip-when" => return self.sf_skip_when(&items, env),
+                        "skip-when" | "ert--skip-when" if !self.has_macro_binding(name) => {
+                            return self.sf_skip_when(&items, env);
+                        }
                         "rx" if !{
                             self.ensure_gnu_rx_loaded();
                             self.has_macro_binding("rx")
@@ -708,7 +748,7 @@ impl Interpreter {
                             return self.sf_progn(&items[1..], env);
                         }
                         "while-no-input" => return self.sf_progn(&items[1..], env),
-                        "ert-info" => {
+                        "ert-info" if !self.has_macro_binding("ert-info") => {
                             // (ert-info (MESSAGE-FORM &key ((:prefix P) "Info: "))
                             //   BODY...): push (PREFIX . MESSAGE) onto the
                             // `ert--infos' the failure reporter displays.
@@ -910,6 +950,7 @@ impl Interpreter {
                     .map(|name| Value::Symbol(name.to_string()))
                     .unwrap_or_else(|| Value::Symbol(name.clone()));
                 self.push_backtrace_frame(backtrace_function, args.to_vec());
+                self.capture_current_backtrace_context(original_name, env, None);
                 let result = match primitives::call(self, name, args, env) {
                     Ok(value) => Ok(value),
                     Err(error @ LispError::Throw(_, _)) => Err(error),
@@ -1033,8 +1074,19 @@ impl Interpreter {
                     true,
                 );
                 frame.push(Self::fresh_frame_identity());
+                self.capture_current_backtrace_context(original_name, env, Some(&frame));
+                // An empty lexical capture is still a scope boundary.  Keep
+                // that fact as closure metadata instead of an artificial
+                // environment binding, since instrumentation and capture
+                // analysis must see only real Lisp bindings.
+                let lexical_closure = self.closure_env_is_lexical(closure_env);
+                let mask_dynamic_eval =
+                    lexical_closure && self.lambda_capture_override() == Some(false);
+                if mask_dynamic_eval {
+                    self.push_lambda_eval_context(true, false);
+                }
                 let previous_activation = self.enter_activation();
-                let result = if closure_env.borrow().is_empty() {
+                let result = if closure_env.borrow().is_empty() && !lexical_closure {
                     // Run directly on the caller's chain: cloning the whole
                     // chain per call made deep call stacks quadratic (the
                     // erc two-network scenario spends most of its time
@@ -1148,6 +1200,9 @@ impl Interpreter {
                     result
                 };
                 self.leave_activation(previous_activation);
+                if mask_dynamic_eval {
+                    self.pop_lambda_capture_override();
+                }
                 self.pop_backtrace_frame();
                 result
             }

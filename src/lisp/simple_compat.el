@@ -20,6 +20,21 @@
   :risky t
   :group 'windows)
 
+(defun function-alias-p (function &optional _noerror)
+  "Return FUNCTION's symbol-alias chain, or nil when it is not an alias."
+  (let (chain next)
+    (while (and (symbolp function)
+                (setq next (symbol-function function))
+                (symbolp next))
+      (push next chain)
+      (setq function next))
+    (nreverse chain)))
+
+;; subr.el establishes this alias in the dumped Emacs.  Keep the logical
+;; function cell even though both names execute through the Rust primitive;
+;; metadata consumers such as `function-alias-p' follow the alias.
+(defalias 'string= #'string-equal)
+
 (defun file-user-uid ()
   "Return the connection-local effective user ID."
   (if-let ((handler
@@ -209,6 +224,20 @@ The batch frame always shows a single window."
   (declare (indent 1) (debug t))
   (list 'if condition nil (cons 'progn body)))
 
+;; GNU preloads this subr.el macro.  The evaluator also has a native fallback
+;; for bootstrap use, but macro consumers (notably ERT's `should') must see the
+;; public macro and recursively expand BODY with the normal macro environment.
+(defmacro with-temp-buffer (&rest body)
+  "Create a temporary buffer, and evaluate BODY there like `progn'."
+  (declare (indent 0) (debug t))
+  (let ((temp-buffer (make-symbol "temp-buffer")))
+    `(let ((,temp-buffer (generate-new-buffer " *temp*" t)))
+       (with-current-buffer ,temp-buffer
+         (unwind-protect
+             (progn ,@body)
+           (and (buffer-name ,temp-buffer)
+                (kill-buffer ,temp-buffer)))))))
+
 (defmacro dolist (spec &rest body)
   "Loop over a list according to SPEC, evaluating BODY for each element."
   (declare (indent 1) (debug ((symbolp form &optional form) body)))
@@ -286,6 +315,26 @@ The batch frame always shows a single window."
                                   (list condition)))
                        ,@(cdr handler)))))
                handlers)))
+
+;; This is a dumped macro in GNU.  Keeping the real macro surface matters to
+;; callers such as ERT that macroexpand a form before deciding how to evaluate
+;; and report it; the native evaluator arm remains only a bootstrap fallback.
+(defmacro with-demoted-errors (format &rest body)
+  "Run BODY and demote any errors to simple messages."
+  (let* ((err (make-symbol "err"))
+         (orig-body body)
+         (orig-format format)
+         (format (if (and (stringp format) body) format
+                   (prog1 "Error: %S"
+                     (if format (push format body)))))
+         (exp
+          `(condition-case-unless-debug ,err
+               ,(macroexp-progn body)
+             (error (message ,format ,err) nil))))
+    (if (eq orig-body body) exp
+      (macroexp-warn-and-return
+       (format-message "Missing format argument in `with-demoted-errors'")
+       exp nil nil orig-format))))
 
 ;; GNU emacs-lisp/timer.el (verbatim): run BODY with a timeout.
 (defmacro with-timeout (list &rest body)
@@ -485,6 +534,21 @@ MET-NAME is as recorded in `load-history' for the method."
                         bindings)
                 edebug-lexical-macro-ctx)))
     (funcall pf specs)))
+
+;; cl-generic.el is part of GNU's dumped state, including this public
+;; condition hierarchy.  Emaxx provides the feature from its native generic
+;; runtime, so materialize the same signal properties during every preload.
+(put 'cl-no-method 'error-conditions '(cl-no-method error))
+(put 'cl-no-method 'error-message "No method")
+(put 'cl-no-next-method 'error-conditions
+     '(cl-no-next-method cl-no-method error))
+(put 'cl-no-next-method 'error-message "No next method")
+(put 'cl-no-primary-method 'error-conditions
+     '(cl-no-primary-method cl-no-method error))
+(put 'cl-no-primary-method 'error-message "No primary method")
+(put 'cl-no-applicable-method 'error-conditions
+     '(cl-no-applicable-method cl-no-method error))
+(put 'cl-no-applicable-method 'error-message "No applicable method")
 
 ;; Obsolete EIEIO `defmethod'/`defgeneric' support: the macros come from
 ;; lisp/obsolete/eieio-compat.el, but its runtime helpers are written
