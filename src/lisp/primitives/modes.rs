@@ -380,6 +380,13 @@ fn activate_c_family_mode_with_semantic(
     }
     let buffer_id = interp.current_buffer_id();
     activate_major_mode(interp, mode, mode_name);
+    // cc-vars.el declares this style variable through
+    // `custom-declare-variable', making it special.  Native mode activation
+    // must provide that binding contract so a caller's `let' remains visible
+    // inside separately defined electric-indent code.  The native indenter's
+    // style fallback remains separate; forcing one style value here would
+    // incorrectly override GNU's per-style resolution.
+    interp.mark_special_variable("c-basic-offset");
     interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::T);
     interp.set_buffer_local_value(
         buffer_id,

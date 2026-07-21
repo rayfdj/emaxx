@@ -2,7 +2,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::compat::{self, BatchReport, FileStatus, TestOutcome, TestStatus};
+use crate::compat::{
+    self, BatchReport, BatchSummary, DiscoveredTest, FileStatus, TestOutcome, TestStatus,
+};
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
@@ -110,14 +112,14 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
         {
             report
         } else {
-            let summary = interpreter.run_ert_tests_with_selector(Some(&selector));
+            let (discovered_tests, summary) = run_ert_for_batch_report(&mut interpreter, &selector);
             BatchReport {
                 runner: "emaxx".into(),
                 file: relative_file.clone(),
                 selector: selector_string,
                 file_status: FileStatus::Loaded,
                 file_error: None,
-                discovered_tests: interpreter.discovered_tests(),
+                discovered_tests,
                 selected_tests: interpreter.last_selected_tests.clone(),
                 results: apply_backtrace_limit(interpreter.test_results.clone()),
                 summary,
@@ -150,11 +152,28 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     }
 }
 
+fn run_ert_for_batch_report(
+    interpreter: &mut Interpreter,
+    selector: &Value,
+) -> (Vec<DiscoveredTest>, BatchSummary) {
+    // GNU's compatibility helper enumerates the loaded file before asking
+    // ERT to run it.  Tests are allowed to define other tests at runtime;
+    // those definitions must not retroactively change this file's discovery
+    // report or the selector universe for the current run.
+    let discovered_tests = interpreter.discovered_tests();
+    let summary = interpreter.run_ert_tests_with_selector(Some(selector));
+    (discovered_tests, summary)
+}
+
 pub(crate) fn initialize_batch_interpreter(
     options: &BatchRunOptions,
 ) -> Result<Interpreter, String> {
     let mut interpreter = Interpreter::new();
     interpreter.set_load_path(options.load_path.clone());
+    // GNU starts batch evaluation in *scratch*, whose buffer-local
+    // `lexical-binding' is t while the default remains nil.  File cookies
+    // override and restore this state around loads.
+    interpreter.set_variable("lexical-binding", Value::T, &mut Vec::new());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     interpreter.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
     preload_batch_compat_libraries(&mut interpreter)?;
@@ -282,6 +301,7 @@ fn extract_perf_request_from_form(form: &Value) -> Option<PerfRequest> {
     }
     let scenario_id = match items.get(1)? {
         Value::String(value) => value.clone(),
+        Value::StringObject(state) => state.borrow().text.clone(),
         Value::Symbol(value) => value.clone(),
         _ => return None,
     };
@@ -525,12 +545,62 @@ mod tests {
     }
 
     #[test]
+    fn batch_report_discovery_is_snapshotted_before_tests_run() {
+        let mut interpreter = Interpreter::new();
+        let definition = Reader::new(
+            "(ert-deftest batch-report-original ()
+               (ert-deftest batch-report-created-during-run () t))",
+        )
+        .read_all()
+        .expect("read ERT definition")
+        .remove(0);
+        interpreter
+            .eval(&definition, &mut Vec::new())
+            .expect("define ERT test");
+
+        let (discovered, summary) = run_ert_for_batch_report(&mut interpreter, &Value::T);
+
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|test| test.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["batch-report-original"]
+        );
+        assert_eq!(interpreter.discovered_tests().len(), 2);
+    }
+
+    #[test]
     fn batch_runtime_binds_command_line_args_left_to_nil() {
         let options = BatchRunOptions::default();
         let interpreter = initialize_batch_interpreter(&options).expect("init batch interpreter");
         assert_eq!(
             interpreter.lookup_var("command-line-args-left", &Vec::new()),
             Some(Value::Nil)
+        );
+    }
+
+    #[test]
+    fn batch_runtime_starts_with_gnu_scratch_lexical_binding() {
+        let options = BatchRunOptions::default();
+        let mut interpreter =
+            initialize_batch_interpreter(&options).expect("init batch interpreter");
+        let form = Reader::new(
+            "(list lexical-binding
+                   (local-variable-p 'lexical-binding)
+                   (default-value 'lexical-binding))",
+        )
+        .read_all()
+        .expect("read lexical startup probe")
+        .remove(0);
+
+        assert_eq!(
+            interpreter
+                .eval(&form, &mut Vec::new())
+                .expect("evaluate lexical startup probe"),
+            Value::list([Value::T, Value::T, Value::Nil])
         );
     }
 

@@ -2135,6 +2135,9 @@ pub(super) fn call(
                 destination,
                 &process_output.stdout,
                 &process_output.stderr,
+                "call-process",
+                args,
+                env,
             )?;
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
@@ -2673,6 +2676,9 @@ pub(super) fn call(
                 destination,
                 &process_output.stdout,
                 &process_output.stderr,
+                "call-process-region",
+                args,
+                env,
             )?;
             Ok(Value::Integer(exit_status_code(&process_output.status)))
         }
@@ -2771,7 +2777,13 @@ pub(super) fn call(
                 // The kill hooks run with the dying buffer current, as in
                 // GNU (auto-revert's rm-watch reads its buffer-locals there).
                 let saved = interp.current_buffer_id();
-                let switched = saved != id && interp.switch_to_buffer_id(id).is_ok();
+                // Fkill_buffer temporarily makes the dying buffer current
+                // for its hooks; it does not display that buffer.  Current
+                // buffer and selected-window buffer may legitimately differ
+                // after `set-buffer' (Dabbrev does this while operating from
+                // the minibuffer), so using the display-switching path here
+                // corrupts the selected window with a soon-to-be-dead buffer.
+                let switched = saved != id && interp.set_current_buffer_id(id).is_ok();
                 let hooks_result: Result<bool, LispError> = (|| {
                     for hook in hook_values(interp, "kill-buffer-query-functions", env, Some(id)) {
                         let result = call_function_value(interp, &hook, &[], env)?;
@@ -2783,7 +2795,7 @@ pub(super) fn call(
                     Ok(true)
                 })();
                 if switched {
-                    let _ = interp.switch_to_buffer_id(saved);
+                    let _ = interp.set_current_buffer_id(saved);
                 }
                 if !hooks_result? {
                     return Ok(Value::Nil);

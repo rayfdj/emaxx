@@ -131,6 +131,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "walk-windows"
             | "selected-frame"
             | "window-frame"
+            | "frame-live-p"
             | "framep"
             | "frame-terminal"
             | "frame-list"
@@ -649,7 +650,7 @@ pub(super) fn call(
             // GNU processes subprocess output whenever it waits; epg relies
             // on the trailing (sleep-for 0.1) in epg-wait-for-completion to
             // flush gpg's final status lines through the process filter.
-            wait_pumping_processes(interp, env, wait_duration(args)?, false)?;
+            wait_pumping_processes(interp, env, wait_duration(args)?, false, None)?;
             Ok(Value::Nil)
         }
         "sit-for" => {
@@ -661,21 +662,32 @@ pub(super) fn call(
                 Some(Value::Integer(_) | Value::Float(_)) => args.get(0..2).unwrap_or(args),
                 _ => args.get(0..1).unwrap_or(args),
             };
-            wait_pumping_processes(interp, env, wait_duration(duration_args)?, false)?;
+            wait_pumping_processes(interp, env, wait_duration(duration_args)?, false, None)?;
             Ok(Value::T)
         }
         "accept-process-output" => {
             need_arg_range(name, args, 0, 4)?;
             // GNU: (accept-process-output &optional PROCESS SECONDS MILLISEC
-            // JUST-THIS-ONE) - the wait always comes from args 2 and 3, and
-            // the call returns as soon as any output is handled.
+            // JUST-THIS-ONE) - the wait always comes from args 2 and 3.  GNU
+            // may service unrelated processes during the wait, but when
+            // PROCESS is non-nil their output does not satisfy this call.
             let duration_args = if args.len() > 1 {
                 &args[1..args.len().min(3)]
             } else {
                 &[]
             };
-            let delivered =
-                wait_pumping_processes(interp, env, wait_duration(duration_args)?, true)?;
+            let target_process_id = args
+                .first()
+                .filter(|process| !process.is_nil())
+                .map(|process| interp.resolve_process_id(process))
+                .transpose()?;
+            let delivered = wait_pumping_processes(
+                interp,
+                env,
+                wait_duration(duration_args)?,
+                true,
+                target_process_id,
+            )?;
             Ok(if delivered { Value::T } else { Value::Nil })
         }
         "input-pending-p" => {
@@ -1987,6 +1999,16 @@ pub(super) fn call(
             Ok(Value::Symbol("frame".into()))
         }
         "framep" => {
+            need_args(name, args, 1)?;
+            Ok(
+                if matches!(&args[0], Value::Symbol(symbol) if symbol == "frame") {
+                    Value::T
+                } else {
+                    Value::Nil
+                },
+            )
+        }
+        "frame-live-p" => {
             need_args(name, args, 1)?;
             Ok(
                 if matches!(&args[0], Value::Symbol(symbol) if symbol == "frame") {

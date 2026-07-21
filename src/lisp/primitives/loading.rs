@@ -161,14 +161,15 @@ pub(crate) fn eval_impl(
     } else {
         // GNU (eval FORM) without LEXICAL evaluates with a nil lexical
         // environment: every variable reference is dynamic (solar/diary
-        // run `mapconcat #'eval' over display forms bound by dlet).  No
-        // lambda-capture override here: a global override would leak into
-        // lambdas created inside called library functions (seq-reduce's
-        // internals must stay lexical); the empty environment already
-        // makes the form's own references dynamic.
+        // run `mapconcat #'eval' over display forms bound by dlet).  Mark the
+        // directly evaluated forms as dynamic; lexical function call
+        // boundaries mask this context so their internal lambdas and lets
+        // retain the function's definition-time semantics.
+        interp.push_lambda_eval_context(false, false);
         let previous_activation = interp.enter_activation();
         let result = interp.eval(&args[0], &mut Vec::new());
         interp.leave_activation(previous_activation);
+        interp.pop_lambda_capture_override();
         result
     }
 }

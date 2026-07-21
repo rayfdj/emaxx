@@ -41,13 +41,13 @@ pub(crate) fn highest_priority_overlay_property(
     buffer: &crate::buffer::Buffer,
     pos: usize,
     prop: &str,
-    include_empty_rear_advance: bool,
+    at_insertion_position: bool,
 ) -> Option<Value> {
     let mut overlays: Vec<&crate::overlay::Overlay> = buffer
         .overlays
         .iter()
         .filter(|overlay| {
-            !overlay.is_dead() && overlay_covers_position(overlay, pos, include_empty_rear_advance)
+            !overlay.is_dead() && overlay_covers_position(overlay, pos, at_insertion_position)
         })
         .collect();
     overlays.sort_by(|a, b| {
@@ -63,13 +63,24 @@ pub(crate) fn highest_priority_overlay_property(
 pub(crate) fn overlay_covers_position(
     overlay: &crate::overlay::Overlay,
     pos: usize,
-    include_empty_rear_advance: bool,
+    at_insertion_position: bool,
 ) -> bool {
-    if overlay.beg == overlay.end {
-        include_empty_rear_advance && overlay.rear_advance && overlay.beg == pos
-    } else {
-        overlay.beg <= pos && pos < overlay.end
+    if !at_insertion_position {
+        return overlay.beg < overlay.end && overlay.beg <= pos && pos < overlay.end;
     }
+
+    // `get-pos-property' asks whether a character inserted at POS would
+    // belong to the overlay.  Endpoint advancement controls that question:
+    // front-advancing excludes the beginning, rear-advancing includes the
+    // end.  An empty overlay covers an insertion only when both endpoint
+    // rules agree.
+    (overlay.beg < pos && pos < overlay.end)
+        || (overlay.beg == pos && !overlay.front_advance && pos < overlay.end)
+        || (overlay.beg < pos && overlay.end == pos && overlay.rear_advance)
+        || (overlay.beg == overlay.end
+            && overlay.beg == pos
+            && !overlay.front_advance
+            && overlay.rear_advance)
 }
 
 pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {

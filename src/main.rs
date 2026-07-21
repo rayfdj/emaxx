@@ -160,12 +160,12 @@ fn run_interactive(file: Option<PathBuf>) -> io::Result<()> {
                             CommandResult::Quit | CommandResult::NeedInput(_) => {}
                         }
                     } else {
-                        let description = format!("{:?} is undefined", &key_buffer[0]);
+                        let description = format!("{:?} is undefined", key_buffer[0]);
                         key_buffer.clear();
                         message = Some(description);
                     }
                 } else {
-                    let description = format!("{:?} is undefined", &key_buffer);
+                    let description = format!("{:?} is undefined", key_buffer);
                     key_buffer.clear();
                     message = Some(description);
                 }

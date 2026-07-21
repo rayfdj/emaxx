@@ -149,9 +149,30 @@
             (cons 'skipped (ert-stats-skipped stats))
             (cons 'unexpected (ert-stats-completed-unexpected stats)))))))
 
+(defun emaxx-compat--call-with-batch-environment (function)
+  "Call FUNCTION with the isolation installed by GNU ERT's batch runner.
+
+The compat reporter needs to collect structured results instead of letting
+`ert-run-tests-batch-and-exit' terminate Emacs.  It must nevertheless retain
+that entry point's writable native-comp cache; otherwise native-enabled test
+runs with HOME=/nonexistent become order-dependent and fail during package
+cleanup."
+  (let ((eln-dir (and (featurep 'native-compile)
+                      (make-temp-file "test-nativecomp-cache-" t))))
+    (when eln-dir
+      (startup-redirect-eln-cache eln-dir))
+    (unwind-protect
+        (funcall function)
+      (when eln-dir
+        (ignore-errors
+          (delete-directory eln-dir t))))))
+
 (defun emaxx-compat-run (selector)
   (let ((result-file (getenv "EMAXX_BATCH_RESULT_FILE")))
     (unless result-file
       (error "EMAXX_BATCH_RESULT_FILE must be set"))
     (with-temp-file result-file
-      (insert (json-encode (emaxx-compat--report selector))))))
+      (insert
+       (json-encode
+        (emaxx-compat--call-with-batch-environment
+         (lambda () (emaxx-compat--report selector))))))))

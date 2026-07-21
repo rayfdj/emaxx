@@ -913,6 +913,100 @@ fn byte_compile_file_loads_macro_expanded_function_bodies() {
 }
 
 #[test]
+fn package_upgrade_reloads_previously_loaded_library_before_compiling() {
+    run_with_large_stack(|| {
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(format!("emaxx-package-reload-{unique}"));
+        let old_dir = root.join("reload-sample-1.0");
+        let new_dir = root.join("reload-sample-2.0");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::write(
+            old_dir.join("reload-sample-aux.el"),
+            ";;; -*- lexical-binding: t -*-\n(defun reload-sample-aux-1 (&rest forms) \"Description\" `(progn ,@forms))\n(provide 'reload-sample-aux)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            old_dir.join("reload-sample.el"),
+            ";;; -*- lexical-binding: t -*-\n(require 'reload-sample-aux)\n(defmacro reload-sample-1 (&rest forms) \"Description\" `(progn ,@forms))\n(defun reload-sample-value () \"\" (reload-sample-1 'a 'b) (reload-sample-aux-1 'a 'b))\n(provide 'reload-sample)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            new_dir.join("reload-sample-aux.el"),
+            ";;; -*- lexical-binding: t -*-\n(defmacro reload-sample-aux-1 (&rest forms) \"Description\" `(progn ,@forms))\n(provide 'reload-sample-aux)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            new_dir.join("reload-sample.el"),
+            ";;; reload-sample.el --- package reload test -*- lexical-binding: t -*-\n;; Version: 2.0\n;; Keywords: tools\n;;; Code:\n(require 'reload-sample-aux)\n(defmacro reload-sample-1 (&rest forms) \"Description\" `(progn ,(cadr (car forms))))\n(defun reload-sample-value () \"\" (list (reload-sample-1 '1 'b) (reload-sample-aux-1 'a 'b)))\n(provide 'reload-sample)\n;;; reload-sample.el ends here\n",
+        )
+        .unwrap();
+        let mut interp = Interpreter::new();
+        let load_path = crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path");
+        interp.set_load_path(load_path);
+        interp.set_variable("noninteractive", Value::T, &mut Vec::new());
+        for feature in ["button", "backquote", "seq"] {
+            if !interp.has_feature(feature) && interp.resolve_load_target(feature).is_some() {
+                interp.load_target(feature).unwrap();
+            }
+        }
+        load_faces_compat(&mut interp);
+        crate::lisp::load_file_strict(
+            &mut interp,
+            &crate::compat::project_root().join("src/lisp/simple_compat.el"),
+        )
+        .unwrap();
+        let result = eval_str_with(
+            &mut interp,
+            &format!(
+                r#"
+                (progn
+                  (require 'package)
+                  (let ((load-path (cons {old_dir:?} load-path)))
+                    (byte-recompile-directory {old_dir:?} 0 t)
+                    (delete-file {old_aux:?})
+                    (delete-file {old_main:?})
+                    (load "reload-sample")
+                    (let ((before (reload-sample-value))
+                          (package-user-dir {package_user_dir:?})
+                          package--initialized
+                          package-alist
+                          package-selected-packages)
+                      (package-install-file {new_dir:?})
+                      (list before (reload-sample-value)))))
+                "#,
+                old_dir = old_dir.display().to_string(),
+                old_aux = old_dir.join("reload-sample-aux.el").display().to_string(),
+                old_main = old_dir.join("reload-sample.el").display().to_string(),
+                new_dir = new_dir.display().to_string(),
+                package_user_dir = root.join("packages").display().to_string(),
+            ),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            result,
+            Value::list([
+                Value::list([
+                    Value::Symbol("progn".into()),
+                    Value::Symbol("a".into()),
+                    Value::Symbol("b".into())
+                ]),
+                Value::list([Value::Integer(1), Value::Symbol("b".into())])
+            ])
+        );
+    });
+}
+
+#[test]
 fn cl_macrolet_expands_defun_body_before_local_macro_exits() {
     let result = eval_str(
         r#"
@@ -3084,12 +3178,14 @@ fn char_width_matches_string_width_for_single_characters() {
             "(let ((tab-width 4))
                    (list (char-width ?a)
                          (char-width ?\t)
+                         (string-width \"\t\")
                          (char-width ?界)
                          (string-width \"界\")))"
         ),
         Value::list([
             Value::Integer(1),
-            Value::Integer(8),
+            Value::Integer(4),
+            Value::Integer(4),
             Value::Integer(2),
             Value::Integer(2),
         ])
@@ -3565,6 +3661,49 @@ fn preloaded_eval_defun_evaluates_current_definition() {
 }
 
 #[test]
+fn defmacro_source_docstring_does_not_hide_following_declarations() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defmacro sample-declared-macro (form)
+                 \"A source docstring with reader identity.\"
+                 (declare (debug (form)))
+                 form)
+               (get 'sample-declared-macro 'edebug-form-spec))"
+        ),
+        Value::list([Value::Symbol("form".into())])
+    );
+}
+
+#[test]
+fn edebug_instrumentation_generates_unique_nested_definition_names() {
+    let emacs_repo = upstream_emacs_repo();
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&emacs_repo)
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp =
+        crate::batch::initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+    interp.load_target("ert").expect("load ERT");
+    interp
+        .load_target(
+            emacs_repo
+                .join("test/lisp/emacs-lisp/edebug-tests.el")
+                .to_str()
+                .expect("UTF-8 test path"),
+        )
+        .expect("load edebug tests");
+    let cl_flet_spec = eval_str_with(&mut interp, "(get 'cl-flet 'edebug-form-spec)");
+    assert!(cl_flet_spec.is_truthy(), "missing cl-flet Edebug spec");
+    let summary =
+        interp.run_ert_tests_with_selector(Some(&Value::Symbol("edebug-tests-cl-flet".into())));
+    assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
+    assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+    assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
+}
+
+#[test]
 fn autoload_do_load_loads_function_stubs() {
     run_with_large_stack(|| {
         let root = std::env::temp_dir().join(format!(
@@ -3985,6 +4124,92 @@ fn load_target_prefers_files_over_same_named_directories() {
 }
 
 #[test]
+fn gnu_elc_fallback_does_not_override_an_interpretable_bare_source() {
+    run_with_large_stack(|| {
+        let root = std::env::temp_dir().join(format!(
+            "emaxx-gnu-elc-fallback-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("sample.el");
+        let compiled = root.join("sample.elc");
+        std::fs::write(
+            &source,
+            ";;; -*- lexical-binding: t -*-\n\
+             (defmacro sample-value () '(quote before))\n\
+             (defun sample-function () (sample-value))\n\
+             (provide 'sample)\n",
+        )
+        .unwrap();
+        // A genuine GNU byte-code object is enough to require the sibling
+        // source fallback; Emaxx must not attempt to call this opcode stream.
+        std::fs::write(&compiled, b";ELC\x1e\0\0\0\n#[0 \"\\300\\207\" [nil] 1]\n").unwrap();
+
+        let mut source_interp = Interpreter::new();
+        source_interp.set_load_path(vec![root.clone()]);
+        assert_eq!(source_interp.load_target("sample").unwrap(), source);
+        eval_str_with(
+            &mut source_interp,
+            "(defmacro sample-value () '(quote after))",
+        );
+        assert_eq!(
+            eval_str_with(&mut source_interp, "(sample-function)"),
+            Value::Symbol("after".into())
+        );
+
+        // An explicit genuine GNU bytecode request still falls back to its
+        // sibling source, because Emaxx does not execute GNU bytecode.
+        let mut compiled_interp = Interpreter::new();
+        compiled_interp.set_load_path(vec![root.clone()]);
+        assert_eq!(compiled_interp.load_target("sample.elc").unwrap(), compiled);
+        eval_str_with(
+            &mut compiled_interp,
+            "(defmacro sample-value () '(quote after))",
+        );
+        assert_eq!(
+            eval_str_with(&mut compiled_interp, "(sample-function)"),
+            Value::Symbol("after".into())
+        );
+
+        std::fs::remove_file(root.join("sample.el")).unwrap();
+        std::fs::remove_file(root.join("sample.elc")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    });
+}
+
+#[test]
+fn headered_textual_elc_executes_instead_of_its_empty_source_stub() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-headered-textual-elc-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("sample.el");
+    let compiled = root.join("sample.elc");
+    std::fs::write(&source, "").unwrap();
+    std::fs::write(
+        &compiled,
+        b";ELC\x1e\0\0\0\n;;; Compiled\n(provide 'headered-textual-sample)\n",
+    )
+    .unwrap();
+
+    let mut interp = Interpreter::new();
+    interp.set_load_path(vec![root.clone()]);
+    assert_eq!(interp.load_target("sample").unwrap(), compiled);
+    assert!(interp.has_feature("headered-textual-sample"));
+
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_file(root.join("sample.elc")).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
 fn load_target_resolves_repeated_directory_autoload_aliases() {
     let root = std::env::temp_dir().join(format!(
         "emaxx-load-target-alias-{}",
@@ -4064,6 +4289,32 @@ fn load_file_strict_prebinds_current_load_list() {
         assert_eq!(
             interp.lookup_var("current-load-list", &Vec::new()),
             Some(Value::Nil)
+        );
+
+        std::fs::remove_file(path).unwrap();
+    });
+}
+
+#[test]
+fn symbol_file_finds_defun_recorded_by_source_load() {
+    run_with_large_stack(|| {
+        let path = std::env::temp_dir().join(format!(
+            "emaxx-symbol-file-defun-{}.el",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "(defun emaxx-loaded-source-probe () t)\n").unwrap();
+
+        let mut interp = Interpreter::new();
+        crate::lisp::load_file_strict(&mut interp, &path).unwrap();
+        assert_string_value(
+            eval_str_with(
+                &mut interp,
+                "(symbol-file 'emaxx-loaded-source-probe 'defun)",
+            ),
+            &path.display().to_string(),
         );
 
         std::fs::remove_file(path).unwrap();
@@ -4795,6 +5046,29 @@ fn load_file_strict_preserves_outer_lexical_binding_and_restores_default() {
             interp.lookup_var("lexical-binding", &Vec::new()),
             Some(Value::Nil)
         );
+    });
+}
+
+#[test]
+fn lexical_ert_body_keeps_macro_context_in_its_temporary_buffer() {
+    run_with_large_stack(|| {
+        let mut interp = Interpreter::new();
+        interp.set_variable("lexical-binding", Value::T, &mut Vec::new());
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defmacro emaxx-lexical-ert-probe ()
+                   (cl-assert lexical-binding)
+                   t)
+                 (ert-deftest emaxx-lexical-ert-context ()
+                   (should lexical-binding)
+                   (should (emaxx-lexical-ert-probe))))"#,
+        );
+
+        let summary = interp.run_ert_tests_with_selector(None);
+        assert_eq!(summary.total, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.passed, 1, "{:#?}", interp.test_results);
+        assert_eq!(summary.failed, 0, "{:#?}", interp.test_results);
     });
 }
 

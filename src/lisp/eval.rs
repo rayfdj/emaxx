@@ -36,6 +36,142 @@ mod ert;
 
 pub(crate) use rx::compile_rx_to_string;
 
+// lread.c's complete GNU 30.2 DEFVAR_LISP/DEFVAR_BOOL contract.  C-defined
+// Lisp variables are special: a `let' binding in a lexical caller must remain
+// visible to separately defined functions.  Package upgrades depend on this
+// for `load-path', and readers/loaders use the same contract for the rest of
+// this group, so keep the source manifest together instead of adding isolated
+// compatibility exceptions as tests happen to exercise them.
+const GNU_LREAD_SPECIAL_VARIABLES: &[&str] = &[
+    "obarray",
+    "values",
+    "standard-input",
+    "read-circle",
+    "load-path",
+    "load-suffixes",
+    "module-file-suffix",
+    "dynamic-library-suffixes",
+    "load-file-rep-suffixes",
+    "load-in-progress",
+    "after-load-alist",
+    "load-history",
+    "load-file-name",
+    "load-true-file-name",
+    "user-init-file",
+    "current-load-list",
+    "load-read-function",
+    "load-source-file-function",
+    "load-force-doc-strings",
+    "load-convert-to-unibyte",
+    "source-directory",
+    "preloaded-file-list",
+    "byte-boolean-vars",
+    "load-dangerous-libraries",
+    "force-load-messages",
+    "bytecomp-version-regexp",
+    "lexical-binding",
+    "eval-buffer-list",
+    "lread--unescaped-character-literals",
+    "load-prefer-newer",
+    "load-no-native",
+    "read-symbol-shorthands",
+    "macroexp--dynvars",
+];
+
+// buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
+// are both special under lexical binding and automatically local to the
+// current buffer when assigned.  Keeping the manifest together prevents a
+// newly exercised preloaded variable from accidentally behaving like an
+// ordinary Emaxx global (the fill-column/string-fill regression did exactly
+// that after lexical closure boundaries became correct).
+const GNU_NATIVE_PER_BUFFER_VARIABLES: &[&str] = &[
+    "abbrev-mode",
+    "auto-fill-function",
+    "bidi-display-reordering",
+    "bidi-paragraph-direction",
+    "bidi-paragraph-separate-re",
+    "bidi-paragraph-start-re",
+    "buffer-auto-save-file-format",
+    "buffer-auto-save-file-name",
+    "buffer-backed-up",
+    "buffer-display-count",
+    "buffer-display-table",
+    "buffer-display-time",
+    "buffer-file-coding-system",
+    "buffer-file-format",
+    "buffer-file-name",
+    "buffer-file-truename",
+    "buffer-invisibility-spec",
+    "buffer-read-only",
+    "buffer-saved-size",
+    "buffer-undo-list",
+    "cache-long-scans",
+    "ctl-arrow",
+    "cursor-in-non-selected-windows",
+    "cursor-type",
+    "default-directory",
+    "enable-multibyte-characters",
+    "fill-column",
+    "fringe-cursor-alist",
+    "fringe-indicator-alist",
+    "fringes-outside-margins",
+    "header-line-format",
+    "horizontal-scroll-bar",
+    "indicate-buffer-boundaries",
+    "indicate-empty-lines",
+    "left-fringe-width",
+    "left-margin",
+    "left-margin-width",
+    "line-spacing",
+    "local-abbrev-table",
+    "local-minor-modes",
+    "major-mode",
+    "mark-active",
+    "mode-line-format",
+    "mode-name",
+    "overwrite-mode",
+    "point-before-scroll",
+    "right-fringe-width",
+    "right-margin-width",
+    "scroll-bar-height",
+    "scroll-bar-width",
+    "scroll-down-aggressively",
+    "scroll-up-aggressively",
+    "selective-display",
+    "selective-display-ellipses",
+    "tab-line-format",
+    "tab-width",
+    "text-conversion-style",
+    "truncate-lines",
+    "vertical-scroll-bar",
+    "word-wrap",
+];
+
+// The DEFVAR_PER_BUFFER slots absent from buffer.c's buffer_local_flags table
+// have index -1: unlike the default-inheriting entries above, every buffer
+// owns their value unconditionally.
+const GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES: &[&str] = &[
+    "buffer-auto-save-file-format",
+    "buffer-auto-save-file-name",
+    "buffer-backed-up",
+    "buffer-display-count",
+    "buffer-display-time",
+    "buffer-file-format",
+    "buffer-file-name",
+    "buffer-file-truename",
+    "buffer-invisibility-spec",
+    "buffer-read-only",
+    "buffer-saved-size",
+    "buffer-undo-list",
+    "default-directory",
+    "enable-multibyte-characters",
+    "local-minor-modes",
+    "major-mode",
+    "mark-active",
+    "mode-name",
+    "point-before-scroll",
+];
+
 // Edebug specs that GNU Emacs registers through `declare (debug ...)` forms
 // in preloaded Lisp files for macros emaxx implements natively.
 fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
@@ -215,6 +351,244 @@ fn builtin_edebug_elem_specs() -> Vec<(String, Vec<(String, Value)>)> {
     .collect()
 }
 
+fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
+    let definitions: &[(&str, &[&str], &str)] = &[
+        ("error", &["error"], "error"),
+        ("quit", &["quit"], "Quit"),
+        ("minibuffer-quit", &["minibuffer-quit", "quit"], "Quit"),
+        ("user-error", &["user-error", "error"], ""),
+        (
+            "wrong-length-argument",
+            &["wrong-length-argument", "error"],
+            "Wrong length argument",
+        ),
+        (
+            "wrong-type-argument",
+            &["wrong-type-argument", "error"],
+            "Wrong type argument",
+        ),
+        (
+            "type-mismatch",
+            &["type-mismatch", "error"],
+            "Types do not match",
+        ),
+        (
+            "args-out-of-range",
+            &["args-out-of-range", "error"],
+            "Args out of range",
+        ),
+        (
+            "void-function",
+            &["void-function", "error"],
+            "Symbol's function definition is void",
+        ),
+        (
+            "cyclic-function-indirection",
+            &["cyclic-function-indirection", "error"],
+            "Symbol's chain of function indirections contains a loop",
+        ),
+        (
+            "cyclic-variable-indirection",
+            &["cyclic-variable-indirection", "error"],
+            "Symbol's chain of variable indirections contains a loop",
+        ),
+        (
+            "circular-list",
+            &["circular-list", "error"],
+            "List contains a loop",
+        ),
+        (
+            "void-variable",
+            &["void-variable", "error"],
+            "Symbol's value as variable is void",
+        ),
+        (
+            "setting-constant",
+            &["setting-constant", "error"],
+            "Attempt to set a constant symbol",
+        ),
+        (
+            "trapping-constant",
+            &["trapping-constant", "error"],
+            "Attempt to trap writes to a constant symbol",
+        ),
+        (
+            "invalid-read-syntax",
+            &["invalid-read-syntax", "error"],
+            "Invalid read syntax",
+        ),
+        (
+            "invalid-function",
+            &["invalid-function", "error"],
+            "Invalid function",
+        ),
+        (
+            "wrong-number-of-arguments",
+            &["wrong-number-of-arguments", "error"],
+            "Wrong number of arguments",
+        ),
+        ("no-catch", &["no-catch", "error"], "No catch for tag"),
+        (
+            "end-of-file",
+            &["end-of-file", "error"],
+            "End of file during parsing",
+        ),
+        ("arith-error", &["arith-error", "error"], "Arithmetic error"),
+        (
+            "beginning-of-buffer",
+            &["beginning-of-buffer", "error"],
+            "Beginning of buffer",
+        ),
+        (
+            "end-of-buffer",
+            &["end-of-buffer", "error"],
+            "End of buffer",
+        ),
+        (
+            "buffer-read-only",
+            &["buffer-read-only", "error"],
+            "Buffer is read-only",
+        ),
+        (
+            "text-read-only",
+            &["text-read-only", "buffer-read-only", "error"],
+            "Text is read-only",
+        ),
+        (
+            "inhibited-interaction",
+            &["inhibited-interaction", "error"],
+            "User interaction while inhibited",
+        ),
+        (
+            "domain-error",
+            &["domain-error", "arith-error", "error"],
+            "Arithmetic domain error",
+        ),
+        (
+            "range-error",
+            &["range-error", "arith-error", "error"],
+            "Arithmetic range error",
+        ),
+        (
+            "singularity-error",
+            &["singularity-error", "domain-error", "arith-error", "error"],
+            "Arithmetic singularity error",
+        ),
+        (
+            "overflow-error",
+            &["overflow-error", "range-error", "arith-error", "error"],
+            "Arithmetic overflow error",
+        ),
+        (
+            "underflow-error",
+            &["underflow-error", "range-error", "arith-error", "error"],
+            "Arithmetic underflow error",
+        ),
+        (
+            "recursion-error",
+            &["recursion-error", "error"],
+            "Excessive recursive calling error",
+        ),
+        (
+            "excessive-lisp-nesting",
+            &["excessive-lisp-nesting", "recursion-error", "error"],
+            "Lisp nesting exceeds `max-lisp-eval-depth'",
+        ),
+        (
+            "excessive-variable-binding",
+            &["excessive-variable-binding", "recursion-error", "error"],
+            "Variable binding depth exceeds max-specpdl-size",
+        ),
+        ("file-error", &["file-error", "error"], "File error"),
+        (
+            "file-already-exists",
+            &["file-already-exists", "file-error", "error"],
+            "File already exists",
+        ),
+        (
+            "file-date-error",
+            &["file-date-error", "file-error", "error"],
+            "Cannot set file date",
+        ),
+        (
+            "file-missing",
+            &["file-missing", "file-error", "error"],
+            "File is missing",
+        ),
+        (
+            "permission-denied",
+            &["permission-denied", "file-error", "error"],
+            "Cannot access file or directory",
+        ),
+        (
+            "file-notify-error",
+            &["file-notify-error", "file-error", "error"],
+            "File notification error",
+        ),
+        (
+            "remote-file-error",
+            &["remote-file-error", "file-error", "error"],
+            "Remote file error",
+        ),
+        (
+            "search-failed",
+            &["search-failed", "error"],
+            "Search failed",
+        ),
+        (
+            "user-search-failed",
+            &["user-search-failed", "user-error", "search-failed", "error"],
+            "Search failed",
+        ),
+        (
+            "invalid-regexp",
+            &["invalid-regexp", "error"],
+            "Invalid regexp",
+        ),
+        ("scan-error", &["scan-error", "error"], "Scan error"),
+        // cl-generic is dumped in GNU and native/preprovided in Emaxx.
+        ("cl-no-method", &["cl-no-method", "error"], "No method"),
+        (
+            "cl-no-next-method",
+            &["cl-no-next-method", "cl-no-method", "error"],
+            "No next method",
+        ),
+        (
+            "cl-no-primary-method",
+            &["cl-no-primary-method", "cl-no-method", "error"],
+            "No primary method",
+        ),
+        (
+            "cl-no-applicable-method",
+            &["cl-no-applicable-method", "cl-no-method", "error"],
+            "No applicable method",
+        ),
+    ];
+
+    definitions
+        .iter()
+        .map(|(name, conditions, message)| {
+            (
+                (*name).to_string(),
+                vec![
+                    (
+                        "error-conditions".to_string(),
+                        Value::list(
+                            conditions
+                                .iter()
+                                .map(|condition| Value::Symbol((*condition).to_string())),
+                        ),
+                    ),
+                    (
+                        "error-message".to_string(),
+                        Value::String((*message).to_string()),
+                    ),
+                ],
+            )
+        })
+        .collect()
+}
+
 fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     let mut properties: Vec<(String, Vec<(String, Value)>)> = [
         ("autoload", 3),
@@ -245,6 +619,7 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
     properties.extend(builtin_edebug_form_specs());
     properties.extend(builtin_edebug_declaration_specs());
     properties.extend(builtin_edebug_elem_specs());
+    properties.extend(builtin_error_symbol_properties());
     // GNU: (function-put 'lambda 'doc-string-elt 2); pp's code formatter
     // keeps only pre-docstring elements on the first line.  Merged into
     // lambda's existing entry (per-symbol entries replace wholesale).
@@ -384,6 +759,10 @@ struct BacktraceFrame {
     function: Value,
     args: Vec<Value>,
     locals: Vec<(String, Value)>,
+    /// Snapshot of the evaluator environment at this activation while a
+    /// debugger is active.  Frames retain their identity stamps so
+    /// `backtrace-eval' assignments can update the suspended lexical cells.
+    lexical_context: Option<Env>,
     evald: bool,
     debug_on_exit: bool,
 }
@@ -576,6 +955,10 @@ struct ProcessState {
     /// is lost (epg reads gpg's final status lines this way).
     pending_stdout: Vec<u8>,
     pending_stderr: Vec<u8>,
+    /// Monotonic count of nonempty output deliveries.  A targeted
+    /// `accept-process-output' may service other processes while it waits,
+    /// but only a change to the requested process satisfies that wait.
+    output_delivery_count: u64,
     /// The process property list (process-put/process-get).
     plist: Value,
     /// GNU p->childp: t for a real child process; for a network process
@@ -625,7 +1008,11 @@ struct ScheduledTimer {
     repeat: Option<f64>,
 }
 
-pub(crate) type MacroBinding = (String, Vec<String>, Vec<Value>);
+#[derive(Clone)]
+pub(crate) struct MacroBinding {
+    pub(crate) name: String,
+    pub(crate) expander: Value,
+}
 
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
@@ -839,6 +1226,11 @@ pub struct Interpreter {
     /// genuinely captured lexical cell from an ordinary marked local without
     /// retaining every closure ever created.
     captured_lexical_frames: HashMap<i64, Vec<std::rc::Weak<std::cell::RefCell<Env>>>>,
+    /// Lexical evaluation context belongs to the closure object, not to its
+    /// captured variable frames.  Keep weak identities here so metadata can
+    /// never affect environment lookup, emptiness, or frame merging.
+    lexical_closure_envs: HashMap<usize, std::rc::Weak<std::cell::RefCell<Env>>>,
+    lexical_closure_registrations: usize,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     face_inheritance: Vec<(String, Option<String>)>,
@@ -935,6 +1327,8 @@ impl Interpreter {
                     "default-process-coding-system".into(),
                     Value::cons(Value::symbol("utf-8-unix"), Value::symbol("utf-8-unix")),
                 ),
+                ("process-coding-system-alist".into(), Value::Nil),
+                ("network-coding-system-alist".into(), Value::Nil),
                 ("delete-exited-processes".into(), Value::T),
                 ("fast-read-process-output".into(), Value::T),
                 ("internal--daemon-sockname".into(), Value::Nil),
@@ -1012,6 +1406,9 @@ impl Interpreter {
                 "last-command-event".into(),
                 "last-event-frame".into(),
                 "last-nonmenu-event".into(),
+                "prefix-arg".into(),
+                "last-prefix-arg".into(),
+                "current-prefix-arg".into(),
                 "signal-hook-function".into(),
                 "command-error-function".into(),
                 "gensym-counter".into(),
@@ -1048,6 +1445,11 @@ impl Interpreter {
                 "indent-tabs-mode".into(),
                 "initial-window-system".into(),
                 "last-coding-system-used".into(),
+                "coding-system-for-read".into(),
+                "coding-system-for-write".into(),
+                "file-coding-system-alist".into(),
+                "process-coding-system-alist".into(),
+                "network-coding-system-alist".into(),
                 "line-spacing".into(),
                 "left-margin".into(),
                 "last-command".into(),
@@ -1251,6 +1653,8 @@ impl Interpreter {
             closure_capture_cache: Vec::new(),
             lexical_cell_updates: HashMap::new(),
             captured_lexical_frames: HashMap::new(),
+            lexical_closure_envs: HashMap::new(),
+            lexical_closure_registrations: 0,
             lossage_size: 300,
             interactive_call_depth: 0,
             face_inheritance: Vec::new(),
@@ -1296,6 +1700,18 @@ impl Interpreter {
         };
         interp.globals_index = interp.globals.iter().cloned().collect();
         interp.special_variables_index = interp.special_variables.iter().cloned().collect();
+        for name in GNU_LREAD_SPECIAL_VARIABLES {
+            interp.mark_special_variable(name);
+        }
+        for name in GNU_NATIVE_PER_BUFFER_VARIABLES {
+            interp.mark_per_buffer_special(name);
+        }
+        for name in GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES {
+            interp.mark_always_buffer_local_special(name);
+        }
+        // search.c uses its own Lisp variable rather than a Buffer field, but
+        // GNU gives it the same always-buffer-local behavior.
+        interp.mark_per_buffer_special("case-fold-search");
         // GNU process.c: (provide 'make-network-process '(...subfeatures)),
         // consulted by two-argument `featurep' (erc-d's unix-socket test
         // checks (featurep 'make-network-process '(:family local))).
@@ -1421,8 +1837,7 @@ impl Interpreter {
         interp.mark_auto_buffer_local("mode-name");
         let mode_line_format = default_mode_line_format();
         interp.set_global_binding("mode-line-format", mode_line_format.clone());
-        interp.mark_special_variable("mode-line-format");
-        interp.mark_auto_buffer_local("mode-line-format");
+        interp.mark_per_buffer_special("mode-line-format");
         interp.put_symbol_property(
             "mode-line-format",
             "standard-value",
@@ -1430,8 +1845,7 @@ impl Interpreter {
         );
         for name in ["header-line-format", "tab-line-format"] {
             interp.set_global_binding(name, Value::Nil);
-            interp.mark_special_variable(name);
-            interp.mark_auto_buffer_local(name);
+            interp.mark_per_buffer_special(name);
         }
         interp.set_global_binding(
             "mode-line-buffer-identification",
@@ -1447,8 +1861,7 @@ impl Interpreter {
         // GNU defines this C variable as both special and automatically
         // buffer-local.  A dynamic binding therefore belongs to the buffer
         // where it was made and must not make a newly selected buffer read-only.
-        interp.mark_special_variable("buffer-read-only");
-        interp.mark_auto_buffer_local("buffer-read-only");
+        interp.mark_always_buffer_local_special("buffer-read-only");
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");
         // GNU's preloaded `(declare (indent N))' effects: every symbol
@@ -1665,23 +2078,76 @@ impl Interpreter {
         // only ever affects the current buffer, so a dired/find-file in one
         // buffer must not redirect unrelated buffers (and later `ls' spawns)
         // into a directory that gets deleted by test cleanup.
-        interp.mark_auto_buffer_local("default-directory");
         // Special (dynamically scoped) like every DEFVAR_PER_BUFFER
         // variable: `let' must go through the special-binding machinery,
         // which records the binding buffer, so a setq from another buffer
         // creates that buffer's own local instead of mutating the binding.
-        interp.mark_special_variable("default-directory");
-        // GNU's C-level `obarray' defvar is special.  In particular, test
-        // harnesses and package loaders let-bind a private obarray and expect
-        // `intern' calls in separately defined functions to see it.
-        interp.mark_special_variable("obarray");
+        interp.mark_always_buffer_local_special("default-directory");
+        // buffer.c exposes these native Buffer fields through
+        // DEFVAR_PER_BUFFER.  They are therefore dynamic specials as well as
+        // automatically buffer-local: a lexical caller may bind a file name
+        // for separately defined code (bookmark.el does), but that binding
+        // must not become the file name of a newly selected buffer.
+        for name in ["buffer-file-name", "buffer-file-truename"] {
+            interp.mark_always_buffer_local_special(name);
+        }
+        // emacs.c defines this host flag with DEFVAR_BOOL.  Batch tests may
+        // dynamically bind it around separately defined interactive code
+        // (Viper does); lexical isolation must not hide that binding.
+        interp.mark_special_variable("noninteractive");
         // GNU keeps this dynamically scoped variable globally bound to nil;
         // loading a lexical file binds it to t only for that load.
         interp.set_global_binding("lexical-binding", Value::Nil);
-        interp.mark_special_variable("lexical-binding");
-        interp.mark_auto_buffer_local("lexical-binding");
+        interp.mark_always_buffer_local_special("lexical-binding");
+        // GNU preloads files.el, where this defcustom is globally bound.
+        // abbrev.el consumes it without requiring files.el itself.
+        interp.set_global_binding("save-abbrevs", Value::T);
+        interp.mark_special_variable("save-abbrevs");
+        // callproc.c defines both as DEFVAR_LISP variables before dumped
+        // Lisp is loaded.  Keep their host-computed defaults in bindings.rs,
+        // but record the special declaration here so lexical callers can
+        // dynamically override the shell used by separately defined code.
+        interp.mark_special_variable("shell-file-name");
+        interp.mark_special_variable("shell-command-switch");
+        // editfns.c defines this before paragraphs.el is dumped.  Paragraph
+        // and line motion bind it around calls into separately defined
+        // functions, so a lexical binding here would silently leave field
+        // constraints enabled (most visibly at non-sticky shell prompts).
+        interp.set_global_binding("inhibit-field-text-motion", Value::Nil);
+        interp.mark_special_variable("inhibit-field-text-motion");
+        // GNU print.c installs these primitive DEFVARs before Lisp startup.
+        // Keep the declaration and default together: printer helpers such as
+        // cl-print dynamically bind the limits in one function and expect the
+        // primitive printer called through another function to observe them.
+        for (name, value) in [
+            ("standard-output", Value::T),
+            ("print-circle", Value::Nil),
+            ("print-continuous-numbering", Value::Nil),
+            ("print-gensym", Value::Nil),
+            ("print-integers-as-characters", Value::Nil),
+            ("print-length", Value::Nil),
+            ("print-level", Value::Nil),
+            ("print-quoted", Value::T),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
         interp.set_global_binding("char-property-alias-alist", Value::Nil);
         interp.mark_special_variable("char-property-alias-alist");
+        // GNU textprop.c supplies syntax-table/display, and the dumped Lisp
+        // image adds composition/fill-space.  `insert-and-inherit' consults
+        // this process-wide special when deciding which adjacent properties
+        // may propagate onto newly inserted text.
+        interp.set_global_binding(
+            "text-property-default-nonsticky",
+            Value::list([
+                Value::cons(Value::Symbol("fill-space".into()), Value::T),
+                Value::cons(Value::Symbol("composition".into()), Value::T),
+                Value::cons(Value::Symbol("syntax-table".into()), Value::T),
+                Value::cons(Value::Symbol("display".into()), Value::T),
+            ]),
+        );
+        interp.mark_special_variable("text-property-default-nonsticky");
         interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
         interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
         interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
@@ -1712,9 +2178,90 @@ impl Interpreter {
             "custom-type",
             Value::Symbol("natnum".into()),
         );
+        // callint.c DEFVAR_KBOARD/DEFVAR_LISP variables.  Command helpers
+        // dynamically bind these around calls into separately defined
+        // functions, so lexical code must still observe the active prefix.
+        interp.set_global_binding("prefix-arg", Value::Nil);
+        interp.set_global_binding("last-prefix-arg", Value::Nil);
         interp.set_global_binding("current-prefix-arg", Value::Nil);
-        interp.set_global_binding("this-command", Value::Nil);
-        interp.set_global_binding("last-command", Value::Nil);
+        // keyboard.c exposes command-loop state through DEFVAR_LISP and
+        // DEFVAR_KBOARD.  Those C definitions are special declarations just
+        // like Lisp `defvar': a lexical `let' around a call must be visible
+        // inside the separately defined callee.  Keep this as one coherent
+        // group so new command clients do not each need a compatibility shim.
+        for name in [
+            "last-command",
+            "real-last-command",
+            "last-repeatable-command",
+            "this-command",
+            "real-this-command",
+            "current-minibuffer-command",
+            "this-command-keys-shift-translated",
+            "this-original-command",
+        ] {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
+        // eval.c defines the debugger controls before loading dumped Lisp.
+        // Their special declarations are part of the evaluator boundary:
+        // ERT, Edebug, and command-loop code let-bind `debugger' or its
+        // policy in one lexical function and expect separately defined error
+        // handlers to observe the active binding.  These are the dumped
+        // batch defaults, after debug.el has replaced `debug-early'.
+        for (name, value) in [
+            ("debugger", Value::Symbol("debug".into())),
+            ("debug-on-error", Value::Nil),
+            ("debug-on-quit", Value::Nil),
+            ("debug-on-signal", Value::Nil),
+            ("debugger-may-continue", Value::T),
+            ("debug-on-next-call", Value::Nil),
+            ("backtrace-on-error-noninteractive", Value::T),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
+        // minibuf.c plus the dumped minibuffer.el provide the completion
+        // variables consumed by the native completion engine.  They are not
+        // mere fallback constants: each DEFVAR/defcustom also declares the
+        // name special, so callers can let-bind policy around a completion
+        // function defined elsewhere (Completion Preview does exactly this).
+        interp.set_global_binding("completion-ignore-case", Value::Nil);
+        interp.set_global_binding("completion-regexp-list", Value::Nil);
+        interp.set_global_binding("completion-auto-help", Value::T);
+        interp.set_global_binding("completion-extra-properties", Value::Nil);
+        interp.set_global_binding("enable-recursive-minibuffers", Value::Nil);
+        for name in [
+            "completion-ignore-case",
+            "completion-regexp-list",
+            "completion-auto-help",
+            "completion-extra-properties",
+            "completion-styles",
+            "completion-styles-alist",
+            "enable-recursive-minibuffers",
+        ] {
+            interp.mark_special_variable(name);
+        }
+        // callproc.c/lread.c publish the installation-directory values as C
+        // DEFVARs.  Tests and startup helpers deliberately let-bind these
+        // around calls into preloaded functions (for example, a `t' entry in
+        // `custom-theme-load-path' expands relative to `data-directory').
+        for name in [
+            "source-directory",
+            "data-directory",
+            "doc-directory",
+            "configure-info-directory",
+        ] {
+            interp.mark_special_variable(name);
+        }
+        // GNU loadup.el preloads eldoc.el before the dumped image is used.
+        // descr-text.el intentionally consumes this option without requiring
+        // ElDoc itself, so preserve both the dumped default and defcustom's
+        // special declaration at the runtime boundary.
+        interp.set_global_binding(
+            "eldoc-echo-area-use-multiline-p",
+            Value::Symbol("truncate-sym-name-if-fit".into()),
+        );
+        interp.mark_special_variable("eldoc-echo-area-use-multiline-p");
         interp.set_global_binding("tab-bar-new-tab-choice", Value::T);
         interp.set_global_binding("max-lisp-eval-depth", Value::Integer(1600));
         interp.put_symbol_property(
@@ -1723,8 +2270,20 @@ impl Interpreter {
             tab_bar_new_tab_choice_custom_type(),
         );
         interp.set_global_binding("search-upper-case", Value::Symbol("not-yanks".into()));
+        // search.c primitive DEFVARs.  Search helpers bind these around
+        // calls into separately defined code, so both are dynamic specials.
         interp.set_global_binding("search-spaces-regexp", Value::Nil);
+        interp.mark_special_variable("search-spaces-regexp");
+        interp.set_global_binding("inhibit-changing-match-data", Value::Nil);
+        interp.mark_special_variable("inhibit-changing-match-data");
         interp.set_global_binding("search-whitespace-regexp", Value::String("[ \t]+".into()));
+        // GNU preloads window.el, whose `defcustom' both initializes this
+        // user action table and declares it special.  Buffer-display policy
+        // is commonly let-bound in a lexical caller and consumed by a
+        // separately defined display function (ERC does exactly this), so a
+        // merely lexical Emaxx binding silently loses the user action.
+        interp.set_global_binding("display-buffer-alist", Value::Nil);
+        interp.mark_special_variable("display-buffer-alist");
         if let Some(temp_dir) = interp.lookup_var("temporary-file-directory", &Vec::new()) {
             interp.put_symbol_property(
                 "temporary-file-directory",
@@ -1790,6 +2349,25 @@ impl Interpreter {
         self.lambda_trim_overrides.last().copied().unwrap_or(false)
     }
 
+    pub(crate) fn mark_lexical_closure_env(&mut self, env: &SharedEnv) {
+        self.lexical_closure_registrations = self.lexical_closure_registrations.wrapping_add(1);
+        if self.lexical_closure_registrations.is_multiple_of(4096) {
+            self.lexical_closure_envs
+                .retain(|_, owner| owner.strong_count() > 0);
+        }
+        let identity = Rc::as_ptr(env) as usize;
+        self.lexical_closure_envs
+            .insert(identity, Rc::downgrade(env));
+    }
+
+    pub(crate) fn closure_env_is_lexical(&self, env: &SharedEnv) -> bool {
+        let identity = Rc::as_ptr(env) as usize;
+        self.lexical_closure_envs
+            .get(&identity)
+            .and_then(std::rc::Weak::upgrade)
+            .is_some_and(|owner| Rc::ptr_eq(&owner, env))
+    }
+
     pub(crate) fn register_captured_lexical_frames(&mut self, closure_env: &SharedEnv) {
         let frame_ids = closure_env
             .borrow()
@@ -1849,6 +2427,27 @@ impl Interpreter {
         }
     }
 
+    /// Read a closure binding through the same shared-cell overlay used when
+    /// the closure is invoked.  Captured environments are snapshots, while
+    /// assignments made after capture live in `lexical_cell_updates' until
+    /// the next invocation refreshes that snapshot.  Observers such as
+    /// `equal' must not see a stale pre-assignment value in the meantime.
+    pub(crate) fn effective_captured_binding(
+        &self,
+        closure_env: &SharedEnv,
+        name: &str,
+    ) -> Option<Value> {
+        for frame in closure_env.borrow().iter().rev() {
+            let shared_update = Self::frame_identity(frame)
+                .and_then(|frame_id| self.lexical_cell_updates.get(&frame_id))
+                .and_then(|updates| updates.get(name));
+            if let Some((_, value)) = frame.iter().rev().find(|(bound, _)| bound == name) {
+                return Some(shared_update.cloned().unwrap_or_else(|| value.clone()));
+            }
+        }
+        None
+    }
+
     pub(crate) fn eval_with_closure_env<F>(
         &mut self,
         closure_env: &SharedEnv,
@@ -1862,7 +2461,11 @@ impl Interpreter {
         let mut captured_snapshot = closure_env.borrow().clone();
         self.refresh_captured_lexical_cells(&mut captured_snapshot);
         if captured_snapshot.is_empty() {
-            return evaluate(self, env);
+            // Only lexical closures reach this path with an empty capture;
+            // dynamic closures are handled directly on the caller chain.
+            // Preserve the lexical scope boundary without manufacturing a
+            // fake binding that leaks into instrumentation/capture analysis.
+            return evaluate(self, &mut Vec::new());
         }
 
         if env_has_truthy_binding(env, "__closure-isolated-current-env") {
@@ -2757,11 +3360,22 @@ fn validate_lambda_list(spec: &Value, items: &[Value]) -> Result<(), LispError> 
 struct LoweredClDefun {
     params: Vec<Value>,
     destructuring_bindings: Vec<(Value, String)>,
-    keyword_rest_param: Option<String>,
+    raw_rest_param: Option<String>,
+    remaining_args_name: Option<String>,
+    optional_bindings: Vec<ClOptionalBinding>,
+    rest_binding: Option<Value>,
+    reject_remaining_args: bool,
+    required_count: usize,
     keyword_bindings: Vec<ClKeyBinding>,
     // (PATTERN INIT) pairs from `&aux', bound sequentially after the
     // arguments; PATTERN may destructure.
     aux_bindings: Vec<(Value, Value)>,
+}
+
+struct ClOptionalBinding {
+    pattern: Value,
+    default_value: Value,
+    supplied_name: Option<String>,
 }
 
 struct ClKeyBinding {
@@ -2769,6 +3383,16 @@ struct ClKeyBinding {
     keyword_name: String,
     default_value: Value,
     supplied_name: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClDefunSection {
+    Required,
+    Optional,
+    RestName,
+    AfterRest,
+    Key,
+    Aux,
 }
 
 fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun, LispError> {
@@ -2780,87 +3404,102 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
 
     let mut lowered = Vec::with_capacity(items.len());
     let mut destructuring_bindings = Vec::new();
+    let mut optional_bindings = Vec::new();
+    let mut rest_binding = None;
     let mut keyword_bindings = Vec::new();
-    let mut keyword_rest_param = None;
-    let mut in_key_section = false;
-    let mut in_aux_section = false;
-    let mut expecting_rest_name = false;
     let mut aux_bindings = Vec::new();
+    let mut section = ClDefunSection::Required;
+    let mut saw_key = false;
+    let mut required_count = 0;
 
     for (index, item) in items.into_iter().enumerate() {
-        match item {
-            Value::Symbol(symbol) => match symbol.as_str() {
+        if let Value::Symbol(symbol) = &item {
+            match symbol.as_str() {
                 "&optional" => {
-                    if in_key_section {
-                        return Err(LispError::Signal(
-                            "Unsupported cl-defun lambda list keyword: &optional".into(),
-                        ));
+                    if section != ClDefunSection::Required {
+                        return Err(invalid_function(spec.clone()));
                     }
-                    lowered.push(Value::Symbol(symbol));
+                    section = ClDefunSection::Optional;
+                    continue;
                 }
-                "&rest" => {
-                    if in_key_section {
-                        return Err(LispError::Signal(
-                            "Unsupported cl-defun lambda list keyword: &rest".into(),
-                        ));
+                "&rest" | "&body" => {
+                    if !matches!(section, ClDefunSection::Required | ClDefunSection::Optional) {
+                        return Err(invalid_function(spec.clone()));
                     }
-                    lowered.push(Value::Symbol(symbol));
-                    expecting_rest_name = true;
-                }
-                "&body" => {
-                    if in_key_section {
-                        return Err(LispError::Signal(
-                            "Unsupported cl-defun lambda list keyword: &body".into(),
-                        ));
-                    }
-                    lowered.push(Value::Symbol("&rest".into()));
-                    expecting_rest_name = true;
+                    section = ClDefunSection::RestName;
+                    continue;
                 }
                 "&key" => {
-                    if expecting_rest_name {
+                    if !matches!(
+                        section,
+                        ClDefunSection::Required
+                            | ClDefunSection::Optional
+                            | ClDefunSection::AfterRest
+                    ) {
                         return Err(invalid_function(spec.clone()));
                     }
-                    in_key_section = true;
-                    if keyword_rest_param.is_none() {
-                        let temp_name = format!("emaxx--cl-defun-{name}-keys");
-                        lowered.push(Value::Symbol("&rest".into()));
-                        lowered.push(Value::Symbol(temp_name.clone()));
-                        keyword_rest_param = Some(temp_name);
-                    }
+                    section = ClDefunSection::Key;
+                    saw_key = true;
+                    continue;
                 }
-                "&allow-other-keys" if in_key_section => {}
+                "&allow-other-keys" if section == ClDefunSection::Key => continue,
                 "&aux" => {
-                    if expecting_rest_name {
+                    if section == ClDefunSection::RestName {
                         return Err(invalid_function(spec.clone()));
                     }
-                    in_aux_section = true;
-                    in_key_section = false;
+                    section = ClDefunSection::Aux;
+                    continue;
                 }
                 "&whole" | "&environment" => {
                     return Err(LispError::Signal(format!(
                         "Unsupported cl-defun lambda list keyword: {symbol}"
                     )));
                 }
-                _ if in_aux_section => {
-                    aux_bindings.push((Value::Symbol(symbol), Value::Nil));
-                }
-                _ if in_key_section => {
-                    keyword_bindings.push(ClKeyBinding {
-                        variable_name: symbol.clone(),
-                        keyword_name: format!(":{symbol}"),
-                        default_value: Value::Nil,
-                        supplied_name: None,
-                    });
-                }
-                _ => {
-                    if expecting_rest_name {
-                        keyword_rest_param = Some(symbol.clone());
-                        expecting_rest_name = false;
-                    }
+                _ => {}
+            }
+        }
+
+        match section {
+            ClDefunSection::Required => {
+                required_count += 1;
+                if let Value::Symbol(symbol) = item {
                     lowered.push(Value::Symbol(symbol));
+                } else if matches!(item, Value::Cons(_, _)) {
+                    let temp_name = format!("emaxx--cl-defun-{name}-arg-{index}");
+                    lowered.push(Value::Symbol(temp_name.clone()));
+                    destructuring_bindings.push((item, temp_name));
+                } else {
+                    return Err(invalid_function(spec.clone()));
                 }
+            }
+            ClDefunSection::Optional => {
+                optional_bindings.push(parse_cl_defun_optional_binding(item)?);
+            }
+            ClDefunSection::RestName => {
+                if !matches!(item, Value::Symbol(_) | Value::Cons(_, _)) {
+                    return Err(invalid_function(spec.clone()));
+                }
+                rest_binding = Some(item);
+                section = ClDefunSection::AfterRest;
+            }
+            ClDefunSection::AfterRest => return Err(invalid_function(spec.clone())),
+            ClDefunSection::Key => match item {
+                Value::Symbol(symbol) => keyword_bindings.push(ClKeyBinding {
+                    variable_name: symbol.clone(),
+                    keyword_name: format!(":{symbol}"),
+                    default_value: Value::Nil,
+                    supplied_name: None,
+                }),
+                Value::Cons(_, _) => {
+                    keyword_bindings.push(parse_cl_defun_key_binding(item)?);
+                }
+                _ => return Err(invalid_function(spec.clone())),
             },
-            Value::Cons(_, _) if in_aux_section => {
+            ClDefunSection::Aux => {
+                if let Value::Symbol(symbol) = item {
+                    aux_bindings.push((Value::Symbol(symbol), Value::Nil));
+                    continue;
+                }
                 let parts = item.to_vec()?;
                 let pattern = parts
                     .first()
@@ -2869,32 +3508,78 @@ fn lower_cl_defun_lambda_list(name: &str, spec: &Value) -> Result<LoweredClDefun
                 let init = parts.get(1).cloned().unwrap_or(Value::Nil);
                 aux_bindings.push((pattern, init));
             }
-            Value::Cons(_, _) if in_key_section => {
-                keyword_bindings.push(parse_cl_defun_key_binding(item)?);
-            }
-            Value::Cons(_, _) => {
-                let temp_name = format!("emaxx--cl-defun-{name}-arg-{index}");
-                lowered.push(Value::Symbol(temp_name.clone()));
-                if expecting_rest_name {
-                    keyword_rest_param = Some(temp_name.clone());
-                    expecting_rest_name = false;
-                }
-                destructuring_bindings.push((item, temp_name));
-            }
-            _ => return Err(invalid_function(spec.clone())),
         }
     }
 
-    if expecting_rest_name {
+    if section == ClDefunSection::RestName {
         return Err(invalid_function(spec.clone()));
     }
+
+    let uses_rest_args = !optional_bindings.is_empty() || rest_binding.is_some() || saw_key;
+    let reject_remaining_args = !optional_bindings.is_empty() && rest_binding.is_none() && !saw_key;
+    let (raw_rest_param, remaining_args_name) = if uses_rest_args {
+        let raw_name = format!("emaxx--cl-defun-{name}-raw-rest");
+        let remaining_name = format!("emaxx--cl-defun-{name}-remaining");
+        lowered.push(Value::Symbol("&rest".into()));
+        lowered.push(Value::Symbol(raw_name.clone()));
+        (Some(raw_name), Some(remaining_name))
+    } else {
+        (None, None)
+    };
 
     Ok(LoweredClDefun {
         params: lowered,
         destructuring_bindings,
-        keyword_rest_param,
+        raw_rest_param,
+        remaining_args_name,
+        optional_bindings,
+        rest_binding,
+        reject_remaining_args,
+        required_count,
         keyword_bindings,
         aux_bindings,
+    })
+}
+
+fn parse_cl_defun_optional_binding(spec: Value) -> Result<ClOptionalBinding, LispError> {
+    let (pattern, default_value, supplied_name) = match spec {
+        Value::Symbol(_) => (spec, Value::Nil, None),
+        Value::Cons(_, _) => {
+            let items = spec.to_vec()?;
+            if items.is_empty() || items.len() > 3 {
+                return Err(LispError::Signal(
+                    "Unsupported cl-defun &optional binding".into(),
+                ));
+            }
+            let pattern = items[0].clone();
+            if !matches!(pattern, Value::Symbol(_) | Value::Cons(_, _)) {
+                return Err(LispError::Signal(
+                    "Unsupported cl-defun &optional binding".into(),
+                ));
+            }
+            let default_value = items.get(1).cloned().unwrap_or(Value::Nil);
+            let supplied_name = match items.get(2) {
+                Some(Value::Symbol(name)) => Some(name.clone()),
+                Some(_) => {
+                    return Err(LispError::Signal(
+                        "Unsupported cl-defun &optional binding".into(),
+                    ));
+                }
+                None => None,
+            };
+            (pattern, default_value, supplied_name)
+        }
+        _ => {
+            return Err(LispError::Signal(
+                "Unsupported cl-defun &optional binding".into(),
+            ));
+        }
+    };
+
+    Ok(ClOptionalBinding {
+        pattern,
+        default_value,
+        supplied_name,
     })
 }
 

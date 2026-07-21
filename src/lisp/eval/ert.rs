@@ -98,7 +98,7 @@ impl Interpreter {
         let mut cursor = 3;
         if items
             .get(cursor)
-            .is_some_and(|value| matches!(value, Value::String(_)))
+            .is_some_and(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
         {
             cursor += 1;
         }
@@ -125,17 +125,20 @@ impl Interpreter {
             cursor += 2;
         }
 
-        let body = Value::Lambda(
-            Vec::new(),
-            items[cursor..].to_vec(),
-            shared_env(env.clone()),
-        );
+        let closure_env = shared_env(env.clone());
+        if self
+            .lookup_var("lexical-binding", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            self.mark_lexical_closure_env(&closure_env);
+        }
+        let body = Value::Lambda(Vec::new(), items[cursor..].to_vec(), closure_env);
         // Mirror `ert-set-test': tests are also reachable through the
         // `ert--test' symbol property as an `ert-test' struct, which
         // `ert-get-test' and the struct accessors read.
         let docstring = items
             .get(3)
-            .filter(|value| matches!(value, Value::String(_)))
+            .filter(|value| matches!(value, Value::String(_) | Value::StringObject(_)))
             .cloned()
             .unwrap_or(Value::Nil);
         let record = self.create_record(
@@ -363,7 +366,21 @@ impl Interpreter {
             if let Some(id) = temp_buffer_id {
                 let _ = self.switch_to_buffer_id(id);
             }
-            let mut result = self.call_function_value(test.body.clone(), None, &[], &mut env);
+            // GNU `ert--run-test-internal' explicitly binds
+            // `lexical-binding' to t inside the per-test temp buffer before
+            // invoking the test body.  This is an ERT runner contract, not a
+            // property to impose on every lexical closure invocation.
+            let lexical_restore = self.bind_special_variable("lexical-binding", Value::T, &mut env);
+            let mut result = match lexical_restore.as_ref() {
+                Ok(_) => self.call_function_value(test.body.clone(), None, &[], &mut env),
+                Err(error) => Err(error.clone()),
+            };
+            if let Ok(restore) = lexical_restore
+                && let Err(error) = self.restore_special_binding(restore, &mut env)
+                && result.is_ok()
+            {
+                result = Err(error);
+            }
             if self.has_buffer_id(saved_buffer_id) {
                 let _ = self.switch_to_buffer_id(saved_buffer_id);
             }

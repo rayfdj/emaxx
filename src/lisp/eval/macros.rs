@@ -115,7 +115,11 @@ impl Interpreter {
 
     // ── Macros ──
 
-    pub(super) fn sf_defmacro(&mut self, items: &[Value]) -> Result<Value, LispError> {
+    pub(super) fn sf_defmacro(
+        &mut self,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         if items.len() < 3 {
             return Err(LispError::WrongNumberOfArgs("defmacro".into(), items.len()));
         }
@@ -127,7 +131,7 @@ impl Interpreter {
         }
         // Body starts at index 3, skip docstrings
         let body_start = if items.len() > 4 {
-            if let Value::String(_) = &items[3] {
+            if matches!(&items[3], Value::String(_) | Value::StringObject(_)) {
                 4
             } else {
                 3
@@ -159,9 +163,19 @@ impl Interpreter {
             body_start
         };
         let body: Vec<Value> = items[body_start..].to_vec();
+        let lambda_form = Value::list(
+            std::iter::once(Value::Symbol("lambda".into()))
+                .chain(std::iter::once(Value::list(
+                    params.iter().cloned().map(Value::Symbol),
+                )))
+                .chain(body.iter().cloned()),
+        );
+        let expander = self.eval(&lambda_form, env)?;
         self.note_macro_added(&name);
-        self.macros
-            .push((name.clone(), params.clone(), body.clone()));
+        self.macros.push(MacroBinding {
+            name: name.clone(),
+            expander: expander.clone(),
+        });
         // Pending advice on a macro: GNU defalias hands the fresh
         // (macro . EXPANDER) cell to `defalias-fset-function', and nadvice
         // fsets the advised cell back (the cell wins over the macro table).
@@ -169,12 +183,8 @@ impl Interpreter {
             .get_symbol_property(&name, "defalias-fset-function")
             .is_some_and(|value| value.is_truthy())
         {
-            let cell = Value::cons(
-                Value::Symbol("macro".into()),
-                Value::Lambda(params, body, shared_env(Vec::new())),
-            );
-            let mut env = Env::new();
-            self.defalias_fset_function_handles(&name, &cell, &mut env);
+            let cell = Value::cons(Value::Symbol("macro".into()), expander);
+            self.defalias_fset_function_handles(&name, &cell, env);
         }
         Ok(Value::Symbol(name))
     }
@@ -262,10 +272,15 @@ impl Interpreter {
         let function = self.eval(&items[2], env)?;
         self.validate_function_binding(&name, &function)?;
         if crate::lisp::primitives::prefer_builtin_override(&name) {
-            self.set_function_binding(&name, Some(Value::BuiltinFunc(name.clone())));
+            // Calls still resolve through the preferred native primitive,
+            // but retain GNU's logical function cell for symbol-function,
+            // alias chasing, compiler macros, and generalized variables.
+            self.set_function_binding(&name, Some(function));
+            self.record_definition_in_load_history("defun", &name);
             return Ok(Value::Symbol(name));
         }
         if self.defalias_fset_function_handles(&name, &function, env) {
+            self.record_definition_in_load_history("defun", &name);
             self.advice_note_new_definition(&name);
             return Ok(Value::Symbol(name));
         }
@@ -279,6 +294,7 @@ impl Interpreter {
             self.shadow_macro_binding(&name);
         }
         self.set_function_binding(&name, Some(function));
+        self.record_definition_in_load_history("defun", &name);
         self.advice_note_new_definition(&name);
         Ok(Value::Symbol(name))
     }
@@ -405,7 +421,7 @@ impl Interpreter {
         }
 
         let mut attempted_autoload = false;
-        let (params, body) = loop {
+        let expander = loop {
             if let Some(expanded) = self.try_builtin_macroexpand(name, args, env)? {
                 return Ok(Some(expanded));
             }
@@ -464,59 +480,16 @@ impl Interpreter {
         // Advised macros expand through the advice chain: the expander
         // (resolved now, so redefinitions are seen) is the innermost
         // function and receives the unevaluated argument forms.
-        if self
+        let expander = if self
             .advice_registry
             .get(name)
             .is_some_and(|state| !state.entries.is_empty())
         {
-            let expander = Value::Lambda(params.clone(), body.clone(), shared_env(Vec::new()));
-            let composed = self.compose_advice_chain(name, expander);
-            let expanded = self.call_function_value(composed, Some(name), args, env)?;
-            return Ok(Some(expanded));
-        }
-
-        // Bind params to unevaluated args
-        let mut frame = Vec::new();
-        let mut arg_idx = 0;
-        let mut rest = false;
-        let mut optional = false;
-
-        for param in &params {
-            if param == "&optional" {
-                optional = true;
-                continue;
-            }
-            if param == "&rest" || param == "&body" {
-                rest = true;
-                continue;
-            }
-            if rest {
-                let rest_args = Value::list(args.get(arg_idx..).unwrap_or(&[]).iter().cloned());
-                frame.push((param.clone(), rest_args));
-                break;
-            }
-            let val = if arg_idx < args.len() {
-                args[arg_idx].clone()
-            } else if optional {
-                Value::Nil
-            } else {
-                // GNU signals wrong-number-of-arguments when a macro call
-                // omits required parameters ((pcase-setq a) must error).
-                return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-            };
-            frame.push((param.clone(), val));
-            arg_idx += 1;
-        }
-
-        Self::push_marked_frame(env, frame);
-        let expanded = if body.len() == 1 {
-            self.eval(&body[0], env)?
+            self.compose_advice_chain(name, expander)
         } else {
-            let progn =
-                Value::list(std::iter::once(Value::symbol("progn")).chain(body.iter().cloned()));
-            self.eval(&progn, env)?
+            expander
         };
-        env.pop();
+        let expanded = self.call_function_value(expander, Some(name), args, env)?;
         Ok(Some(expanded))
     }
 
@@ -1070,7 +1043,7 @@ impl Interpreter {
             // macroexpanded with the local macros in effect (generator.el's
             // CPS transformer relies on `macroexpand' doing this).
             "cl-macrolet" if args.len() >= 2 => {
-                let local_macros = self.parse_cl_macrolet_bindings(&args[0])?;
+                let local_macros = self.parse_cl_macrolet_bindings(&args[0], env)?;
                 let (local_start, local_count) = self.push_local_macros(&local_macros);
                 let mut forms = vec![Value::Symbol("progn".into())];
                 let mut failure = None;
@@ -1738,8 +1711,12 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        let val = self.eval(&items[1], env)?;
-        if val.is_truthy() {
+        // GNU's private `ert--skip-unless' treats evaluation errors like a
+        // false result, so both paths skip rather than leaking the error.
+        let keep_running = self
+            .eval(&items[1], env)
+            .is_ok_and(|value| value.is_truthy());
+        if keep_running {
             Ok(Value::Nil)
         } else {
             Err(LispError::TestSkipped("Test skipped".into()))
@@ -1754,8 +1731,12 @@ impl Interpreter {
         if items.len() < 2 {
             return Ok(Value::Nil);
         }
-        let val = self.eval(&items[1], env)?;
-        if val.is_truthy() {
+        // GNU's private `ert--skip-when' treats evaluation errors like a
+        // true result, so an error means skip as well.
+        let should_skip = self
+            .eval(&items[1], env)
+            .map_or(true, |value| value.is_truthy());
+        if should_skip {
             Err(LispError::TestSkipped("Test skipped".into()))
         } else {
             Ok(Value::Nil)
@@ -2114,14 +2095,43 @@ fn substitute_symbol_macros(form: &Value, substitutions: &[(String, Value)]) -> 
                     Value::list(rebuilt)
                 }
                 Some(Value::Symbol(head)) if head == "setq" && items.len() >= 3 => {
-                    let mut rebuilt = vec![items[0].clone()];
+                    // A symbol macro in SETQ position denotes a generalized
+                    // variable.  GNU macroexp-all rewrites that pair through
+                    // SETF (with-slots consequently becomes eieio-oset), not
+                    // into an invalid `(setq (PLACE ...) VALUE)'.
+                    let mut assignments = Vec::new();
                     for pair in items[1..].chunks(2) {
-                        rebuilt.push(substitute_symbol_macros(&pair[0], substitutions));
-                        if let Some(value) = pair.get(1) {
-                            rebuilt.push(substitute_symbol_macros(value, substitutions));
-                        }
+                        let Some(value) = pair.get(1) else { continue };
+                        let value = substitute_symbol_macros(value, substitutions);
+                        let assignment = pair[0]
+                            .as_symbol()
+                            .ok()
+                            .and_then(|name| {
+                                substitutions
+                                    .iter()
+                                    .find(|(macro_name, _)| macro_name == name)
+                                    .map(|(_, expansion)| {
+                                        Value::list([
+                                            Value::Symbol("setf".into()),
+                                            expansion.clone(),
+                                            value.clone(),
+                                        ])
+                                    })
+                            })
+                            .unwrap_or_else(|| {
+                                Value::list([Value::Symbol("setq".into()), pair[0].clone(), value])
+                            });
+                        assignments.push(assignment);
                     }
-                    Value::list(rebuilt)
+                    match assignments.len() {
+                        0 => Value::Nil,
+                        1 => assignments.pop().unwrap_or(Value::Nil),
+                        _ => Value::list(
+                            std::iter::once(Value::Symbol("progn".into()))
+                                .chain(assignments)
+                                .collect::<Vec<_>>(),
+                        ),
+                    }
                 }
                 _ => Value::list(
                     items
@@ -2139,6 +2149,10 @@ fn substitute_symbol_macros(form: &Value, substitutions: &[(String, Value)]) -> 
 // `(a b ,x ,@y . z) => (append (list 'a 'b x) y 'z).  Unquoted leaves
 // become quoted literals; self-evaluating atoms stay as-is.
 fn backquote_template_code(template: &Value) -> Value {
+    backquote_template_code_at_depth(template, 0)
+}
+
+fn backquote_template_code_at_depth(template: &Value, depth: usize) -> Value {
     fn quote_literal(value: &Value) -> Value {
         match value {
             Value::Nil
@@ -2152,14 +2166,35 @@ fn backquote_template_code(template: &Value) -> Value {
         }
     }
     if let Some((kind, inner)) = backquote_unquote_form(template) {
-        if kind == "comma" {
-            return inner;
+        if depth == 0 {
+            if kind == "comma" {
+                return inner;
+            }
+            // A top-level ,@ is invalid; keep it quoted.
+            return quote_literal(template);
         }
-        // A top-level ,@ is invalid; keep it quoted.
-        return quote_literal(template);
+        let head = template
+            .to_vec()
+            .ok()
+            .and_then(|items| items.first().cloned())
+            .unwrap_or_else(|| Value::Symbol(kind.into()));
+        return Value::list([
+            Value::Symbol("list".into()),
+            quote_literal(&head),
+            backquote_template_code_at_depth(&inner, depth - 1),
+        ]);
     }
-    if nested_backquote_body(template).is_some() {
-        return quote_literal(template);
+    if let Some(body) = nested_backquote_body(template) {
+        let head = template
+            .to_vec()
+            .ok()
+            .and_then(|items| items.first().cloned())
+            .unwrap_or_else(|| Value::Symbol("backquote".into()));
+        return Value::list([
+            Value::Symbol("list".into()),
+            quote_literal(&head),
+            backquote_template_code_at_depth(&body, depth + 1),
+        ]);
     }
     // A quoted form (or vector literal) is only opaque when nothing
     // inside it unquotes: `',(f) reads as (quote (comma (f))) and must
@@ -2178,7 +2213,7 @@ fn backquote_template_code(template: &Value) -> Value {
     loop {
         if let Some((kind, inner)) = backquote_unquote_form(&tail) {
             // Dotted unquote tail: `(a . ,x)
-            if kind == "comma" {
+            if depth == 0 && kind == "comma" {
                 if !chunk.is_empty() {
                     segments.push(Value::list(
                         std::iter::once(Value::Symbol("list".into()))
@@ -2188,13 +2223,25 @@ fn backquote_template_code(template: &Value) -> Value {
                 }
                 segments.push(inner);
                 tail = Value::Nil;
+            } else if depth > 0 {
+                if !chunk.is_empty() {
+                    segments.push(Value::list(
+                        std::iter::once(Value::Symbol("list".into()))
+                            .chain(chunk.drain(..))
+                            .collect::<Vec<_>>(),
+                    ));
+                }
+                segments.push(backquote_template_code_at_depth(&tail, depth));
+                tail = Value::Nil;
             }
             break;
         }
         match tail.cons_values() {
             Some((car, cdr)) => {
                 if let Some((kind, inner)) = backquote_unquote_form(&car) {
-                    if kind == "comma-at" {
+                    if depth > 0 {
+                        chunk.push(backquote_template_code_at_depth(&car, depth));
+                    } else if kind == "comma-at" {
                         if !chunk.is_empty() {
                             segments.push(Value::list(
                                 std::iter::once(Value::Symbol("list".into()))
@@ -2207,7 +2254,7 @@ fn backquote_template_code(template: &Value) -> Value {
                         chunk.push(inner);
                     }
                 } else {
-                    chunk.push(backquote_template_code(&car));
+                    chunk.push(backquote_template_code_at_depth(&car, depth));
                 }
                 tail = cdr;
             }

@@ -22,6 +22,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "compare-buffer-substrings"
             | "field-beginning"
             | "field-end"
+            | "field-string"
             | "field-string-no-properties"
             | "delete-field"
             | "constrain-to-field"
@@ -180,73 +181,110 @@ pub(super) fn call(
                 None => None,
             };
             let point_min = interp.buffer.point_min();
-            let point_max = interp.buffer.point_max();
-            // GNU boundary rule: when the fields before and after POS differ,
-            // the position belongs to the after-field if its first char is
-            // front-sticky for `field', else to the before-field if its last
-            // char is rear-sticky (the default); if neither claims it, POS is
-            // a zero-length field of its own (erc's prompt end relies on the
-            // rear-sticky case).
-            let stickiness_covers_field = |value: Option<Value>| match value {
-                Some(Value::T) => true,
-                Some(list @ Value::Cons(_, _)) => list
-                    .to_vec()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .any(|item| matches!(item, Value::Symbol(name) if name == "field"))
-                    })
-                    .unwrap_or(false),
-                _ => false,
-            };
-            let after_field = (pos < point_max)
-                .then(|| interp.buffer.text_property_at(pos, "field"))
-                .flatten();
-            let before_field = (pos > point_min)
-                .then(|| interp.buffer.text_property_at(pos - 1, "field"))
-                .flatten();
-            let field = if escape_from_edge && before_field != after_field {
-                // GNU's ESCAPE-FROM-EDGE (find_field's merge_at_boundary):
-                // at a boundary the fields merge, so the beginning belongs
-                // to the before-field and the end to the after-field,
-                // regardless of stickiness.
-                if name == "field-beginning" {
-                    before_field
-                } else {
-                    after_field
-                }
-            } else if pos == point_min
-                || before_field == after_field
-                || (pos < point_max
-                    && stickiness_covers_field(interp.buffer.text_property_at(pos, "front-sticky")))
-            {
-                after_field
-            } else if !stickiness_covers_field(
-                interp.buffer.text_property_at(pos - 1, "rear-nonsticky"),
-            ) {
-                before_field
+            let after_field = super::call(
+                interp,
+                "get-char-property",
+                &[Value::Integer(pos as i64), Value::Symbol("field".into())],
+                env,
+            )?;
+            let before_field = if pos > point_min {
+                super::call(
+                    interp,
+                    "get-char-property",
+                    &[
+                        Value::Integer((pos - 1) as i64),
+                        Value::Symbol("field".into()),
+                    ],
+                    env,
+                )?
             } else {
-                // Unclaimed boundary: a zero-length field at POS.
-                return Ok(Value::Integer(pos as i64));
+                after_field.clone()
             };
-            let mut cursor = pos;
-            if name == "field-beginning" {
-                let stop = limit.unwrap_or(point_min).max(point_min);
-                while cursor > stop && interp.buffer.text_property_at(cursor - 1, "field") == field
-                {
-                    cursor -= 1;
-                }
-            } else {
-                let stop = limit.unwrap_or(point_max).min(point_max);
-                while cursor < stop && interp.buffer.text_property_at(cursor, "field") == field {
-                    cursor += 1;
+            let mut at_field_start = false;
+            let mut at_field_end = false;
+            if !escape_from_edge {
+                let inherited_field = super::call(
+                    interp,
+                    "get-pos-property",
+                    &[Value::Integer(pos as i64), Value::Symbol("field".into())],
+                    env,
+                )?;
+                at_field_end = inherited_field != after_field;
+                at_field_start = inherited_field != before_field;
+                if inherited_field.is_nil() && at_field_start && at_field_end {
+                    // A nil insertion between two non-nil fields normally
+                    // marks a non-editable boundary (for example, a prompt),
+                    // not a synthetic zero-width field.
+                    at_field_start = false;
+                    at_field_end = false;
                 }
             }
-            Ok(Value::Integer(cursor as i64))
+
+            let change = |interp: &mut Interpreter,
+                          primitive: &str,
+                          position: usize,
+                          limit: Option<usize>,
+                          env: &mut Env|
+             -> Result<usize, LispError> {
+                super::call(
+                    interp,
+                    primitive,
+                    &[
+                        Value::Integer(position as i64),
+                        Value::Symbol("field".into()),
+                        Value::Nil,
+                        limit.map_or(Value::Nil, |value| Value::Integer(value as i64)),
+                    ],
+                    env,
+                )?
+                .as_integer()
+                .map(|value| value as usize)
+            };
+
+            if name == "field-beginning" {
+                if at_field_start {
+                    return Ok(Value::Integer(pos as i64));
+                }
+                let mut beginning = pos;
+                if escape_from_edge
+                    && matches!(&before_field, Value::Symbol(value) if value == "boundary")
+                {
+                    beginning = change(
+                        interp,
+                        "previous-single-char-property-change",
+                        beginning,
+                        limit,
+                        env,
+                    )?;
+                }
+                beginning = change(
+                    interp,
+                    "previous-single-char-property-change",
+                    beginning,
+                    limit,
+                    env,
+                )?;
+                Ok(Value::Integer(beginning as i64))
+            } else {
+                if at_field_end {
+                    return Ok(Value::Integer(pos as i64));
+                }
+                let mut end = pos;
+                if escape_from_edge
+                    && matches!(&after_field, Value::Symbol(value) if value == "boundary")
+                {
+                    end = change(interp, "next-single-char-property-change", end, limit, env)?;
+                }
+                end = change(interp, "next-single-char-property-change", end, limit, env)?;
+                Ok(Value::Integer(end as i64))
+            }
         }
-        "field-string-no-properties" => {
-            need_args(name, args, 1)?;
-            let pos = position_from_value(interp, &args[0])?;
+        "field-string" | "field-string-no-properties" => {
+            need_arg_range(name, args, 0, 1)?;
+            let pos = match args.first().filter(|value| !value.is_nil()) {
+                Some(value) => position_from_value(interp, value)?,
+                None => interp.buffer.point(),
+            };
             let start = super::call(
                 interp,
                 "field-beginning",
@@ -256,12 +294,18 @@ pub(super) fn call(
             .as_integer()? as usize;
             let end = super::call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
                 .as_integer()? as usize;
-            Ok(Value::String(
-                interp
-                    .buffer
-                    .buffer_substring(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?,
-            ))
+            let text = interp
+                .buffer
+                .buffer_substring(start, end)
+                .map_err(|e| LispError::Signal(e.to_string()))?;
+            if name == "field-string" {
+                Ok(string_like_value(
+                    text,
+                    interp.buffer.substring_property_spans(start, end),
+                ))
+            } else {
+                Ok(Value::String(text))
+            }
         }
         "delete-field" => {
             need_args(name, args, 1)?;
@@ -801,11 +845,17 @@ pub(super) fn call(
                             ])));
                         }
                         seen.push(symbol.clone());
-                        let resolved = interp.lookup_function(symbol, env)?;
-                        if matches!(resolved, Value::Symbol(_)) {
-                            current = resolved;
-                        } else {
-                            return Ok(resolved);
+                        match interp.lookup_function(symbol, env) {
+                            Ok(resolved) if matches!(resolved, Value::Symbol(_)) => {
+                                current = resolved;
+                            }
+                            Ok(resolved) => return Ok(resolved),
+                            // Since Emacs 24.4, a void function cell is
+                            // represented as nil and indirect-function returns
+                            // that nil.  Calling the result is where a
+                            // void-function condition belongs.
+                            Err(LispError::Void(_)) => return Ok(Value::Nil),
+                            Err(error) => return Err(error),
                         }
                     }
                     _ => return Ok(current),

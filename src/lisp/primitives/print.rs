@@ -1108,9 +1108,13 @@ pub(crate) fn render_prin1_body(
             _ => None,
         };
         if let Some((prefix, inner)) = quoted {
+            // GNU's print-quoted syntax replaces the (quote INNER) wrapper;
+            // it does not charge that elided cons level against print-level.
+            // Passing depth + 1 here truncates one level too early (for
+            // example, print-level 1 would render '(a) as '...).
             return Ok(format!(
                 "{prefix}{}",
-                render_prin1_with_context(interp, inner, env, context, depth + 1)?
+                render_prin1_with_context(interp, inner, env, context, depth)?
             ));
         }
     }

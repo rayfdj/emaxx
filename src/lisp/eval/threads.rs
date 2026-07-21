@@ -200,6 +200,7 @@ impl Interpreter {
             parent_server_id: None,
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
+            output_delivery_count: 0,
             plist: Value::Nil,
             contact: Value::T,
         });
@@ -264,6 +265,7 @@ impl Interpreter {
             parent_server_id,
             pending_stdout: Vec::new(),
             pending_stderr: Vec::new(),
+            output_delivery_count: 0,
             plist,
             contact,
         });
@@ -280,6 +282,17 @@ impl Interpreter {
     pub fn process_name(&self, record_id: u64) -> Option<String> {
         self.find_process_state(record_id)
             .map(|process| process.name.clone())
+    }
+
+    pub(crate) fn process_output_delivery_count(&self, record_id: u64) -> Option<u64> {
+        self.find_process_state(record_id)
+            .map(|process| process.output_delivery_count)
+    }
+
+    pub(crate) fn note_process_output_delivery(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.output_delivery_count = process.output_delivery_count.saturating_add(1);
+        }
     }
 
     /// GNU `process-command': child processes expose the program followed by
@@ -737,33 +750,11 @@ impl Interpreter {
         stdin
             .flush()
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_millis(100);
-        loop {
-            let mut made_progress = false;
-            if let Some(pipe) = runtime.child.stdout.as_mut() {
-                made_progress |= read_nonblocking_pipe(pipe, &mut stdout)?;
-            }
-            if let Some(pipe) = runtime.child.stderr.as_mut() {
-                made_progress |= read_nonblocking_pipe(pipe, &mut stderr)?;
-            }
-            if let Some(status) = runtime
-                .child
-                .try_wait()
-                .map_err(|error| LispError::Signal(error.to_string()))?
-            {
-                process.status = ProcessStatus::Exit;
-                process.exit_code = status.code();
-                process.runtime = None;
-                break;
-            }
-            if made_progress || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        Ok((stdout, stderr))
+        // GNU queues the bytes and returns; filters run when the event loop
+        // later accepts process output.  Waiting here made every send block
+        // for up to 100 ms and hid ordering bugs behind an accidental
+        // synchronous drain.
+        Ok((Vec::new(), Vec::new()))
     }
 
     pub fn process_send_eof(&mut self, record_id: u64) -> Result<(Vec<u8>, Vec<u8>), LispError> {

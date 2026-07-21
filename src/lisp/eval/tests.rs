@@ -34,6 +34,17 @@ fn eval_str_with_upstream_load_path(src: &str) -> Value {
     eval_str_with(&mut interp, src)
 }
 
+fn eval_str_with_upstream_batch(src: &str) -> Value {
+    let options = crate::batch::BatchRunOptions {
+        load_path: crate::compat::emaxx_upstream_load_path(&upstream_emacs_repo())
+            .expect("upstream load path"),
+        ..Default::default()
+    };
+    let mut interp = crate::batch::initialize_batch_interpreter(&options)
+        .expect("initialize GNU-compatible batch interpreter");
+    eval_str_with(&mut interp, src)
+}
+
 fn load_faces_compat(interp: &mut Interpreter) {
     let path = crate::compat::project_root().join("src/lisp/faces_compat.el");
     crate::lisp::load_file_strict(interp, &path).unwrap();

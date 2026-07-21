@@ -337,7 +337,43 @@ pub(super) fn call(
             Err(LispError::Throw(args[0].clone(), args[1].clone()))
         }
         "define-error" => {
-            need_args(name, args, 1)?;
+            need_arg_range(name, args, 2, 3)?;
+            let condition_name = args[0].as_symbol()?.to_string();
+            let parent = args.get(2).filter(|value| value.is_truthy()).cloned();
+            let parent = parent.unwrap_or_else(|| Value::Symbol("error".into()));
+            let parent_is_list = matches!(parent, Value::Cons(_, _));
+            let parents = if parent_is_list {
+                parent.to_vec()?
+            } else {
+                vec![parent]
+            };
+
+            let mut conditions = vec![Value::Symbol(condition_name.clone())];
+            for parent in parents {
+                let parent_name = parent.as_symbol()?.to_string();
+                if !conditions.contains(&parent) {
+                    conditions.push(parent.clone());
+                }
+                let inherited = interp
+                    .get_symbol_property(&parent_name, "error-conditions")
+                    .and_then(|value| value.to_vec().ok());
+                if parent_is_list && inherited.is_none() {
+                    return Err(LispError::Signal(format!("Unknown signal `{parent_name}'")));
+                }
+                for ancestor in inherited.unwrap_or_default() {
+                    if !conditions.contains(&ancestor) {
+                        conditions.push(ancestor);
+                    }
+                }
+            }
+            interp.put_symbol_property(
+                &condition_name,
+                "error-conditions",
+                Value::list(conditions),
+            );
+            if args[1].is_truthy() {
+                interp.put_symbol_property(&condition_name, "error-message", args[1].clone());
+            }
             Ok(args[0].clone())
         }
         "define-fringe-bitmap" => Ok(Value::Nil),

@@ -380,19 +380,18 @@ impl Interpreter {
             &path.display().to_string(),
         ));
         // Upstream expands to `let', which binds special names dynamically.
-        let special_restore =
-            if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env) {
-                match self.bind_special_variable(&name, dir_value, env) {
-                    Ok(restore) => Some(restore),
-                    Err(error) => {
-                        let _ = fs::remove_dir_all(&path);
-                        return Err(error);
-                    }
+        let special_restore = if self.binding_is_dynamic(&name, env) {
+            match self.bind_special_variable(&name, dir_value, env) {
+                Ok(restore) => Some(restore),
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&path);
+                    return Err(error);
                 }
-            } else {
-                env.push(vec![(name, dir_value)]);
-                None
-            };
+            }
+        } else {
+            env.push(vec![(name, dir_value)]);
+            None
+        };
         let mut result = self.sf_progn(&items[2..], env);
         match special_restore {
             Some(restore) => {
@@ -600,7 +599,7 @@ impl Interpreter {
         let mut restores = Vec::new();
         let mut result = Ok(Value::Nil);
         for (var, value) in frame {
-            if self.is_dynamic_binding_name(&var) || self.local_special_active(&var, env) {
+            if self.binding_is_dynamic(&var, env) {
                 match self.bind_special_variable(&var, value, env) {
                     Ok(restore) => restores.push(restore),
                     Err(error) => {
@@ -660,7 +659,8 @@ impl Interpreter {
         {
             return self.sf_progn(body, env);
         }
-        match self.sf_progn(body, env) {
+        let body_result = self.sf_progn(body, env);
+        match body_result {
             Ok(value) => Ok(value),
             Err(LispError::Throw(tag, value)) => Err(LispError::Throw(tag, value)),
             Err(error) => {
@@ -1353,10 +1353,11 @@ impl Interpreter {
             ));
         }
         let val = self.eval(&items[2], env)?;
-        let mut frame = Vec::new();
-        self.bind_cl_pattern(&items[1], val, &mut frame)?;
-
-        Self::push_marked_frame(env, frame);
+        Self::push_marked_frame(env, Vec::new());
+        if let Err(error) = self.bind_cl_destructuring_pattern(&items[1], val, env) {
+            env.pop();
+            return Err(error);
+        }
         let result = self.sf_progn(&items[3..], env);
         env.pop();
         result
@@ -1649,7 +1650,7 @@ impl Interpreter {
                 items.len() - 1,
             ));
         }
-        let local_macros = self.parse_cl_macrolet_bindings(&items[1])?;
+        let local_macros = self.parse_cl_macrolet_bindings(&items[1], env)?;
 
         let mut result = Value::Nil;
         for form in &items[2..] {
@@ -1670,6 +1671,7 @@ impl Interpreter {
     pub(super) fn parse_cl_macrolet_bindings(
         &mut self,
         bindings_value: &Value,
+        env: &mut Env,
     ) -> Result<Vec<MacroBinding>, LispError> {
         let bindings = bindings_value.to_vec()?;
         let mut parsed = Vec::with_capacity(bindings.len());
@@ -1679,13 +1681,23 @@ impl Interpreter {
                 continue;
             }
             let mname = parts[0].as_symbol()?.to_string();
-            let params_val = parts[1].to_vec()?;
-            let mut params = Vec::new();
-            for p in &params_val {
-                params.push(p.as_symbol()?.to_string());
-            }
-            let body: Vec<Value> = parts[2..].to_vec();
-            parsed.push((mname, params, body));
+            parts[1].to_vec()?;
+            let lambda_form = Value::list(
+                std::iter::once(Value::Symbol("lambda".into()))
+                    .chain(std::iter::once(parts[1].clone()))
+                    .chain(parts[2..].iter().cloned()),
+            );
+            // `cl-macrolet' expanders are lexical functions even when the
+            // containing form is reached through `(eval FORM)' with a nil
+            // lexical environment.  The caller's eval mode governs FORM,
+            // not the expander function's parameter scope.
+            self.push_lambda_eval_context(true, false);
+            let expander = self.eval(&lambda_form, env);
+            self.pop_lambda_capture_override();
+            parsed.push(MacroBinding {
+                name: mname,
+                expander: expander?,
+            });
         }
         Ok(parsed)
     }
@@ -1705,11 +1717,12 @@ impl Interpreter {
             return Ok(form.clone());
         }
 
-        let body_start = if items.len() > 3 && matches!(items[3], Value::String(_)) {
-            4
-        } else {
-            3
-        };
+        let body_start =
+            if items.len() > 3 && matches!(items[3], Value::String(_) | Value::StringObject(_)) {
+                4
+            } else {
+                3
+            };
         let mut expanded = Vec::with_capacity(items.len());
         expanded.extend(items[..body_start].iter().cloned());
         for body in &items[body_start..] {

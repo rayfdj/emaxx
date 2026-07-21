@@ -434,7 +434,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
         let name = items[1].as_symbol()?.to_string();
         let params = self.parse_params(&items[2])?;
         let body_start = if items.len() > 4 {
-            if let Value::String(_) = &items[3] {
+            if matches!(&items[3], Value::String(_) | Value::StringObject(_)) {
                 4
             } else {
                 3
@@ -691,7 +691,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
             match binding {
                 Value::Symbol(name) => {
                     Self::check_let_binding_name(name)?;
-                    if self.is_dynamic_binding_name(name) || self.local_special_active(name, env) {
+                    if self.binding_is_dynamic(name, env) {
                         special_bindings.push((name.clone(), Value::Nil));
                     } else {
                         frame.push((name.clone(), Value::Nil));
@@ -709,8 +709,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     } else {
                         Value::Nil
                     };
-                    if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env)
-                    {
+                    if self.binding_is_dynamic(&name, env) {
                         special_bindings.push((name, val));
                     } else {
                         frame.push((name, Self::stored_value(val)));
@@ -934,7 +933,7 @@ TYPE is a type descriptor as accepted by `cl-typep', which see."
                     }
                     _ => return Err(wrong_type_argument("listp", binding.clone())),
                 };
-                if self.is_dynamic_binding_name(&name) || self.local_special_active(&name, env) {
+                if self.binding_is_dynamic(&name, env) {
                     restores.push(self.bind_special_variable(&name, value, env)?);
                 } else {
                     Self::push_marked_frame(env, vec![(name, Self::stored_value(value))]);

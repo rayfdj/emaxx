@@ -311,6 +311,13 @@ pub(crate) fn intern_soft_in_obarray(
     obarray: &Value,
     symbol_name: &str,
 ) -> Result<Value, LispError> {
+    if matches!(obarray, Value::Record(id) if interp.is_standard_obarray_id(*id)) {
+        return Ok(if interp.standard_obarray_contains_symbol(symbol_name) {
+            crate::lisp::types::interned_symbol_value(symbol_name.to_string())
+        } else {
+            Value::Nil
+        });
+    }
     Ok(obarray_symbols(interp, obarray)?
         .into_iter()
         .find(|value| obarray_symbol_matches(value, symbol_name))

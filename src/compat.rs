@@ -709,6 +709,7 @@ pub fn current_emacs_version(emacs_binary: &Path) -> Result<String, String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmacsRuntime {
     pub emacs_version: String,
+    pub repository_version: Option<String>,
     pub system_type: String,
     pub native_compilation: bool,
 }
@@ -717,7 +718,7 @@ pub fn current_emacs_runtime(emacs_binary: &Path) -> Result<EmacsRuntime, String
     let output = Command::new(emacs_binary)
         .arg("--batch")
         .arg("--eval")
-        .arg("(princ (format \"%s\\n%s\\n%s\" emacs-version system-type (if (featurep 'native-compile) \"t\" \"nil\")))")
+        .arg("(princ (format \"%s\\n%s\\n%s\\n%s\" emacs-version (if (boundp 'emacs-repository-version) emacs-repository-version \"\") system-type (if (featurep 'native-compile) \"t\" \"nil\")))")
         .output()
         .map_err(|err| format!("run {} --batch: {err}", emacs_binary.display()))?;
     if !output.status.success() {
@@ -739,6 +740,11 @@ pub fn current_emacs_runtime(emacs_binary: &Path) -> Result<EmacsRuntime, String
         })?
         .trim()
         .to_string();
+    let repository_version = lines
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     let system_type = lines
         .next()
         .ok_or_else(|| format!("{} --batch produced no system type", emacs_binary.display()))?
@@ -747,6 +753,7 @@ pub fn current_emacs_runtime(emacs_binary: &Path) -> Result<EmacsRuntime, String
     let native_compilation = matches!(lines.next().map(str::trim), Some("t"));
     Ok(EmacsRuntime {
         emacs_version,
+        repository_version,
         system_type,
         native_compilation,
     })
@@ -778,6 +785,12 @@ pub fn validate_oracle(lock: &OracleLock, local: &OracleLocalConfig) -> Result<(
         ));
     }
     let runtime = current_emacs_runtime(&local.emacs_binary)?;
+    if runtime.repository_version.as_deref() != Some(current_commit.as_str()) {
+        return Err(format!(
+            "oracle executable was not built from the pinned checkout: repo is {current_commit}, binary reports {:?}; rebuild GNU Emacs before repinning",
+            runtime.repository_version
+        ));
+    }
     if runtime.emacs_version != lock.emacs_version {
         return Err(format!(
             "oracle Emacs version mismatch: pinned {} but found {}; run `cargo run --bin compat-harness -- oracle pin --emacs {} --repo {}` to repin",
@@ -1223,5 +1236,14 @@ mod tests {
         );
         assert_eq!(envs.get("EMACSLOADPATH"), Some(&None));
         assert_eq!(envs.get("EMACS_TEST_VERBOSE"), Some(&Some("1".to_string())));
+    }
+
+    #[test]
+    fn oracle_reporter_preserves_erts_writable_native_comp_cache() {
+        let helper = include_str!("../compat/emacs_compat_runner.el");
+
+        assert!(helper.contains("(startup-redirect-eln-cache eln-dir)"));
+        assert!(helper.contains("(delete-directory eln-dir t)"));
+        assert!(helper.contains("emaxx-compat--call-with-batch-environment"));
     }
 }

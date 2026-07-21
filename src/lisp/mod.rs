@@ -5,8 +5,9 @@ pub mod reader;
 pub mod sqlite;
 pub mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::compat::TestStatus;
 
@@ -188,9 +189,56 @@ fn preprocess_lazy_doc_source(path: &Path, source: &str, force_load_doc_strings:
     rewrite_lazy_doc_refs(&out, path, &docs, force_load_doc_strings)
 }
 
+fn contains_gnu_byte_code_literal(value: &types::Value) -> bool {
+    fn quoted_byte_code_function(value: &types::Value) -> bool {
+        value.to_vec().ok().is_some_and(|items| {
+            matches!(
+                items.as_slice(),
+                [types::Value::Symbol(quote), types::Value::Symbol(kind)]
+                    if quote == "quote" && kind == "byte-code-function"
+            )
+        })
+    }
+
+    fn visit(value: &types::Value, seen: &mut HashSet<usize>) -> bool {
+        let types::Value::Cons(car, cdr) = value else {
+            return false;
+        };
+        let identity = Rc::as_ptr(car) as usize;
+        if !seen.insert(identity) {
+            return false;
+        }
+        let head = car.borrow().clone();
+        let tail = cdr.borrow().clone();
+        if matches!(&head, types::Value::Symbol(name) if name == reader::RECORD_LITERAL_SYMBOL)
+            && let types::Value::Cons(kind, _) = &tail
+            && quoted_byte_code_function(&kind.borrow())
+        {
+            return true;
+        }
+        visit(&head, seen) || visit(&tail, seen)
+    }
+
+    visit(value, &mut HashSet::new())
+}
+
+fn headered_elc_is_interpretable_lisp(path: &Path, source: &str) -> bool {
+    let source = preprocess_lazy_doc_source(path, source, false);
+    reader::Reader::new(&source)
+        .read_all()
+        .is_ok_and(|forms| !forms.iter().any(contains_gnu_byte_code_literal))
+}
+
 fn read_source(path: &Path) -> Result<String, types::LispError> {
-    std::fs::read_to_string(path)
-        .map_err(|e| types::LispError::Signal(format!("Cannot read {}: {}", path.display(), e)))
+    String::from_utf8(read_source_bytes(path)?).map_err(|error| {
+        types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
+    })
+}
+
+fn read_source_bytes(path: &Path) -> Result<Vec<u8>, types::LispError> {
+    std::fs::read(path).map_err(|error| {
+        types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
+    })
 }
 
 fn source_settings(source: &str) -> Result<SourceFileSettings, types::LispError> {
@@ -302,7 +350,24 @@ pub fn load_file_strict(
     interp: &mut eval::Interpreter,
     path: &Path,
 ) -> Result<(), types::LispError> {
-    let source = read_source(path)?;
+    let requested_source = read_source_bytes(path)?;
+    // A versioned `;ELC' header does not by itself imply bytecode:
+    // `byte-compile-insert-header' is also used for files containing ordinary
+    // readable Lisp.  Execute those directly.  Only fall back to sibling
+    // source when parsed forms contain an actual `#[...]' byte-code object
+    // (or cannot be decoded as Lisp); Emaxx does not yet implement GNU's VM.
+    let compiled_source_path = path.with_extension("el");
+    let versioned_elc = requested_source.starts_with(b";ELC\x1e");
+    let source = if versioned_elc && compiled_source_path.is_file() {
+        match String::from_utf8(requested_source) {
+            Ok(source) if headered_elc_is_interpretable_lisp(path, &source) => source,
+            Ok(_) | Err(_) => read_source(&compiled_source_path)?,
+        }
+    } else {
+        String::from_utf8(requested_source).map_err(|error| {
+            types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
+        })?
+    };
     let settings = source_settings(&source)?;
     let force_load_doc_strings = interp
         .lookup_var("load-force-doc-strings", &types::Env::new())
@@ -313,7 +378,8 @@ pub fn load_file_strict(
         source
     };
     let warning_message = unescaped_char_literal_warning(path, &source);
-    let previous = interp.set_current_load_file(Some(path.display().to_string()));
+    let load_file = path.display().to_string();
+    let previous = interp.set_current_load_file(Some(load_file.clone()));
     let previous_load_list = interp
         .lookup_var("current-load-list", &types::Env::new())
         .unwrap_or(types::Value::Nil);
@@ -324,15 +390,37 @@ pub fn load_file_strict(
         .lookup_var("read-symbol-shorthands", &types::Env::new())
         .unwrap_or(types::Value::Nil);
     let mut env = types::Env::new();
-    let lexical_restore = interp.bind_special_dynamic(
-        "lexical-binding",
-        if settings.lexical_binding {
-            types::Value::T
-        } else {
-            types::Value::Nil
-        },
-        &mut env,
-    )?;
+    // GNU `load' establishes these as real specbind layers.  A Rust-only
+    // current-file side channel is insufficient: an outer Lisp binding such
+    // as `(let ((load-file-name nil)) (load ...))' must be shadowed by the
+    // file being loaded, then restored on every exit path.
+    let mut dynamic_restores = Vec::with_capacity(5);
+    for (name, value) in [
+        ("load-file-name", types::Value::String(load_file.clone())),
+        (
+            "load-true-file-name",
+            types::Value::String(load_file.clone()),
+        ),
+        ("inhibit-file-name-operation", types::Value::Nil),
+        ("load-in-progress", types::Value::T),
+        (
+            "lexical-binding",
+            if settings.lexical_binding {
+                types::Value::T
+            } else {
+                types::Value::Nil
+            },
+        ),
+    ] {
+        match interp.bind_special_dynamic(name, value, &mut env) {
+            Ok(restore) => dynamic_restores.push(restore),
+            Err(error) => {
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        }
+    }
     interp.set_global_binding(
         "read-symbol-shorthands",
         read_symbol_shorthands_value(&settings.read_symbol_shorthands),
@@ -349,7 +437,7 @@ pub fn load_file_strict(
     {
         Ok(forms) => forms,
         Err(error) => {
-            let _ = interp.restore_special_dynamic(lexical_restore, &mut env);
+            let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
             restore_load_dynamic_bindings(
                 interp,
                 previous_read_symbol_shorthands,
@@ -361,7 +449,7 @@ pub fn load_file_strict(
     };
     for form in &forms {
         if let Err(error) = interp.eval(form, &mut env) {
-            let _ = interp.restore_special_dynamic(lexical_restore, &mut env);
+            let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
             restore_load_dynamic_bindings(
                 interp,
                 previous_read_symbol_shorthands,
@@ -396,9 +484,20 @@ pub fn load_file_strict(
     if let Some(message) = warning_message {
         append_message(interp, &message);
     }
-    interp.restore_special_dynamic(lexical_restore, &mut env)?;
+    restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env)?;
     restore_load_dynamic_bindings(interp, previous_read_symbol_shorthands, previous_load_list);
     interp.set_current_load_file(previous);
+    Ok(())
+}
+
+fn restore_special_dynamic_bindings(
+    interp: &mut eval::Interpreter,
+    restores: &mut Vec<eval::SpecialBindingRestore>,
+    env: &mut types::Env,
+) -> Result<(), types::LispError> {
+    while let Some(restore) = restores.pop() {
+        interp.restore_special_dynamic(restore, env)?;
+    }
     Ok(())
 }
 

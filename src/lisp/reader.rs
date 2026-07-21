@@ -540,16 +540,19 @@ impl<'a> Reader<'a> {
                 None => return Err(LispError::EndOfInput),
                 Some(b'"') => {
                     self.advance();
-                    if has_explicit_multibyte || has_raw_bytes || has_invalid_unicode {
-                        return Ok(Some(Value::StringObject(Rc::new(RefCell::new(
-                            SharedStringState {
-                                text: s,
-                                props: Vec::new(),
-                                multibyte: has_explicit_multibyte || has_invalid_unicode,
-                            },
-                        )))));
-                    }
-                    return Ok(Some(Value::String(s)));
+                    // A Lisp string is an object even when it has no text
+                    // properties.  Keeping ordinary source literals as the
+                    // scalar `Value::String` shortcut loses object identity
+                    // when a quoted list is traversed or macro-expanded.
+                    // GNU's reader allocates the object once, so repeated
+                    // evaluation of the same literal returns that object.
+                    return Ok(Some(Value::StringObject(Rc::new(RefCell::new(
+                        SharedStringState {
+                            text: s,
+                            props: Vec::new(),
+                            multibyte: has_explicit_multibyte || has_invalid_unicode,
+                        },
+                    )))));
                 }
                 Some(b'\\') => {
                     self.advance();
@@ -1787,7 +1790,12 @@ mod tests {
 
     #[test]
     fn strings() {
-        assert_eq!(read_one(r#""hello""#), Value::String("hello".into()));
+        let ordinary = read_one(r#""hello""#);
+        assert_eq!(ordinary, Value::String("hello".into()));
+        assert!(
+            matches!(ordinary, Value::StringObject(_)),
+            "source string literals must retain Lisp object identity"
+        );
         assert_eq!(read_one(r#""a\nb""#), Value::String("a\nb".into()));
         assert_eq!(read_one(r#""a\"b""#), Value::String("a\"b".into()));
         assert_eq!(read_one("\"a\\\nb\""), Value::String("ab".into()));

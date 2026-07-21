@@ -28,6 +28,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "symbolp"
             | "keywordp"
             | "functionp"
+            | "cl-struct-p"
             | "compiled-function-p"
             | "byte-code-function-p"
             | "closurep"
@@ -348,6 +349,15 @@ pub(super) fn call(
                 } else {
                     Value::Nil
                 },
+            )
+        }
+        "cl-struct-p" => {
+            need_args(name, args, 1)?;
+            super::call(
+                interp,
+                "cl-typep",
+                &[args[0].clone(), Value::Symbol("cl-structure-object".into())],
+                env,
             )
         }
         "compiled-function-p" | "byte-code-function-p" => {
