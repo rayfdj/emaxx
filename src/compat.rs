@@ -514,7 +514,7 @@ pub fn emaxx_upstream_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, Strin
     if let Ok(paths) = upstream_repo_load_path(emacs_repo) {
         return Ok(paths);
     }
-    fallback_upstream_load_path(emacs_repo)
+    repo_local_elisp_load_path(emacs_repo)
 }
 
 fn upstream_repo_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
@@ -588,7 +588,12 @@ fn upstream_repo_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
-fn fallback_upstream_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
+/// Construct a repo-local load path without consulting the GNU oracle.
+///
+/// This is also the startup fallback for Emaxx child processes launched by
+/// upstream tests.  Those children inherit `EMACS_TEST_DIRECTORY`, but not the
+/// harness's explicit `-L` arguments.
+pub fn repo_local_elisp_load_path(emacs_repo: &Path) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     for relative_root in ["test", "test/lisp", "lisp"] {
         let root = emacs_repo.join(relative_root);

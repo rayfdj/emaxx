@@ -41,6 +41,7 @@ pub fn is_builtin(name: &str) -> bool {
             | "sqlite-rollback"
             | "sqlite-load-extension"
             | "sqlite-next"
+            | "sqlite-columns"
             | "sqlite-more-p"
             | "sqlite-finalize"
             | "sqlite-version"
@@ -67,6 +68,7 @@ pub fn call(
         "sqlite-rollback" => sqlite_rollback(interp, args),
         "sqlite-load-extension" => sqlite_load_extension(interp, args),
         "sqlite-next" => sqlite_next(interp, args),
+        "sqlite-columns" => sqlite_columns(interp, args),
         "sqlite-more-p" => sqlite_more_p(interp, args),
         "sqlite-finalize" => sqlite_finalize(interp, args),
         "sqlite-version" => sqlite_version(args),
@@ -248,6 +250,23 @@ fn sqlite_next(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispEr
             let row = state.rows[state.index].clone();
             state.index += 1;
             Ok(row)
+        }
+        Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
+        None => Err(LispError::TypeError("sqlite".into(), args[0].type_name())),
+    }
+}
+
+fn sqlite_columns(interp: &Interpreter, args: &[Value]) -> Result<Value, LispError> {
+    need_args("sqlite-columns", args, 1, 1)?;
+    let id = sqlite_id(&args[0])?;
+    match interp.find_sqlite_handle(id) {
+        Some(SqliteHandleState::Set(state)) => {
+            if state.closed {
+                return Err(LispError::Signal("Statement closed".into()));
+            }
+            Ok(Value::list(
+                state.columns.iter().cloned().map(Value::String),
+            ))
         }
         Some(SqliteHandleState::Database(_)) => Err(LispError::Signal("Invalid set object".into())),
         None => Err(LispError::TypeError("sqlite".into(), args[0].type_name())),

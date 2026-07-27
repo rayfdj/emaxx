@@ -170,86 +170,29 @@ impl Interpreter {
         let Some(path) = self.resolve_load_target(target) else {
             return Err(load_file_missing_error(target));
         };
+        self.materialize_cl_macs_runtime_dependency(target)?;
+        crate::lisp::load_file_strict(self, &path)?;
+        Ok(path)
+    }
+
+    fn materialize_cl_macs_runtime_dependency(&mut self, target: &str) -> Result<(), LispError> {
         // GNU cl-macs.el starts with `(require 'cl-lib)'.  emaxx treats
         // cl-lib as preloaded, so that require is a no-op here; when the
         // runtime environment lacks cl-lib's Lisp-level helpers (e.g. a bare
         // interpreter that never loaded simple_compat.el), load the real
-        // cl-lib.el first so cl-macs macro expanders can call them.
+        // cl-lib.el first so cl-macs macro expanders can call them.  This
+        // must cover both explicit `load' and `require': cl-preloaded.el's
+        // eager compile-time require reaches the latter path.
         if target == "cl-macs"
             && self.lookup_function("cl-copy-list", &Env::new()).is_err()
             && !self.loading_features.iter().any(|name| name == "cl-lib")
         {
             self.load_target("cl-lib")?;
         }
-        crate::lisp::load_file_strict(self, &path)?;
-        Ok(path)
+        Ok(())
     }
 
-    fn register_mock_tramp_method(&mut self) {
-        if !self.has_feature("tramp") {
-            return;
-        }
-        let methods = self
-            .lookup_var("tramp-methods", &Env::new())
-            .unwrap_or(Value::Nil);
-        let already_registered = methods.to_vec().is_ok_and(|entries| {
-            entries.iter().any(|entry| {
-                entry
-                    .to_vec()
-                    .ok()
-                    .and_then(|parts| parts.first().cloned())
-                    .is_some_and(|head| matches!(&head, Value::String(text) if text == "mock"))
-            })
-        });
-        if already_registered {
-            return;
-        }
-        let mock_entry = Value::list([
-            Value::String("mock".into()),
-            Value::list([
-                Value::Symbol("tramp-login-program".into()),
-                Value::String("sh".into()),
-            ]),
-            Value::list([
-                Value::Symbol("tramp-login-args".into()),
-                Value::list([Value::list([Value::String("-i".into())])]),
-            ]),
-            Value::list([
-                Value::Symbol("tramp-direct-async".into()),
-                Value::list([Value::String("-c".into())]),
-            ]),
-            Value::list([
-                Value::Symbol("tramp-remote-shell".into()),
-                Value::String("/bin/sh".into()),
-            ]),
-            Value::list([
-                Value::Symbol("tramp-remote-shell-args".into()),
-                Value::list([Value::String("-c".into())]),
-            ]),
-            Value::list([
-                Value::Symbol("tramp-connection-timeout".into()),
-                Value::Integer(10),
-            ]),
-        ]);
-        self.set_variable(
-            "tramp-methods",
-            Value::cons(mock_entry, methods),
-            &mut Vec::new(),
-        );
-        let system_name = crate::lisp::primitives::call(self, "system-name", &[], &mut Vec::new())
-            .unwrap_or_else(|_| Value::String("localhost".into()));
-        let host_alist = self
-            .lookup_var("tramp-default-host-alist", &Env::new())
-            .unwrap_or(Value::Nil);
-        let host_entry = Value::list([Value::String("\\`mock\\'".into()), Value::Nil, system_name]);
-        self.set_variable(
-            "tramp-default-host-alist",
-            Value::cons(host_entry, host_alist),
-            &mut Vec::new(),
-        );
-    }
-
-    pub(super) fn require_feature_with_target(
+    pub(crate) fn require_feature_with_target(
         &mut self,
         feature: &str,
         target: Option<&str>,
@@ -278,12 +221,6 @@ impl Interpreter {
                 }
                 self.provide_feature_with_after_load("cl-loaddefs")?;
             }
-            if feature == "ert-x" {
-                // GNU ert-x.el registers the `mock' Tramp method as a side
-                // effect of initializing `ert-remote-temporary-file-directory'
-                // when Tramp is already loaded.
-                self.register_mock_tramp_method();
-            }
             return self.provide_feature_with_after_load(feature);
         }
         if feature == "cus-edit" || target == Some("cus-edit") {
@@ -294,6 +231,7 @@ impl Interpreter {
             }
         }
         let load_target = target.unwrap_or(feature);
+        self.materialize_cl_macs_runtime_dependency(load_target)?;
         let Some(path) =
             crate::lisp::primitives::resolve_load_target_in_env(self, load_target, env)
         else {
@@ -459,6 +397,60 @@ impl Interpreter {
         self.selected_window_id = id;
     }
 
+    pub(crate) fn window_cursor_visible(&self, id: u64) -> bool {
+        self.window_cursor_visibility
+            .get(&id)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn set_window_cursor_visible(&mut self, id: u64, visible: bool) {
+        self.window_cursor_visibility.insert(id, visible);
+    }
+
+    pub(crate) fn old_selected_window_value(&self) -> Value {
+        Value::Record(self.old_selected_window_id)
+    }
+
+    pub(crate) fn frame_old_selected_window_value(&self) -> Value {
+        self.frame_old_selected_window_id
+            .map(Value::Record)
+            .unwrap_or(Value::Nil)
+    }
+
+    pub(crate) fn window_use_time(&self, id: u64) -> i64 {
+        self.find_record(id)
+            .and_then(|record| record.slots.get(primitives::WINDOW_USE_TIME_SLOT))
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn record_window_selection(&mut self, id: u64) {
+        self.window_select_count = self.window_select_count.saturating_add(1);
+        let use_time = self.window_select_count;
+        if let Some(window) = self.find_record_mut(id) {
+            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(use_time);
+        }
+    }
+
+    pub(crate) fn bump_window_use_time(&mut self, id: u64) -> Option<i64> {
+        if id == self.selected_window_id
+            || self.window_use_time(self.selected_window_id) != self.window_select_count
+        {
+            return None;
+        }
+        let bumped = self.window_select_count;
+        if let Some(window) = self.find_record_mut(id) {
+            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(bumped);
+        }
+        self.window_select_count = self.window_select_count.saturating_add(1);
+        let selected_time = self.window_select_count;
+        if let Some(selected) = self.find_record_mut(self.selected_window_id) {
+            selected.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(selected_time);
+        }
+        Some(bumped)
+    }
+
     pub fn selected_window_buffer_id(&self) -> u64 {
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.first())
@@ -534,7 +526,9 @@ impl Interpreter {
     }
 
     pub fn set_frame_width(&mut self, width: i64) {
-        self.frame_width = width.max(1);
+        let width = width.max(1);
+        self.resize_frame_window_records(width, self.frame_height());
+        self.frame_width = width;
     }
 
     pub fn frame_height(&self) -> i64 {
@@ -542,7 +536,176 @@ impl Interpreter {
     }
 
     pub fn set_frame_height(&mut self, height: i64) {
-        self.frame_height = height.max(1);
+        let height = height.max(1);
+        self.resize_frame_window_records(self.frame_width(), height);
+        self.frame_height = height;
+    }
+
+    fn window_record_geometry(&self, id: u64) -> (i64, i64, i64, i64) {
+        let integer_slot = |slot: usize, fallback: i64| {
+            self.find_record(id)
+                .and_then(|record| record.slots.get(slot))
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(fallback)
+        };
+        (
+            integer_slot(primitives::WINDOW_PIXEL_WIDTH_SLOT, self.frame_width()),
+            integer_slot(primitives::WINDOW_PIXEL_HEIGHT_SLOT, self.frame_height()),
+            integer_slot(primitives::WINDOW_PIXEL_LEFT_SLOT, 0),
+            integer_slot(primitives::WINDOW_PIXEL_TOP_SLOT, 0),
+        )
+    }
+
+    fn set_window_record_geometry(&mut self, id: u64, geometry: (i64, i64, i64, i64)) {
+        let Some(record) = self.find_record_mut(id) else {
+            return;
+        };
+        if record.slots.len() <= primitives::WINDOW_PIXEL_TOP_SLOT {
+            record
+                .slots
+                .resize(primitives::WINDOW_PIXEL_TOP_SLOT + 1, Value::Nil);
+        }
+        for (slot, value) in [
+            (primitives::WINDOW_PIXEL_WIDTH_SLOT, geometry.0),
+            (primitives::WINDOW_PIXEL_HEIGHT_SLOT, geometry.1),
+            (primitives::WINDOW_PIXEL_LEFT_SLOT, geometry.2),
+            (primitives::WINDOW_PIXEL_TOP_SLOT, geometry.3),
+        ] {
+            record.slots[slot] = Value::Integer(value);
+        }
+    }
+
+    fn window_record_link(&self, id: u64, slot: usize) -> Option<u64> {
+        match self
+            .find_record(id)
+            .and_then(|record| record.slots.get(slot))
+        {
+            Some(Value::Record(link)) => Some(*link),
+            _ => None,
+        }
+    }
+
+    fn resize_window_record_tree(&mut self, id: u64, geometry: (i64, i64, i64, i64)) {
+        let old_geometry = self.window_record_geometry(id);
+        let kind = self
+            .find_record(id)
+            .and_then(|record| record.slots.get(primitives::WINDOW_KIND_SLOT))
+            .cloned()
+            .unwrap_or(Value::Nil);
+        let horizontal = matches!(
+            kind,
+            Value::Symbol(ref kind) if kind == primitives::INTERNAL_HORIZONTAL_WINDOW_KIND
+        );
+        let vertical = matches!(
+            kind,
+            Value::Symbol(ref kind) if kind == primitives::INTERNAL_VERTICAL_WINDOW_KIND
+        );
+        let mut children = Vec::new();
+        let mut child = self.window_record_link(id, primitives::WINDOW_FIRST_CHILD_SLOT);
+        while let Some(child_id) = child {
+            if children.contains(&child_id) {
+                break;
+            }
+            children.push(child_id);
+            child = self.window_record_link(child_id, primitives::WINDOW_NEXT_SIBLING_SLOT);
+        }
+
+        self.set_window_record_geometry(id, geometry);
+        if children.is_empty() || (!horizontal && !vertical) {
+            return;
+        }
+
+        let old_total = if horizontal {
+            old_geometry.0
+        } else {
+            old_geometry.1
+        }
+        .max(1);
+        let new_total = if horizontal { geometry.0 } else { geometry.1 }.max(0);
+        let mut old_offset = 0;
+        for (index, child_id) in children.iter().enumerate() {
+            let child_geometry = self.window_record_geometry(*child_id);
+            let old_size = if horizontal {
+                child_geometry.0
+            } else {
+                child_geometry.1
+            }
+            .max(0);
+            let new_start = new_total.saturating_mul(old_offset) / old_total;
+            old_offset = old_offset.saturating_add(old_size);
+            let new_end = if index + 1 == children.len() {
+                new_total
+            } else {
+                new_total.saturating_mul(old_offset) / old_total
+            };
+            let child_new_geometry = if horizontal {
+                (
+                    new_end.saturating_sub(new_start),
+                    geometry.1,
+                    geometry.2.saturating_add(new_start),
+                    geometry.3,
+                )
+            } else {
+                (
+                    geometry.0,
+                    new_end.saturating_sub(new_start),
+                    geometry.2,
+                    geometry.3.saturating_add(new_start),
+                )
+            };
+            self.resize_window_record_tree(*child_id, child_new_geometry);
+        }
+    }
+
+    fn resize_frame_window_records(&mut self, width: i64, height: i64) {
+        if let Some(Value::Record(root_id)) = self.global_binding_value("emaxx-root-window") {
+            let old_root = self.window_record_geometry(root_id);
+            self.resize_window_record_tree(root_id, (width, height, old_root.2, old_root.3));
+        }
+        if let Some(Value::Record(minibuffer_id)) =
+            self.global_binding_value("emaxx-minibuffer-window")
+        {
+            let old_minibuffer = self.window_record_geometry(minibuffer_id);
+            self.set_window_record_geometry(
+                minibuffer_id,
+                (width, old_minibuffer.1, old_minibuffer.2, height),
+            );
+        }
+    }
+
+    pub(crate) fn frame_parameter_override(&self, name: &str) -> Option<Value> {
+        self.frame_parameter_overrides
+            .iter()
+            .find(|(parameter, _)| parameter == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    pub(crate) fn frame_name_value(&self) -> Value {
+        self.frame_name.clone()
+    }
+
+    pub(crate) fn frame_and_buffer_state(&self) -> Value {
+        self.frame_and_buffer_state.clone()
+    }
+
+    pub(crate) fn set_frame_and_buffer_state(&mut self, state: Value) {
+        self.frame_and_buffer_state = state;
+    }
+
+    pub(crate) fn frame_parameter_overrides(&self) -> &[(String, Value)] {
+        &self.frame_parameter_overrides
+    }
+
+    pub(crate) fn set_frame_parameter_override(&mut self, name: String, value: Value) {
+        if let Some((_, current)) = self
+            .frame_parameter_overrides
+            .iter_mut()
+            .find(|(parameter, _)| parameter == &name)
+        {
+            *current = value;
+        } else {
+            self.frame_parameter_overrides.insert(0, (name, value));
+        }
     }
 
     pub(super) fn snapshot_window_configuration(&self) -> WindowConfigurationSnapshot {
@@ -576,17 +739,25 @@ impl Interpreter {
         &mut self,
         value: &Value,
     ) -> Result<bool, LispError> {
+        let Some(snapshot) = self.window_configuration_snapshot_from_value(value) else {
+            return Ok(false);
+        };
+        self.restore_window_configuration(snapshot)?;
+        Ok(true)
+    }
+
+    fn window_configuration_snapshot_from_value(
+        &self,
+        value: &Value,
+    ) -> Option<WindowConfigurationSnapshot> {
         let Value::Record(id) = value else {
-            return Ok(false);
+            return None;
         };
-        let Some(record) = self.find_record(*id) else {
-            return Ok(false);
-        };
-        if record.type_name != "window-configuration" {
-            return Ok(false);
-        }
-        let slots = record.slots.clone();
-        let snapshot = WindowConfigurationSnapshot {
+        let record = self
+            .find_record(*id)
+            .filter(|record| record.type_name == "window-configuration")?;
+        let slots = &record.slots;
+        Some(WindowConfigurationSnapshot {
             current_buffer_id: slots
                 .first()
                 .and_then(|value| value.as_integer().ok())
@@ -607,19 +778,44 @@ impl Interpreter {
                 .get(4)
                 .and_then(|value| value.as_integer().ok())
                 .unwrap_or(24),
-        };
-        self.restore_window_configuration(snapshot)?;
-        Ok(true)
+        })
     }
 
     pub(crate) fn is_window_configuration_value(&self, value: &Value) -> bool {
-        matches!(
-            value,
-            Value::Record(id)
-                if self
-                    .find_record(*id)
-                    .is_some_and(|record| record.type_name == "window-configuration")
-        )
+        self.window_configuration_snapshot_from_value(value)
+            .is_some()
+    }
+
+    pub(crate) fn window_configurations_equal(
+        &self,
+        left: &Value,
+        right: &Value,
+    ) -> Result<bool, LispError> {
+        let snapshot = |value: &Value| {
+            self.window_configuration_snapshot_from_value(value)
+                .ok_or_else(|| {
+                    LispError::TypeError("window-configuration-p".into(), value.type_name())
+                })
+        };
+        let left = snapshot(left)?;
+        let right = snapshot(right)?;
+        // GNU compares layout, buffers, and frame dimensions, while
+        // deliberately ignoring point and scrolling positions.  Slots 1
+        // and 2 are Emaxx's window-start/history state; slot 0 is the
+        // displayed buffer and later slots describe window structure.
+        let layout_slots = |slots: &[Value]| {
+            slots
+                .first()
+                .into_iter()
+                .chain(slots.iter().skip(3))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        Ok(left.current_buffer_id == right.current_buffer_id
+            && left.frame_width == right.frame_width
+            && left.frame_height == right.frame_height
+            && layout_slots(&left.selected_window_slots)
+                == layout_slots(&right.selected_window_slots))
     }
 
     pub(super) fn restore_window_configuration(
@@ -660,7 +856,17 @@ impl Interpreter {
             Value::Symbol(symbol) => Some(symbol.clone()),
             Value::Record(record_id) => self
                 .find_class_state_by_record_id(*record_id)
-                .map(|state| state.name.clone()),
+                .map(|state| state.name.clone())
+                .or_else(|| {
+                    // eieio-core constructs an `eieio--class' record, fills
+                    // its inherited cl--class slots, and only then installs
+                    // it with `(setf (cl--find-class NAME) RECORD)'.  GNU's
+                    // accessors work throughout that construction phase.
+                    let record = self.find_record(*record_id)?;
+                    (record.type_name == "eieio--class")
+                        .then(|| record.slots.first()?.as_symbol().ok().map(str::to_string))
+                        .flatten()
+                }),
             _ => None,
         }
     }
@@ -668,6 +874,82 @@ impl Interpreter {
     pub(crate) fn class_value(&self, name: &str) -> Option<Value> {
         self.find_class_state(name)
             .map(|state| Value::Record(state.record_id))
+            // Loaded cl-preloaded.el defines `cl--find-class' as this public
+            // symbol property.  A GNU EIEIO class can therefore exist
+            // without ever passing through the bootstrap ClassState path.
+            .or_else(|| self.get_symbol_property(name, "cl--class"))
+    }
+
+    pub(crate) fn raw_eieio_class_slot(&self, class: &Value, index: usize) -> Option<Value> {
+        let Value::Record(record_id) = class else {
+            return None;
+        };
+        let record = self.find_record(*record_id)?;
+        // A class built by GNU's eieio-core.el has the complete `cl--class'
+        // plus `eieio--class' record layout (slots 0..=10).  Native
+        // bootstrap classes deliberately keep their canonical metadata in
+        // ClassState and use a compact four-slot facade.  Do not interpret
+        // facade fields using the GNU record layout.
+        (record.type_name == "eieio--class" && record.slots.len() >= 11)
+            .then(|| record.slots.get(index).cloned())
+            .flatten()
+    }
+
+    fn raw_eieio_class_parents(&self, class: &Value) -> Option<Value> {
+        self.raw_eieio_class_slot(class, 2).or_else(|| {
+            let Value::Record(record_id) = class else {
+                return None;
+            };
+            let record = self.find_record(*record_id)?;
+            // Unregistered short records are raw cl--class values used
+            // during Lisp construction and by focused compatibility tests.
+            (record.type_name == "eieio--class"
+                && self.find_class_state_by_record_id(*record_id).is_none())
+            .then(|| record.slots.get(2).cloned())
+            .flatten()
+        })
+    }
+
+    pub(crate) fn raw_eieio_class_slot_by_name(&self, name: &str, index: usize) -> Option<Value> {
+        let class = self.class_value(name)?;
+        self.raw_eieio_class_slot(&class, index)
+    }
+
+    pub(crate) fn eieio_unbound_form(&self) -> Option<Value> {
+        self.global_value("eieio--unbound-form")
+    }
+
+    pub(crate) fn eieio_unbound_value(&self) -> Option<Value> {
+        self.global_value("eieio--unbound")
+    }
+
+    fn raw_eieio_class_parent_names(&self, name: &str) -> Option<Vec<String>> {
+        let class = self
+            .class_value(name)
+            .or_else(|| self.get_symbol_property(name, "cl--class"))?;
+        Some(
+            self.raw_eieio_class_parents(&class)?
+                .to_vec()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|parent| self.class_name_from_value(parent))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn class_is_autoload_stub(&self, name: &str) -> bool {
+        let Some(Value::Record(record_id)) = self.class_value(name) else {
+            return false;
+        };
+        let Some(record) = self.find_record(record_id) else {
+            return false;
+        };
+        // eieio--full-class-object uses the nil default-object cache to
+        // distinguish the dummy made by eieio-defclass-autoload from a
+        // completed class.  The cache is field 9 of the full record.
+        record.type_name == "eieio--class"
+            && record.slots.len() >= 11
+            && record.slots.get(9).is_none_or(Value::is_nil)
     }
 
     pub(crate) fn class_parents_value(&self, class: &Value) -> Result<Value, LispError> {
@@ -683,18 +965,24 @@ impl Interpreter {
         let Value::Record(record_id) = class else {
             return Err(LispError::TypeError("class".into(), class.type_name()));
         };
-        if let Some(state) = self.find_class_state_by_record_id(*record_id) {
-            return Ok(Value::list(state.parents.iter().map(|parent| {
-                self.class_value(parent)
-                    .unwrap_or_else(|| Value::Symbol(parent.clone()))
-            })));
-        }
         if let Some((_, parents)) = self
             .class_parent_overrides
             .iter()
             .find(|(stored_id, _)| stored_id == record_id)
         {
             return Ok(Value::list(parents.iter().map(|parent| {
+                self.class_value(parent)
+                    .unwrap_or_else(|| Value::Symbol(parent.clone()))
+            })));
+        }
+        // GNU registers a new class before it fills the record's parent
+        // field.  The completed Lisp record is therefore authoritative over
+        // the initially empty ClassState snapshot.
+        if let Some(parents) = self.raw_eieio_class_parents(class) {
+            return Ok(parents);
+        }
+        if let Some(state) = self.find_class_state_by_record_id(*record_id) {
+            return Ok(Value::list(state.parents.iter().map(|parent| {
                 self.class_value(parent)
                     .unwrap_or_else(|| Value::Symbol(parent.clone()))
             })));
@@ -706,12 +994,26 @@ impl Interpreter {
         let Value::Record(record_id) = class.clone() else {
             return Err(LispError::TypeError("class".into(), class.type_name()));
         };
-        let parents = self
+        let overridden_parents = self
             .class_parent_overrides
             .iter()
             .find(|(stored_id, _)| *stored_id == record_id)
-            .map(|(_, parents)| parents.clone())
+            .map(|(_, parents)| parents.clone());
+        let raw_parents = self
+            .find_record(record_id)
+            .and_then(|record| {
+                (record.type_name == "eieio--class")
+                    .then(|| record.slots.get(2).cloned())
+                    .flatten()
+            })
+            .and_then(|parents| parents.to_vec().ok())
             .unwrap_or_default();
+        let parents = overridden_parents.unwrap_or_else(|| {
+            raw_parents
+                .iter()
+                .filter_map(|parent| self.class_name_from_value(parent))
+                .collect()
+        });
         if let Some(existing) = self.find_class_state_mut(name) {
             existing.record_id = record_id;
             existing.parents = parents.clone();
@@ -861,22 +1163,27 @@ impl Interpreter {
             }
             output.push(crate::lisp::types::interned_symbol_value(name.to_string()));
             let builtin_parents = primitives::builtin_class_parents(name);
-            if !builtin_parents.is_empty() {
-                for parent in builtin_parents {
-                    visit(interp, parent, output, seen);
+            let parents = if !builtin_parents.is_empty() {
+                builtin_parents
+                    .iter()
+                    .map(|parent| (*parent).to_string())
+                    .collect()
+            } else if let Some(parents) = interp.raw_eieio_class_parent_names(name) {
+                parents
+            } else {
+                interp
+                    .find_class_state(name)
+                    .map(|state| state.parents.clone())
+                    .unwrap_or_default()
+            };
+            if parents.is_empty() {
+                if name != "t" {
+                    visit(interp, "t", output, seen);
                 }
-            } else if let Some(state) = interp.find_class_state(name) {
-                if state.parents.is_empty() {
-                    if name != "t" {
-                        visit(interp, "t", output, seen);
-                    }
-                } else {
-                    for parent in &state.parents {
-                        visit(interp, parent, output, seen);
-                    }
+            } else {
+                for parent in parents {
+                    visit(interp, &parent, output, seen);
                 }
-            } else if name != "t" {
-                visit(interp, "t", output, seen);
             }
         }
 
@@ -919,6 +1226,17 @@ impl Interpreter {
     }
 
     pub(crate) fn class_children(&self, name: &str) -> Vec<Value> {
+        // GNU mutates the live eieio--class record when each subclass is
+        // defined.  A ClassState entry may have been installed earlier,
+        // before those child names were pushed, so a complete Lisp record is
+        // authoritative just as it is for parents, slots, and options.
+        if let Some(children) = self
+            .class_value(name)
+            .and_then(|class| self.raw_eieio_class_slot(&class, 5))
+            .and_then(|children| children.to_vec().ok())
+        {
+            return children;
+        }
         self.find_class_state(name)
             .map(|state| {
                 state
@@ -991,24 +1309,46 @@ impl Interpreter {
         record_value
     }
 
-    pub fn terminal_parameter(&self, name: &str) -> Option<Value> {
+    pub fn terminal_parameter(&self, parameter: &Value) -> Option<Value> {
         self.terminal_parameters
             .iter()
-            .rfind(|(parameter, _)| parameter == name)
+            .rfind(|(key, _)| key == parameter)
             .map(|(_, value)| value.clone())
     }
 
-    pub fn set_terminal_parameter(&mut self, name: &str, value: Value) {
+    pub fn terminal_live(&self) -> bool {
+        self.terminal_live
+    }
+
+    pub fn delete_terminal_state(&mut self) {
+        self.terminal_live = false;
+        self.terminal_parameters.clear();
+    }
+
+    pub fn set_terminal_parameter(&mut self, parameter: Value, value: Value) -> Value {
+        let parameter = Self::stored_value(parameter);
         let value = Self::stored_value(value);
         if let Some(index) = self
             .terminal_parameters
             .iter()
-            .rposition(|(parameter, _)| parameter == name)
+            .rposition(|(key, _)| key == &parameter)
         {
+            let previous = self.terminal_parameters[index].1.clone();
             self.terminal_parameters[index].1 = value;
+            previous
         } else {
-            self.terminal_parameters.push((name.to_string(), value));
+            self.terminal_parameters.push((parameter, value));
+            Value::Nil
         }
+    }
+
+    pub fn terminal_parameters(&self) -> Value {
+        Value::list(
+            self.terminal_parameters
+                .iter()
+                .rev()
+                .map(|(parameter, value)| Value::cons(parameter.clone(), value.clone())),
+        )
     }
 
     /// Remove a non-current buffer from the live buffer list.
@@ -1045,8 +1385,36 @@ impl Interpreter {
         } else {
             let _ = self.remove_buffer_id(id);
         }
+        // GNU's kill-buffer path replaces the dying buffer in every window
+        // before tearing the buffer down.  Keep that invariant here as the
+        // low-level backstop too: Emaxx's temporary-buffer and ERT cleanup
+        // paths call kill_buffer_id directly, so updating only the selected
+        // window leaves non-selected windows looking live while their buffer
+        // slot names a dead ID.
+        let replacement_id = self.current_buffer_id;
+        let replacement_start = self
+            .buffer_bounds_by_id(replacement_id)
+            .map(|(point_min, _)| point_min)
+            .unwrap_or(1);
+        let window_ids = self.record_ids_by_type("window");
+        for window_id in window_ids {
+            let showed_killed_buffer = self
+                .find_record(window_id)
+                .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
+                .and_then(|value| value.as_integer().ok())
+                .is_some_and(|buffer_id| buffer_id.max(0) as u64 == id);
+            if !showed_killed_buffer {
+                continue;
+            }
+            if let Some(window) = self.find_record_mut(window_id) {
+                window.slots[primitives::WINDOW_BUFFER_SLOT] =
+                    Value::Integer(replacement_id as i64);
+                window.slots[primitives::WINDOW_START_SLOT] =
+                    Value::Integer(replacement_start as i64);
+            }
+        }
         if selected_window_showed_buffer {
-            self.set_selected_window_buffer_id(self.current_buffer_id);
+            self.set_selected_window_buffer_id(replacement_id);
         }
     }
 
@@ -1182,6 +1550,107 @@ impl Interpreter {
         Value::CharTable(id)
     }
 
+    pub fn unicode_property_table(&mut self, property: &str) -> (Value, bool) {
+        if let Some(id) = self.unicode_property_table_ids.get(property).copied()
+            && self.find_char_table(id).is_some()
+        {
+            return (Value::CharTable(id), false);
+        }
+        let table = self.make_char_table(Some("char-code-property-table".into()), Value::Nil);
+        let Value::CharTable(id) = table else {
+            unreachable!("make_char_table always returns a character table")
+        };
+        // GNU Unicode property tables keep the property name in extra slot
+        // zero and a value-description function in slot three.  Emaxx
+        // computes the generated Unicode data natively, but must expose the
+        // same table contract to the Lisp-owned mule-cmds.el accessors.
+        let state = self
+            .find_char_table_mut(id)
+            .expect("new Unicode property table must exist");
+        let description = if property == "general-category" {
+            Value::BuiltinFunc("emaxx--general-category-description".into())
+        } else {
+            Value::Nil
+        };
+        state.extra_slots = vec![
+            Value::Symbol(property.to_string()),
+            Value::Nil,
+            Value::Nil,
+            description,
+            Value::Nil,
+        ];
+        self.unicode_property_table_ids
+            .insert(property.to_string(), id);
+        (Value::CharTable(id), true)
+    }
+
+    pub fn replace_hash_table_runtime_entries(
+        &mut self,
+        id: u64,
+        test: &str,
+        entries: Vec<(Value, Value)>,
+    ) {
+        if test != "equal" {
+            self.equal_string_hash_tables.remove(&id);
+            return;
+        }
+        let mut string_index = HashMap::new();
+        for (index, (key, _)) in entries.iter().enumerate() {
+            let text = match key {
+                Value::String(text) => Some(text.clone()),
+                Value::StringObject(state) => Some(state.borrow().text.clone()),
+                _ => None,
+            };
+            if let Some(text) = text {
+                string_index.insert(text, index);
+            }
+        }
+        self.equal_string_hash_tables.insert(
+            id,
+            EqualStringHashTableState {
+                entries,
+                string_index,
+            },
+        );
+    }
+
+    pub fn hash_table_runtime_entries(&self, id: u64) -> Option<&Vec<(Value, Value)>> {
+        self.equal_string_hash_tables
+            .get(&id)
+            .map(|state| &state.entries)
+    }
+
+    pub fn equal_string_hash_lookup(&self, id: u64, key: &str) -> Option<Option<Value>> {
+        let state = self.equal_string_hash_tables.get(&id)?;
+        Some(
+            state
+                .string_index
+                .get(key)
+                .and_then(|index| state.entries.get(*index))
+                .map(|(_, value)| value.clone()),
+        )
+    }
+
+    pub fn equal_string_hash_put(
+        &mut self,
+        id: u64,
+        key_text: &str,
+        key: Value,
+        value: Value,
+    ) -> bool {
+        let Some(state) = self.equal_string_hash_tables.get_mut(&id) else {
+            return false;
+        };
+        if let Some(index) = state.string_index.get(key_text).copied() {
+            state.entries[index].1 = value;
+        } else {
+            let index = state.entries.len();
+            state.entries.push((key, value));
+            state.string_index.insert(key_text.to_string(), index);
+        }
+        true
+    }
+
     pub fn find_char_table(&self, id: u64) -> Option<&CharTableState> {
         self.char_tables.iter().find(|table| table.id == id)
     }
@@ -1259,6 +1728,51 @@ impl Interpreter {
             return Some(value);
         }
         Some(table.default.clone())
+    }
+
+    /// Enumerate the effective explicit ranges in an append-only character
+    /// table.  Newer writes mask older ones; nil writes mask without being
+    /// reported as values.
+    pub(crate) fn char_table_effective_ranges(&self, id: u64) -> Option<Vec<CharTableEntry>> {
+        let entries = &self.find_char_table(id)?.entries;
+        let mut covered = Vec::<(u32, u32)>::new();
+        let mut effective = Vec::new();
+
+        for entry in entries.iter().rev() {
+            let mut pieces = vec![(entry.start, entry.end)];
+            for &(covered_start, covered_end) in &covered {
+                let mut remaining = Vec::with_capacity(pieces.len() + 1);
+                for (piece_start, piece_end) in pieces {
+                    if covered_end < piece_start || covered_start > piece_end {
+                        remaining.push((piece_start, piece_end));
+                    } else {
+                        if piece_start < covered_start {
+                            remaining.push((piece_start, covered_start - 1));
+                        }
+                        if piece_end > covered_end {
+                            remaining.push((covered_end + 1, piece_end));
+                        }
+                    }
+                }
+                pieces = remaining;
+                if pieces.is_empty() {
+                    break;
+                }
+            }
+            for &(start, end) in &pieces {
+                covered.push((start, end));
+                if !entry.value.is_nil() {
+                    effective.push(CharTableEntry {
+                        start,
+                        end,
+                        value: entry.value.clone(),
+                    });
+                }
+            }
+        }
+
+        effective.sort_by_key(|entry| (entry.start, entry.end));
+        Some(effective)
     }
 
     pub fn char_table_subtype(&self, id: u64) -> Option<Option<String>> {
@@ -1400,11 +1914,31 @@ impl Interpreter {
     }
 
     pub fn copy_record(&mut self, id: u64) -> Result<Value, LispError> {
+        let hash_entries = self.hash_table_runtime_entries(id).cloned();
         let record = self
             .find_record(id)
             .cloned()
             .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-        let copy = self.create_record(&record.type_name, record.slots);
+        let mut slots = record.slots;
+        if let Some(entries) = &hash_entries
+            && slots.len() >= 2
+        {
+            slots[1] = Value::list(
+                entries
+                    .iter()
+                    .cloned()
+                    .map(|(key, value)| Value::cons(key, value)),
+            );
+        }
+        let test = slots
+            .first()
+            .and_then(|value| value.as_symbol().ok())
+            .unwrap_or("eql")
+            .to_string();
+        let copy = self.create_record(&record.type_name, slots);
+        if let (Some(entries), Value::Record(copy_id)) = (hash_entries, &copy) {
+            self.replace_hash_table_runtime_entries(*copy_id, &test, entries);
+        }
         // GNU `copy-sequence' copies the record verbatim, including a
         // class-object type tag.
         if self.is_class_object_tagged_record(id)
@@ -1510,7 +2044,7 @@ impl Interpreter {
         self.set_global_binding("features", self.features_value());
     }
 
-    pub(super) fn provide_feature_with_after_load(
+    pub(crate) fn provide_feature_with_after_load(
         &mut self,
         feature: &str,
     ) -> Result<Value, LispError> {
@@ -1557,6 +2091,26 @@ impl Interpreter {
                 .map(Value::Symbol)
                 .collect::<Vec<_>>(),
         )
+    }
+
+    pub(crate) fn combined_after_change(&self) -> Option<&CombinedAfterChangeState> {
+        self.combined_after_change.as_ref()
+    }
+
+    pub(crate) fn record_combined_after_change(&mut self, buffer_id: u64, change: (i64, i64, i64)) {
+        match self.combined_after_change.as_mut() {
+            Some(pending) if pending.buffer_id == buffer_id => pending.changes.push(change),
+            _ => {
+                self.combined_after_change = Some(CombinedAfterChangeState {
+                    buffer_id,
+                    changes: vec![change],
+                });
+            }
+        }
+    }
+
+    pub(crate) fn take_combined_after_change(&mut self) -> Option<CombinedAfterChangeState> {
+        self.combined_after_change.take()
     }
 }
 

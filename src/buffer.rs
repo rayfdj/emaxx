@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 /// Modification counter. Bumped on every edit, used to detect
 /// whether a buffer has changed since some snapshot (e.g. last save).
-pub type ModCount = u64;
+pub type ModCount = i64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileModTime {
@@ -40,6 +40,10 @@ pub struct Buffer {
 
     /// Bumped on every modification.
     modiff: ModCount,
+
+    /// Updated when buffer characters change, but not for metadata-only
+    /// modifications such as `set-buffer-modified-p'.
+    chars_modiff: ModCount,
 
     /// Value of modiff at last save.
     save_modiff: ModCount,
@@ -166,6 +170,7 @@ impl Buffer {
             mark: None,
             mark_active: false,
             modiff: 1,
+            chars_modiff: 1,
             save_modiff: 1,
             saved_text: String::new(),
             forced_modified: false,
@@ -197,6 +202,7 @@ impl Buffer {
             mark: None,
             mark_active: false,
             modiff: 1,
+            chars_modiff: 1,
             save_modiff: 1,
             saved_text: s.to_string(),
             forced_modified: false,
@@ -744,6 +750,7 @@ impl Buffer {
         }
 
         self.modiff += 1;
+        self.chars_modiff = self.modiff;
         self.autosaved = false;
         self.pt
     }
@@ -771,6 +778,7 @@ impl Buffer {
         self.text.remove(from0..to0);
         self.text.insert(from0, text);
         self.modiff += 1;
+        self.chars_modiff = self.modiff;
         self.autosaved = false;
     }
 
@@ -835,6 +843,7 @@ impl Buffer {
         self.zv -= nchars;
 
         self.modiff += 1;
+        self.chars_modiff = self.modiff;
         self.autosaved = false;
         Ok(deleted)
     }
@@ -906,7 +915,7 @@ impl Buffer {
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
-        self.forced_modified || self.full_buffer_string() != self.saved_text
+        self.forced_modified || self.modiff != self.save_modiff
     }
 
     pub fn set_unmodified(&mut self) {
@@ -1015,12 +1024,21 @@ impl Buffer {
         self.modiff
     }
 
+    pub fn chars_modified_tick(&self) -> ModCount {
+        self.chars_modiff
+    }
+
+    pub fn set_modified_tick(&mut self, tick: ModCount) {
+        self.modiff = tick;
+    }
+
     pub fn swap_text_state(&mut self, other: &mut Buffer) {
         std::mem::swap(&mut self.text, &mut other.text);
         std::mem::swap(&mut self.pt, &mut other.pt);
         std::mem::swap(&mut self.mark, &mut other.mark);
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
         std::mem::swap(&mut self.modiff, &mut other.modiff);
+        std::mem::swap(&mut self.chars_modiff, &mut other.chars_modiff);
         std::mem::swap(&mut self.save_modiff, &mut other.save_modiff);
         std::mem::swap(&mut self.saved_text, &mut other.saved_text);
         std::mem::swap(&mut self.forced_modified, &mut other.forced_modified);
@@ -1848,6 +1866,20 @@ mod tests {
         let mut buf = Buffer::new("test");
         assert!(!buf.is_modified());
         buf.insert("x");
+        assert!(buf.is_modified());
+        buf.set_unmodified();
+        assert!(!buf.is_modified());
+    }
+
+    #[test]
+    fn inverse_edits_remain_modified_until_explicitly_marked_clean() {
+        let mut buf = Buffer::from_text("test", "ab");
+        buf.set_unmodified();
+        buf.goto_char(1);
+        let deleted = buf.delete_char(1).unwrap();
+        buf.insert(&deleted);
+
+        assert_eq!(buf.full_buffer_string(), "ab");
         assert!(buf.is_modified());
         buf.set_unmodified();
         assert!(!buf.is_modified());

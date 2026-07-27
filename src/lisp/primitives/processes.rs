@@ -39,7 +39,8 @@ pub(crate) fn configure_external_command(interp: &Interpreter, env: &Env, comman
         .and_then(|value| string_like(&value).map(|string| string.text))
         .filter(|directory| !directory.is_empty())
     {
-        command.current_dir(default_directory);
+        command
+            .current_dir(unquote_local_file_name(&default_directory).unwrap_or(default_directory));
     }
     apply_process_environment(interp, env, command);
 }
@@ -49,13 +50,118 @@ pub(crate) fn spawn_persistent_process(
     program: &str,
     argv: &[String],
     env: &Env,
-) -> Result<Child, LispError> {
+    connection_type: Option<&Value>,
+    separate_stderr: bool,
+) -> Result<RunningProcess, LispError> {
     let mut command = Command::new(program);
     command.args(argv);
     configure_external_command(interp, env, &mut command);
-    command.stdin(Stdio::piped());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+
+    let default_pty = interp
+        .lookup_var("process-connection-type", env)
+        .is_some_and(|value| value.is_truthy());
+    let (input_pty, output_pty) = process_connection_pty_modes(connection_type, default_pty)?;
+    let mut pty_input = None;
+    let mut pty_output = None;
+    let mut pty_slave_guard = None;
+
+    #[cfg(unix)]
+    {
+        if input_pty && output_pty {
+            let (master, slave) = open_emacs_pty()?;
+            pty_slave_guard = Some(
+                slave
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+            );
+            command.stdin(Stdio::from(
+                slave
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+            ));
+            command.stdout(Stdio::from(
+                slave
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+            ));
+            if separate_stderr {
+                command.stderr(Stdio::piped());
+            } else {
+                command.stderr(Stdio::from(slave));
+            }
+            pty_input = Some(
+                master
+                    .try_clone()
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+            );
+            pty_output = Some(master);
+        } else if input_pty {
+            let (master, slave) = open_emacs_pty()?;
+            command.stdin(Stdio::from(slave));
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::piped());
+            pty_input = Some(master);
+        } else {
+            command.stdin(Stdio::piped());
+            if output_pty {
+                let (master, slave) = open_emacs_pty()?;
+                pty_slave_guard = Some(
+                    slave
+                        .try_clone()
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                );
+                command.stdout(Stdio::from(
+                    slave
+                        .try_clone()
+                        .map_err(|error| LispError::Signal(error.to_string()))?,
+                ));
+                if separate_stderr {
+                    command.stderr(Stdio::piped());
+                } else {
+                    command.stderr(Stdio::from(slave));
+                }
+                pty_output = Some(master);
+            } else {
+                command.stdout(Stdio::piped());
+                command.stderr(Stdio::piped());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (input_pty, output_pty, separate_stderr);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // GNU gives every asynchronous child its own process group.  PTY
+        // children also lead a fresh session and acquire stdin's slave as
+        // their controlling terminal.  Signals then target the child job,
+        // including descendants, instead of Emaxx's own process group.
+        // SAFETY: setsid/setpgid/ioctl are async-signal-safe child-side
+        // operations; fd 0 is already the PTY slave for input_pty.
+        unsafe {
+            command.pre_exec(move || {
+                if input_pty || output_pty {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else if libc::setpgid(0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if input_pty && libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY.into(), 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
     let child = command
         .spawn()
         .map_err(|error| LispError::Signal(error.to_string()))?;
@@ -67,8 +173,109 @@ pub(crate) fn spawn_persistent_process(
         if let Some(stderr) = child.stderr.as_ref() {
             set_nonblocking(stderr)?;
         }
+        if let Some(output) = pty_output.as_ref() {
+            set_nonblocking(output)?;
+        }
     }
-    Ok(child)
+    Ok(RunningProcess {
+        child,
+        pty_input,
+        pty_output,
+        pty_slave_guard,
+    })
+}
+
+fn process_connection_pty_modes(
+    connection_type: Option<&Value>,
+    default_pty: bool,
+) -> Result<(bool, bool), LispError> {
+    let Some(connection_type) = connection_type else {
+        return Ok((default_pty, default_pty));
+    };
+    if let Some((input, output)) = connection_type.cons_values() {
+        return Ok((
+            process_connection_endpoint_uses_pty(&input, default_pty)?,
+            process_connection_endpoint_uses_pty(&output, default_pty)?,
+        ));
+    }
+    let pty = process_connection_endpoint_uses_pty(connection_type, default_pty)?;
+    Ok((pty, pty))
+}
+
+fn process_connection_endpoint_uses_pty(
+    value: &Value,
+    default_pty: bool,
+) -> Result<bool, LispError> {
+    match value {
+        Value::Nil => Ok(default_pty),
+        Value::Symbol(name) if name == "pty" => Ok(true),
+        Value::Symbol(name) if name == "pipe" => Ok(false),
+        _ => Err(LispError::Signal(format!(
+            "Unknown connection type: {value}"
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn open_emacs_pty() -> Result<(fs::File, fs::File), LispError> {
+    let mut master = -1;
+    let mut slave = -1;
+    // SAFETY: `openpty' initializes both file descriptors; the optional
+    // name/termios/winsize pointers are allowed to be null.
+    if unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    // SAFETY: ownership of the fresh descriptors is transferred exactly once.
+    let master = unsafe { fs::File::from_raw_fd(master) };
+    // SAFETY: ownership of the fresh descriptor is transferred exactly once.
+    let slave = unsafe { fs::File::from_raw_fd(slave) };
+    for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+        // SAFETY: both descriptors are live and owned by the File values.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(LispError::Signal(
+                std::io::Error::last_os_error().to_string(),
+            ));
+        }
+    }
+
+    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+    // SAFETY: `slave' is a live terminal fd and `tcgetattr' initializes the
+    // termios value on success.
+    if unsafe { libc::tcgetattr(slave.as_raw_fd(), attributes.as_mut_ptr()) } == 0 {
+        // SAFETY: the successful `tcgetattr' initialized `attributes'.
+        let mut attributes = unsafe { attributes.assume_init() };
+        // GNU leaves canonical input and EOF processing enabled, while
+        // disabling echo and CRLF expansion because the editor owns those
+        // presentation concerns.  In particular, canonical VEOF is what
+        // makes `process-send-eof' meaningful for PTY subprocesses.
+        attributes.c_oflag |= libc::OPOST;
+        attributes.c_oflag &= !libc::ONLCR;
+        attributes.c_lflag &= !libc::ECHO;
+        attributes.c_lflag |= libc::ISIG | libc::ICANON;
+        attributes.c_iflag &= !libc::ISTRIP;
+        attributes.c_cflag = (attributes.c_cflag & !libc::CSIZE) | libc::CS8;
+        attributes.c_cc[libc::VEOF] = 4;
+        // SAFETY: `tcsetattr' operates on initialized termios storage and
+        // the same live terminal fd.
+        if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attributes) } < 0 {
+            return Err(LispError::Signal(
+                std::io::Error::last_os_error().to_string(),
+            ));
+        }
+    }
+    Ok((master, slave))
 }
 
 #[cfg(unix)]
@@ -150,6 +357,8 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) coding: Option<(Value, Value)>,
     pub(crate) name: Option<String>,
     pub(crate) stderr_process_id: Option<u64>,
+    pub(crate) file_handler: bool,
+    pub(crate) connection_type: Option<Value>,
 }
 
 pub(crate) fn parse_make_process_args(
@@ -170,6 +379,8 @@ pub(crate) fn parse_make_process_args(
     let mut coding = None;
     let mut name = None;
     let mut stderr_process_id = None;
+    let mut file_handler = false;
+    let mut connection_type = None;
 
     for pair in args.chunks_exact(2) {
         let key = pair[0].as_symbol()?;
@@ -188,6 +399,8 @@ pub(crate) fn parse_make_process_args(
             ":stderr" if !value.is_nil() => {
                 stderr_process_id = Some(interp.resolve_process_id(value)?);
             }
+            ":file-handler" => file_handler = value.is_truthy(),
+            ":connection-type" => connection_type = Some(value.clone()),
             _ => {}
         }
     }
@@ -201,6 +414,8 @@ pub(crate) fn parse_make_process_args(
         coding,
         name,
         stderr_process_id,
+        file_handler,
+        connection_type,
     })
 }
 
@@ -222,6 +437,13 @@ pub(crate) fn deliver_process_output(
         .process_buffer_id(process_id)
         .filter(|buffer_id| interp.get_buffer_by_id(*buffer_id).is_some());
     if let Some(filter) = interp.process_filter(process_id) {
+        // GNU uses t as a flow-control sentinel: the descriptor is removed
+        // from the read set until a real/default filter is installed again.
+        // The pump normally avoids reaching this branch, but retaining the
+        // guard makes direct delivery equally safe.
+        if filter == Value::T {
+            return Ok(());
+        }
         let saved_buffer_id = interp.current_buffer_id();
         let switched = target_buffer_id.is_some_and(|buffer_id| buffer_id != saved_buffer_id);
         if let Some(buffer_id) = target_buffer_id
@@ -242,6 +464,20 @@ pub(crate) fn deliver_process_output(
         return Ok(());
     }
 
+    internal_default_process_filter(interp, process_id, output)
+}
+
+/// GNU `internal-default-process-filter'.  Insert at the process mark before
+/// other markers, preserve the buffer's logical point, and discard output
+/// when the process has no live buffer.
+pub(crate) fn internal_default_process_filter(
+    interp: &mut Interpreter,
+    process_id: u64,
+    output: &str,
+) -> Result<(), LispError> {
+    let target_buffer_id = interp
+        .process_buffer_id(process_id)
+        .filter(|buffer_id| interp.get_buffer_by_id(*buffer_id).is_some());
     let Some(buffer_id) = target_buffer_id else {
         return Ok(());
     };
@@ -253,13 +489,72 @@ pub(crate) fn deliver_process_output(
     if switched {
         interp.switch_to_buffer_id(buffer_id)?;
     }
+    let old_point = interp.buffer.point();
     let insert_at = interp
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().point_max());
     interp.buffer.goto_char(insert_at);
-    interp.insert_current_buffer(output);
+    interp.insert_current_buffer_before_markers(output);
     let new_pos = interp.buffer.point();
     let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
+    let inserted_chars = output.chars().count();
+    let restored_point = if old_point >= insert_at {
+        old_point.saturating_add(inserted_chars)
+    } else {
+        old_point
+    };
+    interp.buffer.goto_char(restored_point);
+    if switched {
+        interp.switch_to_buffer_id(saved_buffer_id)?;
+    }
+    result
+}
+
+/// GNU `internal-default-process-sentinel'.  Non-running state changes are
+/// appended at the process mark without letting a process callback retarget
+/// the caller's current buffer or point.
+pub(crate) fn internal_default_process_sentinel(
+    interp: &mut Interpreter,
+    process_id: u64,
+    message: &str,
+) -> Result<(), LispError> {
+    if matches!(
+        interp.process_status_value(process_id),
+        Some(Value::Symbol(status)) if status == "run"
+    ) {
+        return Ok(());
+    }
+    let Some(buffer_id) = interp
+        .process_buffer_id(process_id)
+        .filter(|buffer_id| interp.get_buffer_by_id(*buffer_id).is_some())
+    else {
+        return Ok(());
+    };
+    let Some(mark_id) = interp.process_mark_id(process_id) else {
+        return Ok(());
+    };
+    let process_name = interp.process_name(process_id).unwrap_or_default();
+    let text = format!("\nProcess {process_name} {message}");
+    let saved_buffer_id = interp.current_buffer_id();
+    let switched = buffer_id != saved_buffer_id;
+    if switched {
+        interp.switch_to_buffer_id(buffer_id)?;
+    }
+    let old_point = interp.buffer.point();
+    let insert_at = interp
+        .marker_position(mark_id)
+        .unwrap_or_else(|| interp.current_buffer().point_max());
+    interp.buffer.goto_char(insert_at);
+    interp.insert_current_buffer(&text);
+    let new_pos = interp.buffer.point();
+    let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
+    let inserted_chars = text.chars().count();
+    let restored_point = if old_point >= insert_at {
+        old_point.saturating_add(inserted_chars)
+    } else {
+        old_point
+    };
+    interp.buffer.goto_char(restored_point);
     if switched {
         interp.switch_to_buffer_id(saved_buffer_id)?;
     }
@@ -282,7 +577,11 @@ pub(crate) fn apply_process_environment(interp: &Interpreter, env: &Env, command
 }
 
 pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, LispError> {
-    value
+    let environment = match value.cons_values() {
+        Some((Value::Symbol(symbol), entries)) if symbol == "environment" => entries,
+        _ => value.clone(),
+    };
+    environment
         .to_vec()?
         .into_iter()
         .map(|item| string_text(&item))
@@ -321,6 +620,26 @@ pub(crate) fn setenv_in_environment_entries(
     }
 }
 
+pub(crate) fn updated_process_environment(
+    environment: &Value,
+    variable: &str,
+    value: Option<&str>,
+    keep_empty: bool,
+) -> Result<Value, LispError> {
+    let wrapped = matches!(
+        environment.cons_values(),
+        Some((Value::Symbol(ref symbol), _)) if symbol == "environment"
+    );
+    let mut entries = process_environment_entries(environment)?;
+    setenv_in_environment_entries(&mut entries, variable, value, keep_empty);
+    let updated = process_environment_from_entries(&entries);
+    Ok(if wrapped {
+        Value::cons(Value::Symbol("environment".into()), updated)
+    } else {
+        updated
+    })
+}
+
 pub(crate) fn getenv_in_environment(
     variable: &str,
     environment: &Value,
@@ -356,15 +675,17 @@ pub(crate) fn append_process_bytes_to_buffer(
     let target_id = match destination {
         Value::T => interp.current_buffer_id(),
         Value::Buffer(_, _) => interp.resolve_buffer_id(destination)?,
-        Value::String(name) => interp
-            .find_buffer(name)
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| interp.create_buffer(name).0),
-        _ => {
-            return Err(LispError::TypeError(
-                "buffer-or-name".into(),
-                destination.type_name(),
-            ));
+        value => {
+            let Some(name) = string_like(value) else {
+                return Err(LispError::TypeError(
+                    "buffer-or-name".into(),
+                    destination.type_name(),
+                ));
+            };
+            interp
+                .find_buffer(&name.text)
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| interp.create_buffer(&name.text).0)
         }
     };
     let original_id = interp.current_buffer_id();
@@ -476,6 +797,7 @@ pub(crate) fn write_process_bytes_to_file(
     bytes: &[u8],
     append: bool,
 ) -> Result<(), LispError> {
+    let path = unquote_local_file_name(path).unwrap_or_else(|| path.to_string());
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true);
     if append {
@@ -708,6 +1030,12 @@ pub(crate) fn pump_external_process_output(
     let ids = interp.live_external_process_ids();
     let mut progressed = false;
     for process_id in ids {
+        if interp.process_output_paused(process_id) {
+            // Status changes still arrive while output is held.  GNU removes
+            // only the read descriptor, not SIGCHLD/status observation.
+            interp.refresh_process_id(process_id)?;
+            continue;
+        }
         let (stdout, stderr) = interp.poll_process_output(process_id)?;
         progressed |= deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
     }
@@ -722,7 +1050,7 @@ pub(crate) fn pump_external_process_output(
 
 /// GNU conv_sockaddr_to_lisp: an inet address as [a b c d port] (ipv4)
 /// or [w0 .. w7 port] (ipv6).
-fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
+pub(crate) fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
     let mut items = vec![Value::symbol("vector-literal")];
     match addr.ip() {
         std::net::IpAddr::V4(ip) => {
@@ -742,6 +1070,43 @@ fn sockaddr_vector(addr: std::net::SocketAddr) -> Value {
     }
     items.push(Value::Integer(addr.port() as i64));
     Value::list(items)
+}
+
+pub(crate) fn socket_addr_from_value(value: &Value) -> Option<std::net::SocketAddr> {
+    let mut items = value.to_vec().ok()?;
+    if matches!(items.first(), Some(Value::Symbol(tag)) if tag == "vector-literal") {
+        items.remove(0);
+    }
+    let integers = items
+        .iter()
+        .map(Value::as_integer)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    match integers.as_slice() {
+        [a, b, c, d, port] => Some(std::net::SocketAddr::from((
+            [
+                u8::try_from(*a).ok()?,
+                u8::try_from(*b).ok()?,
+                u8::try_from(*c).ok()?,
+                u8::try_from(*d).ok()?,
+            ],
+            u16::try_from(*port).ok()?,
+        ))),
+        [a, b, c, d, e, f, g, h, port] => Some(std::net::SocketAddr::from((
+            [
+                u16::try_from(*a).ok()?,
+                u16::try_from(*b).ok()?,
+                u16::try_from(*c).ok()?,
+                u16::try_from(*d).ok()?,
+                u16::try_from(*e).ok()?,
+                u16::try_from(*f).ok()?,
+                u16::try_from(*g).ok()?,
+                u16::try_from(*h).ok()?,
+            ],
+            u16::try_from(*port).ok()?,
+        ))),
+        _ => None,
+    }
 }
 
 /// plist_get on a proper-list plist value by keyword name.
@@ -774,25 +1139,21 @@ fn plist_items_put(items: &mut Vec<Value>, key: &str, value: Value) {
     items.push(value);
 }
 
-/// GNU Fdelete_process on a network process: set status to (exit 0) and
-/// run status_notify SYNCHRONOUSLY, so the process's own sentinel sees
-/// "deleted\n" before delete-process returns.  A process whose death was
-/// already notified is gone from the process list by then (status_notify
-/// removes it under delete-exited-processes), so the sentinel never
-/// fires twice; emaxx mirrors that by only notifying while the network
-/// runtime is still attached.  Sentinel errors are demoted to a message
-/// unless debug-on-error asks for the debugger (exec_sentinel).
+/// GNU Fdelete_process runs status notification synchronously for every
+/// process kind.  Marking the sentinel notified before this call prevents
+/// the ordinary event pump from delivering the same terminal transition a
+/// second time.  Sentinel errors are demoted to a message unless
+/// debug-on-error asks for the debugger (exec_sentinel).
 pub(crate) fn delete_process_notifying(
     interp: &mut Interpreter,
     process_id: u64,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let was_network = interp.is_network_process(process_id);
-    interp.delete_process(process_id)?;
-    if !was_network {
+    let (event, notify_sentinel) = interp.delete_process(process_id)?;
+    if !notify_sentinel {
         return Ok(());
     }
-    match run_process_sentinel(interp, process_id, "deleted\n", env) {
+    match run_process_sentinel(interp, process_id, event, env) {
         Ok(()) => Ok(()),
         Err(error @ LispError::Throw(_, _)) => Err(error),
         Err(error) => {
@@ -837,6 +1198,7 @@ pub(crate) fn make_network_process(
     let mut log = None;
     let mut plist = Value::Nil;
     let mut is_server = false;
+    let mut datagram = false;
     let mut family_local = false;
     let mut family_ipv4 = false;
     let mut nowait = false;
@@ -855,6 +1217,11 @@ pub(crate) fn make_network_process(
             ":log" => log = (!value.is_nil()).then(|| value.clone()),
             ":plist" => plist = value.clone(),
             ":server" => is_server = value.is_truthy(),
+            ":type" => match value {
+                Value::Nil => datagram = false,
+                Value::Symbol(kind) if kind == "datagram" => datagram = true,
+                _ => return Err(LispError::Signal("Unsupported connection type".into())),
+            },
             ":nowait" => nowait = value.is_truthy(),
             ":family" => {
                 family_local = matches!(value, Value::Symbol(symbol) if symbol == "local");
@@ -885,11 +1252,92 @@ pub(crate) fn make_network_process(
         }
     }
 
+    let inherit_coding_system = buffer_id.is_some()
+        && interp
+            .lookup_var("inherit-process-coding-system", env)
+            .is_some_and(|value| value.is_truthy());
     let name = interp.unique_process_name(&name);
     // GNU keeps the original keyword plist as the process's contact info
     // (p->childp), updating :service and appending the resolved :local /
     // :remote address vectors after the socket is set up.
     let mut contact_items: Vec<Value> = args.to_vec();
+
+    if datagram {
+        if family_local {
+            return Err(LispError::Signal(
+                "Datagram local sockets are not supported".into(),
+            ));
+        }
+        let address_host = host.clone().unwrap_or_else(|| "127.0.0.1".into());
+        let address_port = service.unwrap_or(0) as u16;
+        let address =
+            std::net::ToSocketAddrs::to_socket_addrs(&(address_host.as_str(), address_port))
+                .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?
+                .find(|address| !family_ipv4 || address.is_ipv4())
+                .ok_or_else(|| {
+                    LispError::Signal(format!(
+                        "make-network-process: no matching address for {address_host}"
+                    ))
+                })?;
+        let socket = if is_server {
+            std::net::UdpSocket::bind(address)
+        } else {
+            let local = match address {
+                std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+                std::net::SocketAddr::V6(_) => {
+                    std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0))
+                }
+            };
+            std::net::UdpSocket::bind(local)
+        }
+        .map_err(|error| LispError::Signal(format!("make-network-process: {error}")))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let local_addr = socket.local_addr().ok();
+        let remote = (!is_server).then_some(address);
+        if let Some(local_addr) = local_addr {
+            if is_server {
+                plist_items_put(
+                    &mut contact_items,
+                    ":service",
+                    Value::Integer(local_addr.port().into()),
+                );
+                plist_items_put(&mut contact_items, ":local", sockaddr_vector(local_addr));
+            } else {
+                let unspecified = match local_addr {
+                    std::net::SocketAddr::V4(_) => std::net::SocketAddr::from(([0, 0, 0, 0], 0)),
+                    std::net::SocketAddr::V6(_) => {
+                        std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 0))
+                    }
+                };
+                plist_items_put(&mut contact_items, ":local", sockaddr_vector(unspecified));
+            }
+        }
+        if let Some(remote) = remote {
+            plist_items_put(&mut contact_items, ":remote", sockaddr_vector(remote));
+        }
+        let process = interp.create_network_process(
+            &name,
+            buffer_id,
+            inherit_coding_system,
+            filter,
+            sentinel,
+            log,
+            plist,
+            crate::lisp::eval::NetworkRuntime::Datagram { socket, remote },
+            host,
+            service,
+            None,
+            None,
+            Value::list(contact_items),
+        )?;
+        if !is_server {
+            let process_id = interp.resolve_process_id(&process)?;
+            run_process_sentinel(interp, process_id, "open\n", env)?;
+        }
+        return Ok(process);
+    }
 
     if family_local {
         // `:family local' — a unix domain socket named by :service.  GNU
@@ -908,6 +1356,7 @@ pub(crate) fn make_network_process(
             return interp.create_network_process(
                 &name,
                 buffer_id,
+                inherit_coding_system,
                 filter,
                 sentinel,
                 log,
@@ -930,6 +1379,7 @@ pub(crate) fn make_network_process(
         let process = interp.create_network_process(
             &name,
             buffer_id,
+            inherit_coding_system,
             filter,
             sentinel,
             log,
@@ -982,6 +1432,7 @@ pub(crate) fn make_network_process(
         interp.create_network_process(
             &name,
             buffer_id,
+            inherit_coding_system,
             filter,
             sentinel,
             log,
@@ -1010,6 +1461,7 @@ pub(crate) fn make_network_process(
         let process = interp.create_network_process(
             &name,
             buffer_id,
+            inherit_coding_system,
             filter,
             sentinel,
             log,
@@ -1032,6 +1484,375 @@ pub(crate) fn make_network_process(
     }
 }
 
+fn plist_member_value(items: &[Value], key: &str) -> Option<Value> {
+    items.chunks_exact(2).find_map(|pair| {
+        pair[0]
+            .as_symbol()
+            .is_ok_and(|candidate| candidate == key)
+            .then(|| pair[1].clone())
+    })
+}
+
+fn serial_data_bits(value: &Value) -> Result<serialport::DataBits, LispError> {
+    match value {
+        Value::Nil | Value::Integer(8) => Ok(serialport::DataBits::Eight),
+        Value::Integer(7) => Ok(serialport::DataBits::Seven),
+        _ => Err(LispError::Signal(
+            ":bytesize must be nil (8), 7, or 8".into(),
+        )),
+    }
+}
+
+fn serial_parity(value: &Value) -> Result<serialport::Parity, LispError> {
+    match value {
+        Value::Nil => Ok(serialport::Parity::None),
+        Value::Symbol(symbol) if symbol == "even" => Ok(serialport::Parity::Even),
+        Value::Symbol(symbol) if symbol == "odd" => Ok(serialport::Parity::Odd),
+        _ => Err(LispError::Signal(
+            ":parity must be nil (no parity), `even', or `odd'".into(),
+        )),
+    }
+}
+
+fn serial_stop_bits(value: &Value) -> Result<serialport::StopBits, LispError> {
+    match value {
+        Value::Nil | Value::Integer(1) => Ok(serialport::StopBits::One),
+        Value::Integer(2) => Ok(serialport::StopBits::Two),
+        _ => Err(LispError::Signal(
+            ":stopbits must be nil (1 stopbit), 1, or 2".into(),
+        )),
+    }
+}
+
+fn serial_flow_control(value: &Value) -> Result<serialport::FlowControl, LispError> {
+    match value {
+        Value::Nil => Ok(serialport::FlowControl::None),
+        Value::Symbol(symbol) if symbol == "hw" => Ok(serialport::FlowControl::Hardware),
+        Value::Symbol(symbol) if symbol == "sw" => Ok(serialport::FlowControl::Software),
+        _ => Err(LispError::Signal(
+            ":flowcontrol must be nil (no flowcontrol), `hw', or `sw'".into(),
+        )),
+    }
+}
+
+struct SerialConfiguration {
+    speed: u32,
+    data_bits: serialport::DataBits,
+    parity: serialport::Parity,
+    stop_bits: serialport::StopBits,
+    flow_control: serialport::FlowControl,
+}
+
+fn serial_configuration(
+    updates: &[Value],
+    stored_contact: &Value,
+) -> Result<(SerialConfiguration, Value), LispError> {
+    let mut contact_items = stored_contact.to_vec()?;
+    let setting = |key: &str, default: Value| {
+        let value = plist_member_value(updates, key)
+            .unwrap_or_else(|| contact_plist_get(stored_contact, key));
+        if value.is_nil() { default } else { value }
+    };
+    let speed_value = plist_member_value(updates, ":speed")
+        .unwrap_or_else(|| contact_plist_get(stored_contact, ":speed"));
+    let speed = u32::try_from(speed_value.as_integer()?)
+        .map_err(|_| LispError::Signal("Unsupported speed".into()))?;
+    let bytesize = setting(":bytesize", Value::Integer(8));
+    let parity = plist_member_value(updates, ":parity")
+        .unwrap_or_else(|| contact_plist_get(stored_contact, ":parity"));
+    let stopbits = setting(":stopbits", Value::Integer(1));
+    let flowcontrol = plist_member_value(updates, ":flowcontrol")
+        .unwrap_or_else(|| contact_plist_get(stored_contact, ":flowcontrol"));
+    let config = SerialConfiguration {
+        speed,
+        data_bits: serial_data_bits(&bytesize)?,
+        parity: serial_parity(&parity)?,
+        stop_bits: serial_stop_bits(&stopbits)?,
+        flow_control: serial_flow_control(&flowcontrol)?,
+    };
+    plist_items_put(&mut contact_items, ":speed", Value::Integer(speed.into()));
+    plist_items_put(&mut contact_items, ":bytesize", bytesize.clone());
+    plist_items_put(&mut contact_items, ":parity", parity.clone());
+    plist_items_put(&mut contact_items, ":stopbits", stopbits.clone());
+    plist_items_put(&mut contact_items, ":flowcontrol", flowcontrol.clone());
+    let parity_summary = match parity {
+        Value::Symbol(symbol) if symbol == "even" => 'E',
+        Value::Symbol(symbol) if symbol == "odd" => 'O',
+        _ => 'N',
+    };
+    plist_items_put(
+        &mut contact_items,
+        ":summary",
+        Value::String(format!(
+            "{}{parity_summary}{}",
+            bytesize.as_integer()?,
+            stopbits.as_integer()?
+        )),
+    );
+    Ok((config, Value::list(contact_items)))
+}
+
+fn open_serial_port(path: &str) -> Result<serialport::TTYPort, LispError> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::IntoRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        // SAFETY: ownership of the descriptor is transferred from File to
+        // TTYPort exactly once.  This path intentionally does not touch
+        // termios: GNU's documented :speed nil contract preserves it.
+        let mut port = unsafe { serialport::TTYPort::from_raw_fd(file.into_raw_fd()) };
+        serialport::SerialPort::set_timeout(&mut port, Duration::ZERO)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        Ok(port)
+    }
+
+    #[cfg(not(unix))]
+    Err(LispError::Signal(
+        "Serial ports are unsupported on this platform".into(),
+    ))
+}
+
+#[cfg(unix)]
+fn serial_speed(speed: u32) -> libc::speed_t {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        speed as libc::speed_t
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    {
+        match speed {
+            0 => libc::B0,
+            50 => libc::B50,
+            75 => libc::B75,
+            110 => libc::B110,
+            134 => libc::B134,
+            150 => libc::B150,
+            200 => libc::B200,
+            300 => libc::B300,
+            600 => libc::B600,
+            1200 => libc::B1200,
+            1800 => libc::B1800,
+            2400 => libc::B2400,
+            4800 => libc::B4800,
+            9600 => libc::B9600,
+            19200 => libc::B19200,
+            38400 => libc::B38400,
+            57600 => libc::B57600,
+            115200 => libc::B115200,
+            230400 => libc::B230400,
+            _ => speed as libc::speed_t,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn configure_serial_descriptor(
+    fd: std::os::fd::RawFd,
+    configuration: &SerialConfiguration,
+) -> Result<(), LispError> {
+    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+    // SAFETY: FD belongs to the live serial runtime and tcgetattr initializes
+    // the termios structure on success.
+    if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    // SAFETY: tcgetattr succeeded above.
+    let mut attributes = unsafe { attributes.assume_init() };
+    // SAFETY: attributes is initialized and exclusively borrowed.
+    unsafe { libc::cfmakeraw(&mut attributes) };
+    attributes.c_cflag |= libc::CLOCAL | libc::CREAD;
+    // SAFETY: cfsetspeed only mutates the initialized termios structure.
+    if unsafe { libc::cfsetspeed(&mut attributes, serial_speed(configuration.speed)) } != 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    attributes.c_cflag &= !libc::CSIZE;
+    attributes.c_cflag |= match configuration.data_bits {
+        serialport::DataBits::Seven => libc::CS7,
+        serialport::DataBits::Eight => libc::CS8,
+        _ => unreachable!("serial parser accepts only seven or eight data bits"),
+    };
+    attributes.c_cflag &= !(libc::PARENB | libc::PARODD);
+    attributes.c_iflag &= !(libc::IGNPAR | libc::INPCK);
+    match configuration.parity {
+        serialport::Parity::None => {}
+        serialport::Parity::Even => {
+            attributes.c_cflag |= libc::PARENB;
+            attributes.c_iflag |= libc::IGNPAR | libc::INPCK;
+        }
+        serialport::Parity::Odd => {
+            attributes.c_cflag |= libc::PARENB | libc::PARODD;
+            attributes.c_iflag |= libc::IGNPAR | libc::INPCK;
+        }
+    }
+    attributes.c_cflag &= !libc::CSTOPB;
+    if configuration.stop_bits == serialport::StopBits::Two {
+        attributes.c_cflag |= libc::CSTOPB;
+    }
+    attributes.c_cflag &= !libc::CRTSCTS;
+    attributes.c_iflag &= !(libc::IXON | libc::IXOFF);
+    match configuration.flow_control {
+        serialport::FlowControl::None => {}
+        serialport::FlowControl::Hardware => attributes.c_cflag |= libc::CRTSCTS,
+        serialport::FlowControl::Software => attributes.c_iflag |= libc::IXON | libc::IXOFF,
+    }
+    // SAFETY: FD remains live and tcsetattr reads the initialized structure.
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &attributes) } != 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn serial_process_designator(interp: &mut Interpreter, args: &[Value]) -> Result<u64, LispError> {
+    let requested = [":process", ":name", ":buffer", ":port"]
+        .into_iter()
+        .find_map(|key| plist_member_value(args, key).filter(Value::is_truthy));
+    let process = match requested.as_ref() {
+        None => interp.process_value_for_buffer(interp.current_buffer_id()),
+        Some(process @ Value::Record(_)) => Some(process.clone()),
+        Some(value) if string_like(value).is_some() => {
+            let text = string_text(value)?;
+            interp
+                .find_process_id_by_name(&text)
+                .map(Value::Record)
+                .or_else(|| {
+                    interp
+                        .resolve_buffer_id(value)
+                        .ok()
+                        .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id))
+                })
+        }
+        Some(value) => interp
+            .resolve_buffer_id(value)
+            .ok()
+            .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id)),
+    }
+    .ok_or_else(|| wrong_type_argument("processp", requested.unwrap_or(Value::Nil)))?;
+    let process_id = interp.resolve_process_id(&process)?;
+    if !interp.is_serial_process(process_id) {
+        return Err(LispError::Signal("Not a serial process".into()));
+    }
+    Ok(process_id)
+}
+
+pub(crate) fn serial_process_configure(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let process_id = serial_process_designator(interp, args)?;
+    let stored_contact = interp
+        .process_contact_plist(process_id)
+        .unwrap_or(Value::Nil);
+    if contact_plist_get(&stored_contact, ":speed").is_nil() {
+        return Ok(Value::Nil);
+    }
+    let (configuration, contact) = serial_configuration(args, &stored_contact)?;
+    #[cfg(unix)]
+    configure_serial_descriptor(interp.serial_process_fd(process_id)?, &configuration)?;
+    interp.set_process_contact_plist(process_id, contact)?;
+    Ok(Value::Nil)
+}
+
+pub(crate) fn make_serial_process(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let port_value = plist_member_value(args, ":port")
+        .filter(Value::is_truthy)
+        .ok_or_else(|| LispError::Signal("No port specified".into()))?;
+    let port_name = string_text(&port_value)?;
+    let Some(speed_value) = plist_member_value(args, ":speed") else {
+        return Err(LispError::Signal(":speed not specified".into()));
+    };
+    let speed = if speed_value.is_nil() {
+        None
+    } else {
+        Some(
+            u32::try_from(speed_value.as_integer()?)
+                .map_err(|_| LispError::Signal("Unsupported speed".into()))?,
+        )
+    };
+    let serial = open_serial_port(&port_name)?;
+    let contact = Value::list(args.iter().cloned());
+    let contact = if speed.is_some() {
+        let (configuration, contact) = serial_configuration(args, &contact)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            configure_serial_descriptor(serial.as_raw_fd(), &configuration)?;
+        }
+        contact
+    } else {
+        contact
+    };
+    let name = plist_member_value(args, ":name")
+        .filter(Value::is_truthy)
+        .map(|value| string_text(&value))
+        .transpose()?
+        .unwrap_or_else(|| port_name.clone());
+    let buffer = plist_member_value(args, ":buffer")
+        .filter(Value::is_truthy)
+        .unwrap_or_else(|| Value::String(name.clone()));
+    let buffer_id =
+        process_buffer_target(interp, &buffer)?.expect("a serial process always has a buffer");
+    let filter = plist_member_value(args, ":filter").filter(Value::is_truthy);
+    let sentinel = plist_member_value(args, ":sentinel").filter(Value::is_truthy);
+    let plist = plist_member_value(args, ":plist").unwrap_or(Value::Nil);
+    let coding = plist_member_value(args, ":coding").unwrap_or(Value::Nil);
+    let (decoding, encoding) = if coding.is_nil() {
+        (
+            interp
+                .lookup_var("coding-system-for-read", env)
+                .unwrap_or(Value::Nil),
+            interp
+                .lookup_var("coding-system-for-write", env)
+                .unwrap_or(Value::Nil),
+        )
+    } else {
+        coding
+            .cons_values()
+            .unwrap_or_else(|| (coding.clone(), coding.clone()))
+    };
+    let noquery = plist_member_value(args, ":noquery").is_some_and(|value| value.is_truthy());
+    let stopped = plist_member_value(args, ":stop").is_some_and(|value| value.is_truthy());
+    let process = interp.create_serial_process(
+        &name,
+        buffer_id,
+        filter,
+        sentinel,
+        plist,
+        crate::lisp::eval::SerialRuntime { port: serial },
+        contact,
+        decoding,
+        encoding,
+        !noquery,
+        stopped,
+    )?;
+    let process_id = interp.resolve_process_id(&process)?;
+    let inherit = coding.is_nil()
+        && interp
+            .lookup_var("inherit-process-coding-system", env)
+            .is_some_and(|value| value.is_truthy());
+    interp.set_process_inherit_coding_system_flag(process_id, inherit)?;
+    Ok(process)
+}
+
 fn run_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
@@ -1045,6 +1866,8 @@ fn run_process_sentinel(
             &[Value::Record(process_id), Value::String(event.to_string())],
             env,
         )?;
+    } else {
+        internal_default_process_sentinel(interp, process_id, event)?;
     }
     Ok(())
 }
@@ -1081,17 +1904,17 @@ fn run_process_log(
 pub(crate) fn wait_pumping_processes(
     interp: &mut Interpreter,
     env: &mut Env,
-    total: std::time::Duration,
+    total: Option<std::time::Duration>,
     return_on_delivery: bool,
     target_process_id: Option<u64>,
 ) -> Result<bool, LispError> {
-    let deadline = std::time::Instant::now() + total;
+    let deadline = total.map(|total| std::time::Instant::now() + total);
     let mut delivered = false;
     let target_start =
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
     loop {
         let mut progressed = pump_external_process_output(interp, env)?;
-        progressed |= pump_network_processes(interp, env)?;
+        progressed |= pump_connection_processes(interp, env)?;
         progressed |= run_pending_url_retrievals(interp, env)?;
         delivered |= progressed;
         interp.drive_threads(env, true)?;
@@ -1108,16 +1931,31 @@ pub(crate) fn wait_pumping_processes(
             break;
         }
         let now = std::time::Instant::now();
-        if now >= deadline {
+        if deadline.is_some_and(|deadline| now >= deadline) {
             // Timer/thread callbacks above can consume the remainder of the
             // deadline while the requested child becomes readable.  Drain
             // readiness once more before reporting a timeout; otherwise the
             // bytes are left for the next caller, producing a deterministic
             // one-wait lag under load.
             let mut final_progress = pump_external_process_output(interp, env)?;
-            final_progress |= pump_network_processes(interp, env)?;
+            final_progress |= pump_connection_processes(interp, env)?;
             final_progress |= run_pending_url_retrievals(interp, env)?;
             delivered |= final_progress;
+            break;
+        }
+        // With no explicit timeout GNU waits for PROCESS, but returns once a
+        // subprocess has exited even if it produced no bytes.  Pending bytes
+        // keep the id live until the pump above has delivered them.
+        if deadline.is_none()
+            && target_process_id.is_some_and(|process_id| {
+                !interp.live_external_process_ids().contains(&process_id)
+                    && !matches!(
+                        interp.process_status_value(process_id),
+                        Some(Value::Symbol(status))
+                            if matches!(status.as_str(), "run" | "open" | "connect" | "listen")
+                    )
+            })
+        {
             break;
         }
         if progressed {
@@ -1125,7 +1963,9 @@ pub(crate) fn wait_pumping_processes(
         }
         // Idle: nap until the deadline or the next due timer, polling at
         // most every 10ms so freshly arriving input is picked up promptly.
-        let mut nap = deadline - now;
+        let mut nap = deadline
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .unwrap_or(std::time::Duration::from_millis(10));
         if let Some(due) = interp.next_timer_due() {
             nap = nap.min(due.saturating_duration_since(now));
         }
@@ -1144,7 +1984,7 @@ pub(crate) fn wait_pumping_processes(
 
 /// Accept pending server connections and deliver stream input/closure to
 /// filters and sentinels.  Returns true if anything was processed.
-pub(crate) fn pump_network_processes(
+pub(crate) fn pump_connection_processes(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<bool, LispError> {
@@ -1218,6 +2058,10 @@ pub(crate) fn pump_network_processes(
             let server_sentinel = interp.process_sentinel(server_id);
             let server_log = interp.process_log_function(server_id);
             let server_buffer = interp.process_buffer_id(server_id);
+            let child_inherit_coding_system = server_buffer.is_some()
+                && interp
+                    .process_inherit_coding_system_flag(server_id)
+                    .unwrap_or(false);
             let base_name = interp.process_name(server_id).unwrap_or_default();
             // GNU names inet children "NAME <HOST:PORT>" (note the space)
             // and unnamed-peer children "NAME <N>" from connect_counter.
@@ -1229,6 +2073,7 @@ pub(crate) fn pump_network_processes(
             let child = interp.create_network_process(
                 &child_name,
                 server_buffer,
+                child_inherit_coding_system,
                 server_filter,
                 server_sentinel,
                 server_log,
@@ -1252,9 +2097,12 @@ pub(crate) fn pump_network_processes(
         }
     }
 
-    // Deliver input / closure on every open stream.
-    for stream_id in interp.network_stream_ids() {
-        let (bytes, closed) = interp.poll_network_stream(stream_id)?;
+    // Deliver input / closure on every open network or serial stream.
+    for stream_id in interp.connection_stream_ids() {
+        if interp.process_output_paused(stream_id) {
+            continue;
+        }
+        let (bytes, closed) = interp.poll_connection_stream(stream_id)?;
         if !bytes.is_empty() {
             progressed = true;
             let output = crate::lisp::primitives::coding::bytes_to_shared_unibyte_value(&bytes);

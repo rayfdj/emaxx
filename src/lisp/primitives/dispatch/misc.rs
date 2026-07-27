@@ -18,6 +18,9 @@ pub(super) fn handles(name: &str) -> bool {
             | "user-error"
             | "signal"
             | "throw"
+            | "defalias"
+            | "provide"
+            | "require"
             | "define-error"
             | "define-fringe-bitmap"
             | "define-mail-user-agent"
@@ -46,6 +49,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "custom-add-to-group"
             | "custom-current-group"
             | "daemonp"
+            | "daemon-initialized"
+            | "kill-emacs"
+            | "invocation-name"
+            | "invocation-directory"
             | "documentation"
             | "documentation-property"
             | "get"
@@ -92,6 +99,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "cancel-timer"
             | "timer-event-handler"
             | "timerp"
+            | "current-idle-time"
+            | "subr-type"
+            | "function-equal"
+            | "get-internal-run-time"
+            | "flush-standard-output"
             | "lossage-size"
             | "executable-find"
             | "add-hook"
@@ -145,6 +157,7 @@ pub(super) fn call(
                     let consumed = slice[..reader.position()].chars().count();
                     let resolved = crate::lisp::reader::resolve_circular_read_syntax(val)?;
                     let materialized = materialize_read_hash_table_literals(interp, &resolved)?;
+                    let materialized = materialize_read_char_table_literals(interp, &materialized)?;
                     Ok(Value::cons(
                         materialized,
                         Value::Integer((start + consumed) as i64),
@@ -284,6 +297,36 @@ pub(super) fn call(
         }
 
         // ── Misc ──
+        "kill-emacs" => {
+            need_arg_range(name, args, 0, 2)?;
+
+            // In supported Emaxx use the Lisp runtime is owned by the batch
+            // process.  GNU uses safe_run_hooks in this mode: an ordinary
+            // hook error is reported but cannot cancel orderly shutdown.
+            safe_run_named_hooks(
+                interp,
+                "kill-emacs-hook",
+                env,
+                Some(interp.current_buffer_id()),
+            )?;
+
+            // emacs.c accepts only a fixnum here.  Preserve its explicit
+            // INT_MIN/INT_MAX masking before the CLI boundary narrows the
+            // platform status to what the parent process can observe.
+            let exit_code = match args.first() {
+                Some(Value::Integer(value)) if *value < 0 => {
+                    ((*value as u32) | (i32::MIN as u32)) as i32
+                }
+                Some(Value::Integer(value)) => ((*value as u32) & (i32::MAX as u32)) as i32,
+                _ => 0,
+            };
+            let termination = EmacsTermination {
+                exit_code,
+                restart: args.get(1).is_some_and(Value::is_truthy),
+            };
+            interp.request_termination(termination.clone());
+            Err(LispError::Terminate(termination))
+        }
         "error" => {
             let msg = if args.is_empty() {
                 "error".to_string()
@@ -331,10 +374,46 @@ pub(super) fn call(
             Err(LispError::SignalValue(value))
         }
         "throw" => {
-            if args.len() < 2 {
+            if args.len() != 2 {
                 return Err(LispError::WrongNumberOfArgs("throw".into(), args.len()));
             }
-            Err(LispError::Throw(args[0].clone(), args[1].clone()))
+            interp.throw_value(args[0].clone(), args[1].clone(), env)
+        }
+        "defalias" => {
+            need_arg_range(name, args, 2, 3)?;
+            interp.defalias_value(args, env)
+        }
+        "provide" => {
+            need_arg_range(name, args, 1, 2)?;
+            let feature = args[0].as_symbol()?.to_string();
+            let subfeatures = args.get(1).cloned().unwrap_or(Value::Nil);
+            // GNU rejects improper/non-list subfeature values even when the
+            // feature was already present.
+            subfeatures.to_vec()?;
+            if subfeatures.is_truthy() {
+                interp.put_symbol_property(&feature, "subfeatures", subfeatures);
+            }
+            interp.provide_feature_with_after_load(&feature)
+        }
+        "require" => {
+            need_arg_range(name, args, 1, 3)?;
+            let feature = args[0].as_symbol()?.to_string();
+            let target = match args.get(1) {
+                Some(value) if value.is_truthy() => Some(string_text(value)?),
+                _ => None,
+            };
+            let noerror = args.get(2).is_some_and(Value::is_truthy);
+            let result = interp.require_feature_with_target(&feature, target.as_deref(), env);
+            // GNU's NOERROR only suppresses failure to locate/open the file;
+            // errors raised after a file was found still propagate.
+            if noerror
+                && let Err(LispError::SignalValue(condition)) = &result
+                && matches!(condition.car(), Ok(Value::Symbol(kind))
+                    if kind == "file-missing" || kind == "file-error")
+            {
+                return Ok(Value::Nil);
+            }
+            result
         }
         "define-error" => {
             need_arg_range(name, args, 2, 3)?;
@@ -814,6 +893,19 @@ pub(super) fn call(
             need_args(name, args, 0)?;
             Ok(Value::Nil)
         }
+        "daemon-initialized" => {
+            need_args(name, args, 0)?;
+            Err(LispError::Signal(
+                "This function can only be called if emacs is run as a daemon".into(),
+            ))
+        }
+        "invocation-name" | "invocation-directory" => {
+            need_args(name, args, 0)?;
+            let value = interp.lookup_var(name, env).unwrap_or(Value::Nil);
+            Ok(string_like(&value)
+                .map(|string| Value::String(string.text))
+                .unwrap_or(value))
+        }
         "documentation" => {
             need_args(name, args, 1)?;
             if let Some(documentation) = function_documentation(interp, &args[0], env) {
@@ -858,8 +950,11 @@ pub(super) fn call(
             need_arg_range(name, args, 2, 3)?;
             let mut symbol = args[0].as_symbol()?.to_string();
             let property = args[1].as_symbol()?;
-            // GNU follows defalias chains until a non-nil property is found
-            // ((function-get 'not 'side-effect-free) reads null's — unsafep).
+            let autoload = args.get(2).cloned().unwrap_or(Value::Nil);
+            // GNU follows aliases until a non-nil property is found.  With
+            // AUTOLOAD, a lazy definition is loaded before retrying the same
+            // symbol: declaration side effects such as `gv-expander' are
+            // intentionally installed by the owning file, not loaddefs.
             let mut hops = 0;
             loop {
                 if let Some(value) = interp.get_symbol_property(&symbol, property)
@@ -871,8 +966,30 @@ pub(super) fn call(
                 if hops > 10 {
                     return Ok(Value::Nil);
                 }
-                match interp.raw_function_binding(&symbol, env) {
-                    Some(Value::Symbol(next)) if next != symbol => symbol = next,
+                let Some(function) = interp.raw_function_binding(&symbol, env) else {
+                    return Ok(Value::Nil);
+                };
+                if autoload.is_truthy() && autoload_parts(&function).is_some() {
+                    let macro_only = if matches!(
+                        &autoload,
+                        Value::Symbol(name) if name == "macro"
+                    ) {
+                        Value::Symbol("macro".into())
+                    } else {
+                        Value::Nil
+                    };
+                    let loaded = super::call(
+                        interp,
+                        "autoload-do-load",
+                        &[function.clone(), Value::Symbol(symbol.clone()), macro_only],
+                        env,
+                    )?;
+                    if !values_equal(interp, &function, &loaded) {
+                        continue;
+                    }
+                }
+                match function {
+                    Value::Symbol(next) if next != symbol => symbol = next,
                     _ => return Ok(Value::Nil),
                 }
             }
@@ -1083,7 +1200,11 @@ pub(super) fn call(
                 }
             }
             lambda_body.extend(body);
-            Ok(Value::Lambda(params, lambda_body, shared_env(captured_env)))
+            Ok(Value::Lambda(
+                params,
+                lambda_body.into(),
+                shared_env(captured_env),
+            ))
         }
         "getenv" | "getenv-internal" => {
             need_args(name, args, 1)?;
@@ -1140,38 +1261,21 @@ pub(super) fn call(
             {
                 *text = substitute_in_file_name(text);
             }
-
-            let mut process_environment = interp
+            let process_environment = interp
                 .lookup_var("process-environment", env)
                 .unwrap_or(Value::Nil);
-            let wrapped_environment = matches!(
-                process_environment.cons_values(),
-                Some((Value::Symbol(ref symbol), _)) if symbol == "environment"
-            );
-            if wrapped_environment && let Some((_, environment)) = process_environment.cons_values()
-            {
-                process_environment = environment;
-            }
-
-            let mut entries = process_environment_entries(&process_environment)?;
-            setenv_in_environment_entries(&mut entries, &variable, value.as_deref(), true);
-            let updated = process_environment_from_entries(&entries);
-            interp.set_variable(
-                "process-environment",
-                if wrapped_environment {
-                    Value::cons(Value::Symbol("environment".into()), updated)
-                } else {
-                    updated
-                },
-                env,
-            );
-
-            unsafe {
-                if let Some(value) = value.as_deref() {
-                    std::env::set_var(&variable, value);
-                } else {
-                    std::env::remove_var(&variable);
-                }
+            let updated = updated_process_environment(
+                &process_environment,
+                &variable,
+                value.as_deref(),
+                true,
+            )?;
+            interp.set_variable("process-environment", updated, env);
+            if variable == "TZ" {
+                interp.local_time_zone_rule = value
+                    .as_ref()
+                    .map(|rule| Value::String(rule.clone()))
+                    .unwrap_or_else(|| Value::Symbol("wall".into()));
             }
             Ok(value.map(Value::String).unwrap_or(Value::Nil))
         }
@@ -1516,23 +1620,97 @@ pub(super) fn call(
                 },
             )
         }
+        "current-idle-time" => {
+            need_args(name, args, 0)?;
+            // Batch Emaxx has no input loop in which idle time accumulates.
+            Ok(Value::Nil)
+        }
+        "subr-type" => {
+            need_args(name, args, 1)?;
+            if !matches!(args[0], Value::BuiltinFunc(_)) {
+                return Err(wrong_type_argument("subrp", args[0].clone()));
+            }
+            // Emaxx currently has no native-compiled Lisp subrs.  GNU C
+            // primitives report nil here even in native-comp-enabled builds.
+            Ok(Value::Nil)
+        }
+        "function-equal" => {
+            need_args(name, args, 2)?;
+            let same = match (&args[0], &args[1]) {
+                (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+                (Value::Integer(left), Value::Integer(right)) => left == right,
+                (Value::Symbol(left), Value::Symbol(right))
+                | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
+                (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+                (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
+                    Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
+                }
+                (Value::Lambda(_, left_body, _), Value::Lambda(_, right_body, _)) => {
+                    Rc::ptr_eq(left_body, right_body)
+                }
+                (Value::Buffer(left, _), Value::Buffer(right, _))
+                | (Value::Marker(left), Value::Marker(right))
+                | (Value::Overlay(left), Value::Overlay(right))
+                | (Value::CharTable(left), Value::CharTable(right))
+                | (Value::Record(left), Value::Record(right))
+                | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
+                _ => false,
+            };
+            Ok(if same { Value::T } else { Value::Nil })
+        }
+        "get-internal-run-time" => {
+            need_args(name, args, 0)?;
+            process_cpu_time_value()
+        }
+        "flush-standard-output" => {
+            need_args(name, args, 0)?;
+            std::io::stdout()
+                .flush()
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            Ok(Value::Nil)
+        }
         "lossage-size" => {
-            if args.is_empty() {
+            need_arg_range(name, args, 0, 1)?;
+            if args.first().is_none_or(Value::is_nil) {
                 return Ok(Value::Integer(interp.lossage_size));
             }
-            let new_size = args[0].as_integer()?;
+            let Value::Integer(new_size) = &args[0] else {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("user-error"),
+                    Value::String("Value must be a positive integer".into()),
+                ])));
+            };
+            let new_size = *new_size;
+            if new_size < 0 {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("user-error"),
+                    Value::String("Value must be a positive integer".into()),
+                ])));
+            }
             if new_size < 100 {
-                return Err(LispError::Signal("lossage-size must be >= 100".into()));
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("user-error"),
+                    Value::String("Value must be >= 100".into()),
+                ])));
             }
             interp.lossage_size = new_size;
-            Ok(Value::Integer(new_size))
+            let new_size = new_size as usize;
+            if interp.keyboard_input.recent_keys.len() > new_size {
+                let excess = interp.keyboard_input.recent_keys.len() - new_size;
+                interp.keyboard_input.recent_keys.drain(0..excess);
+            }
+            Ok(Value::Integer(interp.lossage_size))
         }
         "executable-find" => {
-            need_args(name, args, 1)?;
-            let executable = string_text(&args[0])?;
-            Ok(find_executable(&executable)
-                .map(Value::String)
-                .unwrap_or(Value::Nil))
+            need_arg_range(name, args, 1, 2)?;
+            let path = interp.lookup_var("exec-path", env).unwrap_or(Value::Nil);
+            let suffixes = interp
+                .lookup_var("exec-suffixes", env)
+                .unwrap_or_else(|| Value::list([Value::String(String::new())]));
+            // Keep the search semantics in the same producer as `locate-file':
+            // in particular, an empty `exec-path' is one empty entry denoting
+            // the dynamically bound `default-directory'.
+            locate_file_internal(interp, &args[0], &path, &suffixes, &Value::Integer(1), env)
         }
         "add-hook" => {
             need_args(name, args, 2)?;
@@ -1814,6 +1992,37 @@ pub(super) fn call(
         }
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
     }
+}
+
+#[cfg(unix)]
+fn process_cpu_time_value() -> Result<Value, LispError> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage initializes the pointed-to rusage structure and does
+    // not retain the pointer.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return Err(LispError::Signal(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    // SAFETY: the successful getrusage call initialized every field.
+    let usage = unsafe { usage.assume_init() };
+    let mut seconds = usage.ru_utime.tv_sec + usage.ru_stime.tv_sec;
+    let mut micros = i64::from(usage.ru_utime.tv_usec) + i64::from(usage.ru_stime.tv_usec);
+    if micros >= 1_000_000 {
+        seconds += micros / 1_000_000;
+        micros %= 1_000_000;
+    }
+    Ok(Value::list([
+        Value::Integer(seconds >> 16),
+        Value::Integer(seconds & 0xffff),
+        Value::Integer(micros),
+        Value::Integer(0),
+    ]))
+}
+
+#[cfg(not(unix))]
+fn process_cpu_time_value() -> Result<Value, LispError> {
+    system_time_list_value(SystemTime::now())
 }
 
 fn hook_value_to_vec(value: Value) -> Vec<Value> {

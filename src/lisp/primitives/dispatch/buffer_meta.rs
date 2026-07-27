@@ -6,10 +6,87 @@ use super::*;
 fn help_function_arglist_value(function: &Value) -> Value {
     match function {
         Value::Lambda(params, _, _) => Value::list(params.iter().cloned().map(Value::Symbol)),
+        Value::BuiltinFunc(name) => {
+            let Some(arity) = builtin_arity_value(name).or_else(|| special_form_arity_value(name))
+            else {
+                return Value::T;
+            };
+            let Ok(minimum) = arity.car().and_then(|value| value.as_integer()) else {
+                return Value::T;
+            };
+            let Ok(maximum) = arity.cdr() else {
+                return Value::T;
+            };
+            let mut parameters = (1..=minimum)
+                .map(|index| Value::Symbol(format!("arg{index}")))
+                .collect::<Vec<_>>();
+            match maximum {
+                Value::Integer(maximum) if maximum > minimum => {
+                    parameters.push(Value::Symbol("&optional".into()));
+                    parameters.extend(
+                        (minimum + 1..=maximum).map(|index| Value::Symbol(format!("arg{index}"))),
+                    );
+                }
+                Value::Symbol(kind) if kind == "many" => {
+                    parameters.push(Value::Symbol("&rest".into()));
+                    parameters.push(Value::Symbol("rest".into()));
+                }
+                Value::Symbol(kind) if kind == "unevalled" => {
+                    parameters.push(Value::Symbol("&rest".into()));
+                    parameters.push(Value::Symbol("body".into()));
+                }
+                _ => {}
+            }
+            Value::list(parameters)
+        }
         Value::Cons(car, cdr) if matches!(&*car.borrow(), Value::Symbol(s) if s == "macro") => {
             help_function_arglist_value(&cdr.borrow())
         }
         _ => Value::Nil,
+    }
+}
+
+fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
+    let Ok(items) = plist.to_vec() else {
+        return false;
+    };
+    items
+        .chunks_exact(2)
+        .find(|pair| pair[0].as_symbol().ok() == Some(property))
+        .is_some_and(|pair| pair[1].is_truthy())
+}
+
+fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) -> bool {
+    value.to_vec().is_ok_and(|charsets| {
+        charsets.into_iter().any(|charset| {
+            let Ok(name) = charset.as_symbol() else {
+                return false;
+            };
+            matches!(name, "ascii" | "unicode" | "iso-8859-1")
+                || interp
+                    .charset_plist_value(name)
+                    .is_some_and(|plist| plist_property_is_truthy(&plist, ":ascii-compatible-p"))
+        })
+    })
+}
+
+fn coding_category_name(kind: &str, args: &[Value]) -> &'static str {
+    match kind {
+        "utf-8" => match args.get(13) {
+            Some(Value::Nil) | None => "coding-category-utf-8",
+            Some(Value::T) => "coding-category-utf-8-sig",
+            Some(_) => "coding-category-utf-8-auto",
+        },
+        "utf-16" => "coding-category-utf-16-auto",
+        "charset" => "coding-category-charset",
+        "iso-2022" => "coding-category-iso-7",
+        "emacs-mule" => "coding-category-emacs-mule",
+        "shift-jis" => "coding-category-sjis",
+        "big5" => "coding-category-big5",
+        "ccl" => "coding-category-ccl",
+        "raw-text" => "coding-category-raw-text",
+        "undecided" => "coding-category-undecided",
+        _ => "coding-category-undecided",
     }
 }
 
@@ -64,6 +141,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "native-comp-unit-file"
             | "native-comp-unit-set-file"
             | "decode-char"
+            | "encode-char"
             | "char-charset"
             | "charsetp"
             | "charset-id-internal"
@@ -86,6 +164,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "sort-charsets"
             | "coding-system-p"
             | "check-coding-system"
+            | "read-coding-system"
+            | "read-non-nil-coding-system"
             | "coding-system-list"
             | "coding-system-type"
             | "coding-system-priority-list"
@@ -854,7 +934,7 @@ pub(super) fn call(
                             // represented as nil and indirect-function returns
                             // that nil.  Calling the result is where a
                             // void-function condition belongs.
-                            Err(LispError::Void(_)) => return Ok(Value::Nil),
+                            Err(LispError::VoidFunction(_)) => return Ok(Value::Nil),
                             Err(error) => return Err(error),
                         }
                     }
@@ -974,15 +1054,20 @@ pub(super) fn call(
         "decode-char" => {
             need_args(name, args, 2)?;
             let charset = args[0].as_symbol()?;
-            let code = args[1].as_integer()?;
-            Ok(match interp.charset_canonical_name(charset).as_deref() {
-                Some("ascii") if (0..=0x7f).contains(&code) => Value::Integer(code),
-                Some("unicode") if code >= 0 => Value::Integer(code),
-                Some("eight-bit") if (0..=0xff).contains(&code) => {
-                    Value::Integer(RAW_BYTE_REGEX_BASE as i64 + code)
-                }
-                Some(_) | None => Value::Nil,
-            })
+            let code = u32::try_from(args[1].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
+            Ok(decode_charset_code(interp, charset, code)
+                .map(|character| Value::Integer(character.into()))
+                .unwrap_or(Value::Nil))
+        }
+        "encode-char" => {
+            need_args(name, args, 2)?;
+            let character = u32::try_from(args[0].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            let charset = args[1].as_symbol()?;
+            Ok(encode_charset_char(interp, charset, character)
+                .map(|code| Value::Integer(code.into()))
+                .unwrap_or(Value::Nil))
         }
         "char-charset" => {
             need_args(name, args, 1)?;
@@ -1094,7 +1179,14 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
-        "define-charset-internal" => Err(LispError::WrongNumberOfArgs(name.into(), args.len())),
+        "define-charset-internal" => {
+            // mule.el normalizes the public plist API into NAME plus its 16
+            // C-layer attribute slots; the final slot is the canonical plist.
+            need_args(name, args, 17)?;
+            let charset = args[0].as_symbol()?.to_string();
+            interp.define_charset(&charset, args[16].clone());
+            Ok(Value::Nil)
+        }
         "define-charset-alias" => {
             need_args(name, args, 2)?;
             let alias = args[0].as_symbol()?;
@@ -1109,8 +1201,25 @@ pub(super) fn call(
             Ok(args[1].clone())
         }
         "unify-charset" => {
-            need_args(name, args, 1)?;
-            Err(LispError::Signal("Cannot unify charset".into()))
+            need_arg_range(name, args, 1, 3)?;
+            let charset = args[0].as_symbol()?;
+            if !interp.has_charset(charset) {
+                return Err(LispError::Void(charset.to_string()));
+            }
+            if let Some(map) = args.get(1)
+                && !map.is_nil()
+                && !map.is_string()
+                && !is_vector_value(map)
+            {
+                return Err(LispError::TypeError(
+                    "string-or-vector".into(),
+                    map.type_name(),
+                ));
+            }
+            // GNU maps legacy private charset code points onto Unicode here.
+            // Emaxx stores buffer text as Unicode already, so registration is
+            // the semantic state change and no secondary char table is needed.
+            Ok(Value::Nil)
         }
         "get-unused-iso-final-char" => {
             need_args(name, args, 2)?;
@@ -1187,6 +1296,52 @@ pub(super) fn call(
                 None => Value::Nil,
             })
         }
+        "read-coding-system" | "read-non-nil-coding-system" => {
+            need_arg_range(
+                name,
+                args,
+                1,
+                if name == "read-coding-system" { 2 } else { 1 },
+            )?;
+            let collection = Value::list(
+                interp
+                    .coding_system_list(false)
+                    .into_iter()
+                    .map(|coding| Value::list([Value::String(coding)])),
+            );
+            let default = args.get(1).cloned().unwrap_or(Value::Nil);
+            let default = match default {
+                Value::Symbol(symbol) => Value::String(symbol),
+                value => value,
+            };
+            let completion_args = [
+                args[0].clone(),
+                collection,
+                Value::Nil,
+                Value::T,
+                Value::Nil,
+                Value::Symbol("coding-system-history".into()),
+                default,
+                Value::Nil,
+            ];
+
+            loop {
+                // coding.c dynamically binds this around completing-read;
+                // all coding-system names are lower-case and completion is
+                // intentionally case-insensitive.
+                env.push(vec![("completion-ignore-case".into(), Value::T)]);
+                let result = completing_read(interp, &completion_args, env);
+                env.pop();
+                let entered = string_text(&result?)?;
+                if entered.is_empty() {
+                    if name == "read-non-nil-coding-system" {
+                        continue;
+                    }
+                    return Ok(Value::Nil);
+                }
+                return Ok(Value::Symbol(entered));
+            }
+        }
         "coding-system-list" => {
             need_arg_range(name, args, 0, 1)?;
             Ok(Value::list(
@@ -1199,6 +1354,9 @@ pub(super) fn call(
         }
         "coding-system-type" => {
             need_args(name, args, 1)?;
+            if args[0].is_nil() {
+                return Ok(Value::Symbol("raw-text".into()));
+            }
             Ok(match checked_coding_name(interp, &args[0])? {
                 Some(coding) => interp
                     .coding_system_kind_name(&coding)
@@ -1250,7 +1408,14 @@ pub(super) fn call(
         }
         "coding-system-plist" => {
             need_args(name, args, 1)?;
-            let coding = checked_coding_symbol(interp, &args[0])?;
+            // GNU's C primitive treats nil as `no-conversion'.  This remains
+            // observable after dumped mule.el replaces `coding-system-type'
+            // with a Lisp wrapper over this plist.
+            let coding = if args[0].is_nil() {
+                "no-conversion".to_string()
+            } else {
+                checked_coding_symbol(interp, &args[0])?
+            };
             Ok(interp
                 .coding_system_plist_value(&coding)
                 .unwrap_or(Value::Nil))
@@ -1297,13 +1462,41 @@ pub(super) fn call(
                 return Ok(Value::Integer(0));
             }
             let coding = checked_coding_symbol(interp, &args[0])?;
-            Ok(interp
-                .coding_system_eol_type_value(&coding)
-                .map(Value::Integer)
-                .unwrap_or(Value::Nil))
+            if let Some(eol_type) = interp.coding_system_eol_type_value(&coding) {
+                return Ok(Value::Integer(eol_type));
+            }
+            if coding == "no-conversion" {
+                return Ok(Value::Integer(0));
+            }
+            let base = interp
+                .coding_system_base_name(&coding)
+                .unwrap_or_else(|| coding.clone());
+            let variants = ["unix", "dos", "mac"]
+                .into_iter()
+                .map(|suffix| format!("{base}-{suffix}"))
+                .collect::<Vec<_>>();
+            Ok(
+                if variants
+                    .iter()
+                    .all(|variant| interp.has_coding_system(variant))
+                {
+                    Value::list(
+                        std::iter::once(Value::Symbol("vector-literal".into()))
+                            .chain(variants.into_iter().map(Value::Symbol)),
+                    )
+                } else {
+                    Value::Nil
+                },
+            )
         }
         "coding-system-base" => {
             need_args(name, args, 1)?;
+            // GNU treats nil as the no-conversion coding system.  This is
+            // used by display-independent mode setup when a terminal has no
+            // explicit coding system (for example an Emaxx batch frame).
+            if args[0].is_nil() {
+                return Ok(Value::Symbol("no-conversion".into()));
+            }
             let coding = checked_coding_symbol(interp, &args[0])?;
             Ok(interp
                 .coding_system_base_name(&coding)
@@ -1416,10 +1609,10 @@ pub(super) fn call(
             detect_coding_region_value(interp, &args[0], &args[1], args.get(2), env)
         }
         "find-coding-systems-region-internal" => {
-            if args.is_empty() || args.len() > 3 {
+            if args.len() < 2 || args.len() > 3 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            find_coding_systems_region_internal_value(interp, &args[0])
+            find_coding_systems_region_internal_value(interp, &args[0], &args[1], args.get(2))
         }
         "decode-sjis-char" => {
             need_args(name, args, 1)?;
@@ -1499,7 +1692,31 @@ pub(super) fn call(
             let coding = args[0].as_symbol()?;
             let mnemonic = args[1].as_integer()?;
             let kind = args[2].as_symbol()?;
-            let plist = args[11].clone();
+            // coding.c derives public attributes from the validated codec
+            // shape and prepends them to the Lisp-supplied plist.  Dumped
+            // mule.el reads these properties back to decide display and
+            // keyboard suitability; storing only the caller's raw plist
+            // loses, for example, UTF-8's implicit ASCII compatibility.
+            let ascii_compatible = args[4].is_truthy()
+                || matches!(kind, "raw-text" | "emacs-mule")
+                || (kind == "utf-8" && args.get(13).is_none_or(Value::is_nil))
+                || (matches!(kind, "charset" | "shift-jis" | "big5")
+                    && coding_charset_list_is_ascii_compatible(interp, &args[3]));
+            let supplied_plist = args[11].to_vec()?;
+            let plist = Value::list(
+                [
+                    Value::Symbol(":ascii-compatible-p".into()),
+                    if ascii_compatible {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                    Value::Symbol(":category".into()),
+                    Value::Symbol(coding_category_name(kind, args).into()),
+                ]
+                .into_iter()
+                .chain(supplied_plist),
+            );
             let eol_type = match args[12].as_symbol()? {
                 "unix" => Some(0),
                 "dos" => Some(1),

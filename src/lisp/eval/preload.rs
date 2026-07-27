@@ -1,5 +1,17 @@
 use super::*;
 
+impl Interpreter {
+    pub(crate) fn run_generated_dumped_initializers(&mut self) -> Result<(), LispError> {
+        for source in generated_autoloads::generated_dumped_initializers() {
+            let form = crate::lisp::reader::Reader::new(source)
+                .read()?
+                .ok_or_else(|| LispError::Signal("Empty dumped initializer".into()))?;
+            self.eval(&form, &mut Vec::new())?;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn preloaded_command_line_1() -> Value {
     Value::Lambda(
         vec!["args-left".into()],
@@ -52,7 +64,8 @@ pub(crate) fn preloaded_command_line_1() -> Value {
                 ]),
             ]),
             Value::Nil,
-        ])],
+        ])]
+        .into(),
         shared_env(Vec::new()),
     )
 }
@@ -200,69 +213,8 @@ pub(crate) fn preloaded_eval_defun() -> Value {
                     Value::Symbol("result".into()),
                 ]),
             ]),
-        ],
-        shared_env(Vec::new()),
-    )
-}
-
-pub(crate) fn preloaded_sh_mode() -> Value {
-    Value::Lambda(
-        Vec::new(),
-        vec![
-            Value::list([
-                Value::Symbol("setq-local".into()),
-                Value::Symbol("major-mode".into()),
-                Value::list([
-                    Value::Symbol("quote".into()),
-                    Value::Symbol("sh-mode".into()),
-                ]),
-            ]),
-            Value::list([
-                Value::Symbol("setq-local".into()),
-                Value::Symbol("mode-name".into()),
-                Value::String("Shell-script".into()),
-            ]),
-            Value::list([
-                Value::Symbol("setq-local".into()),
-                Value::Symbol("imenu-case-fold-search".into()),
-                Value::Nil,
-            ]),
-            Value::list([
-                Value::Symbol("setq-local".into()),
-                Value::Symbol("imenu-generic-skip-comments-and-strings".into()),
-                Value::Nil,
-            ]),
-            Value::list([
-                Value::Symbol("setq-local".into()),
-                Value::Symbol("imenu-create-index-function".into()),
-                Value::list([
-                    Value::Symbol("quote".into()),
-                    Value::Symbol("imenu-default-create-index-function".into()),
-                ]),
-            ]),
-            Value::list([
-                Value::Symbol("setq-local".into()),
-                Value::Symbol("imenu-generic-expression".into()),
-                Value::list([
-                    Value::Symbol("quote".into()),
-                    Value::list([
-                        Value::list([
-                            Value::Nil,
-                            Value::String(
-                                "^[ \t]*function[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)".into(),
-                            ),
-                            Value::Integer(1),
-                        ]),
-                        Value::list([
-                            Value::Nil,
-                            Value::String("^[ \t]*\\([A-Za-z_][A-Za-z0-9_]*\\)[ \t]*()".into()),
-                            Value::Integer(1),
-                        ]),
-                    ]),
-                ]),
-            ]),
-            Value::Nil,
-        ],
+        ]
+        .into(),
         shared_env(Vec::new()),
     )
 }
@@ -422,7 +374,8 @@ pub(crate) fn preloaded_completion_table_dynamic() -> Value {
                     ]),
                 ]),
             ]),
-        ])],
+        ])]
+        .into(),
         shared_env(Vec::new()),
     )
 }
@@ -497,6 +450,25 @@ fn builtin_pcomplete_autoload_file(name: &str) -> Option<&'static str> {
     }
 }
 
+fn generated_dumped_autoload_value(name: &str) -> Option<Value> {
+    let (file, interactive, kind) = generated_autoloads::generated_dumped_autoload(name)?;
+    Some(Value::list([
+        Value::Symbol("autoload".into()),
+        Value::String(file.into()),
+        Value::Nil,
+        if interactive { Value::T } else { Value::Nil },
+        kind.map(|kind| Value::Symbol(kind.into()))
+            .unwrap_or(Value::Nil),
+    ]))
+}
+
+fn generated_dumped_function_value(name: &str) -> Option<Value> {
+    crate::lisp::reader::Reader::new(generated_autoloads::generated_dumped_function(name)?)
+        .read()
+        .ok()
+        .flatten()
+}
+
 pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
     if let Some(file) = builtin_pcomplete_autoload_file(name) {
         return Some(builtin_file_autoload(file, Value::Nil));
@@ -527,6 +499,10 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "fill-paragraph" => Some(builtin_file_autoload("fill", Value::Nil)),
         "fill-region" => Some(builtin_file_autoload("fill", Value::Nil)),
         "find-lisp-object-file-name" => Some(builtin_file_autoload("help-fns", Value::Nil)),
+        // GNU dumps help.el and nadvice.el before help-fns.el.  Materialize
+        // those dumped internal contracts from their owning libraries on
+        // first use instead of duplicating their high-level Lisp here.
+        "help-split-fundoc" => Some(builtin_file_autoload("help", Value::Nil)),
         "gv-define-expander" => Some(builtin_macro_autoload("gv")),
         "gv-ref" => Some(builtin_macro_autoload("gv")),
         "gv-deref" => Some(builtin_file_autoload("gv", Value::Nil)),
@@ -549,6 +525,9 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "keymap-substitute" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "keymap-unset" => Some(builtin_file_autoload("keymap", Value::Nil)),
         "define-keymap" => Some(builtin_file_autoload("keymap", Value::Nil)),
+        // GNU dumps map-ynp.el before files.el.  Keep the implementation in
+        // upstream Elisp while preserving that startup availability here.
+        "map-y-or-n-p" => Some(builtin_file_autoload("emacs-lisp/map-ynp", Value::Nil)),
         // GNU preloads newcomment.el.
         "comment-indent"
         | "comment-indent-default"
@@ -560,6 +539,25 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         // implementation in cus-edit.el; require_feature_with_target already
         // loads that library's dumped dependencies in startup order.
         "customize-set-value" => Some(builtin_file_autoload("cus-edit", Value::T)),
+        "compile" => Some(builtin_file_autoload("compile", Value::T)),
+        // GNU dumps files.el.  Keep its high-level save/revert policy in
+        // Elisp and materialize the dumped definitions together on first use;
+        // the native arms remain lower-level fallbacks for file-less runtimes.
+        "save-buffer"
+        | "revert-buffer"
+        | "revert-buffer-with-fine-grain"
+        | "save-some-buffers"
+        | "save-buffers-kill-emacs" => Some(builtin_file_autoload("files", Value::T)),
+        "basic-save-buffer" => Some(builtin_file_autoload("files", Value::Nil)),
+        // GNU dumps these libraries before files.el, whose functions call
+        // the helpers directly.  Keep the implementation in upstream Lisp
+        // and lazily materialize the dumped contract in Emaxx.
+        "uniquify--create-file-buffer-advice" | "uniquify--rename-buffer-advice" => {
+            Some(builtin_file_autoload("uniquify", Value::Nil))
+        }
+        "vc-before-save" | "vc-after-save" => {
+            Some(builtin_file_autoload("vc/vc-hooks", Value::Nil))
+        }
         // GNU preloads nadvice.el; the old advice.el is autoloaded.
         "add-function" | "remove-function" => Some(builtin_macro_autoload("nadvice")),
         // advice-add/remove/member-p defer to GNU nadvice.el when its file
@@ -569,6 +567,8 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "advice-add"
         | "advice-remove"
         | "advice-member-p"
+        | "advice--p"
+        | "advice--symbol-function"
         | "advice-function-member-p"
         | "advice-function-mapc"
         | "advice--add-function"
@@ -600,7 +600,6 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
         "dired-mode" => Some(builtin_file_autoload("dired", Value::Nil)),
         "prolog-mode" => Some(builtin_file_autoload("prolog", Value::Nil)),
         "setq-connection-local" => Some(builtin_macro_autoload("files-x")),
-        "sh-mode" => Some(preloaded_sh_mode()),
         // GNU preloads tabulated-list.el via buff-menu.el.
         "tabulated-list-mode" => Some(builtin_file_autoload("tabulated-list", Value::Nil)),
         "syntax-propertize-precompile-rules" | "syntax-propertize-rules" => {
@@ -645,9 +644,12 @@ pub(crate) fn builtin_autoload_function(name: &str) -> Option<Value> {
                     Value::list([Value::Symbol("keyboard-quit".into())]),
                 ]),
                 Value::Nil,
-            ],
+            ]
+            .into(),
             shared_env(Vec::new()),
         )),
-        _ => None,
+        _ => {
+            generated_dumped_autoload_value(name).or_else(|| generated_dumped_function_value(name))
+        }
     }
 }

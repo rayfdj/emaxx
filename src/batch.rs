@@ -8,7 +8,7 @@ use crate::compat::{
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::reader::Reader;
-use crate::lisp::types::{Env, Value};
+use crate::lisp::types::{EmacsTermination, Env, LispError, Value};
 use crate::perf::{self, PERF_RESULT_FILE_ENV, PerfRunReport};
 
 #[derive(Clone, Debug, Default)]
@@ -19,6 +19,22 @@ pub struct BatchRunOptions {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatchRunOutcome {
+    Exit(i32),
+    Restart,
+}
+
+impl From<EmacsTermination> for BatchRunOutcome {
+    fn from(termination: EmacsTermination) -> Self {
+        if termination.restart {
+            Self::Restart
+        } else {
+            Self::Exit(termination.exit_code)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PerfRequest {
     scenario_id: String,
     n: usize,
@@ -26,7 +42,11 @@ struct PerfRequest {
     samples: u32,
 }
 
-pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
+pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
+    let options = BatchRunOptions {
+        load_path: effective_batch_load_path(&options)?,
+        ..options
+    };
     let mut interpreter = initialize_batch_interpreter(&options)?;
     let mut loaded_test_file: Option<PathBuf> = None;
     let (selector, saw_ert_runner) = parse_selector_requests(&options.eval)?;
@@ -46,6 +66,9 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
             continue;
         }
         if let Err(error) = lisp::load_file_strict(&mut interpreter, &resolved) {
+            if let LispError::Terminate(termination) = error {
+                return Ok(termination.into());
+            }
             let mut error_text = error.to_string();
             let backtrace = format_backtrace_summary(&interpreter);
             if !backtrace.is_empty() {
@@ -66,7 +89,10 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
             emit_artifacts(&report)?;
             emit_human_log(&report);
             write_junit_report_if_requested(&report)?;
-            return Ok(2);
+            return Ok(BatchRunOutcome::Exit(2));
+        }
+        if let Some(termination) = interpreter.take_pending_termination() {
+            return Ok(termination.into());
         }
     }
 
@@ -79,9 +105,18 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
             if extract_ert_batch_selector(&form).is_none()
                 && extract_perf_request_from_form(&form).is_none()
             {
-                interpreter.eval(&form, &mut eval_env).map_err(|error| {
-                    format!("evaluate --eval expression `{expression}`: {error}")
-                })?;
+                match interpreter.eval(&form, &mut eval_env) {
+                    Ok(_) => {}
+                    Err(LispError::Terminate(termination)) => return Ok(termination.into()),
+                    Err(error) => {
+                        return Err(format!(
+                            "evaluate --eval expression `{expression}`: {error}"
+                        ));
+                    }
+                }
+                if let Some(termination) = interpreter.take_pending_termination() {
+                    return Ok(termination.into());
+                }
             }
         }
     }
@@ -95,14 +130,21 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
         )?;
         emit_perf_artifacts(&report)?;
         emit_perf_human_log(&report);
-        return Ok(match report.status {
+        return Ok(BatchRunOutcome::Exit(match report.status {
             perf::PerfRunStatus::Completed | perf::PerfRunStatus::Unsupported => 0,
             perf::PerfRunStatus::Failed => 1,
-        });
+        }));
     }
 
     let Some(test_file) = loaded_test_file else {
-        return Err("batch mode needs at least one `-l <test file>` target or an `(emaxx-perf-run-batch ...)` request".into());
+        if saw_ert_runner {
+            let (_, summary) = run_ert_for_batch_report(&mut interpreter, &selector);
+            if let Some(termination) = interpreter.take_pending_termination() {
+                return Ok(termination.into());
+            }
+            return Ok(BatchRunOutcome::Exit(i32::from(summary.unexpected != 0)));
+        }
+        return Ok(BatchRunOutcome::Exit(0));
     };
 
     let relative_file = report_file_name(&test_file);
@@ -113,6 +155,9 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
             report
         } else {
             let (discovered_tests, summary) = run_ert_for_batch_report(&mut interpreter, &selector);
+            if let Some(termination) = interpreter.take_pending_termination() {
+                return Ok(termination.into());
+            }
             BatchReport {
                 runner: "emaxx".into(),
                 file: relative_file.clone(),
@@ -144,11 +189,11 @@ pub fn run_batch(options: BatchRunOptions) -> Result<i32, String> {
     write_junit_report_if_requested(&report)?;
 
     if report.file_status == FileStatus::LoadError {
-        Ok(2)
+        Ok(BatchRunOutcome::Exit(2))
     } else if report.summary.unexpected == 0 {
-        Ok(0)
+        Ok(BatchRunOutcome::Exit(0))
     } else {
-        Ok(1)
+        Ok(BatchRunOutcome::Exit(1))
     }
 }
 
@@ -169,19 +214,97 @@ pub(crate) fn initialize_batch_interpreter(
     options: &BatchRunOptions,
 ) -> Result<Interpreter, String> {
     let mut interpreter = Interpreter::new();
-    interpreter.set_load_path(options.load_path.clone());
+    interpreter.set_load_path(effective_batch_load_path(options)?);
     // GNU starts batch evaluation in *scratch*, whose buffer-local
     // `lexical-binding' is t while the default remains nil.  File cookies
     // override and restore this state around loads.
     interpreter.set_variable("lexical-binding", Value::T, &mut Vec::new());
     interpreter.set_variable("noninteractive", Value::T, &mut Vec::new());
     interpreter.set_variable("command-line-args-left", Value::Nil, &mut Vec::new());
+    // Loading the dumped Lisp owners below corresponds to GNU's pre-dump
+    // phase, where delayed Custom initializers accumulate until startup.
+    interpreter.set_variable("custom-delayed-init-variables", Value::Nil, &mut Vec::new());
     preload_batch_compat_libraries(&mut interpreter)?;
+    complete_delayed_custom_initialization(&mut interpreter)?;
+    initialize_batch_locale_environment(&mut interpreter)?;
     Ok(interpreter)
 }
 
+fn complete_delayed_custom_initialization(interpreter: &mut Interpreter) -> Result<(), String> {
+    // GNU records :initialize custom-initialize-delay options while building
+    // the dumped image, then replays their setters at runtime in startup.el.
+    // Emaxx reconstructs that preload phase from source, so complete the same
+    // transition before exposing the initialized batch interpreter.
+    let form = Reader::new(
+        "(progn
+           (when (listp custom-delayed-init-variables)
+             (mapc #'custom-reevaluate-setting
+                   (reverse custom-delayed-init-variables)))
+           (setq custom-delayed-init-variables t))",
+    )
+    .read_all()
+    .map_err(|error| format!("read delayed Custom startup form: {error}"))?
+    .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("complete delayed Custom initialization: {error}"))?;
+    Ok(())
+}
+
+fn initialize_batch_locale_environment(interpreter: &mut Interpreter) -> Result<(), String> {
+    // startup.el runs this after the dumped multilingual owners are present.
+    // It is observable even under --batch: on a UTF-8 locale GNU selects
+    // utf-8-unix for terminal/keyboard I/O, which in turn drives the dumped
+    // Lisp implementation of `char-displayable-p'.
+    //
+    // `initialize_batch_interpreter' is also the embedding boundary used by
+    // small tests with an intentionally empty load path.  That runtime has no
+    // dumped/startup Lisp owners to invoke, just as an embedding which has not
+    // installed them cannot run this phase yet.
+    if interpreter
+        .lookup_function("set-locale-environment", &Vec::new())
+        .is_err()
+    {
+        return Ok(());
+    }
+    let form = Reader::new("(set-locale-environment nil nil t)")
+        .read_all()
+        .map_err(|error| format!("read batch locale startup form: {error}"))?
+        .remove(0);
+    interpreter
+        .eval(&form, &mut Vec::new())
+        .map_err(|error| format!("initialize batch locale environment: {error}"))?;
+    Ok(())
+}
+
+fn effective_batch_load_path(options: &BatchRunOptions) -> Result<Vec<PathBuf>, String> {
+    if !options.load_path.is_empty() {
+        return Ok(options.load_path.clone());
+    }
+
+    let Ok(test_directory) = env::var("EMACS_TEST_DIRECTORY") else {
+        return Ok(Vec::new());
+    };
+    let test_directory = PathBuf::from(test_directory);
+    let Some(repo_root) = test_directory.parent() else {
+        return Ok(Vec::new());
+    };
+    compat::repo_local_elisp_load_path(repo_root)
+}
+
 fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), String> {
-    for feature in ["button", "backquote", "seq"] {
+    // keymap.el is loaded near the start of GNU loadup, before bindings.el.
+    // Its macros own high-level keymap construction policy; the Rust layer
+    // supplies the mutable keymap primitives they target.
+    for feature in [
+        "backquote",
+        "keymap",
+        "button",
+        "seq",
+        "mule",
+        "mule-conf",
+        "env",
+    ] {
         if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
             continue;
         }
@@ -195,6 +318,194 @@ fn preload_batch_compat_libraries(interpreter: &mut Interpreter) -> Result<(), S
         lisp::load_file_strict(interpreter, &path)
             .map_err(|error| format!("load {}: {error}", path.display()))?;
     }
+    // GNU dumps tabulated-list.el into the initial image (loadup reaches it
+    // through buff-menu.el).  An autoload for the mode function alone is not
+    // an equivalent startup state: dumped clients such as kmacro.el inherit
+    // `tabulated-list-mode-map' while their top-level forms are loading.
+    // Load the owning Lisp library so its maps, variables, and mode contract
+    // become available together, without moving that policy into Rust.
+    if !interpreter.has_feature("tabulated-list")
+        && interpreter
+            .resolve_load_target("emacs-lisp/tabulated-list")
+            .is_some()
+    {
+        interpreter
+            .load_target("emacs-lisp/tabulated-list")
+            .map_err(|error| format!("preload tabulated-list: {error}"))?;
+    }
+
+    // GNU builds the standard keymaps in bindings.el before dumping help.el.
+    // Keep both owning Lisp libraries at that boundary instead of maintaining
+    // a growing Rust list of whichever dumped bindings Help happens to query.
+    if let Some(path) = interpreter.resolve_load_target("bindings") {
+        lisp::load_file_strict(interpreter, &path)
+            .map_err(|error| format!("preload bindings: {error}"))?;
+    }
+    // GNU loads and dumps window.el immediately after bindings.el.  Its
+    // previous/next-buffer lists and quit/restore policy are the Lisp owner
+    // of the state transitions initiated by the window.c primitives.  A
+    // native fallback for `quit-window' is not an equivalent startup state:
+    // packages such as Todo call `set-window-buffer' and later expect the
+    // dumped Lisp policy to consume the history recorded at that boundary.
+    if !interpreter.has_feature("window") && interpreter.resolve_load_target("window").is_some() {
+        interpreter
+            .load_target("window")
+            .map_err(|error| format!("preload window: {error}"))?;
+    }
+    if !interpreter.has_feature("files") && interpreter.resolve_load_target("files").is_some() {
+        interpreter
+            .load_target("files")
+            .map_err(|error| format!("preload files: {error}"))?;
+    }
+
+    // GNU dumps help.el into the initial image.  Loading its owning Lisp
+    // library here preserves that startup contract: tests and packages may
+    // call internal Help formatters without first requiring `help', and the
+    // high-level keymap/quoting policy remains on the Elisp side.
+    if !interpreter.has_feature("help") && interpreter.resolve_load_target("help").is_some() {
+        interpreter
+            .load_target("help")
+            .map_err(|error| format!("preload help: {error}"))?;
+    }
+
+    // GNU loadup loads jka-cmpr-hook.el immediately after help.el.  Info's
+    // dumped implementation calls its public compression predicates without
+    // requiring the feature, so loading only info.el leaves an impossible
+    // startup state.  Keep the policy and handler tables in their owning
+    // Lisp library rather than stubbing whichever predicate a caller reaches.
+    if !interpreter.has_feature("jka-cmpr-hook")
+        && interpreter.resolve_load_target("jka-cmpr-hook").is_some()
+    {
+        interpreter
+            .load_target("jka-cmpr-hook")
+            .map_err(|error| format!("preload jka-cmpr-hook: {error}"))?;
+    }
+
+    // mule-cmds.el is loaded (and dumped) immediately after the Help and
+    // compression hooks in GNU loadup.  It intentionally has no `provide'
+    // form, so callers use its commands and C-x RET map without requiring a
+    // feature.  Keep that policy in its Lisp owner rather than copying the
+    // individual command bindings into Rust.
+    if interpreter.resolve_load_target("mule-cmds").is_some()
+        && let Err(error) = interpreter.load_target("mule-cmds")
+    {
+        return Err(format!(
+            "preload mule-cmds: {error}; frames: {}",
+            format_backtrace_summary(interpreter)
+        ));
+    }
+
+    // GNU's dumped multilingual image pairs mule-conf's charset registry
+    // with generated Unicode metadata and language-owned coding systems.
+    // Loading only mule-conf leaves impossible half-registered states such
+    // as an `ibm038' charset with no `ebcdic-int' coding-system alias.  Load
+    // the owners needed by the portable coding boundary here.  The complete
+    // language loadup group also contains extended utf-8-emacs source above
+    // Unicode (not representable by Rust String) and belongs with the tabled
+    // internal-representation/bytecode work, not this compatibility fix.
+    for library in ["case-table", "charprop", "charscript"] {
+        if interpreter.resolve_load_target(library).is_some() {
+            interpreter
+                .load_target(library)
+                .map_err(|error| format!("preload {library}: {error}"))?;
+        }
+    }
+    for library in [
+        "language/chinese",
+        "language/english",
+        "language/hebrew",
+        "language/utf-8-lang",
+    ] {
+        if interpreter.resolve_load_target(library).is_some() {
+            interpreter
+                .load_target(library)
+                .map_err(|error| format!("preload {library}: {error}"))?;
+        }
+    }
+
+    // These map-owning libraries are also part of GNU's dumped image.  Keep
+    // their definitions on the Lisp side and load them in loadup order; Help
+    // legitimately refers to the maps without first requiring either file.
+    for (feature, provisional_maps) in [
+        ("minibuffer", &["minibuffer-local-completion-map"][..]),
+        ("progmodes/elisp-mode", &["emacs-lisp-mode-map"][..]),
+    ] {
+        if interpreter.has_feature(feature) || interpreter.resolve_load_target(feature).is_none() {
+            continue;
+        }
+        // Interpreter::new keeps identity-bearing fallbacks for file-less
+        // embedding.  During loadup those provisional values must yield to
+        // their real `defvar-keymap' owner, exactly as an undumped GNU build
+        // sees the variables before loading these files.
+        for map in provisional_maps {
+            interpreter.remove_global_binding(map);
+        }
+        interpreter
+            .load_target(feature)
+            .map_err(|error| format!("preload {feature}: {error}"))?;
+    }
+
+    // frame.el follows simple.el and minibuffer.el in GNU loadup.  It owns
+    // the portable display/monitor policy layered over host frame
+    // primitives, so packages may call that policy without requiring
+    // `frame' themselves.
+    if !interpreter.has_feature("frame") && interpreter.resolve_load_target("frame").is_some() {
+        interpreter
+            .load_target("frame")
+            .map_err(|error| format!("preload frame: {error}"))?;
+    }
+
+    // isearch.el is dumped by GNU and owns both the incremental-search
+    // command layer and its full keymap.  Loading only downstream users (for
+    // example Eshell's history module) cannot recreate that startup state.
+    if !interpreter.has_feature("isearch") && interpreter.resolve_load_target("isearch").is_some() {
+        interpreter
+            .load_target("isearch")
+            .map_err(|error| format!("preload isearch: {error}"))?;
+    }
+
+    // GNU loads this VC/uniquify cluster immediately before Electric.
+    // Downstream dumped files call its Lisp-owned helpers without requiring
+    // the features, so preserve the complete owners and their load order.
+    for library in ["vc/vc-hooks", "vc/ediff-hook", "uniquify"] {
+        if interpreter.resolve_load_target(library).is_some() {
+            interpreter
+                .load_target(library)
+                .map_err(|error| format!("preload {library}: {error}"))?;
+        }
+    }
+
+    // GNU loadup dumps this portable cluster in this order.  Its variables
+    // are startup contracts, not merely implementation details of commands:
+    // major modes extend `electric-indent-chars' and install Eldoc callbacks
+    // while their own files load.  Keep those definitions in their owning
+    // Lisp libraries instead of copying whichever variable fails first into
+    // Rust.  Shorthands intentionally has no `provide' form.
+    for (library, feature) in [
+        ("electric", Some("electric")),
+        ("paren", Some("paren")),
+        ("emacs-lisp/shorthands", None),
+        ("emacs-lisp/eldoc", Some("eldoc")),
+        ("emacs-lisp/cconv", Some("cconv")),
+    ] {
+        if feature.is_some_and(|feature| interpreter.has_feature(feature))
+            || interpreter.resolve_load_target(library).is_none()
+        {
+            continue;
+        }
+        interpreter
+            .load_target(library)
+            .map_err(|error| format!("preload {library}: {error}"))?;
+    }
+
+    // loaddefs.el is generated after the owning dumped libraries.  Its
+    // top-level declarations extend base registries such as
+    // `interpreter-mode-alist'; replaying them before files.el would bind an
+    // incomplete replacement and prevent files.el's `defvar' default from
+    // ever being installed.
+    interpreter
+        .run_generated_dumped_initializers()
+        .map_err(|error| format!("initialize generated dumped autoload state: {error}"))?;
 
     Ok(())
 }
@@ -703,6 +1014,591 @@ mod tests {
                     Value::Symbol("b".into()),
                     Value::Symbol("b".into()),
                 ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_generated_character_script_table() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (aref char-script-table ?A)
+                       (aref char-script-table #x05D0)
+                       (aref char-script-table #x200B))",
+            )
+            .read_all()
+            .expect("read character-script startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate character-script startup probe"),
+                Value::list([
+                    Value::Symbol("latin".into()),
+                    Value::Symbol("hebrew".into()),
+                    Value::Symbol("symbol".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_complete_tabulated_list_state() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'tabulated-list)\
+                       (fboundp 'tabulated-list-mode)\
+                       (boundp 'tabulated-list-mode-map)\
+                       (keymapp tabulated-list-mode-map)\
+                       (special-variable-p 'tabulated-list-mode-hook))",
+            )
+            .read_all()
+            .expect("read tabulated-list startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate tabulated-list startup probe"),
+                Value::list([Value::T, Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_minor_mode_registration_policy() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(progn
+                   (setq minor-mode-list '(first-mode after-mode)
+                         minor-mode-alist
+                         '((first-mode \" First\") (after-mode \" After\"))
+                         minor-mode-map-alist
+                         (list (cons 'first-mode (make-sparse-keymap))
+                               (cons 'after-mode (make-sparse-keymap))))
+                   (let ((map (make-sparse-keymap)))
+                     (add-minor-mode 'sample-mode \" Sample\" map
+                                     'after-mode 'sample-mode-toggle)
+                     (list (fboundp 'add-minor-mode)
+                           (car minor-mode-list)
+                           (mapcar #'car minor-mode-alist)
+                           (mapcar #'car minor-mode-map-alist)
+                           (eq (cdr (assq 'sample-mode minor-mode-map-alist)) map)
+                           (get 'sample-mode :minor-mode-function))))",
+            )
+            .read_all()
+            .expect("read minor-mode startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate minor-mode startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::Symbol("sample-mode".into()),
+                    Value::list([
+                        Value::Symbol("first-mode".into()),
+                        Value::Symbol("after-mode".into()),
+                        Value::Symbol("sample-mode".into()),
+                    ]),
+                    Value::list([
+                        Value::Symbol("first-mode".into()),
+                        Value::Symbol("after-mode".into()),
+                        Value::Symbol("sample-mode".into()),
+                    ]),
+                    Value::T,
+                    Value::Symbol("sample-mode-toggle".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_isearch_owner_and_full_map() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'isearch)\
+                       (boundp 'isearch-mode-map)\
+                       (keymapp isearch-mode-map)\
+                       (eq (lookup-key isearch-mode-map \"\\C-s\")\
+                           'isearch-repeat-forward))",
+            )
+            .read_all()
+            .expect("read isearch startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate isearch startup probe"),
+                Value::list([Value::T, Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_dumped_electric_eldoc_cluster() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'electric)
+                       (boundp 'electric-indent-chars)
+                       electric-indent-chars
+                       (special-variable-p 'electric-indent-chars)
+                       (featurep 'paren)
+                       (fboundp 'shorthands-font-lock-shorthands)
+                       (featurep 'eldoc)
+                       (boundp 'eldoc-documentation-function)
+                       (featurep 'cconv))",
+            )
+            .read_all()
+            .expect("read electric startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate electric startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::list([Value::Integer('\n' as i64)]),
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_inherited_cl_struct_setters() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(progn
+                   (require 'eieio-core)
+                   (let* ((class (eieio--class-make 'emaxx-inherited-setter-probe))
+                          (descriptor
+                           (cl--make-slot-descriptor 'sample-slot nil t nil)))
+                     (funcall #'(setf eieio--class-parents) nil class)
+                     (funcall #'(setf eieio--class-slots)
+                              (list descriptor) class)
+                     (list (eieio--class-name class)
+                           (eieio--class-parents class)
+                           (recordp (make-record class 1 nil))
+                           (cl--slot-descriptor-name
+                            (car (eieio--class-slots class))))))",
+            )
+            .read_all()
+            .expect("read inherited CL setter probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("invoke inherited eieio--class setter"),
+                Value::list([
+                    Value::Symbol("emaxx-inherited-setter-probe".into()),
+                    Value::Nil,
+                    Value::T,
+                    Value::Symbol("sample-slot".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_applies_the_gnu_locale_startup_policy() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let oracle = emacs_repo.join("src/emacs");
+            let expression = "(list current-locale-environment
+                                    locale-coding-system
+                                    (terminal-coding-system)
+                                    (keyboard-coding-system)
+                                    (char-displayable-p ?‘))";
+            let oracle_form = format!("(prin1 {expression})");
+            let output = std::process::Command::new(&oracle)
+                .args(["--batch", "-Q", "--eval", &oracle_form])
+                .output()
+                .unwrap_or_else(|error| panic!("run locale oracle {}: {error}", oracle.display()));
+            assert!(
+                output.status.success(),
+                "locale oracle failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expected = Reader::new(&String::from_utf8_lossy(&output.stdout))
+                .read_all()
+                .expect("read locale oracle output")
+                .remove(0);
+
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(expression)
+                .read_all()
+                .expect("read locale startup probe")
+                .remove(0);
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate locale startup probe"),
+                expected
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preserves_the_mule_ccl_boundary() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            interpreter.set_variable(
+                "data-directory",
+                Value::String(lisp::primitives::path_to_directory_string(
+                    &emacs_repo.join("etc"),
+                )),
+                &mut Vec::new(),
+            );
+            let utf16_fixture = emacs_repo
+                .join("test/lisp/international/mule-util-resources/test.utf-16le")
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            let form_source = "(progn
+                   (require 'ccl)
+                   (let ((symbol (gensym))
+                         (table (make-hash-table :test 'eq))
+                         (registers [17 0 0 0 0 0 0 0]))
+                     (puthash 17 16 table)
+                     (define-translation-hash-table symbol table)
+                     (ccl-execute
+                      (ccl-compile
+                       `(2 ((loop (lookup-integer ,symbol r0 r1)))))
+                      registers)
+                     (list (featurep 'mule)
+                           (featurep 'code-pages)
+                           (fboundp 'define-translation-hash-table)
+                           (fboundp 'register-ccl-program)
+                           (fboundp 'universal-coding-system-argument)
+                           (eq (lookup-key ctl-x-map [13]) mule-keymap)
+                           (coding-system-p 'ebcdic-int)
+                           (encode-coding-char ?a 'ebcdic-int)
+                           (coding-system-p 'chinese-hz)
+                           (coding-system-p 'windows-1255)
+                           (coding-system-get
+                            'utf-7-imap :post-read-conversion)
+                           (encode-coding-string \"a&bcd\" 'utf-7-imap)
+                           (decode-coding-string \"a&-bcd\" 'utf-7-imap)
+                           (string-to-list
+                            (encode-coding-string \"あ\" 'utf-16be))
+                           (decode-coding-string
+                            (unibyte-string 48 66) 'utf-16be)
+                           (with-temp-buffer
+                             (insert \"0B\")
+                             (decode-coding-region
+                              (point-min) (point-max) 'utf-16be)
+                             (buffer-string))
+                           (string-to-list
+                            (encode-coding-string
+                             \"あ\" 'utf-16be-with-signature))
+                           (string-to-list
+                            (encode-coding-string
+                             \"a\" 'utf-8-with-signature))
+                           (decode-coding-string
+                            (unibyte-string 239 187 191 97)
+                            'utf-8-with-signature)
+                           (with-temp-buffer
+                             (insert
+                              \"<!doctype html><html><head>\"
+                              \"<meta charset='utf-8'></head></html>\")
+                             (goto-char (point-min))
+                             (condition-case err
+                                 (list
+                                  buffer-file-coding-system
+                                  (coding-system-type
+                                   buffer-file-coding-system)
+                                  (sgml-html-meta-auto-coding-function
+                                   (- (point-max) (point-min))))
+                               (error
+                                (list buffer-file-coding-system err))))
+                           (let ((auto-coding-alist nil)
+                                 (auto-coding-regexp-alist nil)
+                                 (auto-coding-functions
+                                  (list (lambda (_size)
+                                          'utf-16le-with-signature))))
+                             (with-temp-buffer
+                               (insert-file-contents
+                                \"__MULE_UTF16_FIXTURE__\")
+                               (goto-char (point-min))
+                               (search-forward \"été\" nil t)))
+                           registers
+                           (let ((enable-recursive-minibuffers t))
+                             (ert-simulate-keys
+                                 [24 13 99 117 116 102 45 56 13 21 21 99 97 98 13]
+                               (read-string (string)))))))"
+                .replace("__MULE_UTF16_FIXTURE__", &utf16_fixture);
+            let form = Reader::new(&form_source)
+                .read_all()
+                .expect("read Mule/CCL startup probe")
+                .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate Mule/CCL startup probe"),
+                Value::list([
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    lisp::primitives::bytes_to_shared_unibyte_value(&[0x81]),
+                    Value::T,
+                    Value::T,
+                    Value::Symbol("utf-7-imap-post-read-conversion".into()),
+                    Value::String("a&-bcd".into()),
+                    Value::String("a&bcd".into()),
+                    Value::list([Value::Integer(48), Value::Integer(66)]),
+                    Value::String("あ".into()),
+                    Value::String("あ".into()),
+                    Value::list([
+                        Value::Integer(254),
+                        Value::Integer(255),
+                        Value::Integer(48),
+                        Value::Integer(66),
+                    ]),
+                    Value::list([
+                        Value::Integer(239),
+                        Value::Integer(187),
+                        Value::Integer(191),
+                        Value::Integer(97),
+                    ]),
+                    Value::String("a".into()),
+                    Value::list([
+                        Value::Symbol("utf-8-unix".into()),
+                        Value::Symbol("utf-8".into()),
+                        Value::Symbol("utf-8-unix".into()),
+                    ]),
+                    Value::Integer(13),
+                    Value::list([
+                        Value::Symbol("vector-literal".into()),
+                        Value::Integer(2),
+                        Value::Integer(16),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(0),
+                        Value::Integer(1),
+                    ]),
+                    Value::String("ccccccccccccccccab".into()),
+                ])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_preloads_the_gnu_compression_hook_surface() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let form = Reader::new(
+                "(list (featurep 'jka-cmpr-hook)
+                       (fboundp 'jka-compr-installed-p)
+                       (consp (jka-compr-installed-p)))",
+            )
+            .read_all()
+            .expect("read compression-hook startup probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("evaluate compression-hook startup probe"),
+                Value::list([Value::T, Value::T, Value::T])
+            );
+        });
+    }
+
+    #[test]
+    fn batch_runtime_info_finds_a_dot_info_file_on_its_dynamic_path() {
+        run_with_large_stack(|| {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("emaxx-batch-info-{}-{stamp}", std::process::id()));
+            fs::create_dir_all(&root).expect("create Info test directory");
+            fs::write(
+                root.join("present.info"),
+                "\x1f\nFile: present.info,  Node: Top,  Up: (dir)\n\nPresent manual.\n",
+            )
+            .expect("write synthetic Info file");
+
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("init batch interpreter");
+            interpreter
+                .load_target("info")
+                .expect("load the dumped Info library");
+            let root_string = root.to_string_lossy().replace('\\', "\\\\");
+            let form = Reader::new(&format!(
+                "(let ((Info-directory-list (list \"{root_string}\"))
+                       (Info-additional-directory-list nil))
+                   (Info-find-file \"present\" t))"
+            ))
+            .read_all()
+            .expect("read Info search probe")
+            .remove(0);
+            let result = interpreter
+                .eval(&form, &mut Vec::new())
+                .expect("evaluate Info search probe");
+            assert!(
+                result.is_truthy(),
+                "Info-find-file did not find {}: {result}",
+                root.join("present.info").display()
+            );
+            let mode = Reader::new(
+                "(with-current-buffer (get-buffer-create \"*info*\")
+                   (Info-mode)
+                   t)",
+            )
+            .read_all()
+            .expect("read Info mode probe")
+            .remove(0);
+            let mode_result = interpreter.eval(&mode, &mut Vec::new());
+            match mode_result {
+                Ok(value) => assert_eq!(value, Value::T),
+                Err(error) => panic!(
+                    "Info mode error: {error:?}; frames: {:?}",
+                    interpreter.backtrace_frames_snapshot()
+                ),
+            }
+            let goto = Reader::new(&format!(
+                "(let ((Info-directory-list (list \"{root_string}\"))
+                       (Info-additional-directory-list nil))
+                   (with-current-buffer (get-buffer-create \"*info*\")
+                     (Info-goto-node \"(present)\" \"xref - temporary\" t)
+                     t))"
+            ))
+            .read_all()
+            .expect("read Info node probe")
+            .remove(0);
+            let goto_result = interpreter.eval(&goto, &mut Vec::new());
+            match goto_result {
+                Ok(value) => assert_eq!(value, Value::T),
+                Err(error) => panic!(
+                    "Info node error: {error:?}; frames: {:?}",
+                    interpreter.backtrace_frames_snapshot()
+                ),
+            }
+
+            fs::remove_dir_all(root).expect("remove Info test directory");
+        });
+    }
+
+    #[test]
+    fn batch_runtime_exposes_generated_upstream_org_version_autoload_contract() {
+        run_with_large_stack(|| {
+            let emacs_repo = compat::project_root().join("../emacs");
+            let options = BatchRunOptions {
+                load_path: compat::emaxx_upstream_load_path(&emacs_repo)
+                    .expect("upstream load path"),
+                ..Default::default()
+            };
+            let mut interpreter =
+                initialize_batch_interpreter(&options).expect("initialize batch interpreter");
+            let form = Reader::new(
+                "(list (fboundp 'org-release)
+                       (fboundp 'org-git-version)
+                       (org-release))",
+            )
+            .read_all()
+            .expect("read Org autoload probe")
+            .remove(0);
+
+            assert_eq!(
+                interpreter
+                    .eval(&form, &mut Vec::new())
+                    .expect("run Org autoloads"),
+                Value::list([Value::T, Value::T, Value::String("9.7.11".into()),])
             );
         });
     }

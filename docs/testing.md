@@ -2,7 +2,7 @@
 
 `emaxx` has three separate testing layers. They are intentionally different, and they should not be treated as interchangeable.
 
-There is also a separate performance scoreboard in [`docs/performance.md`](/Users/alpha/CodexProjects/emaxx/docs/performance.md). It does not replace any of the correctness layers below.
+There is also a separate performance scoreboard in [`docs/performance.md`](performance.md). It does not replace any of the correctness layers below.
 
 ## At A Glance
 
@@ -25,6 +25,12 @@ Run:
 ```bash
 cargo test --lib
 ```
+
+The repository defaults the Rust test harness to two workers.  Many of these
+tests run complete GNU Lisp subsystems or child processes inside the debug
+interpreter; higher test-level concurrency merely starves independent
+interpreters and makes process deadlines host-load dependent.  Asynchronous
+behavior inside each interpreter remains fully exercised.
 
 What this covers:
 

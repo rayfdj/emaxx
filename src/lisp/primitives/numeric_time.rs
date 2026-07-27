@@ -190,10 +190,21 @@ pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
 }
 
 pub(crate) fn builtin_arity_value(name: &str) -> Option<Value> {
+    if let Some((minimum, maximum)) = generated_builtin_arities::generated_builtin_arity(name) {
+        let maximum = match maximum {
+            -1 => Value::Symbol("many".into()),
+            -2 => Value::Symbol("unevalled".into()),
+            maximum => Value::Integer(maximum),
+        };
+        return Some(Value::cons(Value::Integer(minimum), maximum));
+    }
     let arity = match name {
         "car" | "caar" | "identity" | "func-arity" | "subr-arity" => {
             (Value::Integer(1), Value::Integer(1))
         }
+        "module-function-p" | "keymap-prompt" => (Value::Integer(1), Value::Integer(1)),
+        "last-nonminibuffer-frame" => (Value::Integer(0), Value::Integer(0)),
+        "frame-root-window" => (Value::Integer(0), Value::Integer(1)),
         "cons" => (Value::Integer(2), Value::Integer(2)),
         "remq" => (Value::Integer(2), Value::Integer(2)),
         "safe-length" => (Value::Integer(1), Value::Integer(1)),
@@ -273,7 +284,6 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "not"
             | "progn"
             | "delay-mode-hooks"
-            | "throw"
             | "prog1"
             | "let"
             | "dlet"
@@ -299,7 +309,6 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "defface"
             | "defvar-keymap"
             | "define-short-documentation-group"
-            | "eval"
             | "define-minor-mode"
             | "define-globalized-minor-mode"
             | "define-derived-mode"
@@ -319,10 +328,9 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "with-memoization"
             | "easy-menu-define"
             | "cl-defstruct"
-            | "defalias"
             | "backquote"
             | "lambda"
-            | "call-interactively"
+            | "interactive"
             | "function"
             | "function-quote"
             | "while"
@@ -363,7 +371,6 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "combine-change-calls"
             | "cl-destructuring-bind"
             | "cl-letf"
-            | "aset"
             | "cl-flet"
             | "cl-labels"
             | "cl-macrolet"
@@ -382,8 +389,6 @@ pub(crate) fn is_special_form_name(name: &str) -> bool {
             | "ert--skip-when"
             | "rx"
             | "rx-define"
-            | "require"
-            | "provide"
             | "with-eval-after-load"
             | "with-no-warnings"
             | "declare"
@@ -1055,13 +1060,27 @@ pub(crate) fn exact_time_less(left: &ExactTimeValue, right: &ExactTimeValue) -> 
     left.ticks.clone() * &right.hz < right.ticks.clone() * &left.hz
 }
 
-pub(crate) fn local_zone_spec(time: Option<&ExactTimeValue>) -> ZoneSpec {
-    if let Ok(tz) = std::env::var("TZ")
-        && let Some(posix) = parse_posix_tz(&tz)
+fn posix_time_zone_from_value(value: &Value) -> Option<PosixTimeZone> {
+    string_text(value)
+        .ok()
+        .and_then(|text| parse_posix_tz(&text))
+}
+
+pub(crate) fn local_zone_spec(interp: &Interpreter, time: Option<&ExactTimeValue>) -> ZoneSpec {
+    if let Some(posix) = posix_time_zone_from_value(&interp.local_time_zone_rule)
         && let Some(time) = time
     {
         return posix.zone_for_instant(time);
     }
+    if !local_time_zone_rule_is_wall(&interp.local_time_zone_rule)
+        && let Ok(zone) = explicit_zone_spec_from_value(&interp.local_time_zone_rule, time)
+    {
+        return zone;
+    }
+    system_wall_zone_spec(time)
+}
+
+fn system_wall_zone_spec(time: Option<&ExactTimeValue>) -> ZoneSpec {
     let offset_seconds = time
         .and_then(|value| {
             let (whole_seconds, _) = time_floor_parts(value);
@@ -1078,6 +1097,7 @@ pub(crate) fn local_zone_spec(time: Option<&ExactTimeValue>) -> ZoneSpec {
 }
 
 pub(crate) fn local_zone_spec_for_civil(
+    interp: &Interpreter,
     year: i32,
     month: u32,
     day: u32,
@@ -1085,10 +1105,13 @@ pub(crate) fn local_zone_spec_for_civil(
     minute: u32,
     second: u32,
 ) -> ZoneSpec {
-    if let Ok(tz) = std::env::var("TZ")
-        && let Some(posix) = parse_posix_tz(&tz)
-    {
+    if let Some(posix) = posix_time_zone_from_value(&interp.local_time_zone_rule) {
         return posix.zone_for_civil(year, month, day, hour, minute, second);
+    }
+    if !local_time_zone_rule_is_wall(&interp.local_time_zone_rule)
+        && let Ok(zone) = explicit_zone_spec_from_value(&interp.local_time_zone_rule, None)
+    {
+        return zone;
     }
     // A local civil time must be resolved with the offset that applied on
     // that date, not today's offset.  Historical timezone changes can
@@ -1107,7 +1130,7 @@ pub(crate) fn local_zone_spec_for_civil(
                 .or_else(|| resolved.latest())
         });
     local.map_or_else(
-        || local_zone_spec(None),
+        || system_wall_zone_spec(None),
         |datetime| ZoneSpec {
             offset_seconds: datetime.offset().local_minus_utc(),
             abbreviation: datetime.format("%Z").to_string(),
@@ -1388,12 +1411,27 @@ impl PosixTimeZone {
     }
 }
 
+fn local_time_zone_rule_is_wall(rule: &Value) -> bool {
+    rule.is_nil() || matches!(rule, Value::Symbol(symbol) if symbol == "wall")
+}
+
 pub(crate) fn zone_spec_from_value(
+    interp: &Interpreter,
     zone: &Value,
     time: Option<&ExactTimeValue>,
 ) -> Result<ZoneSpec, LispError> {
     match zone {
-        Value::Nil => Ok(local_zone_spec(time)),
+        Value::Nil => Ok(local_zone_spec(interp, time)),
+        Value::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(interp, time)),
+        _ => explicit_zone_spec_from_value(zone, time),
+    }
+}
+
+fn explicit_zone_spec_from_value(
+    zone: &Value,
+    time: Option<&ExactTimeValue>,
+) -> Result<ZoneSpec, LispError> {
+    match zone {
         Value::T => Ok(ZoneSpec {
             offset_seconds: 0,
             abbreviation: "UTC".into(),
@@ -1427,11 +1465,10 @@ pub(crate) fn zone_spec_from_value(
                 is_dst: false,
             }))
         }
-        Value::Symbol(symbol) if symbol == "-" => Ok(local_zone_spec(time)),
         Value::Cons(_, _) => {
             let items = zone.to_vec()?;
             if items.is_empty() {
-                return Ok(local_zone_spec(time));
+                return Err(LispError::TypeError("time-zone".into(), zone.type_name()));
             }
             let offset = match &items[0] {
                 Value::Integer(value) => *value as i32,
@@ -1897,6 +1934,19 @@ pub(crate) fn call_time_builtin(
 ) -> Result<Value, LispError> {
     let now = current_time_value()?;
     match name {
+        "set-time-zone-rule" => {
+            need_args(name, args, 1)?;
+            let rule = if args[0].is_nil() {
+                Value::Symbol("wall".into())
+            } else {
+                args[0].clone()
+            };
+            if !local_time_zone_rule_is_wall(&rule) {
+                let _ = explicit_zone_spec_from_value(&rule, Some(&now))?;
+            }
+            interp.local_time_zone_rule = rule;
+            Ok(Value::Nil)
+        }
         "current-time" => {
             need_arg_range(name, args, 0, 0)?;
             Ok(exact_time_to_value(&now))
@@ -1904,7 +1954,8 @@ pub(crate) fn call_time_builtin(
         "current-time-string" => {
             need_arg_range(name, args, 0, 2)?;
             let time = exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
-            let zone = zone_spec_from_value(args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
+            let zone =
+                zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
             let (datetime, _) = time_local_datetime(&time, &zone)?;
             Ok(Value::String(
                 datetime.format("%a %b %e %H:%M:%S %Y").to_string(),
@@ -2004,7 +2055,8 @@ pub(crate) fn call_time_builtin(
         "decode-time" => {
             need_arg_range(name, args, 0, 3)?;
             let time = exact_time_from_value(interp, args.first().unwrap_or(&Value::Nil), &now)?;
-            let zone = zone_spec_from_value(args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
+            let zone =
+                zone_spec_from_value(interp, args.get(1).unwrap_or(&Value::Nil), Some(&time))?;
             let form = args.get(2).unwrap_or(&Value::Nil);
             decode_time_value(&time, &zone, form)
         }
@@ -2043,6 +2095,7 @@ pub(crate) fn call_time_builtin(
             let time = normalize_decoded_civil_time(year, month, day, hour, minute, second)?;
             let zone = if value_is_unspecified(fields.get(8)) {
                 local_zone_spec_for_civil(
+                    interp,
                     time.year(),
                     time.month(),
                     time.day(),
@@ -2062,10 +2115,10 @@ pub(crate) fn call_time_builtin(
                         time.second(),
                     )
                 } else {
-                    zone_spec_from_value(zone_text, None)?
+                    zone_spec_from_value(interp, zone_text, None)?
                 }
             } else {
-                zone_spec_from_value(fields.get(8).unwrap_or(&Value::Nil), None)?
+                zone_spec_from_value(interp, fields.get(8).unwrap_or(&Value::Nil), None)?
             };
             let offset = zone_offset(&zone)?;
             let local = offset
@@ -2081,7 +2134,8 @@ pub(crate) fn call_time_builtin(
             need_arg_range(name, args, 1, 3)?;
             let format = string_text(&args[0])?;
             let time = exact_time_from_value(interp, args.get(1).unwrap_or(&Value::Nil), &now)?;
-            let zone = zone_spec_from_value(args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
+            let zone =
+                zone_spec_from_value(interp, args.get(2).unwrap_or(&Value::Nil), Some(&time))?;
             Ok(Value::String(format_time_string_value(
                 interp, &format, &time, &zone,
             )?))
@@ -2094,9 +2148,9 @@ pub(crate) fn call_time_builtin(
                 None
             };
             let zone = if let Some(zone_value) = args.get(1).filter(|value| !value.is_nil()) {
-                zone_spec_from_value(zone_value, time.as_ref())?
+                zone_spec_from_value(interp, zone_value, time.as_ref())?
             } else {
-                local_zone_spec(time.as_ref())
+                local_zone_spec(interp, time.as_ref())
             };
             Ok(Value::list([
                 Value::Integer(zone.offset_seconds as i64),
@@ -2394,6 +2448,9 @@ pub(crate) fn parse_decimal_string_to_number(text: &str) -> Value {
         return Value::Integer(0);
     };
     if prefix.contains(['.', 'e', 'E']) {
+        if let Some(value) = crate::lisp::reader::parse_special_float_token(prefix) {
+            return Value::Float(value);
+        }
         if prefix.ends_with('.')
             && !prefix.contains(['e', 'E'])
             && prefix
@@ -2461,21 +2518,38 @@ pub(crate) fn decimal_number_prefix(text: &str) -> Option<&str> {
     if matches!(chars.get(index), Some((_, 'e' | 'E'))) {
         let exponent_marker = index;
         index += 1;
+        let mut positive_special = false;
         if let Some((_, sign)) = chars.get(index)
             && matches!(sign, '+' | '-')
         {
+            positive_special = *sign == '+';
             index += 1;
         }
         let exponent_start = index;
-        while let Some((_, ch)) = chars.get(index)
-            && ch.is_ascii_digit()
-        {
-            index += 1;
-        }
-        if index > exponent_start {
+        let special_exponent = positive_special
+            && chars
+                .get(index..index + 3)
+                .map(|suffix| {
+                    suffix
+                        .iter()
+                        .map(|(_, ch)| ch.to_ascii_uppercase())
+                        .collect::<String>()
+                })
+                .is_some_and(|suffix| matches!(suffix.as_str(), "INF" | "NAN"));
+        if special_exponent {
+            index += 3;
             end = index;
         } else {
-            end = exponent_marker;
+            while let Some((_, ch)) = chars.get(index)
+                && ch.is_ascii_digit()
+            {
+                index += 1;
+            }
+            if index > exponent_start {
+                end = index;
+            } else {
+                end = exponent_marker;
+            }
         }
     }
 

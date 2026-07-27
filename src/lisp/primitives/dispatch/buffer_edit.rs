@@ -22,6 +22,62 @@ fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
     })
 }
 
+fn span_properties_at(
+    spans: &[crate::buffer::TextPropertySpan],
+    position: usize,
+) -> &[(String, Value)] {
+    spans
+        .iter()
+        .find(|span| span.start <= position && position < span.end)
+        .map(|span| span.props.as_slice())
+        .unwrap_or(&[])
+}
+
+fn property_span_boundaries(spans: &[crate::buffer::TextPropertySpan]) -> Vec<usize> {
+    let mut boundaries = spans
+        .iter()
+        .flat_map(|span| [span.start, span.end])
+        .collect::<Vec<_>>();
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries
+}
+
+fn next_property_span_boundary(
+    spans: &[crate::buffer::TextPropertySpan],
+    position: usize,
+    limit: usize,
+    next_interval_only: bool,
+) -> Option<usize> {
+    let initial = span_properties_at(spans, position);
+    property_span_boundaries(spans)
+        .into_iter()
+        .filter(|boundary| position < *boundary && *boundary < limit)
+        .find(|boundary| next_interval_only || span_properties_at(spans, *boundary) != initial)
+}
+
+fn previous_property_span_boundary(
+    spans: &[crate::buffer::TextPropertySpan],
+    position: usize,
+    limit: usize,
+) -> Option<usize> {
+    let initial = position
+        .checked_sub(1)
+        .map(|position| span_properties_at(spans, position))
+        .unwrap_or(&[]);
+    property_span_boundaries(spans)
+        .into_iter()
+        .rev()
+        .filter(|boundary| limit < *boundary && *boundary < position)
+        .find(|boundary| {
+            boundary
+                .checked_sub(1)
+                .map(|position| span_properties_at(spans, position))
+                .unwrap_or(&[])
+                != initial
+        })
+}
+
 fn buffer_text_property_at_insertion(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
@@ -257,6 +313,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "point-min"
             | "point-max"
             | "minibuffer-prompt-end"
+            | "combine-after-change-execute"
             | "goto-char"
             | "forward-char"
             | "forward-word"
@@ -289,8 +346,10 @@ pub(super) fn handles(name: &str) -> bool {
             | "search-forward"
             | "search-backward"
             | "re-search-forward"
+            | "posix-search-forward"
             | "search-forward-regexp"
             | "re-search-backward"
+            | "posix-search-backward"
             | "search-backward-regexp"
             | "forward-list"
             | "down-list"
@@ -371,6 +430,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "current-column"
             | "current-indentation"
             | "indent-according-to-mode"
+            | "c-indent-line"
             | "indent-line-to"
             | "indent-to-left-margin"
             | "indent-relative"
@@ -388,17 +448,23 @@ pub(super) fn handles(name: &str) -> bool {
             | "buffer-modified-p"
             | "buffer-chars-modified-tick"
             | "buffer-modified-tick"
+            | "internal--set-buffer-modified-tick"
             | "set-buffer-modified-p"
             | "restore-buffer-modified-p"
             | "get-pos-property"
             | "get-char-property"
+            | "get-char-property-and-overlay"
             | "get-text-property"
             | "text-property-any"
             | "text-property-not-all"
             | "next-single-property-change"
+            | "next-property-change"
+            | "next-char-property-change"
             | "next-single-char-property-change"
+            | "previous-char-property-change"
             | "previous-single-char-property-change"
             | "previous-single-property-change"
+            | "previous-property-change"
             | "text-properties-at"
             | "object-intervals"
             | "put-text-property"
@@ -620,7 +686,19 @@ pub(super) fn call(
         "point" => Ok(Value::Integer(interp.buffer.point() as i64)),
         "point-min" => Ok(Value::Integer(interp.buffer.point_min() as i64)),
         "point-max" => Ok(Value::Integer(interp.buffer.point_max() as i64)),
-        "minibuffer-prompt-end" => Ok(Value::Integer(interp.buffer.point_min() as i64)),
+        "minibuffer-prompt-end" => {
+            let prompt_length = interp
+                .lookup_var("emaxx--minibuffer-prompt", env)
+                .and_then(|value| string_like(&value).map(|string| string.text.chars().count()))
+                .unwrap_or(0);
+            Ok(Value::Integer(
+                interp.buffer.point_min().saturating_add(prompt_length) as i64,
+            ))
+        }
+        "combine-after-change-execute" => {
+            need_args(name, args, 0)?;
+            flush_combined_after_change(interp, env)
+        }
         "goto-char" => {
             need_args(name, args, 1)?;
             let pos = position_from_value(interp, &args[0])?;
@@ -1048,11 +1126,12 @@ pub(super) fn call(
             if count != 1 {
                 super::call(interp, "forward-line", &[Value::Integer(count - 1)], env)?;
             }
-            if name == "move-end-of-line" {
-                interp.buffer.end_of_line();
+            let target = if name == "move-end-of-line" {
+                super::call(interp, "line-end-position", &[], env)?
             } else {
-                interp.buffer.beginning_of_line();
-            }
+                super::call(interp, "line-beginning-position", &[], env)?
+            };
+            interp.buffer.goto_char(target.as_integer()? as usize);
             Ok(Value::Nil)
         }
         "line-move" => {
@@ -1193,11 +1272,13 @@ pub(super) fn call(
             }
         }
         "re-search-forward" | "search-forward-regexp" => {
-            regexp::buffer_regex_search(interp, args, env, true)
+            regexp::buffer_regex_search(interp, args, env, true, false)
         }
         "re-search-backward" | "search-backward-regexp" => {
-            regexp::buffer_regex_search(interp, args, env, false)
+            regexp::buffer_regex_search(interp, args, env, false, false)
         }
+        "posix-search-forward" => regexp::buffer_regex_search(interp, args, env, true, true),
+        "posix-search-backward" => regexp::buffer_regex_search(interp, args, env, false, true),
         "forward-list" => {
             if args.len() > 1 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
@@ -1820,7 +1901,21 @@ pub(super) fn call(
             need_arg_range(name, args, 0, 1)?;
             buffer_line_statistics_value(interp, args.first())
         }
-        "max-char" => Ok(Value::Integer(0x3F_FFFF)),
+        "max-char" => {
+            need_arg_range(name, args, 0, 1)?;
+            // GNU keeps a wider internal character space for raw-byte and
+            // legacy character representations, but a non-nil UNICODE
+            // argument asks for the Unicode scalar ceiling specifically.
+            // Unicode-wide Lisp scans rely on this distinction to stop at
+            // U+10FFFF rather than traversing the whole internal space.
+            Ok(Value::Integer(
+                if args.first().is_some_and(Value::is_truthy) {
+                    0x10_FFFF
+                } else {
+                    0x3F_FFFF
+                },
+            ))
+        }
         "position-bytes" => {
             let pos = if args.is_empty() {
                 interp.buffer.point()
@@ -1877,7 +1972,10 @@ pub(super) fn call(
                 Some(value) => position_from_value(interp, value)?,
             };
             match interp.buffer.char_at(pos) {
-                Some(c) => Ok(Value::Integer(c as i64)),
+                Some(c) => Ok(Value::Integer(public_buffer_char_code(
+                    c,
+                    interp.buffer.is_multibyte(),
+                ))),
                 None => Ok(Value::Nil),
             }
         }
@@ -1890,7 +1988,10 @@ pub(super) fn call(
                 Ok(Value::Nil)
             } else {
                 match interp.buffer.char_at(pos - 1) {
-                    Some(c) => Ok(Value::Integer(c as i64)),
+                    Some(c) => Ok(Value::Integer(public_buffer_char_code(
+                        c,
+                        interp.buffer.is_multibyte(),
+                    ))),
                     None => Ok(Value::Nil),
                 }
             }
@@ -2196,6 +2297,11 @@ pub(super) fn call(
                     env,
                 )?;
             }
+            Ok(Value::Nil)
+        }
+        "c-indent-line" => {
+            need_arg_range(name, args, 0, 3)?;
+            let _ = simple_c_family_indent_line(interp, env)?;
             Ok(Value::Nil)
         }
         "current-indentation" => {
@@ -2650,43 +2756,99 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
-        "buffer-modified-p" => Ok(if interp.buffer.is_autosaved() {
-            Value::Symbol("autosaved".into())
-        } else if interp.buffer.is_modified() {
-            Value::T
-        } else {
-            Value::Nil
-        }),
+        "buffer-modified-p" => {
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = match args.first() {
+                Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
+                _ => interp.current_buffer_id(),
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?;
+            Ok(if buffer.is_autosaved() {
+                Value::Symbol("autosaved".into())
+            } else if buffer.is_modified() {
+                Value::T
+            } else {
+                Value::Nil
+            })
+        }
         "buffer-chars-modified-tick" | "buffer-modified-tick" => {
-            Ok(Value::Integer(interp.buffer.modified_tick() as i64))
+            need_arg_range(name, args, 0, 1)?;
+            let buffer_id = match args.first() {
+                Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
+                _ => interp.current_buffer_id(),
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?;
+            let tick = if name == "buffer-chars-modified-tick" {
+                buffer.chars_modified_tick()
+            } else {
+                buffer.modified_tick()
+            };
+            Ok(Value::Integer(tick))
+        }
+        "internal--set-buffer-modified-tick" => {
+            need_arg_range(name, args, 1, 2)?;
+            let Value::Integer(tick) = &args[0] else {
+                return Err(LispError::TypeError("fixnump".into(), args[0].type_name()));
+            };
+            let buffer_id = match args.get(1) {
+                Some(buffer) if !buffer.is_nil() => interp.resolve_buffer_id(buffer)?,
+                _ => interp.current_buffer_id(),
+            };
+            interp
+                .get_buffer_by_id_mut(buffer_id)
+                .ok_or_else(|| LispError::TypeError("buffer".into(), "killed".into()))?
+                .set_modified_tick(*tick);
+            Ok(Value::Nil)
         }
         "set-buffer-modified-p" => {
             need_args(name, args, 1)?;
-            if args[0].is_nil() {
-                interp.buffer.set_unmodified();
-                if let Some(path) = current_buffer_file(interp).map(str::to_string) {
-                    interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-                }
-            } else {
+            let modified = !args[0].is_nil();
+            let was_modified = interp.buffer.is_modified();
+            let update_lock = !interp
+                .lookup_var("inhibit-modification-hooks", env)
+                .is_some_and(|value| value.is_truthy())
+                && interp.buffer.file.is_some()
+                && interp.buffer.file_truename.is_some();
+            if was_modified && !modified && update_lock {
+                unlock_current_buffer(interp, env)?;
+            } else if !was_modified && modified && update_lock {
+                maybe_lock_current_buffer_file(interp, env)?;
+            }
+            if modified {
                 interp.buffer.set_modified();
-                let _ = maybe_lock_current_buffer(interp, env);
+            } else {
+                interp.buffer.set_unmodified();
             }
             Ok(Value::Nil)
         }
         "restore-buffer-modified-p" => {
             need_args(name, args, 1)?;
-            if args[0].is_nil() {
+            let flag = args[0].clone();
+            let modified = !flag.is_nil();
+            let was_modified = interp.buffer.is_modified();
+            let update_lock = !interp
+                .lookup_var("inhibit-modification-hooks", env)
+                .is_some_and(|value| value.is_truthy())
+                && interp.buffer.file.is_some()
+                && interp.buffer.file_truename.is_some();
+            if was_modified && !modified && update_lock {
+                unlock_current_buffer(interp, env)?;
+            } else if !was_modified && modified && update_lock {
+                maybe_lock_current_buffer_file(interp, env)?;
+            }
+            if flag.is_nil() {
                 interp.buffer.set_unmodified();
-                if let Some(path) = current_buffer_file(interp).map(str::to_string) {
-                    interp.buffer.set_visited_file_modtime(file_modtime(&path)?);
-                }
-            } else if matches!(&args[0], Value::Symbol(symbol) if symbol == "autosaved") {
+            } else if matches!(&flag, Value::Symbol(symbol) if symbol == "autosaved") {
                 interp.buffer.set_modified();
                 interp.buffer.set_autosaved();
             } else {
                 interp.buffer.set_modified();
             }
-            Ok(Value::Nil)
+            Ok(flag)
         }
         "get-pos-property" | "get-char-property" => {
             need_args(name, args, 2)?;
@@ -2734,6 +2896,34 @@ pub(super) fn call(
                 }
             })
             .unwrap_or(Value::Nil))
+        }
+        "get-char-property-and-overlay" => {
+            need_arg_range(name, args, 2, 3)?;
+            let prop = args[1].as_symbol()?.to_string();
+            if let Some(object) = args.get(2)
+                && string_like(object).is_some()
+            {
+                let pos = args[0].as_integer()?.max(0) as usize;
+                let value = string_property_at_with_category(interp, object, pos, &prop)
+                    .unwrap_or(Value::Nil);
+                return Ok(Value::cons(value, Value::Nil));
+            }
+            let pos = position_from_value(interp, &args[0])?;
+            let buffer_id = match args.get(2) {
+                Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
+                _ => interp.current_buffer_id(),
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            if let Some((value, overlay_id)) =
+                highest_priority_overlay_property_with_id(interp, buffer, pos, &prop, false)
+            {
+                return Ok(Value::cons(value, Value::Overlay(overlay_id)));
+            }
+            let value =
+                buffer_property_at_with_category(interp, buffer, pos, &prop).unwrap_or(Value::Nil);
+            Ok(Value::cons(value, Value::Nil))
         }
         "get-text-property" => {
             if args.len() < 2 || args.len() > 3 {
@@ -2876,6 +3066,57 @@ pub(super) fn call(
             }
             Ok(limit
                 .map(|value| Value::Integer(value as i64))
+                .unwrap_or(Value::Nil))
+        }
+        "next-property-change" => {
+            need_arg_range(name, args, 1, 3)?;
+            let object = args.get(1).unwrap_or(&Value::Nil);
+            let next_interval_only = matches!(args.get(2), Some(Value::T));
+            let explicit_limit = args
+                .get(2)
+                .filter(|value| !value.is_nil() && !matches!(value, Value::T));
+            if let Some(string) = string_like(object) {
+                let pos = args[0].as_integer()?.max(0) as usize;
+                let end = string.text.chars().count();
+                let limit = explicit_limit
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .map(|value| value.max(0) as usize)
+                    .unwrap_or(end)
+                    .min(end);
+                let change =
+                    next_property_span_boundary(&string.props, pos, limit, next_interval_only);
+                return Ok(change
+                    .map(|position| Value::Integer(position as i64))
+                    .or_else(|| {
+                        (explicit_limit.is_some() || next_interval_only)
+                            .then_some(Value::Integer(limit as i64))
+                    })
+                    .unwrap_or(Value::Nil));
+            }
+            let pos = position_from_value(interp, &args[0])?;
+            let buffer_id = if object.is_nil() {
+                interp.current_buffer_id()
+            } else {
+                interp.resolve_buffer_id(object)?
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            let end = buffer.point_max();
+            let limit = explicit_limit
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or(end)
+                .min(end);
+            let spans = buffer.full_property_spans();
+            let change = next_property_span_boundary(&spans, pos, limit, next_interval_only);
+            Ok(change
+                .map(|position| Value::Integer(position as i64))
+                .or_else(|| {
+                    (explicit_limit.is_some() || next_interval_only)
+                        .then_some(Value::Integer(limit as i64))
+                })
                 .unwrap_or(Value::Nil))
         }
         "next-single-char-property-change" => {
@@ -3028,6 +3269,91 @@ pub(super) fn call(
             Ok(limit
                 .map(|value| Value::Integer(value as i64))
                 .unwrap_or(Value::Nil))
+        }
+        "previous-property-change" => {
+            need_arg_range(name, args, 1, 3)?;
+            let object = args.get(1).unwrap_or(&Value::Nil);
+            let explicit_limit = args.get(2).filter(|value| !value.is_nil());
+            if let Some(string) = string_like(object) {
+                let pos = args[0].as_integer()?.max(0) as usize;
+                let limit = explicit_limit
+                    .map(Value::as_integer)
+                    .transpose()?
+                    .map(|value| value.max(0) as usize)
+                    .unwrap_or(0);
+                let change = previous_property_span_boundary(&string.props, pos, limit);
+                return Ok(change
+                    .map(|position| Value::Integer(position as i64))
+                    .or_else(|| {
+                        explicit_limit
+                            .is_some()
+                            .then_some(Value::Integer(limit as i64))
+                    })
+                    .unwrap_or(Value::Nil));
+            }
+            let pos = position_from_value(interp, &args[0])?;
+            let buffer_id = if object.is_nil() {
+                interp.current_buffer_id()
+            } else {
+                interp.resolve_buffer_id(object)?
+            };
+            let buffer = interp
+                .get_buffer_by_id(buffer_id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+            let limit = explicit_limit
+                .map(|value| position_from_value(interp, value))
+                .transpose()?
+                .unwrap_or(buffer.point_min())
+                .max(buffer.point_min());
+            let spans = buffer.full_property_spans();
+            let change = previous_property_span_boundary(&spans, pos, limit);
+            Ok(change
+                .map(|position| Value::Integer(position as i64))
+                .or_else(|| {
+                    explicit_limit
+                        .is_some()
+                        .then_some(Value::Integer(limit as i64))
+                })
+                .unwrap_or(Value::Nil))
+        }
+        "next-char-property-change" => {
+            need_arg_range(name, args, 1, 2)?;
+            let position = position_from_value(interp, &args[0])?;
+            let mut limit =
+                super::overlays::next_overlay_change_position(&interp.buffer, position) as i64;
+            if let Some(explicit_limit) = args.get(1).filter(|value| !value.is_nil()) {
+                limit = limit.min(explicit_limit.as_integer()?);
+            }
+            let change = usize::try_from(limit).ok().and_then(|limit| {
+                next_property_span_boundary(
+                    &interp.buffer.full_property_spans(),
+                    position,
+                    limit,
+                    false,
+                )
+            });
+            Ok(change
+                .map(|position| Value::Integer(position as i64))
+                .unwrap_or(Value::Integer(limit)))
+        }
+        "previous-char-property-change" => {
+            need_arg_range(name, args, 1, 2)?;
+            let position = position_from_value(interp, &args[0])?;
+            let mut limit =
+                super::overlays::previous_overlay_change_position(&interp.buffer, position) as i64;
+            if let Some(explicit_limit) = args.get(1).filter(|value| !value.is_nil()) {
+                limit = limit.max(explicit_limit.as_integer()?);
+            }
+            let change = usize::try_from(limit).ok().and_then(|limit| {
+                previous_property_span_boundary(
+                    &interp.buffer.full_property_spans(),
+                    position,
+                    limit,
+                )
+            });
+            Ok(change
+                .map(|position| Value::Integer(position as i64))
+                .unwrap_or(Value::Integer(limit)))
         }
         "text-properties-at" => {
             if args.is_empty() || args.len() > 2 {

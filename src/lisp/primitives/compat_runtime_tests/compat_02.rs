@@ -34,6 +34,116 @@ fn coding_system_get_reports_for_unibyte_for_raw_text() {
 }
 
 #[test]
+fn define_coding_system_internal_derives_public_utf8_attributes_like_coding_c() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    call(
+        &mut interp,
+        "define-coding-system-internal",
+        &[
+            Value::Symbol("sample-utf-8".into()),
+            Value::Integer('U' as i64),
+            Value::Symbol("utf-8".into()),
+            Value::list([Value::Symbol("unicode".into())]),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::list([
+                Value::Symbol(":name".into()),
+                Value::Symbol("sample-utf-8".into()),
+            ]),
+            Value::Nil,
+            Value::Nil,
+        ],
+        &mut env,
+    )
+    .expect("define a no-signature UTF-8 coding system");
+
+    for (property, expected) in [
+        (":ascii-compatible-p", Value::T),
+        (":category", Value::Symbol("coding-category-utf-8".into())),
+    ] {
+        assert_eq!(
+            call(
+                &mut interp,
+                "coding-system-get",
+                &[
+                    Value::Symbol("sample-utf-8".into()),
+                    Value::Symbol(property.into()),
+                ],
+                &mut env,
+            )
+            .unwrap_or_else(|error| panic!("read {property}: {error}")),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn preloaded_latin_charset_coding_preserves_ascii_and_non_ascii_bytes() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    call(
+        &mut interp,
+        "define-coding-system-internal",
+        &[
+            Value::Symbol("sample-latin-charset".into()),
+            Value::Integer('C' as i64),
+            Value::Symbol("charset".into()),
+            Value::list([Value::Symbol("iso-8859-1".into())]),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::list([
+                Value::Symbol(":charset-list".into()),
+                Value::list([Value::Symbol("iso-8859-1".into())]),
+            ]),
+            Value::Nil,
+        ],
+        &mut env,
+    )
+    .expect("define Latin-1 charset coding");
+
+    let encoded = call(
+        &mut interp,
+        "encode-coding-string",
+        &[
+            Value::String("foó".into()),
+            Value::Symbol("sample-latin-charset".into()),
+        ],
+        &mut env,
+    )
+    .expect("encode Latin-1 through the preloaded direct charset mapping");
+    assert_eq!(
+        encode_raw_text_bytes(
+            &string_text(&encoded).expect("encoded coding string should be string-like"),
+        )
+        .expect("encoded raw text should convert back to bytes"),
+        b"fo\xf3"
+    );
+
+    let decoded = call(
+        &mut interp,
+        "decode-coding-string",
+        &[encoded, Value::Symbol("sample-latin-charset".into())],
+        &mut env,
+    )
+    .expect("decode Latin-1 through the preloaded direct charset mapping");
+    assert_eq!(
+        string_text(&decoded).expect("decoded coding string should be string-like"),
+        "foó"
+    );
+}
+
+#[test]
 fn decode_coding_region_inserts_into_destination_buffer() {
     let mut interp = Interpreter::new();
     let mut env = Vec::new();
@@ -56,6 +166,41 @@ fn decode_coding_region_inserts_into_destination_buffer() {
     );
     let dest = interp.get_buffer_by_id(buffer_id).expect("dest buffer");
     assert_eq!(dest.buffer_string(), "abc");
+}
+
+#[test]
+fn decode_coding_region_reports_the_detected_eol_variant() {
+    for (line_ending, expected) in [
+        (b"\n".as_slice(), "iso-2022-7bit-unix"),
+        (b"\r\n".as_slice(), "iso-2022-7bit-dos"),
+        (b"\r".as_slice(), "iso-2022-7bit-mac"),
+    ] {
+        let mut interp = Interpreter::new();
+        let mut env = Vec::new();
+        let mut bytes = vec![0x1b, b'$', b'B', b'$', b'"', 0x1b, b'(', b'B'];
+        bytes.extend_from_slice(line_ending);
+        interp.buffer =
+            crate::buffer::Buffer::from_text("*encoded*", &decode_raw_text_bytes(&bytes));
+        interp.buffer.set_multibyte(false);
+        let end = interp.buffer.point_max();
+
+        call(
+            &mut interp,
+            "decode-coding-region",
+            &[
+                Value::Integer(1),
+                Value::Integer(end as i64),
+                Value::Symbol("iso-2022-7bit".into()),
+            ],
+            &mut env,
+        )
+        .expect("decode ISO-2022 text");
+
+        assert_eq!(
+            interp.lookup_var("last-coding-system-used", &env),
+            Some(Value::Symbol(expected.into()))
+        );
+    }
 }
 
 #[test]
@@ -452,9 +597,10 @@ fn rename_visited_file_moves_disk_file_and_updates_buffer_path() {
     assert!(!Path::new(&old_path).exists());
     assert!(Path::new(&new_path).exists());
     assert_eq!(interp.buffer.file.as_deref(), Some(new_path.as_str()));
+    let canonical_new_path = canonical_file_name(&new_path);
     assert_eq!(
         interp.buffer.file_truename.as_deref(),
-        Some(new_path.as_str())
+        Some(canonical_new_path.as_str())
     );
     assert!(interp.buffer.visited_file_modtime().is_some());
 
@@ -710,6 +856,39 @@ fn write_process_output_supports_stdout_buffer_and_stderr_file() {
     );
     assert_eq!(std::fs::read(&stderr_path).expect("stderr file"), b"warn\n");
     std::fs::remove_file(stderr_path).expect("cleanup stderr file");
+}
+
+#[test]
+fn write_process_output_accepts_a_shared_string_buffer_name() {
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let (buffer_id, _) = interp.create_buffer("*shared-name-output*");
+    let destination =
+        make_shared_string_value_with_multibyte("*shared-name-output*".into(), Vec::new(), true);
+
+    write_process_output(
+        &mut interp,
+        &destination,
+        b"output\n",
+        b"",
+        "call-process",
+        &[
+            Value::String("sample".into()),
+            Value::Nil,
+            destination.clone(),
+            Value::Nil,
+        ],
+        &mut env,
+    )
+    .expect("write output to a buffer named by a shared string");
+
+    assert_eq!(
+        interp
+            .get_buffer_by_id(buffer_id)
+            .expect("output buffer")
+            .buffer_string(),
+        "output\n"
+    );
 }
 
 #[test]

@@ -1,3 +1,6 @@
 [env]
-# Upstream Emacs Lisp loads can recurse deeply in test threads.
-RUST_MIN_STACK = "268435456"
+# Many library tests run full GNU Lisp subsystems and spawn child processes.
+# More workers only oversubscribe the debug interpreter and can starve those
+# children past semantic deadlines; the tests do not exercise shared
+# cross-interpreter concurrency.  Match the explicit large-stack test gate.
+RUST_TEST_THREADS = { value = "2", force = false }

@@ -18,6 +18,171 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- AUTHORITATIVE 2026-07-27 NATIVE-AUDIT CHECKPOINT: the generated GNU 30.2
+  source/runtime manifest contains 1,685 source-level `DEFUN`s, 1,420 of which
+  are available in the configured oracle build.  Emaxx now has exact native
+  Rust surface contracts for 1,197 of those and 223 remain missing.  The fast
+  inventory test pins both sorted name sets by count and fingerprint and
+  verifies arity, command/special-form metadata, and an actual Rust dispatch
+  route for every claimed mirror.  This is an inventory, not a claim that
+  every mirrored primitive's deep semantics are complete.
+- This checkpoint completed coherent native families rather than adding
+  selector-specific shims: libxml-backed XML/HTML parsing, the remaining
+  `window.c` surface, `kill-emacs` termination/restart semantics, `data.c`
+  including exhaustive module-free `user-ptrp`, `terminal.c`, and `dispnew.c`.
+  A full-file Eshell regression also exposed reentrant process-sentinel
+  notification: GNU claims a terminal status before calling the sentinel, so a
+  sentinel may delete its own process without recursively notifying itself.
+  Emaxx now makes the same state transition, with a direct GNU-oracle Rust
+  regression.
+- The final fast gate for this checkpoint is
+  `cargo test --all-targets --all-features`: 1,594 library tests, 28
+  compatibility-harness tests, 1 performance-harness test, 5 CLI tests, and 3
+  ERT-runner tests all passed (plus the zero-test binary target).  It was run
+  with localhost socket permission because four real process/network tests
+  cannot run in a socket-denying sandbox.  Rustfmt, `git diff --check`, and
+  Clippy with `-D warnings` also passed.  Scheduler-sensitive debug tests use
+  generous outer test deadlines; production wait semantics were not changed.
+  The exact 1..N/7080 oracle gate has NOT been rerun after this native-audit
+  batch, so the compatibility frontier below remains the last measured one.
+  After committing this checkpoint, continue the native family audit (good
+  next candidates are the remaining `indent.c` primitives) or begin the fresh
+  exact oracle replay; do not infer 7080 progress from the native inventory.
+- AUTHORITATIVE 2026-07-25 FRONTIER: Delimited Columns is 9/9 in
+  `target/compat/run-1784977186186812000-88703`.  Dabbrev is 16/16 immediately
+  before it in `target/compat/run-1784976862207828000-88306`, Custom is 9/9 in
+  `target/compat/run-1784973964022350000-85646`, and Completion Preview is
+  11/11 in `target/compat/run-1784973333950428000-84528`.  NEXT is
+  `test/lisp/descr-text-tests.el` (three selected tests).
+- The newest thematic contracts are native frame/window and command-loop
+  behavior: real Rust `modify-frame-parameters`, selected/old-selected-window
+  state, use-time ordering, and GNU's deliberately narrow
+  `execute-kbd-macro` catch set.  A customized `command-error-function` does
+  not catch ordinary `user-error`; only `minibuffer-quit` is handled at that
+  loop boundary.  Direct fast Rust coverage and the killed-buffer/cross-buffer
+  Dabbrev selectors prevent regression.  Higher Custom and Dabbrev policy
+  stays in upstream Lisp.
+- Completion Preview exposed the parallel dumped-Lisp inventory theme:
+  `forward-whitespace`, `forward-symbol`, and `forward-same-syntax` are
+  Lisp-owned GNU `subr.el` preloads, so Emaxx now preloads them in Lisp and
+  covers all 11 upstream Completion Preview tests in the fast suite.
+- The latest thematic repair is the native `window.c` boundary.  Rust now
+  supplies the dumped variable family, batch geometry, resize/new-size state,
+  scroll hooks, fringes/scrollbars/cursor/display-table contracts, and actual
+  split/delete topology.  Window records initialize every native slot when
+  constructed, so later access cannot retroactively fill earlier state with
+  nil.  Internal windows are valid but not live and have no buffer, matching
+  GNU; this was the shared contract behind the final Todo failure.  Higher
+  window policy remains in real preloaded `window.el`.  Keep the focused Rust
+  assertions for defaults, topology, deletion, hooks, and Todo itself.
+- The first whole-native-surface audit is an inventory, not a bug count.
+  Its superseding reproducible snapshot is the 2026-07-27 generated manifest
+  above: 1,420 host-available GNU C primitives, 1,197 exact native Emaxx
+  surfaces, and 223 missing.  Do not silently compare it with a bare
+  `emacs -Q --batch` `subr-primitive-p` enumeration; regenerate from GNU C
+  `DEFUN` declarations plus the configured oracle runtime contract.  The
+  earlier variable audit found 684 active variables declared from GNU C, of
+  which Emaxx left 338 unbound; that variable inventory has not yet received
+  the same generated checkpoint treatment.
+  Some are intentionally irrelevant GUI/platform/compiler surfaces, and a
+  binding does not establish correct semantics.  Use the list to audit one
+  GNU source family at a time: read GNU C for the observable contract, keep
+  native C behavior native in idiomatic Rust, keep Lisp policy in Lisp, add
+  table-driven fast Rust probes, then use the oracle for ambiguous/deep
+  behavior.  Do not bulk-add no-op stubs.  The window family demonstrates the
+  payoff: its missing function surface fell from 45/117 to 19 while repairing
+  a cluster rather than one selector.
+- 2026-07-24 trustworthy cumulative baseline:
+  `target/compat/run-1784899759213881000-79075` is the clean isolated
+  canonical prefix through `test/lisp/files-x-tests.el`: 173/225 files match
+  exactly and 52 mismatch.  The newer clean canonical prefix through
+  `test/lisp/calendar/icalendar-tests.el` is 22/22 in
+  `target/compat/run-1784938521267523000-23325`.  It folds Emacsclient,
+  Archive, Auto-Revert, Bookmark, and iCalendar into ordered execution with no
+  early regression; iCalendar is 41/41 in that artifact, focused Auto-Revert is
+  7/7 in
+  `target/compat/run-1784907269175094000-12521`, Bookmark is 47/47 in
+  `target/compat/run-1784922448544839000-15902`, and Archive passes under the
+  corrected isolated-resource gate in
+  `target/compat/run-1784931683709926000-16475`.  A new 225-file replay is
+  still pending.  NEXT is `test/lisp/calendar/iso8601-tests.el`.  Do not
+  quote the older 3554/7080 prefix as a fresh gate: the VM-only `.elc.gz`
+  selector remains deliberately tabled.
+- The compatibility harness now makes stale/cross-run test state impossible
+  by construction.  Every run creates separate `git clone --shared`
+  checkouts for GNU and Emaxx, pins both to the configured GNU commit, and
+  runs `git clean -ffdqx` before each test file.  It restores only an explicit
+  fingerprinted test-support allowlist (generated ignored Lisp plus named
+  `lib-src` helpers); it never copies `src/emacs`.  GNU load-path directory
+  order is remapped into the isolated Emaxx checkout.  The support fingerprint
+  is recorded and rechecked in provenance, and 28 harness unit tests cover
+  ignored-output exclusion, per-file restoration, support mutation detection,
+  load-path ordering, and overriding the oracle executable's dumped
+  `source-directory` before each test.  The latter prevents `test/data`
+  fixture paths from escaping into the original sibling checkout.  Never
+  weaken this isolation or run a cumulative gate directly against the
+  writable sibling checkout.
+- Auto-Revert's timer and notification machinery was healthy; the shared file
+  edit boundary was wrong.  `insert-file-contents` with REPLACE no longer asks
+  a second supersession question, and its atomic delete+insert dynamically
+  binds `buffer-file-name` nil as GNU fileio.c specifies.  Bookmark then
+  exposed the full C-boundary contract for
+  `find-coding-systems-region-internal`: string or `(START END)` input, ASCII's
+  `t` sentinel, and EXCLUDE filtering.  The complete real/effective UID/GID
+  family is present, using direct POSIX identity calls on Unix.  Fast Rust
+  regressions cover all of these contracts.
+- iCalendar's seven two-hour shifts were one host-value abstraction leak:
+  GNU's preloaded Lisp `setenv` passes a mutable/property-capable string to
+  `set-time-zone-rule`, but Emaxx local civil-time encoding matched only its
+  compact string representation and silently fell back to wall time.  Both
+  local encode/decode paths now parse POSIX timezone rules through the common
+  string accessor.  The fast Rust regression uses the real upstream preload
+  stack and covers winter, DST, and explicit UTC.
+- The newest thematic repairs are at shared host boundaries.  Empty
+  `emaxx --batch` now exits successfully like GNU, which lets the real
+  `lib-src/emacsclient` fixture launch Emaxx as `ALTERNATE_EDITOR`.
+  `discard-input` implements GNU keyboard.c's batch-visible contract by
+  clearing pending command events and ending keyboard-macro definition.
+  Compressed file decoding presents the suffix-stripped payload name to
+  auto-coding policy, matching `jka-compr-byte-compiler-base-file-name`.
+  Most importantly, the `undecided` coding system now performs actual byte
+  detection, records the precise detected coding, preserves unibyte
+  destination bytes, and `encode/decode-coding-region` return GNU-compatible
+  lengths.  Fast Rust regressions cover every one of these behaviors,
+  including the exact UTF-8 snowflake path that repaired both nested Archive
+  extraction failures.
+- ACTIVE UNCOMMITTED THEMATIC FILE/PROCESS BATCH.  The strict canonical
+  prefix is now 3554/7080: the four automated `filenotify-tests.el' selectors
+  pass together in `target/compat/run-1784640263759277000-3945`, and the first
+  `files-tests.el' selector passes.  The second files selector,
+  `files-load-elc-gz-file`, remains the explicitly tabled GNU bytecode-VM gap;
+  do not fake it by forwarding to GNU or decoding `.elc' as source.  Beyond
+  that blocked strict-prefix point, the complete 116-test files replay is
+  115/116 in `target/compat/run-1784639865227053000-3224`; bytecode is its only
+  mismatch.  NEXT non-VM file is `test/lisp/files-x-tests.el' (selectors
+  3670..3676).  No final full Rust gate, commit, or push has happened yet.
+- The final files repairs are thematic host/preload contracts.  GNU files.el
+  now owns high-level save/revert policy through lazy dumped autoloads, while
+  native Rust implements lower-level file I/O and the newly added C-boundary
+  `replace-buffer-contents'.  That primitive uses a bounded LCS edit plan so
+  matched text, point/markers, properties, overlays, and narrowing survive;
+  `revert-buffer-function' carries GNU's public `revert-buffer--default'
+  spelling, with native behavior only as a file-less fallback.  VISIT writes
+  mark buffers saved, read-file-name honors its dynamic provider, files.el's
+  dumped save variables exist before first assignment, and missing-file visits
+  finish visiting state before signaling.  File-handler-visible names stay at
+  the Lisp boundary while unquoted host paths are used only for I/O.
+- Bug#18141 exposed two shared native manifests rather than an ISO fixture
+  special case.  GNU buffer.c's complete native permanent-local table is
+  `truncate-lines' plus `buffer-file-coding-system'; both now survive major
+  mode resets.  GNU 30.2 was probed directly and confirmed that all 18 ordinary
+  built-in text coding bases expose Unix/DOS/Mac variants, so bootstrap now
+  constructs the complete family centrally instead of maintaining a partial
+  hand-written list.  Fast Rust regressions cover native permanence, the full
+  coding registry, compressed visit/save, `replace-buffer-contents', and
+  fine-grained revert end to end.  The generated root files ` *temp*',
+  ` *temp*~', ` *temp*<2>', and ` *temp*<2>~' are stale artifacts from the
+  formerly ignored read-file-name provider and must be removed before commit.
 - ACTIVE UNCOMMITTED THEMATIC REGRESSION BATCH AFTER 3125 IS READY TO COMMIT.
   The final cumulative artifact is
   `target/compat/run-1784589326956761000-16406` (201 files through
@@ -1856,6 +2021,14 @@ one at a time.  For every mismatch:
 5. Replay the exact selector, then its grouped file when practical, plus
    nearby oracle files affected by the shared boundary.  The Rust suite catches
    local regressions quickly; only the oracle establishes GNU compatibility.
+
+`--selector check-all` resolves to ERT selector `t` and therefore runs tagged
+expensive/remote tests too; `--scope automated` filters files, not tests inside
+a file.  For the canonical 7080 denominator, use the manifest selectors (or
+`--selector default` where the manifest selected precisely the untagged set).
+Use `check-all` deliberately as the broader file stress test, with a timeout
+appropriate for its expensive tests, and do not misreport its larger test set
+as the canonical denominator.
 
 Opportunistic cleanup is encouraged only inside the code directly implicated
 by the failure.  Refactor convoluted, non-idiomatic, duplicated, or

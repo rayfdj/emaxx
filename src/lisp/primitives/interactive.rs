@@ -1,5 +1,53 @@
 use super::*;
 
+pub(crate) fn set_command_key_state(
+    interp: &mut Interpreter,
+    keys: Vec<Value>,
+    raw_keys: Vec<Value>,
+    env: &mut Env,
+) {
+    interp.keyboard_input.command_keys = keys.clone();
+    interp.keyboard_input.single_command_start = 0;
+    interp.keyboard_input.raw_keys = raw_keys;
+    interp.set_variable(
+        "this-single-command-keys",
+        Value::list(std::iter::once(Value::symbol("vector-literal")).chain(keys)),
+        env,
+    );
+}
+
+fn dribble_event_bytes(event: &Value) -> Vec<u8> {
+    match event {
+        Value::Integer(code) => u32::try_from(*code)
+            .ok()
+            .and_then(char::from_u32)
+            .map(|character| character.to_string().into_bytes())
+            .unwrap_or_else(|| format!("<{code}>").into_bytes()),
+        Value::String(text) => text.as_bytes().to_vec(),
+        Value::StringObject(state) => state.borrow().text.as_bytes().to_vec(),
+        Value::Symbol(symbol) => format!("<{symbol}>").into_bytes(),
+        other => format!("<{other}>").into_bytes(),
+    }
+}
+
+fn record_external_input_event(interp: &mut Interpreter, event: &Value) {
+    if !interp.kbd_macro_executions.is_empty() {
+        return;
+    }
+    interp.keyboard_input.recent_keys.push(event.clone());
+    let limit = interp.lossage_size.max(0) as usize;
+    if interp.keyboard_input.recent_keys.len() > limit {
+        let excess = interp.keyboard_input.recent_keys.len() - limit;
+        interp.keyboard_input.recent_keys.drain(0..excess);
+    }
+    if let Some(path) = &interp.keyboard_input.dribble_file
+        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path)
+    {
+        let _ = file.write_all(&dribble_event_bytes(event));
+        let _ = file.flush();
+    }
+}
+
 pub(crate) fn function_documentation(
     interp: &Interpreter,
     value: &Value,
@@ -312,7 +360,11 @@ pub(crate) fn pop_unread_command_event_value(
         {
             state.index += 1;
             let index = state.index;
-            interp.set_global_binding("executing-kbd-macro-index", Value::Integer(index as i64));
+            interp.set_variable(
+                "executing-kbd-macro-index",
+                Value::Integer(index as i64),
+                env,
+            );
             return Ok(event);
         }
         return Err(LispError::Signal(
@@ -321,6 +373,7 @@ pub(crate) fn pop_unread_command_event_value(
     }
     let event = events.remove(0);
     interp.set_variable("unread-command-events", Value::list(events), env);
+    record_external_input_event(interp, &event);
     Ok(event)
 }
 

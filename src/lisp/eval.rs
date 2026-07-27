@@ -4,13 +4,15 @@ use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::Child;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::primitives;
-use super::reader::RECORD_LITERAL_SYMBOL;
+use super::reader::{CHAR_TABLE_LITERAL_SYMBOL, RECORD_LITERAL_SYMBOL};
 use super::sqlite::SqliteHandleState;
-use super::types::{Env, LispError, SharedEnv, Value, interned_symbol_value, shared_env};
+use super::types::{
+    EmacsTermination, Env, LispError, SharedEnv, Value, interned_symbol_value, shared_env,
+};
 use crate::compat::{BatchSummary, DiscoveredTest, TestOutcome, TestStatus};
 use regex::Regex;
 
@@ -22,6 +24,7 @@ mod coding;
 mod control_forms;
 mod core;
 mod definitions;
+mod generated_autoloads;
 mod loops;
 mod macros;
 mod preload;
@@ -77,6 +80,13 @@ const GNU_LREAD_SPECIAL_VARIABLES: &[&str] = &[
     "read-symbol-shorthands",
     "macroexp--dynvars",
 ];
+
+// emacs.c's locale controls are native DEFVAR_LISP cells.  Startup's real
+// `set-locale-environment' policy reads and dynamically binds them before
+// most dumped libraries run, so they must exist independently of whichever
+// Lisp package first happens to exercise locale setup.
+const GNU_EMACS_LOCALE_SPECIAL_VARIABLES: &[&str] =
+    &["system-messages-locale", "system-time-locale"];
 
 // buffer.c's complete GNU 30.2 DEFVAR_PER_BUFFER contract.  These variables
 // are both special under lexical binding and automatically local to the
@@ -146,6 +156,12 @@ const GNU_NATIVE_PER_BUFFER_VARIABLES: &[&str] = &[
     "vertical-scroll-bar",
     "word-wrap",
 ];
+
+// buffer.c's buffer_permanent_local_flags table.  Unlike Lisp variables
+// carrying only a `permanent-local' property, these slots are made permanent
+// by the host and must retain that metadata before dumped Lisp is loaded.
+const GNU_NATIVE_PERMANENT_LOCAL_VARIABLES: &[&str] =
+    &["truncate-lines", "buffer-file-coding-system"];
 
 // The DEFVAR_PER_BUFFER slots absent from buffer.c's buffer_local_flags table
 // have index -1: unlike the default-inheriting entries above, every buffer
@@ -589,7 +605,7 @@ fn builtin_error_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
         .collect()
 }
 
-fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
+fn builtin_symbol_properties() -> Vec<(String, Value)> {
     let mut properties: Vec<(String, Vec<(String, Value)>)> = [
         ("autoload", 3),
         ("defadvice", 3),
@@ -638,6 +654,14 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
         ));
     }
     properties
+        .into_iter()
+        .map(|(symbol, properties)| {
+            let plist = properties
+                .into_iter()
+                .flat_map(|(property, value)| [Value::Symbol(property), value]);
+            (symbol, Value::list(plist))
+        })
+        .collect()
 }
 
 // One live keyboard-macro execution: recursive edits started while the macro
@@ -646,6 +670,19 @@ fn builtin_symbol_properties() -> Vec<(String, Vec<(String, Value)>)> {
 pub(crate) struct KbdMacroExecutionState {
     pub(crate) events: Vec<Value>,
     pub(crate) index: usize,
+}
+
+// keyboard.c keeps these as one kboard-owned input state.  Keeping the same
+// ownership boundary here prevents command-key, raw-key, lossage, focus, and
+// dribble primitives from drifting into unrelated Lisp-variable shims.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct KeyboardInputState {
+    pub(crate) command_keys: Vec<Value>,
+    pub(crate) single_command_start: usize,
+    pub(crate) raw_keys: Vec<Value>,
+    pub(crate) recent_keys: Vec<Value>,
+    pub(crate) dribble_file: Option<PathBuf>,
+    pub(crate) internal_last_event_frame: Option<Value>,
 }
 
 // One active `ert-with-message-capture` scope.  When the capture variable is
@@ -845,6 +882,9 @@ struct ThreadState {
     status: ThreadStatus,
     program: ThreadProgram,
     outcome: Option<ThreadOutcome>,
+    /// Whether this thread's event wait is currently servicing process
+    /// callbacks on behalf of user input.
+    waiting_for_user_input: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -862,10 +902,26 @@ struct ConditionVariableState {
     name: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CombinedAfterChangeState {
+    pub(crate) buffer_id: u64,
+    /// (unchanged chars before, unchanged chars after, inserted - deleted)
+    pub(crate) changes: Vec<(i64, i64, i64)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EqualStringHashTableState {
+    entries: Vec<(Value, Value)>,
+    string_index: HashMap<String, usize>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ProcessStatus {
     Run,
+    Stop,
     Exit,
+    /// Subprocess terminated by an operating-system signal.
+    Signal,
     /// Nonblocking network connection not yet reported as established.
     Connect,
     /// Network connection established (client or accepted server child).
@@ -876,11 +932,21 @@ enum ProcessStatus {
     Listen,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcessKind {
+    Real,
+    Pipe,
+    Network,
+    Serial,
+}
+
 impl ProcessStatus {
     fn symbol(&self) -> &'static str {
         match self {
             Self::Run => "run",
+            Self::Stop => "stop",
             Self::Exit => "exit",
+            Self::Signal => "signal",
             Self::Connect => "connect",
             Self::Open => "open",
             Self::Closed => "closed",
@@ -889,7 +955,10 @@ impl ProcessStatus {
     }
 
     fn is_live(&self) -> bool {
-        matches!(self, Self::Run | Self::Connect | Self::Open | Self::Listen)
+        matches!(
+            self,
+            Self::Run | Self::Stop | Self::Connect | Self::Open | Self::Listen
+        )
     }
 }
 
@@ -897,6 +966,10 @@ impl ProcessStatus {
 pub(crate) enum NetworkRuntime {
     Listener(std::net::TcpListener),
     Stream(std::net::TcpStream),
+    Datagram {
+        socket: std::net::UdpSocket,
+        remote: Option<std::net::SocketAddr>,
+    },
     /// `:family local' — unix domain sockets (erc-d's direct tests).
     UnixListener(std::os::unix::net::UnixListener),
     UnixStream(std::os::unix::net::UnixStream),
@@ -908,8 +981,29 @@ impl std::fmt::Debug for NetworkRuntime {
     }
 }
 
-struct RunningProcess {
-    child: Child,
+/// A serial descriptor is a process connection, but neither a subprocess nor
+/// a network socket.  Keep it separate so type checks cannot accidentally
+/// grant network-only operations to serial processes.
+pub(crate) struct SerialRuntime {
+    pub(crate) port: serialport::TTYPort,
+}
+
+impl std::fmt::Debug for SerialRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SerialRuntime").finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct RunningProcess {
+    pub(crate) child: Child,
+    /// Writable master for a pseudo-terminal connected to child stdin.
+    pub(crate) pty_input: Option<fs::File>,
+    /// Readable master for a pseudo-terminal connected to child output.
+    pub(crate) pty_output: Option<fs::File>,
+    /// Parent-held slave descriptor.  Darwin can discard unread master-side
+    /// bytes when the final slave closes, so keep one slave alive until the
+    /// child has exited and its output has been drained.
+    pub(crate) pty_slave_guard: Option<fs::File>,
 }
 
 impl std::fmt::Debug for RunningProcess {
@@ -920,6 +1014,7 @@ impl std::fmt::Debug for RunningProcess {
 
 struct ProcessState {
     record_id: u64,
+    kind: ProcessKind,
     buffer_id: Option<u64>,
     mark_marker_id: u64,
     status: ProcessStatus,
@@ -931,17 +1026,32 @@ struct ProcessState {
     log: Option<Value>,
     /// The process name (process-name / get-process).
     name: String,
-    _query_on_exit_flag: bool,
+    /// Thread whose event loop owns this process's descriptors.  None means
+    /// any thread may service it.
+    thread_id: Option<u64>,
+    query_on_exit_flag: bool,
+    /// GNU reuses p->command = t to stop traffic on connection records.
+    /// Keep that flow-control bit separate from the real subprocess argv.
+    traffic_stopped: bool,
+    /// GNU p->inherit_coding_system_flag.  This is independent from the
+    /// process coding pair and can be toggled after process creation.
+    inherit_coding_system_flag: bool,
     decoding: Value,
     encoding: Value,
     program: Option<String>,
     argv: Vec<String>,
     /// Optional pipe process receiving this child's standard error.
     stderr_process_id: Option<u64>,
-    /// Child exit code; nil for a signal/forced deletion or live processes.
+    /// Child exit code, or fatal signal number for signaled termination.
     exit_code: Option<i32>,
+    /// Fatal signal number when the OS reports signaled termination.
+    exit_signal: Option<i32>,
+    /// OS pid retained after the Child handle is reaped; nil for pipe and
+    /// network process records.
+    os_pid: Option<u32>,
     runtime: Option<RunningProcess>,
     network: Option<NetworkRuntime>,
+    serial: Option<SerialRuntime>,
     /// Network :host/:service as given at creation (process-contact).
     contact_host: Option<String>,
     contact_service: Option<i64>,
@@ -975,6 +1085,13 @@ struct WindowConfigurationSnapshot {
     selected_window_slots: Vec<Value>,
     frame_width: i64,
     frame_height: i64,
+}
+
+#[derive(Clone)]
+struct FileNotifyWatch {
+    path: Option<String>,
+    callback: Value,
+    active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1053,9 +1170,19 @@ pub struct Interpreter {
     pub(crate) special_scan_floor: usize,
     pub(crate) lisp_eval_depth: usize,
     pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
+    pub(crate) kbd_macro_definition: Vec<Value>,
+    pub(crate) kbd_macro_committed_len: usize,
+    pub(crate) keyboard_input: KeyboardInputState,
     pub(crate) command_loop_recursion_depth: usize,
-    /// Symbol properties keyed by symbol name.
-    symbol_properties: Vec<(String, Vec<(String, Value)>)>,
+    /// GNU's process-local time-zone rule.  Keep it interpreter-local here:
+    /// Rust tests run interpreters concurrently in one host process, so
+    /// mutating the host `TZ' would leak state between otherwise isolated
+    /// Emacs instances.
+    pub(crate) local_time_zone_rule: Value,
+    /// Symbol properties keyed by symbol name.  Each value is the actual live
+    /// Lisp plist, matching GNU symbols' plist cell rather than a Rust-side
+    /// projection that loses `setcar'/`setcdr' mutations.
+    symbol_properties: Vec<(String, Value)>,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<String>,
     /// Membership index for `interned_symbols'.  Keeping insertion order in
@@ -1070,16 +1197,45 @@ pub struct Interpreter {
     variable_watchers: Vec<(String, Vec<Value>)>,
     /// The current buffer being operated on.
     pub buffer: crate::buffer::Buffer,
+    /// Keymap selected by `use-global-map'.  GNU keeps this independently
+    /// from the Lisp variable `global-map'.
+    current_global_map: Option<Value>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
     /// The currently selected window record.
     selected_window_id: u64,
+    /// Whether each window should display its cursor on the next redisplay.
+    /// Missing entries retain GNU's visible-by-default state.
+    window_cursor_visibility: HashMap<u64, bool>,
+    /// Window selected when the last window-change cycle completed.
+    old_selected_window_id: u64,
+    /// Per-frame old selected window.  GNU's initial batch frame leaves this
+    /// unset until the first completed window-change cycle.
+    frame_old_selected_window_id: Option<u64>,
+    /// Monotonic selection stamp used by `window-use-time'.
+    window_select_count: i64,
     /// The selected frame width in character columns.
     frame_width: i64,
     /// The selected frame height in character rows.
     frame_height: i64,
+    /// Explicit parameters stored on the single batch/TTY frame.  Defaults
+    /// are derived from live geometry by the frame primitives; this sidecar
+    /// only owns values changed through `modify-frame-parameters'.
+    frame_parameter_overrides: Vec<(String, Value)>,
+    /// Stable Lisp identity of the batch frame's default name.
+    frame_name: Value,
+    /// dispnew.c's internal frame/buffer menu state vector.
+    frame_and_buffer_state: Value,
     /// Terminal-local parameters for the single runtime terminal.
-    terminal_parameters: Vec<(String, Value)>,
+    ///
+    /// GNU stores this as an alist and `set-terminal-parameter' accepts any
+    /// Lisp object as a key, even though the getter's public contract requires
+    /// a symbol.  Keep the native representation equally general.
+    terminal_parameters: Vec<(Value, Value)>,
+    /// Whether the single headless/bootstrap terminal has not been deleted.
+    /// GNU keeps deleted terminal objects as non-live Lisp identities while
+    /// removing them from `terminal-list`.
+    terminal_live: bool,
     /// Inactive buffers keyed by ID.
     inactive_buffers: Vec<(u64, crate::buffer::Buffer)>,
     /// Known buffers: (id, name) pairs.
@@ -1094,8 +1250,19 @@ pub struct Interpreter {
     markers: Vec<MarkerState>,
     /// Char tables allocated by the interpreter.
     char_tables: Vec<CharTableState>,
+    /// Stable lazy tables returned by `unicode-property-table-internal'.
+    /// GNU caches these in `char-code-property-alist'; recreating a table on
+    /// every character lookup makes Unicode-wide scans catastrophically
+    /// quadratic in allocation and also loses `put-char-code-property' data.
+    unicode_property_table_ids: HashMap<String, u64>,
+    /// Indexed storage for the common GNU `equal' hash-table/string-key
+    /// workload.  Record slots retain metadata compatibility, while this
+    /// sidecar prevents puthash/gethash from cloning and scanning a Lisp list.
+    equal_string_hash_tables: HashMap<u64, EqualStringHashTableState>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
+    /// Registered charsets and their stable GNU-compatible numeric IDs.
+    charset_ids: Vec<(String, i64)>,
     /// Charset plist overrides keyed by canonical charset name.
     charset_plists: Vec<(String, Value)>,
     /// Current charset priority order.
@@ -1104,6 +1271,9 @@ pub struct Interpreter {
     iso_charsets: Vec<(i64, i64, u32, String)>,
     /// Coding systems keyed by canonical name.
     coding_systems: Vec<CodingSystemState>,
+    /// GNU ccl.c's private registration table.  Lisp symbols refer to these
+    /// entries through their `ccl-program-idx' property.
+    pub(crate) ccl_programs: Vec<Option<(String, Value)>>,
     /// Coding-system aliases keyed by alias name.
     coding_aliases: Vec<(String, String)>,
     /// Current coding-system priority order.
@@ -1112,6 +1282,7 @@ pub struct Interpreter {
     terminal_coding: Option<String>,
     /// Current keyboard coding system.
     keyboard_coding: Option<String>,
+    input_interrupt_mode: bool,
     /// Shared standard category table.
     standard_category_table_id: Option<u64>,
     /// Shared standard case table.
@@ -1182,6 +1353,10 @@ pub struct Interpreter {
     /// erc's message load).  The cached entry holds the ORIGINAL form
     /// too, so its cons stays alive and the address is never reused.
     macro_expansion_cache: HashMap<usize, (u64, Value, Value)>,
+    /// Immutable lambda code keyed by the source form's car-cell identity.
+    /// The weak source witness prevents a recycled allocator address from
+    /// aliasing an unrelated form whose older closure is still alive.
+    lambda_source_bodies: HashMap<usize, LambdaSourceBodyCacheEntry>,
     /// Features currently available in this interpreter.
     provided_features: Vec<String>,
     /// Forms waiting for a feature to be provided.
@@ -1199,6 +1374,11 @@ pub struct Interpreter {
     pub test_results: Vec<TestOutcome>,
     /// Selected test names from the most recent ERT run.
     pub last_selected_tests: Vec<String>,
+    /// A `kill-emacs` request waiting for the process-owning batch boundary.
+    /// Keeping it explicit prevents an internal error-demotion path from
+    /// accidentally turning the native noreturn primitive into a catchable
+    /// Lisp condition.
+    pending_termination: Option<EmacsTermination>,
     /// The latest regexp match data in buffer coordinates.
     pub last_match_data: Option<Vec<Option<(usize, usize)>>>,
     /// Source buffer for buffer-origin match data; string searches leave this unset.
@@ -1244,6 +1424,7 @@ pub struct Interpreter {
     thread_states: Vec<ThreadState>,
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
+    combined_after_change: Option<CombinedAfterChangeState>,
     process_states: Vec<ProcessState>,
     class_states: Vec<ClassState>,
     class_parent_overrides: Vec<(u64, Vec<String>)>,
@@ -1259,6 +1440,7 @@ pub struct Interpreter {
     /// stored Value keeps the template alive so keys stay unique).
     pub(crate) plain_quote_templates: HashMap<usize, Value>,
     pending_file_notifications: Vec<(String, String)>,
+    file_notify_watches: HashMap<i64, FileNotifyWatch>,
     pub(crate) gnu_pcase_load_attempted: bool,
     pub(crate) gnu_rx_load_attempted: bool,
     pub(crate) pending_url_retrievals: Vec<PendingUrlRetrieval>,
@@ -1267,6 +1449,10 @@ pub struct Interpreter {
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
     active_handlers: Vec<ActiveHandler>,
+    /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
+    /// immediately when no `eq' tag is live, allowing condition handlers to
+    /// observe the error without intercepting throws bound for an outer catch.
+    active_catch_tags: Vec<Value>,
     handler_dispatch_depth: usize,
     suspend_condition_case_count: usize,
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
@@ -1284,6 +1470,85 @@ pub(crate) enum ActiveHandler {
     Case(Vec<Value>),
 }
 
+type LambdaSourceBodyCacheEntry = (Weak<std::cell::RefCell<Value>>, Weak<Vec<Value>>);
+
+fn make_query_replace_map(interp: &mut Interpreter) -> Value {
+    let map = primitives::make_runtime_keymap(interp, Some("query-replace-map"));
+    // replace.el is part of GNU's dumped image.  map-y-or-n-p and other
+    // preloaded prompt helpers therefore see this complete response map
+    // before `replace' is explicitly loaded.
+    for (key, answer) in [
+        ("SPC", "act"),
+        ("DEL", "skip"),
+        ("delete", "skip"),
+        ("backspace", "skip"),
+        ("y", "act"),
+        ("n", "skip"),
+        ("Y", "act"),
+        ("N", "skip"),
+        ("e", "edit-replacement"),
+        ("E", "edit-replacement-exact-case"),
+        (",", "act-and-show"),
+        ("q", "exit"),
+        ("RET", "exit"),
+        ("return", "exit"),
+        (".", "act-and-exit"),
+        ("C-r", "edit"),
+        ("C-w", "delete-and-edit"),
+        ("C-l", "recenter"),
+        ("!", "automatic"),
+        ("^", "backup"),
+        ("u", "undo"),
+        ("U", "undo-all"),
+        ("C-h", "help"),
+        ("f1", "help"),
+        ("help", "help"),
+        ("?", "help"),
+        ("C-g", "quit"),
+        ("C-]", "quit"),
+        ("C-v", "scroll-up"),
+        ("M-v", "scroll-down"),
+        ("next", "scroll-up"),
+        ("prior", "scroll-down"),
+        ("C-M-v", "scroll-other-window"),
+        ("M-next", "scroll-other-window"),
+        ("C-M-S-v", "scroll-other-window-down"),
+        ("M-prior", "scroll-other-window-down"),
+        ("escape", "exit-prefix"),
+    ] {
+        primitives::keymap_define_binding_with_placement(
+            interp,
+            &map,
+            key,
+            Some(vec![key.into()]),
+            Value::Symbol(answer.into()),
+            true,
+        )
+        .expect("static query-replace-map binding");
+    }
+    map
+}
+
+fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
+    let map = primitives::make_runtime_keymap(interp, Some("visual-line-mode-map"));
+    for (command, replacement) in [
+        ("kill-line", "kill-visual-line"),
+        ("move-beginning-of-line", "beginning-of-visual-line"),
+        ("move-end-of-line", "end-of-visual-line"),
+    ] {
+        let parts = vec!["<remap>".into(), format!("<{command}>")];
+        let _ = primitives::keymap_define_binding_with_placement(
+            interp,
+            &map,
+            &parts.join(" "),
+            Some(parts),
+            Value::Symbol(replacement.into()),
+            true,
+        );
+    }
+    map
+}
+
 impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
@@ -1291,16 +1556,36 @@ impl Default for Interpreter {
 }
 
 impl Interpreter {
+    pub(crate) fn request_termination(&mut self, termination: EmacsTermination) {
+        self.pending_termination = Some(termination);
+    }
+
+    pub(crate) fn pending_termination(&self) -> Option<&EmacsTermination> {
+        self.pending_termination.as_ref()
+    }
+
+    pub(crate) fn take_pending_termination(&mut self) -> Option<EmacsTermination> {
+        self.pending_termination.take()
+    }
+
     pub fn new() -> Self {
         let main_thread_id = 1u64;
         let standard_obarray_id = 2u64;
         let standard_syntax_table_id = 1u64;
+        let local_time_zone_rule = std::env::var("TZ")
+            .map(Value::String)
+            .unwrap_or_else(|_| Value::Symbol("wall".into()));
+        let frame_name =
+            primitives::make_shared_string_value_with_multibyte("F1".into(), Vec::new(), true);
         let mut interp = Interpreter {
             globals: vec![
                 ("main-thread".into(), Value::Record(main_thread_id)),
                 ("obarray".into(), Value::Record(standard_obarray_id)),
                 ("cl--proclaims-deferred".into(), Value::Nil),
                 ("cl-old-struct-compat-mode".into(), Value::Nil),
+                // GNU frame.c defines this native variable before frame.el
+                // and any dumped/preloaded Lisp run.
+                ("default-frame-alist".into(), Value::Nil),
                 (
                     "command-line-args".into(),
                     primitives::command_line_args_value(),
@@ -1315,13 +1600,16 @@ impl Interpreter {
                 ("delayed-after-hook-functions".into(), Value::Nil),
                 ("delayed-mode-hooks".into(), Value::Nil),
                 ("executing-kbd-macro".into(), Value::Nil),
+                ("executing-kbd-macro-index".into(), Value::Integer(0)),
                 ("exec-path".into(), current_exec_path()),
+                ("kbd-macro-termination-hook".into(), Value::Nil),
                 ("last-kbd-macro".into(), Value::Nil),
                 ("file-name-handler-alist".into(), Value::Nil),
                 ("inhibit-file-name-handlers".into(), Value::Nil),
                 ("inhibit-file-name-operation".into(), Value::Nil),
                 ("inhibit-read-only".into(), Value::Nil),
                 ("kill-emacs-hook".into(), Value::Nil),
+                ("delete-terminal-functions".into(), Value::Nil),
                 ("null-device".into(), Value::String("/dev/null".into())),
                 (
                     "default-process-coding-system".into(),
@@ -1339,6 +1627,7 @@ impl Interpreter {
                 ("process-adaptive-read-buffering".into(), Value::T),
                 ("process-connection-type".into(), Value::T),
                 ("process-error-pause-time".into(), Value::Integer(1)),
+                ("inherit-process-coding-system".into(), Value::Nil),
                 ("process-prioritize-lower-fds".into(), Value::Nil),
                 ("read-process-output-max".into(), Value::Integer(65_536)),
                 ("selection-converter-alist".into(), Value::Nil),
@@ -1385,6 +1674,29 @@ impl Interpreter {
                     Value::Symbol("external-debugging-output".into()),
                 ),
                 ("emaxx-external-debugging-output-target".into(), Value::Nil),
+                (
+                    "code-conversion-map-vector".into(),
+                    Value::list(
+                        std::iter::once(Value::Symbol("vector-literal".into()))
+                            .chain(std::iter::repeat_n(Value::Nil, 16)),
+                    ),
+                ),
+                ("translation-hash-table-vector".into(), Value::Nil),
+                ("font-ccl-encoder-alist".into(), Value::Nil),
+                ("charset-revision-table".into(), Value::Nil),
+                ("enable-character-translation".into(), Value::T),
+                ("last-code-conversion-error".into(), Value::Nil),
+                (
+                    "latin-extra-code-table".into(),
+                    Value::list(
+                        std::iter::once(Value::Symbol("vector-literal".into()))
+                            .chain(std::iter::repeat_n(Value::Nil, 256)),
+                    ),
+                ),
+                ("select-safe-coding-system-function".into(), Value::Nil),
+                ("standard-translation-table-for-decode".into(), Value::Nil),
+                ("standard-translation-table-for-encode".into(), Value::Nil),
+                ("translation-table-for-input".into(), Value::Nil),
             ],
             variable_aliases: Vec::new(),
             variable_aliases_index: HashMap::new(),
@@ -1395,12 +1707,18 @@ impl Interpreter {
             special_scan_floor: 0,
             lisp_eval_depth: 0,
             kbd_macro_executions: Vec::new(),
+            kbd_macro_definition: Vec::new(),
+            kbd_macro_committed_len: 0,
+            keyboard_input: KeyboardInputState::default(),
             command_loop_recursion_depth: 0,
+            local_time_zone_rule,
             special_variables: vec![
                 "case-fold-search".into(),
                 "executing-kbd-macro".into(),
                 "executing-kbd-macro-index".into(),
                 "defining-kbd-macro".into(),
+                "kbd-macro-termination-hook".into(),
+                "last-kbd-macro".into(),
                 "track-mouse".into(),
                 "last-input-event".into(),
                 "last-command-event".into(),
@@ -1422,6 +1740,8 @@ impl Interpreter {
                 "inhibit-quit".into(),
                 "quit-flag".into(),
                 "unread-command-events".into(),
+                "coding-system-alist".into(),
+                "char-code-property-alist".into(),
                 "overlay-arrow-position".into(),
                 "overlay-arrow-string".into(),
                 "load-read-function".into(),
@@ -1432,6 +1752,7 @@ impl Interpreter {
                 "cl--proclaims-deferred".into(),
                 "current-load-list".into(),
                 "load-history".into(),
+                "default-frame-alist".into(),
                 "delay-mode-hooks".into(),
                 "delayed-after-hook-functions".into(),
                 "delayed-mode-hooks".into(),
@@ -1465,6 +1786,7 @@ impl Interpreter {
                 "process-adaptive-read-buffering".into(),
                 "process-connection-type".into(),
                 "process-error-pause-time".into(),
+                "inherit-process-coding-system".into(),
                 "process-environment".into(),
                 "process-prioritize-lower-fds".into(),
                 "read-process-output-max".into(),
@@ -1489,11 +1811,20 @@ impl Interpreter {
             standard_obarray_id,
             variable_watchers: Vec::new(),
             buffer: crate::buffer::Buffer::new("*test*"),
+            current_global_map: None,
             current_buffer_id: 0,
             selected_window_id: 0,
+            window_cursor_visibility: HashMap::new(),
+            old_selected_window_id: 0,
+            frame_old_selected_window_id: None,
+            window_select_count: 1,
             frame_width: 80,
             frame_height: 24,
+            frame_parameter_overrides: Vec::new(),
+            frame_name,
+            frame_and_buffer_state: Value::Nil,
             terminal_parameters: Vec::new(),
+            terminal_live: true,
             inactive_buffers: vec![(1, crate::buffer::Buffer::new("*Messages*"))],
             buffer_list: vec![(0, "*test*".to_string()), (1, "*Messages*".to_string())],
             next_buffer_id: 2,
@@ -1552,15 +1883,76 @@ impl Interpreter {
                     category_docs: Vec::new(),
                 },
             ],
+            unicode_property_table_ids: HashMap::new(),
+            equal_string_hash_tables: HashMap::new(),
             charset_aliases: Vec::new(),
-            charset_plists: Vec::new(),
+            charset_ids: vec![
+                ("ascii".into(), 0),
+                ("iso-8859-1".into(), 1),
+                ("unicode".into(), 2),
+                ("emacs".into(), 3),
+                ("eight-bit".into(), 4),
+            ],
+            // charset.c creates these five records before dumped Lisp runs.
+            // Their direct mappings are part of the preload contract: merely
+            // reserving the names makes charset codings appear valid while
+            // rejecting every non-ASCII character (notably Latin-1).
+            charset_plists: vec![
+                (
+                    "ascii".into(),
+                    Value::list([
+                        Value::symbol(":ascii-compatible-p"),
+                        Value::T,
+                        Value::symbol(":code-offset"),
+                        Value::Integer(0),
+                    ]),
+                ),
+                (
+                    "iso-8859-1".into(),
+                    Value::list([
+                        Value::symbol(":ascii-compatible-p"),
+                        Value::T,
+                        Value::symbol(":code-offset"),
+                        Value::Integer(0),
+                    ]),
+                ),
+                (
+                    "unicode".into(),
+                    Value::list([
+                        Value::symbol(":ascii-compatible-p"),
+                        Value::T,
+                        Value::symbol(":code-offset"),
+                        Value::Integer(0),
+                    ]),
+                ),
+                (
+                    "emacs".into(),
+                    Value::list([
+                        Value::symbol(":ascii-compatible-p"),
+                        Value::T,
+                        Value::symbol(":code-offset"),
+                        Value::Integer(0),
+                    ]),
+                ),
+                (
+                    "eight-bit".into(),
+                    Value::list([
+                        Value::symbol(":ascii-compatible-p"),
+                        Value::Nil,
+                        Value::symbol(":code-offset"),
+                        Value::Integer(0x3f_ff80),
+                    ]),
+                ),
+            ],
             charset_priority: vec!["unicode".into(), "ascii".into(), "eight-bit".into()],
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             coding_systems: builtin_coding_systems(),
+            ccl_programs: vec![None; 32],
             coding_aliases: builtin_coding_aliases(),
             coding_priority: builtin_coding_priority(),
             terminal_coding: None,
             keyboard_coding: None,
+            input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_table_id: None,
             ascii_case_table_ids: Vec::new(),
@@ -1612,7 +2004,15 @@ impl Interpreter {
             definition_generation: 0,
             not_macro_names: HashMap::new(),
             macro_expansion_cache: HashMap::new(),
+            lambda_source_bodies: HashMap::new(),
             provided_features: vec![
+                // GNU bindings.el advertises these host-backed primitive
+                // families in the dumped image.
+                "base64".into(),
+                // GNU dumps cl-preloaded.el's circular CL class/structure
+                // foundation.  Emaxx's equivalent host metadata is
+                // installed below before any included struct is defined.
+                "cl-preloaded".into(),
                 "emacs".into(),
                 "emaxx".into(),
                 "ert".into(),
@@ -1622,15 +2022,19 @@ impl Interpreter {
                 // capability subfeatures; the property is set alongside in
                 // Interpreter::new (featurep consults it).
                 "make-network-process".into(),
+                "md5".into(),
                 "native-compile".into(),
                 // GNU preloads oclosure.el (loadup.el); emaxx implements
                 // oclosures natively, so (require 'oclosure) must not load
                 // the GNU file over them.
                 "oclosure".into(),
-                // url-retrieve and friends are native (Rust HTTP); GNU's
-                // url.el/url-http.el would shadow them with
-                // make-network-process code emaxx cannot run.
-                "url".into(),
+                "overlay".into(),
+                "sha1".into(),
+                "text-properties".into(),
+                // `url' itself is a Lisp package: claiming its feature here
+                // would make `(require 'url)' skip url.el's parser, record,
+                // cookie, and method setup.  Only the HTTP transport entry
+                // points are pinned to Rust (see `prefer_builtin_override').
                 "url-http".into(),
                 "threads".into(),
             ],
@@ -1641,6 +2045,7 @@ impl Interpreter {
             ert_tests: Vec::new(),
             test_results: Vec::new(),
             last_selected_tests: Vec::new(),
+            pending_termination: None,
             last_match_data: None,
             last_match_data_buffer_id: None,
             profiler_memory_running: false,
@@ -1674,9 +2079,11 @@ impl Interpreter {
                 status: ThreadStatus::Runnable,
                 program: ThreadProgram::Main,
                 outcome: None,
+                waiting_for_user_input: false,
             }],
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
+            combined_after_change: None,
             process_states: Vec::new(),
             class_states: Vec::new(),
             class_parent_overrides: Vec::new(),
@@ -1685,6 +2092,7 @@ impl Interpreter {
             pending_timers: Vec::new(),
             plain_quote_templates: HashMap::new(),
             pending_file_notifications: Vec::new(),
+            file_notify_watches: HashMap::new(),
             gnu_pcase_load_attempted: false,
             gnu_rx_load_attempted: false,
             pending_url_retrievals: Vec::new(),
@@ -1693,6 +2101,7 @@ impl Interpreter {
             last_thread_error: None,
             backtrace_frames: Vec::new(),
             active_handlers: Vec::new(),
+            active_catch_tags: Vec::new(),
             handler_dispatch_depth: 0,
             suspend_condition_case_count: 0,
             window_margins: Vec::new(),
@@ -1703,8 +2112,15 @@ impl Interpreter {
         for name in GNU_LREAD_SPECIAL_VARIABLES {
             interp.mark_special_variable(name);
         }
+        for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
         for name in GNU_NATIVE_PER_BUFFER_VARIABLES {
             interp.mark_per_buffer_special(name);
+        }
+        for name in GNU_NATIVE_PERMANENT_LOCAL_VARIABLES {
+            interp.put_symbol_property(name, "permanent-local", Value::T);
         }
         for name in GNU_ALWAYS_LOCAL_PER_BUFFER_VARIABLES {
             interp.mark_always_buffer_local_special(name);
@@ -1737,6 +2153,25 @@ impl Interpreter {
             ]);
             interp.put_symbol_property("make-network-process", "subfeatures", subfeatures);
         }
+        interp.put_symbol_property(
+            "overlay",
+            "subfeatures",
+            Value::list([
+                Value::Symbol("display".into()),
+                Value::Symbol("syntax-table".into()),
+                Value::Symbol("field".into()),
+            ]),
+        );
+        interp.put_symbol_property(
+            "text-properties",
+            "subfeatures",
+            Value::list([
+                Value::Symbol("display".into()),
+                Value::Symbol("syntax-table".into()),
+                Value::Symbol("field".into()),
+                Value::Symbol("point-entered".into()),
+            ]),
+        );
         for class_name in primitives::builtin_class_names() {
             interp.put_symbol_property(
                 class_name,
@@ -1750,6 +2185,161 @@ impl Interpreter {
                     Value::Symbol(predicate.into()),
                 );
             }
+        }
+        for (type_name, predicate) in primitives::builtin_cl_satisfies_types() {
+            interp.put_symbol_property(
+                type_name,
+                "cl-deftype-satisfies",
+                Value::Symbol((*predicate).into()),
+            );
+        }
+        // simple.el dumps decoded-time's `:type list' cl-defstruct.  Emaxx
+        // keeps its accessors host-backed, but must publish the same struct
+        // and compiler-macro metadata so GNU gv.el can lower their setf
+        // places to list cells.
+        let decoded_time_slots = [
+            "second", "minute", "hour", "day", "month", "year", "weekday", "dst", "zone",
+        ];
+        interp.put_symbol_property(
+            "decoded-time",
+            "emaxx-struct-slots",
+            Value::list(decoded_time_slots.into_iter().map(Value::symbol)),
+        );
+        interp.put_symbol_property(
+            "decoded-time",
+            "emaxx-struct-defaults",
+            Value::list(
+                decoded_time_slots
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        if index == 7 {
+                            Value::Integer(-1)
+                        } else {
+                            Value::Nil
+                        }
+                    }),
+            ),
+        );
+        interp.put_symbol_property(
+            "decoded-time",
+            "emaxx-struct-slot-descs",
+            Value::list(
+                std::iter::once(Value::list([Value::symbol("cl-tag-slot")])).chain(
+                    decoded_time_slots
+                        .into_iter()
+                        .map(|slot| Value::list([Value::symbol(slot)])),
+                ),
+            ),
+        );
+        interp.put_symbol_property(
+            "decoded-time",
+            "emaxx-struct-sequence-type",
+            Value::symbol("list"),
+        );
+        for (index, slot) in decoded_time_slots.into_iter().enumerate() {
+            let accessor = format!("decoded-time-{slot}");
+            interp.put_symbol_property(
+                &accessor,
+                "emaxx-struct-type",
+                Value::symbol("decoded-time"),
+            );
+            interp.put_symbol_property(
+                &accessor,
+                "emaxx-struct-slot",
+                Value::Integer(index as i64),
+            );
+            interp.install_struct_accessor_compiler_macro(&accessor, "nth", index);
+        }
+
+        // cl-preloaded.el also dumps cl-slot-descriptor before ordinary
+        // libraries run.  Its accessors stay host-backed in Emaxx, while the
+        // structure and compiler-macro metadata remain observable Lisp
+        // contract (notably to gv.el and CEDET).
+        let cl_slot_descriptor_slots = ["name", "initform", "type", "props"];
+        interp.put_symbol_property(
+            "cl-slot-descriptor",
+            "emaxx-struct-slots",
+            Value::list(cl_slot_descriptor_slots.into_iter().map(Value::symbol)),
+        );
+        interp.put_symbol_property(
+            "cl-slot-descriptor",
+            "emaxx-struct-defaults",
+            Value::list(std::iter::repeat_n(
+                Value::Nil,
+                cl_slot_descriptor_slots.len(),
+            )),
+        );
+        interp.put_symbol_property(
+            "cl-slot-descriptor",
+            "emaxx-struct-slot-descs",
+            Value::list(
+                std::iter::once(Value::list([Value::symbol("cl-tag-slot")])).chain(
+                    cl_slot_descriptor_slots
+                        .into_iter()
+                        .map(|slot| Value::list([Value::symbol(slot)])),
+                ),
+            ),
+        );
+        interp.put_symbol_property(
+            "cl-slot-descriptor",
+            "emaxx-struct-sequence-type",
+            Value::Nil,
+        );
+        for (index, slot) in cl_slot_descriptor_slots.into_iter().enumerate() {
+            let accessor = format!("cl--slot-descriptor-{slot}");
+            interp.put_symbol_property(
+                &accessor,
+                "emaxx-struct-type",
+                Value::symbol("cl-slot-descriptor"),
+            );
+            interp.put_symbol_property(
+                &accessor,
+                "emaxx-struct-slot",
+                Value::Integer(index as i64),
+            );
+            interp.install_struct_accessor_compiler_macro(&accessor, "aref", index + 1);
+        }
+
+        // cl-preloaded.el creates this parent before eieio-core defines
+        // `eieio--class' with (:include cl--class).  The source bootstrap is
+        // intentionally circular and builds GNU's record/class object
+        // representation; Emaxx owns that low-level representation in Rust,
+        // so install the dumped parent metadata at the same boundary.  The
+        // ordinary `cl-defstruct' producer then derives every inherited
+        // EIEIO accessor and `(setf ACCESSOR)' function from this one table.
+        let cl_class_slots = ["name", "docstring", "parents", "slots", "index-table"];
+        interp.put_symbol_property(
+            "cl--class",
+            "emaxx-struct-slots",
+            Value::list(cl_class_slots.into_iter().map(Value::symbol)),
+        );
+        interp.put_symbol_property(
+            "cl--class",
+            "emaxx-struct-defaults",
+            Value::list(std::iter::repeat_n(Value::Nil, cl_class_slots.len())),
+        );
+        interp.put_symbol_property(
+            "cl--class",
+            "emaxx-struct-slot-descs",
+            Value::list(
+                std::iter::once(Value::list([Value::symbol("cl-tag-slot")])).chain(
+                    cl_class_slots
+                        .into_iter()
+                        .map(|slot| Value::list([Value::symbol(slot)])),
+                ),
+            ),
+        );
+        interp.put_symbol_property("cl--class", "emaxx-struct-sequence-type", Value::Nil);
+        for (slot, index) in [("name", 0usize), ("parents", 2), ("index-table", 4)] {
+            let accessor = format!("cl--class-{slot}");
+            interp.put_symbol_property(&accessor, "emaxx-struct-type", Value::symbol("cl--class"));
+            interp.put_symbol_property(
+                &accessor,
+                "emaxx-struct-slot",
+                Value::Integer(index as i64),
+            );
+            interp.install_struct_accessor_compiler_macro(&accessor, "aref", index + 1);
         }
         let esc_map = primitives::make_runtime_full_keymap(&mut interp, Some("esc-map"));
         interp.set_global_binding("esc-map", esc_map.clone());
@@ -1776,7 +2366,21 @@ impl Interpreter {
             true,
         );
         let global_map = primitives::make_runtime_full_keymap(&mut interp, Some("global-map"));
+        interp.current_global_map = Some(global_map.clone());
         interp.set_global_binding("global-map", global_map);
+        // Dumped mode maps are identity-bearing Lisp objects.  A computed
+        // fallback would allocate a fresh `(keymap ...)' facade on every
+        // variable read, breaking `eq', mapatoms, mutation, and aliases.
+        for name in [
+            "text-mode-map",
+            "lisp-mode-shared-map",
+            "lisp-mode-map",
+            "emacs-lisp-mode-map",
+            "special-mode-map",
+        ] {
+            let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
+            interp.set_global_binding(name, keymap);
+        }
         let buffer_menu_mode_map =
             primitives::make_runtime_keymap(&mut interp, Some("Buffer-menu-mode-map"));
         interp.set_global_binding("Buffer-menu-mode-map", buffer_menu_mode_map.clone());
@@ -1805,11 +2409,34 @@ impl Interpreter {
             .unwrap_or(Value::Nil);
         let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{1b}", esc_map);
         let _ = primitives::keymap_define_binding(&mut interp, &global_map, "\u{18}", ctl_x_map);
+        // subr.el constructs the initial global map before bindings.el is
+        // dumped.  C-] is intentionally defined there (and not repeated by
+        // bindings.el), so the native bootstrap side of that existing
+        // boundary must carry it too.
+        let _ = primitives::keymap_define_binding(
+            &mut interp,
+            &global_map,
+            "C-]",
+            Value::Symbol("abort-recursive-edit".into()),
+        );
         let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
         interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
         let input_decode_map =
             primitives::make_runtime_keymap(&mut interp, Some("input-decode-map"));
         interp.set_global_binding("input-decode-map", input_decode_map);
+        // keyboard.c creates these identity-bearing translation/event maps
+        // before bindings.el is dumped.  Keep the native map family together
+        // so loading the owning Lisp bindings never depends on ad-hoc nil
+        // placeholders.
+        for name in [
+            "special-event-map",
+            "function-key-map",
+            "key-translation-map",
+        ] {
+            let keymap = primitives::make_runtime_keymap(&mut interp, Some(name));
+            interp.set_global_binding(name, keymap);
+            interp.mark_special_variable(name);
+        }
         let minibuffer_local_map =
             primitives::make_runtime_keymap(&mut interp, Some("minibuffer-local-map"));
         interp.set_global_binding("minibuffer-local-map", minibuffer_local_map);
@@ -1819,12 +2446,39 @@ impl Interpreter {
             "minibuffer-local-completion-map",
             minibuffer_local_completion_map,
         );
-        let query_replace_map =
-            primitives::make_runtime_keymap(&mut interp, Some("query-replace-map"));
+        let query_replace_map = make_query_replace_map(&mut interp);
         interp.set_global_binding("query-replace-map", query_replace_map);
+        // `visual-line-mode' deliberately stays native in Emaxx, so its
+        // native bootstrap owns the same complete mode contract that GNU's
+        // dumped simple.el creates: a stable map, mode variable, hook family,
+        // and minor-mode registry entry.
+        let visual_line_mode_map = make_visual_line_mode_map(&mut interp);
+        interp.set_global_binding("visual-line-mode-map", visual_line_mode_map.clone());
+        interp.mark_special_variable("visual-line-mode-map");
         interp.set_global_binding("mouse-wheel-buttons", Value::Nil);
-        interp.set_global_binding("minor-mode-map-alist", Value::Nil);
+        interp.set_global_binding(
+            "minor-mode-map-alist",
+            Value::list([Value::cons(
+                Value::Symbol("visual-line-mode".into()),
+                visual_line_mode_map,
+            )]),
+        );
+        interp.set_global_binding(
+            "minor-mode-list",
+            Value::list([Value::Symbol("visual-line-mode".into())]),
+        );
         primitives::ensure_standard_abbrev_tables(&mut interp);
+        interp.set_global_binding("visual-line-mode", Value::Nil);
+        interp.mark_special_variable("visual-line-mode");
+        interp.mark_auto_buffer_local("visual-line-mode");
+        for hook in [
+            "visual-line-mode-hook",
+            "visual-line-mode-on-hook",
+            "visual-line-mode-off-hook",
+        ] {
+            interp.set_global_binding(hook, Value::Nil);
+            interp.mark_special_variable(hook);
+        }
         interp.set_global_binding("font-lock-mode", Value::Nil);
         interp.mark_auto_buffer_local("font-lock-mode");
         interp.set_global_binding("font-lock-fontified", Value::Nil);
@@ -1857,11 +2511,80 @@ impl Interpreter {
         let char_script_table =
             interp.make_char_table(Some("char-script-table".into()), Value::Nil);
         interp.set_global_binding("char-script-table", char_script_table);
+        let auto_fill_chars = interp.make_char_table(Some("auto-fill-chars".into()), Value::Nil);
+        if let Value::CharTable(table_id) = auto_fill_chars {
+            interp
+                .char_table_set(table_id, ' ' as u32, Value::T)
+                .expect("initialize auto-fill-chars space entry");
+            interp
+                .char_table_set(table_id, '\n' as u32, Value::T)
+                .expect("initialize auto-fill-chars newline entry");
+            interp.set_global_binding("auto-fill-chars", Value::CharTable(table_id));
+        }
+        let char_width_table = interp.make_char_table(None, Value::Integer(1));
+        if let Value::CharTable(table_id) = char_width_table {
+            interp
+                .char_table_set_range(table_id, 0x80, 0x9f, Value::Integer(4))
+                .expect("initialize C1 character widths");
+            interp.set_global_binding("char-width-table", Value::CharTable(table_id));
+        }
+        let ambiguous_width_chars = interp.make_char_table(None, Value::Nil);
+        interp.set_global_binding("ambiguous-width-chars", ambiguous_width_chars);
+        let printable_chars = interp.make_char_table(None, Value::Nil);
+        if let Value::CharTable(table_id) = printable_chars {
+            interp
+                .char_table_set_range(table_id, 32, 126, Value::T)
+                .expect("initialize ASCII printable characters");
+            interp
+                .char_table_set_range(table_id, 160, 0x3f_ffff, Value::T)
+                .expect("initialize multibyte printable characters");
+            interp.set_global_binding("printable-chars", Value::CharTable(table_id));
+        }
+        interp.set_global_binding("script-representative-chars", Value::Nil);
+        interp.set_global_binding("unicode-category-table", Value::Nil);
+        interp.set_global_binding("auto-composition-function", Value::Nil);
+        let composition_function_table = interp.make_char_table(None, Value::Nil);
+        interp.set_global_binding("composition-function-table", composition_function_table);
+        interp.set_global_binding("auto-composition-emoji-eligible-codepoints", Value::Nil);
+        for name in [
+            "auto-fill-chars",
+            "char-width-table",
+            "ambiguous-width-chars",
+            "printable-chars",
+            "char-script-table",
+            "script-representative-chars",
+            "unicode-category-table",
+            "auto-composition-function",
+            "composition-function-table",
+            "auto-composition-emoji-eligible-codepoints",
+        ] {
+            interp.mark_special_variable(name);
+        }
         interp.set_global_binding("buffer-read-only", Value::Nil);
+        interp.set_global_binding("dump-mode", Value::Nil);
+        interp.mark_special_variable("dump-mode");
+        interp.set_global_binding("charset-map-path", Value::Nil);
+        interp.set_global_binding("inhibit-load-charset-map", Value::Nil);
+        interp.set_global_binding("current-iso639-language", Value::Nil);
+        for name in [
+            "charset-map-path",
+            "inhibit-load-charset-map",
+            "charset-list",
+            "current-iso639-language",
+        ] {
+            interp.mark_special_variable(name);
+        }
         // GNU defines this C variable as both special and automatically
         // buffer-local.  A dynamic binding therefore belongs to the buffer
         // where it was made and must not make a newly selected buffer read-only.
         interp.mark_always_buffer_local_special("buffer-read-only");
+        for (name, value) in [
+            ("delete-auto-save-files", Value::T),
+            ("kill-buffer-delete-auto-save-files", Value::Nil),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
         interp.set_global_binding("read-only-mode", Value::Nil);
         interp.mark_auto_buffer_local("read-only-mode");
         // GNU's preloaded `(declare (indent N))' effects: every symbol
@@ -2091,10 +2814,14 @@ impl Interpreter {
         for name in ["buffer-file-name", "buffer-file-truename"] {
             interp.mark_always_buffer_local_special(name);
         }
+        for name in ["buffer-auto-save-file-name", "selective-display"] {
+            interp.set_global_binding(name, Value::Nil);
+        }
         // emacs.c defines this host flag with DEFVAR_BOOL.  Batch tests may
         // dynamically bind it around separately defined interactive code
         // (Viper does); lexical isolation must not hide that binding.
         interp.mark_special_variable("noninteractive");
+        interp.mark_special_variable("delete-terminal-functions");
         // GNU keeps this dynamically scoped variable globally bound to nil;
         // loading a lexical file binds it to t only for that load.
         interp.set_global_binding("lexical-binding", Value::Nil);
@@ -2109,6 +2836,46 @@ impl Interpreter {
         // dynamically override the shell used by separately defined code.
         interp.mark_special_variable("shell-file-name");
         interp.mark_special_variable("shell-command-switch");
+        interp.mark_special_variable("exec-path");
+        // doc.c defines this as a native Lisp variable.  Help's quoting
+        // policy calls the C accessor from separately defined Lisp, so a
+        // lexical caller's `let' must establish a dynamic binding.
+        interp.mark_special_variable("text-quoting-style");
+        // simple.el is dumped by GNU.  Gnus, Ibuffer, Dired, and Tramp read
+        // this shell-command state without requiring simple.el, so keep the
+        // adjacent public defaults together instead of discovering them one
+        // void variable at a time.
+        for (name, value) in [
+            (
+                "shell-command-buffer-name",
+                Value::String("*Shell Command Output*".into()),
+            ),
+            (
+                "shell-command-buffer-name-async",
+                Value::String("*Async Shell Command*".into()),
+            ),
+            ("shell-command-history", Value::Nil),
+            ("shell-command-default-error-buffer", Value::Nil),
+            (
+                "async-shell-command-buffer",
+                Value::Symbol("confirm-new-buffer".into()),
+            ),
+            ("async-shell-command-display-buffer", Value::T),
+            ("async-shell-command-width", Value::Nil),
+            ("shell-command-prompt-show-cwd", Value::Nil),
+            ("shell-command-dont-erase-buffer", Value::Nil),
+            ("shell-command-saved-pos", Value::Nil),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
+        // subr.el's prompt policy is let-bound by callers and consumed by
+        // separately defined save commands.
+        interp.set_global_binding("use-dialog-box", Value::Nil);
+        interp.mark_special_variable("use-dialog-box");
+        // fileio.c exposes this as a dynamically scoped DEFVAR_LISP.  Temp
+        // helpers are defined separately and must observe callers' let-bindings.
+        interp.mark_special_variable("temporary-file-directory");
         // editfns.c defines this before paragraphs.el is dumped.  Paragraph
         // and line motion bind it around calls into separately defined
         // functions, so a lexical binding here would silently leave field
@@ -2148,10 +2915,107 @@ impl Interpreter {
             ]),
         );
         interp.mark_special_variable("text-property-default-nonsticky");
-        interp.put_symbol_property("write-file-functions", "permanent-local", Value::T);
-        interp.put_symbol_property("local-write-file-hooks", "permanent-local", Value::T);
+        // files.el is dumped in GNU, so these `defvar-local' contracts must
+        // exist before user/test code can set them and thereby trigger the
+        // lazy files.el load.  Otherwise the first assignment leaks globally
+        // and changes the save policy of every later buffer.
+        for name in [
+            "write-file-functions",
+            "local-write-file-hooks",
+            "write-contents-functions",
+        ] {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_per_buffer_special(name);
+            interp.put_symbol_property(name, "permanent-local", Value::T);
+        }
+        interp.set_global_binding("buffer-save-without-query", Value::Nil);
+        interp.mark_per_buffer_special("buffer-save-without-query");
+        for (name, value) in [
+            ("save-some-buffers-default-predicate", Value::Nil),
+            ("save-some-buffers-functions", Value::Nil),
+            ("kill-emacs-query-functions", Value::Nil),
+            ("confirm-kill-emacs", Value::Nil),
+            ("confirm-kill-processes", Value::T),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
+        interp.set_global_binding("require-final-newline", Value::Nil);
+        interp.mark_special_variable("require-final-newline");
+        // files.el defines this as nil and then calls
+        // `make-variable-buffer-local'.  Merely carrying the property is not
+        // enough: otherwise setting it in one buffer changes every buffer's
+        // save policy.
+        interp.set_global_binding("buffer-offer-save", Value::Nil);
+        interp.mark_per_buffer_special("buffer-offer-save");
         interp.put_symbol_property("buffer-offer-save", "permanent-local", Value::T);
         interp.put_symbol_property("backup-inhibited", "permanent-local", Value::T);
+        // mule.el is dumped before files.el.  Save/revert code reads this
+        // automatically buffer-local coding choice directly.
+        interp.set_global_binding("buffer-file-coding-system-explicit", Value::Nil);
+        interp.mark_per_buffer_special("buffer-file-coding-system-explicit");
+        interp.put_symbol_property(
+            "buffer-file-coding-system-explicit",
+            "permanent-local",
+            Value::T,
+        );
+        // GNU loadup preloads vc-hooks.el and uniquify.el before files.el.
+        // files.el reads these bindings directly, without boundp guards.
+        interp.set_global_binding("vc-mode", Value::Nil);
+        interp.mark_per_buffer_special("vc-mode");
+        interp.put_symbol_property("vc-mode", "permanent-local", Value::T);
+        for (name, value) in [
+            (
+                "uniquify-buffer-name-style",
+                Value::Symbol("post-forward-angle-brackets".into()),
+            ),
+            ("uniquify-separator", Value::Nil),
+            ("uniquify-trailing-separator-p", Value::Nil),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
+        // callproc.c publishes this complete host-program manifest before
+        // any Lisp is loaded.  Gnus and the preloaded tag/VC libraries read
+        // different members directly, and DEFVAR_LISP makes every member
+        // dynamically scoped.  Their values live in `default_var_value'
+        // (emacsclient has a compatibility-tree-aware default there).
+        for name in [
+            "ctags-program-name",
+            "etags-program-name",
+            "hexl-program-name",
+            "emacsclient-program-name",
+            "movemail-program-name",
+            "ebrowse-program-name",
+            "rcs2log-program-name",
+        ] {
+            interp.mark_special_variable(name);
+        }
+        // Native minibuffer variables likewise exist before Lisp is loaded
+        // and are consumed by preloaded prompt helpers.
+        interp.set_global_binding(
+            "minibuffer-prompt-properties",
+            Value::list([Value::Symbol("read-only".into()), Value::T]),
+        );
+        interp.mark_special_variable("minibuffer-prompt-properties");
+        interp.set_global_binding("minibuffer-auto-raise", Value::Nil);
+        interp.mark_special_variable("minibuffer-auto-raise");
+        // minibuffer.el preloads these dispatch hooks.  Callers dynamically
+        // override them around a separately defined reader (ERT does this to
+        // make prompts deterministic), so lexical fallback bindings are not
+        // sufficient.
+        for name in ["read-buffer-function", "read-file-name-function"] {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
+        interp.set_global_binding(
+            "exec-directory",
+            Value::String(
+                primitives::current_invocation_directory()
+                    .unwrap_or_else(primitives::default_directory),
+            ),
+        );
+        interp.mark_special_variable("exec-directory");
         interp.set_global_binding("mark-ring", Value::Nil);
         interp.mark_auto_buffer_local("mark-ring");
         interp.put_symbol_property("mark-ring", "permanent-local", Value::T);
@@ -2230,6 +3094,21 @@ impl Interpreter {
         interp.set_global_binding("completion-auto-help", Value::T);
         interp.set_global_binding("completion-extra-properties", Value::Nil);
         interp.set_global_binding("enable-recursive-minibuffers", Value::Nil);
+        // minibuf.c also publishes the per-read completion session before
+        // minibuffer.el is dumped.  Completion-in-region users (including
+        // Eshell) legitimately call the dumped helpers outside an active
+        // minibuffer, where these variables remain bound to nil.
+        for name in [
+            "minibuffer-completion-table",
+            "minibuffer-completion-predicate",
+            "minibuffer-completion-confirm",
+            "minibuffer-help-form",
+            "minibuffer-history-position",
+            "minibuffer-allow-text-properties",
+        ] {
+            interp.set_global_binding(name, Value::Nil);
+        }
+        interp.set_global_binding("minibuffer-history-variable", Value::Integer(0));
         for name in [
             "completion-ignore-case",
             "completion-regexp-list",
@@ -2238,6 +3117,13 @@ impl Interpreter {
             "completion-styles",
             "completion-styles-alist",
             "enable-recursive-minibuffers",
+            "minibuffer-completion-table",
+            "minibuffer-completion-predicate",
+            "minibuffer-completion-confirm",
+            "minibuffer-help-form",
+            "minibuffer-history-variable",
+            "minibuffer-history-position",
+            "minibuffer-allow-text-properties",
         ] {
             interp.mark_special_variable(name);
         }
@@ -2284,6 +3170,52 @@ impl Interpreter {
         // merely lexical Emaxx binding silently loses the user action.
         interp.set_global_binding("display-buffer-alist", Value::Nil);
         interp.mark_special_variable("display-buffer-alist");
+        // window.c establishes this complete variable family before dumped
+        // window.el.  These are native dynamic variables, not optional Lisp
+        // defaults: separately defined display and scrolling functions
+        // routinely let-bind them across function boundaries.
+        for name in [
+            "temp-buffer-show-function",
+            "minibuffer-completing-file-name",
+            "minibuffer-scroll-window",
+            "other-window-scroll-buffer",
+            "other-window-scroll-default",
+            "scroll-preserve-screen-position",
+            "window-point-insertion-type",
+            "window-buffer-change-functions",
+            "window-size-change-functions",
+            "window-selection-change-functions",
+            "window-state-change-functions",
+            "window-state-change-hook",
+            "window-configuration-change-hook",
+            "window-restore-killed-buffer-windows",
+            "window-scroll-functions",
+            "window-combination-resize",
+            "window-resize-pixelwise",
+            "fast-but-imprecise-scrolling",
+        ] {
+            interp.set_global_binding(name, Value::Nil);
+            interp.mark_special_variable(name);
+        }
+        for name in ["mode-line-in-non-selected-windows", "auto-window-vscroll"] {
+            interp.set_global_binding(name, Value::T);
+            interp.mark_special_variable(name);
+        }
+        for (name, value) in [
+            ("next-screen-context-lines", Value::Integer(2)),
+            ("recenter-redisplay", Value::Symbol("tty".into())),
+            (
+                "window-combination-limit",
+                Value::Symbol("window-size".into()),
+            ),
+            (
+                "window-persistent-parameters",
+                Value::list([Value::cons(Value::Symbol("clone-of".into()), Value::T)]),
+            ),
+        ] {
+            interp.set_global_binding(name, value);
+            interp.mark_special_variable(name);
+        }
         if let Some(temp_dir) = interp.lookup_var("temporary-file-directory", &Vec::new()) {
             interp.put_symbol_property(
                 "temporary-file-directory",
@@ -2298,28 +3230,46 @@ impl Interpreter {
         );
         let selected_window = interp.create_record(
             "window",
-            vec![
-                Value::Integer(interp.current_buffer_id as i64),
-                Value::Integer(interp.buffer.point_min() as i64),
-            ],
+            primitives::window_record_slots(
+                Some(interp.current_buffer_id),
+                interp.buffer.point_min(),
+                Value::Nil,
+                (interp.frame_width(), interp.frame_height(), 0, 0),
+            ),
         );
+        interp.set_global_binding("emaxx-root-window", selected_window.clone());
         let Value::Record(selected_window_id) = selected_window else {
             unreachable!("window records use Value::Record");
         };
         interp.selected_window_id = selected_window_id;
+        interp.old_selected_window_id = selected_window_id;
+        if let Some(window) = interp.find_record_mut(selected_window_id) {
+            window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
+        }
         let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
         let minibuffer_window = interp.create_record(
             "window",
-            vec![
-                Value::Integer(minibuffer_buffer_id as i64),
-                Value::Integer(1),
-                Value::Nil,
+            primitives::window_record_slots(
+                Some(minibuffer_buffer_id),
+                1,
                 Value::Symbol(primitives::MINIBUFFER_WINDOW_KIND.into()),
-            ],
+                (interp.frame_width(), 1, 0, interp.frame_height()),
+            ),
         );
         interp.set_global_binding("emaxx-minibuffer-window", minibuffer_window);
         interp.set_global_binding("emaxx-minibuffer-selected-window", Value::Nil);
         interp
+    }
+
+    pub fn current_global_map_value(&self) -> Value {
+        self.current_global_map
+            .clone()
+            .or_else(|| self.lookup_var("global-map", &Vec::new()))
+            .unwrap_or(Value::Nil)
+    }
+
+    pub fn set_current_global_map_value(&mut self, keymap: Value) {
+        self.current_global_map = Some(keymap);
     }
 
     pub fn set_load_path(&mut self, load_path: Vec<PathBuf>) {
@@ -2555,7 +3505,7 @@ impl Interpreter {
 
     // Append echo-area output to the active `ert-with-message-capture'
     // scope, keeping a dynamically bound capture variable current.
-    pub fn append_message_capture(&mut self, text: &str, newline: bool) {
+    pub fn append_message_capture(&mut self, text: &str, newline: bool, env: &mut Env) {
         let live_update = if let Some(capture) = self.message_capture_stack.last_mut() {
             capture.text.push_str(text);
             if newline {
@@ -2569,7 +3519,7 @@ impl Interpreter {
             None
         };
         if let Some((var, captured)) = live_update {
-            self.set_symbol_value_cell(&var, Value::String(captured));
+            self.set_variable(&var, Value::String(captured), env);
         }
     }
 
@@ -2798,15 +3748,15 @@ fn forms_to_progn(forms: &[Value]) -> Value {
     }
 }
 
-fn normalize_if_let_spec(spec: &Value) -> Result<Value, LispError> {
+fn normalize_if_let_spec(spec: &Value) -> Result<Vec<Value>, LispError> {
     let items = spec.to_vec()?;
     let old_single_binding_syntax = !items.is_empty()
         && items.len() <= 2
         && !matches!(items[0], Value::Nil | Value::Cons(_, _));
     Ok(if old_single_binding_syntax {
-        Value::list([spec.clone()])
+        vec![spec.clone()]
     } else {
-        spec.clone()
+        items
     })
 }
 
@@ -2852,6 +3802,10 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
             Value::Symbol("void-variable".into()),
             Value::Symbol(symbol.clone()),
         ]),
+        LispError::VoidFunction(symbol) => Value::list([
+            Value::Symbol("void-function".into()),
+            Value::Symbol(symbol.clone()),
+        ]),
         LispError::WrongNumberOfArgs(name, count) => Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             Value::Symbol(name.clone()),
@@ -2872,6 +3826,9 @@ pub(crate) fn error_condition_value(error: &LispError) -> Value {
         ]),
         LispError::Throw(tag, value) => {
             Value::list([Value::Symbol("no-catch".into()), tag.clone(), value.clone()])
+        }
+        LispError::Terminate(_) => {
+            Value::list([Value::Symbol("emaxx--process-termination".into())])
         }
         LispError::SignalValue(value) => value.clone(),
     }
@@ -3142,6 +4099,7 @@ fn is_record_literal_slot_form(value: &Value) -> bool {
             matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote")
                 || is_vector_literal(value)
                 || is_bool_vector_literal(value)
+                || is_char_table_literal_reader_form(value)
                 || is_record_literal_reader_form(value)
         }
         Value::Symbol(_) => false,
@@ -3163,6 +4121,13 @@ fn is_record_literal_reader_form(value: &Value) -> bool {
     items[1..].iter().all(is_record_literal_slot_form)
 }
 
+fn is_char_table_literal_reader_form(value: &Value) -> bool {
+    let Value::Cons(car, _) = value else {
+        return false;
+    };
+    matches!(&*car.borrow(), Value::Symbol(name) if name == CHAR_TABLE_LITERAL_SYMBOL)
+}
+
 fn is_quote_form(value: &Value) -> bool {
     value.to_vec().ok().is_some_and(
         |items| matches!(items.as_slice(), [Value::Symbol(symbol), _] if symbol == "quote"),
@@ -3173,6 +4138,7 @@ fn is_backquote_atomic_cons_tail(value: &Value) -> bool {
     is_quote_form(value)
         || is_vector_literal(value)
         || is_bool_vector_literal(value)
+        || is_char_table_literal_reader_form(value)
         || is_record_literal_reader_form(value)
 }
 
@@ -4844,10 +5810,13 @@ fn deep_copy_value(value: &Value) -> Value {
     }
 }
 
-fn parse_cl_defstruct_constructor_params(items: Vec<Value>) -> (Vec<String>, Vec<(String, Value)>) {
+fn parse_cl_defstruct_constructor_params(
+    items: Vec<Value>,
+) -> (Vec<String>, Vec<(String, Value)>, bool) {
     let mut params = Vec::new();
     let mut aux_bindings = Vec::new();
     let mut in_aux = false;
+    let mut direct_lambda = true;
     for item in items {
         if matches!(&item, Value::Symbol(name) if name == "&aux") {
             in_aux = true;
@@ -4869,10 +5838,18 @@ fn parse_cl_defstruct_constructor_params(items: Vec<Value>) -> (Vec<String>, Vec
                 _ => {}
             }
         } else if let Ok(name) = item.as_symbol() {
+            if name.starts_with('&') && name != "&optional" {
+                direct_lambda = false;
+            }
             params.push(name.to_string());
+        } else {
+            // Destructuring and default-bearing CL parameters require the
+            // general &rest parser below; ordinary interpreted lambdas
+            // cannot represent them directly.
+            direct_lambda = false;
         }
     }
-    (params, aux_bindings)
+    (params, aux_bindings, direct_lambda)
 }
 
 fn cl_defstruct_constructor_aux_let_bindings(
@@ -5429,10 +6406,8 @@ fn is_compat_preloaded_feature(feature: &str) -> bool {
             | "cl-lib"
             | "cus-load"
             | "edmacro"
-            | "ert-x"
             | "hex-util"
             | "map"
-            | "python"
             | "rfc2104"
             | "seq"
             | "thread"

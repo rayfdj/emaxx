@@ -458,12 +458,33 @@ pub(crate) fn nreverse_sequence_value(
             }
             Ok(value.clone())
         }
-        Value::Nil | Value::Cons(_, _) => {
-            let mut items = value.to_vec()?;
-            items.reverse();
-            Ok(Value::list(items))
-        }
+        Value::Nil | Value::Cons(_, _) => nreverse_list_cells(value),
         _ => Err(LispError::TypeError("sequence".into(), value.type_name())),
+    }
+}
+
+fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
+    let mut current = value.clone();
+    let mut reversed = Value::Nil;
+    let mut seen = HashSet::new();
+    loop {
+        match current.clone() {
+            Value::Nil => return Ok(reversed),
+            Value::Cons(car, cdr) => {
+                let identity = Rc::as_ptr(&car) as usize;
+                if !seen.insert(identity) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                let next = cdr.borrow().clone();
+                *cdr.borrow_mut() = reversed;
+                reversed = current;
+                current = next;
+            }
+            other => return Err(LispError::TypeError("list".into(), other.type_name())),
+        }
     }
 }
 

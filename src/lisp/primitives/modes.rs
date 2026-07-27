@@ -5,6 +5,14 @@ pub(super) fn is_major_mode_builtin(name: &str) -> bool {
     matches!(
         name,
         "text-mode"
+            | "outline-mode"
+            | "mhtml-mode"
+            | "tcl-mode"
+            | "awk-mode"
+            | "sh-base-mode"
+            | "sh-mode"
+            | "makefile-mode"
+            | "makefile-gmake-mode"
             | "c-mode"
             | "c++-mode"
             | "java-mode"
@@ -31,6 +39,48 @@ pub(super) fn call_major_mode(interp: &mut Interpreter, name: &str) -> Result<Va
         "text-mode" => {
             derived_mode_set_parent(interp, "text-mode", Some("fundamental-mode"));
             activate_text_mode(interp)
+        }
+        "outline-mode" => {
+            derived_mode_set_parent(interp, "outline-mode", Some("text-mode"));
+            activate_major_mode(interp, "outline-mode", "Outline");
+            Ok(Value::Nil)
+        }
+        "mhtml-mode" => {
+            derived_mode_set_parent(interp, "mhtml-mode", Some("html-mode"));
+            activate_major_mode(interp, "mhtml-mode", "HTML+");
+            Ok(Value::Nil)
+        }
+        "tcl-mode" => {
+            derived_mode_set_parent(interp, "tcl-mode", Some("prog-mode"));
+            activate_hash_comment_mode(interp, "tcl-mode", "Tcl")
+        }
+        "awk-mode" => {
+            derived_mode_set_parent(interp, "awk-mode", Some("prog-mode"));
+            activate_hash_comment_mode(interp, "awk-mode", "AWK")
+        }
+        "sh-base-mode" => {
+            derived_mode_set_parent(interp, "sh-base-mode", Some("prog-mode"));
+            activate_hash_comment_mode(interp, "sh-base-mode", "Shell-script")
+        }
+        "sh-mode" => {
+            derived_mode_set_parent(interp, "sh-base-mode", Some("prog-mode"));
+            derived_mode_set_parent(interp, "sh-mode", Some("sh-base-mode"));
+            let result = activate_hash_comment_mode(interp, "sh-mode", "Shell-script")?;
+            interp.set_buffer_local_value(
+                interp.current_buffer_id(),
+                "sh-shell",
+                Value::Symbol("sh".into()),
+            );
+            Ok(result)
+        }
+        "makefile-mode" => {
+            derived_mode_set_parent(interp, "makefile-mode", Some("prog-mode"));
+            activate_hash_comment_mode(interp, "makefile-mode", "Makefile")
+        }
+        "makefile-gmake-mode" => {
+            derived_mode_set_parent(interp, "makefile-mode", Some("prog-mode"));
+            derived_mode_set_parent(interp, "makefile-gmake-mode", Some("makefile-mode"));
+            activate_hash_comment_mode(interp, "makefile-gmake-mode", "GNUmakefile")
         }
         "c-mode" => {
             derived_mode_set_parent(interp, "c-mode", Some("prog-mode"));
@@ -387,6 +437,15 @@ fn activate_c_family_mode_with_semantic(
     // style fallback remains separate; forcing one style value here would
     // incorrectly override GNU's per-style resolution.
     interp.mark_special_variable("c-basic-offset");
+    // CC Mode advertises a real, reindenting line function.  Electric Indent
+    // deliberately suppresses modes that still advertise `indent-relative',
+    // so leaving the fundamental-mode default here disables layout/indent
+    // cooperation even though the native C indenter exists.
+    interp.set_buffer_local_value(
+        buffer_id,
+        "indent-line-function",
+        Value::Symbol("c-indent-line".into()),
+    );
     interp.set_buffer_local_value(buffer_id, "indent-tabs-mode", Value::T);
     interp.set_buffer_local_value(
         buffer_id,
@@ -481,14 +540,12 @@ fn auto_mode_symbol_from_value(value: &Value) -> Option<String> {
     }
 }
 
-pub(super) fn auto_mode_function_for_file_name(
+fn auto_mode_function_from_entries(
     interp: &Interpreter,
     env: &Env,
     path: &str,
+    entries: &Value,
 ) -> Result<Option<String>, LispError> {
-    let Some(entries) = interp.lookup_var("auto-mode-alist", env) else {
-        return Ok(None);
-    };
     for candidate in auto_mode_candidates(interp, env, path) {
         for entry in entries.to_vec()? {
             let Value::Cons(pattern, mode) = entry else {
@@ -509,6 +566,263 @@ pub(super) fn auto_mode_function_for_file_name(
                 return Ok(Some(mode_symbol));
             }
         }
+    }
+    Ok(None)
+}
+
+pub(super) fn auto_mode_function_for_file_name(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> Result<Option<String>, LispError> {
+    let Some(entries) = interp.lookup_var("auto-mode-alist", env) else {
+        return Ok(None);
+    };
+    auto_mode_function_from_entries(interp, env, path, &entries)
+}
+
+/// GNU's `set-auto-mode' executes every mode cookie from left to right.
+/// Header cookies take precedence over the trailing Local Variables block.
+pub(super) fn file_local_mode_functions(source: &str) -> (Vec<String>, Vec<String>) {
+    fn normalized_mode(text: &str) -> Option<String> {
+        let name = text.trim().to_ascii_lowercase();
+        (!name.is_empty()).then(|| {
+            if name.ends_with("-mode") {
+                name
+            } else {
+                format!("{name}-mode")
+            }
+        })
+    }
+
+    fn modes_in_spec(spec: &str) -> Vec<String> {
+        if !spec.contains(':') {
+            return normalized_mode(spec).into_iter().collect();
+        }
+        spec.split(';')
+            .filter_map(|setting| {
+                let (name, value) = setting.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("mode")
+                    .then(|| normalized_mode(value))
+                    .flatten()
+            })
+            .collect()
+    }
+
+    let lines = source.lines().collect::<Vec<_>>();
+    let header_line = match lines.as_slice() {
+        [first, second, ..]
+            if first.trim_start().starts_with("#!") || first.trim_start().starts_with("'\"") =>
+        {
+            *second
+        }
+        [first, ..] => *first,
+        [] => "",
+    };
+    let header = header_line
+        .find("-*-")
+        .and_then(|start| {
+            let rest = &header_line[start + 3..];
+            rest.find("-*-").map(|end| modes_in_spec(&rest[..end]))
+        })
+        .unwrap_or_default();
+
+    let mut tail = Vec::new();
+    let mut in_locals = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if !in_locals {
+            in_locals = trimmed.eq_ignore_ascii_case("local variables:");
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("end:") {
+            break;
+        }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.trim().eq_ignore_ascii_case("mode")
+            && let Some(mode) = normalized_mode(value)
+        {
+            tail.push(mode);
+        }
+    }
+    (header, tail)
+}
+
+pub(super) fn directory_local_auto_mode(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+) -> Result<Option<String>, LispError> {
+    let Some(parent) = Path::new(path).parent() else {
+        return Ok(None);
+    };
+    for directory in parent.ancestors() {
+        let file = directory.join(".dir-locals.el");
+        let Ok(source) = fs::read_to_string(file) else {
+            continue;
+        };
+        let Some(form) = crate::lisp::reader::Reader::new(&source).read()? else {
+            return Ok(None);
+        };
+        for entry in form.to_vec()? {
+            let Some((key, entries)) = entry.cons_values() else {
+                continue;
+            };
+            if key == Value::Symbol("auto-mode-alist".into())
+                && let Some(mode) = auto_mode_function_from_entries(interp, env, path, &entries)?
+                && mode.ends_with("-mode")
+                && mode != "dired-mode"
+            {
+                return Ok(Some(mode));
+            }
+        }
+        return Ok(None);
+    }
+    Ok(None)
+}
+
+fn mode_from_interpreter_alist(
+    interp: &Interpreter,
+    env: &Env,
+    interpreter: &str,
+) -> Result<Option<String>, LispError> {
+    let Some(entries) = interp.lookup_var("interpreter-mode-alist", env) else {
+        return Ok(None);
+    };
+    for entry in entries.to_vec()? {
+        let Some((pattern, mode)) = entry.cons_values() else {
+            continue;
+        };
+        let Some(pattern) = string_like(&pattern) else {
+            continue;
+        };
+        let anchored = StringLike {
+            text: format!(r"\`\(?:{}\)\'", pattern.text),
+            props: Vec::new(),
+            multibyte: pattern.multibyte,
+        };
+        let regex = regexp::compile_elisp_regex(interp, &anchored, env, "", true)?;
+        if regex
+            .is_match(interpreter)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+        {
+            return Ok(auto_mode_symbol_from_value(&mode));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn interpreter_mode_function(
+    interp: &Interpreter,
+    env: &Env,
+    source: &str,
+) -> Result<Option<(String, Option<String>)>, LispError> {
+    let Some(first_line) = source.lines().next() else {
+        return Ok(None);
+    };
+    let Some(command) = first_line.trim_start().strip_prefix("#!") else {
+        return Ok(None);
+    };
+    let mut words = command.split_whitespace().collect::<Vec<_>>();
+    let Some(program) = words.first().copied() else {
+        return Ok(None);
+    };
+    let mut interpreter = file_name_nondirectory(program);
+    if interpreter == "env" {
+        words.remove(0);
+        let mut index = 0;
+        while index < words.len() {
+            let word = words[index];
+            if let Some(split) = word.strip_prefix("--split-string=") {
+                let mut expansion = split.split_whitespace().collect::<Vec<_>>();
+                expansion.extend_from_slice(&words[index + 1..]);
+                words = expansion;
+                index = 0;
+                continue;
+            }
+            if let Some(suffix) = word
+                .strip_prefix('-')
+                .and_then(|options| options.find('S').map(|at| &options[at + 1..]))
+                && !suffix.is_empty()
+            {
+                let mut expansion = vec![suffix];
+                expansion.extend_from_slice(&words[index + 1..]);
+                words = expansion;
+                index = 0;
+                continue;
+            }
+            if word.starts_with('-') || word.contains('=') {
+                index += 1;
+                continue;
+            }
+            interpreter = file_name_nondirectory(word);
+            break;
+        }
+    }
+
+    let dynamic = mode_from_interpreter_alist(interp, env, &interpreter)?;
+    let fallback = match interpreter.as_str() {
+        "awk" => Some("awk-mode"),
+        "make" => Some("makefile-gmake-mode"),
+        "python" | "python2" | "python3" => Some("python-mode"),
+        "bash" | "bash2" | "rbash" | "rbash2" | "sh" | "sh5" | "dash" | "ksh" | "mksh" | "zsh"
+        | "ash" | "csh" | "tcsh" => Some("sh-mode"),
+        _ => None,
+    };
+    let Some(mode) = dynamic.or_else(|| fallback.map(str::to_string)) else {
+        return Ok(None);
+    };
+    let dialect = (mode == "sh-mode").then(|| match interpreter.as_str() {
+        "bash" | "bash2" | "rbash" | "rbash2" => "bash".to_string(),
+        other => other.to_string(),
+    });
+    Ok(Some((mode, dialect)))
+}
+
+pub(super) fn magic_mode_function(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    source: &str,
+    variable: &str,
+) -> Result<Option<String>, LispError> {
+    if let Some(entries) = interp.lookup_var(variable, env) {
+        let limit = interp
+            .lookup_var("magic-mode-regexp-match-limit", env)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(4000)
+            .max(0) as usize;
+        let beginning = source.chars().take(limit).collect::<String>();
+        for entry in entries.to_vec()? {
+            let Some((matcher, mode)) = entry.cons_values() else {
+                continue;
+            };
+            let matched = if let Some(pattern) = string_like(&matcher) {
+                let mut regexp_env = env.clone();
+                regexp_env.push(vec![("case-fold-search".into(), Value::Nil)]);
+                let regex = regexp::compile_elisp_regex(interp, &pattern, &regexp_env, "", true)?;
+                regex
+                    .captures(&beginning)
+                    .map_err(|error| LispError::Signal(error.to_string()))?
+                    .and_then(|captures| captures.get(0).map(|found| found.start() == 0))
+                    .unwrap_or(false)
+            } else {
+                interp
+                    .call_function_value(matcher, None, &[], env)
+                    .is_ok_and(|value| value.is_truthy())
+            };
+            if matched {
+                return Ok(auto_mode_symbol_from_value(&mode));
+            }
+        }
+    }
+    if variable == "magic-fallback-mode-alist"
+        && source
+            .trim_start_matches(|ch: char| ch.is_ascii_whitespace())
+            .to_ascii_lowercase()
+            .starts_with("<!doctype html")
+    {
+        return Ok(Some("mhtml-mode".into()));
     }
     Ok(None)
 }

@@ -74,7 +74,7 @@ The command does not fail just because `emaxx` is slower. It only fails on harne
 
 `perf-harness` reuses the pinned oracle from the compatibility harness:
 
-- tracked lock: [`compat/oracle.lock.json`](/Users/alpha/CodexProjects/emaxx/compat/oracle.lock.json)
+- tracked lock: [`compat/oracle.lock.json`](../compat/oracle.lock.json)
 - local config: `compat/oracle.local.json`
 
 It also reuses upstream-like environment shaping where helpful:
@@ -105,7 +105,7 @@ Each run writes:
 
 ## Current Scope
 
-The initial scenario catalog lives in [`compat/perf_scenarios.json`](/Users/alpha/CodexProjects/emaxx/compat/perf_scenarios.json).
+The initial scenario catalog lives in [`compat/perf_scenarios.json`](../compat/perf_scenarios.json).
 
 It currently includes:
 

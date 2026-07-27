@@ -62,33 +62,101 @@ pub(crate) fn json_serialize_options(args: &[Value]) -> Result<(Value, Value), L
 }
 
 pub(crate) fn current_group_id() -> Result<u32, LispError> {
-    let output = Command::new("id")
-        .arg("-g")
-        .output()
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    if !output.status.success() {
-        return Err(LispError::Signal("Failed to determine current gid".into()));
+    #[cfg(unix)]
+    {
+        // SAFETY: getegid has no preconditions and does not dereference memory.
+        Ok(unsafe { libc::getegid() } as u32)
     }
-    let value = String::from_utf8_lossy(&output.stdout);
-    value
-        .trim()
-        .parse::<u32>()
-        .map_err(|error| LispError::Signal(error.to_string()))
+    #[cfg(not(unix))]
+    {
+        let output = Command::new("id")
+            .arg("-g")
+            .output()
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        if !output.status.success() {
+            return Err(LispError::Signal("Failed to determine current gid".into()));
+        }
+        let value = String::from_utf8_lossy(&output.stdout);
+        value
+            .trim()
+            .parse::<u32>()
+            .map_err(|error| LispError::Signal(error.to_string()))
+    }
 }
 
 pub(crate) fn current_user_id() -> Result<u32, LispError> {
-    let output = Command::new("id")
-        .arg("-u")
-        .output()
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    if !output.status.success() {
-        return Err(LispError::Signal("Failed to determine current uid".into()));
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions and does not dereference memory.
+        Ok(unsafe { libc::geteuid() } as u32)
     }
-    let value = String::from_utf8_lossy(&output.stdout);
-    value
-        .trim()
-        .parse::<u32>()
-        .map_err(|error| LispError::Signal(error.to_string()))
+    #[cfg(not(unix))]
+    {
+        let output = Command::new("id")
+            .arg("-u")
+            .output()
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        if !output.status.success() {
+            return Err(LispError::Signal("Failed to determine current uid".into()));
+        }
+        let value = String::from_utf8_lossy(&output.stdout);
+        value
+            .trim()
+            .parse::<u32>()
+            .map_err(|error| LispError::Signal(error.to_string()))
+    }
+}
+
+pub(crate) fn current_real_group_id() -> Result<u32, LispError> {
+    #[cfg(unix)]
+    {
+        // SAFETY: getgid has no preconditions and does not dereference memory.
+        Ok(unsafe { libc::getgid() } as u32)
+    }
+    #[cfg(not(unix))]
+    {
+        current_group_id()
+    }
+}
+
+pub(crate) fn current_real_user_id() -> Result<u32, LispError> {
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid has no preconditions and does not dereference memory.
+        Ok(unsafe { libc::getuid() } as u32)
+    }
+    #[cfg(not(unix))]
+    {
+        current_user_id()
+    }
+}
+
+#[cfg(unix)]
+fn user_name_from_uid(uid: u32) -> Option<String> {
+    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    // getpwuid_r uses caller-owned scratch storage and no process-global
+    // passwd cursor, so concurrent interpreters cannot disturb this lookup.
+    let mut scratch = vec![0_i8; 16 * 1024];
+    // SAFETY: all pointers refer to appropriately sized caller-owned storage
+    // for the duration of this reentrant libc call.
+    if unsafe {
+        libc::getpwuid_r(
+            uid as libc::uid_t,
+            passwd.as_mut_ptr(),
+            scratch.as_mut_ptr(),
+            scratch.len(),
+            &mut result,
+        )
+    } != 0
+        || result.is_null()
+    {
+        return None;
+    }
+    // SAFETY: successful getpwuid_r initialized passwd, whose name points
+    // into scratch until this function returns.
+    let name = unsafe { std::ffi::CStr::from_ptr((*passwd.as_ptr()).pw_name) };
+    Some(name.to_string_lossy().into_owned())
 }
 
 pub(crate) fn group_name_from_gid(gid: i64) -> Result<Option<String>, LispError> {
@@ -202,12 +270,6 @@ pub(crate) fn compat_installation_directory() -> Option<String> {
         .map(|repo_root| path_to_directory_string(&repo_root))
 }
 
-pub(crate) fn compat_invocation_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
-    let repo_root = compat_repo_root_from_test_directory(test_directory)?;
-    let candidate = repo_root.join("src").join("emacs");
-    candidate.exists().then_some(candidate)
-}
-
 pub(crate) fn compat_emacsclient_path_from_test_directory(test_directory: &str) -> Option<PathBuf> {
     let repo_root = compat_repo_root_from_test_directory(test_directory)?;
     let candidate = repo_root.join("lib-src").join("emacsclient");
@@ -234,11 +296,6 @@ pub(crate) fn current_invocation_directory() -> Option<String> {
 }
 
 pub(crate) fn current_invocation_path() -> PathBuf {
-    if let Ok(test_directory) = std::env::var("EMACS_TEST_DIRECTORY")
-        && let Some(path) = compat_invocation_path_from_test_directory(&test_directory)
-    {
-        return path;
-    }
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("emaxx"))
 }
 
@@ -259,25 +316,144 @@ pub(crate) fn emacs_pid_value() -> i64 {
     i64::from(std::process::id())
 }
 
-pub(crate) fn process_attributes_value(pid: i64) -> Value {
-    if pid <= 0 || pid != emacs_pid_value() {
-        return Value::Nil;
+fn process_inventory() -> sysinfo::System {
+    let mut system = sysinfo::System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::everything().without_tasks(),
+    );
+    system
+}
+
+pub(crate) fn list_system_processes_value() -> Value {
+    let system = process_inventory();
+    let mut pids = system
+        .processes()
+        .keys()
+        .map(|pid| i64::from(pid.as_u32()))
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    Value::list(pids.into_iter().map(Value::Integer))
+}
+
+fn old_style_process_time(ticks: u64, ticks_per_second: u64) -> Value {
+    let exact = exact_time_value(BigInt::from(ticks), BigInt::from(ticks_per_second))
+        .expect("positive process time resolution");
+    exact_time_to_old_style(&exact).expect("process times fit GNU's old-style time representation")
+}
+
+fn process_state_code(status: sysinfo::ProcessStatus) -> &'static str {
+    use sysinfo::ProcessStatus;
+
+    match status {
+        ProcessStatus::Idle => "I",
+        ProcessStatus::Run => "R",
+        ProcessStatus::Sleep | ProcessStatus::Suspended => "S",
+        ProcessStatus::Stop | ProcessStatus::Tracing => "T",
+        ProcessStatus::Zombie => "Z",
+        ProcessStatus::Dead => "X",
+        ProcessStatus::Wakekill | ProcessStatus::Waking => "W",
+        ProcessStatus::Parked => "P",
+        ProcessStatus::LockBlocked | ProcessStatus::UninterruptibleDiskSleep => "D",
+        ProcessStatus::Unknown(_) => "?",
     }
-    Value::list([Value::cons(
-        Value::Symbol("comm".into()),
-        Value::String(current_invocation_name().unwrap_or_else(|| "emaxx".into())),
-    )])
+}
+
+pub(crate) fn process_attributes_value(pid: i64) -> Value {
+    let Ok(pid) = u32::try_from(pid) else {
+        return Value::Nil;
+    };
+    let system = process_inventory();
+    let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) else {
+        return Value::Nil;
+    };
+    let mut attributes = Vec::new();
+    let mut push = |name: &str, value: Value| {
+        attributes.push(Value::cons(Value::symbol(name), value));
+    };
+
+    #[cfg(unix)]
+    {
+        if let Some(uid) = process.effective_user_id().or_else(|| process.user_id()) {
+            let uid = **uid;
+            push("euid", Value::Integer(i64::from(uid)));
+            if let Some(user) = user_name_from_uid(uid) {
+                push("user", Value::String(user));
+            }
+        }
+        if let Some(gid) = process.effective_group_id().or_else(|| process.group_id()) {
+            push("egid", Value::Integer(i64::from(*gid)));
+            if let Ok(Some(group)) = group_name_from_gid(i64::from(*gid)) {
+                push("group", Value::String(group));
+            }
+        }
+    }
+
+    push(
+        "comm",
+        Value::String(process.name().to_string_lossy().into_owned()),
+    );
+    push(
+        "state",
+        Value::String(process_state_code(process.status()).into()),
+    );
+    if let Some(parent) = process.parent() {
+        push("ppid", Value::Integer(i64::from(parent.as_u32())));
+    }
+    #[cfg(unix)]
+    {
+        let raw_pid = pid as libc::pid_t;
+        // SAFETY: getpgid and getsid accept an integer process id and do not
+        // dereference caller-owned memory.
+        let process_group = unsafe { libc::getpgid(raw_pid) };
+        if process_group >= 0 {
+            push("pgrp", Value::Integer(i64::from(process_group)));
+        }
+        // SAFETY: same contract as getpgid above.
+        let session = unsafe { libc::getsid(raw_pid) };
+        if session >= 0 {
+            push("sess", Value::Integer(i64::from(session)));
+        }
+    }
+    if let Some(tasks) = process.tasks() {
+        push("thcount", Value::Integer(tasks.len() as i64));
+    }
+    push("start", old_style_process_time(process.start_time(), 1));
+    push(
+        "vsize",
+        Value::Integer((process.virtual_memory() / 1024) as i64),
+    );
+    push("rss", Value::Integer((process.memory() / 1024) as i64));
+    push("etime", old_style_process_time(process.run_time(), 1));
+    let accumulated_millis = process.accumulated_cpu_time();
+    push("time", old_style_process_time(accumulated_millis, 1_000));
+    let command = process
+        .cmd()
+        .iter()
+        .map(|argument| argument.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !command.is_empty() {
+        push("args", Value::String(command));
+    }
+    Value::list(attributes)
 }
 
 pub(crate) fn expand_file_name(path: &str, base: Option<&str>) -> String {
+    let home = std::env::var("HOME").ok();
+    expand_file_name_with_home(path, base, home.as_deref())
+}
+
+fn expand_file_name_with_home(path: &str, base: Option<&str>, home: Option<&str>) -> String {
     let preserve_directory_syntax = path.ends_with(std::path::MAIN_SEPARATOR);
-    let expanded = expand_home_prefix(path);
+    let expanded = expand_home_prefix_with_home(path, home);
     let candidate = PathBuf::from(expanded);
     let absolute = if candidate.is_absolute() {
         candidate
     } else {
         let base_dir = base
-            .map(PathBuf::from)
+            .map(|base| PathBuf::from(expand_home_prefix_with_home(base, home)))
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| PathBuf::from(default_directory()));
         if base_dir.is_absolute() {
@@ -306,7 +482,15 @@ pub(crate) fn expand_file_name_runtime(
     if let Some(base) = base {
         validate_file_name(base)?;
     }
-    if let Some(handler) = find_file_name_handler(interp, env, path) {
+    let handler =
+        if let Some(handler) = find_file_name_handler(interp, env, path, "expand-file-name")? {
+            Some(handler)
+        } else if let Some(base) = base {
+            find_file_name_handler(interp, env, base, "expand-file-name")?
+        } else {
+            None
+        };
+    if let Some(handler) = handler {
         let function = match handler {
             Value::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
             other => other,
@@ -324,12 +508,18 @@ pub(crate) fn expand_file_name_runtime(
         )?;
         return string_text(&handled);
     }
-    Ok(expand_file_name(path, base))
+    Ok(expand_file_name_in_env(interp, env, path, base))
 }
 
 pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &str) -> String {
+    // `/:` quotes a local name so Lisp file-name handlers are bypassed.  Keep
+    // the marker in lexical file-name operations, but remove it at the one
+    // boundary where a name becomes a host path.
+    if let Some(unquoted) = unquote_local_file_name(path) {
+        return expand_file_name_in_env(interp, env, &unquoted, None);
+    }
     if let Some(remote) = parse_remote_file_name(path) {
-        return resolved_remote_localname(&remote);
+        return resolved_remote_localname_in_env(interp, env, &remote);
     }
     if Path::new(path).is_absolute() {
         return path.to_string();
@@ -337,15 +527,60 @@ pub(crate) fn resolve_file_name_in_env(interp: &Interpreter, env: &Env, path: &s
     let base = interp
         .lookup_var("default-directory", env)
         .and_then(|value| string_like(&value).map(|string| string.text));
-    expand_file_name(path, base.as_deref())
+    let base = base
+        .as_deref()
+        .and_then(|base| unquote_local_file_name(base).or_else(|| Some(base.to_string())));
+    let expanded = expand_file_name_in_env(interp, env, path, base.as_deref());
+    unquote_local_file_name(&expanded).unwrap_or(expanded)
 }
 
-pub(crate) fn resolved_remote_localname(remote: &RemoteFileNameParts) -> String {
+/// Return the canonical name recorded in `buffer-file-truename'.
+///
+/// Visiting APIs keep the spelling requested by Lisp in `buffer-file-name',
+/// while this companion value resolves host aliases such as macOS's
+/// `/var' -> `/private/var' symlink.  If the final component does not exist,
+/// retain the expanded name, matching `file-truename' at our current host
+/// abstraction boundary.
+pub(crate) fn canonical_file_name(path: &str) -> String {
+    fs::canonicalize(path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+pub(crate) fn unquote_local_file_name(path: &str) -> Option<String> {
+    path.strip_prefix("/:")
+        .map(|rest| if rest.is_empty() { "/" } else { rest }.to_string())
+}
+
+pub(crate) fn expand_file_name_in_env(
+    interp: &Interpreter,
+    env: &Env,
+    path: &str,
+    base: Option<&str>,
+) -> String {
+    let home = lisp_environment_string(interp, env, "HOME");
+    expand_file_name_with_home(path, base, home.as_deref())
+}
+
+pub(crate) fn resolved_remote_localname_in_env(
+    interp: &Interpreter,
+    env: &Env,
+    remote: &RemoteFileNameParts,
+) -> String {
     if remote.method == "mock" {
-        expand_home_prefix(&remote.localname)
+        let home = lisp_environment_string(interp, env, "HOME");
+        expand_home_prefix_with_home(&remote.localname, home.as_deref())
     } else {
         remote.localname.clone()
     }
+}
+
+fn lisp_environment_string(interp: &Interpreter, env: &Env, variable: &str) -> Option<String> {
+    let environment = interp.lookup_var("process-environment", env)?;
+    getenv_in_environment(variable, &environment, false)
+        .ok()
+        .flatten()
+        .and_then(|value| string_like(&value).map(|string| string.text))
 }
 
 pub(crate) fn substitute_in_file_name(path: &str) -> String {
@@ -392,11 +627,16 @@ pub(crate) fn substitute_in_file_name(path: &str) -> String {
 }
 
 pub(crate) fn expand_home_prefix(path: &str) -> String {
+    let home = std::env::var("HOME").ok();
+    expand_home_prefix_with_home(path, home.as_deref())
+}
+
+fn expand_home_prefix_with_home(path: &str, home: Option<&str>) -> String {
     if path == "~" {
-        return std::env::var("HOME").unwrap_or_else(|_| path.to_string());
+        return home.unwrap_or(path).to_string();
     }
     if let Some(suffix) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(home) = home
     {
         return PathBuf::from(home).join(suffix).display().to_string();
     }
@@ -406,11 +646,12 @@ pub(crate) fn expand_home_prefix(path: &str) -> String {
             .map(|(user, suffix)| (user, Some(suffix)))
             .unwrap_or((rest, None));
         if user_exists(user)
-            && let Ok(home) = std::env::var("HOME")
+            && let Some(home) = home
         {
-            return suffix.map_or(home.clone(), |suffix| {
-                PathBuf::from(home).join(suffix).display().to_string()
-            });
+            return suffix.map_or_else(
+                || home.to_string(),
+                |suffix| PathBuf::from(home).join(suffix).display().to_string(),
+            );
         }
     }
     path.to_string()
@@ -913,18 +1154,16 @@ pub(crate) fn refresh_current_dired_buffer_for_path(
     };
     let directory_path = Path::new(&directory);
     let changed = Path::new(changed_path);
-    if !changed.starts_with(directory_path) {
+    // A directory listing changes when the directory itself or one of its
+    // immediate entries changes.  Descendant mutations belong to a child
+    // directory's listing; refreshing an ancestor here makes Dired react to
+    // events that GNU's file-notification backend never delivers to it.
+    if changed != directory_path && changed.parent() != Some(directory_path) {
         return Ok(());
     }
-    let target = changed
-        .strip_prefix(directory_path)
-        .ok()
-        .and_then(|relative| relative.components().next())
-        .map(|component| directory_path.join(component.as_os_str()))
-        .unwrap_or_else(|| changed.to_path_buf());
     let buffer_name = interp.buffer.name.clone();
     initialize_dired_buffer(interp, &buffer_name, &directory)?;
-    let target_text = target.to_string_lossy().into_owned();
+    let target_text = changed.to_string_lossy().into_owned();
     let _ = call_named_function(
         interp,
         "dired-goto-file",
@@ -979,26 +1218,319 @@ pub(crate) fn validate_file_name(path: &str) -> Result<(), LispError> {
     }
 }
 
-pub(crate) fn find_file_name_handler(interp: &Interpreter, env: &Env, file: &str) -> Option<Value> {
-    let handlers = interp.lookup_var("file-name-handler-alist", env)?;
-    let entries = handlers.to_vec().ok()?;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MockFileNameHandlerOperation {
+    Custom,
+    LocalPathArguments(&'static [usize]),
+}
+
+/// Classify the operations implemented by Emaxx's in-process transport for
+/// ERT's `/mock:' Tramp method.  Keep handler advertisement and handler
+/// execution on this single table: if an operation is absent, real Tramp may
+/// legitimately handle it; if it is present, it must never leak into a shell
+/// connection merely because `tramp.el' has populated
+/// `file-name-handler-alist'.
+pub(crate) fn mock_file_name_handler_operation(
+    operation: &str,
+) -> Option<MockFileNameHandlerOperation> {
+    use MockFileNameHandlerOperation::{Custom, LocalPathArguments};
+
+    match operation {
+        "abbreviate-file-name"
+        | "exec-path"
+        | "expand-file-name"
+        | "file-group-gid"
+        | "file-local-copy"
+        | "file-remote-p"
+        | "file-truename"
+        | "file-user-uid"
+        | "make-process"
+        | "start-file-process" => Some(Custom),
+        "delete-directory"
+        | "delete-file"
+        | "file-accessible-directory-p"
+        | "file-directory-p"
+        | "file-executable-p"
+        | "file-exists-p"
+        | "file-readable-p"
+        | "file-regular-p"
+        | "file-writable-p" => Some(LocalPathArguments(&[0])),
+        "write-region" => Some(LocalPathArguments(&[2, 5])),
+        _ => None,
+    }
+}
+
+pub(crate) fn find_file_name_handler(
+    interp: &Interpreter,
+    env: &Env,
+    file: &str,
+    operation: &str,
+) -> Result<Option<Value>, LispError> {
+    if mock_file_name_handler_operation(operation).is_some()
+        && parse_remote_file_name(file).is_some_and(|remote| remote.method == "mock")
+    {
+        return Ok(Some(Value::Symbol("emaxx-mock-file-name-handler".into())));
+    }
+    let handlers = interp
+        .lookup_var("file-name-handler-alist", env)
+        .unwrap_or(Value::Nil);
+    let entries = handlers.to_vec()?;
+    let operation = Value::Symbol(operation.to_string());
+    let inhibited = if interp
+        .lookup_var("inhibit-file-name-operation", env)
+        .as_ref()
+        == Some(&operation)
+    {
+        interp
+            .lookup_var("inhibit-file-name-handlers", env)
+            .unwrap_or(Value::Nil)
+            .to_vec()?
+    } else {
+        Vec::new()
+    };
+    let mut regexp_env = env.clone();
+    regexp_env.push(vec![("case-fold-search".into(), Value::Nil)]);
+    let mut best = None;
+    let mut result = None;
+
     for entry in entries {
         let Value::Cons(pattern, handler) = entry else {
             continue;
         };
         let pattern = pattern.borrow().clone();
         let handler = handler.borrow().clone();
-        let Ok(pattern) = string_text(&pattern) else {
+        let Some(pattern) = string_like(&pattern) else {
             continue;
         };
-        let Ok(regex) = Regex::new(&pattern) else {
+        if let Value::Symbol(symbol) = &handler
+            && let Some(operations) = interp.get_symbol_property(symbol, "operations")
+            && !operations.is_nil()
+            && !operations.to_vec()?.contains(&operation)
+        {
+            continue;
+        }
+        let regexp = regexp::compile_elisp_regex(interp, &pattern, &regexp_env, "", true)?;
+        let Some(captures) = regexp
+            .captures(file)
+            .map_err(|error| LispError::Signal(error.to_string()))?
+        else {
             continue;
         };
-        if regex.is_match(file) {
-            return Some(handler);
+        let position = captures
+            .get(0)
+            .expect("a successful regexp match has group zero")
+            .start();
+        if best.is_none_or(|current| position > current) && !inhibited.contains(&handler) {
+            best = Some(position);
+            result = Some(handler);
         }
     }
-    None
+    Ok(result)
+}
+
+/// Give Lisp file-name handlers the same choke point that GNU's individual
+/// file primitives provide.  The operation table deliberately contains only
+/// arguments that are file names; arbitrary string arguments must never
+/// acquire file-name-handler semantics.
+pub(crate) fn dispatch_file_name_handler(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    operation: &str,
+    args: &[Value],
+) -> Result<Option<Value>, LispError> {
+    let indices: &[usize] = match operation {
+        "add-name-to-file"
+        | "copy-directory"
+        | "copy-file"
+        | "file-equal-p"
+        | "file-in-directory-p"
+        | "file-name-all-completions"
+        | "file-name-completion"
+        | "file-newer-than-file-p"
+        | "make-symbolic-link"
+        | "rename-file" => &[0, 1],
+        "write-region" => &[2, 5],
+        "start-file-process" => &[2],
+        "access-file"
+        | "abbreviate-file-name"
+        | "byte-compiler-base-file-name"
+        | "delete-directory"
+        | "delete-file"
+        | "diff-latest-backup-file"
+        | "directory-file-name"
+        | "directory-files"
+        | "directory-files-and-attributes"
+        | "dired-compress-file"
+        | "dired-uncache"
+        | "file-accessible-directory-p"
+        | "file-acl"
+        | "file-attributes"
+        | "file-directory-p"
+        | "file-executable-p"
+        | "file-exists-p"
+        | "file-locked-p"
+        | "file-local-copy"
+        | "file-modes"
+        | "file-name-as-directory"
+        | "file-name-case-insensitive-p"
+        | "file-name-directory"
+        | "file-name-nondirectory"
+        | "file-name-sans-versions"
+        | "file-ownership-preserved-p"
+        | "file-readable-p"
+        | "file-regular-p"
+        | "file-remote-p"
+        | "file-selinux-context"
+        | "file-symlink-p"
+        | "file-system-info"
+        | "file-truename"
+        | "file-writable-p"
+        | "find-backup-file-name"
+        | "get-file-buffer"
+        | "insert-directory"
+        | "insert-file-contents"
+        | "load"
+        | "lock-file"
+        | "make-directory"
+        | "make-nearby-temp-file"
+        | "make-temp-file"
+        | "process-file"
+        | "set-file-acl"
+        | "set-file-modes"
+        | "set-file-selinux-context"
+        | "set-file-times"
+        | "substitute-in-file-name"
+        | "unhandled-file-name-directory"
+        | "unlock-file"
+        | "vc-registered" => &[0],
+        _ => &[],
+    };
+
+    let mut candidates = indices
+        .iter()
+        .filter_map(|index| args.get(*index))
+        .filter_map(string_like)
+        .map(|string| string.text)
+        .collect::<Vec<_>>();
+
+    if operation == "make-process" {
+        for pair in args.chunks_exact(2) {
+            if pair[0] == Value::Symbol(":command".into())
+                && let Ok(command) = pair[1].to_vec()
+                && let Some(program) = command.first().and_then(string_like)
+            {
+                candidates.push(program.text);
+                break;
+            }
+        }
+    }
+
+    let uses_implicit_default_directory = if indices.is_empty() {
+        matches!(
+            operation,
+            "make-auto-save-file-name"
+                | "make-process"
+                | "memory-info"
+                | "set-visited-file-modtime"
+                | "shell-command"
+                | "temporary-file-directory"
+                | "verify-visited-file-modtime"
+        )
+    } else {
+        !matches!(
+            operation,
+            "abbreviate-file-name"
+                | "directory-file-name"
+                | "file-name-as-directory"
+                | "file-name-directory"
+                | "file-name-nondirectory"
+                | "file-name-sans-versions"
+                | "file-remote-p"
+                | "substitute-in-file-name"
+                | "unhandled-file-name-directory"
+        ) && candidates.iter().any(|file| !file_name_absolute_p(file))
+    };
+    if uses_implicit_default_directory
+        && let Some(directory) = interp.lookup_var("default-directory", env)
+        && let Some(directory) = string_like(&directory)
+    {
+        candidates.push(directory.text);
+    }
+
+    if matches!(
+        operation,
+        "make-auto-save-file-name" | "set-visited-file-modtime" | "verify-visited-file-modtime"
+    ) {
+        let buffer_id = if operation == "verify-visited-file-modtime" {
+            args.first()
+                .filter(|buffer| buffer.is_truthy())
+                .and_then(|buffer| interp.resolve_buffer_id(buffer).ok())
+                .unwrap_or_else(|| interp.current_buffer_id())
+        } else {
+            interp.current_buffer_id()
+        };
+        if let Some(file) = interp
+            .get_buffer_by_id(buffer_id)
+            .and_then(|buffer| buffer.file.clone())
+        {
+            candidates.push(file);
+        }
+    }
+
+    for file in candidates {
+        let Some(handler) = find_file_name_handler(interp, env, &file, operation)? else {
+            continue;
+        };
+        let (function, original_name) = match handler {
+            Value::Symbol(symbol) => {
+                let function = interp.lookup_function(&symbol, env)?;
+                (function, Some(symbol))
+            }
+            function => (function, None),
+        };
+        let mut handler_args = std::iter::once(Value::Symbol(operation.into()))
+            .chain(args.iter().cloned())
+            .collect::<Vec<_>>();
+        if operation == "verify-visited-file-modtime" && args.is_empty() {
+            handler_args.push(Value::Nil);
+        }
+        let result =
+            interp.call_function_value(function, original_name.as_deref(), &handler_args, env)?;
+        if operation == "insert-file-contents" {
+            let inserted = result
+                .to_vec()
+                .ok()
+                .and_then(|items| items.get(1).cloned())
+                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            finish_insert_file_contents(interp, env, inserted, &args[1..])?;
+        }
+        if operation == "write-region"
+            && let Some(visit) = args.get(4)
+            && (matches!(visit, Value::T) || string_like(visit).is_some())
+        {
+            // GNU's native write-region retains responsibility for the
+            // VISIT postconditions even when a Lisp file-name handler writes
+            // the bytes.  Handlers such as jka-compr update the visited
+            // modtime, then rely on this outer primitive boundary to record
+            // the visited name and mark the source buffer saved.
+            let visited_name = if matches!(visit, Value::T) {
+                args.get(2)
+                    .and_then(string_like)
+                    .map(|name| name.text)
+                    .ok_or_else(|| LispError::TypeError("string".into(), "non-string".into()))?
+            } else {
+                string_like(visit)
+                    .map(|name| name.text)
+                    .ok_or_else(|| LispError::TypeError("string".into(), visit.type_name()))?
+            };
+            interp.buffer.file = Some(expand_file_name_runtime(interp, env, &visited_name, None)?);
+            interp.buffer.set_unmodified();
+        }
+        return Ok(Some(result));
+    }
+    Ok(None)
 }
 
 pub(crate) fn ert_resource_directory(interp: &Interpreter) -> Option<String> {
@@ -1047,9 +1579,10 @@ pub(crate) fn directory_files(
     count: Option<usize>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    validate_file_name(directory)?;
+    let directory = resolve_file_name_in_env(interp, env, directory);
+    validate_file_name(&directory)?;
     let mut entries = vec![".".to_string(), "..".to_string()];
-    let iter = fs::read_dir(directory).map_err(|error| LispError::Signal(error.to_string()))?;
+    let iter = fs::read_dir(&directory).map_err(|error| LispError::Signal(error.to_string()))?;
     for entry in iter {
         let entry = entry.map_err(|error| LispError::Signal(error.to_string()))?;
         entries.push(entry.file_name().to_string_lossy().into_owned());
@@ -1078,7 +1611,7 @@ pub(crate) fn directory_files(
     }
     Ok(Value::list(entries.into_iter().map(|entry| {
         let text = if full {
-            Path::new(directory)
+            Path::new(&directory)
                 .join(&entry)
                 .to_string_lossy()
                 .into_owned()

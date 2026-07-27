@@ -234,7 +234,7 @@ pub(super) fn tab_bar_new_tab_choice_custom_type() -> Value {
 }
 
 pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
-    vec![
+    let mut systems = vec![
         CodingSystemState {
             name: "undecided".into(),
             base: "undecided".into(),
@@ -332,6 +332,22 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             kind: "iso-latin-1".into(),
             eol_type: Some(1),
             plist: coding_plist('L', std::iter::empty()),
+        },
+        CodingSystemState {
+            name: "windows-1252".into(),
+            base: "windows-1252".into(),
+            kind: "charset".into(),
+            eol_type: None,
+            plist: coding_plist(
+                '*',
+                [
+                    (
+                        ":charset-list".into(),
+                        Value::list([Value::Symbol("windows-1252".into())]),
+                    ),
+                    (":mime-charset".into(), Value::Symbol("windows-1252".into())),
+                ],
+            ),
         },
         CodingSystemState {
             name: "cyrillic-koi8".into(),
@@ -504,6 +520,13 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             plist: coding_plist('r', std::iter::empty()),
         },
         CodingSystemState {
+            name: "mac-roman".into(),
+            base: "mac-roman".into(),
+            kind: "iso-latin-1".into(),
+            eol_type: None,
+            plist: coding_plist('m', std::iter::empty()),
+        },
+        CodingSystemState {
             name: "mac-roman-mac".into(),
             base: "mac-roman".into(),
             kind: "iso-latin-1".into(),
@@ -552,7 +575,93 @@ pub(super) fn builtin_coding_systems() -> Vec<CodingSystemState> {
             eol_type: None,
             plist: coding_plist('C', std::iter::empty()),
         },
-    ]
+    ];
+
+    // GNU's ordinary text coding systems expose a complete EOL family.
+    // Keep that invariant in one place instead of growing a hand-maintained
+    // subset whenever a caller first asks for BASE-unix/dos/mac.
+    let bases = systems
+        .iter()
+        .filter(|coding| {
+            coding.eol_type.is_none()
+                && coding.name == coding.base
+                && coding.name != "no-conversion"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for base in bases {
+        for (suffix, eol_type) in [("unix", 0), ("dos", 1), ("mac", 2)] {
+            let name = format!("{}-{suffix}", base.name);
+            if systems.iter().any(|coding| coding.name == name) {
+                continue;
+            }
+            systems.push(CodingSystemState {
+                name,
+                base: base.base.clone(),
+                kind: base.kind.clone(),
+                eol_type: Some(eol_type),
+                plist: base.plist.clone(),
+            });
+        }
+    }
+    // GNU's dumped mule.el implements public queries such as
+    // `coding-system-type' in Lisp over the plist returned by the C coding
+    // registry.  Bootstrap entries therefore need the same public metadata;
+    // the Rust `kind' field is an internal codec discriminator and is not
+    // always the public coding type (for example euc-jp is iso-2022).
+    for coding in &mut systems {
+        let public_type = if matches!(coding.name.as_str(), "unix" | "dos" | "mac") {
+            "undecided"
+        } else {
+            match coding.kind.as_str() {
+                "utf-8" | "utf-8-with-signature" | "utf-8-auto" => "utf-8",
+                "utf-16" | "utf-16be" | "utf-16le" => "utf-16",
+                "undecided" | "prefer-utf-8" => "undecided",
+                "raw-text" | "no-conversion" => "raw-text",
+                "euc-jp" | "iso-2022-7bit" => "iso-2022",
+                "sjis" => "shift-jis",
+                "big5" => "big5",
+                "us-ascii" | "iso-latin-1" | "cyrillic-koi8" | "windows-1252" | "mac-roman"
+                | "chinese-gb18030" | "charset" => "charset",
+                other => other,
+            }
+        };
+        let mut plist = coding.plist.to_vec().unwrap_or_default();
+        let charset_list = match coding.kind.as_str() {
+            "utf-8" | "utf-8-with-signature" | "utf-8-auto" => {
+                Some(Value::list([Value::Symbol("unicode".into())]))
+            }
+            "us-ascii" | "undecided" | "prefer-utf-8" => {
+                Some(Value::list([Value::Symbol("ascii".into())]))
+            }
+            "iso-latin-1" => Some(Value::list([Value::Symbol("iso-8859-1".into())])),
+            _ => None,
+        };
+        if matches!(
+            coding.kind.as_str(),
+            "utf-8"
+                | "utf-8-with-signature"
+                | "utf-8-auto"
+                | "us-ascii"
+                | "undecided"
+                | "prefer-utf-8"
+                | "iso-latin-1"
+                | "raw-text"
+        ) {
+            plist.extend([Value::Symbol(":ascii-compatible-p".into()), Value::T]);
+        }
+        if let Some(charset_list) = charset_list {
+            plist.extend([Value::Symbol(":charset-list".into()), charset_list]);
+        }
+        plist.extend([
+            Value::Symbol(":name".into()),
+            Value::Symbol(coding.name.clone()),
+            Value::Symbol(":coding-type".into()),
+            Value::Symbol(public_type.into()),
+        ]);
+        coding.plist = Value::list(plist);
+    }
+    systems
 }
 
 pub(super) fn builtin_coding_aliases() -> Vec<(String, String)> {
@@ -564,6 +673,7 @@ pub(super) fn builtin_coding_aliases() -> Vec<(String, String)> {
         ("iso-8859-1".into(), "iso-latin-1".into()),
         ("iso-8859-1-unix".into(), "iso-latin-1-unix".into()),
         ("iso-8859-1-dos".into(), "iso-latin-1-dos".into()),
+        ("cp1252".into(), "windows-1252".into()),
         ("koi8-r".into(), "cyrillic-koi8".into()),
         ("binary".into(), "raw-text".into()),
         ("utf8".into(), "utf-8".into()),

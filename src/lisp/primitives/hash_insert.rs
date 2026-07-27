@@ -154,36 +154,86 @@ pub(crate) fn keymap_list_items(
     interp: &Interpreter,
     value: &Value,
 ) -> Result<Option<Vec<Value>>, LispError> {
+    keymap_list_items_inner(interp, value, &mut HashSet::new(), &mut HashSet::new())
+}
+
+fn keymap_list_items_inner(
+    interp: &Interpreter,
+    value: &Value,
+    seen_keymaps: &mut HashSet<u64>,
+    seen_cons: &mut HashSet<usize>,
+) -> Result<Option<Vec<Value>>, LispError> {
     let Some(id) = keymap_record_id(interp, value) else {
         return Ok(None);
     };
+    if !seen_keymaps.insert(id) {
+        // GNU keymaps are cons graphs and may contain recursive prefix
+        // bindings.  A repeated node is still recognizably a keymap, but
+        // must not recurse forever while projecting the list interface.
+        return Ok(Some(vec![Value::Symbol("keymap".into())]));
+    }
     let Some(record) = interp.find_record(id) else {
         return Ok(None);
     };
+    let char_table = keymap_char_table(record);
+    let name = record.slots.first().cloned().filter(|name| !name.is_nil());
+    let bindings = keymap_bindings(record)?;
     let mut items = vec![Value::Symbol("keymap".into())];
-    if let Some(char_table) = keymap_char_table(record) {
+    if let Some(char_table) = char_table {
         items.push(char_table);
     }
-    let bindings = keymap_bindings(record)?;
-    if let Some(name) = record.slots.first()
-        && !name.is_nil()
-    {
-        items.push(name.clone());
+    if let Some(name) = name {
+        items.push(name);
     }
-    items.extend(
-        bindings
-            .iter()
-            .filter(|binding| !binding.after_prompt)
-            .rev()
-            .map(keymap_binding_entry),
-    );
-    items.extend(
-        bindings
-            .iter()
-            .filter(|binding| binding.after_prompt)
-            .map(keymap_binding_entry),
-    );
+    for binding in bindings
+        .iter()
+        .filter(|binding| !binding.after_prompt)
+        .rev()
+        .chain(bindings.iter().filter(|binding| binding.after_prompt))
+    {
+        let value = project_embedded_keymaps(interp, &binding.value, seen_keymaps, seen_cons)?;
+        items.push(Value::cons(
+            keymap_entry_key_value(&binding_key_parts(binding), &binding.key),
+            value,
+        ));
+    }
+    seen_keymaps.remove(&id);
     Ok(Some(items))
+}
+
+fn project_embedded_keymaps(
+    interp: &Interpreter,
+    value: &Value,
+    seen_keymaps: &mut HashSet<u64>,
+    seen_cons: &mut HashSet<usize>,
+) -> Result<Value, LispError> {
+    if keymap_record_id(interp, value).is_some() {
+        return Ok(Value::list(
+            keymap_list_items_inner(interp, value, seen_keymaps, seen_cons)?
+                .expect("keymap identity was checked above"),
+        ));
+    }
+
+    let Value::Cons(car, cdr) = value else {
+        return Ok(value.clone());
+    };
+    let identity = Rc::as_ptr(car) as usize;
+    if !seen_cons.insert(identity) {
+        // Preserve a circular non-keymap cons graph.  The caller's list
+        // primitive remains responsible for reporting or traversing it.
+        return Ok(value.clone());
+    }
+    let original_car = car.borrow().clone();
+    let original_cdr = cdr.borrow().clone();
+    let projected_car = project_embedded_keymaps(interp, &original_car, seen_keymaps, seen_cons)?;
+    let projected_cdr = project_embedded_keymaps(interp, &original_cdr, seen_keymaps, seen_cons)?;
+    seen_cons.remove(&identity);
+
+    if values_eql(&projected_car, &original_car) && values_eql(&projected_cdr, &original_cdr) {
+        Ok(value.clone())
+    } else {
+        Ok(Value::cons(projected_car, projected_cdr))
+    }
 }
 
 pub(crate) fn context_menu_keymap_items(
@@ -313,71 +363,165 @@ pub(crate) fn set_hash_table_entries(
     let Value::Record(id) = table else {
         return Err(LispError::TypeError("hash-table".into(), table.type_name()));
     };
+    let Some(test) = interp
+        .find_record(*id)
+        .filter(|record| record.type_name == "hash-table")
+        .and_then(|record| record.slots.first())
+        .and_then(|value| value.as_symbol().ok())
+        .map(str::to_string)
+    else {
+        return Err(LispError::TypeError("hash-table".into(), table.type_name()));
+    };
     let Some(record) = interp.find_record_mut(*id) else {
         return Err(LispError::TypeError("hash-table".into(), table.type_name()));
     };
     if record.slots.len() < 2 {
         record.slots.resize(2, Value::Nil);
     }
-    record.slots[1] = hash_table_entries_to_value(entries);
+    record.slots[1] = hash_table_entries_to_value(entries.clone());
+    interp.replace_hash_table_runtime_entries(*id, &test, entries);
     Ok(())
 }
 
-pub(crate) fn parse_xml_region(xml: &str) -> Result<Value, roxmltree::Error> {
-    let doc = Document::parse(xml)?;
-    let children = xml_child_values(doc.root())?;
-    if children.len() == 1 && matches!(children.first(), Some(Value::Cons(_, _))) {
-        Ok(children.into_iter().next().unwrap_or(Value::Nil))
-    } else {
-        Ok(Value::list(
-            [Value::Symbol("top".into()), Value::Nil]
-                .into_iter()
-                .chain(children),
-        ))
-    }
+pub(crate) fn parse_xml_region(xml: &str, discard_comments: bool) -> Value {
+    parse_libxml_region(xml, discard_comments, false)
 }
 
-pub(crate) fn xml_child_values(node: Node<'_, '_>) -> Result<Vec<Value>, roxmltree::Error> {
-    let mut children = Vec::new();
-    for child in node.children() {
-        match child.node_type() {
-            NodeType::Element => children.push(xml_element_value(child)?),
-            NodeType::Comment => {
-                children.push(Value::list([
-                    Value::Symbol("comment".into()),
-                    Value::Nil,
-                    Value::String(child.text().unwrap_or_default().to_string()),
-                ]));
-            }
-            NodeType::Text => {
-                let text = child.text().unwrap_or_default();
-                if !text.trim().is_empty() {
-                    children.push(Value::String(text.to_string()));
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(children)
+pub(crate) fn parse_html_region(html: &str, discard_comments: bool) -> Value {
+    parse_libxml_region(html, discard_comments, true)
 }
 
-pub(crate) fn xml_element_value(node: Node<'_, '_>) -> Result<Value, roxmltree::Error> {
-    let attrs = if node.attributes().len() == 0 {
-        Value::Nil
+/// Parse using the same libxml2 modes as GNU Emacs' `xml.c`.
+///
+/// In particular, libxml2's `NOBLANKS` behavior cannot be reproduced by
+/// dropping every whitespace-only text node after parsing: it retains some
+/// whitespace adjacent to mixed content.  Using the same parser also preserves
+/// GNU's recovery behavior for malformed HTML instead of substituting HTML5's
+/// different adoption-agency rules.
+fn parse_libxml_region(source: &str, discard_comments: bool, html: bool) -> Value {
+    let parser = if html {
+        LibxmlParser::default_html()
     } else {
-        Value::list(node.attributes().map(|attr| {
-            Value::cons(
-                Value::Symbol(attr.name().to_string()),
-                Value::String(attr.value().to_string()),
-            )
-        }))
+        LibxmlParser::default()
     };
-    let children = xml_child_values(node)?;
-    Ok(Value::list(
-        [Value::Symbol(node.tag_name().name().to_string()), attrs]
-            .into_iter()
-            .chain(children),
-    ))
+    let Ok(document) = parser.parse_string_with_options(
+        source.as_bytes(),
+        LibxmlParserOptions {
+            recover: html,
+            no_error: true,
+            no_warning: true,
+            no_blanks: true,
+            no_net: true,
+            encoding: Some("utf-8"),
+            ..LibxmlParserOptions::default()
+        },
+    ) else {
+        // `xmlReadMemory' and `htmlReadMemory' return NULL on failure, which
+        // GNU exposes as nil rather than as a Lisp signal.
+        return Value::Nil;
+    };
+    let Some(root) = document.get_root_element() else {
+        return Value::Nil;
+    };
+
+    // GNU's legacy DISCARD-COMMENTS argument skips only the document-level
+    // sibling scan.  Comments inside the root remain in the DOM in both modes.
+    if discard_comments {
+        return libxml_node_value(&root);
+    }
+
+    let mut first = root.clone();
+    while let Some(previous) = first.get_prev_sibling() {
+        first = previous;
+    }
+    let mut nodes = Vec::new();
+    let mut previous = Value::Nil;
+    let mut current = Some(first);
+    while let Some(node) = current {
+        current = node.get_next_sibling();
+        if !previous.is_nil() {
+            nodes.push(previous);
+        }
+        previous = libxml_node_value(&node);
+    }
+    if nodes.is_empty() {
+        // This intentionally asks libxml2 for the root again rather than
+        // returning `previous': GNU does the same when leading DTD/unsupported
+        // document nodes converted to nil and never seeded its accumulator.
+        document
+            .get_root_element()
+            .as_ref()
+            .map_or(Value::Nil, libxml_node_value)
+    } else {
+        Value::list(
+            [Value::symbol("top"), Value::Nil]
+                .into_iter()
+                .chain(nodes)
+                .chain([previous]),
+        )
+    }
+}
+
+fn libxml_node_value(node: &LibxmlNode) -> Value {
+    match node.get_type() {
+        Some(LibxmlNodeType::ElementNode) => {
+            let attributes = libxml_attributes_in_source_order(node);
+            let attributes = if attributes.is_empty() {
+                Value::Nil
+            } else {
+                Value::list(attributes)
+            };
+            Value::list(
+                [Value::symbol(&node.get_name()), attributes]
+                    .into_iter()
+                    .chain(node.get_child_nodes().iter().map(libxml_node_value)),
+            )
+        }
+        Some(LibxmlNodeType::TextNode | LibxmlNodeType::CDataSectionNode) => {
+            Value::String(node.get_content())
+        }
+        Some(LibxmlNodeType::CommentNode) => Value::list([
+            Value::symbol("comment"),
+            Value::Nil,
+            Value::String(node.get_content()),
+        ]),
+        _ => Value::Nil,
+    }
+}
+
+fn libxml_attributes_in_source_order(node: &LibxmlNode) -> Vec<Value> {
+    let mut attributes = Vec::new();
+    let node_ptr = node.node_ptr();
+    if node_ptr.is_null() {
+        return attributes;
+    }
+
+    // `libxml::Node::get_properties' returns a HashMap and therefore loses the
+    // observable source order that GNU preserves by walking xmlAttr::next.
+    // The document owns these pointers for the full duration of this scan.
+    let mut attribute = unsafe { (*node_ptr).properties };
+    while !attribute.is_null() {
+        // SAFETY: `attribute' is a non-null node in this document's linked
+        // xmlAttr list, so its name and next pointers remain valid here.
+        let (name, next) = unsafe {
+            let name = if (*attribute).name.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr((*attribute).name.cast())
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            (name, (*attribute).next)
+        };
+        if !name.is_empty() {
+            attributes.push(Value::cons(
+                Value::symbol(&name),
+                Value::String(node.get_property(&name).unwrap_or_default()),
+            ));
+        }
+        attribute = next;
+    }
+    attributes
 }
 
 pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Value> {
@@ -406,18 +550,40 @@ pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Va
 
 pub(crate) fn find_bidi_override(interp: &Interpreter, start: usize, end: usize) -> Option<usize> {
     let text = interp.buffer.buffer_substring(start, end).ok()?;
-    let chars = text.chars().collect::<Vec<_>>();
-    let control_index = chars
-        .iter()
-        .position(|ch| matches!(*ch as u32, 0x202A..=0x202E | 0x2066..=0x2069))?;
-    chars[control_index..]
-        .iter()
-        .position(|ch| {
-            !matches!((*ch) as u32, 0x202A..=0x202E | 0x2066..=0x2069)
-                && !ch.is_whitespace()
-                && !matches!(*ch, '{' | '}')
-        })
-        .map(|offset| start + control_index + offset)
+    if !text
+        .chars()
+        .any(|character| matches!(character as u32, 0x202A..=0x202E | 0x2066..=0x2069))
+    {
+        return None;
+    }
+
+    use unicode_bidi::{BidiClass, BidiInfo, LTR_LEVEL};
+    let bidi = BidiInfo::new(&text, Some(LTR_LEVEL));
+    for (character_index, (byte_index, _)) in text.char_indices().enumerate() {
+        let class = bidi.original_classes[byte_index];
+        let level = bidi.levels[byte_index].number();
+        let suspicious = match class {
+            // GNU allows only the paragraph base level for L/EN and
+            // the first RTL level for R/AL.
+            BidiClass::L | BidiClass::EN => level > 0,
+            BidiClass::R | BidiClass::AL => level > 1,
+            // Explicit embeddings/isolates may move weak and neutral
+            // characters by one level without creating a confusing
+            // override; deeper nesting is suspicious.
+            BidiClass::AN
+            | BidiClass::BN
+            | BidiClass::CS
+            | BidiClass::ES
+            | BidiClass::ET
+            | BidiClass::NSM
+            | BidiClass::ON => level > 1,
+            _ => false,
+        };
+        if suspicious {
+            return Some(start + character_index);
+        }
+    }
+    None
 }
 
 pub(crate) fn insert_impl(
@@ -569,7 +735,7 @@ pub(crate) fn insert_text_with_hooks(
         ],
         env,
     )?;
-    let _ = maybe_lock_current_buffer(interp, env);
+    let _ = maybe_lock_current_buffer_on_change(interp, env);
     run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
     Ok(())
 }

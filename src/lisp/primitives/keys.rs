@@ -14,6 +14,201 @@ pub(crate) const KEY_DESCRIPTION_MODIFIER_MASK: i64 = KEY_DESCRIPTION_ALT_BIT
     | KEY_DESCRIPTION_META_BIT;
 pub(crate) const KEY_DESCRIPTION_META_PREFIX: i64 = 0x1B;
 
+const EVENT_UP_BIT: i64 = 1;
+const EVENT_DOWN_BIT: i64 = 1 << 1;
+const EVENT_DRAG_BIT: i64 = 1 << 2;
+const EVENT_CLICK_BIT: i64 = 1 << 3;
+const EVENT_DOUBLE_BIT: i64 = 1 << 4;
+const EVENT_TRIPLE_BIT: i64 = 1 << 5;
+
+fn solitary_event_modifier(name: &str) -> i64 {
+    match name {
+        "A" | "alt" => KEY_DESCRIPTION_ALT_BIT,
+        "C" | "ctrl" | "control" => KEY_DESCRIPTION_CTRL_BIT,
+        "H" | "hyper" => KEY_DESCRIPTION_HYPER_BIT,
+        "M" | "meta" => KEY_DESCRIPTION_META_BIT,
+        "S" | "shift" => KEY_DESCRIPTION_SHIFT_BIT,
+        "s" | "super" => KEY_DESCRIPTION_SUPER_BIT,
+        "up" => EVENT_UP_BIT,
+        "down" => EVENT_DOWN_BIT,
+        "drag" => EVENT_DRAG_BIT,
+        "click" => EVENT_CLICK_BIT,
+        "double" => EVENT_DOUBLE_BIT,
+        "triple" => EVENT_TRIPLE_BIT,
+        _ => 0,
+    }
+}
+
+fn modified_event_symbol_name(modifiers: i64, base: &str) -> String {
+    let mut name = String::new();
+    for (bit, prefix) in [
+        (KEY_DESCRIPTION_ALT_BIT, "A-"),
+        (KEY_DESCRIPTION_CTRL_BIT, "C-"),
+        (KEY_DESCRIPTION_HYPER_BIT, "H-"),
+        (KEY_DESCRIPTION_META_BIT, "M-"),
+        (KEY_DESCRIPTION_SHIFT_BIT, "S-"),
+        (KEY_DESCRIPTION_SUPER_BIT, "s-"),
+        (EVENT_DOUBLE_BIT, "double-"),
+        (EVENT_TRIPLE_BIT, "triple-"),
+        (EVENT_UP_BIT, "up-"),
+        (EVENT_DOWN_BIT, "down-"),
+        (EVENT_DRAG_BIT, "drag-"),
+    ] {
+        if modifiers & bit != 0 {
+            name.push_str(prefix);
+        }
+    }
+    // click is represented by the absence of the other mouse prefixes.
+    name.push_str(base);
+    name
+}
+
+fn control_event_code(code: i64) -> i64 {
+    match code {
+        0x3f => 0x7f,
+        0x20 | 0x40 => 0,
+        value if (b'a' as i64..=b'z' as i64).contains(&value) => value - 0x60,
+        value if (b'A' as i64..=b'_' as i64).contains(&value) => value - 0x40,
+        value => value,
+    }
+}
+
+pub(crate) fn event_convert_list_value(
+    interp: &mut Interpreter,
+    event_description: &Value,
+) -> Result<Value, LispError> {
+    let items = event_description.to_vec()?;
+    let mut base = None;
+    let mut modifiers = 0;
+    for (index, item) in items.iter().enumerate() {
+        let modifier = if index + 1 < items.len() {
+            item.as_symbol()
+                .ok()
+                .map(solitary_event_modifier)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if modifier != 0 {
+            modifiers |= modifier;
+        } else if base.is_some() {
+            return Err(LispError::Signal("Two bases given in one event".into()));
+        } else {
+            base = Some(item.clone());
+        }
+    }
+
+    let mut base = base.unwrap_or(Value::Nil);
+    if let Value::Symbol(symbol) = &base
+        && symbol.chars().count() == 1
+    {
+        base = Value::Integer(symbol.chars().next().expect("one character") as i64);
+    }
+    match base {
+        Value::Integer(mut code) => {
+            if modifiers & KEY_DESCRIPTION_SHIFT_BIT != 0
+                && (b'a' as i64..=b'z' as i64).contains(&code)
+            {
+                code -= i64::from(b'a' - b'A');
+                modifiers &= !KEY_DESCRIPTION_SHIFT_BIT;
+            }
+            if modifiers & KEY_DESCRIPTION_CTRL_BIT != 0 {
+                code = control_event_code(code);
+                modifiers &= !KEY_DESCRIPTION_CTRL_BIT;
+            }
+            Ok(Value::Integer(code | modifiers))
+        }
+        Value::Symbol(base) => {
+            let modified = modified_event_symbol_name(modifiers, &base);
+            if let Some(kind) = interp.get_symbol_property(&base, "event-kind") {
+                interp.put_symbol_property(&modified, "event-kind", kind);
+            }
+            Ok(Value::Symbol(modified))
+        }
+        _ => Err(LispError::Signal("Invalid base event".into())),
+    }
+}
+
+fn event_modifier_elements(modifiers: i64) -> Vec<Value> {
+    [
+        (KEY_DESCRIPTION_META_BIT, "meta"),
+        (KEY_DESCRIPTION_CTRL_BIT, "control"),
+        (KEY_DESCRIPTION_SHIFT_BIT, "shift"),
+        (KEY_DESCRIPTION_HYPER_BIT, "hyper"),
+        (KEY_DESCRIPTION_SUPER_BIT, "super"),
+        (KEY_DESCRIPTION_ALT_BIT, "alt"),
+        (EVENT_TRIPLE_BIT, "triple"),
+        (EVENT_DOUBLE_BIT, "double"),
+        (EVENT_CLICK_BIT, "click"),
+        (EVENT_DRAG_BIT, "drag"),
+        (EVENT_DOWN_BIT, "down"),
+        (EVENT_UP_BIT, "up"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| modifiers & bit != 0)
+    .map(|(_, name)| Value::symbol(name))
+    .collect()
+}
+
+pub(crate) fn parse_event_symbol_modifiers(
+    interp: &mut Interpreter,
+    value: &Value,
+) -> Result<Value, LispError> {
+    let symbol = value.as_symbol()?;
+    if interp
+        .get_symbol_property(symbol, "event-symbol-element-mask")
+        .is_some_and(|value| value.cons_values().is_some())
+    {
+        return Ok(interp
+            .get_symbol_property(symbol, "event-symbol-elements")
+            .unwrap_or(Value::Nil));
+    }
+
+    let mut modifiers = 0;
+    let mut offset = 0;
+    while offset + 1 < symbol.len() {
+        let rest = &symbol[offset..];
+        let parsed = [
+            ("A-", KEY_DESCRIPTION_ALT_BIT),
+            ("C-", KEY_DESCRIPTION_CTRL_BIT),
+            ("H-", KEY_DESCRIPTION_HYPER_BIT),
+            ("M-", KEY_DESCRIPTION_META_BIT),
+            ("S-", KEY_DESCRIPTION_SHIFT_BIT),
+            ("s-", KEY_DESCRIPTION_SUPER_BIT),
+            ("drag-", EVENT_DRAG_BIT),
+            ("down-", EVENT_DOWN_BIT),
+            ("double-", EVENT_DOUBLE_BIT),
+            ("triple-", EVENT_TRIPLE_BIT),
+            ("up-", EVENT_UP_BIT),
+        ]
+        .into_iter()
+        .find(|(prefix, _)| rest.starts_with(prefix));
+        let Some((prefix, bit)) = parsed else {
+            break;
+        };
+        modifiers |= bit;
+        offset += prefix.len();
+    }
+    let base = &symbol[offset..];
+    let mouse_click =
+        modifiers & (EVENT_DOWN_BIT | EVENT_DRAG_BIT | EVENT_DOUBLE_BIT | EVENT_TRIPLE_BIT) == 0
+            && ((base
+                .strip_prefix("mouse-")
+                .is_some_and(|button| button.len() == 1 && button.as_bytes()[0].is_ascii_digit()))
+                || base.starts_with("wheel-"));
+    if mouse_click {
+        modifiers |= EVENT_CLICK_BIT;
+    }
+
+    let base = Value::symbol(base);
+    let element_mask = Value::list([base.clone(), Value::Integer(modifiers)]);
+    let elements =
+        Value::list(std::iter::once(base.clone()).chain(event_modifier_elements(modifiers)));
+    interp.put_symbol_property(symbol, "event-symbol-element-mask", element_mask);
+    interp.put_symbol_property(symbol, "event-symbol-elements", elements.clone());
+    Ok(elements)
+}
+
 pub(crate) fn parse_kbd_sequence(text: &str) -> Result<Value, LispError> {
     let mut items = vec![Value::Symbol("vector-literal".into())];
     for token in text.split_whitespace() {
@@ -122,6 +317,24 @@ pub(crate) fn key_sequence_binding_text(value: &Value) -> Result<String, LispErr
     Ok(key_sequence_binding_parts(value)?.join(" "))
 }
 
+/// Parse the descriptive key spelling accepted by the `keymap-*' Lisp API.
+///
+/// This is intentionally separate from `key_sequence_binding_parts': GNU's
+/// older primitives (`define-key', `lookup-key', `key-binding', ...) treat a
+/// string as the raw sequence of characters it contains, while `keymap-set'
+/// and friends explicitly pass their strings through `key-parse'.  Guessing
+/// from spaces is observably wrong for raw bindings such as `"\C-c, "'.
+pub(crate) fn textual_key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
+    if let Some(string) = string_like(value) {
+        return key_sequence_binding_parts(&parse_kbd_sequence(&string.text)?);
+    }
+    key_sequence_binding_parts(value)
+}
+
+pub(crate) fn textual_key_sequence_binding_text(value: &Value) -> Result<String, LispError> {
+    Ok(textual_key_sequence_binding_parts(value)?.join(" "))
+}
+
 pub(crate) fn looks_like_textual_key_spec(text: &str) -> bool {
     // A space separates keys in a textual spec, but a string that is
     // nothing but spaces is a raw key sequence (like `" "' for SPC).
@@ -143,17 +356,6 @@ pub(crate) fn looks_like_textual_key_spec(text: &str) -> bool {
 }
 
 pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, LispError> {
-    if let Some(string) = string_like(value) {
-        if looks_like_textual_key_spec(&string.text) {
-            let parsed = parse_kbd_sequence(&string.text)?;
-            let mut parts = Vec::new();
-            append_key_description_parts(&parsed, &mut parts)?;
-            return Ok(parts);
-        }
-        let mut parts = Vec::new();
-        append_key_description_parts(value, &mut parts)?;
-        return Ok(parts);
-    }
     if let Ok(events) = vector_items(value)
         && let [event] = events.as_slice()
     {
@@ -170,6 +372,37 @@ pub(crate) fn key_sequence_binding_parts(value: &Value) -> Result<Vec<String>, L
     Ok(parts)
 }
 
+/// Return the event path used to store or traverse a keymap binding.
+///
+/// GNU represents Meta-modified character keys as an ESC prefix followed by
+/// the character event.  Keeping the display spelling (`M-v') as a synthetic
+/// root event changes full-keymap ordering and prevents the ESC prefix map
+/// from being discoverable.  Symbolic events such as `M-<up>' remain single
+/// events, just as they do in GNU.
+pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {
+    keymap_parts_from_display_parts(key_sequence_binding_parts(value)?)
+}
+
+pub(crate) fn textual_key_sequence_keymap_parts(value: &Value) -> Result<Vec<String>, LispError> {
+    keymap_parts_from_display_parts(textual_key_sequence_binding_parts(value)?)
+}
+
+fn keymap_parts_from_display_parts(display_parts: Vec<String>) -> Result<Vec<String>, LispError> {
+    let mut parts = Vec::with_capacity(display_parts.len());
+    for part in display_parts {
+        let events = parse_kbd_token(&part);
+        if let [Value::Integer(code)] = events.as_slice()
+            && code & KEY_DESCRIPTION_META_BIT != 0
+        {
+            parts.push("ESC".into());
+            parts.push(describe_key_code(code & !KEY_DESCRIPTION_META_BIT));
+        } else {
+            parts.push(part);
+        }
+    }
+    Ok(parts)
+}
+
 pub(crate) fn append_key_description_parts(
     sequence: &Value,
     output: &mut Vec<String>,
@@ -177,13 +410,6 @@ pub(crate) fn append_key_description_parts(
     let events = key_description_events(sequence)?;
     let mut add_meta = false;
     for event in events {
-        if let Some(string) = string_like(&event)
-            && looks_like_textual_key_spec(&string.text)
-        {
-            let parsed = parse_kbd_sequence(&string.text)?;
-            append_key_description_parts(&parsed, output)?;
-            continue;
-        }
         if add_meta {
             match event {
                 Value::Integer(code) if code == KEY_DESCRIPTION_META_PREFIX => {

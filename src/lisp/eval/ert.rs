@@ -132,7 +132,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let body = Value::Lambda(Vec::new(), items[cursor..].to_vec(), closure_env);
+        let body = Value::Lambda(Vec::new(), items[cursor..].to_vec().into(), closure_env);
         // Mirror `ert-set-test': tests are also reachable through the
         // `ert--test' symbol property as an `ert-test' struct, which
         // `ert-get-test' and the struct accessors read.
@@ -262,6 +262,7 @@ impl Interpreter {
         let body_result = self.eval(&items[1], env);
         self.pop_handler_bindings(handler_start);
         match body_result {
+            Err(error @ LispError::Terminate(_)) => Err(error),
             Err(e) => {
                 if self.take_condition_case_suspend() {
                     return Err(e);
@@ -331,10 +332,16 @@ impl Interpreter {
         summary.total = tests.len();
 
         for test in &tests {
+            let mut env: Env = Vec::new();
+            // GNU can deliver SIGCHLD-driven process state changes between
+            // ERT tests.  Emaxx owns those transitions in its cooperative
+            // event pump, so run one nonblocking cycle at the same safe
+            // boundary.  Otherwise a completed child left by one test
+            // remains spuriously `run' throughout every later test.
+            let _ = primitives::pump_external_process_output(self, &mut env);
             if std::env::var("EMAXX_DEBUG_ERT").is_ok() {
                 eprintln!("ERT running: {}", test.name);
             }
-            let mut env: Env = Vec::new();
             // Timers a test scheduled but never reached firing conditions
             // for must not leak into later tests.
             self.pending_timers.clear();
@@ -375,6 +382,13 @@ impl Interpreter {
                 Ok(_) => self.call_function_value(test.body.clone(), None, &[], &mut env),
                 Err(error) => Err(error.clone()),
             };
+            // GNU's native `kill-emacs` exits immediately: ERT never turns it
+            // into a failed test and never runs its ordinary per-test unwind
+            // cleanup.  The process-owning batch boundary consumes the
+            // pending request after this runner returns.
+            if matches!(result, Err(LispError::Terminate(_))) {
+                return summary;
+            }
             if let Ok(restore) = lexical_restore
                 && let Err(error) = self.restore_special_binding(restore, &mut env)
                 && result.is_ok()
@@ -448,6 +462,10 @@ impl Interpreter {
                     });
                 }
             }
+            // Give children created by this test the same boundary delivery
+            // opportunity before the next test begins.  This is deliberately
+            // nonblocking: long-running subprocesses remain live.
+            let _ = primitives::pump_external_process_output(self, &mut env);
         }
         summary
     }

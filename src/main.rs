@@ -2,14 +2,16 @@
 
 use std::fs;
 use std::io::{self, stdout};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::thread;
 
 use clap::Parser;
 use crossterm::terminal;
 
-use emaxx::batch::{self, BatchRunOptions};
+use emaxx::batch::{self, BatchRunOptions, BatchRunOutcome};
 use emaxx::buffer::Buffer;
 use emaxx::command::{self, CommandResult};
 use emaxx::display::{self, Screen};
@@ -26,9 +28,14 @@ struct Cli {
     no_site_file: bool,
     #[arg(long)]
     no_site_lisp: bool,
+    // Emaxx does not load user/site init files yet, so GNU's -Q/--quick is
+    // already the effective startup mode.  Keep the parsed flag for command-
+    // line compatibility even though it requires no additional action.
+    #[arg(short = 'Q', long = "quick")]
+    _quick: bool,
     #[arg(short = 'L', value_name = "DIR")]
     load_path: Vec<PathBuf>,
-    #[arg(short = 'l', value_name = "FILE")]
+    #[arg(short = 'l', long = "load", value_name = "FILE")]
     load: Vec<String>,
     #[arg(long = "eval", value_name = "EXPR")]
     eval: Vec<String>,
@@ -49,12 +56,15 @@ fn main() -> ExitCode {
 fn try_main() -> Result<u8, String> {
     let cli = Cli::parse();
     if cli.batch {
-        let code = run_batch_with_large_stack(BatchRunOptions {
+        let outcome = run_batch_with_large_stack(BatchRunOptions {
             load_path: cli.load_path,
             load: cli.load,
             eval: cli.eval,
         })?;
-        return Ok(code as u8);
+        return match outcome {
+            BatchRunOutcome::Exit(code) => Ok(code as u8),
+            BatchRunOutcome::Restart => restart_current_process(),
+        };
     }
 
     if cli.no_init_file
@@ -73,7 +83,7 @@ fn try_main() -> Result<u8, String> {
     Ok(0)
 }
 
-fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<i32, String> {
+fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
     // Dropping an N-element list recurses N deep through the cons chain;
     // upstream tests build 8-million-element lists (Bug#24264), so the
     // batch thread needs stack for the teardown as well as evaluation.
@@ -84,6 +94,29 @@ fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<i32, String> {
         .map_err(|error| format!("start batch thread: {error}"))?
         .join()
         .map_err(|_| "batch thread panicked".to_string())?
+}
+
+#[cfg(unix)]
+fn restart_current_process() -> Result<u8, String> {
+    let mut args = std::env::args_os();
+    let executable = args
+        .next()
+        .ok_or_else(|| "No command line arguments known; unable to re-execute Emaxx".to_string())?;
+    let error = Command::new(executable).args(args).exec();
+    Err(format!("Unable to re-execute Emaxx: {error}"))
+}
+
+#[cfg(not(unix))]
+fn restart_current_process() -> Result<u8, String> {
+    let mut args = std::env::args_os();
+    let executable = args
+        .next()
+        .ok_or_else(|| "No command line arguments known; unable to re-execute Emaxx".to_string())?;
+    let status = Command::new(executable)
+        .args(args)
+        .status()
+        .map_err(|error| format!("Unable to re-execute Emaxx: {error}"))?;
+    Ok(status.code().unwrap_or(1) as u8)
 }
 
 fn run_interactive(file: Option<PathBuf>) -> io::Result<()> {

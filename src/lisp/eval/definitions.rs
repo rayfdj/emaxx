@@ -692,9 +692,18 @@ impl Interpreter {
             let symbol = items[index].as_symbol()?.to_string();
             let value = self.eval(&items[index + 1], env)?;
             if let Some(custom_type) = self.get_symbol_property(&symbol, "custom-type") {
-                let matches = if self.lookup_function("widget-convert", env).is_ok()
-                    && self.lookup_function("widget-apply", env).is_ok()
-                {
+                // An autoload stub is not a usable widget runtime when this
+                // interpreter has no matching Lisp load path.  The native
+                // setopt fallback can validate the common Custom types
+                // without turning a merely advertised wid-edit autoload into
+                // an unconditional file dependency.
+                let widget_runtime_loaded =
+                    ["widget-convert", "widget-apply"].into_iter().all(|name| {
+                        self.lookup_function(name, env).is_ok_and(|binding| {
+                            crate::lisp::primitives::autoload_parts(&binding).is_none()
+                        })
+                    });
+                let matches = if widget_runtime_loaded {
                     let widget = self.call_function_value(
                         Value::Symbol("widget-convert".into()),
                         Some("widget-convert"),
@@ -1798,17 +1807,13 @@ impl Interpreter {
                 }
                 ":initialize" => {
                     let function = self.eval(&items[index + 1], env)?;
-                    // The standard custom-initialize-* functions reduce to the
-                    // plain default assignment emaxx already performed;
-                    // re-running them can clobber values whose default
-                    // expressions aren't idempotent.  Only bespoke
-                    // initializers (erc-modules' lambda) carry extra
-                    // side effects worth running.
-                    let standard = matches!(&function, Value::Symbol(name)
-                        if name.starts_with("custom-initialize-"));
-                    if !standard {
-                        initialize = Some(function);
-                    }
+                    // `custom-declare-variable' delegates the initial
+                    // assignment to this function.  In particular,
+                    // `custom-initialize-reset' must invoke a :set function
+                    // even when an earlier `defvar' already bound the option;
+                    // completion-pcm uses that side effect to compile its
+                    // delimiter regexp.
+                    initialize = Some(function);
                 }
                 ":type" => {
                     let custom_type = self.eval(&items[index + 1], env)?;
@@ -1867,7 +1872,7 @@ impl Interpreter {
                 // custom-initialize family loaded; the plain default
                 // assignment already happened, so a void initializer is
                 // tolerable.
-                Err(LispError::Void(_)) => {}
+                Err(LispError::VoidFunction(_)) => {}
                 Err(LispError::SignalValue(condition))
                     if matches!(condition.car(), Ok(Value::Symbol(kind))
                         if kind == "void-function") => {}
@@ -2038,7 +2043,15 @@ impl Interpreter {
             return Ok(Value::Nil);
         }
 
-        let keymap = crate::lisp::primitives::make_runtime_keymap(self, Some(&resolved));
+        let full = items
+            .windows(2)
+            .find(|pair| matches!(&pair[0], Value::Symbol(keyword) if keyword == ":full"))
+            .is_some_and(|pair| pair[1].is_truthy());
+        let keymap = if full {
+            crate::lisp::primitives::make_runtime_full_keymap(self, Some(&resolved))
+        } else {
+            crate::lisp::primitives::make_runtime_keymap(self, Some(&resolved))
+        };
         let mut index = 2;
         let mut seen_keys = HashSet::new();
         while index + 1 < items.len() {
@@ -2085,11 +2098,24 @@ impl Interpreter {
         let Some(name) = items.get(1).and_then(|value| value.as_symbol().ok()) else {
             return Ok(Value::Nil);
         };
-        if let Some(Value::Symbol(kind)) = items.first() {
+        if let Some(Value::Symbol(raw_kind)) = items.first() {
+            // Eager source expansion lowers `define-derived-mode' to a
+            // GNU-shaped search stub followed by this internal executor.
+            // The executor must replace that stub with the real mode body;
+            // treating its private name as a fourth mode kind leaves the
+            // preceding `(defalias MODE #'ignore)' installed.
+            let kind = if raw_kind == "emaxx--define-derived-mode" {
+                "define-derived-mode"
+            } else {
+                raw_kind.as_str()
+            };
             if kind == "define-minor-mode" {
                 let mut init_value = Value::Nil;
                 let mut global = false;
                 let mut variable_name = name.to_string();
+                let mut variable_setter = None;
+                let mut lighter = Value::Nil;
+                let mut keymap_spec = None;
                 let mut index = if matches!(
                     items.get(2),
                     Some(Value::String(_) | Value::StringObject(_))
@@ -2109,13 +2135,19 @@ impl Interpreter {
                     match keyword {
                         ":init-value" => init_value = items[index + 1].clone(),
                         ":global" => global = items[index + 1].is_truthy(),
-                        ":variable" => {
-                            if let Some((variable, _setter)) = items[index + 1].cons_values()
-                                && let Ok(variable) = variable.as_symbol()
-                            {
-                                variable_name = variable.to_string();
+                        ":lighter" => lighter = items[index + 1].clone(),
+                        ":keymap" => keymap_spec = Some(items[index + 1].clone()),
+                        ":variable" => match &items[index + 1] {
+                            Value::Symbol(variable) => variable_name = variable.clone(),
+                            variable => {
+                                if let Some((variable, setter)) = variable.cons_values()
+                                    && let Ok(variable) = variable.as_symbol()
+                                {
+                                    variable_name = variable.to_string();
+                                    variable_setter = Some(setter);
+                                }
                             }
-                        }
+                        },
                         _ => {}
                     }
                     index += 2;
@@ -2152,8 +2184,44 @@ impl Interpreter {
                         .insert(variable_name.clone(), stored.clone());
                     self.globals.push((variable_name.clone(), stored));
                 }
-                if let Some(map) = self.lookup_var(&format!("{name}-map"), &Vec::new()) {
-                    let entry = Value::cons(Value::Symbol(name.to_string()), map);
+                let toggle = Value::Symbol(variable_name.clone());
+                let mut minor_modes = self
+                    .lookup_var("minor-mode-list", &Vec::new())
+                    .unwrap_or(Value::Nil)
+                    .to_vec()
+                    .unwrap_or_default();
+                if !minor_modes.iter().any(|mode| mode == &toggle) {
+                    minor_modes.insert(0, toggle.clone());
+                    self.set_global_binding("minor-mode-list", Value::list(minor_modes));
+                }
+
+                if !lighter.is_nil() {
+                    let entry = Value::list([toggle.clone(), lighter]);
+                    let mut entries = self
+                        .lookup_var("minor-mode-alist", &Vec::new())
+                        .unwrap_or(Value::Nil)
+                        .to_vec()
+                        .unwrap_or_default();
+                    if let Some(index) = entries
+                        .iter()
+                        .position(|existing| existing.car().is_ok_and(|mode| mode == toggle))
+                    {
+                        entries[index] = entry;
+                    } else {
+                        entries.insert(0, entry);
+                    }
+                    self.set_global_binding("minor-mode-alist", Value::list(entries));
+                }
+
+                let map = match keymap_spec {
+                    Some(Value::Symbol(map_name)) => self.lookup_var(&map_name, &Vec::new()),
+                    Some(Value::Nil) => None,
+                    Some(_) => self.lookup_var(&format!("{name}-map"), &Vec::new()),
+                    None => self.lookup_var(&format!("{name}-map"), &Vec::new()),
+                };
+                if let Some(map) = map {
+                    let entry_mode = toggle.clone();
+                    let entry = Value::cons(toggle, map);
                     let mut entries = self
                         .lookup_var("minor-mode-map-alist", &Vec::new())
                         .unwrap_or(Value::Nil)
@@ -2162,16 +2230,15 @@ impl Interpreter {
                     if let Some(index) = entries.iter().position(|existing| {
                         existing
                             .cons_values()
-                            .is_some_and(|(mode, _)| mode == Value::Symbol(name.to_string()))
+                            .is_some_and(|(mode, _)| mode == entry_mode)
                     }) {
                         entries[index] = entry;
                     } else {
-                        entries.push(entry);
+                        entries.insert(0, entry);
                     }
                     self.set_global_binding("minor-mode-map-alist", Value::list(entries));
                 }
 
-                let setter_symbol = if global { "setq-default" } else { "setq" };
                 let current_mode_form = if global {
                     Value::list([
                         Value::Symbol("default-value".into()),
@@ -2214,11 +2281,16 @@ impl Interpreter {
                     ]),
                 ]);
 
-                let mut body = vec![Value::list([
-                    Value::Symbol(setter_symbol.into()),
-                    Value::Symbol(variable_name.clone()),
-                    toggle_form,
-                ])];
+                let set_mode_form = if let Some(setter) = variable_setter {
+                    Value::list([Value::Symbol("funcall".into()), setter, toggle_form])
+                } else {
+                    Value::list([
+                        Value::Symbol(if global { "setq-default" } else { "setq" }.into()),
+                        Value::Symbol(variable_name.clone()),
+                        toggle_form,
+                    ])
+                };
+                let mut body = vec![set_mode_form];
                 if !global {
                     // GNU's expansion tracks enabled buffer-local modes in
                     // the C variable `local-minor-modes'.
@@ -2275,7 +2347,7 @@ impl Interpreter {
                     name,
                     Some(Value::Lambda(
                         vec!["&optional".into(), "arg".into()],
-                        body,
+                        body.into(),
                         shared_env(Vec::new()),
                     )),
                 );
@@ -2306,6 +2378,9 @@ impl Interpreter {
                     _ => None,
                 });
                 let map_name = format!("{name}-map");
+                let hook_name = format!("{name}-hook");
+                let default_syntax_table_name = format!("{name}-syntax-table");
+                let default_abbrev_table_name = format!("{name}-abbrev-table");
                 if self.lookup_var(&map_name, &Vec::new()).is_none() {
                     let stored = Self::stored_value(crate::lisp::primitives::keymap_placeholder(
                         Some(&map_name),
@@ -2321,13 +2396,72 @@ impl Interpreter {
                     index += 1;
                 }
                 let mut after_hook = None;
+                let mut interactive = true;
+                let mut syntax_table = Value::Symbol(default_syntax_table_name.clone());
+                let mut abbrev_table = Value::Symbol(default_abbrev_table_name.clone());
+                let mut declare_syntax_table = true;
+                let mut declare_abbrev_table = true;
                 while let Some(Value::Symbol(keyword)) = items.get(index)
                     && keyword.starts_with(':')
                 {
-                    if keyword == ":after-hook" {
-                        after_hook = items.get(index + 1).cloned();
+                    match keyword.as_str() {
+                        ":after-hook" => after_hook = items.get(index + 1).cloned(),
+                        ":interactive" => {
+                            interactive = items.get(index + 1).is_some_and(Value::is_truthy);
+                        }
+                        ":syntax-table" => {
+                            syntax_table = items.get(index + 1).cloned().unwrap_or(Value::Nil);
+                            declare_syntax_table = false;
+                        }
+                        ":abbrev-table" => {
+                            abbrev_table = items.get(index + 1).cloned().unwrap_or(Value::Nil);
+                            declare_abbrev_table = false;
+                        }
+                        _ => {}
                     }
                     index += 2;
+                }
+                for variable in [
+                    hook_name.as_str(),
+                    map_name.as_str(),
+                    default_syntax_table_name.as_str(),
+                    default_abbrev_table_name.as_str(),
+                ] {
+                    self.mark_special_variable(variable);
+                }
+                if self.lookup_var(&hook_name, &Vec::new()).is_none() {
+                    self.set_global_binding(&hook_name, Value::Nil);
+                }
+                if declare_syntax_table
+                    && self
+                        .lookup_var(&default_syntax_table_name, &Vec::new())
+                        .is_none()
+                {
+                    let Value::CharTable(table_id) =
+                        self.make_char_table(Some("syntax-table".into()), Value::Nil)
+                    else {
+                        unreachable!("make_char_table returns a char table");
+                    };
+                    self.set_char_table_parent(table_id, Some(self.standard_syntax_table_id()))?;
+                    self.set_global_binding(&default_syntax_table_name, Value::CharTable(table_id));
+                }
+                if declare_abbrev_table
+                    && !self
+                        .lookup_var(&default_abbrev_table_name, &Vec::new())
+                        .is_some_and(|value| {
+                            crate::lisp::primitives::is_abbrev_table_value(self, &value)
+                        })
+                {
+                    let table = crate::lisp::primitives::make_runtime_abbrev_table(
+                        self,
+                        Some(&default_abbrev_table_name),
+                        Value::Nil,
+                    );
+                    self.set_global_binding(&default_abbrev_table_name, table);
+                    crate::lisp::primitives::register_abbrev_table_symbol(
+                        self,
+                        &default_abbrev_table_name,
+                    );
                 }
                 let mut delayed_body = Vec::new();
                 // GNU expands to (delay-mode-hooks (,(or PARENT
@@ -2344,22 +2478,19 @@ impl Interpreter {
                     Value::Symbol("use-local-map".into()),
                     Value::Symbol(map_name.clone()),
                 ]));
-                // GNU define-derived-mode installs MODE-syntax-table.
-                let syntax_table_name = format!("{name}-syntax-table");
-                delayed_body.push(Value::list([
-                    Value::Symbol("if".into()),
-                    Value::list([
-                        Value::Symbol("boundp".into()),
-                        Value::list([
-                            Value::Symbol("quote".into()),
-                            Value::Symbol(syntax_table_name.clone()),
-                        ]),
-                    ]),
-                    Value::list([
+                if !syntax_table.is_nil() {
+                    delayed_body.push(Value::list([
                         Value::Symbol("set-syntax-table".into()),
-                        Value::Symbol(syntax_table_name),
-                    ]),
-                ]));
+                        syntax_table,
+                    ]));
+                }
+                if !abbrev_table.is_nil() {
+                    delayed_body.push(Value::list([
+                        Value::Symbol("setq-local".into()),
+                        Value::Symbol("local-abbrev-table".into()),
+                        abbrev_table,
+                    ]));
+                }
                 delayed_body.push(Value::list([
                     Value::Symbol("setq-local".into()),
                     Value::Symbol("major-mode".into()),
@@ -2376,11 +2507,15 @@ impl Interpreter {
                     ]));
                 }
                 delayed_body.extend_from_slice(&items[index..]);
-                let mut body = vec![Value::list(
+                let mut body = Vec::new();
+                if interactive {
+                    body.push(Value::list([Value::Symbol("interactive".into())]));
+                }
+                body.push(Value::list(
                     std::iter::once(Value::Symbol("delay-mode-hooks".into()))
                         .chain(delayed_body)
                         .collect::<Vec<_>>(),
-                )];
+                ));
                 if let Some(after_hook) = after_hook {
                     body.push(Value::list([
                         Value::Symbol("push".into()),
@@ -2406,7 +2541,11 @@ impl Interpreter {
                 ]));
                 self.set_function_binding(
                     name,
-                    Some(Value::Lambda(Vec::new(), body, shared_env(Vec::new()))),
+                    Some(Value::Lambda(
+                        Vec::new(),
+                        body.into(),
+                        shared_env(Vec::new()),
+                    )),
                 );
                 crate::lisp::primitives::derived_mode_set_parent(self, name, parent);
                 return Ok(Value::Symbol(name.to_string()));
@@ -2541,7 +2680,7 @@ impl Interpreter {
                 Some(Value::Symbol(keyword)) if keyword == ":constructor" => match parts.get(1) {
                     Some(Value::Nil) => suppress_default_constructor = true,
                     Some(Value::Symbol(constructor_name)) => {
-                        let (params, aux_bindings) = parts
+                        let (params, aux_bindings, direct_lambda) = parts
                             .get(2)
                             .and_then(|value| value.to_vec().ok())
                             .map(parse_cl_defstruct_constructor_params)
@@ -2551,6 +2690,7 @@ impl Interpreter {
                                         .chain(slot_names.iter().cloned())
                                         .collect::<Vec<_>>(),
                                     Vec::new(),
+                                    false,
                                 )
                             });
                         let docstring = parts.get(3).and_then(|value| match value {
@@ -2563,6 +2703,7 @@ impl Interpreter {
                             params,
                             aux_bindings,
                             docstring,
+                            direct_lambda,
                         ));
                     }
                     _ => {}
@@ -2598,7 +2739,7 @@ impl Interpreter {
         if !suppress_default_constructor
             && !constructors
                 .iter()
-                .any(|(constructor_name, _, _, _)| constructor_name == &default_constructor_name)
+                .any(|(constructor_name, _, _, _, _)| constructor_name == &default_constructor_name)
         {
             constructors.push((
                 default_constructor_name,
@@ -2607,6 +2748,7 @@ impl Interpreter {
                     .collect::<Vec<_>>(),
                 Vec::new(),
                 None,
+                false,
             ));
         }
 
@@ -2683,7 +2825,8 @@ impl Interpreter {
                         Value::Symbol("emaxx-struct-p".into()),
                         struct_name.clone(),
                         Value::Symbol("object".into()),
-                    ])],
+                    ])]
+                    .into(),
                     shared_env(Vec::new()),
                 )),
             );
@@ -2696,7 +2839,8 @@ impl Interpreter {
                 vec![Value::list([
                     Value::Symbol("copy-sequence".into()),
                     Value::Symbol("object".into()),
-                ])],
+                ])]
+                .into(),
                 shared_env(Vec::new()),
             )),
         );
@@ -2744,10 +2888,24 @@ impl Interpreter {
                         } else {
                             Value::Nil
                         },
-                    ])],
+                    ])]
+                    .into(),
                     shared_env(Vec::new()),
                 )),
             );
+            // GNU's default inline cl-defstruct accessors publish a compiler
+            // macro that lowers the logical accessor to its physical
+            // sequence/record slot.  gv.el deliberately relies on that
+            // metadata to implement `setf'.
+            let (operator, physical_index) = if list_backed && !struct_named {
+                ("nth", index)
+            } else if vector_backed {
+                ("aref", index)
+            } else {
+                // GNU records expose their type tag at aref index zero.
+                ("aref", index + 1)
+            };
+            self.install_struct_accessor_compiler_macro(&accessor_name, operator, physical_index);
             // GNU cl-defstruct also emits `(defun (setf ACCESSOR) (val cl-x)
             // ...)' so gv's `(funcall #'(setf ACCESSOR) VAL X)' fallback
             // works for struct slots.
@@ -2762,13 +2920,14 @@ impl Interpreter {
                             Value::Symbol("cl-x".into()),
                         ]),
                         Value::Symbol("val".into()),
-                    ])],
+                    ])]
+                    .into(),
                     shared_env(Vec::new()),
                 )),
             );
         }
 
-        for (constructor_name, params, aux_bindings, docstring) in constructors {
+        for (constructor_name, params, aux_bindings, docstring, direct_lambda) in constructors {
             self.put_symbol_property(
                 &constructor_name,
                 "emaxx-function-arglist",
@@ -2783,7 +2942,17 @@ impl Interpreter {
             };
             let params_list = Value::list(params_for_make.into_iter().map(Value::Symbol));
             let params_value = Value::list([Value::Symbol("quote".into()), params_list]);
-            let call_args = if aux_bindings.is_empty() {
+            let call_args = if aux_bindings.is_empty() && direct_lambda {
+                Value::list(
+                    std::iter::once(Value::Symbol("list".into())).chain(
+                        params
+                            .iter()
+                            .filter(|param| !param.starts_with('&'))
+                            .cloned()
+                            .map(Value::Symbol),
+                    ),
+                )
+            } else if aux_bindings.is_empty() {
                 Value::Symbol("args".into())
             } else {
                 // GNU fills slots only from constructor params and &aux
@@ -2838,10 +3007,18 @@ impl Interpreter {
             let body = if aux_bindings.is_empty() {
                 make_form
             } else {
-                let let_bindings = Value::list(cl_defstruct_constructor_aux_let_bindings(
-                    &params,
-                    aux_bindings,
-                ));
+                let let_bindings = if direct_lambda {
+                    Value::list(
+                        aux_bindings
+                            .into_iter()
+                            .map(|(name, form)| Value::list([Value::Symbol(name), form])),
+                    )
+                } else {
+                    Value::list(cl_defstruct_constructor_aux_let_bindings(
+                        &params,
+                        aux_bindings,
+                    ))
+                };
                 Value::list([Value::Symbol("let*".into()), let_bindings, make_form])
             };
             let lambda_body = match docstring {
@@ -2851,14 +3028,55 @@ impl Interpreter {
             self.set_function_binding(
                 &constructor_name,
                 Some(Value::Lambda(
-                    vec!["&rest".into(), "args".into()],
-                    lambda_body,
+                    if direct_lambda {
+                        params
+                    } else {
+                        vec!["&rest".into(), "args".into()]
+                    },
+                    lambda_body.into(),
                     shared_env(Vec::new()),
                 )),
             );
         }
 
         Ok(Value::Symbol(name))
+    }
+
+    pub(super) fn install_struct_accessor_compiler_macro(
+        &mut self,
+        accessor: &str,
+        operator: &str,
+        physical_index: usize,
+    ) {
+        let compiler_macro_name = format!("{accessor}--cmacro");
+        let expanded_form = if operator == "nth" {
+            Value::list([
+                Value::Symbol("list".into()),
+                quoted_literal(&Value::Symbol("nth".into())),
+                Value::Integer(physical_index as i64),
+                Value::Symbol("object".into()),
+            ])
+        } else {
+            Value::list([
+                Value::Symbol("list".into()),
+                quoted_literal(&Value::Symbol("aref".into())),
+                Value::Symbol("object".into()),
+                Value::Integer(physical_index as i64),
+            ])
+        };
+        self.set_function_binding(
+            &compiler_macro_name,
+            Some(Value::Lambda(
+                vec!["_form".into(), "object".into()],
+                vec![expanded_form].into(),
+                shared_env(Vec::new()),
+            )),
+        );
+        self.put_symbol_property(
+            accessor,
+            "compiler-macro",
+            Value::Symbol(compiler_macro_name),
+        );
     }
 
     pub(super) fn sf_incf(
@@ -3206,7 +3424,7 @@ impl Interpreter {
         {
             self.mark_lexical_closure_env(&closure_env);
         }
-        let lambda = Value::Lambda(params, body, closure_env);
+        let lambda = Value::Lambda(params, body.into(), closure_env);
         // GNU defalias routes advised names through the symbol's
         // `defalias-fset-function' (nadvice's advice--defalias-fset), which
         // re-applies pending or existing advice around the new definition.
@@ -3279,8 +3497,8 @@ impl Interpreter {
         let name = items[1].as_symbol()?.to_string();
         let params = self.parse_params(&items[2])?;
         let body = items[3..].to_vec();
-        let lambda = Value::Lambda(params, body, shared_env(env.clone()));
-        self.put_symbol_property(&name, "emaxx-cl-deftype-handler", lambda);
+        let lambda = Value::Lambda(params, body.into(), shared_env(env.clone()));
+        self.put_symbol_property(&name, "cl-deftype-handler", lambda);
         Ok(Value::Symbol(name))
     }
 
@@ -3375,7 +3593,8 @@ impl Interpreter {
                     vec![Value::list([
                         Value::Symbol("error".into()),
                         Value::String(format!("Class {name} is abstract")),
-                    ])],
+                    ])]
+                    .into(),
                     shared_env(Vec::new()),
                 )),
             );
@@ -3395,7 +3614,8 @@ impl Interpreter {
                             Value::Symbol(name.to_string()),
                         ]),
                         Value::Symbol("initargs".into()),
-                    ])],
+                    ])]
+                    .into(),
                     shared_env(Vec::new()),
                 )),
             );
@@ -3421,7 +3641,8 @@ impl Interpreter {
                             Value::Symbol(name.to_string()),
                         ]),
                     ]),
-                ])],
+                ])]
+                .into(),
                 shared_env(Vec::new()),
             )),
         );
@@ -3436,7 +3657,8 @@ impl Interpreter {
                         Value::Symbol(name.to_string()),
                     ]),
                     Value::Symbol("object".into()),
-                ])],
+                ])]
+                .into(),
                 shared_env(Vec::new()),
             )),
         );
@@ -4069,6 +4291,8 @@ impl Interpreter {
         lowered.extend(executable_method_forms.iter().cloned());
         let requested_method_name = function_name_from_binding_form(&items[1])?;
         let method_name = self.canonical_function_name(&requested_method_name, env);
+        let generic_doc =
+            self.get_symbol_property(&method_name, "emaxx-cl-defgeneric-documentation");
         // Without an explicit `cl-defgeneric', the first method's formals
         // become the generic's, as in GNU.  Later methods then rename their
         // parameters onto these, so stored specializer variables, dispatch
@@ -4239,7 +4463,8 @@ impl Interpreter {
                 ),
             ]);
             closure_env.extend(env.iter().cloned());
-            let wrapper = Value::Lambda(generic_params, wrapper_body, shared_env(closure_env));
+            let wrapper =
+                Value::Lambda(generic_params, wrapper_body.into(), shared_env(closure_env));
             if let Some((previous_env, previous_name)) = insertion_parent {
                 let mut previous_env = previous_env.borrow_mut();
                 for frame in previous_env.iter_mut() {
@@ -4465,7 +4690,7 @@ impl Interpreter {
                 .collect::<Vec<_>>();
                 let replacement = Value::Lambda(
                     generic_params.clone(),
-                    method_body.clone(),
+                    method_body.clone().into(),
                     shared_env(replacement_env),
                 );
                 if cl_defmethod_set_named_binding(
@@ -4527,7 +4752,7 @@ impl Interpreter {
             .collect::<Vec<_>>();
             let current_method = Value::Lambda(
                 generic_params.clone(),
-                method_body,
+                method_body.into(),
                 shared_env(current_method_env),
             );
             let next_condition = current_stored_specializer.condition(&generic_runtime_variables);
@@ -4589,12 +4814,12 @@ impl Interpreter {
             };
             let top_wrapper = Value::Lambda(
                 wrapper_params.clone(),
-                dispatch_body(top_condition),
+                dispatch_body(top_condition).into(),
                 wrapper_closure(previous.clone()),
             );
             let next_wrapper = Value::Lambda(
                 wrapper_params,
-                dispatch_body(next_condition),
+                dispatch_body(next_condition).into(),
                 wrapper_closure(dispatch_previous),
             );
             let wrapper = if specific_splices.is_empty() {
@@ -4677,7 +4902,7 @@ impl Interpreter {
             let generic_params = self.parse_params(&generic_lambda_list)?;
             let base_method = Value::Lambda(
                 generic_params,
-                executable_method_forms.clone(),
+                executable_method_forms.clone().into(),
                 shared_env(env.clone()),
             );
             if cl_defmethod_replace_ignore_previous_bindings(&previous, &base_method) {
@@ -4726,7 +4951,7 @@ impl Interpreter {
             )?;
             let mut closure_env = env.clone();
             closure_env.push(vec![(previous_symbol, Self::stored_value(previous))]);
-            let wrapper = Value::Lambda(params, body, shared_env(closure_env));
+            let wrapper = Value::Lambda(params, body.into(), shared_env(closure_env));
             self.set_function_binding(&method_name, Some(wrapper));
             Ok(items[1].clone())
         } else if method_specializers.is_empty() {
@@ -4842,6 +5067,16 @@ impl Interpreter {
                 &method_name,
                 current_stored_specializer.metadata_value(),
             );
+        }
+        // `cl-defmethod' may replace the generic's callable dispatch wrapper
+        // through `cl-defun', but it does not redefine the generic itself.
+        // `sf_defun' correctly clears stale docs for ordinary redefinitions;
+        // restore this separately owned generic metadata after the wrapper
+        // transition.  Method docstrings remain on their method metadata.
+        if result.is_ok()
+            && let Some(generic_doc) = generic_doc
+        {
+            self.put_symbol_property(&method_name, "function-documentation", generic_doc);
         }
         result
     }
@@ -5207,6 +5442,25 @@ impl Interpreter {
     }
 
     pub(super) fn sf_lambda(&mut self, items: &[Value], env: &mut Env) -> Result<Value, LispError> {
+        self.sf_lambda_with_source(items, None, env)
+    }
+
+    pub(super) fn sf_lambda_from_source(
+        &mut self,
+        source: &Value,
+        items: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let source_anchor = source.cons_cells().map(|(car, _)| car);
+        self.sf_lambda_with_source(items, source_anchor, env)
+    }
+
+    fn sf_lambda_with_source(
+        &mut self,
+        items: &[Value],
+        source_anchor: Option<crate::lisp::types::ConsSlot>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
         if items.len() < 2 {
             return Err(LispError::Signal("lambda needs params".into()));
         }
@@ -5236,25 +5490,29 @@ impl Interpreter {
         } else {
             shared_env(Vec::new())
         };
+        let body = match source_anchor {
+            Some(source_anchor) => {
+                let source_id = Rc::as_ptr(&source_anchor) as usize;
+                if let Some((cached_source, cached_body)) =
+                    self.lambda_source_bodies.get(&source_id)
+                    && cached_source
+                        .upgrade()
+                        .is_some_and(|cached| Rc::ptr_eq(&cached, &source_anchor))
+                    && let Some(body) = cached_body.upgrade()
+                {
+                    body
+                } else {
+                    let body = Rc::new(body);
+                    self.lambda_source_bodies.insert(
+                        source_id,
+                        (Rc::downgrade(&source_anchor), Rc::downgrade(&body)),
+                    );
+                    body
+                }
+            }
+            None => Rc::new(body),
+        };
         Ok(Value::Lambda(params, body, closure_env))
-    }
-
-    pub(super) fn sf_eval_function(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 || items.len() > 3 {
-            return Err(LispError::WrongNumberOfArgs(
-                "eval".into(),
-                items.len().saturating_sub(1),
-            ));
-        }
-        let mut evaluated = Vec::with_capacity(items.len().saturating_sub(1));
-        for item in &items[1..] {
-            evaluated.push(self.eval(item, env)?);
-        }
-        crate::lisp::primitives::eval_impl(self, &evaluated, env)
     }
 }
 

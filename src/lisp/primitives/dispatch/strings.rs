@@ -20,6 +20,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "concat"
             | "string-match"
             | "string-match-p"
+            | "posix-string-match"
             | "subregexp-context-p"
             | "isearch-no-upper-case-p"
             | "string-empty-p"
@@ -56,6 +57,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "find-composition-internal"
             | "ucs-normalize-NFC-string"
             | "ucs-normalize-NFD-string"
+            | "ucs-normalize-NFKC-string"
+            | "ucs-normalize-NFKD-string"
             | "string-replace"
             | "subst-char-in-string"
             | "replace-regexp-in-string"
@@ -88,6 +91,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "string-to-char"
             | "char-syntax"
             | "string-to-syntax"
+            | "internal-describe-syntax-value"
             | "syntax-class-to-char"
             | "string-bytes"
             | "multibyte-string-p"
@@ -97,8 +101,11 @@ pub(super) fn handles(name: &str) -> bool {
             | "capitalize"
             | "upcase-initials"
             | "unicode-property-table-internal"
+            | "get-unicode-property-internal"
+            | "put-unicode-property-internal"
             | "get-char-code-property"
             | "char-code-property-description"
+            | "emaxx--general-category-description"
             | "char-resolve-modifiers"
     )
 }
@@ -234,15 +241,27 @@ pub(super) fn call(
         }
         "make-record" => {
             need_args(name, args, 3)?;
-            let type_name = args[0].as_symbol()?;
+            let (type_name, class_object_tagged) = match args[0].as_symbol() {
+                Ok(type_name) => (type_name.to_string(), false),
+                Err(_) => (
+                    interp.class_name_from_value(&args[0]).ok_or_else(|| {
+                        LispError::TypeError("symbol".into(), args[0].type_name())
+                    })?,
+                    true,
+                ),
+            };
             let length = args[1].as_integer()?;
             if length < 0 {
                 return Err(LispError::Signal("Wrong type argument: natnump".into()));
             }
-            Ok(interp.create_record(
-                type_name,
+            let record = interp.create_record(
+                &type_name,
                 std::iter::repeat_n(args[2].clone(), length as usize).collect(),
-            ))
+            );
+            if class_object_tagged && let Value::Record(record_id) = &record {
+                interp.mark_class_object_tagged_record(*record_id);
+            }
+            Ok(record)
         }
         "make-finalizer" => {
             need_args(name, args, 1)?;
@@ -284,6 +303,7 @@ pub(super) fn call(
         }
         "string-match" => regexp::string_match_impl(interp, args, env, true),
         "string-match-p" => regexp::string_match_impl(interp, args, env, false),
+        "posix-string-match" => regexp::posix_string_match_impl(interp, args, env),
         "subregexp-context-p" => {
             need_arg_range(name, args, 2, 3)?;
             let regexp = string_text(&args[0])?;
@@ -747,11 +767,19 @@ pub(super) fn call(
             let mut result_multibyte = string_like(fmt_value).is_some_and(|s| s.multibyte);
             let mut arg_idx = 1;
             let chars: Vec<char> = fmt.chars().collect();
+            let quoting_style =
+                (name == "format-message").then(|| effective_text_quoting_style(interp, env));
             let mut i = 0;
             while i < chars.len() {
                 if chars[i] != '%' || i + 1 >= chars.len() {
                     let start = result.chars().count();
-                    result.push(chars[i]);
+                    let literal = match (quoting_style, chars[i]) {
+                        (Some("curve"), '`') => '‘',
+                        (Some("curve"), '\'') => '’',
+                        (Some("straight"), '`') => '\'',
+                        _ => chars[i],
+                    };
+                    result.push(literal);
                     if let Some(props) = format_source_props(fmt_value, i, i + 1) {
                         result_props.push(TextPropertySpan {
                             start,
@@ -1326,6 +1354,18 @@ pub(super) fn call(
             let input = string_text(&args[0])?;
             Ok(Value::String(input.nfd().collect()))
         }
+        "ucs-normalize-NFKC-string" => {
+            need_args(name, args, 1)?;
+            use unicode_normalization::UnicodeNormalization;
+            let input = string_text(&args[0])?;
+            Ok(Value::String(input.nfkc().collect()))
+        }
+        "ucs-normalize-NFKD-string" => {
+            need_args(name, args, 1)?;
+            use unicode_normalization::UnicodeNormalization;
+            let input = string_text(&args[0])?;
+            Ok(Value::String(input.nfkd().collect()))
+        }
         "string-replace" => {
             need_args(name, args, 3)?;
             let from = string_text(&args[0])?;
@@ -1376,6 +1416,8 @@ pub(super) fn call(
             let start = normalize_string_index(args.get(6), 0, source_len)? as usize;
             regexp::validate_elisp_regex(&pattern.text)?;
             let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
+            let saved_match_data = interp.last_match_data.clone();
+            let saved_match_data_buffer_id = interp.last_match_data_buffer_id;
             let mut result = source.text.chars().take(start).collect::<String>();
             let mut search_pos = start;
             let mut search_byte = regexp::byte_index_for_char(&source.text, start);
@@ -1414,18 +1456,27 @@ pub(super) fn call(
                         &source.text,
                     )?);
                 } else {
-                    regexp::set_match_data(
-                        interp,
-                        0,
-                        &source.text,
-                        &captures,
-                        regex.capture_mapping(),
-                        None,
+                    // GNU invokes a functional replacement with match data
+                    // translated to the complete matched substring, not with
+                    // absolute offsets into STRING.  Nested `match-string'
+                    // calls in the callback therefore use the callback's
+                    // string argument directly.
+                    interp.last_match_data = Some(
+                        match_data
+                            .iter()
+                            .map(|entry| {
+                                entry.map(|(begin, end)| (begin - full_start, end - full_start))
+                            })
+                            .collect(),
                     );
+                    interp.last_match_data_buffer_id = None;
                     let matched_text =
-                        regexp::slice_string_chars(&source.text, replace_start, replace_end);
+                        regexp::slice_string_chars(&source.text, full_start, full_end);
                     let value =
-                        call_function_value(interp, &args[1], &[Value::String(matched_text)], env)?;
+                        call_function_value(interp, &args[1], &[Value::String(matched_text)], env);
+                    interp.last_match_data = saved_match_data.clone();
+                    interp.last_match_data_buffer_id = saved_match_data_buffer_id;
+                    let value = value?;
                     result.push_str(&string_text(&value)?);
                 }
                 result.push_str(&regexp::slice_string_chars(
@@ -1456,6 +1507,8 @@ pub(super) fn call(
                 search_pos,
                 source.text.chars().count(),
             ));
+            interp.last_match_data = saved_match_data;
+            interp.last_match_data_buffer_id = saved_match_data_buffer_id;
             Ok(Value::String(result))
         }
         "edmacro-parse-keys" => {
@@ -1667,10 +1720,28 @@ pub(super) fn call(
         "string-to-syntax" => {
             need_args(name, args, 1)?;
             let spec = string_text(&args[0])?;
-            let Some(entry) = syntax::parse_syntax_spec(&spec) else {
-                return Ok(Value::Nil);
-            };
+            let entry = syntax::parse_syntax_spec(&spec).ok_or_else(|| {
+                let letter = spec.chars().next().unwrap_or('\0');
+                LispError::Signal(format!("Invalid syntax description letter: {letter}"))
+            })?;
             Ok(syntax::syntax_entry_value(entry))
+        }
+        "internal-describe-syntax-value" => {
+            need_args(name, args, 1)?;
+            let (mut description, prefix) = syntax::describe_syntax_value(&args[0]);
+            if prefix {
+                let suffix = super::call(
+                    interp,
+                    "substitute-command-keys",
+                    &[Value::String(
+                        ",\n\t  is a prefix character for `backward-prefix-chars'".into(),
+                    )],
+                    env,
+                )?;
+                description.push_str(&string_text(&suffix)?);
+            }
+            interp.insert_current_buffer(&description);
+            Ok(args[0].clone())
         }
         "syntax-class-to-char" => {
             need_args(name, args, 1)?;
@@ -1756,81 +1827,74 @@ pub(super) fn call(
         "unicode-property-table-internal" => {
             need_args(name, args, 1)?;
             let property = args[0].as_symbol()?;
-            let table = interp.make_char_table(Some(property.into()), Value::Nil);
-            if property == "decomposition" {
+            if let Some(registered) = registered_unicode_property(interp, property, env)?
+                && !unicode_property_uses_unsupported_bytecode(interp, &registered)
+            {
+                return Ok(registered);
+            }
+            let (table, created) = interp.unicode_property_table(property);
+            if created && property == "decomposition" {
                 populate_unicode_decomposition_table(interp, &table)?;
             }
             Ok(table)
+        }
+        "get-unicode-property-internal" => {
+            need_args(name, args, 2)?;
+            let Value::CharTable(table_id) = args[0] else {
+                return Err(LispError::TypeError(
+                    "char-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            if interp.char_table_purpose(table_id) != Some("char-code-property-table") {
+                return Err(LispError::Signal("Invalid Unicode property table".into()));
+            }
+            let property = interp
+                .char_table_extra_slot(table_id, 0)
+                .and_then(|property| property.as_symbol().ok().map(str::to_string))
+                .ok_or_else(|| LispError::Signal("Invalid Unicode property table".into()))?;
+            let character = u32::try_from(args[1].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            if let Some(value) = interp.char_table_get(table_id, character)
+                && !value.is_nil()
+            {
+                return decode_unicode_property_value(interp, table_id, value);
+            }
+            if property == "decomposition" {
+                return Ok(Value::list([Value::Integer(i64::from(character))]));
+            }
+            Ok(native_char_code_property(character, &property))
+        }
+        "put-unicode-property-internal" => {
+            need_args(name, args, 3)?;
+            let Value::CharTable(table_id) = args[0] else {
+                return Err(LispError::TypeError(
+                    "char-table".into(),
+                    args[0].type_name(),
+                ));
+            };
+            let character = u32::try_from(args[1].as_integer()?)
+                .map_err(|_| LispError::Signal("Invalid character".into()))?;
+            interp.char_table_set(table_id, character, args[2].clone())?;
+            Ok(Value::Nil)
         }
         "get-char-code-property" => {
             need_args(name, args, 2)?;
             let ch = u32::try_from(args[0].as_integer()?)
                 .map_err(|_| LispError::Signal("Invalid character".into()))?;
             let property = args[1].as_symbol()?;
-            let value = match property {
-                "name" => unicode_character_name(ch)
-                    .map(Value::String)
-                    .unwrap_or(Value::Nil),
-                "general-category" => unicode_general_category_symbol(ch)
-                    .map(|symbol| Value::Symbol(symbol.into()))
-                    .unwrap_or(Value::Nil),
-                "canonical-combining-class" => canonical_combining_class(ch)
-                    .map(Value::Integer)
-                    .unwrap_or(Value::Integer(0)),
-                _ => match (normalize_case_key(ch), property) {
-                    (code, "uppercase") => {
-                        if code == 0x00DF {
-                            Value::Nil
-                        } else {
-                            let mapped = simple_upcase_char(code);
-                            if mapped == code {
-                                Value::Nil
-                            } else {
-                                Value::Integer(mapped as i64)
-                            }
-                        }
-                    }
-                    (code, "lowercase") => {
-                        let mapped = simple_downcase_char(code, false);
-                        if mapped == code {
-                            Value::Nil
-                        } else {
-                            Value::Integer(mapped as i64)
-                        }
-                    }
-                    (code, "titlecase") => {
-                        if code == 0x00DF {
-                            Value::Nil
-                        } else if code == 0x01C5 {
-                            Value::Integer(code as i64)
-                        } else {
-                            let mapped = simple_titlecase_char(code);
-                            if mapped == code {
-                                Value::Nil
-                            } else {
-                                Value::Integer(mapped as i64)
-                            }
-                        }
-                    }
-                    (0x00DF, "special-uppercase") => Value::String("SS".into()),
-                    (0x00DF, "special-titlecase") => Value::String("Ss".into()),
-                    (0x00DF, "special-lowercase") => Value::Nil,
-                    (0x00DF, _) => Value::Nil,
-                    (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
-                    (0x0130, "special-lowercase") => Value::String("i\u{307}".into()),
-                    (0x0130, _) => Value::Nil,
-                    (0xFB01, "special-uppercase") => Value::String("FI".into()),
-                    (0xFB01, "special-titlecase") => Value::String("Fi".into()),
-                    (0xFB01, _) => Value::Nil,
-                    _ => Value::Nil,
-                },
-            };
-            Ok(value)
+            Ok(native_char_code_property(ch, property))
         }
         "char-code-property-description" => {
             need_args(name, args, 2)?;
             let property = args[0].as_symbol()?;
             Ok(unicode_property_description(property, &args[1])
+                .map(|description| Value::String(description.into()))
+                .unwrap_or(Value::Nil))
+        }
+        "emaxx--general-category-description" => {
+            need_args(name, args, 1)?;
+            Ok(unicode_property_description("general-category", &args[0])
                 .map(|description| Value::String(description.into()))
                 .unwrap_or(Value::Nil))
         }
@@ -1842,6 +1906,169 @@ pub(super) fn call(
         }
 
         _ => unreachable!("dispatch chunk called for unsupported primitive"),
+    }
+}
+
+fn registered_unicode_property(
+    interp: &mut Interpreter,
+    property: &str,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let Some(mut registered) = find_registered_unicode_property(interp, property, env) else {
+        return Ok(None);
+    };
+    let filename = match &registered {
+        Value::String(_) | Value::StringObject(_) => string_text(&registered)?,
+        _ => return Ok(Some(registered)),
+    };
+    if native_unicode_property_file(property) == Some(filename.as_str()) {
+        return Ok(None);
+    }
+    let target = format!("international/{filename}");
+    let Some(path) = resolve_load_target_in_env(interp, &target, env)
+        .or_else(|| resolve_load_target_in_env(interp, &filename, env))
+    else {
+        return Ok(Some(registered));
+    };
+    crate::lisp::load_file_strict(interp, &path)?;
+    registered =
+        find_registered_unicode_property(interp, property, env).unwrap_or(Value::String(filename));
+    Ok(Some(registered))
+}
+
+fn find_registered_unicode_property(
+    interp: &Interpreter,
+    property: &str,
+    env: &Env,
+) -> Option<Value> {
+    let mut alist = interp.lookup_var("char-code-property-alist", env)?;
+    loop {
+        let (entry, rest) = alist.cons_values()?;
+        if let Some((key, value)) = entry.cons_values()
+            && key.as_symbol().ok() == Some(property)
+        {
+            return Some(value);
+        }
+        alist = rest;
+        if alist.is_nil() {
+            return None;
+        }
+    }
+}
+
+fn native_unicode_property_file(property: &str) -> Option<&'static str> {
+    match property {
+        "name" => Some("uni-name.el"),
+        "general-category" => Some("uni-category.el"),
+        "canonical-combining-class" => Some("uni-combining.el"),
+        "uppercase" => Some("uni-uppercase.el"),
+        "lowercase" => Some("uni-lowercase.el"),
+        "titlecase" => Some("uni-titlecase.el"),
+        "special-uppercase" => Some("uni-special-uppercase.el"),
+        "special-lowercase" => Some("uni-special-lowercase.el"),
+        "special-titlecase" => Some("uni-special-titlecase.el"),
+        _ => None,
+    }
+}
+
+fn unicode_property_uses_unsupported_bytecode(interp: &Interpreter, table: &Value) -> bool {
+    let Value::CharTable(id) = table else {
+        return false;
+    };
+    if interp.char_table_extra_slot(*id, 0) == Some(Value::Symbol("decomposition".into())) {
+        return false;
+    }
+    let Some(Value::Record(decoder_id)) = interp.char_table_extra_slot(*id, 1) else {
+        return false;
+    };
+    interp
+        .find_record(decoder_id)
+        .is_some_and(|record| record.type_name == "byte-code-function")
+}
+
+fn decode_unicode_property_value(
+    interp: &Interpreter,
+    table_id: u64,
+    value: Value,
+) -> Result<Value, LispError> {
+    if interp.char_table_extra_slot(table_id, 1) != Some(Value::Integer(0)) {
+        return Ok(value);
+    }
+    let index = usize::try_from(value.as_integer()?)
+        .map_err(|_| LispError::Signal("Invalid Unicode property value".into()))?;
+    let Some(vector) = interp.char_table_extra_slot(table_id, 4) else {
+        return Ok(value);
+    };
+    let items = vector.to_vec()?;
+    let values = if matches!(
+        items.first(),
+        Some(Value::Symbol(symbol)) if symbol == "vector-literal"
+    ) {
+        &items[1..]
+    } else {
+        &items
+    };
+    Ok(values.get(index).cloned().unwrap_or(value))
+}
+
+fn native_char_code_property(ch: u32, property: &str) -> Value {
+    match property {
+        "name" => unicode_character_name(ch)
+            .map(Value::String)
+            .unwrap_or(Value::Nil),
+        "general-category" => unicode_general_category_symbol(ch)
+            .map(|symbol| Value::Symbol(symbol.into()))
+            .unwrap_or(Value::Nil),
+        "canonical-combining-class" => canonical_combining_class(ch)
+            .map(Value::Integer)
+            .unwrap_or(Value::Integer(0)),
+        _ => match (normalize_case_key(ch), property) {
+            (code, "uppercase") => {
+                if code == 0x00DF {
+                    Value::Nil
+                } else {
+                    let mapped = simple_upcase_char(code);
+                    if mapped == code {
+                        Value::Nil
+                    } else {
+                        Value::Integer(mapped as i64)
+                    }
+                }
+            }
+            (code, "lowercase") => {
+                let mapped = simple_downcase_char(code, false);
+                if mapped == code {
+                    Value::Nil
+                } else {
+                    Value::Integer(mapped as i64)
+                }
+            }
+            (code, "titlecase") => {
+                if code == 0x00DF {
+                    Value::Nil
+                } else if code == 0x01C5 {
+                    Value::Integer(code as i64)
+                } else {
+                    let mapped = simple_titlecase_char(code);
+                    if mapped == code {
+                        Value::Nil
+                    } else {
+                        Value::Integer(mapped as i64)
+                    }
+                }
+            }
+            (0x00DF, "special-uppercase") => Value::String("SS".into()),
+            (0x00DF, "special-titlecase") => Value::String("Ss".into()),
+            (0x00DF, "special-lowercase") => Value::Nil,
+            (0x00DF, _) => Value::Nil,
+            (0x00CF, _) | (0x00EF, _) | (0x00FF, _) => Value::Nil,
+            (0x0130, "special-lowercase") => Value::String("i\u{307}".into()),
+            (0x0130, _) => Value::Nil,
+            (0xFB01, "special-uppercase") => Value::String("FI".into()),
+            (0xFB01, "special-titlecase") => Value::String("Fi".into()),
+            (0xFB01, _) => Value::Nil,
+            _ => Value::Nil,
+        },
     }
 }
 

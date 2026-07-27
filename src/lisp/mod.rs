@@ -368,6 +368,17 @@ pub fn load_file_strict(
             types::LispError::Signal(format!("Cannot read {}: {}", path.display(), error))
         })?
     };
+    // GNU readevalloop decides this once, before reading the first form: it
+    // eagerly expands source only when macroexp.el's owner function is
+    // already installed, and never for byte-compiled input.  A nested
+    // `require' that defines the function must not retroactively change the
+    // policy for the outer file.
+    let macroexpander_ready = interp
+        .lookup_function("internal-macroexpand-for-load", &types::Env::new())
+        .is_ok();
+    let eager_macroexpand = macroexpander_ready
+        && !versioned_elc
+        && path.extension().is_none_or(|extension| extension != "elc");
     let settings = source_settings(&source)?;
     let force_load_doc_strings = interp
         .lookup_var("load-force-doc-strings", &types::Env::new())
@@ -447,8 +458,32 @@ pub fn load_file_strict(
             return Err(error);
         }
     };
+    // GNU's reader interns ordinary symbols as it constructs each form.
+    // Emaxx deliberately keeps parsing independent from an Interpreter, so
+    // reproduce that reader side effect at the common file-load boundary
+    // before evaluation can inspect symbol identity via `intern-soft'.
     for form in &forms {
-        if let Err(error) = interp.eval(form, &mut env) {
+        interp.intern_symbols_in_value(form);
+    }
+    for (form_index, form) in forms.iter().enumerate() {
+        let result = if eager_macroexpand {
+            primitives::eager_expand_eval(interp, form, &mut env)
+        } else {
+            interp.eval(form, &mut env)
+        };
+        if let Err(error) = result {
+            if std::env::var_os("EMAXX_TRACE_LOAD_ERRORS").is_some() {
+                let head = form
+                    .car()
+                    .ok()
+                    .and_then(|value| value.as_symbol().ok().map(str::to_owned))
+                    .unwrap_or_else(|| form.type_name());
+                eprintln!(
+                    "load error in {} at form {} ({head}): {error:?}",
+                    path.display(),
+                    form_index + 1
+                );
+            }
             let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
             restore_load_dynamic_bindings(
                 interp,
@@ -554,6 +589,9 @@ pub fn run_ert_file(
     };
 
     // Evaluate all top-level forms (this collects ert-deftest definitions)
+    for form in &forms {
+        interp.intern_symbols_in_value(form);
+    }
     for form in &forms {
         // Ignore errors in top-level forms (e.g. require of missing features)
         let _ = interp.eval(form, &mut env);

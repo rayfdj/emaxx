@@ -189,6 +189,43 @@ fn if_let_and_when_let_support_single_binding_compat_syntax() {
 }
 
 #[test]
+fn native_when_let_does_not_reexpand_transient_if_let_forms_in_loops() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (defvar emaxx-test-if-let-expansions 0)
+               (defmacro if-let* (bindings then &rest else)
+                 (setq emaxx-test-if-let-expansions
+                       (1+ emaxx-test-if-let-expansions))
+                 `(if ,(cadar bindings) ,then ,@else))
+               (let ((sum 0))
+                 (dotimes (i 1000)
+                   (when-let ((value i))
+                     (setq sum (+ sum value))))
+                 (list sum emaxx-test-if-let-expansions)))"
+        ),
+        Value::list([Value::Integer(499_500), Value::Integer(0)])
+    );
+}
+
+#[test]
+fn if_let_star_keeps_all_bindings_in_scope_for_the_else_branch() {
+    // GNU expands this to one `let*': after B fails, C is bound to nil
+    // without evaluating its value form, and all three bindings surround
+    // the else branch.
+    assert_eq!(
+        eval_str(
+            "(if-let* ((a 1)
+                        (b nil)
+                        (c (error \"must not run\")))
+                 'then
+               (list a b c))"
+        ),
+        Value::list([Value::Integer(1), Value::Nil, Value::Nil])
+    );
+}
+
+#[test]
 fn and_let_star_returns_body_or_last_binding_value() {
     assert_eq!(
         eval_str("(and-let* ((a 1) (b (+ a 2))) (+ a b))"),
@@ -270,6 +307,174 @@ fn require_and_provide_evaluate_feature_variables() {
         Value::Symbol("sample-dynamic-feature".into())
     );
     assert!(interp.has_feature("sample-dynamic-feature"));
+}
+
+#[test]
+fn provide_subfeatures_and_require_noerror_match_gnu_primitive_contracts() {
+    assert_eq!(
+        eval_str(
+            "(progn
+               (provide 'sample-contract-feature '(:one :two))
+               (list
+                 (featurep 'sample-contract-feature :two)
+                 (condition-case err
+                     (provide 'sample-invalid-subfeatures 'not-a-list)
+                   (wrong-type-argument (car err)))
+                 (require 'sample-definitely-missing-feature nil t)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Nil,
+        ])
+    );
+}
+
+#[test]
+fn native_file_primitives_use_deterministic_metadata_not_wall_clock_races() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-native-file-contract-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).expect("create native file contract directory");
+    let older = root.join("older");
+    let newer = root.join("newer");
+    let alias = root.join("newer-alias");
+    let missing = root.join("missing");
+    fs::write(&older, "older").expect("write older file");
+    fs::write(&newer, "newer").expect("write newer file");
+    fs::File::open(&older)
+        .expect("open older file")
+        .set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(100_000)),
+        )
+        .expect("set deterministic older timestamp");
+    fs::File::open(&newer)
+        .expect("open newer file")
+        .set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(200_000)),
+        )
+        .expect("set deterministic newer timestamp");
+
+    let result = eval_str(&format!(
+        "(progn
+           (add-name-to-file {newer:?} {alias:?})
+           (list
+             (file-newer-than-file-p {newer:?} {older:?})
+             (file-newer-than-file-p {older:?} {newer:?})
+             (file-newer-than-file-p {newer:?} {missing:?})
+             (file-newer-than-file-p {missing:?} {newer:?})
+             (file-acl {newer:?})
+             (set-file-acl {newer:?} nil)
+             (file-selinux-context {newer:?})
+             (set-file-selinux-context {newer:?} '(nil nil nil nil))
+             (comp-el-to-eln-filename \"source.el\" {root:?})))",
+        newer = newer.display().to_string(),
+        older = older.display().to_string(),
+        alias = alias.display().to_string(),
+        missing = missing.display().to_string(),
+        root = root.display().to_string(),
+    ));
+    assert_eq!(
+        result,
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::list([Value::Nil, Value::Nil, Value::Nil, Value::Nil]),
+            Value::Nil,
+            Value::String(root.join("source.eln").display().to_string()),
+        ])
+    );
+    fs::write(&alias, "updated through hard link").expect("write hard-link alias");
+    assert_eq!(
+        fs::read_to_string(&newer).expect("read original hard-link name"),
+        "updated through hard link"
+    );
+    fs::remove_dir_all(root).expect("remove native file contract directory");
+}
+
+#[test]
+fn native_dired_host_data_and_comparators_keep_their_direct_call_contracts() {
+    assert_eq!(
+        eval_str(
+            "(let ((users (system-users))
+                   (groups (system-groups)))
+               (list
+                 (file-attributes-lessp '(\"A\") '(\"a\"))
+                 (file-attributes-lessp '(\"a\") '(\"A\"))
+                 (car-less-than-car '(1) '(2))
+                 (car-less-than-car '(2.5) '(3))
+                 (car-less-than-car
+                   '(#x10000000000000000)
+                   '(#x20000000000000000))
+                 (> (length users) 0)
+                 (not (memq nil (mapcar #'stringp users)))
+                 (not (memq nil (mapcar #'stringp groups)))
+                 (mapcar
+                   (lambda (name)
+                     (list
+                       (subrp (symbol-function name))
+                       (func-arity name)))
+                   '(file-attributes-lessp
+                     system-users
+                     system-groups
+                     car-less-than-car))))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::T,
+            Value::list([
+                Value::list([Value::T, Value::cons(Value::Integer(2), Value::Integer(2)),]),
+                Value::list([Value::T, Value::cons(Value::Integer(0), Value::Integer(0)),]),
+                Value::list([Value::T, Value::cons(Value::Integer(0), Value::Integer(0)),]),
+                Value::list([Value::T, Value::cons(Value::Integer(2), Value::Integer(2)),]),
+            ]),
+        ])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn kill_process_is_a_native_command_and_accepts_a_process_name() {
+    assert_eq!(
+        eval_str(
+            "(let* ((process
+                     (make-process
+                      :name \"native-kill-process\"
+                      :command '(\"/bin/sleep\" \"30\")
+                      :connection-type 'pipe
+                      :sentinel 'ignore))
+                    (returned (kill-process \"native-kill-process\")))
+               (while (process-live-p process)
+                 (accept-process-output process 0.01))
+               (list
+                (commandp 'kill-process)
+                (subrp (symbol-function 'kill-process))
+                returned
+                (process-status process)
+                (process-exit-status process)))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            Value::String("native-kill-process".into()),
+            Value::symbol("signal"),
+            Value::Integer(libc::SIGKILL.into()),
+        ])
+    );
 }
 
 #[test]
@@ -658,14 +863,23 @@ fn auto_revert_mode_reloads_changed_file() {
     let form = format!(
         r#"(progn
                  (require 'autorevert)
-                 (setq auto-revert-interval 0)
+                 (customize-set-variable 'auto-revert-interval 0.1)
                  (write-region "any text" nil "{path_text}" nil 'no-message)
                  (let ((buf (find-file-noselect "{path_text}")))
                    (with-current-buffer buf
                      (auto-revert-mode 1)
                      (write-region "another text" nil "{path_text}" nil 'no-message)
                      (set-file-times "{path_text}" (time-subtract nil 1))
-                     (sleep-for 0)
+                     (ert-with-message-capture auto-revert-test-messages
+                       (let ((started (current-time)))
+                         (while
+                             (and
+                              (< (float-time (time-subtract nil started)) 0.3)
+                              (null
+                               (string-match
+                                "Reverting buffer"
+                                auto-revert-test-messages)))
+                           (sleep-for 0.05))))
                      (prog1 (buffer-string)
                        (set-buffer-modified-p nil)
                        (kill-buffer buf)))))"#
@@ -673,6 +887,51 @@ fn auto_revert_mode_reloads_changed_file() {
     assert_eq!(
         eval_str_with_upstream_load_path(&form),
         Value::String("another text".into())
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn insert_file_contents_replace_never_prompts_about_supersession() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-insert-replace-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(&path, "old").expect("create insert-file-contents source");
+    let path_text = path.to_string_lossy();
+    let form = format!(
+        r#"(progn
+                 (require 'cl-lib)
+                 (let ((buf (find-file-noselect "{path_text}"))
+                       (asked nil))
+                   (unwind-protect
+                       (progn
+                         (with-temp-buffer
+                           (insert "new")
+                           (write-region nil nil "{path_text}" nil 'no-message))
+                         (set-file-times
+                          "{path_text}"
+                          (time-add
+                           (with-current-buffer buf (visited-file-modtime))
+                           10))
+                         (with-current-buffer buf
+                           (cl-letf
+                               (((symbol-function
+                                  'ask-user-about-supersession-threat)
+                                 (lambda (&rest _) (setq asked t))))
+                             (insert-file-contents
+                              "{path_text}" nil nil nil t)
+                             (list (buffer-string) asked))))
+                     (when (buffer-live-p buf)
+                       (with-current-buffer buf (set-buffer-modified-p nil))
+                       (kill-buffer buf)))))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&form),
+        Value::list([Value::String("new".into()), Value::Nil])
     );
     let _ = fs::remove_file(path);
 }
@@ -778,6 +1037,66 @@ fn file_notifications_drive_global_auto_revert_without_polling() {
         ])
     );
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn file_notifications_keep_callbacks_isolated_and_invalidate_deleted_paths() {
+    let root = std::env::temp_dir().join(format!(
+        "emaxx-notify-watch-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir(&root).expect("create notification root");
+    let file = root.join("watched-file");
+    let directory = root.join("watched-directory");
+    fs::write(&file, "contents").expect("create watched file");
+    fs::create_dir(&directory).expect("create watched directory");
+    let file = serde_json::to_string(&file.display().to_string()).unwrap();
+    let directory = serde_json::to_string(&directory.display().to_string()).unwrap();
+    let form = format!(
+        r#"(progn
+             (require 'filenotify)
+             (let (events first second directory-watch)
+               (setq first
+                     (file-notify-add-watch
+                      {file} '(change)
+                      (lambda (event)
+                        (when (eq (cadr event) 'deleted)
+                          (push 1 events))))
+                     second
+                     (file-notify-add-watch
+                      {file} '(change)
+                      (lambda (event)
+                        (when (eq (cadr event) 'deleted)
+                          (push 2 events)))))
+               (file-notify-rm-watch first)
+               (delete-file {file})
+               (sleep-for 0)
+               (setq directory-watch
+                     (file-notify-add-watch
+                      {directory} '(change)
+                      (lambda (event)
+                        (when (eq (cadr event) 'deleted)
+                          (push 'directory events)))))
+               (delete-directory {directory})
+               (sleep-for 0)
+               (list (reverse events)
+                     (file-notify-valid-p first)
+                     (file-notify-valid-p second)
+                     (file-notify-valid-p directory-watch))))"#
+    );
+    assert_eq!(
+        eval_str_with_upstream_load_path(&form),
+        Value::list([
+            Value::list([Value::Integer(2), Value::symbol("directory")]),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
+    );
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -1003,6 +1322,50 @@ fn select_safe_coding_system_uses_default_candidates() {
     assert_eq!(
         eval_str("(select-safe-coding-system (point-min) (point-max) (list t 'utf-8-emacs))"),
         Value::Symbol("utf-8-emacs".into())
+    );
+}
+
+#[test]
+fn find_coding_systems_region_internal_accepts_positions_and_exclusions() {
+    assert_eq!(
+        eval_str_with_upstream_load_path(
+            r#"(progn
+                 (with-temp-buffer
+                   (insert "ascii")
+                   (let ((ascii
+                          (find-coding-systems-region-internal
+                           (point-min) (point-max))))
+                     (erase-buffer)
+                     (insert "❄")
+                     (let ((all
+                            (find-coding-systems-region-internal
+                             (point-min) (point-max)))
+                           (excluded
+                            (find-coding-systems-region-internal
+                             (point-min) (point-max) '(utf-8))))
+                       (list ascii
+                             (not (null (memq 'utf-8 all)))
+                             (not (null (memq 'utf-8 excluded))))))))"#
+        ),
+        Value::list([Value::T, Value::T, Value::Nil,])
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn user_and_group_identity_primitives_report_effective_and_real_ids() {
+    assert_eq!(
+        eval_str("(list (user-uid) (user-real-uid) (group-gid) (group-real-gid))"),
+        Value::list([
+            // SAFETY: these POSIX identity accessors have no preconditions.
+            Value::Integer(unsafe { libc::geteuid() } as i64),
+            // SAFETY: these POSIX identity accessors have no preconditions.
+            Value::Integer(unsafe { libc::getuid() } as i64),
+            // SAFETY: these POSIX identity accessors have no preconditions.
+            Value::Integer(unsafe { libc::getegid() } as i64),
+            // SAFETY: these POSIX identity accessors have no preconditions.
+            Value::Integer(unsafe { libc::getgid() } as i64),
+        ])
     );
 }
 
@@ -1283,6 +1646,36 @@ fn encode_coding_region_binary_returns_unibyte_string() {
 }
 
 #[test]
+fn buffer_character_primitives_project_raw_bytes_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"(list
+                 (with-temp-buffer
+                   (set-buffer-multibyte nil)
+                   (insert (unibyte-string 255 216))
+                   (goto-char (point-min))
+                   (list (following-char)
+                         (char-after)
+                         (progn (forward-char 1) (preceding-char))
+                         (char-before)))
+                 (with-temp-buffer
+                   (insert (unibyte-string 255))
+                   (goto-char (point-min))
+                   (following-char)))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(255),
+                Value::Integer(255),
+                Value::Integer(255),
+                Value::Integer(255),
+            ]),
+            Value::Integer(0x3F_FFFF),
+        ])
+    );
+}
+
+#[test]
 fn encode_coding_string_substitutes_unencodable_ascii_and_latin1_chars() {
     assert_eq!(
         eval_str(
@@ -1345,6 +1738,56 @@ fn decode_coding_region_rewrites_dos_eol_in_place() {
                      (string-search "\r" (buffer-string)))"#
         ),
         Value::Nil
+    );
+}
+
+#[test]
+fn decode_coding_region_detects_undecided_text_and_honors_buffer_width() {
+    assert_eq!(
+        eval_str(
+            r#"(let ((raw "\342\235\204\n"))
+                 (list
+                  (with-temp-buffer
+                    (set-buffer-multibyte t)
+                    (insert raw)
+                    (goto-char (point-min))
+                    (list (decode-coding-region
+                           (point-min) (point-max) 'undecided)
+                          (char-after (point-min))
+                          enable-multibyte-characters
+                          last-coding-system-used
+                          (string-to-list (buffer-string))))
+                  (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert raw)
+                    (list (decode-coding-region
+                           (point-min) (point-max) 'undecided)
+                          (buffer-size)
+                          enable-multibyte-characters
+                          last-coding-system-used
+                          (string-to-list (buffer-string))))))"#
+        ),
+        Value::list([
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(10052),
+                Value::T,
+                Value::Symbol("utf-8-unix".into()),
+                Value::list([Value::Integer(10052), Value::Integer(10)]),
+            ]),
+            Value::list([
+                Value::Integer(2),
+                Value::Integer(4),
+                Value::Nil,
+                Value::Symbol("utf-8-unix".into()),
+                Value::list([
+                    Value::Integer(226),
+                    Value::Integer(157),
+                    Value::Integer(132),
+                    Value::Integer(10),
+                ]),
+            ]),
+        ])
     );
 }
 
@@ -2385,6 +2828,44 @@ fn forward_and_backward_sexp_move_over_balanced_lists() {
 }
 
 #[test]
+fn scan_sexps_uses_syntax_properties_for_comment_boundaries() {
+    assert_eq!(
+        eval_str(
+            r#"
+                (with-temp-buffer
+                  (insert "here's an opener (\n"
+                          "> here's citing someone with an opener (\n"
+                          "and here's a closer )")
+                  (goto-char (point-min))
+                  (re-search-forward "^>")
+                  (let ((start (match-beginning 0)))
+                    (add-text-properties
+                     start (1+ start)
+                     `(syntax-table ,(string-to-syntax "<")))
+                    (end-of-line)
+                    (add-text-properties
+                     (point) (1+ (point))
+                     `(syntax-table ,(string-to-syntax ">"))))
+                  (setq-local parse-sexp-lookup-properties t)
+                  (setq-local parse-sexp-ignore-comments t)
+                  (goto-char (point-max))
+                  (backward-sexp)
+                  (let ((before (buffer-substring-no-properties
+                                 (pos-bol) (point))))
+                    (forward-sexp)
+                    (list before
+                          (buffer-substring-no-properties
+                           (pos-bol) (point)))))
+                "#
+        ),
+        Value::list([
+            Value::String("here's an opener ".into()),
+            Value::String("and here's a closer )".into()),
+        ])
+    );
+}
+
+#[test]
 fn syntax_ppss_moves_point_to_pos_like_gnu() {
     // GNU syntax-ppss is NOT excursion-saving: point ends at POS
     // (beginning-of-defun-comments depends on this).
@@ -2694,7 +3175,8 @@ fn translation_table_vector_is_bound_vector_not_abbrev_table() {
             r#"
                 (require 'abbrev)
                 (list (boundp 'translation-table-vector)
-                      (vectorp translation-table-vector)
+                      (and (vectorp translation-table-vector)
+                           (= (length translation-table-vector) 16))
                       (abbrev-table-p translation-table-vector))
                 "#
         ),
@@ -3373,6 +3855,34 @@ fn eval_buffer_interns_symbols_read_from_loaded_source() {
 }
 
 #[test]
+fn load_file_strict_interns_symbols_read_from_loaded_source() {
+    let path = std::env::temp_dir().join(format!(
+        "emaxx-load-interns-symbols-{}.el",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos()
+    ));
+    fs::write(
+        &path,
+        "(setq sample-loaded-symbol-holder 'sample-loaded-file-symbol-61d9)\n",
+    )
+    .expect("write loaded symbol source");
+
+    let mut interp = Interpreter::new();
+    crate::lisp::load_file_strict(&mut interp, &path).expect("load symbol source");
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(intern-soft "sample-loaded-file-symbol-61d9" obarray)"#,
+        ),
+        Value::Symbol("sample-loaded-file-symbol-61d9".into())
+    );
+
+    fs::remove_file(path).expect("remove loaded symbol source");
+}
+
+#[test]
 fn inhibited_interaction_uses_expected_condition_type() {
     let mut interp = Interpreter::new();
     let mut env: Env = Vec::new();
@@ -3456,6 +3966,309 @@ fn failed_looking_at_preserves_previous_match_data() {
             Value::list([Value::Integer(1), Value::Integer(3)]),
             Value::Integer(1),
             Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn boundary_heavy_searches_use_linear_candidates_without_weakening_symbol_boundaries() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (with-temp-buffer
+              (insert (make-string 200000 ?x) "\nM-x mapcar ")
+              (goto-char (point-min))
+              (let ((news-pattern
+                     "'mapcar'\\|M-x[ \t\n]+mapcar\\_>\\|(mapcar)\\|^\\(?:  \\|\t\\)[ \t]*\\(\\(.*[( ']\\)?mapcar\\_>\\)"))
+                (list (and (re-search-forward news-pattern nil t)
+                           (match-string 0))
+                      (string-match "foo\\_>" "foo-bar foo ")
+                      (string-match "\\_<foo" "xfoo foo"))))
+            "#
+        ),
+        Value::list([
+            Value::String("M-x mapcar".into()),
+            Value::Integer(8),
+            Value::Integer(5),
+        ])
+    );
+}
+
+#[test]
+fn backward_regexp_search_iterates_matches_not_every_buffer_character() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (list
+             (with-temp-buffer
+               (insert "* Changes in Emacs 30.2\n" (make-string 200000 ?x))
+               (goto-char (point-max))
+               (and (re-search-backward
+                     "^\\* \\(?:.* \\)?Emacs \\([0-9.]+[0-9]\\)" nil t)
+                    (list (point) (match-string 1))))
+             (with-temp-buffer
+               (insert "ababa")
+               (goto-char (point-max))
+               (re-search-backward "aba" nil t)))
+            "#
+        ),
+        Value::list([
+            Value::list([Value::Integer(1), Value::String("30.2".into())]),
+            Value::Integer(3),
+        ])
+    );
+}
+
+#[test]
+fn dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape() {
+    // A file-less interpreter must not poison the process-wide provenance
+    // cache for the upstream-backed interpreter used immediately afterward.
+    let _ = eval_str("(subrp (symbol-function 'last))");
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"
+                (progn
+                 (require 'help)
+                 (defvar emaxx-help-test-map nil)
+                 (setq emaxx-help-test-map (make-sparse-keymap "Demo"))
+                 (let ((map emaxx-help-test-map))
+                  (define-key map "a" 'ignore)
+                  (let ((canonical (keymap-canonicalize map)))
+                    (list
+                     (keymap-prompt map)
+                     (keymap-prompt canonical)
+                     (let ((tail (cdr canonical)))
+                       (while (and tail (not (consp (car tail))))
+                         (setq tail (cdr tail)))
+                       (lookup-key tail "a" t))
+                     (not (null
+                           (string-match-p
+                            "a[[:blank:]]+ignore"
+                            (substitute-command-keys
+                             "\\{emaxx-help-test-map}"))))
+                     (type-of (symbol-function 'last))
+                     (symbol-function 'search-forward-regexp)
+                     (file-name-nondirectory (symbol-file 'chmod 'defun))
+                     (file-name-nondirectory (symbol-file 'posn-window 'defun))
+                     (with-temp-buffer
+                       (windowp (temp-buffer-window-show (current-buffer))))))))
+                "#
+            ),
+            Value::list([
+                Value::String("Demo".into()),
+                Value::String("Demo".into()),
+                Value::Symbol("ignore".into()),
+                Value::T,
+                Value::Symbol("byte-code-function".into()),
+                Value::Symbol("re-search-forward".into()),
+                Value::String("subr.el".into()),
+                Value::String("subr.el".into()),
+                Value::T,
+            ])
+        );
+    });
+}
+
+#[test]
+fn batch_startup_preloads_the_gnu_help_surface() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"
+                (list (featurep 'keymap)
+                      (file-name-nondirectory
+                       (symbol-file 'defvar-keymap 'defun))
+                      (progn
+                        (defvar-keymap emaxx-help-full-map
+                          :full t
+                          "1" #'ignore
+                          "2" #'ignore
+                          "M-g M-c" #'forward-char)
+                        (list (char-table-p (cadr emaxx-help-full-map))
+                              (lookup-key emaxx-help-full-map
+                                          (kbd "M-g M-c") t)
+                              (length
+                               (accessible-keymaps emaxx-help-full-map))
+                              (not
+                               (null
+                                (string-match-p
+                                 "M-g M-c[[:blank:]]+forward-char"
+                                 (substitute-command-keys
+                                  "\\{emaxx-help-full-map}"))))))
+                      (featurep 'help)
+                      (fboundp 'help--key-description-fontified)
+                      (featurep 'minibuffer)
+                      (featurep 'elisp-mode)
+                      (lookup-key global-map (kbd "C-]") t)
+                      (key-description
+                       (where-is-internal #'abort-recursive-edit nil t))
+                      (substitute-command-keys
+                       "\\<minibuffer-local-must-match-map>\\[abort-recursive-edit]")
+                      (substitute-command-keys
+                       "\\<emacs-lisp-mode-map>\\[eval-defun]")
+                      (key-description (where-is-internal #'next-line nil t))
+                      (key-description (where-is-internal #'goto-char nil t))
+                      (key-description (where-is-internal #'save-buffer nil t))
+                      (progn
+                        (with-output-to-temp-buffer " *Emaxx Help Output*"
+                          (princ "redirected"))
+                        (with-current-buffer " *Emaxx Help Output*"
+                          (buffer-string)))
+                      (let ((text-quoting-style 'curve))
+                        (substitute-quotes "`x'"))
+                      (let ((map '(keymap
+                                   (1 . ignore)
+                                   (menu-bar keymap
+                                    (foo menu-item "Foo" ignore))))
+                            (shadow '((keymap (1 . forward-char)))))
+                        (list
+                         (length (accessible-keymaps map))
+                         (lookup-key shadow "\C-a" t)
+                         (eq (lookup-key shadow [] t) shadow)
+                         (with-temp-buffer
+                           (let ((standard-output (current-buffer)))
+                             (help--describe-map-tree
+                              map t shadow nil nil nil nil nil nil)
+                             (not (null
+                                   (string-match-p
+                                    "<menu-bar> <foo>[[:blank:]]+ignore"
+                                    (buffer-string))))))
+                         (with-temp-buffer
+                           (let ((standard-output (current-buffer)))
+                             (help--describe-map-tree
+                              map t shadow nil nil t nil nil nil)
+                             (equal (buffer-string) "")))
+                         (with-temp-buffer
+                           (let ((standard-output (current-buffer)))
+                             (help--describe-map-tree
+                              map t shadow nil nil t nil nil t)
+                             (let ((text (buffer-string)))
+                               (and (not (null (string-match-p "C-a" text)))
+                                    (not (null
+                                          (string-match-p
+                                           "this binding is currently shadowed"
+                                           text))))))))))
+                "#,
+            ),
+            Value::list([
+                Value::T,
+                Value::String("keymap.el".into()),
+                Value::list([
+                    Value::T,
+                    Value::Symbol("forward-char".into()),
+                    Value::Integer(4),
+                    Value::T,
+                ]),
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::Symbol("abort-recursive-edit".into()),
+                Value::String("C-]".into()),
+                Value::String("C-]".into()),
+                Value::String("C-M-x".into()),
+                Value::String("C-n".into()),
+                Value::String("M-g c".into()),
+                Value::String("C-x C-s".into()),
+                Value::String("redirected\n".into()),
+                Value::String("‘x’".into()),
+                Value::list([
+                    Value::Integer(2),
+                    Value::Symbol("forward-char".into()),
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                    Value::T,
+                ]),
+            ])
+        );
+    });
+}
+
+#[test]
+fn backquote_splicing_uses_a_runtime_keymaps_public_list_shape() {
+    assert_eq!(
+        eval_str(
+            "(let ((map (make-sparse-keymap)))
+               (list (keymapp map)
+                     `(prefix ,@map suffix)))",
+        ),
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::Symbol("prefix".into()),
+                Value::Symbol("keymap".into()),
+                Value::Symbol("suffix".into()),
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn help_symbol_regexp_uses_current_syntax_table_for_operator_symbols() {
+    run_with_large_stack(|| {
+        assert_eq!(
+            eval_str_with_upstream_batch(
+                r#"
+                (progn
+                  (require 'help-mode)
+                  (let ((fmt "See also the function ‘%s’."))
+                    (mapcar
+                     (lambda (fn)
+                       (with-temp-buffer
+                         (insert (format fmt fn))
+                         (goto-char (point-min))
+                         (and (re-search-forward help-xref-symbol-regexp nil t)
+                              (match-string 9))))
+                     '(interactive \` = + - * / %))))
+                "#,
+            ),
+            Value::list(
+                ["interactive", "`", "=", "+", "-", "*", "/", "%"]
+                    .into_iter()
+                    .map(|value| Value::String(value.into())),
+            )
+        );
+    });
+}
+
+#[test]
+fn regexp_word_atoms_follow_the_current_syntax_table_without_cache_leakage() {
+    assert_eq!(
+        eval_str(
+            r#"
+            (let ((syntax-pattern "\\sw")
+                  (word-pattern "\\w"))
+              (list
+               (with-temp-buffer
+                 (list (string-match-p syntax-pattern "%")
+                       (string-match-p syntax-pattern "_")
+                       (string-match-p word-pattern "%")))
+               (with-temp-buffer
+                 (set-syntax-table (make-syntax-table (standard-syntax-table)))
+                 (modify-syntax-entry ?% ".")
+                 (modify-syntax-entry ?A ".")
+                 (list (char-syntax ?%)
+                       (char-syntax ?A)
+                       (string-match-p syntax-pattern "%")
+                       (string-match-p syntax-pattern "A")))
+               (with-temp-buffer
+                 (set-syntax-table (make-syntax-table (standard-syntax-table)))
+                 (modify-syntax-entry ?_ "w")
+                 (list (string-match-p syntax-pattern "_")
+                       (string-match-p word-pattern "_")))))
+            "#,
+        ),
+        Value::list([
+            Value::list([Value::Integer(0), Value::Nil, Value::Integer(0)]),
+            Value::list([
+                Value::Integer('.' as i64),
+                Value::Integer('.' as i64),
+                Value::Nil,
+                Value::Nil,
+            ]),
+            Value::list([Value::Integer(0), Value::Integer(0)]),
         ])
     );
 }

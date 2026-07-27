@@ -928,17 +928,109 @@ pub(crate) fn test_completion(
         return Ok(result);
     }
     let ignore_case = completion_ignores_case(interp, env);
-    let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
-    Ok(
-        if matches
-            .iter()
-            .any(|candidate| completion_strings_equal(&candidate.name, &input, ignore_case))
-        {
-            Value::T
+    let regexp_list = interp
+        .lookup_var("completion-regexp-list", env)
+        .and_then(|value| value.to_vec().ok())
+        .unwrap_or_default();
+    let predicate = args.get(2).filter(|value| !value.is_nil()).cloned();
+    for candidate in completion_candidates(interp, &args[1])? {
+        if !completion_strings_equal(&candidate.name, &input, ignore_case) {
+            continue;
+        }
+        let mut matches_regexps = true;
+        for pattern in &regexp_list {
+            if !completion_regex_matches(interp, env, &candidate.name, pattern)? {
+                matches_regexps = false;
+                break;
+            }
+        }
+        if !matches_regexps {
+            continue;
+        }
+        if let Some(predicate) = &predicate {
+            let predicate = resolve_callable(interp, predicate, env)?;
+            let result = invoke_function_value(interp, &predicate, &candidate.predicate_args, env)?;
+            if result.is_truthy() {
+                return Ok(result);
+            }
         } else {
-            Value::Nil
-        },
-    )
+            return Ok(Value::T);
+        }
+    }
+    Ok(Value::Nil)
+}
+
+pub(crate) fn internal_complete_buffer(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    if args.len() != 3 {
+        return Err(LispError::WrongNumberOfArgs(
+            "internal-complete-buffer".into(),
+            args.len(),
+        ));
+    }
+    let input = string_text(&args[0])?;
+    let buffer_alist = Value::list(
+        interp
+            .buffer_list
+            .iter()
+            .map(|(id, name)| {
+                Value::cons(
+                    make_shared_string_value_with_multibyte(name.clone(), Vec::new(), false),
+                    Value::Buffer(*id, name.clone()),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    match &args[2] {
+        Value::Nil => try_completion(
+            interp,
+            &[args[0].clone(), buffer_alist, args[1].clone()],
+            env,
+        ),
+        Value::T => {
+            let completions = all_completions(
+                interp,
+                &[args[0].clone(), buffer_alist, args[1].clone()],
+                env,
+            )?;
+            if !input.is_empty() {
+                return Ok(completions);
+            }
+            let all = completions.to_vec()?;
+            let visible = all
+                .iter()
+                .filter(|value| {
+                    string_like(value).is_some_and(|string| !string.text.starts_with(' '))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if visible.is_empty() && all.len() == interp.buffer_list.len() {
+                Ok(completions)
+            } else {
+                Ok(Value::list(visible))
+            }
+        }
+        Value::Symbol(flag) if flag == "lambda" => test_completion(
+            interp,
+            &[args[0].clone(), buffer_alist, args[1].clone()],
+            env,
+        ),
+        Value::Symbol(flag) if flag == "metadata" => Ok(Value::list([
+            Value::Symbol("metadata".into()),
+            Value::cons(
+                Value::Symbol("category".into()),
+                Value::Symbol("buffer".into()),
+            ),
+            Value::cons(
+                Value::Symbol("cycle-sort-function".into()),
+                Value::Symbol("identity".into()),
+            ),
+        ])),
+        _ => Ok(Value::Nil),
+    }
 }
 
 pub(crate) fn completing_read(
@@ -1017,6 +1109,14 @@ pub(crate) fn list_contains_with(
 
 pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     if let Value::BuiltinFunc(name) = func {
+        if let Some(form) = generated_builtin_arities::generated_builtin_interactive_form(name) {
+            let parsed = crate::lisp::reader::Reader::new(form)
+                .read_all()
+                .ok()?
+                .into_iter()
+                .next()?;
+            return parsed.to_vec().ok();
+        }
         return builtin_interactive_string(name).map(|spec| {
             vec![
                 Value::Symbol("interactive".into()),
@@ -1044,7 +1144,7 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
 }
 
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
-    for form in body {
+    for form in body.iter() {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
             continue;
         }
@@ -1132,7 +1232,7 @@ pub(crate) fn interactive_args_overrides(func: &Value) -> Vec<(String, Value)> {
         return Vec::new();
     };
     let mut overrides = Vec::new();
-    for form in body {
+    for form in body.iter() {
         if matches!(form, Value::String(_) | Value::StringObject(_)) {
             continue;
         }

@@ -35,6 +35,56 @@
 ;; metadata consumers such as `function-alias-p' follow the alias.
 (defalias 'string= #'string-equal)
 
+;; GNU preloads this subr.el helper.  Keep it on the Lisp side of the
+;; keymap boundary: all three operations below are already native primitives.
+(defun define-prefix-command (command &optional mapvar name)
+  "Define COMMAND as a prefix command backed by a new sparse keymap."
+  (let ((map (make-sparse-keymap name)))
+    (fset command map)
+    (set (or mapvar command) map)
+    command))
+
+;; `define-minor-mode' expands into this preloaded subr.el helper.  Keep the
+;; registry policy in Lisp; keymap identity and symbol properties remain the
+;; native substrate on the other side of the existing boundary.
+(defun add-minor-mode (toggle name &optional keymap after toggle-fun)
+  "Register TOGGLE and its mode-line NAME and optional KEYMAP."
+  (unless (memq toggle minor-mode-list)
+    (push toggle minor-mode-list))
+  (setq toggle-fun (or toggle-fun toggle))
+  (unless (eq toggle-fun toggle)
+    (put toggle :minor-mode-function toggle-fun))
+  (when name
+    (let ((existing (assq toggle minor-mode-alist)))
+      (if existing
+          (setcdr existing (list name))
+        (let ((tail minor-mode-alist)
+              found)
+          (while (and tail (not found))
+            (if (eq after (caar tail))
+                (setq found tail)
+              (setq tail (cdr tail))))
+          (if found
+              (let ((rest (cdr found)))
+                (setcdr found nil)
+                (nconc found (list (list toggle name)) rest))
+            (push (list toggle name) minor-mode-alist))))))
+  (when keymap
+    (let ((existing (assq toggle minor-mode-map-alist)))
+      (if existing
+          (setcdr existing keymap)
+        (let ((tail minor-mode-map-alist)
+              found)
+          (while (and tail (not found))
+            (if (eq after (caar tail))
+                (setq found tail)
+              (setq tail (cdr tail))))
+          (if found
+              (let ((rest (cdr found)))
+                (setcdr found nil)
+                (nconc found (list (cons toggle keymap)) rest))
+            (push (cons toggle keymap) minor-mode-map-alist)))))))
+
 (defun file-user-uid ()
   "Return the connection-local effective user ID."
   (if-let ((handler
@@ -195,6 +245,25 @@ PROMPT and INITIAL-CONTENTS are as in `read-from-minibuffer'."
   "Return non-nil if OBJECT is a built-in primitive function."
   (subrp object))
 
+(defun function-get (function property &optional autoload)
+  "Return PROPERTY of FUNCTION, following function aliases.
+When AUTOLOAD is non-nil, load a lazy definition before retrying the property.
+If AUTOLOAD is `macro', only load macro autoloads."
+  (let (value)
+    (while (and (symbolp function)
+                (null (setq value (get function property)))
+                (fboundp function))
+      (let ((definition (symbol-function function)))
+        (if (and autoload
+                 (autoloadp definition)
+                 (not (equal definition
+                             (autoload-do-load
+                              definition function
+                              (and (eq autoload 'macro) 'macro)))))
+            nil
+          (setq function definition))))
+    value))
+
 (defun cl-generic-p (f)
   "Return non-nil if F names a generic function."
   (and (symbolp f)
@@ -202,6 +271,24 @@ PROMPT and INITIAL-CONTENTS are as in `read-from-minibuffer'."
        (or (get f 'emaxx-cl-defgeneric-lambda-list)
            (get f 'emaxx-cl-defmethod-specializers))
        t))
+
+(defun emaxx--cl-generic-describe-function (function)
+  "Append native generic method documentation for FUNCTION to Help output.
+The generic dispatcher owns method metadata in Rust during bootstrap, while
+the presentation and Help hook remain Lisp policy as in GNU cl-generic.el."
+  (when (and (symbolp function) (cl-generic-p function))
+    (let ((docs (get function 'emaxx-cl-defmethod-documentation)))
+      (insert "\nThis is a generic function.\n\n")
+      (when docs
+        (insert "Implementations:\n\n")
+        (dolist (doc docs)
+          (insert doc "\n\n"))))))
+
+;; GNU cl-generic.el installs its description producer into this dumped Help
+;; hook.  Emaxx's bootstrap-compatible generic facade must expose the same
+;; public method documentation when the real help-fns.el renders a function.
+(add-hook 'help-fns-describe-function-functions
+          #'emaxx--cl-generic-describe-function)
 
 (defun one-window-p (&optional _nomini _all-frames)
   "Return non-nil when the selected frame shows exactly one window.
@@ -237,6 +324,27 @@ The batch frame always shows a single window."
              (progn ,@body)
            (and (buffer-name ,temp-buffer)
                 (kill-buffer ,temp-buffer)))))))
+
+;; subr.el preloads this as a Lisp macro.  Keep the expansion at the Lisp
+;; boundary: callers rely on MESSAGE being evaluated once and on cleanup
+;; running after nonlocal exits, neither of which is a host special form.
+(defmacro with-temp-message (message &rest body)
+  "Display MESSAGE temporarily while BODY is evaluated."
+  (declare (indent 1) (debug t))
+  (let ((current-message (make-symbol "current-message"))
+        (temp-message (make-symbol "with-temp-message")))
+    `(let ((,temp-message ,message)
+           (,current-message))
+       (unwind-protect
+           (progn
+             (when ,temp-message
+               (setq ,current-message (current-message))
+               (message "%s" ,temp-message))
+             ,@body)
+         (and ,temp-message
+              (if ,current-message
+                  (message "%s" ,current-message)
+                (message nil)))))))
 
 (defmacro dolist (spec &rest body)
   "Loop over a list according to SPEC, evaluating BODY for each element."
@@ -2318,6 +2426,18 @@ all symbols are bound before any of the VALUEFORMs are evalled."
        ;; General case.
        (t `(let* ,(nreverse seqbinds) ,nbody))))))
 
+;; GNU dumps cl-preloaded.el before cl-lib.  The host-side circular CL
+;; structure metadata does not replace this Lisp-owned assertion condition
+;; and runtime reporter.
+(define-error 'cl-assertion-failed "Assertion failed")
+
+(defun cl--assertion-failed (form &optional string sargs args)
+  (if debug-on-error
+      (funcall debugger 'error `(cl-assertion-failed (,form ,string ,@sargs)))
+    (if string
+        (apply #'error string (append sargs args))
+      (signal 'cl-assertion-failed `(,form ,@sargs)))))
+
 ;; From GNU Emacs 30.2 cl-lib.el
 (defun cl-list* (arg &rest rest)
   "Return a new list with specified ARGs as elements, consed to last ARG.
@@ -3681,14 +3801,10 @@ If true return the decimal value of digit CHAR in RADIX."
 
 (defun cl-remprop (symbol propname)
   "Remove from SYMBOL's plist the property PROPNAME and its value."
-  ;; emaxx materializes `symbol-plist' on each call, so the destructive
-  ;; `cl--do-remf' must be followed by a `setplist' write-back (a no-op
-  ;; in GNU Emacs where the returned plist is the live object).
   (let ((plist (symbol-plist symbol)))
     (if (and plist (eq propname (car plist)))
 	(progn (setplist symbol (cdr (cdr plist))) t)
-      (and (cl--do-remf plist propname)
-           (progn (setplist symbol plist) t)))))
+      (cl--do-remf plist propname))))
 
 (defun cl-set-difference (cl-list1 cl-list2 &rest cl-keys)
   "Combine LIST1 and LIST2 using a set-difference operation.
@@ -4281,6 +4397,44 @@ Defaults to `error'."
    "\\)?"
    "\\([^ \t\n]+\\)"))
 
+;; GNU preloads simple.el, where this declaration makes `non-essential'
+;; dynamically scoped even in lexical-binding files.  File handlers bind it
+;; around advisory operations such as `file-remote-p' so their deeper parsing
+;; and transport layers can avoid prompts and connections.
+(defvar non-essential nil
+  "Non-nil while executing work that should not disturb the user.")
+
+;; Prefix commands share this preloaded simple.el state machine.  Commands
+;; defined in other lexical-binding files (notably mule-cmds.el) call the
+;; public helpers and extend the hooks, so retaining only the command-loop's
+;; native prefix variables is not an equivalent dumped environment.
+(defvar prefix-command--needs-update nil)
+
+(defvar prefix-command-echo-keystrokes-functions nil
+  "Functions that describe the current prefix command state.")
+
+(defun prefix-command-update ()
+  "Mark the current prefix command state as needing an update."
+  (setq prefix-command--needs-update t))
+
+(defvar prefix-command-preserve-state-hook nil
+  "Hook run when a command preserves the current prefix state.")
+
+(defun prefix-command-preserve-state ()
+  "Pass the current prefix command state to the next command."
+  (run-hooks 'prefix-command-preserve-state-hook)
+  (setq this-command last-command)
+  (setq real-this-command real-last-command)
+  (prefix-command-update))
+
+(defun universal-argument--preserve ()
+  "Preserve the universal prefix argument for the following command."
+  (setq prefix-arg current-prefix-arg)
+  (setq current-prefix-arg last-prefix-arg))
+
+(add-hook 'prefix-command-preserve-state-hook
+          #'universal-argument--preserve)
+
 ;; GNU loaddefs autoloads these entry points.
 (autoload 'sh-mode "sh-script" nil t)
 (autoload 'shell-script-mode "sh-script" nil t)
@@ -4293,6 +4447,26 @@ Defaults to `error'."
   "Program used to execute commands on a remote host."
   :group 'environment
   :type 'file)
+
+;; `characters.el' is part of GNU Emacs's dumped image.  Keep this preload
+;; contract in Lisp: consumers may inspect or dynamically bind the variable,
+;; while the host only implements the character operations themselves.
+(defvar bidi-control-characters
+  '(#x200e #x200f #x061c #x202a #x202b #x202d #x202e
+    #x2066 #x2067 #x2068 #x202c #x2069)
+  "List of bidirectional control characters.")
+
+(defun bidi-string-strip-control-characters (string)
+  "Strip bidirectional control characters from STRING."
+  (let (result)
+    (dolist (char (string-to-list string))
+      (unless (memq char bidi-control-characters)
+        (push char result)))
+    (apply #'string (nreverse result))))
+
+;; GNU preloads files.el, where Eshell's file redirection reads this state.
+(defvar-local buffer-file-read-only nil
+  "Non-nil if the visited file was read-only when visited.")
 
 ;; GNU preloads custom.el; ERC resolves module groups through this helper.
 (defun custom-group-of-mode (mode)
@@ -4976,119 +5150,6 @@ when one is set."
       (set-marker end nil)))
   nil)
 
-;; ert-x.el helpers: ert-x is a preloaded feature here, so GNU's file
-;; never loads; these are its portable definitions.
-(defmacro ert-with-buffer-selected (buffer-or-name &rest body)
-  "Display a buffer in a temporary selected window and run BODY.
-
-If BUFFER-OR-NAME is nil, the current buffer is used.
-
-The buffer is made the current buffer, and the temporary window
-becomes the `selected-window', before BODY is evaluated.  The
-window configuration is restored before returning, even if BODY
-exits nonlocally.  The return value is the last form in BODY."
-  (declare (indent 1))
-  `(save-window-excursion
-     (with-current-buffer (or ,buffer-or-name (current-buffer))
-       (with-selected-window (display-buffer (current-buffer))
-         ,@body))))
-
-(defmacro ert-with-test-buffer-selected (spec &rest body)
-  "Create a test buffer, switch to it, and run BODY.
-
-This combines `ert-with-test-buffer' and
-`ert-with-buffer-selected'.  The return value is the last form in
-BODY."
-  (declare (indent 1))
-  `(ert-with-test-buffer (:name ,(plist-get spec :name))
-     (ert-with-buffer-selected (current-buffer)
-       ,@body)))
-
-(defun ert-call-with-buffer-renamed (buffer-name thunk)
-  "Protect the buffer named BUFFER-NAME from side-effects and run THUNK.
-
-Renames the buffer BUFFER-NAME to a new temporary name, creates a
-new buffer named BUFFER-NAME, executes THUNK, kills the new
-buffer, and renames the original buffer back to BUFFER-NAME."
-  (let ((new-buffer-name (generate-new-buffer-name
-                          (format "%s orig buffer" buffer-name))))
-    (with-current-buffer (get-buffer-create buffer-name)
-      (rename-buffer new-buffer-name))
-    (unwind-protect
-        (progn
-          (get-buffer-create buffer-name)
-          (funcall thunk))
-      (when (get-buffer buffer-name)
-        (kill-buffer buffer-name))
-      (with-current-buffer new-buffer-name
-        (rename-buffer buffer-name)))))
-
-(defmacro ert-with-buffer-renamed (spec &rest body)
-  "Protect the buffer named by SPEC's form from side-effects and run BODY.
-
-See `ert-call-with-buffer-renamed' for details."
-  (declare (indent 1))
-  `(ert-call-with-buffer-renamed ,(car spec) (lambda () ,@body)))
-
-(defun ert-buffer-string-reindented (&optional buffer)
-  "Return the contents of BUFFER after reindentation.
-
-BUFFER defaults to current buffer.  Does not modify BUFFER."
-  (with-current-buffer (or buffer (current-buffer))
-    (let ((mode major-mode)
-          (contents (buffer-string)))
-      (with-temp-buffer
-        (insert contents)
-        (funcall mode)
-        (let ((inhibit-read-only t))
-          (indent-region (point-min) (point-max)))
-        (buffer-string)))))
-
-(defun ert-filter-string (s &rest regexps)
-  "Return a copy of S with all matches of REGEXPS removed.
-
-Elements of REGEXPS may also be two-element lists (REGEXP
-SUBEXP), where SUBEXP is the number of a subexpression in
-REGEXP.  In that case, only that subexpression will be removed
-rather than the entire match."
-  (with-temp-buffer
-    (insert s)
-    (dolist (x regexps)
-      (let ((regexp (if (listp x) (nth 0 x) x))
-            (subexp (if (listp x) (nth 1 x) nil)))
-        (goto-char (point-min))
-        (while (re-search-forward regexp nil t)
-          (replace-match "" t t nil subexp))))
-    (buffer-string)))
-
-(defun ert-propertized-string (&rest args)
-  "Return a string with properties as specified by ARGS.
-
-ARGS is a list of strings and plists.  The strings in ARGS are
-concatenated to produce an output string.  In the output string,
-each string from ARGS will have the preceding plist as its
-property list, or no properties if there is no plist before it."
-  (with-temp-buffer
-    (let ((current-plist nil))
-      (dolist (x args)
-        (cond
-         ((stringp x)
-          (let ((begin (point)))
-            (insert x)
-            (set-text-properties begin (point) current-plist)))
-         ((listp x)
-          (unless (zerop (mod (length x) 2))
-            (error "Odd number of args in plist: %S" x))
-          (setq current-plist x))
-         (t (signal 'wrong-type-argument (list '(or string list) x))))))
-    (buffer-string)))
-
-(defun ert--with-temp-file-generate-suffix (filename)
-  "Generate temp file suffix from FILENAME."
-  (concat "-"
-          (replace-regexp-in-string "\\`\\(.+?\\)-?tests?\\'" "\\1"
-                                    (file-name-base filename))))
-
 ;; xdisp.c: the message log line limit is a special variable so tests
 ;; can rebind it dynamically around `message' calls.
 (defvar message-log-max 1000)
@@ -5121,7 +5182,104 @@ property list, or no properties if there is no plist before it."
   (when mode
     (setq-local char-property-alias-alist '((face font-lock-face)))))
 
+;; Keep font-core.el's public hook entry point at the Lisp boundary while the
+;; mode engine itself remains native.  Dumped major-mode hooks (including
+;; Info-mode-hook) call this wrapper without requiring font-core.
+(defun turn-on-font-lock ()
+  "Turn on Font Lock mode unless it is already enabled."
+  (unless font-lock-mode
+    (font-lock-mode)))
+
+;; simple.el preloads this buffer-level operation.  Keep its orchestration in
+;; Lisp: the host primitives own buffer allocation/copying, while the mode and
+;; local-variable lifecycle remains visible to Lisp hooks such as Info's.
+(defun clone-buffer (&optional newname display-flag)
+  "Create and return an independently editable copy of the current buffer."
+  (if buffer-file-name
+      (error "Cannot clone a file-visiting buffer"))
+  (if (get major-mode 'no-clone)
+      (error "Cannot clone a buffer in %s mode" mode-name))
+  (setq newname (or newname (buffer-name)))
+  (if (string-match "<[0-9]+>\\'" newname)
+      (setq newname (substring newname 0 (match-beginning 0))))
+  (let ((buf (current-buffer))
+        (ptmin (point-min))
+        (ptmax (point-max))
+        (pt (point))
+        (mk (if mark-active (mark t)))
+        (modified (buffer-modified-p))
+        (mode major-mode)
+        (lvars (buffer-local-variables))
+        (new (generate-new-buffer newname)))
+    (save-restriction
+      (widen)
+      (with-current-buffer new
+        (insert-buffer-substring buf)))
+    (with-current-buffer new
+      (narrow-to-region ptmin ptmax)
+      (goto-char pt)
+      (if mk (set-mark mk))
+      (set-buffer-modified-p modified)
+      (funcall mode)
+      (mapc (lambda (variable)
+              (condition-case nil
+                  (if (symbolp variable)
+                      (makunbound (make-local-variable variable))
+                    (set (make-local-variable (car variable))
+                         (cdr variable)))
+                (setting-constant nil)))
+            lvars)
+      (run-hooks 'clone-buffer-hook))
+    (if display-flag
+        (let ((same-window-regexps nil)
+              (same-window-buffer-names nil))
+          (pop-to-buffer new)))
+    new))
+
 ;; help.el: run BODY with the help buffer erased, then display it.
+(defvar temp-buffer-setup-hook nil)
+(defvar temp-buffer-show-hook nil)
+(defvar temp-buffer-show-function nil)
+
+(unless (fboundp 'internal-temp-output-buffer-show)
+  (defun internal-temp-output-buffer-show (buffer)
+    "Finish and display BUFFER produced by `with-output-to-temp-buffer'."
+    (with-current-buffer buffer
+      (set-buffer-modified-p nil)
+      (goto-char (point-min)))
+    (if temp-buffer-show-function
+        (funcall temp-buffer-show-function buffer)
+      (let ((window (display-buffer buffer)))
+        (when window
+          (with-current-buffer buffer
+            (run-hooks 'temp-buffer-show-hook)))))
+    nil))
+
+;; subr.el is dumped in GNU.  Keep this output policy as Lisp: BODY executes
+;; in its original buffer with `standard-output' redirected to the freshly
+;; cleared temporary buffer, and only a normal exit displays the result.
+(unless (fboundp 'with-output-to-temp-buffer)
+  (defmacro with-output-to-temp-buffer (bufname &rest body)
+    (declare (debug t) (indent 1))
+    (let ((old-dir (make-symbol "old-dir"))
+          (buf (make-symbol "buf")))
+      `(let* ((,old-dir default-directory)
+              (,buf
+               (with-current-buffer (get-buffer-create ,bufname)
+                 (prog1 (current-buffer)
+                   (kill-all-local-variables)
+                   (setq default-directory ,old-dir
+                         buffer-read-only nil
+                         buffer-file-name nil
+                         buffer-undo-list t)
+                   (let ((inhibit-read-only t)
+                         (inhibit-modification-hooks t))
+                     (erase-buffer)
+                     (run-hooks 'temp-buffer-setup-hook)))))
+              (standard-output ,buf))
+         (prog1 (progn ,@body)
+           (internal-temp-output-buffer-show ,buf))))))
+
 (defmacro with-help-window (buffer-or-name &rest body)
   "Evaluate BODY, then display the help buffer BUFFER-OR-NAME.
 Like GNU's `help--window-setup': BODY runs in the help buffer with
@@ -5208,6 +5366,42 @@ Like GNU's `help--window-setup': BODY runs in the help buffer with
 
 ;; loaddefs: thingatpt autoloads.
 (autoload 'thing-at-point "thingatpt")
+
+;; subr.el: GNU preloads these syntax-aware movement helpers.  Keep this
+;; policy in Lisp; the Rust boundary supplies regexp and syntax-table motion.
+(defun forward-whitespace (arg)
+  "Move point across ARG sequences of spaces, tabs, or newlines."
+  (interactive "^p")
+  (if (natnump arg)
+      (re-search-forward "[ \t]+\\|\n" nil 'move arg)
+    (while (< arg 0)
+      (when (re-search-backward "[ \t]+\\|\n" nil 'move)
+        (or (eq (char-after (match-beginning 0)) ?\n)
+            (skip-chars-backward " \t")))
+      (setq arg (1+ arg)))))
+
+(defun forward-symbol (arg)
+  "Move point to the end of the ARGth following symbol."
+  (interactive "^p")
+  (if (natnump arg)
+      (re-search-forward "\\(\\sw\\|\\s_\\)+" nil 'move arg)
+    (while (< arg 0)
+      (when (re-search-backward "\\(\\sw\\|\\s_\\)+" nil 'move)
+        (skip-syntax-backward "w_"))
+      (setq arg (1+ arg)))))
+
+(defun forward-same-syntax (&optional arg)
+  "Move across ARG groups having the same syntax class."
+  (interactive "^p")
+  (setq arg (or arg 1))
+  (while (< arg 0)
+    (skip-syntax-backward
+     (char-to-string (char-syntax (char-before))))
+    (setq arg (1+ arg)))
+  (while (> arg 0)
+    (skip-syntax-forward
+     (char-to-string (char-syntax (char-after))))
+    (setq arg (1- arg))))
 
 ;; loaddefs: edebug autoloads.
 (autoload 'edebug-defun "edebug" nil t)
@@ -5824,13 +6018,6 @@ recursion."
   "Remove stale .eln files (no-op: emaxx has no native compilation cache)."
   nil)
 
-;; GNU comp.el helper: emaxx never writes .eln files, so map to a path
-;; that cannot exist (package-delete probes it before removing).
-(defun comp-el-to-eln-filename (filename &optional base-dir)
-  "Return the .eln path FILENAME would compile to (never exists here)."
-  (expand-file-name (concat (file-name-base filename) ".eln")
-                    (or base-dir (expand-file-name "eln-cache" temporary-file-directory))))
-
 ;; GNU files.el (verbatim).
 (defun prune-directory-list (dirs &optional keep reject)
   "Return a copy of DIRS with all non-existent directories removed.
@@ -5869,12 +6056,9 @@ to a package-local loaddefs file.")
           (t
            len))))
 
-;; outline.el: GNU's file builds its mode menus by walking keymaps as
-;; raw lists (`mapcar'/`nconc' over `outline-mode-menu-bar-map'), which
-;; the record-backed emaxx keymaps cannot satisfy, so the real file
-;; cannot load.  Provide the feature with the pieces its library
-;; consumers (lisp-mnt.el's `lm-section-end') actually read.  All
-;; definitions are verbatim from outline.el.
+;; outline.el state read by preloaded Lisp helpers before the library itself
+;; is required.  The real library remains authoritative and supplies the
+;; complete mode/keymap contract when loaded.
 (defvar outline-regexp "[*\^L]+"
   "Regular expression to match the beginning of a heading.
 Any line whose beginning matches this regexp is considered to start a heading.
@@ -5908,8 +6092,6 @@ This is actually either the level specified in `outline-heading-alist'
 or else the number of characters matched by `outline-regexp'."
   (or (cdr (assoc (match-string 0) outline-heading-alist))
       (- (match-end 0) (match-beginning 0))))
-
-(provide 'outline)
 
 ;; help.el (verbatim): describe-package quotes the install directory
 ;; with this.
@@ -6551,6 +6733,45 @@ of SECS seconds since the epoch.  SECS may be a fraction."
 (defvar next-line-add-newlines nil
   "If non-nil, `next-line' inserts newline to avoid `end of buffer' error.")
 
+;; GNU simple.el dumps this whole option family.  Electric Pair dynamically
+;; disables `blink-matching-paren' while inserting a synthetic closer, so the
+;; binding must exist even in batch sessions that never call the blinking
+;; commands themselves.
+(defgroup paren-blinking nil
+  "Blinking matching of parens and expressions."
+  :prefix "blink-matching-"
+  :group 'paren-matching)
+
+(defcustom blink-matching-paren t
+  "Non-nil means show a matching open delimiter after inserting its close."
+  :type '(choice (const nil) (const t) (const jump) (const jump-offscreen))
+  :group 'paren-blinking)
+
+(defcustom blink-matching-paren-on-screen t
+  "Non-nil means show a matching open delimiter when it is on screen."
+  :type 'boolean
+  :group 'paren-blinking)
+
+(defcustom blink-matching-paren-distance (* 100 1024)
+  "Maximum distance to search backward for a matching open delimiter."
+  :type '(choice (const nil) integer)
+  :group 'paren-blinking)
+
+(defcustom blink-matching-delay 1
+  "Seconds to delay after showing a matching delimiter."
+  :type 'number
+  :group 'paren-blinking)
+
+(defcustom blink-matching-paren-dont-ignore-comments nil
+  "Non-nil means matching delimiter search includes comments."
+  :type 'boolean
+  :group 'paren-blinking)
+
+(defcustom blink-matching-paren-highlight-offscreen nil
+  "Non-nil means highlight an off-screen matching delimiter in the echo area."
+  :type 'boolean
+  :group 'paren-blinking)
+
 ;; GNU C display variables (window.c/xdisp.c defaults): viper reads and
 ;; let-binds these at load time.
 (defvar scroll-step 0)
@@ -6560,9 +6781,83 @@ of SECS seconds since the epoch.  SECS may be a fraction."
 (defvar mark-even-if-inactive t)
 (defvar emulation-mode-map-alists nil)
 (defvar initial-major-mode 'lisp-interaction-mode)
+(defcustom initial-scratch-message
+  ";; This buffer is for text that is not saved, and for Lisp evaluation.
+;; To create a file, visit it with `\\[find-file]' and enter text in its buffer.
+
+"
+  "Initial documentation displayed in *scratch* buffer at startup."
+  :type '(choice (text :tag "Message") (const :tag "none" nil)))
+
+;; GNU simple.el owns this policy; window.el's `last-buffer' calls it after
+;; rejecting every live frame buffer.  Keep creation, initial contents, and
+;; major-mode setup together on the Lisp side.
+(defun get-scratch-buffer-create ()
+  "Return the *scratch* buffer, creating a new one if needed."
+  (or (get-buffer "*scratch*")
+      (let ((scratch (get-buffer-create "*scratch*")))
+        (with-current-buffer scratch
+          (when initial-scratch-message
+            (insert (substitute-command-keys initial-scratch-message))
+            (set-buffer-modified-p nil))
+          (funcall initial-major-mode)
+          (when (eq initial-major-mode 'lisp-interaction-mode)
+            (setq-local trusted-content :all)))
+        scratch)))
 (defvar-local abbrev-mode nil)
 (defvar-local auto-fill-function nil)
 (defalias 'beep #'ding)
+
+;; GNU subr.el's strict word motion disables mode-specific boundary
+;; functions while retaining the ordinary syntax-table word motion.
+(defvar word-move-empty-char-table nil
+  "Empty boundary-function table used by strict word motion.")
+
+(defun forward-word-strictly (&optional arg)
+  "Move forward ARG words without mode-specific word boundaries."
+  (let ((find-word-boundary-function-table
+         (if (char-table-p word-move-empty-char-table)
+             word-move-empty-char-table
+           (setq word-move-empty-char-table (make-char-table nil)))))
+    (forward-word (or arg 1))))
+
+(defun backward-word-strictly (&optional arg)
+  "Move backward ARG words without mode-specific word boundaries."
+  (let ((find-word-boundary-function-table
+         (if (char-table-p word-move-empty-char-table)
+             word-move-empty-char-table
+           (setq word-move-empty-char-table (make-char-table nil)))))
+    (forward-word (- (or arg 1)))))
+
+;; GNU simple.el dumps the Auto Fill mode controls.  Keep the mode policy in
+;; Lisp; `define-minor-mode' supplies the standard buffer-local lifecycle.
+(defvar normal-auto-fill-function 'do-auto-fill
+  "Function installed in `auto-fill-function' when Auto Fill is enabled.")
+
+;; GNU preloads abbrev.el; its mode variable is host-backed, while the
+;; toggling command and hook lifecycle remain ordinary dumped Lisp.
+(define-minor-mode abbrev-mode
+  "Toggle Abbrev mode in the current buffer."
+  :variable abbrev-mode)
+
+(define-minor-mode auto-fill-mode
+  "Toggle automatic line breaking."
+  :variable (auto-fill-function
+             . (lambda (enabled)
+                 (setq auto-fill-function
+                       (if enabled normal-auto-fill-function)))))
+
+(defun auto-fill-function ()
+  "Function-cell placeholder for the Auto Fill variable."
+  nil)
+
+(defun turn-on-auto-fill ()
+  "Unconditionally turn on Auto Fill mode."
+  (auto-fill-mode 1))
+
+(defun turn-off-auto-fill ()
+  "Unconditionally turn off Auto Fill mode."
+  (auto-fill-mode -1))
 
 ;; GNU mule-cmds.el (preloaded): the input-method state surface, enough
 ;; for viper's conditional deactivation in batch (no input method active).
@@ -6572,6 +6867,64 @@ of SECS seconds since the epoch.  SECS may be a fraction."
 (defvar input-method-history nil)
 (defvar input-method-deactivate-hook nil)
 (defvar deactivate-current-input-method-function nil)
+
+;; GNU mule-cmds.el owns the public character-property registry in Lisp; the
+;; host primitive only resolves and indexes the registered tables.
+(put 'char-code-property-table 'char-table-extra-slots 5)
+
+(defun define-char-code-property (name table &optional docstring)
+  "Register TABLE as the Unicode character property NAME."
+  (unless (symbolp name)
+    (error "Not a symbol: %s" name))
+  (unless (or (stringp table)
+              (and (char-table-p table)
+                   (eq (char-table-subtype table)
+                       'char-code-property-table)
+                   (eq (char-table-extra-slot table 0) name)))
+    (error "Invalid character property table: %s" table))
+  ;; Reloading charprop.el must not replace a table that its generated data
+  ;; file has already materialized.
+  (unless (and (stringp table)
+               (char-table-p (alist-get name char-code-property-alist)))
+    (setf (alist-get name char-code-property-alist)
+          (if (stringp table) (purecopy table) table))
+    (put name 'char-code-property-documentation (purecopy docstring))))
+
+(defvar char-code-property-table
+  (make-char-table 'char-code-property-table)
+  "Fallback table for character properties outside the Unicode registry.")
+
+(defun get-char-code-property (char property)
+  "Return the value of CHAR's character PROPERTY."
+  (let ((table (unicode-property-table-internal property)))
+    (if (char-table-p table)
+        (let ((decoder (char-table-extra-slot table 1)))
+          (if (functionp decoder)
+              (funcall decoder char (aref table char) table)
+            (get-unicode-property-internal table char)))
+      (plist-get (aref char-code-property-table char) property))))
+
+(defun put-char-code-property (char property value)
+  "Set CHAR's character PROPERTY to VALUE and return VALUE."
+  (let ((table (unicode-property-table-internal property)))
+    (if (char-table-p table)
+        (let ((encoder (char-table-extra-slot table 2)))
+          (if (functionp encoder)
+              (funcall encoder char value table)
+            (put-unicode-property-internal table char value)))
+      (let* ((plist (aref char-code-property-table char))
+             (updated (plist-put plist property value)))
+        (unless (eq updated plist)
+          (aset char-code-property-table char updated))))
+    value))
+
+(defun char-code-property-description (property value)
+  "Return PROPERTY's description of VALUE, or nil."
+  (let ((table (unicode-property-table-internal property)))
+    (when (char-table-p table)
+      (let ((describe (char-table-extra-slot table 3)))
+        (when (functionp describe)
+          (funcall describe value))))))
 
 (defvar history-length 100)
 (defvar history-delete-duplicates nil)
@@ -6623,6 +6976,64 @@ HISTORY-VAR cannot refer to a lexical variable."
 	  (run-hooks 'input-method-deactivate-hook)
 	(setq current-input-method nil)
 	(force-mode-line-update)))))
+
+;; subr.el process wrappers are dumped before user libraries load.  Keep the
+;; policy in Elisp so connection-local shell selection stays on GNU's side of
+;; the host boundary.
+(defvar process-menu-query-only nil
+  "Non-nil means `list-processes' shows only processes queried on exit.")
+
+(defun list-processes (&optional query-only buffer)
+  "Display live Emacs subprocesses, optionally restricted to queried ones.
+BUFFER defaults to the standard process-list buffer.  Process enumeration and
+state remain native primitives; formatting and display policy stay in Lisp,
+as they do in GNU Emacs."
+  (unless (fboundp 'process-list)
+    (error "Asynchronous subprocesses are not supported on this system"))
+  (unless (bufferp buffer)
+    (setq buffer (get-buffer-create "*Process List*")))
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (setq process-menu-query-only query-only)
+      (dolist (process (process-list))
+        (when (or (not process-menu-query-only)
+                  (process-query-on-exit-flag process))
+          (insert
+           (format "%-15s %-7s %-7s %s\n"
+                   (process-name process)
+                   (or (process-id process) "--")
+                   (process-status process)
+                   (mapconcat #'identity
+                              (or (process-command process) nil)
+                              " "))))))
+    (setq buffer-read-only t))
+  (display-buffer buffer)
+  nil)
+
+(defun start-process-shell-command (name buffer command)
+  "Start shell COMMAND asynchronously as process NAME using BUFFER."
+  (start-process name buffer shell-file-name shell-command-switch command))
+
+(defun start-file-process-shell-command (name buffer command)
+  "Start shell COMMAND like `start-process-shell-command', file-aware."
+  (with-connection-local-variables
+    (start-file-process
+     name buffer shell-file-name shell-command-switch command)))
+
+(defun call-process-shell-command (command &optional infile buffer display
+					   &rest args)
+  "Run shell COMMAND synchronously through `call-process'."
+  (call-process shell-file-name infile buffer display shell-command-switch
+		(mapconcat #'identity (cons command args) " ")))
+
+(defun process-file-shell-command (command &optional infile buffer display
+					   &rest args)
+  "Run shell COMMAND synchronously through file-aware `process-file'."
+  (with-connection-local-variables
+    (process-file
+     shell-file-name infile buffer display shell-command-switch
+     (mapconcat #'identity (cons command args) " "))))
 
 (defun shell-command-to-string (command)
   "Execute shell command COMMAND and return its output as a string.
@@ -6832,26 +7243,6 @@ backslash quoting, is respected."
     (when (or in-word cur) (push (or cur "") args))
     (nreverse args)))
 
-(defun get-char-property-and-overlay (position prop &optional object)
-  "Like `get-char-property', but with extra overlay information.
-The value is a cons cell.  Its car is the return value of
-`get-char-property' with the same arguments.  Its cdr is the overlay in
-which the property was found, or nil if it was found as a text property
-or not found at all."
-  (let ((overlay nil) (val nil))
-    (unless (stringp object)
-      (let ((buffer (cond ((bufferp object) object)
-                          ((windowp object) (window-buffer object))
-                          (t (current-buffer)))))
-        (with-current-buffer buffer
-          (catch 'done
-            (dolist (ov (overlays-at position))
-              (let ((v (overlay-get ov prop)))
-                (when v (setq val v overlay ov) (throw 'done nil))))))))
-    (if overlay
-        (cons val overlay)
-      (cons (get-char-property position prop object) nil))))
-
 (defun string-glyph-compose (string)
   "Compose STRING according to the Unicode NFC."
   (ucs-normalize-NFC-string string))
@@ -6859,43 +7250,6 @@ or not found at all."
 (defun string-glyph-decompose (string)
   "Decompose STRING according to the Unicode NFD."
   (ucs-normalize-NFD-string string))
-
-(defun next-property-change (position &optional object limit)
-  "Return the position of next property change from POSITION.
-Scan forward in OBJECT (a buffer or string, defaulting to the current
-buffer) until the text properties differ from those at POSITION, and
-return that position.  Return nil (or LIMIT if given) if none is found."
-  (let* ((end (cond (limit limit)
-                    ((stringp object) (length object))
-                    (t (point-max))))
-         (initial (text-properties-at position object))
-         (pos position))
-    (setq pos (1+ pos))
-    (while (and (< pos end)
-                (equal (text-properties-at pos object) initial))
-      (setq pos (1+ pos)))
-    (cond ((< pos end) pos)
-          (limit limit)
-          (t nil))))
-
-(defun previous-property-change (position &optional object limit)
-  "Return the position of previous property change from POSITION.
-Scan backward in OBJECT (a buffer or string, defaulting to the current
-buffer) until the text properties differ from those just before
-POSITION, and return that position.  Return nil (or LIMIT if given) if
-none is found."
-  (let* ((start (cond (limit limit)
-                      ((stringp object) 0)
-                      (t (point-min))))
-         (initial (text-properties-at (1- position) object))
-         (pos position))
-    (setq pos (1- pos))
-    (while (and (> pos start)
-                (equal (text-properties-at (1- pos) object) initial))
-      (setq pos (1- pos)))
-    (cond ((> pos start) pos)
-          (limit limit)
-          (t nil))))
 
 (defun file-name-with-extension (filename extension)
   "Return FILENAME modified to have the specified EXTENSION.
@@ -6960,6 +7314,175 @@ NAME is unquoted."
       (setq
        localname (if (= (length localname) 2) "/" (substring localname 2))))
     (concat (file-remote-p name) localname)))
+
+;; GNU keeps this policy in files.el: /: is a request to bypass every other
+;; magic file-name handler, while retaining the quote in names returned to
+;; Lisp.  Host primitives still receive the unquoted local path.
+(defun file-name-non-special (operation &rest arguments)
+  (let ((inhibit-file-name-handlers
+         (cons 'file-name-non-special
+               (and (eq inhibit-file-name-operation operation)
+                    inhibit-file-name-handlers)))
+        (inhibit-file-name-operation operation)
+        (default-directory
+         (if (memq operation '(insert-directory process-file start-file-process
+                                make-process shell-command
+                                temporary-file-directory))
+             (file-name-unquote default-directory t)
+           default-directory))
+        method indices)
+    (cond
+     ((memq operation '(abbreviate-file-name directory-file-name
+                        file-name-as-directory file-name-directory
+                        file-name-sans-versions file-remote-p
+                        find-backup-file-name))
+      (setq method 'preserve))
+     ((eq operation 'substitute-in-file-name)
+      (setq method 'identity))
+     ((eq operation 'expand-file-name)
+      (setq method 'expand))
+     ((eq operation 'file-truename)
+      (setq method 'quote indices '(0)))
+     ((eq operation 'insert-file-contents)
+      (setq method 'insert indices '(0)))
+     ((memq operation '(make-auto-save-file-name set-visited-file-modtime))
+      (setq method 'buffer-file-name))
+     ((eq operation 'verify-visited-file-modtime)
+      (setq method 'visited-file-modtime))
+     ((memq operation '(copy-file rename-file copy-directory))
+      (setq indices '(0 1)))
+     ((memq operation '(file-name-completion file-name-all-completions
+                        file-equal-p file-newer-than-file-p
+                        file-in-directory-p make-symbolic-link
+                        add-name-to-file))
+      (setq indices '(0 1)))
+     ((eq operation 'write-region)
+      (setq indices '(2 5)))
+     ((memq operation '(file-notify-rm-watch file-notify-valid-p make-process))
+      nil)
+     ((eq operation 'start-file-process)
+      (setq indices '(2)))
+     (t (setq indices '(0))))
+    (dolist (index indices)
+      (let ((tail (nthcdr index arguments)))
+        (when (car tail)
+          (setcar tail (file-name-unquote (car tail) t)))))
+    (cond
+     ((eq method 'identity) (car arguments))
+     ((eq method 'expand)
+      (when (string-prefix-p "/:~" (car arguments))
+        (setcar arguments (file-name-unquote (car arguments) t)))
+      (apply operation arguments))
+     ((eq method 'quote)
+      (file-name-quote (apply operation arguments) t))
+     ((eq method 'buffer-file-name)
+      (let ((buffer-file-name (file-name-unquote buffer-file-name t)))
+        (apply operation arguments)))
+     ((eq method 'insert)
+      (let ((visit (nth 1 arguments)))
+        (unwind-protect
+            (apply operation arguments)
+          (when (and visit buffer-file-name)
+            (setq buffer-file-name (file-name-quote buffer-file-name t))))))
+     ((eq method 'visited-file-modtime)
+      (let ((buffer (current-buffer)))
+        (with-current-buffer (or (car arguments) buffer)
+          (let ((buffer-file-name (file-name-unquote buffer-file-name t)))
+            (with-current-buffer buffer
+              (apply operation arguments))))))
+     (t (apply operation arguments)))))
+
+(setq file-name-handler-alist
+      (cons '("\\`/:" . file-name-non-special) file-name-handler-alist))
+
+(defvar directory-abbrev-alist nil)
+(defvar abbreviated-home-dir nil)
+(defvar auto-save-file-name-transforms nil)
+(defvar lock-file-name-transforms nil)
+
+(defun abbreviate-file-name (filename)
+  "Abbreviate FILENAME using directory aliases and the current HOME."
+  (let ((handler (find-file-name-handler filename 'abbreviate-file-name)))
+    (if handler
+        (funcall handler 'abbreviate-file-name filename)
+      (let ((result filename))
+        (dolist (entry directory-abbrev-alist)
+          (when (and (equal result filename)
+                     (string-match (car entry) filename))
+            (setq result (replace-match (cdr entry) t nil filename))))
+        (unless abbreviated-home-dir
+          (setq abbreviated-home-dir (expand-file-name "~"))
+          (put 'abbreviated-home-dir 'home abbreviated-home-dir))
+        (let* ((cached-home (get 'abbreviated-home-dir 'home))
+               (current-home (expand-file-name "~"))
+               (home-directory (and cached-home
+                                    (file-name-as-directory cached-home))))
+          (cond
+           ((or (not (equal cached-home current-home))
+                (equal home-directory "/"))
+            result)
+           ((equal result (directory-file-name home-directory)) "~")
+           ((string-prefix-p home-directory result)
+            (concat "~/" (substring result (length home-directory))))
+           (t result)))))))
+
+(defun files--transform-file-name (filename transforms prefix suffix)
+  (let (result uniquify)
+    (while (and transforms (not result))
+      (when (string-match (car (car transforms)) filename)
+        (setq result (replace-match (cadr (car transforms)) t nil filename)
+              uniquify (nth 2 (car transforms))))
+      (setq transforms (cdr transforms)))
+    (when result
+      (setq filename
+            (cond
+             ((memq uniquify (secure-hash-algorithms))
+              (concat (file-name-directory result)
+                      (secure-hash uniquify filename)))
+             (uniquify
+              (concat (file-name-directory result)
+                      (subst-char-in-string
+                       ?/ ?! (string-replace "!" "!!" filename))))
+             (t result))))
+    (expand-file-name
+     (concat (file-name-directory filename)
+             prefix (file-name-nondirectory filename) suffix))))
+
+(defun make-auto-save-file-name ()
+  "Return the GNU-compatible auto-save name for the current file buffer."
+  (when buffer-file-name
+    (let ((handler (find-file-name-handler
+                    buffer-file-name 'make-auto-save-file-name)))
+      (if handler
+          (funcall handler 'make-auto-save-file-name)
+        (files--transform-file-name
+         buffer-file-name auto-save-file-name-transforms "#" "#")))))
+
+(defun make-lock-file-name (filename)
+  "Return the GNU-compatible lock-file name for FILENAME."
+  (let ((handler (find-file-name-handler filename 'make-lock-file-name)))
+    (if handler
+        (funcall handler 'make-lock-file-name filename)
+      (files--transform-file-name filename lock-file-name-transforms ".#" ""))))
+
+(defun file-ownership-preserved-p (file &optional _group)
+  "Whether replacing FILE would preserve its owner."
+  (let ((handler (find-file-name-handler file 'file-ownership-preserved-p)))
+    (if handler
+        (funcall handler 'file-ownership-preserved-p file)
+      (let ((attributes (file-attributes file 'integer)))
+        (or (null attributes)
+            (= (file-attribute-user-id attributes) (user-uid)))))))
+
+(defun diff-latest-backup-file (filename)
+  "Return FILENAME's simple backup name when it exists."
+  (let ((handler (find-file-name-handler filename 'diff-latest-backup-file)))
+    (if handler
+        (funcall handler 'diff-latest-backup-file filename)
+      (let ((backup (concat filename "~")))
+        (and (file-exists-p backup) backup)))))
+
+(defun vc-registered (_file) nil)
 
 (defun file-modes-char-to-who (char)
   "Convert CHAR to a numeric bit-mask for extracting mode bits.
@@ -7153,20 +7676,6 @@ If FILE1 or FILE2 does not exist, the return value is unspecified."
 	     (setq f2-attr (file-attributes (file-truename file2)))
              (equal f1-attr f2-attr))))))
 
-(defun file-newer-than-file-p (file1 file2)
-  "Return non-nil if file FILE1 is newer than file FILE2.
-If FILE1 does not exist, the return value is nil;
-otherwise, if FILE2 does not exist, the return value is t."
-  (let ((handler (or (find-file-name-handler file1 'file-newer-than-file-p)
-                     (find-file-name-handler file2 'file-newer-than-file-p))))
-    (if handler
-        (funcall handler 'file-newer-than-file-p file1 file2)
-      (let ((mt1 (file-attribute-modification-time (file-attributes file1)))
-            (mt2 (file-attribute-modification-time (file-attributes file2))))
-        (cond ((not mt1) nil)
-              ((not mt2) t)
-              (t (time-less-p mt2 mt1)))))))
-
 (defun file-chase-links (filename &optional limit)
   "Chase links in FILENAME until a name that is not a link.
 Unlike `file-truename', this does not check whether a parent
@@ -7225,35 +7734,13 @@ directory in this environment (there is no remote support)."
 
 ;; Filesystem features that this environment does not implement.  GNU
 ;; Emacs returns these degraded values when the underlying OS lacks the
-;; corresponding support; they are listed only so the built-in shortdoc
-;; groups can reference them.
-(defun file-acl (_file) "Return the ACL entries of FILE, or nil if unsupported." nil)
-(defun set-file-acl (_file _acl) "Set the ACL entries of FILE (unsupported)." nil)
-(defun file-selinux-context (_file)
-  "Return the SELinux context of FILE (unsupported)."
-  '(nil nil nil nil))
-(defun set-file-selinux-context (_file _context)
-  "Set the SELinux context of FILE (unsupported)."
-  nil)
+;; corresponding support; the C-primitive mirrors live in Rust.
 (defun file-extended-attributes (_file)
   "Return an alist of extended attributes of FILE (unsupported)."
   nil)
 (defun set-file-extended-attributes (_file _attributes)
   "Set the extended attributes of FILE (unsupported)."
   nil)
-
-(defun add-name-to-file (file newname &optional ok-if-already-exists)
-  "Give FILE additional name NEWNAME (a hard link).
-Hard links are not supported in this environment."
-  (ignore ok-if-already-exists)
-  (signal 'file-error (list "Adding new name" "Operation not supported"
-                            file newname)))
-
-(defun kill-process (&optional process _current-group)
-  "Kill process PROCESS.  PROCESS may be a process object or a buffer."
-  (let ((proc (or (get-process process) process)))
-    (when (processp proc)
-      (delete-process proc))))
 
 (defun vc-responsible-backend (_file &optional _no-error)
   "Return the version-control backend responsible for FILE.
@@ -7600,16 +8087,41 @@ only list member."
       (t
        (set-default-toplevel-value symbol (eval exp)))))))
 
-(defvar custom-delayed-init-variables nil
-  "List of variables whose initialization is pending until startup.")
+;; GNU custom.el (preloaded): setters used by dumped defcustom declarations.
+(defvar custom-local-buffer nil
+  "Buffer in which Custom setters should establish local values.")
+(put 'custom-local-buffer 'permanent-local t)
+
+(defun custom-set-default (variable value)
+  "Set VARIABLE to VALUE in Custom's current target."
+  (if custom-local-buffer
+      (with-current-buffer custom-local-buffer
+	(set variable value))
+    (set-default-toplevel-value variable value)))
+
+(defun custom-set-minor-mode (variable value)
+  "Set minor mode VARIABLE to VALUE in Custom's current target."
+  (if custom-local-buffer
+      (with-current-buffer custom-local-buffer
+	(funcall variable (if value 1 0)))
+    (funcall variable (if value 1 0))))
+
+(defvar custom-delayed-init-variables t
+  "Variables pending delayed Custom initialization, or t after startup.")
 
 (defun custom-initialize-delay (symbol exp)
-  "Delay initialization of SYMBOL to the next startup.
-In this environment startup has already happened, so initialize
-immediately like `custom-initialize-set'."
-  (set-default-toplevel-value symbol nil)
-  (push symbol custom-delayed-init-variables)
-  (custom-initialize-set symbol exp))
+  "Delay initialization of SYMBOL until startup has completed."
+  (internal--define-uninitialized-variable symbol)
+  (if (listp custom-delayed-init-variables)
+      (push symbol custom-delayed-init-variables)
+    (custom-initialize-reset symbol exp)))
+
+(defun custom-reevaluate-setting (symbol)
+  "Re-evaluate SYMBOL's saved or standard value through its setter."
+  (funcall (or (get symbol 'custom-set) #'set-default)
+	   symbol
+	   (eval (car (or (get symbol 'saved-value)
+			  (get symbol 'standard-value))))))
 
 ;; GNU newcomment.el autoloaded variables (preloaded surface): fill.el's
 ;; adaptive fill consults these in any buffer.
@@ -8290,6 +8802,116 @@ The SEPARATOR regexp defaults to \"\\s-+\"."
 (defvar window-configuration-change-hook nil
   "Normal hook run when the window configuration changed.")
 
+;; GNU preloads this window.el macro.  Keep it in Lisp: Emaxx's batch
+;; display has one frame, so preserving the selected window and current
+;; buffer is the complete observable contract without moving a Lisp macro
+;; across the host boundary.
+(defmacro save-selected-window (&rest body)
+  "Execute BODY, then restore the selected window and current buffer."
+  (declare (indent 0) (debug t))
+  `(let ((save-selected-window--window (selected-window)))
+     (save-current-buffer
+       (unwind-protect
+           (progn ,@body)
+         (when (window-live-p save-selected-window--window)
+           (select-window save-selected-window--window 'norecord))))))
+
+;; GNU preloads help.el, whose global minor mode establishes this binding.
+(defvar temp-buffer-resize-mode nil
+  "Non-nil means automatically resize temporary-buffer windows.")
+(defvar temp-buffer-window-setup-hook nil
+  "Normal hook run before displaying a temporary buffer.")
+(defvar temp-buffer-window-show-hook nil
+  "Normal hook run after displaying a temporary buffer.")
+
+;; GNU window.el owns the temporary-buffer lifecycle in Lisp.  Keep both
+;; setup and orchestration here so the host only supplies the buffer/window
+;; primitives; a native bootstrap fallback must not skip ACTION or the
+;; display phase after this dumped facade has loaded.
+(defun temp-buffer-window-setup (buffer-or-name)
+  "Set up temporary buffer BUFFER-OR-NAME and return it."
+  (let ((old-dir default-directory)
+        (buffer (get-buffer-create buffer-or-name)))
+    (with-current-buffer buffer
+      (kill-all-local-variables)
+      (setq default-directory old-dir)
+      (delete-all-overlays)
+      (setq buffer-read-only nil
+            buffer-file-name nil
+            buffer-undo-list t)
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
+        (erase-buffer)
+        (run-hooks 'temp-buffer-window-setup-hook))
+      buffer)))
+
+;; GNU preloads this window.el function.  Keep its display policy in Lisp;
+;; only the window/display primitives it orchestrates belong in Rust.
+(defun temp-buffer-window-show (buffer &optional action)
+  "Show temporary buffer BUFFER in a window and return that window."
+  (let (resize-temp-buffer-window-inhibit window)
+    (with-current-buffer buffer
+      (set-buffer-modified-p nil)
+      (setq buffer-read-only t)
+      (goto-char (point-min))
+      (when (let ((window-combination-limit
+                   (if (or (eq window-combination-limit 'temp-buffer)
+                           (and (eq window-combination-limit
+                                    'temp-buffer-resize)
+                                temp-buffer-resize-mode))
+                       t
+                     window-combination-limit)))
+              (setq window (display-buffer buffer action)))
+        (setq minibuffer-scroll-window window)
+        (set-window-hscroll window 0)
+        (with-selected-window window
+          (run-hooks 'temp-buffer-window-show-hook)
+          (when temp-buffer-resize-mode
+            (resize-temp-buffer-window window)))
+        window))))
+
+(defmacro with-current-buffer-window
+    (buffer-or-name action quit-function &rest body)
+  "Evaluate BODY in BUFFER-OR-NAME, then display that buffer using ACTION."
+  (declare (debug t) (indent 3))
+  (let ((raw-buffer (make-symbol "buffer-or-name"))
+        (raw-action (make-symbol "action"))
+        (raw-quit (make-symbol "quit-function"))
+        (buffer (make-symbol "buffer"))
+        (window (make-symbol "window"))
+        (value (make-symbol "value")))
+    `(let* ((,raw-buffer ,buffer-or-name)
+            (,raw-action ,action)
+            (,raw-quit ,quit-function)
+            (,buffer (temp-buffer-window-setup ,raw-buffer))
+            (standard-output ,buffer)
+            ,window
+            ,value)
+       (with-current-buffer ,buffer
+         (setq ,value (progn ,@body))
+         (setq ,window
+               (temp-buffer-window-show ,buffer ,raw-action)))
+       (if (functionp ,raw-quit)
+           (funcall ,raw-quit ,window ,value)
+         ,value))))
+
+;; GNU simple.el is dumped before minibuffer.el.  These completion-list
+;; policies are therefore already bound when minibuffer's completion engine
+;; reads them; leaving them out turns a successful completion into a late
+;; void-variable failure during display.
+(defcustom completion-auto-wrap t
+  "Non-nil means completion candidate selection wraps around."
+  :type 'boolean
+  :group 'completion)
+(defcustom completion-auto-select nil
+  "Non-nil means automatically select the completions window."
+  :type '(choice (const nil) (const t) (const second-tab))
+  :group 'completion)
+(defcustom completion-show-help t
+  "Non-nil means show help text in the completions buffer."
+  :type 'boolean
+  :group 'completion)
+
 ;; GNU buffer.c permanent buffer-local display variables.
 (defvar left-margin-width 0
   "Width in columns of left marginal area for display of a buffer.")
@@ -8301,23 +8923,13 @@ The SEPARATOR regexp defaults to \"\\s-+\"."
 (make-variable-buffer-local 'right-margin-width)
 (make-variable-buffer-local 'fringes-outside-margins)
 
-;; emaxx models batch sessions as a single full-frame window, so the
-;; window metric accessors coincide with `window-width'/`window-height'.
+;; GNU defines the body/total metric accessors in window.c and window.el
+;; aliases `window-width'/`window-height' to them.  Emaxx implements those
+;; host primitives in Rust; defining Lisp facades here would make the aliases
+;; recursive once the real preloaded window.el is loaded.
 (defun window-normalize-window (window &optional _live-only)
   "Return WINDOW or the selected window when WINDOW is nil."
   (or window (selected-window)))
-(defun window-total-width (&optional window &rest _round)
-  "Return the total width, in columns, of WINDOW."
-  (window-width window))
-(defun window-total-height (&optional window &rest _round)
-  "Return the total height, in lines, of WINDOW."
-  (window-height window))
-(defun window-body-width (&optional window _pixelwise)
-  "Return the width of WINDOW's text area."
-  (window-width window))
-(defun window-body-height (&optional window _pixelwise)
-  "Return the height of WINDOW's text area."
-  (window-height window))
 (defun window-full-width-p (&optional _window)
   "Return t if WINDOW is as wide as its containing frame."
   t)
@@ -8331,6 +8943,15 @@ The SEPARATOR regexp defaults to \"\\s-+\"."
   "Non-nil means don't signal an error for killing read-only text.")
 (defvar truncate-partial-width-windows 50
   "Non-nil means truncate lines in windows narrower than the frame.")
+
+;; GNU preloads this simple.el command.  Keep its mark setup in Lisp so
+;; `call-interactively' sees the same command boundary as GNU.
+(defun mark-whole-buffer ()
+  "Put point at the beginning and mark at the end of the accessible buffer."
+  (interactive)
+  (push-mark)
+  (push-mark (point-max) nil t)
+  (goto-char (minibuffer-prompt-end)))
 
 ;; GNU window.el (verbatim).
 (defun count-screen-lines (&optional beg end count-final-newline window)
@@ -8654,11 +9275,6 @@ to deactivate this transient map, regardless of KEEP-PRED."
     (when message (message "%s" message))
     exitfun))
 
-;; GNU keyboard.c: no idle time accumulates during batch execution.
-(defun current-idle-time ()
-  "Return the time elapsed since last user input, or nil if not idle."
-  nil)
-
 ;; GNU subr.el (verbatim).
 (defun make-composed-keymap (maps &optional parent)
   "Construct a new keymap composed of MAPS and inheriting from PARENT.
@@ -8688,15 +9304,92 @@ PARENT if non-nil should be a keymap."
 ;; GNU keyboard.c: position info for a buffer shown in WINDOW; nil when
 ;; the buffer isn't displayed there (like an off-screen position).
 ;; `kill-visual-line' reads the (COL . ROW) slot to detect line wraps.
-(defun posn-at-point (&optional pos window)
-  "Return position information for POS in WINDOW, or nil."
-  (setq window (or window (selected-window)))
-  (when (eq (window-buffer window) (current-buffer))
-    (let* ((pos (or pos (point)))
-           (col (save-excursion (goto-char pos)
-                                (- pos (progn (vertical-motion 0) (point)))))
-           (row (max 0 (1- (count-screen-lines (window-start window) pos t)))))
-      (list window pos (cons col row) 0 nil pos (cons col row)))))
+(unless (fboundp 'posn-window)
+  ;; subr.el preloads this defsubst as compiled Lisp.  Keep that observable
+  ;; function type while retaining the policy on the Lisp side.
+  (defalias 'posn-window
+    (byte-compile (lambda (position) (nth 0 position)))
+    "Return the window (or frame) recorded in POSITION."))
+
+;; subr.el is dumped before help-fns.el.
+(unless (fboundp 'chmod)
+  (defalias 'chmod #'set-file-modes))
+
+;; These are aliases in GNU subr.el, not additional search primitives.  Keep
+;; the logical function cells aliased while the target primitives remain in
+;; Rust, so advice and Help observe the same indirection as GNU.
+(defalias 'search-forward-regexp #'re-search-forward)
+(defalias 'search-backward-regexp #'re-search-backward)
+
+(unless (fboundp 'keymap-canonicalize)
+  (defun keymap--menu-item-binding (value)
+    "Return the binding represented by menu item VALUE."
+    (cond
+     ((not (consp value)) value)
+     ((eq 'menu-item (car value))
+      (let* ((binding (nth 2 value))
+             (filter (plist-get (nthcdr 3 value) :filter)))
+        (if filter (funcall filter binding) binding)))
+     ((and (consp (cdr value)) (stringp (cadr value))) (cddr value))
+     ((stringp (car value)) (cdr value))
+     (t value)))
+
+  (defun keymap--menu-item-with-binding (item binding)
+    "Return a menu item like ITEM whose binding is BINDING."
+    (cond
+     ((not (consp item)) binding)
+     ((eq 'menu-item (car item))
+      (setq item (copy-sequence item))
+      (let ((tail (nthcdr 2 item)))
+        (setcar tail binding)
+        (when (plist-get (cdr tail) :filter)
+          (setcdr tail (plist-put (cdr tail) :filter nil))))
+      item)
+     ((and (consp (cdr item)) (stringp (cadr item)))
+      (cons (car item) (cons (cadr item) binding)))
+     (t (cons (car item) binding))))
+
+  (defun keymap--merge-bindings (value1 value2)
+    "Merge keymap bindings VALUE1 and VALUE2, preferring VALUE1."
+    (let ((map1 (keymap--menu-item-binding value1))
+          (map2 (keymap--menu-item-binding value2)))
+      (if (not (and (keymapp map1) (keymapp map2)))
+          value1
+        (let ((map (list 'keymap map1 map2))
+              (item (if (keymapp value1)
+                        (and (not (keymapp value2)) value2)
+                      value1)))
+          (keymap--menu-item-with-binding item map)))))
+
+  (defun keymap-canonicalize (map)
+    "Return a keymap with inheritance and redefinitions resolved."
+    (let (bindings ranges
+          (prompt (keymap-prompt map)))
+      (map-keymap
+       (lambda (key item)
+         (if (consp key)
+             (if (= (car key) (1- (cdr key)))
+                 (progn
+                   (push (cons (car key) item) bindings)
+                   (push (cons (cdr key) item) bindings))
+               (push (cons key item) ranges))
+           (push (cons key item) bindings)))
+       map)
+      (setq map (funcall (if ranges #'make-keymap #'make-sparse-keymap)
+                         prompt))
+      (dolist (binding ranges)
+        (define-key map (vector (car binding)) (cdr binding)))
+      (dolist (binding (prog1 bindings (setq bindings nil)))
+        (let* ((key (car binding))
+               (old-binding (assq key bindings)))
+          (push (if (not old-binding)
+                    binding
+                  (setq bindings (delq old-binding bindings))
+                  (cons key (keymap--merge-bindings
+                             (cdr binding) (cdr old-binding))))
+                bindings)))
+      (nconc map bindings))))
+
 (defvar word-wrap-by-category nil
   "Non-nil means also wrap after characters of a certain category.")
 
@@ -9389,14 +10082,6 @@ Do nothing if FACE is nil."
 	  (setq start2 end2))))))
 
 
-
-;; GNU window.c: the batch frame has no fringes.
-(defun window-fringes (&optional _window)
-  "Return fringe settings of specified WINDOW."
-  (list 0 0 nil nil))
-(defun set-window-fringes (_window _left &optional _right _outside-margins _persistent)
-  "Set fringes of specified WINDOW."
-  nil)
 
 ;; GNU subr.el (verbatim).
 (defun buffer-narrowed-p ()
@@ -10520,16 +11205,6 @@ is used.  If nil or omitted, use the selected frame."
 (defsubst face-spec-match-p (face spec &optional frame)
   "Return t if FACE, on FRAME, matches what SPEC says it should look like."
   (face-attr-match-p face (face-spec-choose spec frame) frame))
-
-;; GNU doc.c documentation-stringp.
-(defun documentation-stringp (object)
-  "Return non-nil if OBJECT is a well-formed docstring object.
-OBJECT can be either a string or a reference if it's kept externally."
-  (or (stringp object)
-      (integerp object)                 ; Reference to DOC.
-      (and (consp object)               ; Reference to .elc.
-           (stringp (car object))
-           (integerp (cdr object)))))
 
 ;; GNU custom.el (verbatim).
 (defun custom-handle-all-keywords (symbol args type)

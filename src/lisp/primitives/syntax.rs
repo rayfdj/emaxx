@@ -30,6 +30,7 @@ pub(super) struct SyntaxEntry {
     end_second: bool,
     nested: bool,
     style_b: bool,
+    style_c: bool,
     pub(super) prefix: bool,
 }
 
@@ -44,6 +45,7 @@ impl Default for SyntaxEntry {
             end_second: false,
             nested: false,
             style_b: false,
+            style_c: false,
             prefix: false,
         }
     }
@@ -187,6 +189,7 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
             '4' => entry.end_second = true,
             'n' => entry.nested = true,
             'b' => entry.style_b = true,
+            'c' => entry.style_c = true,
             'p' => entry.prefix = true,
             _ => {}
         }
@@ -217,15 +220,136 @@ fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
     if entry.nested {
         code |= 1 << 22;
     }
+    if entry.style_c {
+        code |= 1 << 23;
+    }
     code
 }
 
 pub(super) fn syntax_entry_value(entry: SyntaxEntry) -> Value {
-    let code = Value::Integer(syntax_entry_code(entry));
-    match entry.matching {
-        Some(matching) => Value::cons(code, Value::Integer(matching as i64)),
-        None => code,
+    if entry.class == SyntaxClass::Inherit {
+        return Value::Nil;
     }
+    let code = Value::Integer(syntax_entry_code(entry));
+    Value::cons(
+        code,
+        entry
+            .matching
+            .map(|matching| Value::Integer(matching as i64))
+            .unwrap_or(Value::Nil),
+    )
+}
+
+pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
+    if value.is_nil() {
+        return ("default".into(), false);
+    }
+    if matches!(value, Value::CharTable(_)) {
+        return ("deeper char-table ...".into(), false);
+    }
+    let Value::Cons(car, cdr) = value else {
+        return ("invalid".into(), false);
+    };
+    let Value::Integer(raw_code) = *car.borrow() else {
+        return ("invalid".into(), false);
+    };
+    let matching = match &*cdr.borrow() {
+        Value::Nil => None,
+        Value::Integer(code) => u32::try_from(*code).ok().and_then(char::from_u32),
+        _ => return ("invalid".into(), false),
+    };
+    if !cdr.borrow().is_nil() && matching.is_none() {
+        return ("invalid".into(), false);
+    }
+    let syntax_code = raw_code & i64::from(i32::MAX);
+    let Some(class) = syntax_class_from_code(syntax_code & 0xff) else {
+        return ("invalid".into(), false);
+    };
+    let entry = SyntaxEntry {
+        class,
+        matching,
+        start_first: syntax_code & (1 << 16) != 0,
+        start_second: syntax_code & (1 << 17) != 0,
+        end_first: syntax_code & (1 << 18) != 0,
+        end_second: syntax_code & (1 << 19) != 0,
+        prefix: syntax_code & (1 << 20) != 0,
+        style_b: syntax_code & (1 << 21) != 0,
+        nested: syntax_code & (1 << 22) != 0,
+        style_c: syntax_code & (1 << 23) != 0,
+    };
+    let mut description = String::new();
+    description.push(syntax_class_char(class));
+    description.push(entry.matching.unwrap_or(' '));
+    if entry.start_first {
+        description.push('1');
+    }
+    if entry.start_second {
+        description.push('2');
+    }
+    if entry.end_first {
+        description.push('3');
+    }
+    if entry.end_second {
+        description.push('4');
+    }
+    if entry.prefix {
+        description.push('p');
+    }
+    if entry.style_b {
+        description.push('b');
+    }
+    if entry.style_c {
+        description.push('c');
+    }
+    if entry.nested {
+        description.push('n');
+    }
+    let meaning = match class {
+        SyntaxClass::Whitespace => "whitespace",
+        SyntaxClass::Punctuation => "punctuation",
+        SyntaxClass::Word => "word",
+        SyntaxClass::Symbol => "symbol",
+        SyntaxClass::OpenParen => "open",
+        SyntaxClass::CloseParen => "close",
+        SyntaxClass::Quote => "prefix",
+        SyntaxClass::StringQuote => "string",
+        SyntaxClass::PairedDelimiter => "math",
+        SyntaxClass::Escape => "escape",
+        SyntaxClass::CharQuote => "charquote",
+        SyntaxClass::CommentStart => "comment",
+        SyntaxClass::CommentEnd => "endcomment",
+        SyntaxClass::Inherit => "inherit",
+        SyntaxClass::GenericCommentDelimiter => "comment fence",
+        SyntaxClass::GenericStringDelimiter => "string fence",
+    };
+    description.push_str("\twhich means: ");
+    description.push_str(meaning);
+    if let Some(matching) = entry.matching {
+        description.push_str(", matches ");
+        description.push(matching);
+    }
+    if entry.start_first {
+        description.push_str(",\n\t  is the first character of a comment-start sequence");
+    }
+    if entry.start_second {
+        description.push_str(",\n\t  is the second character of a comment-start sequence");
+    }
+    if entry.end_first {
+        description.push_str(",\n\t  is the first character of a comment-end sequence");
+    }
+    if entry.end_second {
+        description.push_str(",\n\t  is the second character of a comment-end sequence");
+    }
+    if entry.style_b {
+        description.push_str(" (comment style b)");
+    }
+    if entry.style_c {
+        description.push_str(" (comment style c)");
+    }
+    if entry.nested {
+        description.push_str(" (nestable)");
+    }
+    (description, entry.prefix)
 }
 
 pub(super) fn char_table_public_value(interp: &Interpreter, table_id: u64, value: Value) -> Value {
@@ -360,6 +484,7 @@ fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
                 prefix: code & (1 << 20) != 0,
                 style_b: code & (1 << 21) != 0,
                 nested: code & (1 << 22) != 0,
+                style_c: code & (1 << 23) != 0,
                 ..SyntaxEntry::default()
             })
         }
@@ -444,7 +569,7 @@ fn comment_start_at(
     idx: usize,
 ) -> Option<CommentStart> {
     let ch = *chars.get(idx)?;
-    let entry = syntax_entry_for_char(interp, table_id, ch);
+    let entry = syntax_entry_at_buffer_position(interp, table_id, ch, idx + 1);
     if entry.class == SyntaxClass::CommentStart {
         return Some(CommentStart {
             kind: CommentKind::Single {
@@ -454,7 +579,7 @@ fn comment_start_at(
         });
     }
     let next = *chars.get(idx + 1)?;
-    let next_entry = syntax_entry_for_char(interp, table_id, next);
+    let next_entry = syntax_entry_at_buffer_position(interp, table_id, next, idx + 2);
     if !(entry.start_first && next_entry.start_second) {
         return None;
     }
@@ -505,7 +630,8 @@ fn skip_comment_with_status(
     match start.kind {
         CommentKind::Single { line } => {
             while cursor < chars.len() {
-                let entry = syntax_entry_for_char(interp, table_id, chars[cursor]);
+                let entry =
+                    syntax_entry_at_buffer_position(interp, table_id, chars[cursor], cursor + 1);
                 if entry.class == SyntaxClass::CommentEnd {
                     if line
                         && chars[cursor] == '\n'
@@ -1535,7 +1661,8 @@ pub(super) fn parse_forward(
         if let Some(comment) = state.comment {
             match comment.kind {
                 CommentKind::Single { line } => {
-                    let entry = syntax_entry_for_char(interp, table_id, chars[idx]);
+                    let entry =
+                        syntax_entry_at_buffer_position(interp, table_id, chars[idx], idx + 1);
                     if entry.class == SyntaxClass::CommentEnd {
                         if line
                             && chars[idx] == '\n'

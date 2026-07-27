@@ -66,21 +66,6 @@ impl Interpreter {
         crate::lisp::primitives::insert_char_impl(self, &evaluated, env)
     }
 
-    pub(super) fn sf_call_interactively(
-        &mut self,
-        items: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if items.len() < 2 {
-            return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
-        }
-        let mut evaluated = Vec::with_capacity(items.len().saturating_sub(1));
-        for item in &items[1..] {
-            evaluated.push(self.eval(item, env)?);
-        }
-        crate::lisp::primitives::call_interactively_impl(self, &evaluated, env)
-    }
-
     pub(super) fn parse_params(&self, spec: &Value) -> Result<Vec<String>, LispError> {
         match spec {
             Value::Nil => Ok(Vec::new()),
@@ -243,12 +228,20 @@ impl Interpreter {
                 let frame = env
                     .get_mut(frame_index)
                     .expect("dotimes binding frame remains active during loop");
-                frame[0] = (var_name.clone(), Value::Integer(i));
+                // GNU's dotimes expansion mutates one lexical loop binding.
+                // Replacing the whole tuple cloned/allocated VAR's name on
+                // every iteration, which dominates Unicode-wide loops.
+                frame[0].1 = Value::Integer(i);
                 if let Err(error) = self.sf_progn(&items[2..], env) {
                     outcome = Err(error);
                     break;
                 }
             }
+        }
+        if !dynamic && let Some(frame) = env.get_mut(frame_index) {
+            // The standard expansion increments VAR through COUNT before
+            // evaluating the optional result form.
+            frame[0].1 = Value::Integer(count);
         }
         let result = outcome.and_then(|()| {
             if spec.len() > 2 {
@@ -2456,7 +2449,7 @@ impl Interpreter {
                     .expect("checked above");
                 let getter_do = Value::Lambda(
                     vec!["--emaxx-gv-getter--".into(), "--emaxx-gv-setter--".into()],
-                    vec![Value::Symbol("--emaxx-gv-getter--".into())],
+                    vec![Value::Symbol("--emaxx-gv-getter--".into())].into(),
                     shared_env(env.clone()),
                 );
                 let mut getter_args = vec![getter_do];
@@ -2493,7 +2486,7 @@ impl Interpreter {
                 }
                 let setter = Value::Lambda(
                     vec!["--emaxx-gv-value--".into()],
-                    vec![Value::list(funcall)],
+                    vec![Value::list(funcall)].into(),
                     shared_env(env.clone()),
                 );
                 Ok(Value::list([

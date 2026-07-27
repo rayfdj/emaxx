@@ -9,11 +9,8 @@ use emaxx::lisp;
 /// Find the emacs source tree relative to this project.
 /// Expects it at ../emacs from the emaxx project root.
 fn emacs_test_dir() -> Option<PathBuf> {
-    let candidates = [
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../emacs/test/src"),
-        PathBuf::from("/Users/alpha/CodexProjects/emacs/test/src"),
-    ];
-    candidates.into_iter().find(|p| p.exists())
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../emacs/test/src");
+    path.exists().then_some(path)
 }
 
 /// Run a single .el test file and report results.

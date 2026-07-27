@@ -1,14 +1,14 @@
 use super::*;
 
 impl Interpreter {
-    pub(super) fn builtin_charset_name(name: &str) -> bool {
-        matches!(name, "ascii" | "unicode" | "eight-bit")
-    }
-
     pub fn charset_canonical_name(&self, name: &str) -> Option<String> {
         let mut current = name.to_string();
         for _ in 0..16 {
-            if Self::builtin_charset_name(&current) {
+            if self
+                .charset_ids
+                .iter()
+                .any(|(registered, _)| registered == &current)
+            {
                 return Some(current);
             }
             let (_, target) = self
@@ -26,12 +26,43 @@ impl Interpreter {
     }
 
     pub fn charset_id(&self, name: &str) -> Option<i64> {
-        match self.charset_canonical_name(name)?.as_str() {
-            "ascii" => Some(0),
-            "unicode" => Some(1),
-            "eight-bit" => Some(8),
-            _ => None,
+        let canonical = self.charset_canonical_name(name)?;
+        self.charset_ids
+            .iter()
+            .rev()
+            .find(|(registered, _)| registered == &canonical)
+            .map(|(_, id)| *id)
+    }
+
+    pub fn define_charset(&mut self, name: &str, plist: Value) -> i64 {
+        let id = self
+            .charset_ids
+            .iter()
+            .rev()
+            .find(|(registered, _)| registered == name)
+            .map(|(_, id)| *id)
+            .unwrap_or_else(|| {
+                let id = self
+                    .charset_ids
+                    .iter()
+                    .map(|(_, id)| *id)
+                    .max()
+                    .unwrap_or(-1)
+                    + 1;
+                self.charset_ids.push((name.to_string(), id));
+                id
+            });
+        if let Some((_, existing)) = self
+            .charset_plists
+            .iter_mut()
+            .rev()
+            .find(|(registered, _)| registered == name)
+        {
+            *existing = plist;
+        } else {
+            self.charset_plists.push((name.to_string(), plist));
         }
+        id
     }
 
     pub fn charset_plist_value(&self, name: &str) -> Option<Value> {
@@ -347,9 +378,34 @@ impl Interpreter {
             .rev()
             .find(|coding| coding.name == name)
         {
-            *existing = definition;
+            *existing = definition.clone();
         } else {
-            self.coding_systems.push(definition);
+            self.coding_systems.push(definition.clone());
+        }
+        // GNU's C primitive creates the complete EOL subsidiary family when
+        // :eol-type is omitted.  High-level mule.el relies on the base query
+        // returning this vector; it does not define the three variants itself.
+        if eol_type.is_none() && name != "no-conversion" {
+            for (suffix, variant_eol) in [("unix", 0), ("dos", 1), ("mac", 2)] {
+                let variant_name = format!("{name}-{suffix}");
+                let variant = CodingSystemState {
+                    name: variant_name.clone(),
+                    base: name.to_string(),
+                    kind: definition.kind.clone(),
+                    eol_type: Some(variant_eol),
+                    plist: definition.plist.clone(),
+                };
+                if let Some(existing) = self
+                    .coding_systems
+                    .iter_mut()
+                    .rev()
+                    .find(|coding| coding.name == variant_name)
+                {
+                    *existing = variant;
+                } else {
+                    self.coding_systems.push(variant);
+                }
+            }
         }
         if !self.coding_priority.iter().any(|existing| existing == name) {
             self.coding_priority.push(name.to_string());
@@ -371,6 +427,14 @@ impl Interpreter {
 
     pub fn set_keyboard_coding_system(&mut self, coding: Option<String>) {
         self.keyboard_coding = coding;
+    }
+
+    pub fn input_interrupt_mode(&self) -> bool {
+        self.input_interrupt_mode
+    }
+
+    pub fn set_input_interrupt_mode(&mut self, enabled: bool) {
+        self.input_interrupt_mode = enabled;
     }
 
     pub fn ensure_standard_category_table(&mut self) -> u64 {

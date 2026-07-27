@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::primitives::processes::wait_pumping_processes;
 
 pub(super) fn handles(name: &str) -> bool {
     matches!(
@@ -74,6 +75,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "cl-reduce"
             | "eval"
             | "eval-buffer"
+            | "eval-region"
             | "unload-feature"
             | "mapconcat"
             | "string-join"
@@ -103,6 +105,17 @@ pub(super) fn handles(name: &str) -> bool {
             | "end-kbd-macro"
             | "call-last-kbd-macro"
             | "execute-kbd-macro"
+            | "cancel-kbd-macro-events"
+            | "store-kbd-macro-event"
+            | "clear-this-command-keys"
+            | "event-convert-list"
+            | "internal--track-mouse"
+            | "internal-event-symbol-parse-modifiers"
+            | "internal-handle-focus-in"
+            | "open-dribble-file"
+            | "read-key-sequence-vector"
+            | "set--this-command-keys"
+            | "suspend-emacs"
             | "recursive-edit"
             | "exit-recursive-edit"
             | "abort-recursive-edit"
@@ -129,6 +142,8 @@ pub(super) fn handles(name: &str) -> bool {
             | "read-no-blanks-input"
             | "completing-read"
             | "read-buffer"
+            | "read-command"
+            | "read-variable"
             | "format-prompt"
     )
 }
@@ -148,45 +163,140 @@ fn apply_cl_key(
     }
 }
 
+fn event_vector(events: impl IntoIterator<Item = Value>) -> Value {
+    Value::list(std::iter::once(Value::symbol("vector-literal")).chain(events))
+}
+
+fn event_array(events: &[Value], force_vector: bool) -> Value {
+    if !force_vector {
+        let characters = events
+            .iter()
+            .map(|event| {
+                let Value::Integer(code) = event else {
+                    return None;
+                };
+                u32::try_from(*code).ok().and_then(char::from_u32)
+            })
+            .collect::<Option<String>>();
+        if let Some(characters) = characters {
+            return Value::String(characters);
+        }
+    }
+    event_vector(events.iter().cloned())
+}
+
 fn execute_kbd_macro(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
     need_arg_range("execute-kbd-macro", args, 1, 3)?;
-    let events = if let Some(string) = string_like(&args[0]) {
+    let final_macro = if matches!(&args[0], Value::Symbol(_)) {
+        super::call(
+            interp,
+            "indirect-function",
+            std::slice::from_ref(&args[0]),
+            env,
+        )?
+    } else {
+        args[0].clone()
+    };
+    let events = if let Some(string) = string_like(&final_macro) {
         string
             .text
             .chars()
             .map(|ch| Value::Integer(ch as i64))
             .collect()
+    } else if is_vector_value(&final_macro) {
+        vector_items(&final_macro)?
     } else {
-        vector_items(&args[0])?
+        return Err(LispError::Signal(
+            "Keyboard macros must be strings or vectors".into(),
+        ));
     };
+    let mut repeat = args
+        .get(1)
+        .map(prefix_numeric_value)
+        .transpose()?
+        .unwrap_or(Value::Integer(1))
+        .as_integer()?;
+    let loop_function = args.get(2).cloned().unwrap_or(Value::Nil);
     let previous_macro = interp
         .lookup_var("executing-kbd-macro", env)
         .unwrap_or(Value::Nil);
     let previous_index = interp
         .lookup_var("executing-kbd-macro-index", env)
         .unwrap_or(Value::Nil);
-    interp.set_global_binding("executing-kbd-macro", args[0].clone());
-    interp.set_global_binding("executing-kbd-macro-index", Value::Integer(0));
-    interp
-        .kbd_macro_executions
-        .push(crate::lisp::eval::KbdMacroExecutionState { events, index: 0 });
-    let result = match run_kbd_macro_events(interp, env) {
-        // GNU's outermost command loop catches `top-level`, terminating the
-        // keyboard macro without propagating an error.
-        Err(LispError::Throw(tag, _)) if matches!(&tag, Value::Symbol(symbol) if symbol == "top-level") => {
-            Ok(())
+    let previous_real_this_command = interp
+        .lookup_var("real-this-command", env)
+        .unwrap_or(Value::Nil);
+
+    // Fexecute_kbd_macro starts each iteration in the selected window's
+    // buffer.  This is observable when Lisp deliberately makes another
+    // buffer current without changing the selected window.
+    interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
+
+    let mut result = Ok(());
+    loop {
+        interp.set_variable("executing-kbd-macro", final_macro.clone(), env);
+        interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
+        interp.set_variable("current-prefix-arg", Value::Nil, env);
+
+        if !loop_function.is_nil() {
+            match call_function_value(interp, &loop_function, &[], env) {
+                Ok(value) if value.is_nil() => break,
+                Ok(_) => {}
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
         }
-        other => other,
-    };
-    interp.kbd_macro_executions.pop();
-    interp.set_global_binding("executing-kbd-macro", previous_macro);
-    interp.set_global_binding("executing-kbd-macro-index", previous_index);
+
+        interp
+            .kbd_macro_executions
+            .push(crate::lisp::eval::KbdMacroExecutionState {
+                events: events.clone(),
+                index: 0,
+            });
+        let iteration = match run_kbd_macro_events(interp, env) {
+            // GNU's outermost command loop catches `top-level`, terminating
+            // the keyboard macro without propagating an error.
+            Err(LispError::Throw(tag, _)) if matches!(&tag, Value::Symbol(symbol) if symbol == "top-level") => {
+                Ok(())
+            }
+            other => other,
+        };
+        interp.kbd_macro_executions.pop();
+        if let Err(error) = iteration {
+            result = Err(error);
+            break;
+        }
+
+        if repeat != 0 {
+            repeat = repeat.saturating_sub(1);
+            if repeat == 0 {
+                break;
+            }
+        }
+        let still_executing = interp
+            .lookup_var("executing-kbd-macro", env)
+            .is_some_and(|value| string_like(&value).is_some() || is_vector_value(&value));
+        if !still_executing {
+            break;
+        }
+    }
+
+    interp.set_variable("executing-kbd-macro", previous_macro, env);
+    interp.set_variable("executing-kbd-macro-index", previous_index, env);
+    interp.set_variable("real-this-command", previous_real_this_command, env);
     interp.set_variable("this-command", Value::Nil, env);
-    result.map(|_| Value::Nil)
+    // This is an unwind cleanup in GNU: it runs once for normal completion,
+    // loop-function termination, and command errors.
+    if let Err(hook_error) = run_named_hooks(interp, "kbd-macro-termination-hook", env, None) {
+        result = Err(hook_error);
+    }
+    result.map(|()| Value::Nil)
 }
 
 fn current_kbd_macro_event(interp: &Interpreter, offset: usize) -> Option<Value> {
@@ -199,7 +309,11 @@ fn current_kbd_macro_event(interp: &Interpreter, offset: usize) -> Option<Value>
 // runs `exit-minibuffer' in the real command loop.  INITIAL seeds the
 // contents with point at the end, and the basic editing keys the Edebug
 // tests use to replace a suggested default are honored.
-fn read_minibuffer_text_from_kbd_macro(interp: &mut Interpreter, initial: &str) -> Option<String> {
+fn read_minibuffer_text_from_kbd_macro(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    initial: &str,
+) -> Option<String> {
     interp.kbd_macro_executions.last()?;
     let mut text: Vec<char> = initial.chars().collect();
     let mut cursor = text.len();
@@ -207,7 +321,7 @@ fn read_minibuffer_text_from_kbd_macro(interp: &mut Interpreter, initial: &str) 
         let Ok(code) = event.as_integer() else {
             break;
         };
-        advance_kbd_macro_index(interp, 1);
+        advance_kbd_macro_index(interp, 1, env);
         match code {
             13 | 10 => break,            // RET / C-j: exit-minibuffer
             1 => cursor = 0,             // C-a: move-beginning-of-line
@@ -233,11 +347,162 @@ fn read_minibuffer_text_from_kbd_macro(interp: &mut Interpreter, initial: &str) 
     Some(text.into_iter().collect())
 }
 
-fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize) {
+// `ert-simulate-keys' drives a real GNU minibuffer through
+// `unread-command-events', not through `execute-kbd-macro'.  Resolve command
+// prefixes before treating events as text so global commands such as
+// C-x RET c can open a nested prompt and then return to the outer minibuffer.
+fn read_minibuffer_text_from_unread_events(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    initial: &str,
+) -> Result<Option<String>, LispError> {
+    let unread = crate::lisp::primitives::unread_command_events(interp, env)?;
+    if unread.is_empty() {
+        return Ok(None);
+    }
+    let mut events = VecDeque::from(unread);
+    let mut contents = initial.to_string();
+    let mut pending_keys = Vec::new();
+
+    while let Some(mut event) = events.pop_front() {
+        interp.set_variable(
+            "unread-command-events",
+            Value::list(events.iter().cloned()),
+            env,
+        );
+        let code = event.as_integer().ok();
+        if pending_keys.is_empty() && matches!(code, Some(10 | 13)) {
+            break;
+        }
+
+        let key = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+        let mut event_key = key_sequence_binding_text(&key)?;
+        if matches!(&event, Value::Symbol(_)) && !event_key.starts_with('<') {
+            event_key = format!("<{event_key}>");
+        }
+        if pending_keys.is_empty()
+            && let Value::Symbol(name) = &event
+            && let Some(translated) = function_key_default_translation(name)
+            && key_binding(interp, &event_key, false, false, env)?.is_nil()
+            && !key_sequence_is_prefix(interp, &event_key, env)?
+        {
+            event = Value::Integer(translated);
+            let translated = Value::list([Value::Symbol("vector-literal".into()), event.clone()]);
+            event_key = key_sequence_binding_text(&translated)?;
+        }
+        pending_keys.push(event_key);
+        let binding_key = pending_keys.join(" ");
+
+        if binding_key == "C-u" {
+            let current = interp
+                .lookup_var("current-prefix-arg", env)
+                .unwrap_or(Value::Nil);
+            let next = match prefix_numeric_value(&current).and_then(|value| value.as_integer()) {
+                Ok(value) if !current.is_nil() => value.saturating_mul(4),
+                _ => 4,
+            };
+            interp.set_variable(
+                "current-prefix-arg",
+                Value::list([Value::Integer(next)]),
+                env,
+            );
+            pending_keys.clear();
+            continue;
+        }
+        if pending_keys.len() == 1
+            && let Some(code) = code
+            && (0x30..=0x39).contains(&code)
+        {
+            let current = interp
+                .lookup_var("current-prefix-arg", env)
+                .unwrap_or(Value::Nil);
+            if !current.is_nil() {
+                let digit = code - 0x30;
+                let next = match &current {
+                    Value::Integer(accumulated) if *accumulated < 0 => {
+                        accumulated.saturating_mul(10).saturating_sub(digit)
+                    }
+                    Value::Integer(accumulated) => {
+                        accumulated.saturating_mul(10).saturating_add(digit)
+                    }
+                    Value::Symbol(minus) if minus == "-" => -digit,
+                    _ => digit,
+                };
+                interp.set_variable("current-prefix-arg", Value::Integer(next), env);
+                pending_keys.clear();
+                continue;
+            }
+        }
+
+        let binding = key_binding(interp, &binding_key, false, false, env)?;
+        if is_keymap_value(interp, &binding)
+            || (binding.is_nil() && key_sequence_is_prefix(interp, &binding_key, env)?)
+        {
+            continue;
+        }
+
+        if pending_keys.len() == 1
+            && let Some(text) = keyboard_macro_self_insert_text(&event)
+            && (binding.is_nil()
+                || matches!(&binding, Value::Symbol(command) if command == "self-insert-command"))
+        {
+            let repeat = interp
+                .lookup_var("current-prefix-arg", env)
+                .and_then(|prefix| prefix_numeric_value(&prefix).ok())
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(1)
+                .max(0) as usize;
+            let command = Value::Symbol("self-insert-command".into());
+            set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
+            interp.set_variable("last-command-event", event.clone(), env);
+            interp.set_variable("this-original-command", command.clone(), env);
+            interp.set_variable("this-command", command.clone(), env);
+            safe_run_named_hooks(
+                interp,
+                "pre-command-hook",
+                env,
+                Some(interp.current_buffer_id()),
+            )?;
+            contents.push_str(&text.repeat(repeat));
+            safe_run_named_hooks(
+                interp,
+                "post-command-hook",
+                env,
+                Some(interp.current_buffer_id()),
+            )?;
+            let final_this_command = interp
+                .lookup_var("this-command", env)
+                .filter(|value| !value.is_nil())
+                .unwrap_or_else(|| command.clone());
+            finish_kbd_macro_command(interp, command, final_this_command, env);
+            interp.set_variable("current-prefix-arg", Value::Nil, env);
+            pending_keys.clear();
+            continue;
+        }
+        if !binding.is_nil() {
+            execute_kbd_macro_command(interp, &binding, &event, env)?;
+            events = VecDeque::from(crate::lisp::primitives::unread_command_events(interp, env)?);
+            interp.set_variable("current-prefix-arg", Value::Nil, env);
+            pending_keys.clear();
+            continue;
+        }
+
+        pending_keys.clear();
+    }
+
+    interp.set_variable("unread-command-events", Value::list(events), env);
+    Ok(Some(contents))
+}
+
+fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize, env: &mut Env) {
     if let Some(state) = interp.kbd_macro_executions.last_mut() {
         state.index += count;
         let index = state.index;
-        interp.set_global_binding("executing-kbd-macro-index", Value::Integer(index as i64));
+        interp.set_variable(
+            "executing-kbd-macro-index",
+            Value::Integer(index as i64),
+            env,
+        );
     }
 }
 
@@ -271,7 +536,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         if pending_keys.is_empty()
             && let Value::Symbol(name) = &event
             && let Some(code) = function_key_default_translation(name)
-            && key_binding(interp, &event_key, env)?.is_nil()
+            && key_binding(interp, &event_key, false, false, env)?.is_nil()
             && !key_sequence_is_prefix(interp, &event_key, env)?
         {
             event = Value::Integer(code);
@@ -279,23 +544,46 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
             event_key = key_sequence_binding_text(&translated)?;
         }
         if pending_keys.is_empty() && event_key == "C-s" {
-            advance_kbd_macro_index(interp, 1);
+            advance_kbd_macro_index(interp, 1, env);
             let mut search_text = String::new();
             while let Some(next_event) = current_kbd_macro_event(interp, 0) {
                 if let Some(text) = keyboard_macro_self_insert_text(&next_event) {
                     search_text.push_str(&text);
-                    advance_kbd_macro_index(interp, 1);
+                    advance_kbd_macro_index(interp, 1, env);
                 } else {
                     break;
                 }
             }
             if !search_text.is_empty() {
-                super::call(
+                // GNU Isearch starts from `case-fold-search', then typed
+                // uppercase disables folding when `search-upper-case' is
+                // enabled.  This matters even in our compact keyboard-macro
+                // driver: treating `Ind' as `ind' can select "Windows" and
+                // leave every following motion command in the wrong region.
+                let smart_case = interp.lookup_var("case-fold-search", env) == Some(Value::T)
+                    && interp
+                        .lookup_var("search-upper-case", env)
+                        .is_some_and(|value| value.is_truthy());
+                let case_fold = if smart_case
+                    && !crate::lisp::primitives::regexp::isearch_no_upper_case_p(
+                        &search_text,
+                        false,
+                    ) {
+                    Value::Nil
+                } else {
+                    interp
+                        .lookup_var("case-fold-search", env)
+                        .unwrap_or(Value::Nil)
+                };
+                let restore = interp.bind_special_variable("case-fold-search", case_fold, env)?;
+                let search_result = super::call(
                     interp,
                     "search-forward",
                     &[Value::String(search_text), Value::Nil, Value::T],
                     env,
-                )?;
+                );
+                interp.restore_special_binding(restore, env)?;
+                search_result?;
             }
             finish_kbd_macro_command(
                 interp,
@@ -321,7 +609,7 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
                 env,
             );
             pending_keys.clear();
-            advance_kbd_macro_index(interp, 1);
+            advance_kbd_macro_index(interp, 1, env);
             continue;
         }
         // While a prefix argument is being entered, digits accumulate into it
@@ -347,21 +635,21 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
                 };
                 interp.set_variable("current-prefix-arg", Value::Integer(next), env);
                 pending_keys.clear();
-                advance_kbd_macro_index(interp, 1);
+                advance_kbd_macro_index(interp, 1, env);
                 continue;
             }
         }
-        let binding = key_binding(interp, &binding_key, env)?;
+        let binding = key_binding(interp, &binding_key, false, false, env)?;
         if is_keymap_value(interp, &binding) {
-            advance_kbd_macro_index(interp, 1);
+            advance_kbd_macro_index(interp, 1, env);
             continue;
         }
         if binding.is_nil() && key_sequence_is_prefix(interp, &binding_key, env)? {
-            advance_kbd_macro_index(interp, 1);
+            advance_kbd_macro_index(interp, 1, env);
             continue;
         }
         if !binding.is_nil() {
-            advance_kbd_macro_index(interp, 1);
+            advance_kbd_macro_index(interp, 1, env);
             execute_kbd_macro_command(interp, &binding, &event, env)?;
             interp.set_variable("current-prefix-arg", Value::Nil, env);
             pending_keys.clear();
@@ -370,18 +658,14 @@ fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), L
         if pending_keys.len() == 1
             && let Some(text) = keyboard_macro_self_insert_text(&event)
         {
-            interp.set_variable(
-                "this-single-command-keys",
-                Value::list([Value::Symbol("vector-literal".into()), event.clone()]),
-                env,
-            );
-            advance_kbd_macro_index(interp, 1);
+            set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
+            advance_kbd_macro_index(interp, 1, env);
             execute_kbd_macro_self_insert(interp, &text, env)?;
             pending_keys.clear();
             continue;
         }
         pending_keys.clear();
-        advance_kbd_macro_index(interp, 1);
+        advance_kbd_macro_index(interp, 1, env);
         // The command loop reports an unbound complete sequence and stops
         // the executing macro.  ERC's keymap tests observe this through
         // ert-with-message-capture after removing module bindings.
@@ -454,11 +738,7 @@ fn execute_kbd_macro_command(
     // GNU's command loop separates each command into its own undo group
     // (undo-auto--boundaries); viper's undo tests observe that grouping.
     interp.buffer.push_undo_boundary();
-    interp.set_variable(
-        "this-single-command-keys",
-        Value::list([Value::Symbol("vector-literal".into()), event.clone()]),
-        env,
-    );
+    set_command_key_state(interp, vec![event.clone()], vec![event.clone()], env);
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("last-command-event", event.clone(), env);
     interp.set_variable("this-original-command", original_command, env);
@@ -483,26 +763,28 @@ fn execute_kbd_macro_command(
         call_interactively_impl(interp, std::slice::from_ref(command), env)
     };
     if let Err(error) = command_result {
-        // The command loop hands command errors to `command-error-function'
-        // and terminates the executing keyboard macro instead of letting the
-        // error propagate.
+        // `Fexecute_kbd_macro' enters GNU's `command_loop_2' with
+        // `minibuffer-quit' as its sole condition handler.  A customized
+        // reporter changes how that one condition is displayed; it does not
+        // turn the command loop into a catch-all for ordinary command errors.
+        if matches!(error, LispError::Throw(_, _))
+            || !error_matches_condition(interp, &error, "minibuffer-quit")
+        {
+            return Err(error);
+        }
         let error_function = interp
             .lookup_var("command-error-function", env)
             .unwrap_or(Value::Nil);
-        let customized = !error_function.is_nil()
-            && !matches!(&error_function, Value::Symbol(name) if name == "command-error-default-function");
-        if matches!(error, LispError::Throw(_, _)) || !customized {
-            return Err(error);
-        }
         let data = crate::lisp::eval::error_condition_value(&error);
         interp.set_global_binding("executing-kbd-macro", Value::Nil);
-        let cef_result = interp.call_function_value(
-            error_function,
-            None,
-            &[data, Value::String(String::new()), Value::Nil],
-            env,
-        );
-        cef_result?;
+        if !error_function.is_nil() {
+            interp.call_function_value(
+                error_function,
+                None,
+                &[data, Value::String(String::new()), Value::Nil],
+                env,
+            )?;
+        }
     }
     safe_run_named_hooks(
         interp,
@@ -519,6 +801,21 @@ fn execute_kbd_macro_command(
         .unwrap_or_else(|| command.clone());
     finish_kbd_macro_command(interp, command.clone(), final_this_command, env);
     Ok(())
+}
+
+fn error_matches_condition(interp: &Interpreter, error: &LispError, expected: &str) -> bool {
+    let condition = error.condition_type();
+    condition == expected
+        || interp
+            .get_symbol_property(&condition, "error-conditions")
+            .and_then(|conditions| conditions.to_vec().ok())
+            .is_some_and(|conditions| {
+                conditions.iter().any(|condition| {
+                    condition
+                        .as_symbol()
+                        .is_ok_and(|condition| condition == expected)
+                })
+            })
 }
 
 fn execute_kbd_macro_self_insert(
@@ -561,6 +858,12 @@ fn finish_kbd_macro_command(
     this_command: Value,
     env: &mut Env,
 ) {
+    if interp
+        .lookup_var("defining-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
+    }
     interp.set_variable("real-last-command", original_command, env);
     interp.set_variable("last-command", this_command, env);
     if interp.lookup_var("last-repeatable-command", env).is_some() {
@@ -696,10 +999,26 @@ pub(super) fn call(
             Ok(args[0].clone())
         }
         "list" | "cl-values" => Ok(Value::list(args.iter().cloned())),
-        "nconc" => nconc_values(args),
+        "nconc" => {
+            let projected = args
+                .iter()
+                .map(|value| {
+                    keymap_list_items(interp, value)
+                        .map(|items| items.map(Value::list).unwrap_or_else(|| value.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            nconc_values(&projected)
+        }
         "append" => {
             let mut items: Vec<Value> = Vec::new();
             for (i, a) in args.iter().enumerate() {
+                let projected;
+                let a = if let Some(keymap_items) = keymap_list_items(interp, a)? {
+                    projected = Value::list(keymap_items);
+                    &projected
+                } else {
+                    a
+                };
                 let is_last = i == args.len() - 1;
                 if is_last {
                     // `append` copies all preceding args and reuses the
@@ -770,10 +1089,14 @@ pub(super) fn call(
             }
             let n = args
                 .get(1)
+                .filter(|value| !value.is_nil())
                 .map(Value::as_integer)
                 .transpose()?
-                .unwrap_or(1)
-                .max(0) as usize;
+                .unwrap_or(1);
+            if n < 0 {
+                return Ok(Value::Nil);
+            }
+            let n = n as usize;
             let mut tails = Vec::new();
             let mut current = args[0].clone();
             loop {
@@ -807,13 +1130,29 @@ pub(super) fn call(
             if args.is_empty() || args.len() > 2 {
                 return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
             }
-            let n = args.get(1).map(Value::as_integer).transpose()?.unwrap_or(1);
+            let n = args
+                .get(1)
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
             if n <= 0 {
                 return Ok(args[0].clone());
             }
             let items = list_sequence_items(interp, &args[0])?;
             let keep = items.len().saturating_sub(n as usize);
-            Ok(Value::list(items.into_iter().take(keep)))
+            if name == "butlast" {
+                return Ok(Value::list(items.into_iter().take(keep)));
+            }
+            if keep == 0 {
+                return Ok(Value::Nil);
+            }
+            let mut tail = args[0].clone();
+            for _ in 1..keep {
+                tail = tail.cdr()?;
+            }
+            tail.set_cdr(Value::Nil)?;
+            Ok(args[0].clone())
         }
         "length" => {
             need_args(name, args, 1)?;
@@ -1573,6 +1912,7 @@ pub(super) fn call(
         }
         "eval" => eval_impl(interp, args, env),
         "eval-buffer" => eval_buffer_impl(interp, args, env),
+        "eval-region" => eval_region_impl(interp, args, env),
         "unload-feature" => unload_feature_impl(interp, args, env),
         "mapconcat" => {
             if args.len() < 2 || args.len() > 3 {
@@ -1891,7 +2231,7 @@ pub(super) fn call(
             body.push(Value::Symbol(rest_name.clone()));
             Ok(Value::Lambda(
                 vec!["&rest".into(), rest_name],
-                vec![Value::list(body)],
+                vec![Value::list(body)].into(),
                 shared_env(env.clone()),
             ))
         }
@@ -1952,16 +2292,73 @@ pub(super) fn call(
             Value::Nil,
         ]))),
         "start-kbd-macro" => {
-            need_arg_range(name, args, 0, 2)?;
-            // Batch-mode compatibility shim: enough for kmacro.el setup/advice
-            // paths, but it does not record or replay keyboard events.
+            need_arg_range(name, args, 1, 2)?;
+            if interp
+                .lookup_var("defining-kbd-macro", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                return Err(LispError::Signal("Already defining kbd macro".into()));
+            }
+            if args[0].is_truthy() {
+                let previous = interp
+                    .lookup_var("last-kbd-macro", env)
+                    .unwrap_or(Value::Nil);
+                interp.kbd_macro_definition = if let Some(string) = string_like(&previous) {
+                    string
+                        .text
+                        .chars()
+                        .map(|character| Value::Integer(character as i64))
+                        .collect()
+                } else {
+                    vector_items(&previous)?
+                };
+                interp.kbd_macro_committed_len = interp.kbd_macro_definition.len();
+                if !args.get(1).is_some_and(Value::is_truthy) {
+                    execute_kbd_macro(interp, &[previous], env)?;
+                }
+            } else {
+                interp.kbd_macro_definition.clear();
+                interp.kbd_macro_committed_len = 0;
+            }
             interp.set_variable("defining-kbd-macro", Value::T, env);
             Ok(Value::Nil)
         }
         "end-kbd-macro" => {
             need_arg_range(name, args, 0, 2)?;
-            // See start-kbd-macro above.
+            if interp
+                .lookup_var("defining-kbd-macro", env)
+                .is_none_or(|value| value.is_nil())
+            {
+                return Err(LispError::Signal("Not defining kbd macro".into()));
+            }
+            let repeat = args
+                .first()
+                .filter(|value| !value.is_nil())
+                .map(Value::as_integer)
+                .transpose()?
+                .unwrap_or(1);
             interp.set_variable("defining-kbd-macro", Value::Nil, env);
+            interp
+                .kbd_macro_definition
+                .truncate(interp.kbd_macro_committed_len);
+            let last_macro = Value::list(
+                std::iter::once(Value::symbol("vector-literal"))
+                    .chain(interp.kbd_macro_definition.iter().cloned()),
+            );
+            interp.set_variable("last-kbd-macro", last_macro.clone(), env);
+            if repeat == 0 {
+                let mut execute_args = vec![last_macro, Value::Integer(0)];
+                if let Some(loop_function) = args.get(1) {
+                    execute_args.push(loop_function.clone());
+                }
+                execute_kbd_macro(interp, &execute_args, env)?;
+            } else if repeat > 1 {
+                let mut execute_args = vec![last_macro, Value::Integer(repeat.saturating_sub(1))];
+                if let Some(loop_function) = args.get(1) {
+                    execute_args.push(loop_function.clone());
+                }
+                execute_kbd_macro(interp, &execute_args, env)?;
+            }
             Ok(Value::Nil)
         }
         "call-last-kbd-macro" => {
@@ -1969,13 +2366,135 @@ pub(super) fn call(
             let macro_value = interp
                 .lookup_var("last-kbd-macro", env)
                 .unwrap_or(Value::Nil);
-            if macro_value.is_nil() {
-                Ok(Value::Nil)
-            } else {
-                execute_kbd_macro(interp, &[macro_value], env)
+            interp.set_variable(
+                "this-command",
+                interp.lookup_var("last-command", env).unwrap_or(Value::Nil),
+                env,
+            );
+            interp.set_variable("real-this-command", macro_value.clone(), env);
+            if interp
+                .lookup_var("defining-kbd-macro", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                return Err(LispError::Signal(
+                    "Can't execute anonymous macro while defining one".into(),
+                ));
             }
+            if macro_value.is_nil() {
+                return Err(LispError::Signal("No kbd macro has been defined".into()));
+            }
+            let mut execute_args = vec![macro_value];
+            execute_args.extend_from_slice(args);
+            execute_kbd_macro(interp, &execute_args, env)?;
+            interp.set_variable(
+                "this-command",
+                interp.lookup_var("last-command", env).unwrap_or(Value::Nil),
+                env,
+            );
+            Ok(Value::Nil)
         }
         "execute-kbd-macro" => execute_kbd_macro(interp, args, env),
+        "cancel-kbd-macro-events" => {
+            need_args(name, args, 0)?;
+            interp
+                .kbd_macro_definition
+                .truncate(interp.kbd_macro_committed_len);
+            Ok(Value::Nil)
+        }
+        "store-kbd-macro-event" => {
+            need_args(name, args, 1)?;
+            if interp
+                .lookup_var("defining-kbd-macro", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                interp.kbd_macro_definition.push(args[0].clone());
+            }
+            Ok(Value::Nil)
+        }
+        "event-convert-list" => {
+            need_args(name, args, 1)?;
+            event_convert_list_value(interp, &args[0])
+        }
+        "internal-event-symbol-parse-modifiers" => {
+            need_args(name, args, 1)?;
+            parse_event_symbol_modifiers(interp, &args[0])
+        }
+        "internal--track-mouse" => {
+            need_args(name, args, 1)?;
+            let restore = interp.bind_special_variable("track-mouse", Value::T, env)?;
+            let result = call_function_value(interp, &args[0], &[], env);
+            interp.restore_special_binding(restore, env)?;
+            result
+        }
+        "internal-handle-focus-in" => {
+            need_args(name, args, 1)?;
+            let event = args[0].to_vec().unwrap_or_default();
+            let valid = matches!(
+                event.as_slice(),
+                [Value::Symbol(kind), Value::Symbol(frame), ..]
+                    if kind == "focus-in" && frame == "frame"
+            );
+            if !valid {
+                return Err(LispError::Signal("invalid focus-in event".into()));
+            }
+            interp.keyboard_input.internal_last_event_frame = event.get(1).cloned();
+            Ok(Value::Nil)
+        }
+        "open-dribble-file" => {
+            need_args(name, args, 1)?;
+            // GNU closes the old stream before it attempts to open the new
+            // one, so a failed replacement must not leave the old file live.
+            interp.keyboard_input.dribble_file = None;
+            if args[0].is_nil() {
+                return Ok(Value::Nil);
+            }
+            let expanded = super::call(
+                interp,
+                "expand-file-name",
+                std::slice::from_ref(&args[0]),
+                env,
+            )?;
+            let path = PathBuf::from(
+                string_like(&expanded)
+                    .ok_or_else(|| LispError::TypeError("stringp".into(), args[0].type_name()))?
+                    .text,
+            );
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|error| LispError::Signal(error.to_string()))?;
+            }
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options
+                .open(&path)
+                .map_err(|error| LispError::Signal(error.to_string()))?;
+            interp.keyboard_input.dribble_file = Some(path);
+            Ok(Value::Nil)
+        }
+        "suspend-emacs" => {
+            need_arg_range(name, args, 0, 1)?;
+            if let Some(stuff_string) = args.first()
+                && !stuff_string.is_nil()
+                && string_like(stuff_string).is_none()
+            {
+                return Err(LispError::TypeError(
+                    "stringp".into(),
+                    stuff_string.type_name(),
+                ));
+            }
+            run_named_hooks(interp, "suspend-hook", env, None)?;
+            // Emaxx currently exposes a headless batch terminal.  There is no
+            // foreground terminal process group to stop and later resume;
+            // the observable native contract in that environment is the
+            // paired hook transition.
+            run_named_hooks(interp, "suspend-resume-hook", env, None)?;
+            Ok(Value::Nil)
+        }
         "recursive-edit" => {
             need_args(name, args, 0)?;
             recursive_edit(interp, env)
@@ -2021,20 +2540,74 @@ pub(super) fn call(
             }
             Ok(Value::Nil)
         }
-        "this-command-keys"
-        | "this-command-keys-vector"
-        | "this-single-command-keys"
-        | "this-single-command-raw-keys" => {
+        "this-command-keys" => {
             need_args(name, args, 0)?;
-            Ok(interp
-                .lookup_var("this-single-command-keys", env)
-                .unwrap_or_else(|| Value::list([Value::Symbol("vector-literal".into())])))
+            Ok(event_array(&interp.keyboard_input.command_keys, false))
+        }
+        "this-command-keys-vector" => {
+            need_args(name, args, 0)?;
+            Ok(event_array(&interp.keyboard_input.command_keys, true))
+        }
+        "this-single-command-keys" => {
+            need_args(name, args, 0)?;
+            let start = interp
+                .keyboard_input
+                .single_command_start
+                .min(interp.keyboard_input.command_keys.len());
+            Ok(event_array(
+                &interp.keyboard_input.command_keys[start..],
+                true,
+            ))
+        }
+        "this-single-command-raw-keys" => {
+            need_args(name, args, 0)?;
+            Ok(event_array(&interp.keyboard_input.raw_keys, true))
+        }
+        "set--this-command-keys" => {
+            need_args(name, args, 1)?;
+            let string = string_like(&args[0])
+                .ok_or_else(|| LispError::TypeError("stringp".into(), args[0].type_name()))?;
+            let keys = string
+                .text
+                .chars()
+                .map(|character| {
+                    if character as u32 == 248 {
+                        Value::Integer(i64::from(b'x') | KEY_DESCRIPTION_META_BIT)
+                    } else {
+                        Value::Integer(character as i64)
+                    }
+                })
+                .collect::<Vec<_>>();
+            set_command_key_state(interp, keys, Vec::new(), env);
+            Ok(Value::Nil)
+        }
+        "clear-this-command-keys" => {
+            need_arg_range(name, args, 0, 1)?;
+            interp.keyboard_input.command_keys.clear();
+            interp.keyboard_input.single_command_start = 0;
+            interp.set_variable(
+                "this-single-command-keys",
+                event_vector(std::iter::empty()),
+                env,
+            );
+            if args.first().is_none_or(Value::is_nil) {
+                interp.keyboard_input.recent_keys.clear();
+            }
+            Ok(Value::Nil)
         }
         "recent-keys" => {
-            // (recent-keys &optional INCLUDE-CMDS): batch sessions record no
-            // key events, matching GNU's empty vector under --batch.
             need_arg_range(name, args, 0, 1)?;
-            Ok(Value::list([Value::Symbol("vector-literal".into())]))
+            let include_commands = args.first().is_some_and(Value::is_truthy);
+            Ok(event_vector(
+                interp
+                    .keyboard_input
+                    .recent_keys
+                    .iter()
+                    .filter(|event| {
+                        include_commands || event.cons_values().is_none_or(|(car, _)| !car.is_nil())
+                    })
+                    .cloned(),
+            ))
         }
         "define-keymap" => Ok(keymap_placeholder(None)),
         "define-abbrev-table" => {
@@ -2093,19 +2666,23 @@ pub(super) fn call(
                 return Ok(event);
             }
         }
-        "read-key-sequence" => {
-            need_arg_range(name, args, 0, 4)?;
+        "read-key-sequence" | "read-key-sequence-vector" => {
+            need_arg_range(name, args, 1, 6)?;
             ensure_interaction_allowed(interp, env)?;
-            Ok(Value::list([
-                Value::Symbol("vector".into()),
-                read_key_sequence_event(interp, env)?,
-            ]))
+            let event = read_key_sequence_event(interp, env)?;
+            let events = vec![event];
+            set_command_key_state(interp, events.clone(), events.clone(), env);
+            Ok(event_array(&events, name == "read-key-sequence-vector"))
         }
         "read-event" | "read-char" | "read-char-exclusive" => {
             let read_event = name == "read-event";
             let timed_poll = args.len() >= 3 && args[2].is_truthy();
             if timed_poll {
-                interp.drive_threads(env, true)?;
+                let timeout = wait_duration(std::slice::from_ref(&args[2]))?;
+                let previous_wait = interp.set_waiting_for_user_input(true);
+                let wait_result = wait_pumping_processes(interp, env, Some(timeout), false, None);
+                interp.set_waiting_for_user_input(previous_wait);
+                wait_result?;
                 if !interaction_allowed(interp, env) {
                     return Ok(Value::Nil);
                 }
@@ -2183,31 +2760,8 @@ pub(super) fn call(
                 .and_then(string_like)
                 .map(|string| string.text)
                 .unwrap_or_default();
-            // ert-simulate-keys feeds input through `unread-command-events';
-            // consume characters up to RET like the GNU command loop.
-            let unread = crate::lisp::primitives::unread_command_events(interp, env)?;
-            let unread_contents = if unread.is_empty() {
-                None
-            } else {
-                let mut contents = initial.clone();
-                let mut consumed = 0;
-                for event in &unread {
-                    consumed += 1;
-                    match crate::lisp::primitives::unread_event_char(event) {
-                        Some('\r') | Some('\n') => break,
-                        Some(ch) => contents.push(ch),
-                        None => break,
-                    }
-                }
-                interp.set_variable(
-                    "unread-command-events",
-                    Value::list(unread[consumed..].to_vec()),
-                    env,
-                );
-                Some(contents)
-            };
-            if let Some(contents) =
-                unread_contents.or_else(|| read_minibuffer_text_from_kbd_macro(interp, &initial))
+            if let Some(contents) = read_minibuffer_text_from_unread_events(interp, env, &initial)?
+                .or_else(|| read_minibuffer_text_from_kbd_macro(interp, env, &initial))
             {
                 if name == "read-from-minibuffer" && args.get(3).is_some_and(Value::is_truthy) {
                     let parsed =
@@ -2260,8 +2814,54 @@ pub(super) fn call(
                 env,
             )
         }
+        "read-command" | "read-variable" => {
+            need_arg_range(name, args, 1, 2)?;
+            let default = args.get(1).cloned().unwrap_or(Value::Nil);
+            let default = match default {
+                Value::Symbol(symbol) => {
+                    Value::String(crate::lisp::types::visible_symbol_name(&symbol).to_string())
+                }
+                other => other,
+            };
+            let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+            let predicate = if name == "read-command" {
+                Value::Symbol("commandp".into())
+            } else {
+                Value::Symbol("custom-variable-p".into())
+            };
+            let history = if name == "read-variable" {
+                Value::Symbol("custom-variable-history".into())
+            } else {
+                Value::Nil
+            };
+            let value = completing_read(
+                interp,
+                &[
+                    args[0].clone(),
+                    obarray.clone(),
+                    predicate,
+                    Value::T,
+                    Value::Nil,
+                    history,
+                    default,
+                    Value::Nil,
+                ],
+                env,
+            )?;
+            if value.is_nil() {
+                Ok(Value::Nil)
+            } else {
+                let symbol = string_text(&value)?;
+                intern_in_obarray(interp, &obarray, &symbol)
+            }
+        }
         "read-file-name" => {
             need_arg_range(name, args, 1, 6)?;
+            if let Some(function) = interp.lookup_var("read-file-name-function", env)
+                && function.is_truthy()
+            {
+                return interp.call_function_value(function, None, args, env);
+            }
             let prompt = args[0].clone();
             let dir = args.get(1).cloned().unwrap_or(Value::Nil);
             let default = args.get(2).cloned().unwrap_or(Value::Nil);
