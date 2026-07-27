@@ -24,6 +24,7 @@ mod coding;
 mod control_forms;
 mod core;
 mod definitions;
+mod faces;
 mod generated_autoloads;
 mod loops;
 mod macros;
@@ -1147,6 +1148,28 @@ pub(crate) struct CompositionState {
     pub(crate) width: i64,
 }
 
+pub(crate) const LFACE_VECTOR_SIZE: usize = 20;
+pub(crate) const LFACE_INHERIT_INDEX: usize = 16;
+
+#[derive(Clone, Debug)]
+pub(crate) struct LispFaceState {
+    pub(crate) name: String,
+    pub(crate) id: Option<i64>,
+    pub(crate) global: Option<Value>,
+    pub(crate) selected_frame: Option<Value>,
+}
+
+fn empty_lisp_face_vector() -> Value {
+    Value::list(
+        std::iter::once(Value::symbol("vector-literal"))
+            .chain(std::iter::once(Value::symbol("face")))
+            .chain(std::iter::repeat_n(
+                Value::symbol("unspecified"),
+                LFACE_VECTOR_SIZE - 1,
+            )),
+    )
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -1429,7 +1452,12 @@ pub struct Interpreter {
     lexical_closure_registrations: usize,
     pub lossage_size: i64,
     interactive_call_depth: usize,
-    face_inheritance: Vec<(String, Option<String>)>,
+    pub(crate) lisp_face_states: Vec<LispFaceState>,
+    pub(crate) next_lisp_face_id: i64,
+    pub(crate) font_selection_order: [String; 4],
+    pub(crate) alternative_font_family_alist: Value,
+    pub(crate) alternative_font_registry_alist: Value,
+    pub(crate) tty_suppress_bold_inverse_default_colors: bool,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
     /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
@@ -2101,7 +2129,22 @@ impl Interpreter {
             lexical_closure_registrations: 0,
             lossage_size: 300,
             interactive_call_depth: 0,
-            face_inheritance: Vec::new(),
+            lisp_face_states: vec![LispFaceState {
+                name: "default".into(),
+                id: Some(0),
+                global: Some(empty_lisp_face_vector()),
+                selected_frame: Some(empty_lisp_face_vector()),
+            }],
+            next_lisp_face_id: 1,
+            font_selection_order: [
+                ":width".into(),
+                ":height".into(),
+                ":weight".into(),
+                ":slant".into(),
+            ],
+            alternative_font_family_alist: Value::Nil,
+            alternative_font_registry_alist: Value::Nil,
+            tty_suppress_bold_inverse_default_colors: false,
             fringe_bitmap_states,
             composition_states: Vec::new(),
             builtin_doc_offsets: HashMap::new(),
