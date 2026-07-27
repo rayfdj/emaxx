@@ -2,6 +2,7 @@
 
 use crate::lisp::types::Value;
 use ropey::Rope;
+use std::rc::Rc;
 use std::time::SystemTime;
 
 /// Modification counter. Bumped on every edit, used to detect
@@ -1547,6 +1548,47 @@ fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
     })
 }
 
+pub(crate) fn text_property_plists_eq(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(name, value)| {
+            right
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .is_some_and(|(_, candidate)| text_property_values_eq(value, candidate))
+        })
+}
+
+pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Nil, Value::Nil) | (Value::T, Value::T) => true,
+        (Value::Integer(left), Value::Integer(right)) => left == right,
+        (Value::BigInteger(left), Value::BigInteger(right)) => left == right,
+        (Value::Float(left), Value::Float(right)) => left == right,
+        (Value::Symbol(left), Value::Symbol(right))
+        | (Value::BuiltinFunc(left), Value::BuiltinFunc(right)) => left == right,
+        (Value::StringObject(left), Value::StringObject(right)) => Rc::ptr_eq(left, right),
+        (Value::Cons(left_car, left_cdr), Value::Cons(right_car, right_cdr)) => {
+            Rc::ptr_eq(left_car, right_car) && Rc::ptr_eq(left_cdr, right_cdr)
+        }
+        (
+            Value::Lambda(left_params, left_body, left_env),
+            Value::Lambda(right_params, right_body, right_env),
+        ) => {
+            left_params == right_params
+                && left_body == right_body
+                && Rc::ptr_eq(left_env, right_env)
+        }
+        (Value::Buffer(left, _), Value::Buffer(right, _))
+        | (Value::Marker(left), Value::Marker(right))
+        | (Value::Overlay(left), Value::Overlay(right))
+        | (Value::CharTable(left), Value::CharTable(right))
+        | (Value::Record(left), Value::Record(right))
+        | (Value::Finalizer(left), Value::Finalizer(right)) => left == right,
+        (Value::Unbound, Value::Unbound) => true,
+        _ => false,
+    }
+}
+
 fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpan> {
     spans.retain(|span| span.start < span.end && !span.props.is_empty());
     spans.sort_by(|left, right| left.start.cmp(&right.start).then(left.end.cmp(&right.end)));
@@ -1554,7 +1596,7 @@ fn merge_adjacent_spans(mut spans: Vec<TextPropertySpan>) -> Vec<TextPropertySpa
     for span in spans {
         if let Some(last) = merged.last_mut()
             && last.end == span.start
-            && last.props == span.props
+            && text_property_plists_eq(&last.props, &span.props)
         {
             last.end = span.end;
         } else {

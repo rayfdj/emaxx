@@ -3,6 +3,7 @@ use super::*;
 mod buffer_edit;
 mod buffer_meta;
 mod collections;
+mod composition;
 mod display;
 mod files_process;
 mod lists;
@@ -38,6 +39,7 @@ enum DispatchModule {
     Numeric,
     Predicates,
     Lists,
+    Composition,
     Strings,
     BufferEdit,
     BufferMeta,
@@ -69,6 +71,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::Predicates
     } else if lists::handles(name) {
         DispatchModule::Lists
+    } else if composition::handles(name) {
+        DispatchModule::Composition
     } else if strings::handles(name) {
         DispatchModule::Strings
     } else if buffer_edit::handles(name) {
@@ -480,6 +484,11 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "ngettext"
             | "format-spec"
             | "char-to-string"
+            | "clear-composition-cache"
+            | "compose-region-internal"
+            | "compose-string-internal"
+            | "composition-get-gstring"
+            | "composition-sort-rules"
             | "find-composition-internal"
             | "ucs-normalize-NFC-string"
             | "ucs-normalize-NFD-string"
@@ -1831,6 +1840,7 @@ fn is_builtin_uncached(name: &str) -> bool {
     ) || numeric::handles(name)
         || predicates::handles(name)
         || lists::handles(name)
+        || composition::handles(name)
         || strings::handles(name)
         || buffer_edit::handles(name)
         || buffer_meta::handles(name)
@@ -1906,6 +1916,7 @@ pub fn call(
         DispatchModule::Numeric => numeric::call(interp, name, args, env),
         DispatchModule::Predicates => predicates::call(interp, name, args, env),
         DispatchModule::Lists => lists::call(interp, name, args, env),
+        DispatchModule::Composition => composition::call(interp, name, args, env),
         DispatchModule::Strings => strings::call(interp, name, args, env),
         DispatchModule::BufferEdit => buffer_edit::call(interp, name, args, env),
         DispatchModule::BufferMeta => buffer_meta::call(interp, name, args, env),

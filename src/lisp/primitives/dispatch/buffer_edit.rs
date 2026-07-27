@@ -3033,7 +3033,7 @@ pub(super) fn call(
                 for cursor in pos.saturating_add(1)..max_pos {
                     let current = string_property_at_with_category(interp, object, cursor, &prop)
                         .unwrap_or(Value::Nil);
-                    if current != initial {
+                    if !crate::buffer::text_property_values_eq(&current, &initial) {
                         return Ok(Value::Integer(cursor as i64));
                     }
                 }
@@ -3070,7 +3070,7 @@ pub(super) fn call(
                     })?;
                     buffer.text_property_at(cursor, &prop).unwrap_or(Value::Nil)
                 };
-                if current != initial {
+                if !crate::buffer::text_property_values_eq(&current, &initial) {
                     return Ok(Value::Integer(cursor as i64));
                 }
             }
@@ -3148,7 +3148,7 @@ pub(super) fn call(
                 for cursor in pos.saturating_add(1)..max_pos {
                     let current = string_property_at_with_category(interp, object, cursor, &prop)
                         .unwrap_or(Value::Nil);
-                    if current != initial {
+                    if !crate::buffer::text_property_values_eq(&current, &initial) {
                         return Ok(Value::Integer(cursor as i64));
                     }
                 }
@@ -3170,7 +3170,7 @@ pub(super) fn call(
             let initial = buffer_char_property_at(interp, buffer, pos, &prop);
             for cursor in pos.saturating_add(1)..max_pos {
                 let current = buffer_char_property_at(interp, buffer, cursor, &prop);
-                if current != initial {
+                if !crate::buffer::text_property_values_eq(&current, &initial) {
                     return Ok(Value::Integer(cursor as i64));
                 }
             }
@@ -3208,7 +3208,7 @@ pub(super) fn call(
             let mut cursor = pos;
             while cursor > min_pos + 1 {
                 let current = buffer_char_property_at(interp, buffer, cursor - 2, &prop);
-                if current != initial {
+                if !crate::buffer::text_property_values_eq(&current, &initial) {
                     return Ok(Value::Integer((cursor - 1) as i64));
                 }
                 cursor -= 1;
@@ -3240,7 +3240,7 @@ pub(super) fn call(
                         .checked_sub(1)
                         .and_then(|index| string_property_at(object, index, &prop))
                         .unwrap_or(Value::Nil);
-                    if previous != initial {
+                    if !crate::buffer::text_property_values_eq(&previous, &initial) {
                         return Ok(Value::Integer(cursor as i64));
                     }
                 }
@@ -3272,7 +3272,7 @@ pub(super) fn call(
                     .checked_sub(1)
                     .and_then(|index| buffer.text_property_at(index, &prop))
                     .unwrap_or(Value::Nil);
-                if previous != initial {
+                if !crate::buffer::text_property_values_eq(&previous, &initial) {
                     return Ok(Value::Integer(cursor as i64));
                 }
             }

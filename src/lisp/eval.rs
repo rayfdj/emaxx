@@ -1140,6 +1140,13 @@ pub(crate) struct FringeBitmapState {
     pub(crate) face: Value,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CompositionState {
+    pub(crate) components: Value,
+    pub(crate) relative: bool,
+    pub(crate) width: i64,
+}
+
 /// The interpreter state: holds the global environment, the current buffer,
 /// and ERT test results.
 pub struct Interpreter {
@@ -1424,6 +1431,7 @@ pub struct Interpreter {
     interactive_call_depth: usize,
     face_inheritance: Vec<(String, Option<String>)>,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
+    pub(crate) composition_states: Vec<CompositionState>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
     undo_sequence: Option<UndoSequenceState>,
@@ -2092,6 +2100,7 @@ impl Interpreter {
             interactive_call_depth: 0,
             face_inheritance: Vec::new(),
             fringe_bitmap_states,
+            composition_states: Vec::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
             undo_sequence: None,
