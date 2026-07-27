@@ -338,6 +338,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "forward-page"
             | "forward-line"
             | "line-move"
+            | "compute-motion"
             | "next-line"
             | "previous-line"
             | "move-end-of-line"
@@ -438,6 +439,7 @@ pub(super) fn handles(name: &str) -> bool {
             | "move-to-column"
             | "indent-rigidly"
             | "line-number-at-pos"
+            | "line-number-display-width"
             | "line-beginning-position"
             | "pos-bol"
             | "count-lines"
@@ -1148,6 +1150,10 @@ pub(super) fn call(
             } else {
                 Err(LispError::Signal("Beginning of buffer".into()))
             }
+        }
+        "compute-motion" => {
+            need_args(name, args, 7)?;
+            compute_motion_value(interp, env, args)
         }
         "vertical-motion" => {
             need_arg_range(name, args, 1, 3)?;
@@ -2636,6 +2642,10 @@ pub(super) fn call(
             }
             Ok(Value::Integer(interp.buffer.line_number_at_pos(pos) as i64))
         }
+        "line-number-display-width" => {
+            need_arg_range(name, args, 0, 1)?;
+            line_number_display_width_value(interp, env, args.first())
+        }
         "line-beginning-position" | "pos-bol" => {
             // GNU treats an explicit nil N as 1 (lisp-mnt passes
             // (if after 2) straight through).
@@ -4019,6 +4029,362 @@ fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
         eol += 1;
     }
     (bol, eol)
+}
+
+fn live_motion_window(interp: &Interpreter, value: &Value) -> Result<Value, LispError> {
+    let window = if value.is_nil() {
+        interp.selected_window_value()
+    } else {
+        value.clone()
+    };
+    let Some(window_id) = window_record_id_from_value(interp, &window) else {
+        return Err(wrong_type_argument("window-live-p", window));
+    };
+    let kind = interp
+        .find_record(window_id)
+        .and_then(|record| record.slots.get(WINDOW_KIND_SLOT))
+        .cloned()
+        .unwrap_or(Value::Nil);
+    if matches!(
+        kind,
+        Value::Symbol(ref kind)
+            if matches!(
+                kind.as_str(),
+                INTERNAL_HORIZONTAL_WINDOW_KIND
+                    | INTERNAL_VERTICAL_WINDOW_KIND
+                    | DELETED_WINDOW_KIND
+            )
+    ) || window_buffer_id(interp, &window).is_none()
+    {
+        return Err(wrong_type_argument("window-live-p", window));
+    }
+    Ok(window)
+}
+
+fn motion_pair(value: &Value) -> Result<(i64, i64), LispError> {
+    let (horizontal, vertical) = value
+        .cons_values()
+        .ok_or_else(|| wrong_type_argument("consp", value.clone()))?;
+    Ok((horizontal.as_integer()?, vertical.as_integer()?))
+}
+
+fn checked_motion_position(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
+    let position = position_from_value(interp, value)?;
+    if position < interp.buffer.point_min() || position > interp.buffer.point_max() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            value.clone(),
+            Value::Integer(interp.buffer.point_min() as i64),
+            Value::Integer(interp.buffer.point_max() as i64),
+        ])));
+    }
+    Ok(position)
+}
+
+fn display_motion_width(
+    interp: &Interpreter,
+    env: &Env,
+    position: usize,
+    character: char,
+    hpos: i64,
+    hscroll: i64,
+    tab_offset: i64,
+) -> i64 {
+    if char_is_invisible(interp, position, env) {
+        return 0;
+    }
+    if let Some(display) = interp
+        .buffer
+        .text_property_at(position, "display")
+        .filter(|value| !value.is_nil())
+    {
+        let begins_run = position == interp.buffer.point_min()
+            || interp.buffer.text_property_at(position - 1, "display") != Some(display.clone());
+        if !begins_run {
+            return 0;
+        }
+        return string_like(&display)
+            .map(|string| {
+                string
+                    .text
+                    .chars()
+                    .map(|character| character.width().unwrap_or(0) as i64)
+                    .sum()
+            })
+            .unwrap_or(0);
+    }
+    if character == '\t' {
+        let tab_width = interp
+            .lookup_var("tab-width", env)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(8)
+            .max(1);
+        let origin = hpos + tab_offset + hscroll - i64::from(hscroll > 0);
+        return tab_width - origin.rem_euclid(tab_width);
+    }
+    if character.is_control() {
+        return if interp
+            .lookup_var("ctl-arrow", env)
+            .is_some_and(|value| value.is_truthy())
+        {
+            2
+        } else {
+            4
+        };
+    }
+    character.width().unwrap_or(0) as i64
+}
+
+fn compute_motion_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+) -> Result<Value, LispError> {
+    let from = checked_motion_position(interp, &args[0])?;
+    let (mut hpos, mut vpos) = motion_pair(&args[1])?;
+    let to = checked_motion_position(interp, &args[2])?;
+    let window = live_motion_window(interp, &args[6])?;
+
+    let body_width = super::call(
+        interp,
+        "window-body-width",
+        std::slice::from_ref(&window),
+        env,
+    )?
+    .as_integer()?;
+    let body_height = super::call(
+        interp,
+        "window-body-height",
+        std::slice::from_ref(&window),
+        env,
+    )?
+    .as_integer()?;
+    let (target_hpos, target_vpos) = if args[3].is_nil() {
+        ((body_width - 1).max(0), body_height)
+    } else {
+        motion_pair(&args[3])?
+    };
+    let mut width = if args[4].is_nil() {
+        body_width - 1
+    } else {
+        args[4].as_integer()?
+    };
+    if width < 0 {
+        width = body_width - 1;
+    }
+    // A zero-width window has no useful headless rendering model; GNU's
+    // redisplay engine still guarantees forward progress through one
+    // canonical display cell.
+    width = width.max(1);
+
+    let (hscroll, mut tab_offset) = if args[5].is_nil() {
+        (0, 0)
+    } else {
+        let (hscroll, tab_offset) = motion_pair(&args[5])?;
+        if hscroll < 0 || tab_offset < 0 {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                Value::Integer(hscroll),
+                Value::Integer(tab_offset),
+            ])));
+        }
+        (hscroll, tab_offset)
+    };
+    let truncates_partial_window = match interp.lookup_var("truncate-partial-width-windows", env) {
+        Some(Value::Integer(threshold)) => {
+            width + 1 < interp.frame_width() && width + 1 < threshold
+        }
+        Some(value) => value.is_truthy() && width + 1 < interp.frame_width(),
+        None => false,
+    };
+    let truncates = hscroll > 0
+        || truncates_partial_window
+        || interp
+            .lookup_var("truncate-lines", env)
+            .is_some_and(|value| value.is_truthy());
+    let left_margin = if hscroll > 0 { 1 - hscroll } else { 0 };
+
+    let mut position = from;
+    let mut previous_hpos = 0;
+    let mut continuation_hpos = None;
+    let mut consumed_character_at_limit = false;
+    loop {
+        let next_character = interp.buffer.char_at(position);
+
+        // A position at the right edge belongs to the beginning of the
+        // continuation line whenever more text follows on the logical line.
+        if hpos >= width && next_character.is_some_and(|character| character != '\n') {
+            if truncates {
+                while position < to
+                    && interp
+                        .buffer
+                        .char_at(position)
+                        .is_some_and(|character| character != '\n')
+                {
+                    position += 1;
+                }
+                hpos = width;
+                previous_hpos = width;
+                consumed_character_at_limit = false;
+            } else {
+                let origin = hpos;
+                vpos += 1;
+                hpos = left_margin;
+                tab_offset += width;
+                previous_hpos = 0;
+                continuation_hpos = Some(origin);
+                consumed_character_at_limit = false;
+            }
+        }
+
+        if vpos > target_vpos || (vpos == target_vpos && hpos >= target_hpos) {
+            break;
+        }
+        if position >= to || position >= interp.buffer.point_max() {
+            break;
+        }
+        let Some(character) = interp.buffer.char_at(position) else {
+            break;
+        };
+        previous_hpos = hpos;
+        if character == '\n' {
+            position += 1;
+            vpos += 1;
+            hpos = left_margin;
+            tab_offset = 0;
+            continuation_hpos = None;
+            consumed_character_at_limit = true;
+            continue;
+        }
+
+        let character_width =
+            display_motion_width(interp, env, position, character, hpos, hscroll, tab_offset);
+        if !truncates
+            && character != '\t'
+            && character_width > 1
+            && hpos > left_margin
+            && hpos + character_width > width
+        {
+            let origin = hpos;
+            vpos += 1;
+            hpos = left_margin;
+            tab_offset += width;
+            continuation_hpos = Some(origin);
+        }
+
+        previous_hpos = hpos;
+        hpos += character_width;
+        position += 1;
+        consumed_character_at_limit = true;
+        if hpos > width {
+            if truncates {
+                while position < to
+                    && interp
+                        .buffer
+                        .char_at(position)
+                        .is_some_and(|character| character != '\n')
+                {
+                    position += 1;
+                }
+                hpos = width;
+                previous_hpos = width;
+                consumed_character_at_limit = false;
+            } else {
+                let origin = previous_hpos;
+                hpos -= width;
+                vpos += 1;
+                tab_offset += width;
+                previous_hpos = 0;
+                continuation_hpos = Some(origin);
+            }
+        }
+    }
+
+    if position == to && to < interp.buffer.point_max() && consumed_character_at_limit {
+        previous_hpos = hpos;
+        continuation_hpos = None;
+    }
+    let continued = continuation_hpos.is_some() && previous_hpos == 0;
+    let previous_hpos = if continued {
+        continuation_hpos.unwrap_or(previous_hpos)
+    } else {
+        previous_hpos
+    };
+    Ok(Value::list([
+        Value::Integer(position as i64),
+        Value::Integer(hpos),
+        Value::Integer(vpos),
+        Value::Integer(previous_hpos),
+        if continued { Value::T } else { Value::Nil },
+    ]))
+}
+
+fn line_number_display_width_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    pixelwise: Option<&Value>,
+) -> Result<Value, LispError> {
+    let body_height = super::call(interp, "window-body-height", &[], env)?
+        .as_integer()?
+        .max(1) as usize;
+    let selected_buffer = interp.selected_window_buffer_id();
+    let saved_buffer = interp.current_buffer_id();
+    interp.set_current_buffer_id(selected_buffer)?;
+    let result = (|| -> Result<Value, LispError> {
+        let mode = interp
+            .lookup_var("display-line-numbers", env)
+            .unwrap_or(Value::Nil);
+        if mode.is_nil() {
+            return Ok(
+                if matches!(pixelwise, Some(Value::Symbol(name)) if name == "columns") {
+                    Value::Float(0.0)
+                } else {
+                    Value::Integer(0)
+                },
+            );
+        }
+
+        let start = interp
+            .selected_window_start()
+            .clamp(interp.buffer.point_min(), interp.buffer.point_max());
+        let start_line = interp.buffer.line_number_at_pos(start);
+        let last_line = interp.buffer.line_number_at_pos(interp.buffer.point_max());
+        let visible_end_line = start_line
+            .saturating_add(body_height.saturating_sub(1))
+            .min(last_line);
+        let displayed_maximum = if matches!(
+            mode,
+            Value::Symbol(ref name) if matches!(name.as_str(), "relative" | "visual")
+        ) {
+            let point_line = interp.buffer.line_number_at_pos(interp.buffer.point());
+            point_line
+                .abs_diff(start_line)
+                .max(point_line.abs_diff(visible_end_line))
+        } else {
+            visible_end_line
+        };
+        let computed_width = displayed_maximum.max(1).to_string().len().max(2) as i64;
+        let requested_width = interp
+            .lookup_var("display-line-numbers-width", env)
+            .and_then(|value| value.as_integer().ok())
+            .unwrap_or(0)
+            .max(0);
+        let columns = computed_width.max(requested_width);
+        // The line-number face contributes two canonical columns of
+        // left/right padding in GNU's headless terminal display.
+        let pixels = columns + 2;
+        Ok(match pixelwise {
+            Some(Value::Symbol(name)) if name == "columns" => Value::Float(pixels as f64),
+            Some(value) if value.is_truthy() => Value::Integer(pixels),
+            _ => Value::Integer(columns),
+        })
+    })();
+    let restore = interp.set_current_buffer_id(saved_buffer);
+    match (result, restore) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
 }
 
 /// GNU `vertical-motion': move by screen lines, honoring continuation.
