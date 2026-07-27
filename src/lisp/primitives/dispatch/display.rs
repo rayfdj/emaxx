@@ -1539,11 +1539,11 @@ pub(super) fn call(
         // ── Output ──
         "substitute-command-keys" => {
             need_arg_range(name, args, 1, 3)?;
-            Ok(Value::String(substitute_command_keys(
+            Ok(substitute_command_keys(
                 interp,
                 &string_text(&args[0])?,
                 env,
-            )))
+            ))
         }
         "message" => {
             let text = if args.is_empty() || args.first().is_some_and(Value::is_nil) {

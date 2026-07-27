@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_216, 9_889_188_231_541_867_857),
+        (1_218, 13_172_899_831_396_163_495),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (204, 15_483_140_156_224_271_115),
+        (202, 17_683_462_402_125_786_975),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -4073,6 +4073,109 @@ fn native_composite_c_family_and_text_property_identity_match_gnu() {
         values_equal(&interp, &actual, &expected),
         "composite.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
+}
+
+#[test]
+fn native_doc_c_family_uses_one_doc_file_index_and_resolution_contract() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should follow the Unix epoch")
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!("emaxx-native-doc-{unique}"));
+    std::fs::create_dir_all(&directory).expect("create synthetic DOC directory");
+    let filename = "fixture-DOC";
+    let doc = b"\x1fSfixture.o\n\
+\x1fFcar\n\
+Raw \\[forward-char] docs.\n\n(fn LIST)\
+\x1fVcase-fold-search\n\
+*Variable \\[forward-char] docs.\
+\x1fSafter.o\n";
+    std::fs::write(directory.join(filename), doc).expect("write synthetic DOC file");
+    let doc_directory = format!("{}/", directory.display());
+    let program = format!(
+        r#"
+        (let ((doc-directory {doc_directory:?}))
+          (put 'doc-zero
+               'variable-documentation 0)
+          (defvar doc-base 1)
+          (defvaralias 'doc-alias 'doc-base)
+          (put 'doc-base
+               'variable-documentation
+               "Alias docs.")
+          (list
+           (Snarf-documentation {filename:?})
+           internal-doc-file-name
+           (internal-subr-documentation
+            (symbol-function 'car))
+           (get 'case-fold-search
+                'variable-documentation)
+           (documentation 'car t)
+           (documentation 'car)
+           (documentation-property
+            'case-fold-search
+            'variable-documentation
+            t)
+           (documentation-property
+            'case-fold-search
+            'variable-documentation)
+           (internal-subr-documentation
+            (lambda () "Lisp docs"))
+           (condition-case error-data
+               (Snarf-documentation 1)
+             (error (car error-data)))
+           (documentation-property
+            'doc-zero 'variable-documentation t)
+           (documentation-property
+            'doc-alias 'variable-documentation t)))"#
+    );
+    let expected = r#"
+        (nil
+         "fixture-DOC"
+         18
+         -73
+         "Raw \\[forward-char] docs.
+
+(fn LIST)"
+         #("Raw C-f docs.
+
+(fn LIST)"
+           4 7
+           (font-lock-face help-key-binding
+            face help-key-binding))
+         "*Variable \\[forward-char] docs."
+         #("*Variable C-f docs."
+           10 13
+           (font-lock-face help-key-binding
+            face help-key-binding))
+         t
+         wrong-type-argument
+         nil
+         "Alias docs.")"#;
+    let expected_printed = r#"(nil "fixture-DOC" 18 -73 "Raw \\[forward-char] docs.
+
+(fn LIST)" #("Raw C-f docs.
+
+(fn LIST)" 4 7 (font-lock-face help-key-binding face help-key-binding)) "*Variable \\[forward-char] docs." #("*Variable C-f docs." 10 13 (font-lock-face help-key-binding face help-key-binding)) t wrong-type-argument nil "Alias docs.")"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("doc.c family contract should parse")
+        .expect("doc.c family contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("doc.c family contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("doc.c expected value should parse")
+        .expect("doc.c expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "doc.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]

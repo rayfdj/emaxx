@@ -3819,9 +3819,10 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
     }
 }
 
-pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &Env) -> String {
+pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &Env) -> Value {
     let chars: Vec<char> = text.chars().collect();
     let mut output = String::new();
+    let mut properties = Vec::new();
     // A `\<MAPVAR>' directive pins subsequent `\[...]' lookups to that map;
     // without one, GNU consults the currently ACTIVE maps (minor-mode and
     // local maps first, then the global map) like `where-is-internal'.
@@ -3880,7 +3881,17 @@ pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &En
                                 })
                         }
                         .unwrap_or_else(|| format!("M-x {command}"));
+                        let start = output.chars().count();
                         output.push_str(&replacement);
+                        let property_end = output.chars().count();
+                        properties.push(TextPropertySpan {
+                            start,
+                            end: property_end,
+                            props: vec![
+                                ("font-lock-face".into(), Value::symbol("help-key-binding")),
+                                ("face".into(), Value::symbol("help-key-binding")),
+                            ],
+                        });
                         index = end + 1;
                         continue;
                     }
@@ -3910,7 +3921,7 @@ pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &En
         index += 1;
     }
 
-    match effective_text_quoting_style(interp, env) {
+    let output = match effective_text_quoting_style(interp, env) {
         "straight" => output
             .chars()
             .map(|ch| if matches!(ch, '`' | '\'') { '\'' } else { ch })
@@ -3924,5 +3935,6 @@ pub(crate) fn substitute_command_keys(interp: &Interpreter, text: &str, env: &En
             })
             .collect(),
         _ => output,
-    }
+    };
+    string_like_value(output, properties)
 }

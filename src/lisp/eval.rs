@@ -1432,6 +1432,9 @@ pub struct Interpreter {
     face_inheritance: Vec<(String, Option<String>)>,
     pub(crate) fringe_bitmap_states: Vec<FringeBitmapState>,
     pub(crate) composition_states: Vec<CompositionState>,
+    /// Raw etc/DOC byte offsets installed in built-in subroutine objects by
+    /// `Snarf-documentation`, keyed by the canonical native function name.
+    pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     standard_syntax_table_id: u64,
     undo_sequence: Option<UndoSequenceState>,
@@ -2101,6 +2104,7 @@ impl Interpreter {
             face_inheritance: Vec::new(),
             fringe_bitmap_states,
             composition_states: Vec::new(),
+            builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             standard_syntax_table_id,
             undo_sequence: None,
@@ -2460,6 +2464,16 @@ impl Interpreter {
             &global_map,
             "C-]",
             Value::Symbol("abort-recursive-edit".into()),
+        );
+        // bindings.el's dumped global map supplies this canonical motion
+        // binding.  Help's command-key substitution reads the live map, so
+        // omitting it changes every `\[forward-char]' doc reference into the
+        // unbound-command fallback instead of GNU's `C-f'.
+        let _ = primitives::keymap_define_binding(
+            &mut interp,
+            &global_map,
+            "C-f",
+            Value::Symbol("forward-char".into()),
         );
         let menu_bar_edit_menu = primitives::make_runtime_keymap(&mut interp, Some("Edit"));
         interp.set_global_binding("menu-bar-edit-menu", menu_bar_edit_menu);
@@ -3177,6 +3191,7 @@ impl Interpreter {
             "source-directory",
             "data-directory",
             "doc-directory",
+            "internal-doc-file-name",
             "configure-info-directory",
         ] {
             interp.mark_special_variable(name);

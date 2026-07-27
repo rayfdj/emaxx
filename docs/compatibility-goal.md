@@ -29,6 +29,19 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Post-`26e68a4` native audit progress completes `doc.c`, bringing the exact
+  inventory to 1,218 mirrored / 202 missing.  Emaxx now uses one native DOC
+  index for `F`/`V`/`S` records, signed user-variable offsets, static/lazy
+  reference resolution, variable aliases, and stale offset zero across
+  `Snarf-documentation`, `internal-subr-documentation`, `documentation`, and
+  `documentation-property`.  This replaces a partial facade that rejected
+  GNU's optional `RAW` argument and exposed unresolved offsets.  The producer
+  fix also restores the dumped global `C-f` / `forward-char` binding and
+  `help-key-binding` text properties from `substitute-command-keys`.  A
+  synthetic-DOC GNU oracle regression covers the complete shared contract.
+  The publication gate passed 1,600 library, 28 compatibility-harness, 1
+  performance-harness, 5 CLI, and 3 ERT-runner tests.  The exact 1..N/7080
+  replay remains pending.
 - Post-`4bb5a43` native audit progress completes `composite.c`, bringing the
   exact inventory to 1,216 mirrored / 204 missing.  The prior
   `find-composition-internal` grapheme approximation is replaced by a native
