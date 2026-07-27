@@ -27,60 +27,69 @@
     value "")
    "\""))
 
-(defun emaxx--native-dispatch-source-p (file source-root)
-  "Return non-nil when FILE owns native dispatch names below SOURCE-ROOT."
-  (let ((relative (file-relative-name file source-root)))
-    (or (member relative
-                '("primitives.rs"
-                  "primitives/ccl.rs"
-                  "primitives/numeric_time.rs"
-                  "sqlite.rs"))
-        (string-prefix-p "primitives/dispatch" relative))))
+(defun emaxx--gnu-c-primitive-contracts (source-root)
+  "Return known-arity GNU C primitive contracts below SOURCE-ROOT.
+
+The C-source manifest is the authoritative native boundary.  In particular,
+do not infer that boundary from arbitrary Rust string literals: dispatcher
+implementation files also contain condition names, variable names, and Lisp
+helper names."
+  (let ((manifest
+         (expand-file-name
+          "primitives/generated_gnu_c_primitives.rs"
+          source-root))
+        contracts)
+    (with-temp-buffer
+      (insert-file-contents manifest)
+      (goto-char (point-min))
+      (while
+          (re-search-forward
+           (concat
+            "GnuCPrimitiveContract { name: \"\\([^\"]+\\)\", "
+            "arity: Some((\\(-?[0-9]+\\), \\(-?[0-9]+\\))), "
+            "command: \\(true\\|false\\)")
+           nil t)
+        (push
+         (list
+          (match-string-no-properties 1)
+          (string-to-number (match-string-no-properties 2))
+          (string-to-number (match-string-no-properties 3))
+          (equal (match-string-no-properties 4) "true"))
+         contracts)))
+    (nreverse contracts)))
 
 (defun emaxx-generate-builtin-arities (source-root output-file)
-  "Write GNU subr arities mentioned below SOURCE-ROOT to OUTPUT-FILE.
+  "Write GNU C primitive metadata below SOURCE-ROOT to OUTPUT-FILE.
 
-Emaxx's dispatchers contain every native function name as a Rust string
-literal.  Intersecting those literals with the running GNU Emacs's subrs
-keeps the generated table complete without teaching the generator about the
-layout of individual dispatcher modules."
+The generated GNU C-source manifest supplies the exact native boundary,
+arity, and command identity.  The running GNU Emacs supplies interactive
+forms for C primitives available in this build.
+Generating every known-arity C primitive is safe: Emaxx consults this metadata
+only after its own dispatcher has produced a native function value."
   (let ((seen (make-hash-table :test #'equal))
         entries interactive-names interactive-entries)
-    (dolist (file (directory-files-recursively source-root "\\.rs\\'"))
-      ;; Only native dispatch ownership files participate.  Test strings,
-      ;; helper operation tables, and generated inventories must never make a
-      ;; missing GNU primitive appear implemented on regeneration.
-      (when (emaxx--native-dispatch-source-p file source-root)
-        (with-temp-buffer
-          (insert-file-contents file)
-          (goto-char (point-min))
-          (while (re-search-forward "\"\\([^\"\n]+\\)\"" nil t)
-            (let* ((name (match-string-no-properties 1))
-                   (symbol (intern-soft name)))
-              (when (and symbol
-                         (not (gethash name seen))
-                         (fboundp symbol)
-                         (subrp (symbol-function symbol)))
-                (let ((function (symbol-function symbol)))
-                  (pcase-let ((`(,minimum . ,maximum)
-                               (subr-arity function)))
-                    (when (and (integerp minimum)
-                               (or (integerp maximum)
-                                   (memq maximum '(many unevalled))))
-                      (puthash name t seen)
-                      (push (list name minimum maximum) entries)
-                      (when-let ((interactive (interactive-form function)))
-                        (let ((form (prin1-to-string interactive)))
-                          (push name interactive-names)
-                          ;; Native-compiled dumped Lisp can expose an
-                          ;; `(interactive (byte-code ...))' form containing
-                          ;; raw control bytes.  Record command identity for
-                          ;; all such functions, but only embed forms that are
-                          ;; safe Rust source text.
-                          (unless (string-match-p
-                                   "[\0-\x08\x0b\x0c\x0e-\x1f]" form)
-                            (push (list name form)
-                                  interactive-entries)))))))))))))
+    (pcase-dolist
+        (`(,name ,minimum ,maximum ,command)
+         (emaxx--gnu-c-primitive-contracts source-root))
+      (unless (gethash name seen)
+        (puthash name t seen)
+        (push (list name minimum maximum) entries)
+        (when command
+          (push name interactive-names))
+        (let ((symbol (intern-soft name)))
+          (when (and symbol
+                     (fboundp symbol)
+                     (subrp (symbol-function symbol))
+                     (not (and (fboundp 'subr-native-elisp-p)
+                               (subr-native-elisp-p
+                                (symbol-function symbol)))))
+            (when-let ((interactive
+                        (interactive-form (symbol-function symbol))))
+              (let ((form (prin1-to-string interactive)))
+                (unless (string-match-p
+                         "[\0-\x08\x0b\x0c\x0e-\x1f]" form)
+                  (push (list name form)
+                        interactive-entries))))))))
     (setq entries (sort entries (lambda (left right)
                                   (string< (car left) (car right)))))
     (setq interactive-entries

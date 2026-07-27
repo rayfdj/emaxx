@@ -29,6 +29,18 @@ handoff and retry instruction are in
 
 ## Current State
 
+- Post-checkpoint native audit progress on 2026-07-27 completes `indent.c` and
+  the remaining `xdisp.c` surface, advancing the exact inventory to 1,208
+  mirrored / 212 missing.  Family-level GNU-oracle Rust regressions cover
+  display motion, line-number width, continuation boundaries, bidi paragraph
+  boundaries and RTL visual motion, headless display queries, and image-map
+  geometry.  Native metadata generation now reads the authoritative GNU
+  C-source manifest instead of scraping arbitrary Rust string literals; an
+  exhaustive fast test checks every known-arity C primitive and prevents
+  dumped Lisp names from leaking across the ownership boundary.  The
+  follow-up full fast gate is green: 1,597 library, 28 compatibility-harness,
+  1 performance-harness, 5 CLI, and 3 ERT-runner tests passed.  The exact
+  1..N/7080 replay remains pending.
 - Authoritative 2026-07-27 native-audit checkpoint: a generated manifest reads
   GNU 30.2 C `DEFUN` declarations and intersects them with the configured
   oracle build.  Of 1,685 source names, 1,420 are host-available; Emaxx has

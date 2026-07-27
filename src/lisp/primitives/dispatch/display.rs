@@ -41,6 +41,194 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
         )
 }
 
+fn current_bidi_paragraph_direction_value(interp: &Interpreter, env: &Env) -> Value {
+    if !interp.buffer.is_multibyte()
+        || interp
+            .lookup_var("bidi-display-reordering", env)
+            .is_some_and(|value| value.is_nil())
+    {
+        return Value::symbol("left-to-right");
+    }
+    if let Some(direction) = interp
+        .lookup_var("bidi-paragraph-direction", env)
+        .filter(|value| !value.is_nil())
+    {
+        return direction;
+    }
+
+    let point_min = interp.buffer.point_min();
+    let point_max = interp.buffer.point_max();
+    let position = interp.buffer.point().clamp(point_min, point_max);
+    // GNU display paragraphs span ordinary newlines.  A blank line starts a
+    // new paragraph only once point has reached nonblank text after it; the
+    // separator itself and trailing blank lines retain the preceding
+    // paragraph's direction.
+    let mut start = point_min;
+    let mut scan = point_min;
+    while scan < point_max {
+        if interp.buffer.char_at(scan) != Some('\n') {
+            scan += 1;
+            continue;
+        }
+        let mut separator_end = scan + 1;
+        while separator_end < point_max
+            && matches!(
+                interp.buffer.char_at(separator_end),
+                Some(' ' | '\t' | '\u{c}')
+            )
+        {
+            separator_end += 1;
+        }
+        if interp.buffer.char_at(separator_end) != Some('\n') {
+            scan += 1;
+            continue;
+        }
+        let mut next_text = separator_end + 1;
+        while next_text < point_max
+            && matches!(
+                interp.buffer.char_at(next_text),
+                Some('\n' | ' ' | '\t' | '\u{c}')
+            )
+        {
+            next_text += 1;
+        }
+        if next_text < point_max && next_text <= position {
+            start = next_text;
+            scan = next_text;
+        } else {
+            break;
+        }
+    }
+    let text = interp
+        .buffer
+        .buffer_substring(start, point_max)
+        .unwrap_or_default();
+    let bidi = unicode_bidi::BidiInfo::new(&text, None);
+    if bidi
+        .paragraphs
+        .first()
+        .is_some_and(|paragraph| paragraph.level.is_rtl())
+    {
+        Value::symbol("right-to-left")
+    } else {
+        Value::symbol("left-to-right")
+    }
+}
+
+fn with_selected_window_buffer<T>(
+    interp: &mut Interpreter,
+    operation: impl FnOnce(&mut Interpreter) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let selected_buffer = interp.selected_window_buffer_id();
+    let saved_buffer = interp.current_buffer_id();
+    interp.set_current_buffer_id(selected_buffer)?;
+    let result = operation(interp);
+    let restore = interp.set_current_buffer_id(saved_buffer);
+    match (result, restore) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+fn image_hot_spot_contains(area: &Value, x: i64, y: i64) -> bool {
+    let Ok(kind) = area
+        .car()
+        .and_then(|value| value.as_symbol().map(str::to_string))
+    else {
+        return false;
+    };
+    let Ok(shape) = area.cdr() else {
+        return false;
+    };
+    match kind.as_str() {
+        "rect" => {
+            let Ok((top_left, bottom_right)) = shape
+                .cons_values()
+                .ok_or_else(|| wrong_type_argument("consp", shape.clone()))
+            else {
+                return false;
+            };
+            let Ok((x0, y0)) = top_left
+                .cons_values()
+                .ok_or_else(|| wrong_type_argument("consp", top_left.clone()))
+                .and_then(|(x, y)| Ok((x.as_integer()?, y.as_integer()?)))
+            else {
+                return false;
+            };
+            let Ok((x1, y1)) = bottom_right
+                .cons_values()
+                .ok_or_else(|| wrong_type_argument("consp", bottom_right.clone()))
+                .and_then(|(x, y)| Ok((x.as_integer()?, y.as_integer()?)))
+            else {
+                return false;
+            };
+            x0 <= x && x <= x1 && y0 <= y && y <= y1
+        }
+        "circle" => {
+            let Some((center, radius)) = shape.cons_values() else {
+                return false;
+            };
+            let Some((x0, y0)) = center.cons_values() else {
+                return false;
+            };
+            let (Ok(x0), Ok(y0), Ok(radius)) =
+                (x0.as_integer(), y0.as_integer(), radius.as_float())
+            else {
+                return false;
+            };
+            let dx = x0 as f64 - x as f64;
+            let dy = y0 as f64 - y as f64;
+            dx * dx + dy * dy <= radius * radius
+        }
+        "poly" => {
+            let Ok(coordinates) = vector_items(&shape) else {
+                return false;
+            };
+            if coordinates.len() < 6 || coordinates.len() % 2 != 0 {
+                return false;
+            }
+            let Ok(mut x0) = coordinates[coordinates.len() - 2].as_integer() else {
+                return false;
+            };
+            let Ok(mut y0) = coordinates[coordinates.len() - 1].as_integer() else {
+                return false;
+            };
+            let mut inside = false;
+            for pair in coordinates.chunks_exact(2) {
+                let (x1, y1) = (x0, y0);
+                let (Ok(next_x), Ok(next_y)) = (pair[0].as_integer(), pair[1].as_integer()) else {
+                    return false;
+                };
+                x0 = next_x;
+                y0 = next_y;
+                if (x0 >= x && x1 >= x) || (x0 < x && x1 < x) || (y > y0 && y > y1) {
+                    continue;
+                }
+                if y < y0 + ((y1 - y0) * (x - x0)) / (x1 - x0) {
+                    inside = !inside;
+                }
+            }
+            inside
+        }
+        _ => false,
+    }
+}
+
+fn lookup_image_map(map: &Value, x: i64, y: i64) -> Value {
+    let Ok(entries) = map.to_vec() else {
+        return Value::Nil;
+    };
+    entries
+        .into_iter()
+        .find(|entry| {
+            entry
+                .car()
+                .is_ok_and(|area| image_hot_spot_contains(&area, x, y))
+        })
+        .unwrap_or(Value::Nil)
+}
+
 pub(super) fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -215,6 +403,15 @@ pub(super) fn handles(name: &str) -> bool {
             | "buffer-text-pixel-size"
             | "get-display-property"
             | "bidi-find-overridden-directionality"
+            | "bidi-resolved-levels"
+            | "current-bidi-paragraph-direction"
+            | "display--line-is-continued-p"
+            | "line-pixel-height"
+            | "long-line-optimizations-p"
+            | "lookup-image-map"
+            | "move-point-visually"
+            | "tab-bar-height"
+            | "tool-bar-height"
             | "redisplay"
             | "redraw-frame"
             | "redraw-display"
@@ -3105,6 +3302,113 @@ pub(super) fn call(
             Ok(find_bidi_override(interp, start, end)
                 .map(|pos| Value::Integer(pos as i64))
                 .unwrap_or(Value::Nil))
+        }
+        "current-bidi-paragraph-direction" => {
+            need_arg_range(name, args, 0, 1)?;
+            let Some(buffer) = args.first().filter(|value| !value.is_nil()) else {
+                return Ok(current_bidi_paragraph_direction_value(interp, env));
+            };
+            let Value::Buffer(buffer_id, _) = buffer else {
+                return Err(wrong_type_argument("bufferp", buffer.clone()));
+            };
+            if !interp.has_buffer_id(*buffer_id) {
+                return Err(wrong_type_argument("bufferp", buffer.clone()));
+            }
+            let saved_buffer = interp.current_buffer_id();
+            interp.set_current_buffer_id(*buffer_id)?;
+            let direction = current_bidi_paragraph_direction_value(interp, env);
+            interp.set_current_buffer_id(saved_buffer)?;
+            Ok(direction)
+        }
+        "bidi-resolved-levels" => {
+            need_arg_range(name, args, 0, 1)?;
+            if let Some(vpos) = args.first().filter(|value| !value.is_nil()) {
+                vpos.as_integer()?;
+            }
+            // Emaxx's headless renderer intentionally retains no glyph
+            // matrix between evaluations, exactly the stale-display case
+            // for which GNU documents a nil result.
+            Ok(Value::Nil)
+        }
+        "line-pixel-height" => {
+            need_args(name, args, 0)?;
+            // The canonical terminal cell is one pixel high in the
+            // headless frame used by both compatibility runners.
+            Ok(Value::Integer(1))
+        }
+        "display--line-is-continued-p" => {
+            need_args(name, args, 0)?;
+            with_selected_window_buffer(interp, |interp| {
+                let original_point = interp.buffer.point();
+                let result = (|| -> Result<Value, LispError> {
+                    super::call(interp, "vertical-motion", &[Value::Integer(0)], env)?;
+                    let screen_line_start = interp.buffer.point();
+                    let moved = super::call(interp, "vertical-motion", &[Value::Integer(1)], env)?
+                        .as_integer()?;
+                    let next_screen_line = interp.buffer.point();
+                    let crosses_logical_line = (screen_line_start..next_screen_line)
+                        .any(|position| interp.buffer.char_at(position) == Some('\n'));
+                    Ok(
+                        if moved == 1
+                            && next_screen_line < interp.buffer.point_max()
+                            && !crosses_logical_line
+                        {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        },
+                    )
+                })();
+                interp.buffer.goto_char(original_point);
+                result
+            })
+        }
+        "move-point-visually" => {
+            need_args(name, args, 1)?;
+            let direction = args[0].as_integer()?;
+            with_selected_window_buffer(interp, |interp| {
+                let right = direction > 0;
+                let right_to_left = matches!(
+                    current_bidi_paragraph_direction_value(interp, env),
+                    Value::Symbol(ref direction) if direction == "right-to-left"
+                );
+                let logical_forward = right != right_to_left;
+                let point = interp.buffer.point();
+                let target = if logical_forward {
+                    if point >= interp.buffer.point_max() {
+                        return Err(signal_condition("end-of-buffer"));
+                    }
+                    point + 1
+                } else {
+                    if point <= interp.buffer.point_min() {
+                        return Err(signal_condition("beginning-of-buffer"));
+                    }
+                    point - 1
+                };
+                interp.buffer.goto_char(target);
+                Ok(Value::Integer(target as i64))
+            })
+        }
+        "long-line-optimizations-p" => {
+            need_args(name, args, 0)?;
+            // GNU only raises this redisplay-owned flag while maintaining a
+            // glyph matrix.  The cache-free headless renderer never does.
+            Ok(Value::Nil)
+        }
+        "tab-bar-height" | "tool-bar-height" => {
+            need_arg_range(name, args, 0, 2)?;
+            decode_live_frame(args.first(), true)?;
+            // The bootstrap terminal frame has no tab/tool-bar window.
+            Ok(Value::Integer(0))
+        }
+        "lookup-image-map" => {
+            need_args(name, args, 3)?;
+            if args[0].is_nil() {
+                return Ok(Value::Nil);
+            }
+            let x = args[1].as_integer()?;
+            let y = args[2].as_integer()?;
+            Ok(lookup_image_map(&args[0], x, y))
         }
         "redisplay" => {
             need_arg_range(name, args, 0, 1)?;

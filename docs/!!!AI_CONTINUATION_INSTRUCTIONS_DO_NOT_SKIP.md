@@ -18,6 +18,28 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- POST-CHECKPOINT 2026-07-27 NATIVE-AUDIT PROGRESS: the complete `indent.c`
+  and remaining `xdisp.c` families are now mirrored, moving the exact
+  inventory from 1,197/223 to 1,208 mirrored / 212 missing.  The shared
+  display-motion layer now owns `compute-motion`, line-number display width,
+  continuation queries, bidi paragraph direction and visual point motion,
+  headless bar/pixel queries, and image-map geometry.  Direct Rust tests
+  compare family-level results with GNU, including continuation boundaries,
+  tabs/control/display/invisible text, blank-line bidi paragraph boundaries,
+  RTL motion, and rectangle/circle/polygon image maps.
+- The builtin-metadata generator no longer scrapes arbitrary string literals
+  from Rust dispatcher files.  It consumes the generated GNU C-source
+  manifest, so condition names and Lisp helper names cannot cross the
+  Lisp/native ownership boundary merely by being mentioned in Rust.  A fast
+  exhaustive test checks arity and command identity for every known-arity
+  GNU C primitive and proves dumped-Lisp `beginning-of-buffer` /
+  `end-of-buffer` remain absent from native metadata.
+- The full fast gate for this follow-up is green:
+  `cargo test --all-targets --all-features` passed 1,597 library tests, 28
+  compatibility-harness tests, 1 performance-harness test, 5 CLI tests, and 3
+  ERT-runner tests (plus the zero-test binary target).  The exact 1..N/7080
+  oracle gate still has not been rerun; do not report the native inventory as
+  7080 frontier progress.
 - AUTHORITATIVE 2026-07-27 NATIVE-AUDIT CHECKPOINT: the generated GNU 30.2
   source/runtime manifest contains 1,685 source-level `DEFUN`s, 1,420 of which
   are available in the configured oracle build.  Emaxx now has exact native

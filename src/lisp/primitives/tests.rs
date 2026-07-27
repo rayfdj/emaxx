@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_197, 9_266_388_462_729_764_669),
+        (1_208, 3_704_738_922_697_380_503),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (223, 3_603_939_082_018_779_415),
+        (212, 15_243_755_666_620_849_093),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -390,6 +390,46 @@ fn generated_rust_manifests_never_contain_trailing_whitespace() {
                 line_index + 1
             );
         }
+    }
+}
+
+#[test]
+fn builtin_metadata_covers_the_whole_c_manifest_without_lisp_string_leakage() {
+    use super::generated_gnu_c_primitives::GNU_C_PRIMITIVES;
+
+    for contract in GNU_C_PRIMITIVES {
+        let Some(arity) = contract.arity else {
+            continue;
+        };
+        assert_eq!(
+            generated_builtin_arities::generated_builtin_arity(contract.name),
+            Some(arity),
+            "{} [{}] is missing from generated C primitive arities",
+            contract.name,
+            contract.origins
+        );
+        assert_eq!(
+            generated_builtin_arities::generated_builtin_command_p(contract.name),
+            contract.command,
+            "{} [{}] has the wrong generated command identity",
+            contract.name,
+            contract.origins
+        );
+    }
+
+    // These are dumped Lisp commands in GNU, not C primitives.  Merely
+    // mentioning their condition symbols inside a Rust dispatcher must never
+    // move them across the Lisp/native boundary.
+    for name in ["beginning-of-buffer", "end-of-buffer"] {
+        assert_eq!(
+            generated_builtin_arities::generated_builtin_arity(name),
+            None,
+            "{name} leaked into C metadata from a Rust string literal"
+        );
+        assert!(
+            !generated_builtin_arities::generated_builtin_command_p(name),
+            "{name} leaked into C command metadata from a Rust string literal"
+        );
     }
 }
 
@@ -6936,6 +6976,231 @@ fn native_headless_window_geometry_and_hscroll_match_gnu_c_contracts() {
             .read()
             .expect("window geometry expected value should parse")
             .expect("window geometry expected value should exist")
+    );
+}
+
+#[test]
+fn native_indent_c_motion_and_line_number_width_family_matches_gnu() {
+    let program = r#"(list
+                       (with-temp-buffer
+                         (insert "abcdef\nxy\tZ")
+                         (setq tab-width 4
+                               truncate-lines nil
+                               truncate-partial-width-windows nil)
+                         (let ((window (selected-window)))
+                           (set-window-buffer window (current-buffer))
+                           (set-window-start window (point-min))
+                           (list
+                            (compute-motion
+                             1 '(0 . 0) (point-max) nil 4 nil window)
+                            (compute-motion
+                             1 '(0 . 0) (point-max) '(0 . 1) 4 nil window)
+                            (compute-motion
+                             1 '(0 . 0) (point-max) '(0 . 2) 4 nil window)
+                            (compute-motion
+                             1 '(0 . 0) (point-max) '(2 . 1) 4 nil window)
+                            (compute-motion
+                             1 '(0 . 0) 5 nil 4 nil window)
+                            (compute-motion
+                             1 '(0 . 0) 6 nil 4 nil window)
+                            (compute-motion
+                             1 '(0 . 0) (point-max) nil 4 '(1 . 0)
+                             window))))
+                       (with-temp-buffer
+                         (dotimes (_ 1234) (insert "x\n"))
+                         (goto-char (point-min))
+                         (forward-line 998)
+                         (let ((start (point))
+                               (window (selected-window)))
+                           (setq-local display-line-numbers t)
+                           (set-window-buffer window (current-buffer))
+                           (set-window-start window start)
+                           (list
+                            (line-number-at-pos start)
+                            (window-body-height window)
+                            (line-number-display-width)
+                            (line-number-display-width t)
+                            (line-number-display-width 'columns)
+                            (let ((display-line-numbers-width 7))
+                              (list
+                               (line-number-display-width)
+                               (line-number-display-width t)))
+                            (let ((display-line-numbers nil))
+                              (list
+                               (line-number-display-width)
+                               (line-number-display-width t)
+                               (line-number-display-width
+                                'columns)))))))"#;
+    let expected = r#"(((12 1 3 4 t)
+                        (5 0 1 4 t)
+                        (8 0 2 2 nil)
+                        (7 2 1 1 nil)
+                        (5 0 1 4 t)
+                        (6 1 1 1 nil)
+                        (12 4 1 4 nil))
+                       (999 23 4 6 6.0 (7 9) (0 0 0.0)))"#;
+    let expected_printed = "(((12 1 3 4 t) (5 0 1 4 t) (8 0 2 2 nil) (7 2 1 1 nil) (5 0 1 4 t) (6 1 1 1 nil) (12 4 1 4 nil)) (999 23 4 6 6.0 (7 9) (0 0 0.0)))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("indent.c family contract should parse")
+        .expect("indent.c family contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("indent.c family contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("indent.c expected value should parse")
+            .expect("indent.c expected value should exist")
+    );
+}
+
+#[test]
+fn native_xdisp_headless_query_family_matches_gnu() {
+    let program = r#"(list
+                       (with-temp-buffer
+                         (insert "abc\n")
+                         (let ((window (selected-window)))
+                           (set-window-buffer window (current-buffer))
+                           (list
+                            (line-pixel-height)
+                            (display--line-is-continued-p)
+                            (tab-bar-height)
+                            (tab-bar-height nil t)
+                            (tool-bar-height)
+                            (tool-bar-height nil t)
+                            (long-line-optimizations-p)
+                            (bidi-resolved-levels)
+                            (bidi-resolved-levels 0))))
+                       (with-temp-buffer
+                         (insert (make-string 200 ?x))
+                         (let ((window (selected-window)))
+                           (set-window-buffer window (current-buffer))
+                           (setq truncate-lines nil
+                                 truncate-partial-width-windows nil)
+                           (mapcar
+                            (lambda (position)
+                              (goto-char position)
+                              (list
+                               position
+                               (display--line-is-continued-p)
+                               (point)))
+                            '(1 80 159 201))))
+                       (with-temp-buffer
+                         (insert "abc אבג\n")
+                         (goto-char 6)
+                         (list
+                          (current-bidi-paragraph-direction)
+                          (let ((bidi-paragraph-direction
+                                 'right-to-left))
+                            (current-bidi-paragraph-direction))
+                          (let ((bidi-display-reordering nil))
+                            (current-bidi-paragraph-direction))
+                          (let ((other
+                                 (generate-new-buffer
+                                  " *bidi-other*")))
+                            (unwind-protect
+                                (progn
+                                  (with-current-buffer other
+                                    (insert "אבג"))
+                                  (current-bidi-paragraph-direction
+                                   other))
+                              (kill-buffer other)))))
+                       (mapcar
+                        (lambda (fixture)
+                          (with-temp-buffer
+                            (insert fixture)
+                            (goto-char (point-max))
+                            (current-bidi-paragraph-direction
+                             (current-buffer))))
+                        '("אבג\nabc"
+                          "אבג\n\nabc"
+                          "abc\nאבג"
+                          "abc\n\nאבג"
+                          "אבג\n\n"))
+                       (with-temp-buffer
+                         (insert "אבג")
+                         (let ((window (selected-window)))
+                           (set-window-buffer window (current-buffer))
+                           (mapcar
+                            (lambda (case)
+                              (goto-char (car case))
+                              (list
+                               (car case)
+                               (cdr case)
+                               (condition-case error-data
+                                   (move-point-visually (cdr case))
+                                 (error (car error-data)))))
+                            '((1 . -1) (1 . 1)
+                              (2 . -1) (2 . 1)
+                              (3 . -1) (3 . 1)
+                              (4 . -1) (4 . 1)))))
+                       (let ((map
+                              '(((rect .
+                                      ((0 . 0) . (10 . 10)))
+                                 rect-id (:help "r"))
+                                ((circle . ((20 . 20) . 5))
+                                 circle-id nil)
+                                ((poly .
+                                       [30 30 40 30 40 40 30 40])
+                                 poly-id nil))))
+                         (mapcar
+                          (lambda (xy)
+                            (lookup-image-map
+                             map (car xy) (cdr xy)))
+                          '((0 . 0) (5 . 5) (10 . 10)
+                            (11 . 5) (20 . 20) (24 . 20)
+                            (26 . 20) (35 . 35) (41 . 35)))))"#;
+    let expected = r#"((1 nil 0 0 0 0 nil nil nil)
+                       ((1 t 1) (80 t 80)
+                        (159 nil 159) (201 nil 201))
+                       (left-to-right right-to-left
+                        left-to-right right-to-left)
+                       (right-to-left left-to-right
+                        left-to-right right-to-left
+                        right-to-left)
+                       ((1 -1 2)
+                        (1 1 beginning-of-buffer)
+                        (2 -1 3) (2 1 1)
+                        (3 -1 4) (3 1 2)
+                        (4 -1 end-of-buffer) (4 1 3))
+                       (((rect (0 . 0) 10 . 10)
+                         rect-id (:help "r"))
+                        ((rect (0 . 0) 10 . 10)
+                         rect-id (:help "r"))
+                        ((rect (0 . 0) 10 . 10)
+                         rect-id (:help "r"))
+                        nil
+                        ((circle (20 . 20) . 5)
+                         circle-id nil)
+                        ((circle (20 . 20) . 5)
+                         circle-id nil)
+                        nil
+                        ((poly .
+                               [30 30 40 30 40 40 30 40])
+                         poly-id nil)
+                        nil))"#;
+    let expected_printed = "((1 nil 0 0 0 0 nil nil nil) ((1 t 1) (80 t 80) (159 nil 159) (201 nil 201)) (left-to-right right-to-left left-to-right right-to-left) (right-to-left left-to-right left-to-right right-to-left right-to-left) ((1 -1 2) (1 1 beginning-of-buffer) (2 -1 3) (2 1 1) (3 -1 4) (3 1 2) (4 -1 end-of-buffer) (4 1 3)) (((rect (0 . 0) 10 . 10) rect-id (:help \"r\")) ((rect (0 . 0) 10 . 10) rect-id (:help \"r\")) ((rect (0 . 0) 10 . 10) rect-id (:help \"r\")) nil ((circle (20 . 20) . 5) circle-id nil) ((circle (20 . 20) . 5) circle-id nil) nil ((poly . [30 30 40 30 40 40 30 40]) poly-id nil) nil))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("xdisp.c family contract should parse")
+        .expect("xdisp.c family contract should contain a form");
+    assert_eq!(
+        interp
+            .eval(&form, &mut env)
+            .expect("xdisp.c family contract should evaluate"),
+        Reader::new(expected)
+            .read()
+            .expect("xdisp.c expected value should parse")
+            .expect("xdisp.c expected value should exist")
     );
 }
 
