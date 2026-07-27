@@ -460,52 +460,6 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn face_inherit_target(&self, face: &str) -> Option<String> {
-        self.face_inheritance
-            .iter()
-            .rev()
-            .find(|(name, _)| name == face)
-            .and_then(|(_, inherit)| inherit.clone())
-    }
-
-    pub fn set_face_inherit_target(
-        &mut self,
-        face: &str,
-        inherit: Option<String>,
-    ) -> Result<(), LispError> {
-        if let Some(target) = inherit.as_ref()
-            && self.face_inheritance_creates_cycle(face, target)
-        {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("error".into()),
-                Value::String("Face inheritance results in inheritance cycle".into()),
-                Value::Symbol(target.clone()),
-            ])));
-        }
-        if let Some((_, slot)) = self
-            .face_inheritance
-            .iter_mut()
-            .rev()
-            .find(|(name, _)| name == face)
-        {
-            *slot = inherit;
-        } else {
-            self.face_inheritance.push((face.to_string(), inherit));
-        }
-        Ok(())
-    }
-
-    pub(super) fn face_inheritance_creates_cycle(&self, face: &str, target: &str) -> bool {
-        let mut current = Some(target.to_string());
-        while let Some(name) = current {
-            if name == face {
-                return true;
-            }
-            current = self.face_inherit_target(&name);
-        }
-        false
-    }
-
     /// Find an overlay by ID in any live buffer.
     pub fn find_overlay(&self, id: u64) -> Option<&crate::overlay::Overlay> {
         self.buffer

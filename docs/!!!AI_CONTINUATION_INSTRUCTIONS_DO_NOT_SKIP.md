@@ -18,6 +18,32 @@ counts as the progress denominator.
 
 ## Current Resume Point
 
+- 2026-07-28 NATIVE-AUDIT CHECKPOINT: the headless semantic core of
+  `xfaces.c` is now complete, advancing the exact inventory to 1,243 mirrored
+  / 177 missing.  The old model split face attributes across synthetic symbol
+  properties and a separate inheritance list; it could not represent GNU's
+  fundamental contract that a Lisp face is one mutable 20-slot vector.  A
+  new interpreter-owned registry is authoritative for global and selected-
+  frame vectors, identity-preserving creation/copy/mutation, inheritance,
+  equality/emptiness, relative-height merging, resource-value conversion,
+  font-selection state, bitmap/color queries, and color-file parsing.
+  Existing `defface`, theme, `face-attribute`, and `set-face-attribute` paths
+  now use that same registry rather than a second cache.  The family-level
+  fast Rust regression compares every one of the 25 claimed primitives
+  directly with GNU, including external `aset` mutation of the returned
+  vector and exact error families.  Two `xfaces.c` names remain deliberately
+  missing: `frame--face-hash-table` depends on the proper multi-frame registry
+  already identified by the `frame.c` audit, and
+  `internal-face-x-get-resource` needs a real GUI resource backend (GNU's
+  batch terminal aborts when it is called directly).  Do not replace either
+  with a nil stub.  Face-targeted tests, rustfmt, strict Clippy, and
+  `git diff --check` are green.  The complete publication gate is green:
+  `cargo test --all-targets --all-features` passed 1,601 library tests, 28
+  compatibility-harness tests, 1 performance-harness test, 5 CLI tests, and
+  3 ERT-runner tests (plus the zero-test binary target).  The first sandboxed
+  run passed all non-network tests but could not open localhost sockets; the
+  exact same gate passed with the required socket permission.  The exact
+  1..N/7080 replay remains pending.
 - POST-`26e68a4` 2026-07-27 NATIVE-AUDIT PROGRESS: `doc.c` is now complete,
   advancing the exact inventory to 1,218 mirrored / 202 missing.  The former
   partial documentation facade rejected GNU's optional `RAW` argument and

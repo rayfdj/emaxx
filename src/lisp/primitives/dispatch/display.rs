@@ -3517,7 +3517,13 @@ pub(super) fn call(
             }
             let face = args[0].as_symbol()?;
             let attribute = args[1].as_symbol()?;
-            Ok(face_attribute_value(interp, face, attribute, args.get(3)))
+            Ok(face_attribute_value_on(
+                interp,
+                face,
+                attribute,
+                matches!(args.get(2), Some(Value::T)),
+                args.get(3),
+            ))
         }
         "face-name" => {
             need_args(name, args, 1)?;
@@ -3537,7 +3543,13 @@ pub(super) fn call(
             } else {
                 ":background"
             };
-            let value = face_attribute_value(interp, face, attribute, args.get(2));
+            let value = face_attribute_value_on(
+                interp,
+                face,
+                attribute,
+                matches!(args.get(1), Some(Value::T)),
+                args.get(2),
+            );
             Ok(if is_unspecified_face_attribute(&value) {
                 Value::Nil
             } else {
@@ -3596,23 +3608,28 @@ pub(super) fn call(
                     Value::Symbol(face),
                 ])));
             }
+            let set_global = matches!(args.get(1), Some(Value::T | Value::Nil));
+            let set_local = !matches!(args.get(1), Some(Value::T));
             let mut index = 2;
             while index + 1 < args.len() {
                 let attribute = args[index].as_symbol()?;
                 let value = &args[index + 1];
-                if attribute == ":inherit" {
+                if attribute == ":inherit" && set_local {
                     let inherit = match value {
                         Value::Nil => None,
                         Value::Symbol(symbol) => Some(symbol.clone()),
-                        _ => return Err(LispError::TypeError("symbol".into(), value.type_name())),
+                        _ => None,
                     };
-                    interp.set_face_inherit_target(&face, inherit)?;
+                    if value.is_nil() || matches!(value, Value::Symbol(_)) {
+                        interp.set_face_inherit_target(&face, inherit)?;
+                    }
                 }
-                interp.put_symbol_property(
-                    &face,
-                    &face_attribute_property_name(attribute),
-                    value.clone(),
-                );
+                if set_global {
+                    super::faces::set_face_attribute(interp, &face, attribute, value, true)?;
+                }
+                if set_local {
+                    super::faces::set_face_attribute(interp, &face, attribute, value, false)?;
+                }
                 index += 2;
             }
             Ok(Value::Nil)

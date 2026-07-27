@@ -342,12 +342,12 @@ fn every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         (mirrored.len(), fingerprint(&mirrored)),
-        (1_218, 13_172_899_831_396_163_495),
+        (1_243, 9_385_334_872_549_546_439),
         "GNU C mirror inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     assert_eq!(
         (missing_names.len(), fingerprint(&missing_names)),
-        (202, 17_683_462_402_125_786_975),
+        (177, 8_542_746_661_416_825_269),
         "GNU C missing-primitive inventory changed; audit the exact addition/removal before updating this snapshot"
     );
     if std::env::var_os("EMAXX_PRINT_NATIVE_PRIMITIVE_AUDIT").is_some() {
@@ -4176,6 +4176,213 @@ Raw \\[forward-char] docs.\n\n(fn LIST)\
         "doc.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
     );
     let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn native_xfaces_lisp_face_registry_family_matches_gnu() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should follow the Unix epoch")
+        .as_nanos();
+    let color_file = std::env::temp_dir().join(format!("emaxx-native-colors-{unique}"));
+    std::fs::write(
+        &color_file,
+        "1 2 3 alpha\n255 0 16 two words\nnot a color\n",
+    )
+    .expect("write synthetic xfaces color file");
+    let color_file = serde_json::to_string(&color_file.display().to_string())
+        .expect("serialize synthetic color filename");
+    let program = format!(
+        r##"
+        (let* ((name 'emaxx-native-face)
+               (copy 'emaxx-native-face-copy)
+               (frame (selected-frame))
+               (global
+                (internal-make-lisp-face name nil))
+               (local
+                (internal-make-lisp-face name frame)))
+          (list
+           (length global)
+           (aref global 0)
+           (vectorp global)
+           (and (internal-lisp-face-p name nil) t)
+           (and (internal-lisp-face-p name frame) t)
+           (internal-lisp-face-empty-p name t)
+           (internal-lisp-face-empty-p name frame)
+           (internal-set-lisp-face-attribute
+            name :foreground "red" t)
+           (internal-get-lisp-face-attribute
+            name :foreground t)
+           (internal-lisp-face-empty-p name t)
+           (internal-copy-lisp-face
+            name copy t nil)
+           (internal-get-lisp-face-attribute
+            copy :foreground t)
+           (internal-lisp-face-equal-p
+            name copy t)
+           (progn
+             (aset global 9 "blue")
+             (internal-get-lisp-face-attribute
+              name :foreground t))
+           (progn
+             (internal-set-lisp-face-attribute
+              name :height 120 frame)
+             (list
+              (internal-get-lisp-face-attribute
+               name :height frame)
+              (internal-get-lisp-face-attribute
+               name :height t)))
+           (progn
+             (internal-set-lisp-face-attribute
+              name :inherit 'default t)
+             (internal-get-lisp-face-attribute
+              name :inherit t))
+           (let ((attrs
+                  (face-attributes-as-vector
+                   '(:height 1.5
+                     :foreground "cyan"))))
+             (list
+              (length attrs)
+              (aref attrs 0)
+              (aref attrs 4)
+              (aref attrs 9)
+              (aref attrs 16)))
+           (list
+            (face-attribute-relative-p
+             :height 1.5)
+            (face-attribute-relative-p
+             :height 100)
+            (face-attribute-relative-p
+             :foreground 'unspecified)
+            (merge-face-attribute
+             :height 1.5 100)
+            (merge-face-attribute
+             :height 1.5 2.0)
+            (merge-face-attribute
+             :foreground 'unspecified "black")
+            (merge-face-attribute
+             :foreground "white" "black"))
+           (list
+            (internal-lisp-face-attribute-values
+             :underline)
+            (internal-lisp-face-attribute-values
+             :height))
+           (list
+            (bitmap-spec-p "bitmap")
+            (bitmap-spec-p
+             (list 8 2 (unibyte-string 0 0)))
+            (bitmap-spec-p
+             (list 9 2 (unibyte-string 0 0)))
+            (bitmap-spec-p '(0 1 "")))
+           (list
+            (color-gray-p "black")
+            (color-gray-p "#808080")
+            (color-gray-p "red")
+            (color-supported-p "red")
+            (color-supported-p "not-a-color"))
+           (progn
+             (internal-set-lisp-face-attribute
+              name :weight 'bold t)
+             (internal-set-lisp-face-attribute
+              name :slant 'italic t)
+             (list
+              (face-font name t)
+              (face-font name frame)))
+           (internal-set-font-selection-order
+            '(:width :height :weight :slant))
+           (internal-set-alternative-font-family-alist
+            '(("Foo" "Bar")))
+           (internal-set-alternative-font-registry-alist
+            '(("ISO" "Foo")))
+           (list
+            (internal-set-lisp-face-attribute-from-resource
+             name :height "140" t)
+            (internal-get-lisp-face-attribute
+             name :height t))
+           (progn
+             (internal-set-lisp-face-attribute
+              copy :foreground "purple" t)
+             (internal-set-lisp-face-attribute
+              copy :foreground "green" frame)
+             (list
+              (internal-merge-in-global-face
+               copy frame)
+              (internal-get-lisp-face-attribute
+               copy :foreground frame)))
+           (x-family-fonts)
+           (condition-case error-data
+               (x-list-fonts "*")
+             (error (car error-data)))
+           (x-load-color-file {color_file})
+           (tty-suppress-bold-inverse-default-colors
+            t)
+           (clear-face-cache)
+           (mapcar
+            (lambda (thunk)
+              (condition-case error-data
+                  (funcall thunk)
+                (error (car error-data))))
+            (list
+             (lambda ()
+               (internal-make-lisp-face 1 nil))
+             (lambda ()
+               (internal-get-lisp-face-attribute
+                name :no-such-attribute t))
+             (lambda ()
+               (internal-set-lisp-face-attribute
+                name :weight 'not-a-weight t))
+             (lambda ()
+               (internal-set-lisp-face-attribute
+                name :inherit '(default 1) t))
+             (lambda ()
+               (internal-set-font-selection-order
+                '(:width :height :weight)))))))"##
+    );
+    let expected = r#"
+        (20 face t t t t t
+         emaxx-native-face "red" nil
+         emaxx-native-face-copy "red" t "blue"
+         (120 unspecified)
+         default
+         (20 unspecified 1.5 "cyan" unspecified)
+         (t nil t 150 3.0 "black" "white")
+         ((t nil) nil)
+         (t t nil nil)
+         (t t nil t nil)
+         ((italic bold) nil)
+         nil
+         ((Foo Bar))
+         (("iso" "foo"))
+         (emaxx-native-face 140)
+         (nil "purple")
+         nil error
+         (("two words" . 16711696)
+          ("alpha" . 66051))
+         t nil
+         (wrong-type-argument error error error error))"#;
+    let expected_printed = "(20 face t t t t t emaxx-native-face \"red\" nil emaxx-native-face-copy \"red\" t \"blue\" (120 unspecified) default (20 unspecified 1.5 \"cyan\" unspecified) (t nil t 150 3.0 \"black\" \"white\") ((t nil) nil) (t t nil nil) (t t nil t nil) ((italic bold) nil) nil ((Foo Bar)) ((\"iso\" \"foo\")) (emaxx-native-face 140) (nil \"purple\") nil error ((\"two words\" . 16711696) (\"alpha\" . 66051)) t nil (wrong-type-argument error error error error))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected_printed);
+
+    let mut interp = Interpreter::new();
+    let mut env = Vec::new();
+    let form = Reader::new(&program)
+        .read()
+        .expect("xfaces.c family contract should parse")
+        .expect("xfaces.c family contract should contain a form");
+    let actual = interp
+        .eval(&form, &mut env)
+        .expect("xfaces.c family contract should evaluate");
+    let expected = Reader::new(expected)
+        .read()
+        .expect("xfaces.c expected value should parse")
+        .expect("xfaces.c expected value should exist");
+    assert!(
+        values_equal(&interp, &actual, &expected),
+        "xfaces.c result differs from GNU:\nactual: {actual:?}\nexpected: {expected:?}"
+    );
+    let _ = std::fs::remove_file(
+        serde_json::from_str::<String>(&color_file).expect("deserialize color filename"),
+    );
 }
 
 #[test]

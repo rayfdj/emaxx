@@ -1985,6 +1985,8 @@ impl Interpreter {
             return Ok(Value::Nil);
         };
         if let Some(spec) = items.get(2) {
+            self.ensure_lisp_face(name, false, false)?;
+            self.ensure_lisp_face(name, true, false)?;
             self.put_symbol_property(name, "face-defface-spec", spec.clone());
             self.put_symbol_property(name, "face-modified", Value::Nil);
             if let Some(doc) = items.get(3)
@@ -2019,11 +2021,9 @@ impl Interpreter {
                     _ => {}
                 }
             }
-            self.put_symbol_property(
-                face,
-                &crate::lisp::primitives::face_attribute_property_name(&attribute),
-                value,
-            );
+            if let Some(index) = crate::lisp::primitives::face_attribute_index(&attribute) {
+                self.set_lisp_face_attribute(face, index, value.clone(), false)?;
+            }
         }
         Ok(())
     }

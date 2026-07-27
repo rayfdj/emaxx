@@ -1684,55 +1684,104 @@ pub(crate) fn face_attribute_property_name(attribute: &str) -> String {
     format!("emaxx-face-attribute::{attribute}")
 }
 
-pub(crate) fn face_attribute_value(
+pub(crate) fn face_attribute_index(attribute: &str) -> Option<usize> {
+    Some(match attribute {
+        ":family" => 1,
+        ":foundry" => 2,
+        ":width" => 3,
+        ":height" => 4,
+        ":weight" | ":bold" => 5,
+        ":slant" | ":italic" => 6,
+        ":underline" => 7,
+        ":inverse-video" | ":reverse-video" => 8,
+        ":foreground" => 9,
+        ":background" => 10,
+        ":stipple" => 11,
+        ":overline" => 12,
+        ":strike-through" => 13,
+        ":box" => 14,
+        ":font" => 15,
+        ":inherit" => 16,
+        ":fontset" => 17,
+        ":distant-foreground" => 18,
+        ":extend" => 19,
+        _ => return None,
+    })
+}
+
+pub(crate) fn face_attribute_value_on(
     interp: &Interpreter,
     face: &str,
     attribute: &str,
+    global: bool,
     inherit: Option<&Value>,
 ) -> Value {
     let mut visited = HashSet::new();
-    face_attribute_value_inner(interp, face, attribute, inherit, &mut visited)
+    face_attribute_value_inner(interp, face, attribute, global, inherit, &mut visited)
 }
 
 pub(crate) fn face_attribute_value_inner(
     interp: &Interpreter,
     face: &str,
     attribute: &str,
+    global: bool,
     inherit: Option<&Value>,
     visited: &mut HashSet<String>,
 ) -> Value {
     if !visited.insert(face.to_string()) {
         return Value::Symbol("unspecified".into());
     }
-    if let Some(value) = interp.get_symbol_property(face, &face_attribute_property_name(attribute))
-    {
+    let direct = face_attribute_index(attribute)
+        .and_then(|index| interp.lisp_face_attribute(face, index, global))
+        .or_else(|| interp.get_symbol_property(face, &face_attribute_property_name(attribute)))
+        .unwrap_or_else(|| Value::Symbol("unspecified".into()));
+    let relative = is_unspecified_face_attribute(&direct)
+        || (attribute == ":height" && !matches!(direct, Value::Integer(_)));
+    if !inherit.is_some_and(Value::is_truthy) || !relative {
         visited.remove(face);
-        return value;
+        return direct;
     }
+    let merge = |inherited: Value| match (&direct, inherited) {
+        (Value::Float(scale), Value::Integer(height)) if attribute == ":height" => {
+            Value::Integer((*scale * height as f64) as i64)
+        }
+        (Value::Float(scale), Value::Float(height)) if attribute == ":height" => {
+            Value::Float(*scale * height)
+        }
+        (_, inherited) if is_unspecified_face_attribute(&direct) => inherited,
+        _ => direct.clone(),
+    };
     if inherit.is_some_and(Value::is_truthy) {
-        if let Some(parent) = face_inherit_spec(interp, face) {
-            let inherited = resolve_face_attribute_inherit(interp, &parent, attribute, visited);
+        if let Some(parent) = face_inherit_spec(interp, face, global) {
+            let inherited =
+                resolve_face_attribute_inherit(interp, &parent, attribute, global, visited);
             if !is_unspecified_face_attribute(&inherited) {
                 visited.remove(face);
-                return inherited;
+                return merge(inherited);
             }
         }
         if let Some(extra) = inherit.filter(|value| !matches!(value, Value::T)) {
-            let inherited = resolve_face_attribute_inherit(interp, extra, attribute, visited);
+            let inherited =
+                resolve_face_attribute_inherit(interp, extra, attribute, global, visited);
             if !is_unspecified_face_attribute(&inherited) {
                 visited.remove(face);
-                return inherited;
+                return merge(inherited);
             }
         }
     }
     visited.remove(face);
-    Value::Symbol("unspecified".into())
+    direct
 }
 
-pub(crate) fn face_inherit_spec(interp: &Interpreter, face: &str) -> Option<Value> {
+pub(crate) fn face_inherit_spec(interp: &Interpreter, face: &str, global: bool) -> Option<Value> {
     interp
-        .get_symbol_property(face, &face_attribute_property_name(":inherit"))
-        .filter(|value| !value.is_nil())
+        .lisp_face_attribute(face, crate::lisp::eval::LFACE_INHERIT_INDEX, global)
+        .filter(|value| !is_unspecified_face_attribute(value) && !value.is_nil())
+        .or_else(|| {
+            interp
+                .get_symbol_property(face, &face_attribute_property_name(":inherit"))
+                .filter(|value| !value.is_nil())
+        })
         .or_else(|| interp.face_inherit_target(face).map(Value::Symbol))
 }
 
@@ -1740,19 +1789,21 @@ pub(crate) fn resolve_face_attribute_inherit(
     interp: &Interpreter,
     inherit: &Value,
     attribute: &str,
+    global: bool,
     visited: &mut HashSet<String>,
 ) -> Value {
     match inherit {
         Value::Nil => Value::Symbol("unspecified".into()),
         Value::Symbol(symbol) => {
-            face_attribute_value_inner(interp, symbol, attribute, Some(&Value::T), visited)
+            face_attribute_value_inner(interp, symbol, attribute, global, Some(&Value::T), visited)
         }
         other => {
             let Ok(items) = other.to_vec() else {
                 return Value::Symbol("unspecified".into());
             };
             for item in items {
-                let value = resolve_face_attribute_inherit(interp, &item, attribute, visited);
+                let value =
+                    resolve_face_attribute_inherit(interp, &item, attribute, global, visited);
                 if !is_unspecified_face_attribute(&value) {
                     return value;
                 }
@@ -1768,6 +1819,9 @@ pub(crate) fn is_unspecified_face_attribute(value: &Value) -> bool {
 
 pub(crate) fn face_exists(interp: &Interpreter, face: &str) -> bool {
     if face == "default" {
+        return true;
+    }
+    if interp.lisp_face_exists(face) {
         return true;
     }
     if interp

@@ -5,6 +5,7 @@ mod buffer_meta;
 mod collections;
 mod composition;
 mod display;
+mod faces;
 mod files_process;
 mod lists;
 mod misc;
@@ -45,6 +46,7 @@ enum DispatchModule {
     BufferMeta,
     FilesProcess,
     Display,
+    Faces,
     Misc,
     MiscKeymaps,
     Overlays,
@@ -83,6 +85,8 @@ fn compute_name_facts(name: &str) -> NameFacts {
         DispatchModule::FilesProcess
     } else if display::handles(name) {
         DispatchModule::Display
+    } else if faces::handles(name) {
+        DispatchModule::Faces
     } else if misc::handles(name) {
         DispatchModule::Misc
     } else if misc_keymaps::handles(name) {
@@ -132,10 +136,11 @@ pub(crate) fn has_dispatch_handler(name: &str) -> bool {
 }
 
 fn is_builtin_uncached(name: &str) -> bool {
-    matches!(
-        name,
-        // Arithmetic
-        "+"  | "-"
+    faces::handles(name)
+        || matches!(
+            name,
+            // Arithmetic
+            "+"  | "-"
             | "*"
             | "/"
             | "%"
@@ -1837,7 +1842,8 @@ fn is_builtin_uncached(name: &str) -> bool {
             | "undo-boundary"
             | "undo"
             | "undo-more"
-    ) || numeric::handles(name)
+        )
+        || numeric::handles(name)
         || predicates::handles(name)
         || lists::handles(name)
         || composition::handles(name)
@@ -1922,6 +1928,7 @@ pub fn call(
         DispatchModule::BufferMeta => buffer_meta::call(interp, name, args, env),
         DispatchModule::FilesProcess => files_process::call(interp, name, args, env),
         DispatchModule::Display => display::call(interp, name, args, env),
+        DispatchModule::Faces => faces::call(interp, name, args, env),
         DispatchModule::Misc => misc::call(interp, name, args, env),
         DispatchModule::MiscKeymaps => misc_keymaps::call(interp, name, args, env),
         DispatchModule::Overlays => overlays::call(interp, name, args, env),

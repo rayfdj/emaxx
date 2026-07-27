@@ -29,6 +29,26 @@ handoff and retry instruction are in
 
 ## Current State
 
+- The 2026-07-28 native-audit checkpoint completes the 25-function
+  headless semantic core of `xfaces.c`, bringing the exact inventory to 1,243
+  mirrored / 177 missing.  One interpreter-owned mutable 20-slot face-vector
+  registry now replaces the former split between synthetic attribute
+  properties and a separate inheritance list.  Native creation, copy,
+  mutation, lookup, equality/emptiness, global/selected-frame state,
+  inheritance, relative-height merging, resource conversion, bitmap/color
+  queries, font-selection state, and color-file parsing all share it, and the
+  existing high-level face/theme paths have been integrated with the same
+  source of truth.  A fast family regression executes all 25 claimed names
+  against GNU, including vector identity and external `aset` mutation.
+  `frame--face-hash-table` remains deferred to the proper multi-frame model;
+  `internal-face-x-get-resource` remains deferred to a real GUI resource
+  backend because GNU aborts when it is called on the batch terminal.  The
+  targeted face suite, rustfmt, strict Clippy, and diff checks are green.
+  The publication gate passed 1,601 library, 28 compatibility-harness, 1
+  performance-harness, 5 CLI, and 3 ERT-runner tests.  The first sandboxed
+  run's four localhost-socket permission failures all passed when the same
+  gate was rerun with socket permission.  The exact 1..N/7080 replay remains
+  pending.
 - Post-`26e68a4` native audit progress completes `doc.c`, bringing the exact
   inventory to 1,218 mirrored / 202 missing.  Emaxx now uses one native DOC
   index for `F`/`V`/`S` records, signed user-variable offsets, static/lazy
